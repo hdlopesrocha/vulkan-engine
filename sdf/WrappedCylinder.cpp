@@ -1,7 +1,9 @@
 #include "WrappedCylinder.hpp"
 
 
-WrappedCylinder::WrappedCylinder(CylinderDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
+WrappedCylinder::WrappedCylinder(CylinderDistanceFunction * function_, const Transformation &model, float bias)
+    : WrappedSignedDistanceFunction(function_)
+    , sphere(getSphere(model, bias)) {
 
 }
 
@@ -14,19 +16,14 @@ BoundingSphere WrappedCylinder::getSphere(const Transformation &model, float bia
     return BoundingSphere(f->getCenter(model), glm::length(model.scale)*sqrt(0.5f) + bias);
 };
 
-ContainmentType WrappedCylinder::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+ContainmentType WrappedCylinder::check(const BoundingCube &cube) const {
     return sphere.test(cube);
 };
 
-bool WrappedCylinder::isContained(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+bool WrappedCylinder::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 };
 
-void WrappedCylinder::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
-    getSphere(model, bias).accept(visitor);
-}
 
 const char* WrappedCylinder::getLabel() const {
     return "Cylinder";

@@ -1,7 +1,8 @@
 #include "WrappedTaperedCapsule.hpp"
 
-WrappedTaperedCapsule::WrappedTaperedCapsule(TaperedCapsuleDistanceFunction * function_)
-    : WrappedSignedDistanceFunction(function_) {
+WrappedTaperedCapsule::WrappedTaperedCapsule(TaperedCapsuleDistanceFunction * function_, const Transformation &model, float bias)
+    : WrappedSignedDistanceFunction(function_)
+    , sphere(getSphere(model, bias)) {
 }
 
 WrappedTaperedCapsule::~WrappedTaperedCapsule() {
@@ -15,18 +16,12 @@ BoundingSphere WrappedTaperedCapsule::getSphere(const Transformation &model, flo
     return BoundingSphere(center, glm::length(model.scale) * (halfLen + maxR) + bias);
 }
 
-ContainmentType WrappedTaperedCapsule::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+ContainmentType WrappedTaperedCapsule::check(const BoundingCube &cube) const {
     return sphere.test(cube);
 }
 
-bool WrappedTaperedCapsule::isContained(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+bool WrappedTaperedCapsule::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
-}
-
-void WrappedTaperedCapsule::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
-    getSphere(model, bias).accept(visitor);
 }
 
 const char* WrappedTaperedCapsule::getLabel() const {

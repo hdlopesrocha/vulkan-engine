@@ -1,6 +1,8 @@
 #include "WrappedTorus.hpp"
 
-WrappedTorus::WrappedTorus(TorusDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
+WrappedTorus::WrappedTorus(TorusDistanceFunction * function_, const Transformation &model, float bias)
+    : WrappedSignedDistanceFunction(function_)
+    , sphere(getSphere(model, bias)) {
 
 }
 
@@ -13,19 +15,13 @@ BoundingSphere WrappedTorus::getSphere(const Transformation &model, float bias) 
     return BoundingSphere(f->getCenter(model), glm::length(model.scale)*sqrt(0.5f) + bias);
 };
 
-ContainmentType WrappedTorus::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+ContainmentType WrappedTorus::check(const BoundingCube &cube) const {
     return sphere.test(cube);
 };
 
-bool WrappedTorus::isContained(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+bool WrappedTorus::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 };
-
-void WrappedTorus::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
-    getSphere(model, bias).accept(visitor);
-}
 
 const char* WrappedTorus::getLabel() const {
     return "Torus";

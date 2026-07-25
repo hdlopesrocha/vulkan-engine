@@ -1,7 +1,9 @@
 #include "WrappedHeightMap.hpp"
 #include "../math/HeightMap.hpp"
 
-WrappedHeightMap::WrappedHeightMap(HeightMapDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
+WrappedHeightMap::WrappedHeightMap(HeightMapDistanceFunction * function_, float bias)
+    : WrappedSignedDistanceFunction(function_)
+    , box(getBox(bias)) {
 
 }
 
@@ -14,19 +16,14 @@ BoundingBox WrappedHeightMap::getBox(float bias) const {
     return BoundingBox(f->map->getMin()-glm::vec3(bias), f->map->getMax()+glm::vec3(bias));
 }
     
-ContainmentType WrappedHeightMap::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingBox box = getBox(bias);
+ContainmentType WrappedHeightMap::check(const BoundingCube &cube) const {
     return box.test(cube);
 };
 
-bool WrappedHeightMap::isContained(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingBox box = getBox(bias);
+bool WrappedHeightMap::isContained(const BoundingCube &cube) const {
     return cube.contains(box);
 };
 
-void WrappedHeightMap::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
-    getBox(bias).accept(visitor);
-}
 
 const char* WrappedHeightMap::getLabel() const {
     return "Height Map";

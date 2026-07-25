@@ -6,16 +6,17 @@
 class WrappedTriangleStrip : public WrappedSignedDistanceFunction {
 public:
     WrappedTriangleStrip(TriangleStripDistanceFunction* function_,
-                         const glm::vec3& sphereCenter, float sphereRadius);
+                         const glm::vec3& sphereCenter, float sphereRadius,
+                         const Transformation &model = Transformation(), float bias = 0.0f);
     ~WrappedTriangleStrip();
     float distance(const glm::vec3 &p, const Transformation &model) override;
-    BoundingSphere getSphere(const Transformation &model, float bias) const;
-    ContainmentType check(const BoundingCube &cube, const Transformation &model, float bias) const override;
-    bool isContained(const BoundingCube &cube, const Transformation &model, float bias) const override;
-    void accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const override;
+    BoundingSphere getSphere(const Transformation &model, float bias) const override;
+    ContainmentType check(const BoundingCube &cube) const override;
+    bool isContained(const BoundingCube &cube) const override;
     const char* getLabel() const override;
 
 private:
     glm::vec3 m_sphereCenter;
     float m_sphereRadius;
+    BoundingSphere sphere;
 };

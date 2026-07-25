@@ -1,8 +1,7 @@
 #include "WrappedPerlinDistortDistanceEffect.hpp"
 
 
-WrappedPerlinDistortDistanceEffect::WrappedPerlinDistortDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_, float brightness_, float contrast_) : WrappedSignedDistanceEffect(NULL), amplitude(amplitude_), frequency(frequency_), offset(offset_), brightness(brightness_), contrast(contrast_) {
-    this->setFunction(function_);
+WrappedPerlinDistortDistanceEffect::WrappedPerlinDistortDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias) : WrappedSignedDistanceEffect(function_, model, bias + amplitude_ * 1.97f), amplitude(amplitude_), frequency(frequency_), offset(offset_), brightness(brightness_), contrast(contrast_) {
 }
 
 WrappedPerlinDistortDistanceEffect::~WrappedPerlinDistortDistanceEffect() {
@@ -27,7 +26,3 @@ float WrappedPerlinDistortDistanceEffect::distance(const glm::vec3 &p, const Tra
     float L = 1.0f + maxJacobian;
     return d / L;
 }
-
-ContainmentType WrappedPerlinDistortDistanceEffect::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    return WrappedSignedDistanceEffect::check(cube, model, bias + amplitude * 1.97f);
-};

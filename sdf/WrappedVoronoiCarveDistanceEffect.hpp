@@ -14,12 +14,10 @@ class WrappedVoronoiCarveDistanceEffect : public WrappedSignedDistanceEffect {
     glm::vec3 offset;
     float brightness;
     float contrast;
-    WrappedVoronoiCarveDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_);
+    WrappedVoronoiCarveDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model = Transformation(), float bias = 0.0f);
     ~WrappedVoronoiCarveDistanceEffect();
-    BoundingSphere getSphere(const Transformation &model, float bias) const;
     const char* getLabel() const override;
     float distance(const glm::vec3 &p, const Transformation &model) override;
-    ContainmentType check(const BoundingCube &cube, const Transformation &model, float bias) const override;
     SdfType getType() const override { return SdfType::CARVE_VORONOI; }
 };
 

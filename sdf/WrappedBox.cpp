@@ -1,6 +1,8 @@
 #include "WrappedBox.hpp"
 
-WrappedBox::WrappedBox(BoxDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
+WrappedBox::WrappedBox(BoxDistanceFunction * function_, const Transformation &model, float bias)
+    : WrappedSignedDistanceFunction(function_)
+    , sphere(getSphere(model, bias)) {
 
 }
 
@@ -13,19 +15,13 @@ BoundingSphere WrappedBox::getSphere(const Transformation &model, float bias) co
     return BoundingSphere(f->getCenter(model), glm::length(model.scale)+ bias);
 };
 
-ContainmentType WrappedBox::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+ContainmentType WrappedBox::check(const BoundingCube &cube) const {
     return sphere.test(cube);
 };
 
-bool WrappedBox::isContained(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+bool WrappedBox::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 };
-
-void WrappedBox::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
-    getSphere(model, bias).accept(visitor);
-}
 
 const char* WrappedBox::getLabel() const {
     return "Box";

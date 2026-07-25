@@ -1,7 +1,8 @@
 #include "WrappedTaperedCylinder.hpp"
 
-WrappedTaperedCylinder::WrappedTaperedCylinder(TaperedCylinderDistanceFunction * function_)
-    : WrappedSignedDistanceFunction(function_) {
+WrappedTaperedCylinder::WrappedTaperedCylinder(TaperedCylinderDistanceFunction * function_, const Transformation &model, float bias)
+    : WrappedSignedDistanceFunction(function_)
+    , sphere(getSphere(model, bias)) {
 }
 
 WrappedTaperedCylinder::~WrappedTaperedCylinder() {
@@ -14,18 +15,12 @@ BoundingSphere WrappedTaperedCylinder::getSphere(const Transformation &model, fl
     return BoundingSphere(f->getCenter(model), glm::length(model.scale) * glm::sqrt(maxRadius * maxRadius + 0.25f) + bias);
 }
 
-ContainmentType WrappedTaperedCylinder::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+ContainmentType WrappedTaperedCylinder::check(const BoundingCube &cube) const {
     return sphere.test(cube);
 }
 
-bool WrappedTaperedCylinder::isContained(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+bool WrappedTaperedCylinder::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
-}
-
-void WrappedTaperedCylinder::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
-    getSphere(model, bias).accept(visitor);
 }
 
 const char* WrappedTaperedCylinder::getLabel() const {

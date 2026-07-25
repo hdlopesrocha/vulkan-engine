@@ -686,7 +686,7 @@ OctreeNodeLevel Octree::fetch(glm::vec3 pos, uint level, bool simplification, Th
 
 
 void Octree::expand(const ShapeArgs &args) {
-    while (!args.function->isContained(*this, args.model, args.minSize)) {
+    while (!args.function->isContained(*this)) {
         glm::vec3 point = args.function->getCenter(args.model);
         unsigned int i = getNodeIndex(point, *this) ^ 0x7;
 
@@ -977,7 +977,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             process = r.shapeSdfCenter <= halfDiagonal;
 
             if(process) {
-                const ContainmentType check = args.function->check(frame.cube, args.model, args.minSize);
+                const ContainmentType check = args.function->check(frame.cube);
                 process = check != ContainmentType::Disjoint;
             }
             if(process) {    

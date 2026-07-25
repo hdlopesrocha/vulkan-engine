@@ -5,12 +5,13 @@
 #include "../math/BoundingSphere.hpp"
 
 class WrappedTaperedCapsule : public WrappedSignedDistanceFunction {
+private:
+    BoundingSphere sphere;
 public:
-    WrappedTaperedCapsule(TaperedCapsuleDistanceFunction * function_);
+    WrappedTaperedCapsule(TaperedCapsuleDistanceFunction * function_, const Transformation &model = Transformation(), float bias = 0.0f);
     ~WrappedTaperedCapsule();
-    BoundingSphere getSphere(const Transformation &model, float bias) const;
-    ContainmentType check(const BoundingCube &cube, const Transformation &model, float bias) const override;
-    bool isContained(const BoundingCube &cube, const Transformation &model, float bias) const override;
-    void accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const override;
+    BoundingSphere getSphere(const Transformation &model, float bias) const override;
+    ContainmentType check(const BoundingCube &cube) const override;
+    bool isContained(const BoundingCube &cube) const override;
     const char* getLabel() const override;
 };

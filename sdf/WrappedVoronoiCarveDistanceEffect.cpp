@@ -1,7 +1,6 @@
 #include "WrappedVoronoiCarveDistanceEffect.hpp"
 
-WrappedVoronoiCarveDistanceEffect::WrappedVoronoiCarveDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_) : WrappedSignedDistanceEffect(NULL), amplitude(amplitude_), cellSize(cellSize_), offset(offset_), brightness(brightness_), contrast(contrast_) {
-    this->setFunction(function_);
+WrappedVoronoiCarveDistanceEffect::WrappedVoronoiCarveDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias) : WrappedSignedDistanceEffect(function_, model, bias + amplitude_), amplitude(amplitude_), cellSize(cellSize_), offset(offset_), brightness(brightness_), contrast(contrast_) {
 }
 
 WrappedVoronoiCarveDistanceEffect::~WrappedVoronoiCarveDistanceEffect() {
@@ -24,7 +23,3 @@ float WrappedVoronoiCarveDistanceEffect::distance(const glm::vec3 &p, const Tran
     float L = 1.0f + maxGrad;
     return carved / L;
 }
-
-ContainmentType WrappedVoronoiCarveDistanceEffect::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    return WrappedSignedDistanceEffect::check(cube, model, bias+amplitude);
-};

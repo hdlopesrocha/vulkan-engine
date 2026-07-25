@@ -1,7 +1,6 @@
 #include "WrappedSineDistortDistanceEffect.hpp"
 
-WrappedSineDistortDistanceEffect::WrappedSineDistortDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_) : WrappedSignedDistanceEffect(NULL), amplitude(amplitude_), frequency(frequency_), offset(offset_) {
-    this->setFunction(function_);
+WrappedSineDistortDistanceEffect::WrappedSineDistortDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_, const Transformation &model, float bias) : WrappedSignedDistanceEffect(function_, model, bias + amplitude_ * 0.5f), amplitude(amplitude_), frequency(frequency_), offset(offset_) {
 }
 
 WrappedSineDistortDistanceEffect::~WrappedSineDistortDistanceEffect() {
@@ -29,7 +28,3 @@ float WrappedSineDistortDistanceEffect::distance(const glm::vec3 &p, const Trans
     float L = 1.0f + maxJacobian;
     return d / L;
 }
-
-ContainmentType WrappedSineDistortDistanceEffect::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    return WrappedSignedDistanceEffect::check(cube, model, bias + amplitude * 0.5f);
-};

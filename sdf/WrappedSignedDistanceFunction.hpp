@@ -14,6 +14,8 @@ namespace tsl {
 #include "SignedDistanceFunction.hpp"
 #include "../math/BoundingVolume.hpp"
 #include "../math/BoundingCube.hpp"
+#include "../math/BoundingSphere.hpp"
+#include "../math/BoundingBox.hpp"
 
 class WrappedSignedDistanceFunction : public SignedDistanceFunction {
     protected:
@@ -26,9 +28,10 @@ class WrappedSignedDistanceFunction : public SignedDistanceFunction {
     WrappedSignedDistanceFunction(SignedDistanceFunction * function_);
     virtual ~WrappedSignedDistanceFunction();
 
-    virtual void accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const = 0;
-    virtual ContainmentType check(const BoundingCube &cube, const Transformation &model, float bias) const = 0;
-    virtual bool isContained(const BoundingCube &cube, const Transformation &model, float bias) const = 0;
+    virtual ContainmentType check(const BoundingCube &cube) const = 0;
+    virtual bool isContained(const BoundingCube &cube) const = 0;
+    virtual BoundingSphere getSphere(const Transformation &model, float bias) const { return BoundingSphere(); }
+    virtual BoundingBox getBox(float bias) const { return BoundingBox(); }
     virtual const char* getLabel() const = 0;
 
     SdfType getType() const override;

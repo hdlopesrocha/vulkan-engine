@@ -1,6 +1,8 @@
 #include "WrappedOctreeDifference.hpp"
 
-WrappedOctreeDifference::WrappedOctreeDifference(OctreeDifferenceFunction * function_) : WrappedSignedDistanceFunction(function_) {
+WrappedOctreeDifference::WrappedOctreeDifference(OctreeDifferenceFunction * function_, float bias)
+    : WrappedSignedDistanceFunction(function_)
+    , box(getBox(bias)) {
 
 }
 
@@ -13,13 +15,11 @@ BoundingBox WrappedOctreeDifference::getBox(float bias) const {
     return BoundingBox(f->box.getMin()-glm::vec3(bias), f->box.getMax()+glm::vec3(bias));
 }
     
-ContainmentType WrappedOctreeDifference::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingBox box = getBox(bias);
+ContainmentType WrappedOctreeDifference::check(const BoundingCube &cube) const {
     return box.test(cube);
 };
 
-bool WrappedOctreeDifference::isContained(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingBox box = getBox(bias);
+bool WrappedOctreeDifference::isContained(const BoundingCube &cube) const {
     return cube.contains(box);
 };
 
@@ -27,10 +27,6 @@ glm::vec3 WrappedOctreeDifference::getCenter(const Transformation &model) const 
     OctreeDifferenceFunction * f = (OctreeDifferenceFunction*) function;
     return f->box.getCenter();
 };
-
-void WrappedOctreeDifference::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
-    getBox(bias).accept(visitor);
-}
 
 const char* WrappedOctreeDifference::getLabel() const {
     return "Octree Difference";

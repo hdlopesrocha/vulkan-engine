@@ -3,10 +3,12 @@
 #include <algorithm>
 
 WrappedTriangleStrip::WrappedTriangleStrip(TriangleStripDistanceFunction* function_,
-                                           const glm::vec3& sphereCenter, float sphereRadius)
+                                           const glm::vec3& sphereCenter, float sphereRadius,
+                                           const Transformation &model, float bias)
     : WrappedSignedDistanceFunction(function_)
     , m_sphereCenter(sphereCenter)
     , m_sphereRadius(sphereRadius)
+    , sphere(getSphere(model, bias))
 {
 }
 
@@ -24,19 +26,12 @@ BoundingSphere WrappedTriangleStrip::getSphere(const Transformation &model, floa
     return BoundingSphere(m_sphereCenter, m_sphereRadius + bias);
 }
 
-ContainmentType WrappedTriangleStrip::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+ContainmentType WrappedTriangleStrip::check(const BoundingCube &cube) const {
     return sphere.test(cube);
 }
 
-bool WrappedTriangleStrip::isContained(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+bool WrappedTriangleStrip::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
-}
-
-
-void WrappedTriangleStrip::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
-    getSphere(model, bias).accept(visitor);
 }
 
 const char* WrappedTriangleStrip::getLabel() const {

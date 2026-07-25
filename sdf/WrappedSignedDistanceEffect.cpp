@@ -1,7 +1,12 @@
 #include "WrappedSignedDistanceEffect.hpp"
 
-WrappedSignedDistanceEffect::WrappedSignedDistanceEffect(WrappedSignedDistanceFunction * function_)
-: WrappedSignedDistanceFunction(function_) {}
+WrappedSignedDistanceEffect::WrappedSignedDistanceEffect(WrappedSignedDistanceFunction * function_, const Transformation &model, float bias)
+: WrappedSignedDistanceFunction(function_) {
+    auto wf = dynamic_cast<WrappedSignedDistanceFunction*>(function);
+    if(wf) {
+        sphere = wf->getSphere(model, bias);
+    }
+}
 
 WrappedSignedDistanceEffect::~WrappedSignedDistanceEffect() = default;
 
@@ -9,20 +14,10 @@ void WrappedSignedDistanceEffect::setFunction(WrappedSignedDistanceFunction * fu
     this->function = function_;
 }
 
-ContainmentType WrappedSignedDistanceEffect::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    auto wf = dynamic_cast<WrappedSignedDistanceFunction*>(function);
-    if(wf) return wf->check(cube, model, bias);
-    return Intersects;
+ContainmentType WrappedSignedDistanceEffect::check(const BoundingCube &cube) const {
+    return sphere.test(cube);
 }
 
-bool WrappedSignedDistanceEffect::isContained(const BoundingCube &cube, const Transformation &model, float bias) const {
-    auto wf = dynamic_cast<WrappedSignedDistanceFunction*>(function);
-    if(wf) return wf->isContained(cube, model, bias);
-    return false;
+bool WrappedSignedDistanceEffect::isContained(const BoundingCube &cube) const {
+    return cube.contains(sphere);
 }
-
-void WrappedSignedDistanceEffect::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
-    auto wf = dynamic_cast<WrappedSignedDistanceFunction*>(function);
-    if(wf) wf->accept(visitor, model, bias);
-}
-

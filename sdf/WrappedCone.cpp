@@ -1,6 +1,8 @@
 #include "WrappedCone.hpp"
 
-WrappedCone::WrappedCone(ConeDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
+WrappedCone::WrappedCone(ConeDistanceFunction * function_, const Transformation &model, float bias)
+    : WrappedSignedDistanceFunction(function_)
+    , sphere(getSphere(model, bias)) {
 
 }
 
@@ -13,19 +15,13 @@ BoundingSphere WrappedCone::getSphere(const Transformation &model, float bias) c
     return BoundingSphere(f->getCenter(model), sqrt(0.5f) * glm::length(model.scale) + bias);
 };
 
-ContainmentType WrappedCone::check(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+ContainmentType WrappedCone::check(const BoundingCube &cube) const {
     return sphere.test(cube);
 };
 
-bool WrappedCone::isContained(const BoundingCube &cube, const Transformation &model, float bias) const {
-    BoundingSphere sphere = getSphere(model, bias);
+bool WrappedCone::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 };
-
-void WrappedCone::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
-    getSphere(model, bias).accept(visitor);
-}
 
 const char* WrappedCone::getLabel() const {
     return "Cone";
