@@ -74,7 +74,7 @@ float RoadDistanceFunction::distance(const glm::vec3 &p, const Transformation &m
     return std::max(road, sphereDist);
 }
 
-glm::vec3 RoadDistanceFunction::getCenter(const Transformation &model) const {
+glm::vec3 RoadDistanceFunction::getCenter() const {
     return m_center;
 }
 

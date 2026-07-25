@@ -1,17 +1,17 @@
 #include "BoxDistanceFunction.hpp"
 
 BoxDistanceFunction::BoxDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::BOX)
+    : SignedDistanceFunction(SdfType::BOX, model.translate)
     , sphere(getSphere(model, bias)) {}
 
 float BoxDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
-    glm::vec3 pos = p - getCenter(model);
+    glm::vec3 pos = p - getCenter();
     pos = glm::inverse(model.quaternion) * pos;
     return SDF::box(pos, model.scale);
 }
 
 BoundingSphere BoxDistanceFunction::getSphere(const Transformation &model, float bias) const {
-    return BoundingSphere(getCenter(model), glm::length(model.scale) + bias);
+    return BoundingSphere(getCenter(), glm::length(model.scale) + bias);
 }
 
 ContainmentType BoxDistanceFunction::check(const BoundingCube &cube) const {

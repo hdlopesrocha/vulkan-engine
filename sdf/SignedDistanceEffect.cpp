@@ -2,6 +2,7 @@
 
 SignedDistanceEffect::SignedDistanceEffect(SignedDistanceFunction &function_, const Transformation &model, float bias)
 : SignedDistanceFunction(), function(function_) {
+    m_center = function_.getCenter();
     sphere = function.getSphere(model, bias);
 }
 
@@ -19,6 +20,6 @@ bool SignedDistanceEffect::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 }
 
-glm::vec3 SignedDistanceEffect::getCenter(const Transformation &model) const {
-    return function.getCenter(model);
+glm::vec3 SignedDistanceEffect::getCenter() const {
+    return m_center;
 }

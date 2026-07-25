@@ -687,7 +687,7 @@ OctreeNodeLevel Octree::fetch(glm::vec3 pos, uint level, bool simplification, Th
 
 void Octree::expand(const ShapeArgs &args) {
     while (!args.function.isContained(*this)) {
-        glm::vec3 point = args.function.getCenter(args.model);
+        glm::vec3 point = args.function.getCenter();
         unsigned int i = getNodeIndex(point, *this) ^ 0x7;
 
         setMin(getMin() - Octree::getShift(i) * getLengthX());

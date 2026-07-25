@@ -13,5 +13,5 @@ class SignedDistanceEffect : public SignedDistanceFunction {
     void setFunction(SignedDistanceFunction &function_);
     ContainmentType check(const BoundingCube &cube) const override;
     bool isContained(const BoundingCube &cube) const override;
-    glm::vec3 getCenter(const Transformation &model) const override;
+    glm::vec3 getCenter() const override;
 };

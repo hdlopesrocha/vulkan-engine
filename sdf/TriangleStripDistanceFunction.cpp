@@ -7,7 +7,7 @@ TriangleStripDistanceFunction::TriangleStripDistanceFunction(
     const glm::vec3& v2_, const glm::vec3& v3_, float halfThick_,
     const glm::vec3& sphereCenter, float sphereRadius,
     const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::TRIANGLE_STRIP)
+    : SignedDistanceFunction(SdfType::TRIANGLE_STRIP, sphereCenter)
     , v0(v0_), v1(v1_), v2(v2_), v3(v3_), halfThick(halfThick_)
     , m_sphereCenter(sphereCenter)
     , m_sphereRadius(sphereRadius)
@@ -16,7 +16,7 @@ TriangleStripDistanceFunction::TriangleStripDistanceFunction(
 }
 
 float TriangleStripDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
-    glm::vec3 pos = p - getCenter(model);
+    glm::vec3 pos = p - model.translate;
     pos = glm::inverse(model.quaternion) * pos;
     glm::vec3 q = pos / model.scale;
 

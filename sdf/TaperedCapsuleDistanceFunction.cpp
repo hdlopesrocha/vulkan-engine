@@ -3,7 +3,7 @@
 
 TaperedCapsuleDistanceFunction::TaperedCapsuleDistanceFunction(glm::vec3 a_, glm::vec3 b_, float r1_, float r2_,
                                                                const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::TAPERED_CAPSULE), a(a_), b(b_), r1(r1_), r2(r2_)
+    : SignedDistanceFunction(SdfType::TAPERED_CAPSULE, 0.5f*(a_+b_)+model.translate), a(a_), b(b_), r1(r1_), r2(r2_)
     , sphere(getSphere(model, bias)) {}
 
 float TaperedCapsuleDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
@@ -12,10 +12,6 @@ float TaperedCapsuleDistanceFunction::distance(const glm::vec3 &p, const Transfo
     float d = SDF::taperedCapsule(pos / model.scale, a, b, r1, r2);
     float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
     return d * minScale;
-}
-
-glm::vec3 TaperedCapsuleDistanceFunction::getCenter(const Transformation &model) const {
-    return 0.5f * (a + b) + model.translate;
 }
 
 BoundingSphere TaperedCapsuleDistanceFunction::getSphere(const Transformation &model, float bias) const {

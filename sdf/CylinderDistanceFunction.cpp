@@ -2,11 +2,11 @@
 #include "SDF.hpp"
 
 CylinderDistanceFunction::CylinderDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::CYLINDER)
+    : SignedDistanceFunction(SdfType::CYLINDER, model.translate)
     , sphere(getSphere(model, bias)) {}
 
 float CylinderDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
-    glm::vec3 pos = p - getCenter(model);
+    glm::vec3 pos = p - getCenter();
     pos = glm::inverse(model.quaternion) * pos;
     glm::vec3 q = pos / model.scale;
 
@@ -17,7 +17,7 @@ float CylinderDistanceFunction::distance(const glm::vec3 &p, const Transformatio
 }
 
 BoundingSphere CylinderDistanceFunction::getSphere(const Transformation &model, float bias) const {
-    return BoundingSphere(getCenter(model), glm::length(model.scale)*sqrt(0.5f) + bias);
+    return BoundingSphere(getCenter(), glm::length(model.scale)*sqrt(0.5f) + bias);
 }
 
 ContainmentType CylinderDistanceFunction::check(const BoundingCube &cube) const {

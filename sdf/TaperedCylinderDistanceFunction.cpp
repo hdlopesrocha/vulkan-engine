@@ -3,11 +3,11 @@
 
 TaperedCylinderDistanceFunction::TaperedCylinderDistanceFunction(float r1_, float r2_,
                                                                 const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::TAPERED_CYLINDER), r1(r1_), r2(r2_)
+    : SignedDistanceFunction(SdfType::TAPERED_CYLINDER, model.translate), r1(r1_), r2(r2_)
     , sphere(getSphere(model, bias)) {}
 
 float TaperedCylinderDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
-    glm::vec3 pos = p - getCenter(model);
+    glm::vec3 pos = p - getCenter();
     pos = glm::inverse(model.quaternion) * pos;
     glm::vec3 q = pos / model.scale;
 
@@ -19,7 +19,7 @@ float TaperedCylinderDistanceFunction::distance(const glm::vec3 &p, const Transf
 
 BoundingSphere TaperedCylinderDistanceFunction::getSphere(const Transformation &model, float bias) const {
     float maxRadius = glm::max(r1, r2);
-    return BoundingSphere(getCenter(model), glm::length(model.scale) * glm::sqrt(maxRadius * maxRadius + 0.25f) + bias);
+    return BoundingSphere(getCenter(), glm::length(model.scale) * glm::sqrt(maxRadius * maxRadius + 0.25f) + bias);
 }
 
 ContainmentType TaperedCylinderDistanceFunction::check(const BoundingCube &cube) const {

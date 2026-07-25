@@ -1,11 +1,11 @@
 #include "OctahedronDistanceFunction.hpp"
 
 OctahedronDistanceFunction::OctahedronDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::OCTAHEDRON)
+    : SignedDistanceFunction(SdfType::OCTAHEDRON, model.translate)
     , sphere(getSphere(model, bias)) {}
 
 float OctahedronDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
-    glm::vec3 pos = p - getCenter(model);
+    glm::vec3 pos = p - getCenter();
     pos = glm::inverse(model.quaternion) * pos;
 
     glm::vec3 q = pos / model.scale;
@@ -17,7 +17,7 @@ float OctahedronDistanceFunction::distance(const glm::vec3 &p, const Transformat
 }
 
 BoundingSphere OctahedronDistanceFunction::getSphere(const Transformation &model, float bias) const {
-    return BoundingSphere(getCenter(model), glm::length(model.scale)*sqrt(0.5f) + bias);
+    return BoundingSphere(getCenter(), glm::length(model.scale)*sqrt(0.5f) + bias);
 }
 
 ContainmentType OctahedronDistanceFunction::check(const BoundingCube &cube) const {

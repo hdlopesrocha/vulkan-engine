@@ -3,7 +3,7 @@
 #include "../math/HeightMap.hpp"
 
 HeightMapDistanceFunction::HeightMapDistanceFunction(HeightMap * map_, float bias)
-    : SignedDistanceFunction(SdfType::HEIGHTMAP), map(map_)
+    : SignedDistanceFunction(SdfType::HEIGHTMAP, map_->getCenter()), map(map_)
     , box(getBox(bias)) {}
 
 float HeightMapDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
@@ -20,8 +20,8 @@ float HeightMapDistanceFunction::distance(const glm::vec3 &p, const Transformati
     return d;
 }
 
-glm::vec3 HeightMapDistanceFunction::getCenter(const Transformation &model) const {
-    return this->map->getCenter();
+glm::vec3 HeightMapDistanceFunction::getCenter() const {
+    return m_center;
 }
 
 BoundingBox HeightMapDistanceFunction::getBox(float bias) const {

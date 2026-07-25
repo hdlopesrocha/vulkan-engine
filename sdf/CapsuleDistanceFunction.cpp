@@ -1,7 +1,7 @@
 #include "CapsuleDistanceFunction.hpp"
 
 CapsuleDistanceFunction::CapsuleDistanceFunction(glm::vec3 a_, glm::vec3 b_, float r, const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::CAPSULE), a(a_), b(b_), radius(r), sphere(getSphere(model, bias)) {}
+    : SignedDistanceFunction(SdfType::CAPSULE, 0.5f*(a_+b_)+model.translate), a(a_), b(b_), radius(r), sphere(getSphere(model, bias)) {}
 
 float CapsuleDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
     glm::vec3 pos = p - model.translate;
@@ -9,10 +9,6 @@ float CapsuleDistanceFunction::distance(const glm::vec3 &p, const Transformation
     float d = SDF::capsule(pos / model.scale, a, b, radius);
     float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
     return d * minScale;
-}
-
-glm::vec3 CapsuleDistanceFunction::getCenter(const Transformation &model) const {
-    return 0.5f*(this->a+this->b)+model.translate;
 }
 
 BoundingSphere CapsuleDistanceFunction::getSphere(const Transformation &model, float bias) const {

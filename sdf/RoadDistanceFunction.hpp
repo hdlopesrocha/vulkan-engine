@@ -13,7 +13,7 @@ public:
                          const Transformation &model = Transformation(), float bias = 0.0f);
     virtual ~RoadDistanceFunction() = default;
     float distance(const glm::vec3 &p, const Transformation &model) const override;
-    glm::vec3 getCenter(const Transformation &model) const override;
+    glm::vec3 getCenter() const override;
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;
     bool isContained(const BoundingCube &cube) const override;
