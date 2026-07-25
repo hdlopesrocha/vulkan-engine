@@ -1,19 +1,37 @@
 #include "PyramidDistanceFunction.hpp"
 
-
-PyramidDistanceFunction::PyramidDistanceFunction() : SignedDistanceFunction(SdfType::PYRAMID) {}
+PyramidDistanceFunction::PyramidDistanceFunction(const Transformation &model, float bias)
+    : SignedDistanceFunction(SdfType::PYRAMID)
+    , sphere(getSphere(model, bias)) {}
 
 float PyramidDistanceFunction::distance(const glm::vec3 &p, const Transformation &model)  {
    glm::vec3 pos = p - getCenter(model);
     pos = glm::inverse(model.quaternion) * pos;
 
-    // aplicar escala ao ponto, não à geometria
     pos /= model.scale;
 
-    // pirâmide unitária (base half=0.5, altura=1.0)
     float d = SDF::pyramid(pos, 1.0f, sqrt(0.5f));
 
-    // corrigir métrica multiplicando pela menor escala
     float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
     return d * minScale;
+}
+
+float PyramidDistanceFunction::boundingSphereRadius(float width, float depth, float height) const {
+    return glm::length(glm::vec3(width, height, depth));
+}
+
+BoundingSphere PyramidDistanceFunction::getSphere(const Transformation &model, float bias) const {
+    return BoundingSphere(getCenter(model), sqrt(0.5f) * glm::length(model.scale) + bias);
+}
+
+ContainmentType PyramidDistanceFunction::check(const BoundingCube &cube) const {
+    return sphere.test(cube);
+}
+
+bool PyramidDistanceFunction::isContained(const BoundingCube &cube) const {
+    return cube.contains(sphere);
+}
+
+const char* PyramidDistanceFunction::getLabel() const {
+    return "Pyramid";
 }

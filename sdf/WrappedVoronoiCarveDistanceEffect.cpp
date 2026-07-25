@@ -1,6 +1,6 @@
 #include "WrappedVoronoiCarveDistanceEffect.hpp"
 
-WrappedVoronoiCarveDistanceEffect::WrappedVoronoiCarveDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias) : WrappedSignedDistanceEffect(function_, model, bias + amplitude_), amplitude(amplitude_), cellSize(cellSize_), offset(offset_), brightness(brightness_), contrast(contrast_) {
+WrappedVoronoiCarveDistanceEffect::WrappedVoronoiCarveDistanceEffect(SignedDistanceFunction * function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias) : WrappedSignedDistanceEffect(function_, model, bias + amplitude_), amplitude(amplitude_), cellSize(cellSize_), offset(offset_), brightness(brightness_), contrast(contrast_) {
 }
 
 WrappedVoronoiCarveDistanceEffect::~WrappedVoronoiCarveDistanceEffect() {

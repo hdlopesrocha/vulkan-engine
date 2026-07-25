@@ -1,16 +1,17 @@
 #pragma once
-#include "WrappedSignedDistanceFunction.hpp"
+#include "SignedDistanceFunction.hpp"
+#include "../math/BoundingSphere.hpp"
 #include <glm/glm.hpp>
 
-class WrappedSignedDistanceEffect : public WrappedSignedDistanceFunction {
+class WrappedSignedDistanceEffect : public SignedDistanceFunction {
     protected:
+    SignedDistanceFunction * function;
     BoundingSphere sphere;
     public:
-    WrappedSignedDistanceEffect(WrappedSignedDistanceFunction * function_, const Transformation &model, float bias);
+    WrappedSignedDistanceEffect(SignedDistanceFunction * function_, const Transformation &model, float bias);
     ~WrappedSignedDistanceEffect();
-    void setFunction(WrappedSignedDistanceFunction * function_);
+    void setFunction(SignedDistanceFunction * function_);
     ContainmentType check(const BoundingCube &cube) const override;
     bool isContained(const BoundingCube &cube) const override;
+    glm::vec3 getCenter(const Transformation &model) const override;
 };
-
- 

@@ -10,7 +10,7 @@
 #include "OctreeNodeTriangleHandler.hpp"
 #include "ShapeArgs.hpp"
 #include "OctreeSerialized.hpp"
-#include "../sdf/WrappedSignedDistanceFunction.hpp"
+#include "../sdf/SignedDistanceFunction.hpp"
 #include <functional>
 #include "../math/BoundingCube.hpp"
 #include "../math/Ray.hpp"
@@ -42,9 +42,10 @@ public:
     ~Octree();
 
     void expand(const ShapeArgs &args);
-    void apply(float (*operation)(float, float), WrappedSignedDistanceFunction *function, const Transformation model, glm::vec4 translate, glm::vec4 scale, const TexturePainter &painter, float minSize, Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
+    void apply(float (*operation)(float, float), SignedDistanceFunction *function, const Transformation model, glm::vec4 translate, glm::vec4 scale, const TexturePainter &painter, float minSize, Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
     void reset();
-    void shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext, bool fromPool = false);        void iterate(IteratorHandler &handler);
+    void shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext, bool fromPool = false);
+        void iterate(IteratorHandler &handler);
         void iterateFlat(IteratorHandler &handler);
         void iterate(IteratorHandler &handler, OctreeNodeData data);
         void iterateFlat(IteratorHandler &handler, OctreeNodeData data);
@@ -77,5 +78,3 @@ private:
 
 
 // Simplifier is declared in Simplifier.hpp
-
- 

@@ -748,7 +748,7 @@ void Octree::buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float
 
 void Octree::apply(
         float (*operation)(float, float),
-        WrappedSignedDistanceFunction *function,
+        SignedDistanceFunction *function,
         const Transformation model,
         glm::vec4 translate,
         glm::vec4 scale,

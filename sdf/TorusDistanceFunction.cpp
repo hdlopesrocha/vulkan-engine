@@ -1,6 +1,7 @@
 #include "TorusDistanceFunction.hpp"
 
-TorusDistanceFunction::TorusDistanceFunction(glm::vec2 radius_) : SignedDistanceFunction(SdfType::TORUS), radius(radius_) {}
+TorusDistanceFunction::TorusDistanceFunction(glm::vec2 radius_, const Transformation &model, float bias)
+    : SignedDistanceFunction(SdfType::TORUS), radius(radius_), sphere(getSphere(model, bias)) {}
 
 float TorusDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
      glm::vec3 pos = p - getCenter(model);
@@ -13,3 +14,18 @@ float TorusDistanceFunction::distance(const glm::vec3 &p, const Transformation &
     return d * minScale;
 }
 
+BoundingSphere TorusDistanceFunction::getSphere(const Transformation &model, float bias) const {
+    return BoundingSphere(getCenter(model), glm::length(model.scale)*sqrt(0.5f) + bias);
+}
+
+ContainmentType TorusDistanceFunction::check(const BoundingCube &cube) const {
+    return sphere.test(cube);
+}
+
+bool TorusDistanceFunction::isContained(const BoundingCube &cube) const {
+    return cube.contains(sphere);
+}
+
+const char* TorusDistanceFunction::getLabel() const {
+    return "Torus";
+}

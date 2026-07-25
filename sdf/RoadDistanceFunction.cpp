@@ -5,7 +5,9 @@
 
 RoadDistanceFunction::RoadDistanceFunction(RoadSpline* spline, float width, float height,
                                             float tMin, float tMax,
-                                            bool applyStartCap, bool applyEndCap)
+                                            bool applyStartCap, bool applyEndCap,
+                                            const glm::vec3& sphereCenter, float sphereRadius,
+                                            const Transformation &model, float bias)
     : SignedDistanceFunction(SdfType::ROAD)
     , m_spline(spline)
     , m_width(width)
@@ -15,6 +17,9 @@ RoadDistanceFunction::RoadDistanceFunction(RoadSpline* spline, float width, floa
     , m_applyStartCap(applyStartCap)
     , m_applyEndCap(applyEndCap)
     , m_center(0.0f)
+    , m_sphereCenter(sphereCenter)
+    , m_sphereRadius(sphereRadius)
+    , sphere(getSphere(model, bias))
 {
     const int numSamples = 32;
     glm::vec3 aabbMin(std::numeric_limits<float>::max());
@@ -64,9 +69,27 @@ float RoadDistanceFunction::distance(const glm::vec3 &p, const Transformation &m
         road = std::max(road, capEnd);
     }
 
-    return road;
+    glm::vec3 dp = p - m_sphereCenter;
+    float sphereDist = glm::length(dp) - m_sphereRadius;
+    return std::max(road, sphereDist);
 }
 
 glm::vec3 RoadDistanceFunction::getCenter(const Transformation &model) const {
     return m_center;
+}
+
+BoundingSphere RoadDistanceFunction::getSphere(const Transformation &model, float bias) const {
+    return BoundingSphere(m_sphereCenter, m_sphereRadius + bias);
+}
+
+ContainmentType RoadDistanceFunction::check(const BoundingCube &cube) const {
+    return sphere.test(cube);
+}
+
+bool RoadDistanceFunction::isContained(const BoundingCube &cube) const {
+    return cube.contains(sphere);
+}
+
+const char* RoadDistanceFunction::getLabel() const {
+    return "Road";
 }

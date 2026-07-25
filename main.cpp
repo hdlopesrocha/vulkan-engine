@@ -2151,7 +2151,7 @@ void MyApp::rebuildBrushScene() {
         // Create the base SDF primitive (stack-allocated, octree copies during add)
         // sdfType: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
         // We use a lambda to avoid massive switch duplication for add vs del with optional effects
-        auto applyEntry = [&](WrappedSignedDistanceFunction* wrappedFunc) {
+        auto applyEntry = [&](SignedDistanceFunction* wrappedFunc) {
             // Brush preview always shows union; the specific operation (Add/Remove/Paint)
             // is only used when applying the brush to the solid space.
             float (*brushOp)(float, float) = SDF::opUnion;
@@ -2200,64 +2200,54 @@ void MyApp::rebuildBrushScene() {
 
         switch (entry.sdfType) {
             case 0: { // Sphere
-                SphereDistanceFunction fn;
-                WrappedSphere wrapped(&fn, model, entry.minSize);
-                applyEntry(&wrapped);
+                SphereDistanceFunction fn(model, entry.minSize);
+                applyEntry(&fn);
                 break;
             }
             case 1: { // Box
-                BoxDistanceFunction fn;
-                WrappedBox wrapped(&fn, model, entry.minSize);
-                applyEntry(&wrapped);
+                BoxDistanceFunction fn(model, entry.minSize);
+                applyEntry(&fn);
                 break;
             }
             case 2: { // Capsule
-                CapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.capsuleRadius);
-                WrappedCapsule wrapped(&fn, model, entry.minSize);
-                applyEntry(&wrapped);
+                CapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.capsuleRadius, model, entry.minSize);
+                applyEntry(&fn);
                 break;
             }
             case 3: { // Octahedron
-                OctahedronDistanceFunction fn;
-                WrappedOctahedron wrapped(&fn, model, entry.minSize);
-                applyEntry(&wrapped);
+                OctahedronDistanceFunction fn(model, entry.minSize);
+                applyEntry(&fn);
                 break;
             }
             case 4: { // Pyramid
-                PyramidDistanceFunction fn;
-                WrappedPyramid wrapped(&fn, model, entry.minSize);
-                applyEntry(&wrapped);
+                PyramidDistanceFunction fn(model, entry.minSize);
+                applyEntry(&fn);
                 break;
             }
             case 5: { // Torus
-                TorusDistanceFunction fn(entry.torusRadii);
-                WrappedTorus wrapped(&fn, model, entry.minSize);
-                applyEntry(&wrapped);
+                TorusDistanceFunction fn(entry.torusRadii, model, entry.minSize);
+                applyEntry(&fn);
                 break;
             }
             case 6: { // Cone
-                ConeDistanceFunction fn;
-                WrappedCone wrapped(&fn, model, entry.minSize);
-                applyEntry(&wrapped);
+                ConeDistanceFunction fn(model, entry.minSize);
+                applyEntry(&fn);
                 break;
             }
             case 7: { // Cylinder
-                CylinderDistanceFunction fn;
-                WrappedCylinder wrapped(&fn, model, entry.minSize);
-                applyEntry(&wrapped);
+                CylinderDistanceFunction fn(model, entry.minSize);
+                applyEntry(&fn);
                 break;
             }
             case 8: { // Tapered Cylinder
-                TaperedCylinderDistanceFunction fn(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y);
-                WrappedTaperedCylinder wrapped(&fn, model, entry.minSize);
-                applyEntry(&wrapped);
+                TaperedCylinderDistanceFunction fn(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y, model, entry.minSize);
+                applyEntry(&fn);
                 break;
             }
             case 9: { // Tapered Capsule
                 TaperedCapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB,
-                    entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y);
-                WrappedTaperedCapsule wrapped(&fn, model, entry.minSize);
-                applyEntry(&wrapped);
+                    entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y, model, entry.minSize);
+                applyEntry(&fn);
                 break;
             }
             default:
@@ -2311,7 +2301,7 @@ void MyApp::applyBrushToScene() {
     glm::vec4 translate(0.0f);
     glm::vec4 scale(1.0f);
 
-    auto applyEntry = [&](WrappedSignedDistanceFunction* wrappedFunc) {
+    auto applyEntry = [&](SignedDistanceFunction* wrappedFunc) {
         if (entry.useEffect) {
             switch (entry.effectType) {
                 case 0: {
@@ -2351,16 +2341,16 @@ void MyApp::applyBrushToScene() {
     };
 
     switch (entry.sdfType) {
-        case 0: { SphereDistanceFunction fn; WrappedSphere wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
-        case 1: { BoxDistanceFunction fn; WrappedBox wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
-        case 2: { CapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.capsuleRadius); WrappedCapsule wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
-        case 3: { OctahedronDistanceFunction fn; WrappedOctahedron wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
-        case 4: { PyramidDistanceFunction fn; WrappedPyramid wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
-        case 5: { TorusDistanceFunction fn(entry.torusRadii); WrappedTorus wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
-        case 6: { ConeDistanceFunction fn; WrappedCone wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
-        case 7: { CylinderDistanceFunction fn; WrappedCylinder wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
-        case 8: { TaperedCylinderDistanceFunction fn(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y); WrappedTaperedCylinder wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
-        case 9: { TaperedCapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y); WrappedTaperedCapsule wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
+        case 0: { SphereDistanceFunction fn(model, entry.minSize); applyEntry(&fn); break; }
+        case 1: { BoxDistanceFunction fn(model, entry.minSize); applyEntry(&fn); break; }
+        case 2: { CapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.capsuleRadius, model, entry.minSize); applyEntry(&fn); break; }
+        case 3: { OctahedronDistanceFunction fn(model, entry.minSize); applyEntry(&fn); break; }
+        case 4: { PyramidDistanceFunction fn(model, entry.minSize); applyEntry(&fn); break; }
+        case 5: { TorusDistanceFunction fn(entry.torusRadii, model, entry.minSize); applyEntry(&fn); break; }
+        case 6: { ConeDistanceFunction fn(model, entry.minSize); applyEntry(&fn); break; }
+        case 7: { CylinderDistanceFunction fn(model, entry.minSize); applyEntry(&fn); break; }
+        case 8: { TaperedCylinderDistanceFunction fn(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y, model, entry.minSize); applyEntry(&fn); break; }
+        case 9: { TaperedCapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y, model, entry.minSize); applyEntry(&fn); break; }
         default:
             std::cerr << "[applyBrushToScene] Unknown sdfType " << entry.sdfType << ", skipping" << std::endl;
             break;
