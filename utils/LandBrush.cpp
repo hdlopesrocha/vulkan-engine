@@ -16,7 +16,7 @@ LandBrush::LandBrush() {
     this->rockMixSand = 25;
 }
 
-int LandBrush::paint(const Vertex &vertex, glm::vec4 translate, glm::vec4 scale) const {
+int LandBrush::paint(const Vertex &vertex) const {
     glm::vec3 n = glm::normalize(vertex.normal);
     float steepness =glm::dot(glm::vec3(0.0f,1.0f,0.0f), n );
     int grassLevel = 256;

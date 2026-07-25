@@ -5,5 +5,5 @@ class WaterBrush : public TexturePainter {
 
 	public: 
 	WaterBrush(int water_);
-	int paint(const Vertex &vertex, glm::vec4 translate, glm::vec4 scale) const override;
+	int paint(const Vertex &vertex) const override;
 };

@@ -17,5 +17,5 @@ class LandBrush : public TexturePainter {
 
 	public: 
 	LandBrush();
-	int paint(const Vertex &vertex, glm::vec4 translate, glm::vec4 scale) const override;
+	int paint(const Vertex &vertex) const override;
 };

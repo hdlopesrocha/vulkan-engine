@@ -15,8 +15,6 @@ struct ShapeArgs {
     SignedDistanceFunction * function;
     const TexturePainter &painter;
     const Transformation model;
-    glm::vec4 translate;
-    glm::vec4 scale;
     Simplifier &simplifier;
     const OctreeChangeHandler &changeHandler; // reference (non-null)
     float minSize;
@@ -26,8 +24,6 @@ struct ShapeArgs {
         SignedDistanceFunction * function,
         const TexturePainter &painter,
         const Transformation model,
-        glm::vec4 translate,
-        glm::vec4 scale,
         Simplifier &simplifier,
         const OctreeChangeHandler &changeHandler,
         float minSize

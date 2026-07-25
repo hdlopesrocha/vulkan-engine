@@ -750,8 +750,6 @@ void Octree::apply(
         float (*operation)(float, float),
         SignedDistanceFunction *function,
         const Transformation model,
-        glm::vec4 translate,
-        glm::vec4 scale,
         const TexturePainter &painter,
         float minSize,
         Simplifier &simplifier,
@@ -761,7 +759,7 @@ void Octree::apply(
     prunedEmptyNodes = 0;
     prunedSolidNodes = 0;
     *shapeCounter = 0;
-    ShapeArgs args = ShapeArgs(operation, function, painter, model, translate, scale, simplifier, changeHandler, minSize);	
+    ShapeArgs args = ShapeArgs(operation, function, painter, model, simplifier, changeHandler, minSize);	
   	expand(args);
     OctreeNodeFrame frame = OctreeNodeFrame(root, NULL, *this, root ? root->getType() : SpaceType::Empty, 0, root ? root->sdf : nullptr, DISCARD_BRUSH_INDEX, *this);
     ThreadContext localChunkContext = ThreadContext(*this);
@@ -1023,7 +1021,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 // Simplification & Painting
                 if(r.isLeaf) {
                     if(r.shapeType != SpaceType::Empty) {
-                        r.brushIndex = args.painter.paint(r.node->vertex, args.translate, args.scale);
+                        r.brushIndex = args.painter.paint(r.node->vertex);
                     }  
                 } else {    
                     if (!r.isChunk) {

@@ -42,7 +42,7 @@ public:
     ~Octree();
 
     void expand(const ShapeArgs &args);
-    void apply(float (*operation)(float, float), SignedDistanceFunction *function, const Transformation model, glm::vec4 translate, glm::vec4 scale, const TexturePainter &painter, float minSize, Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
+    void apply(float (*operation)(float, float), SignedDistanceFunction *function, const Transformation model, const TexturePainter &painter, float minSize, Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
     void reset();
     void shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext, bool fromPool = false);
         void iterate(IteratorHandler &handler);

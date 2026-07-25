@@ -2132,9 +2132,6 @@ void MyApp::rebuildBrushScene() {
     // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
     // distance=0.2: flat patches may have up to 20% cube-size SDF error (curved gets 10%).
     Simplifier simplifier(0.95f, 0.2f, true);
-    glm::vec4 translate(0.0f);
-    glm::vec4 scale(1.0f);
-
     // 4. Process the selected brush entry only
     const auto& entry = *selectedEntry;
         // Select the target octree and handler based on targetLayer
@@ -2163,38 +2160,38 @@ void MyApp::rebuildBrushScene() {
                         PerlinDistortDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectFrequency,
                             glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                        octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        octree.apply(brushOp, &effect, model, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 1: {
                         PerlinCarveDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
                             glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                        octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        octree.apply(brushOp, &effect, model, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 2: {
                         SineDistortDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectFrequency, glm::vec3(0), model, entry.minSize);
-                        octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        octree.apply(brushOp, &effect, model, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 3: {
                         VoronoiCarveDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectCellSize,
                             glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                        octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        octree.apply(brushOp, &effect, model, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     default: {
                         // Fallback: no effect
-                        octree.apply(brushOp, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        octree.apply(brushOp, wrappedFunc, model, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                 }
             } else {
                 // No effect — use the primitive directly
-                octree.apply(brushOp, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                octree.apply(brushOp, wrappedFunc, model, brush, entry.minSize, simplifier, handler);
             }
         };
 
@@ -2298,9 +2295,6 @@ void MyApp::applyBrushToScene() {
     SimpleBrush brush(entry.materialIndex);
 
     Simplifier simplifier(0.95f, 0.2f, true);
-    glm::vec4 translate(0.0f);
-    glm::vec4 scale(1.0f);
-
     auto applyEntry = [&](SignedDistanceFunction* wrappedFunc) {
         if (entry.useEffect) {
             switch (entry.effectType) {
@@ -2308,35 +2302,35 @@ void MyApp::applyBrushToScene() {
                     PerlinDistortDistanceEffect effect(wrappedFunc,
                         entry.effectAmplitude, entry.effectFrequency,
                         glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                    octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                    octree.apply(brushOp, &effect, model, brush, entry.minSize, simplifier, handler);
                     break;
                 }
                 case 1: {
                     PerlinCarveDistanceEffect effect(wrappedFunc,
                         entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
                         glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                    octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                    octree.apply(brushOp, &effect, model, brush, entry.minSize, simplifier, handler);
                     break;
                 }
                 case 2: {
                     SineDistortDistanceEffect effect(wrappedFunc,
                         entry.effectAmplitude, entry.effectFrequency, glm::vec3(0), model, entry.minSize);
-                    octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                    octree.apply(brushOp, &effect, model, brush, entry.minSize, simplifier, handler);
                     break;
                 }
                 case 3: {
                     VoronoiCarveDistanceEffect effect(wrappedFunc,
                         entry.effectAmplitude, entry.effectCellSize,
                         glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                    octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                    octree.apply(brushOp, &effect, model, brush, entry.minSize, simplifier, handler);
                     break;
                 }
                 default:
-                    octree.apply(brushOp, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                    octree.apply(brushOp, wrappedFunc, model, brush, entry.minSize, simplifier, handler);
                     break;
             }
         } else {
-            octree.apply(brushOp, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+            octree.apply(brushOp, wrappedFunc, model, brush, entry.minSize, simplifier, handler);
         }
     };
 
