@@ -4,6 +4,7 @@
 #include "../math/Transformation.hpp"
 #include "../math/TexturePainter.hpp"
 #include "../sdf/SignedDistanceFunction.hpp"
+#include "../sdf/SignedDistanceOperation.hpp"
 #include "../math/TexturePainter.hpp"
 #include "Simplifier.hpp"
 #include "OctreeChangeHandler.hpp"
@@ -11,7 +12,7 @@
 class OctreeChangeHandler;
 
 struct ShapeArgs {
-    float (*operation)(float, float);
+    SignedDistanceOperation operation;
     SignedDistanceFunction * function;
     const TexturePainter &painter;
     const Transformation model;
@@ -20,7 +21,7 @@ struct ShapeArgs {
     float minSize;
 
     ShapeArgs(
-        float (*operation)(float, float),
+        SignedDistanceOperation operation,
         SignedDistanceFunction * function,
         const TexturePainter &painter,
         const Transformation model,

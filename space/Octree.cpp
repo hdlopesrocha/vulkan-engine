@@ -742,12 +742,12 @@ void Octree::buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float 
 
 void Octree::buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], float resultSDF[8], ThreadContext * threadContext) const {
     for (uint i = 0; i < 8; ++i) {
-        resultSDF[i] = args.operation(frame.sdf[i], shapeSDF[i]);
+        resultSDF[i] = args.operation.combine(frame.sdf[i], shapeSDF[i]);
     }
 }
 
 void Octree::apply(
-        float (*operation)(float, float),
+        SignedDistanceOperation operation,
         SignedDistanceFunction *function,
         const Transformation model,
         const TexturePainter &painter,
@@ -760,7 +760,7 @@ void Octree::apply(
     prunedSolidNodes = 0;
     *shapeCounter = 0;
     ShapeArgs args = ShapeArgs(operation, function, painter, model, simplifier, changeHandler, minSize);	
-  	expand(args);
+    expand(args);
     OctreeNodeFrame frame = OctreeNodeFrame(root, NULL, *this, root ? root->getType() : SpaceType::Empty, 0, root ? root->sdf : nullptr, DISCARD_BRUSH_INDEX, *this);
     ThreadContext localChunkContext = ThreadContext(*this);
     NodeOperationResult r = NodeOperationResult();
@@ -786,12 +786,12 @@ bool Octree::isChunkNode(float nodeLength) const {
 }
 
 bool Octree::isThreadNode(float nodeLength, float minSize, int threadSize) const {
-    return minSize*threadSize < nodeLength;
+    return minSize*threadSize*0.5f < nodeLength && nodeLength <= minSize*threadSize;
 }
 
-void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, ThreadContext * threadContext, NodeOperationResult childResult[8], bool fromPool) {
+void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, ThreadContext * threadContext, NodeOperationResult childResult[8]) {
     float childLength = frame.cube.getLengthX()*0.5f;
-    bool isChildThread = !fromPool && isThreadNode(childLength, args.minSize, 16);
+    bool isChildThread = isThreadNode(childLength, args.minSize, 16);
     bool isChildChunk = isChunkNode(childLength);
     std::vector<std::future<void>> futures;
 
@@ -837,7 +837,7 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
             inFlightShapeOps.fetch_add(1);
             futures.push_back(threadPool.enqueue([this, childFrame, args, result]() {
                 ThreadContext localThreadContext(childFrame.cube);
-                shape(*result, childFrame, args, &localThreadContext, true);
+                shape(*result, childFrame, args, &localThreadContext);
                 inFlightShapeOps.fetch_sub(1);
             }));
         } else {
@@ -853,7 +853,7 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
     }
 }
 
-void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext, bool fromPool) {    
+void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext) {    
     r.node = frame.node;
     const float nodeLength = frame.cube.getLengthX();
     const bool isShapeLeaf = nodeLength <= args.minSize;
@@ -886,14 +886,14 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         bool processed = false;
 
         // No existing SDF data (all INFINITY) — result is purely the shape.
-        // Union/Xor: need the Lipschitz center check for safety.
-        // Others (Intersection/Subtraction/Paint): result is INFINITY = Empty.
+        // Operations that propagate from infinity: need the Lipschitz center check for safety.
+        // Others: result is INFINITY = Empty.
         if(!processed && isNodeLeaf) {
             bool allInfinity = true;
             for(int i = 0; i < 8; ++i)
                 if(frame.sdf[i] != INFINITY) { allInfinity = false; break; }
             if(allInfinity) {
-                if(args.operation == &SDF::opUnion || args.operation == &SDF::opXor) {
+                if(args.operation.propagatesFromInfinity()) {
                     if(r.shapeSdfCenter < -halfDiagonal) {
                         SDF::copySDF(r.shapeSDF, r.resultSDF);
                         r.shapeType = SpaceType::Solid;
@@ -910,7 +910,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                         processed = true;
                     }
                 } else {
-                    // Intersection/Subtraction/Paint: INFINITY op anything = INFINITY = Empty
+                    // Non-propagating: INFINITY op anything = INFINITY = Empty
                     r.shapeType = SDF::eval(r.shapeSDF);
                     r.resultType = SpaceType::Empty;
                     r.isSimplified = true;
@@ -920,9 +920,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             }
         }
 
-        // Union/Paint with existing Solid → always Solid everywhere
-        if(!processed && frame.type == SpaceType::Solid &&
-           (args.operation == &SDF::opUnion || args.operation == &SDF::opPaint)) {
+        // Operations that preserve Solid — existing Solid → always Solid everywhere
+        if(!processed && frame.type == SpaceType::Solid && args.operation.preservesSolid()) {
             bool allFinite = true;
             for(int i = 0; i < 8; ++i)
                 if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
@@ -935,11 +934,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             }
         }
 
-        // Intersection/Subtraction/Paint with existing Empty → always Empty everywhere
-        if(!processed && frame.type == SpaceType::Empty &&
-           (args.operation == &SDF::opIntersection ||
-            args.operation == &SDF::opSubtraction ||
-            args.operation == &SDF::opPaint)) {
+        // Operations that preserve Empty — existing Empty → always Empty everywhere
+        if(!processed && frame.type == SpaceType::Empty && args.operation.preservesEmpty()) {
             bool allFinite = true;
             for(int i = 0; i < 8; ++i)
                 if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
@@ -960,7 +956,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
             if(allFinite) {
                 const float existingSdfCenter = SDF::interpolate(frame.sdf, center, frame.cube);
-                const float resultSdfCenter = args.operation(existingSdfCenter, r.shapeSdfCenter);
+                const float resultSdfCenter = args.operation.combine(existingSdfCenter, r.shapeSdfCenter);
                 if(resultSdfCenter < -halfDiagonal) {
                     buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
                     r.shapeType = SDF::eval(r.shapeSDF);
@@ -979,7 +975,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 process = check != ContainmentType::Disjoint;
             }
             if(process) {    
-                shapeChildren(frame, args, threadContext, children, fromPool);
+                shapeChildren(frame, args, threadContext, children);
                 bool childResultSolid = true;
                 bool childResultEmpty = true;
                 bool childShapeSolid = true;

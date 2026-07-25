@@ -2151,7 +2151,7 @@ void MyApp::rebuildBrushScene() {
         auto applyEntry = [&](SignedDistanceFunction* wrappedFunc) {
             // Brush preview always shows union; the specific operation (Add/Remove/Paint)
             // is only used when applying the brush to the solid space.
-            float (*brushOp)(float, float) = SDF::opUnion;
+            SignedDistanceOperation brushOp = SignedDistanceOperation(SDF::opUnion);
             // Optionally wrap in an effect
             // effectType: 0=PerlinDistort, 1=PerlinCarve, 2=SineDistort, 3=VoronoiCarve
             if (entry.useEffect) {
@@ -2275,11 +2275,11 @@ void MyApp::applyBrushToScene() {
     const auto& entry = *selectedEntry;
 
     // Select brush operation based on brushMode
-    float (*brushOp)(float, float);
+    SignedDistanceOperation brushOp = SignedDistanceOperation(SDF::opUnion);
     switch (entry.brushMode) {
-        case 1:  brushOp = SDF::opSubtraction; break;
-        case 2:  brushOp = SDF::opPaint;       break;
-        default: brushOp = SDF::opUnion;       break;
+        case 1:  brushOp = SignedDistanceOperation(SDF::opSubtraction); break;
+        case 2:  brushOp = SignedDistanceOperation(SDF::opPaint);       break;
+        default: brushOp = SignedDistanceOperation(SDF::opUnion);       break;
     }
 
     // Select target octree and handler based on targetLayer
