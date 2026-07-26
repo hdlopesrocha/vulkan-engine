@@ -252,11 +252,46 @@ void IndirectRenderer::removeMesh(uint32_t meshId) {
 void IndirectRenderer::removeAllMeshes() {
     std::lock_guard<std::shared_mutex> guard(mutex);
     meshes.clear();
-    mergedVertices.clear();
-    mergedIndices.clear();
-    indirectCommands.clear();
     metaBuffersWrittenCount = 0;
     dirty = true;
+
+    if (slottedMode) {
+        // Pre-sized slot buffers: zero in-place instead of clearing/resizing.
+        if (!mergedVertices.empty())
+            for (auto& v : mergedVertices) v = Vertex{};
+        if (!mergedIndices.empty())
+            std::memset(mergedIndices.data(), 0, mergedIndices.size() * sizeof(uint32_t));
+        if (!indirectCommands.empty())
+            std::memset(indirectCommands.data(), 0,
+                        indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand));
+
+        // Zero GPU indirect and bounds buffers so culling sees indexCount=0.
+        if (indirectBuffer.buffer != VK_NULL_HANDLE) {
+            void* ptr = indirectBuffer.map(0);
+            if (ptr) {
+                std::memset(ptr, 0, indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand));
+                indirectBuffer.unmap();
+            }
+        }
+        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+            void* ptr = boundsBuffer.map(0);
+            if (ptr) {
+                std::memset(ptr, 0, slotAlloc.capacity() * 2 * sizeof(glm::vec4));
+                boundsBuffer.unmap();
+            }
+        }
+
+        // Free all slots (collect indices first to avoid recursive locking).
+        std::vector<uint32_t> active;
+        slotAlloc.visitActive([&active](uint32_t idx, const auto&) { active.push_back(idx); });
+        for (uint32_t idx : active) slotAlloc.free(idx);
+    } else {
+        mergedVertices.clear();
+        mergedIndices.clear();
+        mergedVertices.shrink_to_fit();
+        mergedIndices.shrink_to_fit();
+        indirectCommands.clear();
+    }
 }
 
 bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, size_t meshCount) {
@@ -1506,6 +1541,11 @@ void IndirectRenderer::drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer com
     vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
     uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
+    uint32_t bufMaxCount = static_cast<uint32_t>(meshCapacity);
+    if (maxCount > bufMaxCount) {
+        std::cerr << "[drawPreparedWithBuffers] CLAMPING maxCount from " << maxCount << " to meshCapacity " << bufMaxCount << std::endl;
+        maxCount = bufMaxCount;
+    }
     if (maxCount == 0) return; // nothing to draw — avoid calling indirect draw with 0 maxDraw
 
     if (!cmdDrawIndexedIndirectCount) {
@@ -1565,7 +1605,11 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
 
     // Issue indirect-draw call; compute shader compacts only visible commands
     uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
-    
+    uint32_t bufMaxCount = static_cast<uint32_t>(meshCapacity);
+    if (maxCount > bufMaxCount) {
+        std::cerr << "[drawPrepared] CLAMPING maxCount from " << maxCount << " to meshCapacity " << bufMaxCount << std::endl;
+        maxCount = bufMaxCount;
+    }
     if (!cmdDrawIndexedIndirectCount) {
         throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
     }
@@ -1599,6 +1643,11 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pi
     // No per-draw model push-constants: models are identity in shaders.
 
     uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
+    uint32_t bufMaxCount = static_cast<uint32_t>(meshCapacity);
+    if (maxCount > bufMaxCount) {
+        std::cerr << "[drawIndirectOnly] CLAMPING maxCount from " << maxCount << " to meshCapacity " << bufMaxCount << std::endl;
+        maxCount = bufMaxCount;
+    }
     if (maxCount == 0) return; // nothing to draw
     if (!cmdDrawIndexedIndirectCount) {
         throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
@@ -1889,6 +1938,12 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     slottedMode = true;
     dirty = false;
     metaBuffersWrittenCount = 0;
+
+    std::cerr << "[IndirectRenderer::initSlots] maxChunks=" << maxChunks
+              << " meshCapacity=" << meshCapacity
+              << " indirectCommands=" << indirectCommands.size()
+              << " compactBuf[0].buffer=" << (void*)compactIndirectBuffers[0].buffer
+              << std::endl << std::flush;
 }
 
 void IndirectRenderer::copyGeometryToSlot(const Geometry& mesh, uint32_t slotIndex)

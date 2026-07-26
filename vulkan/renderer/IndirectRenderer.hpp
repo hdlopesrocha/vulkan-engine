@@ -185,6 +185,14 @@ public:
     VkDescriptorSetLayout getComputeDescriptorSetLayout() const { return computeDescriptorSetLayout; }
     VkDescriptorPool getComputeDescriptorPool() const { return computeDescriptorPool; }
 
+    // Returns true when the slotted API is active (fixed-size slot pool).
+    bool isSlottedMode() const { return slottedMode; }
+
+    // Get the pre-allocated capacity (indirect command count / max slots)
+    // In slotted mode this is the fixed slot pool size; in legacy mode it grows
+    // with addMesh(). Used for sizing external compact buffers (e.g. cubemap).
+    size_t getMeshCapacity() const { return meshCapacity; }
+
     // Get count of active meshes
     size_t getMeshCount() const {
         std::shared_lock<std::shared_mutex> lock(mutex);

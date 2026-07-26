@@ -215,6 +215,10 @@ public:
     // into a single GPU transfer). When null, the upload runs inline.
     void updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom, bool attemptUpload = true, uint sourceVersion = 0, bool* hadRemovals = nullptr, std::vector<uint32_t>* pendingUploads = nullptr);
 
+    // Generate vegetation instances for a given opaque node / chunk.
+    // Extracted so both legacy and slotted mode paths share the same logic.
+    void generateVegetationForNode(VulkanApp* app, NodeID nid, const Geometry& geom);
+
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
     void processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry, ThreadPool* poolOverride = nullptr);

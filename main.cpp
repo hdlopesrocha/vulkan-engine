@@ -1338,8 +1338,12 @@ public:
                 // Allocate per-task compact/visible buffers and descriptor set so cull+draw
                 // recorded on this command buffer don't race with other submissions.
                 IndirectRenderer &ind = this->sceneRenderer->waterRenderer->getIndirectRenderer();
-                uint32_t numCmds = static_cast<uint32_t>(ind.getMeshCount());
-                VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * (numCmds > 0 ? numCmds : 1);
+                uint32_t numCmds = std::max({
+                    static_cast<uint32_t>(ind.getMeshCount()),
+                    static_cast<uint32_t>(ind.getMeshCapacity()),
+                    1u
+                });
+                VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * numCmds;
                 
                 Buffer taskCompact = app->createBuffer(compactSize,
                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
@@ -2095,15 +2099,10 @@ void MyApp::preAllocateAsyncDescriptorPools() {
 void MyApp::rebuildBrushScene() {
     if (!brushScene || !sceneRenderer || !brush3dWidget) return;
 
-    // No device-wide stall here. The brush flow no longer writes into the shared
-    // vertex/index buffers in place: it batches mesh adds and rebuilds once per
-    // layer, and IndirectRenderer::rebuild() double-buffers the merged buffers
-    // across a fixed pool — the batch lands in a fresh slot no in-flight frame is
-    // reading, and the previous slot is recycled only once its frames retire
-    // (frame-fence-gated, non-blocking). In-flight frames keep reading the old
-    // buffers safely, so there is no WRITE_AFTER_READ hazard and no need to idle
-    // the whole device every drag frame. See SceneRenderer::processPendingBrushMeshes
-    // / updateBrushMeshForNode and IndirectRenderer::rebuild().
+    // No device-wide stall here. The brush flow uses the stable-slot indirect
+    // pipeline: clearBrushMeshes() frees old slots, handleEvents() queues geometry,
+    // and processPendingBrushMeshes() commits each mesh independently via
+    // addMeshSlotted() + uploadSlot() — no global rebuild required.
 
     // Process only the currently-selected brush entry from the manager
     const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
@@ -2118,11 +2117,7 @@ void MyApp::rebuildBrushScene() {
     brushScene->transparentOctree.reset();
 
     if (!selectedEntry) {
-        // Nothing to add — just rebuild to commit the removals
-        sceneRenderer->brushSolidIndirectRenderer.setDirty(true);
-        sceneRenderer->brushSolidIndirectRenderer.rebuild(this);
-        sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
-        sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+        // Nothing to add — clearBrushMeshes() already freed all slots.
         return;
     }
 
@@ -2259,11 +2254,8 @@ void MyApp::rebuildBrushScene() {
     uniqueBrushSolidHandler.handleEvents();
     uniqueBrushLiquidHandler.handleEvents();
 
-    // 6. Rebuild indirect buffers so new brush meshes appear
-    sceneRenderer->brushSolidIndirectRenderer.setDirty(true);
-    sceneRenderer->brushSolidIndirectRenderer.rebuild(this);
-    sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
-    sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+    // 6. No global rebuild needed — processPendingBrushMeshes() commits
+    // each brush mesh incrementally via addMeshSlotted() + uploadSlot().
 
     // std::cerr << "[MyApp::rebuildBrushScene] Done — brush opaque chunks: " << sceneRenderer->brushSolidChunks.size()
     //           << ", brush transparent chunks: " << sceneRenderer->brushTransparentChunks.size() << std::endl;
@@ -2443,6 +2435,7 @@ void MyApp::generateMap() {
     if (sceneRenderer) {
         sceneRenderer->removeAllRegisteredMeshes();
         sceneRenderer->removeAllTransparentMeshes();
+        sceneRenderer->chunkManager.removeAll();  // clear slotted-mode per-chunk state
         sceneRenderer->nodeDebugCubes.clear();
         sceneRenderer->clearDebugSDFCubes();
         // Clear vegetation chunk buffers and pending CPU-generation queue.
@@ -2493,6 +2486,7 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     if (sceneRenderer) {
         sceneRenderer->removeAllRegisteredMeshes();
         sceneRenderer->removeAllTransparentMeshes();
+        sceneRenderer->chunkManager.removeAll();  // clear slotted-mode per-chunk state
         sceneRenderer->nodeDebugCubes.clear();
         sceneRenderer->clearDebugSDFCubes();
         if (sceneRenderer->vegetationRenderer) {
@@ -2568,8 +2562,16 @@ void MyApp::ensureCubemapResources() {
     };
 
     // 2. Solid culling buffers (reallocate if mesh count grew)
+    // NOTE: In slotted mode the indirect commands are pre-allocated to
+    // meshCapacity (e.g. 1024); getMeshCount() returns only active meshes (0
+    // before the first scene load).  The compact buffer must be sized to the
+    // full slot pool so that drawPreparedWithBuffers' maxCount is valid.
     IndirectRenderer &solidInd = sceneRenderer->solidRenderer->getIndirectRenderer();
-    uint32_t solidCmds = std::max(static_cast<uint32_t>(solidInd.getMeshCount()), 1u);
+    uint32_t solidCmds = std::max({
+        static_cast<uint32_t>(solidInd.getMeshCount()),
+        static_cast<uint32_t>(solidInd.getMeshCapacity()),
+        1u
+    });
     VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * solidCmds;
     ensureBufferSize(cube360Compact, compactSize,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -2580,7 +2582,11 @@ void MyApp::ensureCubemapResources() {
 
     // 3. Water culling buffers (reallocate if mesh count grew)
     IndirectRenderer &waterInd = sceneRenderer->waterRenderer->getIndirectRenderer();
-    uint32_t waterCmds = std::max(static_cast<uint32_t>(waterInd.getMeshCount()), 1u);
+    uint32_t waterCmds = std::max({
+        static_cast<uint32_t>(waterInd.getMeshCount()),
+        static_cast<uint32_t>(waterInd.getMeshCapacity()),
+        1u
+    });
     VkDeviceSize waterCompactSize = sizeof(VkDrawIndexedIndirectCommand) * waterCmds;
     ensureBufferSize(cube360WaterCompact, waterCompactSize,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
