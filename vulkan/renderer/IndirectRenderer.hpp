@@ -53,7 +53,6 @@ public:
         uploadMgr_ = mgr;
         streamCategory_ = category;
     }
-    bool hasUploadManager() const { return uploadMgr_ != nullptr; }
     // Write all mesh indirect/model/bounds buffers for all active meshes
     void uploadMeshMetaBuffers(VulkanApp* app);
     struct MeshInfo {

@@ -2277,70 +2277,63 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
         uploads.push_back(std::move(iu));
     }
 
+    // Defer writeSlotMeta to the upload completion callback for ALL paths.
+    // Writing meta eagerly would modify the shared indirect/bounds buffers
+    // while in-flight frames may still be reading them (3 frames in flight).
+    // Those frames would see the new meta but stale vertex data (upload not
+    // yet executed for those frames) — causing a 1-frame hole.  The deferred
+    // write runs after the upload completes, once all prior frames have retired.
+    auto deferredWriteMeta = [this, capSlotIndex, capIndexCount, capFirstIndex,
+                              capVertexOffset, capDrawIndex, capBoundsMin, capBoundsMax]()
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex);
+        if (capSlotIndex >= indirectCommands.size()) return;
+        if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
+
+        VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(capSlotIndex) * sizeof(VkDrawIndexedIndirectCommand);
+        void* cmdData = indirectBuffer.map(cmdOffset);
+        if (cmdData) {
+            VkDrawIndexedIndirectCommand cmd{};
+            cmd.indexCount    = capIndexCount;
+            cmd.instanceCount = 1;
+            cmd.firstIndex    = capFirstIndex;
+            cmd.vertexOffset  = capVertexOffset;
+            cmd.firstInstance = capDrawIndex;
+            std::memcpy(cmdData, &cmd, sizeof(cmd));
+            indirectBuffer.unmap();
+        }
+
+        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capSlotIndex) * 2 * sizeof(glm::vec4);
+            void* bndData = boundsBuffer.map(boundsOffset);
+            if (bndData) {
+                glm::vec4 bounds[2] = { capBoundsMin, capBoundsMax };
+                std::memcpy(bndData, bounds, sizeof(bounds));
+                boundsBuffer.unmap();
+            }
+        }
+    };
+
+    auto chained = [deferredWriteMeta = std::move(deferredWriteMeta),
+                    onComplete = std::move(onComplete)]() mutable
+    {
+        deferredWriteMeta();
+        if (onComplete) onComplete();
+    };
+
     bool useUploadMgr = (uploadMgr_ != nullptr);
 
     if (useUploadMgr && (vertexBytes + indexBytes) <= uploadMgr_->slotSize()) {
         // ── UploadManager path (preferred) ──────────────────────────────────
-        // The UploadManager submits the copy to the graphics queue and signals
-        // a binary semaphore that the render waits on (VERTEX_INPUT | INDEX_INPUT).
-        // Since the render starts AFTER the copy completes on the same queue,
-        // we can write the meta eagerly — the GPU will see correct meta + valid
-        // vertex/index data when it draws.
-        writeSlotMeta(slotIndex, *info);
-
         streaming::UploadJob job;
         job.category  = streamCategory_;
         job.priority  = priority;
         job.chunkSlot = nullptr;
         job.uploads   = std::move(uploads);
-        job.onComplete = std::move(onComplete);
+        job.onComplete = std::move(chained);
         uploadMgr_->enqueue(std::move(job));
     } else {
         // ── Legacy ring-backed staging path ────────────────────────────────
-        // This path submits via runSingleTimeCommandsAsync (fence, no semaphore).
-        // The upload and the render may race: writeSlotMeta eagerly here would
-        // make the GPU read the new indirect command + bounds before the vertex/
-        // index data lands — the root cause of brush flickering during animation.
-        // Defer writeSlotMeta to the completion callback so meta is published
-        // only after the transfer is truly resident.
-        auto deferredWriteMeta = [this, capSlotIndex, capIndexCount, capFirstIndex,
-                                  capVertexOffset, capDrawIndex, capBoundsMin, capBoundsMax]()
-        {
-            std::lock_guard<std::recursive_mutex> lock(mutex);
-            if (capSlotIndex >= indirectCommands.size()) return;
-            if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
-
-            VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(capSlotIndex) * sizeof(VkDrawIndexedIndirectCommand);
-            void* cmdData = indirectBuffer.map(cmdOffset);
-            if (cmdData) {
-                VkDrawIndexedIndirectCommand cmd{};
-                cmd.indexCount    = capIndexCount;
-                cmd.instanceCount = 1;
-                cmd.firstIndex    = capFirstIndex;
-                cmd.vertexOffset  = capVertexOffset;
-                cmd.firstInstance = capDrawIndex;
-                std::memcpy(cmdData, &cmd, sizeof(cmd));
-                indirectBuffer.unmap();
-            }
-
-            if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-                VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capSlotIndex) * 2 * sizeof(glm::vec4);
-                void* bndData = boundsBuffer.map(boundsOffset);
-                if (bndData) {
-                    glm::vec4 bounds[2] = { capBoundsMin, capBoundsMax };
-                    std::memcpy(bndData, bounds, sizeof(bounds));
-                    boundsBuffer.unmap();
-                }
-            }
-        };
-
-        auto chained = [deferredWriteMeta = std::move(deferredWriteMeta),
-                        onComplete = std::move(onComplete)]() mutable
-        {
-            deferredWriteMeta();
-            if (onComplete) onComplete();
-        };
-
         deferredUploadCallbacks_.push_back(std::move(chained));
         return uploadMeshes(app, std::vector<uint32_t>{info->id}, priority);
     }
