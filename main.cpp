@@ -1693,84 +1693,33 @@ public:
                 // anchor by top-right using pivot (1,0)
                 ImGui::SetNextWindowPos(ImVec2(disp.x - padding, y), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
 
-                ImGui::Begin("GamepadOverlay", nullptr, flags);
                 bool gamepadConnected = false;
                 for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST; ++jid) {
                     if (glfwJoystickIsGamepad(jid)) { gamepadConnected = true; break; }
                 }
+                bool wiimoteConnected = nunchukPublisher.isConnected();
 
-                ImDrawList* draw_list = ImGui::GetWindowDrawList();
-                ImVec2 cursor = ImGui::GetCursorScreenPos();
-                float iconSize = ImGui::GetFrameHeight() * 0.6f;
-                ImVec2 center = ImVec2(cursor.x + iconSize * 0.5f, cursor.y + iconSize * 0.5f);
-                ImU32 color = gamepadConnected ? IM_COL32(40,200,40,255) : IM_COL32(200,40,40,255);
-                draw_list->AddCircleFilled(center, iconSize * 0.4f, color);
-                ImGui::Dummy(ImVec2(iconSize, iconSize));
-                ImGui::SameLine();
-                ImGui::Text("%s", gamepadConnected ? "Gamepad" : "No Gamepad");
-                if (ImGui::IsItemHovered() || ImGui::IsWindowHovered()) ImGui::SetTooltip("Gamepad %s", gamepadConnected ? "connected" : "not connected");
+                ImGui::Begin("GamepadOverlay", nullptr, flags);
 
-                // Draw controller page indicator (small 3-letter icon) below the gamepad status
+                // Keyboard (always present)
                 {
-                    ImGui::Separator();
-                    const ControllerContext& gctx = controllerManager.gamepadContext;
-                    ImDrawList* dl2 = ImGui::GetWindowDrawList();
-                    ImVec2 pos = ImGui::GetCursorScreenPos();
-                    // Reserve space and draw a small colored circle then the label (same style as GamepadWidget)
-                    float pageIconHeight = ImGui::GetFrameHeight();
-                    ImGui::Dummy(ImVec2(36.0f, pageIconHeight));
-                    // center vertically inside the reserved dummy
-                    ImVec2 center2 = ImVec2(pos.x + 10.0f, pos.y + pageIconHeight * 0.5f);
-                    ImVec4 col = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
-                    const char* label = "?";
-                    switch (gctx.activeCategory()) {
-                        case PageCategory::CAMERA: label = "CAM"; col = ImVec4(0.2f,0.5f,0.9f,1.0f); break;
-                        case PageCategory::BRUSH:  label = "BRU"; col = ImVec4(0.2f,0.9f,0.3f,1.0f); break;
-                    }
-                    dl2->AddCircleFilled(center2, 8.0f, ImGui::ColorConvertFloat4ToU32(col));
-                    float textY = pos.y + (pageIconHeight - ImGui::GetFontSize()) * 0.5f;
-                    dl2->AddText(ImVec2(pos.x + 22.0f, textY), ImGui::ColorConvertFloat4ToU32(ImVec4(1,1,1,1)), label);
-                    if (ImGui::IsItemHovered() || ImGui::IsWindowHovered())
-                        ImGui::SetTooltip("%s > %s", gctx.activePageName().c_str(), gctx.activeSubpageName().c_str());
+                    const char* catLabel = controllerManager.keyboardContext.activeCategory() == PageCategory::CAMERA ? "CAM" : "BRU";
+                    ImGui::Text("Keyboard %s", catLabel);
+                    ImGui::Text("%s", controllerManager.keyboardContext.activeSubpageName().c_str());
                 }
 
-                // Wiimote connection and page indicator (only when connected)
-                if (nunchukPublisher.isConnected()) {
-                    {
-                        ImGui::Separator();
-                        ImDrawList* dl3 = ImGui::GetWindowDrawList();
-                        ImVec2 cursor2 = ImGui::GetCursorScreenPos();
-                        float iconSize2 = ImGui::GetFrameHeight() * 0.6f;
-                        ImVec2 center3 = ImVec2(cursor2.x + iconSize2 * 0.5f, cursor2.y + iconSize2 * 0.5f);
-                        dl3->AddCircleFilled(center3, iconSize2 * 0.4f, IM_COL32(40,200,40,255));
-                        ImGui::Dummy(ImVec2(iconSize2, iconSize2));
-                        ImGui::SameLine();
-                        ImGui::Text("Wiimote");
-                        if (ImGui::IsItemHovered() || ImGui::IsWindowHovered())
-                            ImGui::SetTooltip("Wiimote connected");
-                    }
+                if (gamepadConnected) {
+                    ImGui::Separator();
+                    const char* catLabel = controllerManager.gamepadContext.activeCategory() == PageCategory::CAMERA ? "CAM" : "BRU";
+                    ImGui::Text("Gamepad %s", catLabel);
+                    ImGui::Text("%s", controllerManager.gamepadContext.activeSubpageName().c_str());
+                }
 
-                    // Wiimote page indicator
-                    {
-                        ImGui::Separator();
-                        const ControllerContext& wctx = controllerManager.wiimoteContext;
-                        ImDrawList* dl4 = ImGui::GetWindowDrawList();
-                        ImVec2 pos2 = ImGui::GetCursorScreenPos();
-                        float pageIconHeight2 = ImGui::GetFrameHeight();
-                        ImGui::Dummy(ImVec2(36.0f, pageIconHeight2));
-                        ImVec2 center4 = ImVec2(pos2.x + 10.0f, pos2.y + pageIconHeight2 * 0.5f);
-                        ImVec4 col2 = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
-                        const char* label2 = "?";
-                        switch (wctx.activeCategory()) {
-                            case PageCategory::CAMERA: label2 = "CAM"; col2 = ImVec4(0.2f,0.5f,0.9f,1.0f); break;
-                            case PageCategory::BRUSH:  label2 = "BRU"; col2 = ImVec4(0.2f,0.9f,0.3f,1.0f); break;
-                        }
-                        dl4->AddCircleFilled(center4, 8.0f, ImGui::ColorConvertFloat4ToU32(col2));
-                        float textY2 = pos2.y + (pageIconHeight2 - ImGui::GetFontSize()) * 0.5f;
-                        dl4->AddText(ImVec2(pos2.x + 22.0f, textY2), ImGui::ColorConvertFloat4ToU32(ImVec4(1,1,1,1)), label2);
-                        if (ImGui::IsItemHovered() || ImGui::IsWindowHovered())
-                            ImGui::SetTooltip("%s > %s", wctx.activePageName().c_str(), wctx.activeSubpageName().c_str());
-                    }
+                if (wiimoteConnected) {
+                    ImGui::Separator();
+                    const char* catLabel = controllerManager.wiimoteContext.activeCategory() == PageCategory::CAMERA ? "CAM" : "BRU";
+                    ImGui::Text("Wiimote %s", catLabel);
+                    ImGui::Text("%s", controllerManager.wiimoteContext.activeSubpageName().c_str());
                 }
 
                 ImGui::End();
