@@ -1734,6 +1734,45 @@ public:
                         ImGui::SetTooltip("%s > %s", gctx.activePageName().c_str(), gctx.activeSubpageName().c_str());
                 }
 
+                // Wiimote connection and page indicator (only when connected)
+                if (nunchukPublisher.isConnected()) {
+                    {
+                        ImGui::Separator();
+                        ImDrawList* dl3 = ImGui::GetWindowDrawList();
+                        ImVec2 cursor2 = ImGui::GetCursorScreenPos();
+                        float iconSize2 = ImGui::GetFrameHeight() * 0.6f;
+                        ImVec2 center3 = ImVec2(cursor2.x + iconSize2 * 0.5f, cursor2.y + iconSize2 * 0.5f);
+                        dl3->AddCircleFilled(center3, iconSize2 * 0.4f, IM_COL32(40,200,40,255));
+                        ImGui::Dummy(ImVec2(iconSize2, iconSize2));
+                        ImGui::SameLine();
+                        ImGui::Text("Wiimote");
+                        if (ImGui::IsItemHovered() || ImGui::IsWindowHovered())
+                            ImGui::SetTooltip("Wiimote connected");
+                    }
+
+                    // Wiimote page indicator
+                    {
+                        ImGui::Separator();
+                        const ControllerContext& wctx = controllerManager.wiimoteContext;
+                        ImDrawList* dl4 = ImGui::GetWindowDrawList();
+                        ImVec2 pos2 = ImGui::GetCursorScreenPos();
+                        float pageIconHeight2 = ImGui::GetFrameHeight();
+                        ImGui::Dummy(ImVec2(36.0f, pageIconHeight2));
+                        ImVec2 center4 = ImVec2(pos2.x + 10.0f, pos2.y + pageIconHeight2 * 0.5f);
+                        ImVec4 col2 = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+                        const char* label2 = "?";
+                        switch (wctx.activeCategory()) {
+                            case PageCategory::CAMERA: label2 = "CAM"; col2 = ImVec4(0.2f,0.5f,0.9f,1.0f); break;
+                            case PageCategory::BRUSH:  label2 = "BRU"; col2 = ImVec4(0.2f,0.9f,0.3f,1.0f); break;
+                        }
+                        dl4->AddCircleFilled(center4, 8.0f, ImGui::ColorConvertFloat4ToU32(col2));
+                        float textY2 = pos2.y + (pageIconHeight2 - ImGui::GetFontSize()) * 0.5f;
+                        dl4->AddText(ImVec2(pos2.x + 22.0f, textY2), ImGui::ColorConvertFloat4ToU32(ImVec4(1,1,1,1)), label2);
+                        if (ImGui::IsItemHovered() || ImGui::IsWindowHovered())
+                            ImGui::SetTooltip("%s > %s", wctx.activePageName().c_str(), wctx.activeSubpageName().c_str());
+                    }
+                }
+
                 ImGui::End();
             }
         }
