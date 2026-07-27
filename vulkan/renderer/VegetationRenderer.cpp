@@ -1767,26 +1767,27 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
 
     if (!app) return;
 
-    // Destroy old buffers immediately.  The CPU-generation path runs on the
-    // render thread via processPendingChunks() which is called from draw()
-    // before command buffer submission, so no in-flight work references them.
-    // The GPU path (generateChunkInstances) invokes this from a
-    // deferDestroyUntilFence callback, so its dispatch fence has already
-    // signaled and the GPU is done by the time we reach here.
-    {
-        Buffer tmpBuf{};
-        tmpBuf.buffer = old.buffer;
-        tmpBuf.memory = old.memory;
-        tmpBuf.allocation = old.allocation;
-        app->destroyBuffer(tmpBuf);
-    }
-    {
-        Buffer tmpBuf{};
-        tmpBuf.buffer = old.indirectBuffer;
-        tmpBuf.memory = old.indirectMemory;
-        tmpBuf.allocation = old.indirectAllocation;
-        app->destroyBuffer(tmpBuf);
-    }
+    // Defer destruction until the provided fence signals (or until all
+    // pending work completes if VK_NULL_HANDLE). The old instance buffer
+    // may still be referenced by previously-submitted render command
+    // buffers on the graphics queue — waiting only on the compute/copy
+    // dispatch fence is insufficient.
+    app->deferDestroyUntilFence(completionFence, [app, old]() {
+        {
+            Buffer tmpBuf{};
+            tmpBuf.buffer = old.buffer;
+            tmpBuf.memory = old.memory;
+            tmpBuf.allocation = old.allocation;
+            app->destroyBuffer(tmpBuf);
+        }
+        {
+            Buffer tmpBuf{};
+            tmpBuf.buffer = old.indirectBuffer;
+            tmpBuf.memory = old.indirectMemory;
+            tmpBuf.allocation = old.indirectAllocation;
+            app->destroyBuffer(tmpBuf);
+        }
+    });
 }
 
 // Ensure we clear the stored app pointer on cleanup
