@@ -1379,6 +1379,7 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     std::deque<PendingMeshData> batch;
     {
         std::lock_guard<std::mutex> lock(brushPendingMutex);
+        size_t qsize = brushPendingQueue.size();
         std::sort(brushPendingQueue.begin(), brushPendingQueue.end(),
             [&cameraPos](const PendingMeshData& a, const PendingMeshData& b) {
                 glm::vec3 da = cameraPos - a.nodeData.cube.getCenter();
@@ -1389,6 +1390,8 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
                      std::make_move_iterator(brushPendingQueue.begin()),
                      std::make_move_iterator(brushPendingQueue.end()));
         brushPendingQueue.clear();
+        if (qsize > 0)
+            std::cerr << "[BRUSH] processPendingBrushMeshes: draining " << qsize << " entries" << std::endl;
     }
 
     if (batch.empty()) return;
@@ -1401,7 +1404,11 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     for (auto& pd : batch) {
         IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &brushIR : &waterIR;
         uint32_t slotIdx = ir->addMeshSlotted(pd.geom, static_cast<uint32_t>(pd.nid));
-        if (slotIdx == UINT32_MAX) continue;
+        if (slotIdx == UINT32_MAX) {
+            std::cerr << "[BRUSH] addMeshSlotted FAILED for nid=" << (unsigned long long)pd.nid << std::endl;
+            continue;
+        }
+        std::cerr << "[BRUSH] added mesh slotIdx=" << slotIdx << " for nid=" << (unsigned long long)pd.nid << std::endl;
         ir->uploadSlot(app, slotIdx);
         auto& chunkMap = (pd.layer == LAYER_OPAQUE) ? brushSolidChunks : brushTransparentChunks;
         Model3DVersion mv{slotIdx, pd.version};
@@ -1808,9 +1815,12 @@ void SceneRenderer::addDebugCubeForGeometry(Layer layer, NodeID nid, const Octre
 SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
     brushSolidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        std::cerr << "[BRUSH] onNodeAdded nid=" << (unsigned long long)nid << std::endl;
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
             [this, app](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
+                std::cerr << "[BRUSH] tessellation callback: nid=" << (unsigned long long)nid_
+                          << " verts=" << geom.vertices.size() << " idxs=" << geom.indices.size() << std::endl;
                 // Route brush-solid results to the SEPARATE brush queue so they
                 // are drained independently of the solid/water stream.
                 std::lock_guard<std::mutex> lock(brushPendingMutex);
@@ -1823,6 +1833,8 @@ SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* s
     brushSolidNodeEraseCallback = [this](const OctreeNodeData& nd) {
         std::lock_guard<std::recursive_mutex> lock(chunksMutex);
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        std::cerr << "[BRUSH] onNodeDeleted nid=" << (unsigned long long)nid
+                  << " found=" << (brushSolidChunks.count(nid) ? "yes" : "no") << std::endl;
         auto it = brushSolidChunks.find(nid);
         if (it != brushSolidChunks.end()) {
             if (it->second.meshId != UINT32_MAX) {

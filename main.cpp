@@ -600,6 +600,7 @@ public:
         // Create brush3dWidget after setupTextures() so loadedTextureLayers is set.
         brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager, &eventManager);
         widgetManager.addWidget(brush3dWidget);
+        rebuildBrushScene();
 
         // Create per-frame timestamp query pools for GPU profiling
         {

@@ -1352,12 +1352,18 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     if (cmdState) cmdState->bindComputeDescriptorSets(cmd, computePipelineLayout, 0, 1, &descSet, 0, nullptr);
     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &descSet, 0, nullptr);
     uint32_t numCmds = 0;
+    uint32_t activeInMeshes = 0;
     {
         std::shared_lock<std::shared_mutex> lock(mutex);
         numCmds = getCullDispatchCount(meshes, slotAlloc, slottedMode);
+        for (const auto& kv : meshes) if (kv.second.active) ++activeInMeshes;
     }
     // Fast return if nothing to cull — avoids touching the pipeline at all
-    if (numCmds == 0) return;
+    if (numCmds == 0) {
+        static bool warned = false;
+        if (!warned) { printf("[IR::prepareCull] EARLY RETURN: active=%u numCmds=%u slotted=%d\n", activeInMeshes, numCmds, (int)slottedMode); warned = true; }
+        return;
+    }
 
     uint8_t pc[72]; memcpy(pc, &viewProj, 64); uint32_t layer = 0; memcpy(pc+64, &layer, 4); memcpy(pc+68, &numCmds, 4);
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 72, pc);
@@ -1568,12 +1574,11 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
     static int frameCount = 0;
     if (frameCount < 10) {
         std::shared_lock<std::shared_mutex> lock(mutex);
-        //printf("[IndirectRenderer::drawPrepared] Frame %d: vertexBuffer=%p (verts=%zu), indexBuffer=%p (indices=%zu), drawCommands=%zu\n",
-        //       frameCount, (void*)vertexBuffer.buffer, mergedVertices.size(),
-        //       (void*)indexBuffer.buffer, mergedIndices.size(), indirectCommands.size());
         size_t activeMeshCount = 0;
-        for (const auto& kv : meshes) if (kv.second.active) ++activeMeshCount;
-        //printf("[IndirectRenderer::drawPrepared] meshes.size()=%zu, activeMeshCount=%zu\n", meshes.size(), activeMeshCount);
+        int totalIndexCount = 0;
+        for (const auto& kv : meshes) if (kv.second.active) { ++activeMeshCount; totalIndexCount += kv.second.indexCount; }
+        printf("[IR::drawPrepared] active=%zu totalIdx=%d slotted=%d\n",
+               activeMeshCount, totalIndexCount, (int)slottedMode);
         int meshPrint = 0;
         for (const auto& kv : meshes) {
             if (!kv.second.active) continue;
