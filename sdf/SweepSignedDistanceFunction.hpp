@@ -38,14 +38,17 @@ public:
     virtual ~SweepSignedDistanceFunction() = default;
 
     float distance(const glm::vec3 &p) const override {
+        float d1 = function1.distance(p);
+        float d2 = function2.distance(p);
         glm::vec3 seg = posB - posA;
         float segLenSq = glm::dot(seg, seg);
         if (segLenSq < 1e-6f) {
-            return function1.distance(p);
+            return d1;
         }
         float t = glm::clamp(glm::dot(p - posA, seg) / segLenSq, 0.0f, 1.0f);
         glm::vec3 closest = posA + t * seg;
-        return function2.distance(p - closest + posB);
+        float dSwept = function2.distance(p - closest + posB);
+        return glm::min(glm::min(d1, d2), dSwept);
     }
 
     BoundingSphere getSphere(const Transformation &model, float bias) const override {

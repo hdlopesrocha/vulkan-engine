@@ -2150,6 +2150,165 @@ void MyApp::preAllocateAsyncDescriptorPools() {
     }
 }
 
+// Shared SDF creation: populates fn2 (current) + optionally fn1 (sweep start),
+// wraps in SweepSignedDistanceFunction when sweepMode is on, then calls callback.
+template<typename Fn>
+static void forEachBrushSDF(const BrushEntry& entry, const Transformation& model,
+                            const glm::vec3& sweepStart, float minSize,
+                            const char* logPrefix, Fn&& callback) {
+    switch (entry.sdfType) {
+        case 0: { // Sphere
+            SphereDistanceFunction fn2(model, minSize);
+            if (entry.sweepMode) {
+                Transformation prevModel(entry.scale, sweepStart, entry.rot);
+                SphereDistanceFunction fn1(prevModel, minSize);
+                SweepSignedDistanceFunction<SphereDistanceFunction> sweepFn(fn1, fn2, model, minSize);
+                callback(sweepFn);
+            } else { callback(fn2); }
+            break;
+        }
+        case 1: { // Box
+            BoxDistanceFunction fn2(model, minSize);
+            if (entry.sweepMode) {
+                Transformation prevModel(entry.scale, sweepStart, entry.rot);
+                BoxDistanceFunction fn1(prevModel, minSize);
+                SweepSignedDistanceFunction<BoxDistanceFunction> sweepFn(fn1, fn2, model, minSize);
+                callback(sweepFn);
+            } else { callback(fn2); }
+            break;
+        }
+        case 2: { // Capsule
+            CapsuleDistanceFunction fn2(entry.capsuleA, entry.capsuleB, entry.capsuleRadius, model, minSize);
+            if (entry.sweepMode) {
+                Transformation prevModel(entry.scale, sweepStart, entry.rot);
+                CapsuleDistanceFunction fn1(entry.capsuleA, entry.capsuleB, entry.capsuleRadius, prevModel, minSize);
+                SweepSignedDistanceFunction<CapsuleDistanceFunction> sweepFn(fn1, fn2, model, minSize);
+                callback(sweepFn);
+            } else { callback(fn2); }
+            break;
+        }
+        case 3: { // Octahedron
+            OctahedronDistanceFunction fn2(model, minSize);
+            if (entry.sweepMode) {
+                Transformation prevModel(entry.scale, sweepStart, entry.rot);
+                OctahedronDistanceFunction fn1(prevModel, minSize);
+                SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, model, minSize);
+                callback(sweepFn);
+            } else { callback(fn2); }
+            break;
+        }
+        case 4: { // Pyramid
+            PyramidDistanceFunction fn2(model, minSize);
+            if (entry.sweepMode) {
+                Transformation prevModel(entry.scale, sweepStart, entry.rot);
+                PyramidDistanceFunction fn1(prevModel, minSize);
+                SweepSignedDistanceFunction<PyramidDistanceFunction> sweepFn(fn1, fn2, model, minSize);
+                callback(sweepFn);
+            } else { callback(fn2); }
+            break;
+        }
+        case 5: { // Torus
+            TorusDistanceFunction fn2(entry.torusRadii, model, minSize);
+            if (entry.sweepMode) {
+                Transformation prevModel(entry.scale, sweepStart, entry.rot);
+                TorusDistanceFunction fn1(entry.torusRadii, prevModel, minSize);
+                SweepSignedDistanceFunction<TorusDistanceFunction> sweepFn(fn1, fn2, model, minSize);
+                callback(sweepFn);
+            } else { callback(fn2); }
+            break;
+        }
+        case 6: { // Cone
+            ConeDistanceFunction fn2(model, minSize);
+            if (entry.sweepMode) {
+                Transformation prevModel(entry.scale, sweepStart, entry.rot);
+                ConeDistanceFunction fn1(prevModel, minSize);
+                SweepSignedDistanceFunction<ConeDistanceFunction> sweepFn(fn1, fn2, model, minSize);
+                callback(sweepFn);
+            } else { callback(fn2); }
+            break;
+        }
+        case 7: { // Cylinder
+            CylinderDistanceFunction fn2(model, minSize);
+            if (entry.sweepMode) {
+                Transformation prevModel(entry.scale, sweepStart, entry.rot);
+                CylinderDistanceFunction fn1(prevModel, minSize);
+                SweepSignedDistanceFunction<CylinderDistanceFunction> sweepFn(fn1, fn2, model, minSize);
+                callback(sweepFn);
+            } else { callback(fn2); }
+            break;
+        }
+        case 8: { // Tapered Cylinder
+            TaperedCylinderDistanceFunction fn2(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y, model, minSize);
+            if (entry.sweepMode) {
+                Transformation prevModel(entry.scale, sweepStart, entry.rot);
+                TaperedCylinderDistanceFunction fn1(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y, prevModel, minSize);
+                SweepSignedDistanceFunction<TaperedCylinderDistanceFunction> sweepFn(fn1, fn2, model, minSize);
+                callback(sweepFn);
+            } else { callback(fn2); }
+            break;
+        }
+        case 9: { // Tapered Capsule
+            TaperedCapsuleDistanceFunction fn2(entry.capsuleA, entry.capsuleB,
+                entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y, model, minSize);
+            if (entry.sweepMode) {
+                Transformation prevModel(entry.scale, sweepStart, entry.rot);
+                TaperedCapsuleDistanceFunction fn1(entry.capsuleA, entry.capsuleB,
+                    entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y, prevModel, minSize);
+                SweepSignedDistanceFunction<TaperedCapsuleDistanceFunction> sweepFn(fn1, fn2, model, minSize);
+                callback(sweepFn);
+            } else { callback(fn2); }
+            break;
+        }
+        default:
+            std::cerr << logPrefix << " Unknown sdfType " << entry.sdfType << ", skipping" << std::endl;
+            break;
+    }
+}
+
+// Shared effect+apply: wraps func in the selected effect (if any) and applies to octree.
+static void applyBrushWithEffect(const BrushEntry& entry, SignedDistanceFunction& func,
+                                 Octree& octree, const SignedDistanceOperation& op,
+                                 const Transformation& model, const TexturePainter& brush,
+                                 const Simplifier& simplifier, const OctreeChangeHandler& handler) {
+    float minSize = entry.minSize;
+    if (entry.useEffect) {
+        switch (entry.effectType) {
+            case 0: {
+                PerlinDistortDistanceEffect effect(func,
+                    entry.effectAmplitude, entry.effectFrequency,
+                    glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, minSize);
+                octree.apply(op, effect, model, brush, minSize, simplifier, handler);
+                break;
+            }
+            case 1: {
+                PerlinCarveDistanceEffect effect(func,
+                    entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
+                    glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, minSize);
+                octree.apply(op, effect, model, brush, minSize, simplifier, handler);
+                break;
+            }
+            case 2: {
+                SineDistortDistanceEffect effect(func,
+                    entry.effectAmplitude, entry.effectFrequency, glm::vec3(0), model, minSize);
+                octree.apply(op, effect, model, brush, minSize, simplifier, handler);
+                break;
+            }
+            case 3: {
+                VoronoiCarveDistanceEffect effect(func,
+                    entry.effectAmplitude, entry.effectCellSize,
+                    glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, minSize);
+                octree.apply(op, effect, model, brush, minSize, simplifier, handler);
+                break;
+            }
+            default:
+                octree.apply(op, func, model, brush, minSize, simplifier, handler);
+                break;
+        }
+    } else {
+        octree.apply(op, func, model, brush, minSize, simplifier, handler);
+    }
+}
+
 // Implementation: rebuild the brush scene from Brush3dWidget entries
 void MyApp::rebuildBrushScene() {
     if (!world || !world->brushScene() || !sceneRenderer || !brush3dWidget) return;
@@ -2207,178 +2366,11 @@ void MyApp::rebuildBrushScene() {
         // sdfType: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
         // We use a lambda to avoid massive switch duplication for add vs del with optional effects
         auto applyEntry = [&](SignedDistanceFunction& wrappedFunc) {
-            // Brush preview always shows union; the specific operation (Add/Remove/Paint)
-            // is only used when applying the brush to the solid space.
             AddSignedDistanceOperation brushOp;
-            // Optionally wrap in an effect
-            // effectType: 0=PerlinDistort, 1=PerlinCarve, 2=SineDistort, 3=VoronoiCarve
-            if (entry.useEffect) {
-                switch (entry.effectType) {
-                    case 0: {
-                        PerlinDistortDistanceEffect effect(wrappedFunc,
-                            entry.effectAmplitude, entry.effectFrequency,
-                            glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                        octree.apply(brushOp, effect, model, brush, entry.minSize, simplifier, handler);
-                        break;
-                    }
-                    case 1: {
-                        PerlinCarveDistanceEffect effect(wrappedFunc,
-                            entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
-                            glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                        octree.apply(brushOp, effect, model, brush, entry.minSize, simplifier, handler);
-                        break;
-                    }
-                    case 2: {
-                        SineDistortDistanceEffect effect(wrappedFunc,
-                            entry.effectAmplitude, entry.effectFrequency, glm::vec3(0), model, entry.minSize);
-                        octree.apply(brushOp, effect, model, brush, entry.minSize, simplifier, handler);
-                        break;
-                    }
-                    case 3: {
-                        VoronoiCarveDistanceEffect effect(wrappedFunc,
-                            entry.effectAmplitude, entry.effectCellSize,
-                            glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                        octree.apply(brushOp, effect, model, brush, entry.minSize, simplifier, handler);
-                        break;
-                    }
-                    default: {
-                        // Fallback: no effect
-                        octree.apply(brushOp, wrappedFunc, model, brush, entry.minSize, simplifier, handler);
-                        break;
-                    }
-                }
-            } else {
-                // No effect — use the primitive directly
-                octree.apply(brushOp, wrappedFunc, model, brush, entry.minSize, simplifier, handler);
-            }
+            applyBrushWithEffect(entry, wrappedFunc, octree, brushOp, model, brush, simplifier, handler);
         };
 
-        switch (entry.sdfType) {
-            case 0: { // Sphere
-                SphereDistanceFunction fn2(model, entry.minSize);
-                if (entry.sweepMode) {
-                    Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                    SphereDistanceFunction fn1(prevModel, entry.minSize);
-                    SweepSignedDistanceFunction<SphereDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                    applyEntry(sweepFn);
-                } else {
-                    applyEntry(fn2);
-                }
-                break;
-            }
-            case 1: { // Box
-                BoxDistanceFunction fn2(model, entry.minSize);
-                if (entry.sweepMode) {
-                    Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                    BoxDistanceFunction fn1(prevModel, entry.minSize);
-                    SweepSignedDistanceFunction<BoxDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                    applyEntry(sweepFn);
-                } else {
-                    applyEntry(fn2);
-                }
-                break;
-            }
-            case 2: { // Capsule
-                CapsuleDistanceFunction fn2(entry.capsuleA, entry.capsuleB, entry.capsuleRadius, model, entry.minSize);
-                if (entry.sweepMode) {
-                    Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                    CapsuleDistanceFunction fn1(entry.capsuleA, entry.capsuleB, entry.capsuleRadius, prevModel, entry.minSize);
-                    SweepSignedDistanceFunction<CapsuleDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                    applyEntry(sweepFn);
-                } else {
-                    applyEntry(fn2);
-                }
-                break;
-            }
-            case 3: { // Octahedron
-                OctahedronDistanceFunction fn2(model, entry.minSize);
-                if (entry.sweepMode) {
-                    Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                    OctahedronDistanceFunction fn1(prevModel, entry.minSize);
-                    SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                    applyEntry(sweepFn);
-                } else {
-                    applyEntry(fn2);
-                }
-                break;
-            }
-            case 4: { // Pyramid
-                PyramidDistanceFunction fn2(model, entry.minSize);
-                if (entry.sweepMode) {
-                    Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                    PyramidDistanceFunction fn1(prevModel, entry.minSize);
-                    SweepSignedDistanceFunction<PyramidDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                    applyEntry(sweepFn);
-                } else {
-                    applyEntry(fn2);
-                }
-                break;
-            }
-            case 5: { // Torus
-                TorusDistanceFunction fn2(entry.torusRadii, model, entry.minSize);
-                if (entry.sweepMode) {
-                    Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                    TorusDistanceFunction fn1(entry.torusRadii, prevModel, entry.minSize);                    SweepSignedDistanceFunction<TorusDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                    applyEntry(sweepFn);
-                } else {
-                    applyEntry(fn2);
-                }
-                break;
-            }
-            case 6: { // Cone
-                ConeDistanceFunction fn2(model, entry.minSize);
-                if (entry.sweepMode) {
-                    Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                    ConeDistanceFunction fn1(prevModel, entry.minSize);
-                    SweepSignedDistanceFunction<ConeDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                    applyEntry(sweepFn);
-                } else {
-                    applyEntry(fn2);
-                }
-                break;
-            }
-            case 7: { // Cylinder
-                CylinderDistanceFunction fn2(model, entry.minSize);
-                if (entry.sweepMode) {
-                    Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                    CylinderDistanceFunction fn1(prevModel, entry.minSize);
-                    SweepSignedDistanceFunction<CylinderDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                    applyEntry(sweepFn);
-                } else {
-                    applyEntry(fn2);
-                }
-                break;
-            }
-            case 8: { // Tapered Cylinder
-                TaperedCylinderDistanceFunction fn2(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y, model, entry.minSize);
-                if (entry.sweepMode) {
-                    Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                    TaperedCylinderDistanceFunction fn1(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y, prevModel, entry.minSize);
-                    SweepSignedDistanceFunction<TaperedCylinderDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                    applyEntry(sweepFn);
-                } else {
-                    applyEntry(fn2);
-                }
-                break;
-            }
-            case 9: { // Tapered Capsule
-                TaperedCapsuleDistanceFunction fn2(entry.capsuleA, entry.capsuleB,
-                    entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y, model, entry.minSize);
-                if (entry.sweepMode) {
-                    Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                    TaperedCapsuleDistanceFunction fn1(entry.capsuleA, entry.capsuleB,
-                        entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y, prevModel, entry.minSize);
-                    SweepSignedDistanceFunction<TaperedCapsuleDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                    applyEntry(sweepFn);
-                } else {
-                    applyEntry(fn2);
-                }
-                break;
-            }
-            default:
-                std::cerr << "[rebuildBrushScene] Unknown sdfType " << entry.sdfType << ", skipping" << std::endl;
-                break;
-            }
+        forEachBrushSDF(entry, model, cachedSweepStart, entry.minSize, "[rebuildBrushScene]", applyEntry);
     // 5. Flush queued change events (triggers mesh creation via SceneRenderer)
     uniqueBrushSolidHandler.handleEvents();
     uniqueBrushLiquidHandler.handleEvents();
@@ -2438,170 +2430,10 @@ void MyApp::applyBrushToScene() {
 
     Simplifier simplifier(0.95f, 0.2f, true);
     auto applyEntry = [&](SignedDistanceFunction& wrappedFunc) {
-        if (entry.useEffect) {
-            switch (entry.effectType) {
-                case 0: {
-                    PerlinDistortDistanceEffect effect(wrappedFunc,
-                        entry.effectAmplitude, entry.effectFrequency,
-                        glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                    octree.apply(brushOp, effect, model, brush, entry.minSize, simplifier, handler);
-                    break;
-                }
-                case 1: {
-                    PerlinCarveDistanceEffect effect(wrappedFunc,
-                        entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
-                        glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                    octree.apply(brushOp, effect, model, brush, entry.minSize, simplifier, handler);
-                    break;
-                }
-                case 2: {
-                    SineDistortDistanceEffect effect(wrappedFunc,
-                        entry.effectAmplitude, entry.effectFrequency, glm::vec3(0), model, entry.minSize);
-                    octree.apply(brushOp, effect, model, brush, entry.minSize, simplifier, handler);
-                    break;
-                }
-                case 3: {
-                    VoronoiCarveDistanceEffect effect(wrappedFunc,
-                        entry.effectAmplitude, entry.effectCellSize,
-                        glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
-                    octree.apply(brushOp, effect, model, brush, entry.minSize, simplifier, handler);
-                    break;
-                }
-                default:
-                    octree.apply(brushOp, wrappedFunc, model, brush, entry.minSize, simplifier, handler);
-                    break;
-            }
-        } else {
-            octree.apply(brushOp, wrappedFunc, model, brush, entry.minSize, simplifier, handler);
-        }
+        applyBrushWithEffect(entry, wrappedFunc, octree, brushOp, model, brush, simplifier, handler);
     };
 
-    switch (entry.sdfType) {
-        case 0: {
-            SphereDistanceFunction fn2(model, entry.minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                SphereDistanceFunction fn1(prevModel, entry.minSize);
-                SweepSignedDistanceFunction<SphereDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                applyEntry(sweepFn);
-            } else {
-                applyEntry(fn2);
-            }
-            break;
-        }
-        case 1: {
-            BoxDistanceFunction fn2(model, entry.minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                BoxDistanceFunction fn1(prevModel, entry.minSize);
-                SweepSignedDistanceFunction<BoxDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                applyEntry(sweepFn);
-            } else {
-                applyEntry(fn2);
-            }
-            break;
-        }
-        case 2: {
-            CapsuleDistanceFunction fn2(entry.capsuleA, entry.capsuleB, entry.capsuleRadius, model, entry.minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                CapsuleDistanceFunction fn1(entry.capsuleA, entry.capsuleB, entry.capsuleRadius, prevModel, entry.minSize);
-                SweepSignedDistanceFunction<CapsuleDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                applyEntry(sweepFn);
-            } else {
-                applyEntry(fn2);
-            }
-            break;
-        }
-        case 3: {
-            OctahedronDistanceFunction fn2(model, entry.minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                OctahedronDistanceFunction fn1(prevModel, entry.minSize);
-                SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                applyEntry(sweepFn);
-            } else {
-                applyEntry(fn2);
-            }
-            break;
-        }
-        case 4: {
-            PyramidDistanceFunction fn2(model, entry.minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                PyramidDistanceFunction fn1(prevModel, entry.minSize);
-                SweepSignedDistanceFunction<PyramidDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                applyEntry(sweepFn);
-            } else {
-                applyEntry(fn2);
-            }
-            break;
-        }
-        case 5: {
-            TorusDistanceFunction fn2(entry.torusRadii, model, entry.minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                TorusDistanceFunction fn1(entry.torusRadii, prevModel, entry.minSize);
-                SweepSignedDistanceFunction<TorusDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                applyEntry(sweepFn);
-            } else {
-                applyEntry(fn2);
-            }
-            break;
-        }
-        case 6: {
-            ConeDistanceFunction fn2(model, entry.minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                ConeDistanceFunction fn1(prevModel, entry.minSize);
-                SweepSignedDistanceFunction<ConeDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                applyEntry(sweepFn);
-            } else {
-                applyEntry(fn2);
-            }
-            break;
-        }
-        case 7: {
-            CylinderDistanceFunction fn2(model, entry.minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                CylinderDistanceFunction fn1(prevModel, entry.minSize);
-                SweepSignedDistanceFunction<CylinderDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                applyEntry(sweepFn);
-            } else {
-                applyEntry(fn2);
-            }
-            break;
-        }
-        case 8: {
-            TaperedCylinderDistanceFunction fn2(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y, model, entry.minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                TaperedCylinderDistanceFunction fn1(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y, prevModel, entry.minSize);
-                SweepSignedDistanceFunction<TaperedCylinderDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                applyEntry(sweepFn);
-            } else {
-                applyEntry(fn2);
-            }
-            break;
-        }
-        case 9: {
-            TaperedCapsuleDistanceFunction fn2(entry.capsuleA, entry.capsuleB,
-                entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y, model, entry.minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, cachedSweepStart, entry.rot);
-                TaperedCapsuleDistanceFunction fn1(entry.capsuleA, entry.capsuleB, entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y, prevModel, entry.minSize);
-                SweepSignedDistanceFunction<TaperedCapsuleDistanceFunction> sweepFn(fn1, fn2, model, entry.minSize);
-                applyEntry(sweepFn);
-            } else {
-                applyEntry(fn2);
-            }
-            break;
-        }
-        default:
-            std::cerr << "[applyBrushToScene] Unknown sdfType " << entry.sdfType << ", skipping" << std::endl;
-            break;
-    }
+    forEachBrushSDF(entry, model, cachedSweepStart, entry.minSize, "[applyBrushToScene]", applyEntry);
 
     // Flush queued change events to trigger mesh creation
     sceneUniqueSolidHandler->handleEvents();
