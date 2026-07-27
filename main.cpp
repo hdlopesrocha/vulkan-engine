@@ -2383,14 +2383,6 @@ void MyApp::rebuildBrushScene() {
     // 128-slot brush pool is never exhausted by stale old entries.
     sceneRenderer->processPendingBrushMeshes(this, camera.getPosition());
 
-    // Advance previousTranslate so next frame's sweep trails from here
-    if (selectedEntry && selectedEntry->sweepMode) {
-        BrushEntry* mutableEntry = brushManager.getSelectedEntry();
-        if (mutableEntry) {
-            mutableEntry->previousTranslate = mutableEntry->translate;
-        }
-    }
-
     // std::cerr << "[MyApp::rebuildBrushScene] Done — brush opaque chunks: " << sceneRenderer->brushSolidChunks.size()
     //           << ", brush transparent chunks: " << sceneRenderer->brushTransparentChunks.size() << std::endl;
 }
