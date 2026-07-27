@@ -182,10 +182,10 @@ public:
             Transformation modelA = Transformation(glm::vec3(radius), centerA, 0, 0, 0);
             Transformation modelB = Transformation(glm::vec3(radius), centerB, 45, 0, 0);
             Transformation sweepModel = Transformation(glm::vec3(radius), (centerA + centerB) * 0.5f, 0, 0, 0);
-            OctahedronDistanceFunction fn1(modelA, minSize*0.25f);
-            OctahedronDistanceFunction fn2(modelB, minSize*0.25f);
-            SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), minSize, simplifier, opaqueHandler);
+            OctahedronDistanceFunction fn1(modelA, minSize*0.5f);
+            OctahedronDistanceFunction fn2(modelB, minSize*0.5f);
+            SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, minSize*0.5f);
+            opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), minSize*0.5f, simplifier, opaqueHandler);
         }
 
         {

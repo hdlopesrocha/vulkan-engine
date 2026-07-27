@@ -45,10 +45,16 @@ public:
         }
         float t = glm::clamp(glm::dot(p - posA, seg) / segLenSq, 0.0f, 1.0f);
         glm::vec3 closest = posA + t * seg;
-        // Evaluate both endpoint rotations at the closest point and blend
-        float dA = function1.distance(p - closest + posA);
-        float dB = function2.distance(p - closest + posB);
-        return glm::mix(dA, dB, t);
+        // Interpolate transform at the closest point
+        glm::quat rotInterp = glm::slerp(function1.getRotation(), function2.getRotation(), t);
+        glm::quat rotA = function1.getRotation();
+        glm::vec3 scaleInterp = glm::mix(function1.getScale(), function2.getScale(), t);
+        glm::vec3 scaleA = function1.getScale();
+        // Transform point so fn1 evaluates at the interpolated position/rotation/scale
+        glm::vec3 q = posA + rotA * ((scaleA / scaleInterp) * (glm::inverse(rotInterp) * (p - closest)));
+        float minScaleInterp = glm::min(glm::min(scaleInterp.x, scaleInterp.y), scaleInterp.z);
+        float minScaleA = glm::min(glm::min(scaleA.x, scaleA.y), scaleA.z);
+        return function1.distance(q) * minScaleInterp / minScaleA;
     }
 
     BoundingSphere getSphere(const Transformation &model, float bias) const override {

@@ -20,6 +20,9 @@ public:
     virtual ~SignedDistanceFunction() = default;
     virtual float distance(const glm::vec3 &p) const = 0;
     virtual glm::vec3 getCenter() const { return m_center; }
+    glm::quat getRotation() const { return m_model.quaternion; }
+    glm::vec3 getScale() const { return m_model.scale; }
+    glm::vec3 getPosition() const { return m_model.translate; }
     virtual const char* getLabel() const { return ""; }
     virtual SdfType getType() const { return type; }
 
