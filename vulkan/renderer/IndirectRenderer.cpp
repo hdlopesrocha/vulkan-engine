@@ -2186,22 +2186,70 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     }
     if (!info || !info->active) return false;
 
-    // Write metadata (indirect command + bounds) immediately — these are
-    // host-visible, coherent buffers, so the writes are visible to the GPU
-    // without an explicit flush (HOST_COHERENT).
-    // NOTE: The vertex/index data may not be on the GPU yet when using the
-    // async UploadManager path. The indirect command is updated eagerly so
-    // that once the data arrives, no further CPU write is needed. If the
-    // GPU reads this slot before the upload completes, it will see the new
-    // bounds/draw-count but stale vertex data — this is a brief 1-2 frame
-    // transient that resolves once the transfer completes.
-    writeSlotMeta(slotIndex, *info);
-
-    // If no vertex/index data, we're done (empty mesh)
+    // If no vertex/index data, write meta immediately and return (empty mesh)
     if (info->vertexCount == 0 || info->indexCount == 0) {
+        writeSlotMeta(slotIndex, *info);
         if (onComplete) onComplete();
         return true;
     }
+
+    // Capture metadata for deferred write — the MeshInfo/indirectCommands are
+    // stable until the slot is freed, but we capture the actual draw parameters
+    // by value so the write is correct even if the callback fires after the
+    // slot's MeshInfo is modified by a later updateMeshSlotted call.
+    uint32_t capSlotIndex      = slotIndex;
+    uint32_t capIndexCount     = info->indexCount;
+    uint32_t capFirstIndex     = info->firstIndex;
+    int32_t  capVertexOffset   = static_cast<int32_t>(info->baseVertex);
+    uint32_t capDrawIndex      = info->drawIndex;
+    glm::vec4 capBoundsMin     = info->boundsMin;
+    glm::vec4 capBoundsMax     = info->boundsMax;
+
+    // Build the deferred meta-write callback. This runs AFTER the vertex/index
+    // data has been uploaded to GPU, so the indirect command + bounds written
+    // here point to data that is actually resident. Previously the meta was
+    // written eagerly, creating a ~1-2 frame window where the GPU read the new
+    // indirect command but encountered stale vertex data — the root cause of
+    // brush flickering during continuous animation.
+    auto deferredWriteMeta = [this, capSlotIndex, capIndexCount, capFirstIndex,
+                              capVertexOffset, capDrawIndex, capBoundsMin, capBoundsMax]()
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex);
+        if (capSlotIndex >= indirectCommands.size()) return;
+        if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
+
+        VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(capSlotIndex) * sizeof(VkDrawIndexedIndirectCommand);
+        void* cmdData = indirectBuffer.map(cmdOffset);
+        if (cmdData) {
+            VkDrawIndexedIndirectCommand cmd{};
+            cmd.indexCount    = capIndexCount;
+            cmd.instanceCount = 1;
+            cmd.firstIndex    = capFirstIndex;
+            cmd.vertexOffset  = capVertexOffset;
+            cmd.firstInstance = capDrawIndex;
+            std::memcpy(cmdData, &cmd, sizeof(cmd));
+            indirectBuffer.unmap();
+        }
+
+        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capSlotIndex) * 2 * sizeof(glm::vec4);
+            void* bndData = boundsBuffer.map(boundsOffset);
+            if (bndData) {
+                glm::vec4 bounds[2] = { capBoundsMin, capBoundsMax };
+                std::memcpy(bndData, bounds, sizeof(bounds));
+                boundsBuffer.unmap();
+            }
+        }
+    };
+
+    // Chain deferredWriteMeta before the caller's onComplete so the slot
+    // metadata is published before any old-slot cleanup runs.
+    auto chained = [deferredWriteMeta = std::move(deferredWriteMeta),
+                    onComplete = std::move(onComplete)]() mutable
+    {
+        deferredWriteMeta();
+        if (onComplete) onComplete();
+    };
 
     // Upload vertex/index data via the UploadManager (preferred) or legacy path
     bool useUploadMgr = (uploadMgr_ != nullptr);
@@ -2241,21 +2289,19 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
 
     if (useUploadMgr && (vertexBytes + indexBytes) <= uploadMgr_->slotSize()) {
         // Route through the UploadManager (async, K concurrent staging slots).
-        // The onComplete callback fires when the GPU transfer is fully committed.
+        // The chained callback fires when the GPU transfer is fully committed.
         streaming::UploadJob job;
         job.category  = streamCategory_;
         job.priority  = priority;
         job.chunkSlot = nullptr;
         job.uploads   = std::move(uploads);
-        job.onComplete = [onComplete = std::move(onComplete)]() {
-            if (onComplete) onComplete();
-        };
+        job.onComplete = std::move(chained);
         uploadMgr_->enqueue(std::move(job));
     } else {
         // Fall back to the legacy ring-backed staging path.
-        // Defer the onComplete callback — it will fire when the staging
+        // Defer the chained callback — it will fire when the staging
         // transfer fence signals.
-        deferredUploadCallbacks_.push_back(std::move(onComplete));
+        deferredUploadCallbacks_.push_back(std::move(chained));
         return uploadMeshes(app, std::vector<uint32_t>{info->id}, priority);
     }
 

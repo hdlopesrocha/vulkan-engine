@@ -1413,32 +1413,46 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     brushIR.pollPendingTransfers(app);
     waterIR.pollPendingTransfers(app);
 
-    // CRITICAL: Free old staged slots BEFORE allocating new ones.
-    // If we allocate first and free after, new chunks may reuse the same
-    // slot indices as the pending-old chunks, which we then immediately
-    // free — destroying the new geometry (ABA problem). More importantly,
-    // if the pool is nearly full, new allocations fail because old slots
-    // are still occupied.
-    std::cerr << "[BRUSH] step=freeOld  oldSolid=" << pendingOldBrushChunks.size()
-              << " oldWater=" << pendingOldBrushTransparentChunks.size() << std::endl;
+    // Deferred old-slot cleanup: instead of freeing old staged slots BEFORE
+    // allocating new ones (which creates a window where neither old nor new
+    // geometry is valid on GPU), we capture old slot indices now and free
+    // them AFTER each new slot's vertex upload completes. This keeps the old
+    // geometry visible until the new data is resident on the GPU, eliminating
+    // the 1-2 frame transient where the brush disappears or renders garbage.
+    //
+    // addMeshSlotted may reuse the same slot when the same NodeID exists
+    // (updateMeshSlotted path). In that case oldSlot == slotIdx and we must
+    // NOT free the old slot — it was updated in-place, not replaced.
+    //
+    // Old slots whose NodeID no longer appears in the new set are orphans:
+    // their chunk was removed in the rebuild and the stale geometry is freed
+    // immediately after all new slots are allocated.
+    std::unordered_map<NodeID, uint32_t> oldSolidSlots;
+    std::unordered_map<NodeID, uint32_t> oldTransparentSlots;
     {
         std::lock_guard<std::recursive_mutex> lock(chunksMutex);
         for (auto& entry : pendingOldBrushChunks) {
-            if (entry.second.meshId != UINT32_MAX) {
-                brushIR.removeMeshSlotted(entry.second.meshId);
-            }
+            if (entry.second.meshId != UINT32_MAX)
+                oldSolidSlots[entry.first] = entry.second.meshId;
         }
         pendingOldBrushChunks.clear();
         for (auto& entry : pendingOldBrushTransparentChunks) {
-            if (entry.second.meshId != UINT32_MAX) {
-                waterIR.removeMeshSlotted(entry.second.meshId);
-            }
+            if (entry.second.meshId != UINT32_MAX)
+                oldTransparentSlots[entry.first] = entry.second.meshId;
         }
         pendingOldBrushTransparentChunks.clear();
     }
 
-    if (batch.empty()) return;
+    if (batch.empty()) {
+        // No new geometry — free all remaining old geometry immediately
+        for (auto& [nid, oldSlot] : oldSolidSlots)
+            brushIR.removeMeshSlotted(oldSlot);
+        for (auto& [nid, oldSlot] : oldTransparentSlots)
+            waterIR.removeMeshSlotted(oldSlot);
+        return;
+    }
 
+    std::unordered_set<NodeID> matchedNids;
     uint32_t idx = 0;
     for (auto& pd : batch) {
         IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &brushIR : &waterIR;
@@ -1453,11 +1467,44 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
             continue;
         }
         std::cerr << "[BRUSH] added mesh slotIdx=" << slotIdx << " for nid=" << (unsigned long long)pd.nid << std::endl;
-        ir->uploadSlot(app, slotIdx);
+
+        // Look up the old slot for this NodeID
+        uint32_t oldSlot = UINT32_MAX;
+        {
+            auto& oldMap = (pd.layer == LAYER_OPAQUE) ? oldSolidSlots : oldTransparentSlots;
+            auto it = oldMap.find(pd.nid);
+            if (it != oldMap.end()) {
+                oldSlot = it->second;
+                matchedNids.insert(pd.nid);
+            }
+        }
+
+        // If addMeshSlotted reused the same slot (update in-place), no free needed.
+        if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
+            oldSlot = UINT32_MAX;
+
+        // Defer old-slot cleanup until new vertex data is on the GPU
+        ir->uploadSlot(app, slotIdx, 0.0f, [ir, oldSlot]() {
+            if (oldSlot != UINT32_MAX)
+                ir->removeMeshSlotted(oldSlot);
+        });
+
         auto& chunkMap = (pd.layer == LAYER_OPAQUE) ? brushSolidChunks : brushTransparentChunks;
         Model3DVersion mv{slotIdx, pd.version};
         chunkMap[pd.nid] = mv;
         ++idx;
+    }
+
+    // Free orphaned old slots whose NodeID no longer appears in the new set.
+    // These chunks were removed in the rebuild and have stale geometry at the
+    // old brush position — they must not linger as visible garbage.
+    for (auto& [nid, oldSlot] : oldSolidSlots) {
+        if (!matchedNids.count(nid) && brushSolidChunks.find(nid) == brushSolidChunks.end())
+            brushIR.removeMeshSlotted(oldSlot);
+    }
+    for (auto& [nid, oldSlot] : oldTransparentSlots) {
+        if (!matchedNids.count(nid) && brushTransparentChunks.find(nid) == brushTransparentChunks.end())
+            waterIR.removeMeshSlotted(oldSlot);
     }
 }
 
