@@ -723,6 +723,37 @@ public:
         if (sceneRenderer && sceneRenderer->skyRenderer) {
             sceneRenderer->skyRenderer->update(this);
         }
+
+        // ── Continuous brush apply (drag mode) ──────────────────────────────
+        // While SPACE (keyboard) or B (Wiimote) is HELD on the Brush page,
+        // apply the brush to the scene every frame at the current brush position.
+        // This enables drag-apply: move the brush with WASD/joystick while
+        // holding the apply key to paint a continuous trail.
+        {
+            bool applyHeld = false;
+
+            // Keyboard: SPACE held on BRUSH page
+            bool spaceHeld = glfwGetKey(getWindow(), GLFW_KEY_SPACE) == GLFW_PRESS;
+            if (spaceHeld && controllerManager.keyboardContext.activeCategory() == PageCategory::BRUSH) {
+                applyHeld = true;
+            }
+
+            // Wiimote: B button held on BRUSH page
+            // WIIMOTE_BUTTON_B = 0x0004 (defined in wiiuse.h)
+            if (!applyHeld) {
+                static constexpr uint16_t kWiimoteButtonB = 0x0004;
+                WiimoteState wmState = nunchukPublisher.getState();
+                bool bHeld = (wmState.buttons & kWiimoteButtonB) != 0;
+                if (bHeld && controllerManager.wiimoteContext.activeCategory() == PageCategory::BRUSH) {
+                    applyHeld = true;
+                }
+            }
+
+            if (applyHeld) {
+                brushApplyToScenePending = true;
+            }
+        }
+
         profileCpuUpdate = std::chrono::duration<float, std::milli>(
             std::chrono::high_resolution_clock::now() - cpuUpdateT0).count();
     }
