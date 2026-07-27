@@ -2425,7 +2425,9 @@ void MyApp::applyBrushToScene() {
         applyBrushWithEffect(entry, wrappedFunc, octree, brushOp, model, brush, simplifier, handler);
     };
 
-    forEachBrushSDF(entry, model, cachedSweepStart, entry.minSize, "[applyBrushToScene]", applyEntry);
+    // Read the current sweep start directly from the entry (avoids stale cachedSweepStart)
+    const glm::vec3 sweepStart = selectedEntry->previousTranslate;
+    forEachBrushSDF(entry, model, sweepStart, entry.minSize, "[applyBrushToScene]", applyEntry);
 
     // Flush queued change events to trigger mesh creation
     sceneUniqueSolidHandler->handleEvents();
