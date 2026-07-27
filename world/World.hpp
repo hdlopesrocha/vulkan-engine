@@ -74,6 +74,19 @@ public:
     Octree& transparentOctree() { return scene_->transparentOctree; }
     const Octree& transparentOctree() const { return scene_->transparentOctree; }
 
+    // ── Brush scene (separate scene for editing previews) ────────────────────
+    // The brush scene has its own octrees for brush preview geometry. It is
+    // managed separately from the main scene and uses its own IndirectRenderer.
+    // Returns nullptr until createBrushScene() is called.
+    LocalScene* brushScene() { return brushScene_.get(); }
+    const LocalScene* brushScene() const { return brushScene_.get(); }
+
+    // Create (or recreate) the brush scene. Call once during setup.
+    // The brush octrees are reset on each rebuildBrushScene call.
+    void createBrushScene() {
+        brushScene_ = std::make_unique<LocalScene>();
+    }
+
     // ── Chunk manager (state machine for the async rebuild pipeline) ────────
 
     ChunkManager& chunkManager() { return chunkManager_; }
@@ -111,8 +124,11 @@ public:
     void notifyProxySwapped(ChunkId id, std::shared_ptr<const RenderProxy> newProxy);
 
 private:
-    // The scene with octrees (SDF storage + meshing).
+    // The main scene with octrees (SDF storage + meshing).
     std::unique_ptr<LocalScene> scene_;
+
+    // The brush editing scene (separate octrees, no chunk tracking).
+    std::unique_ptr<LocalScene> brushScene_;
 
     // Per-chunk data (world-owned, no GPU references).
     mutable std::mutex chunkMutex_;

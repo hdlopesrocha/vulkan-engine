@@ -53,6 +53,14 @@ void IndirectRenderer::publishPendingTransfer(VulkanApp* app) {
         pendingTransfer.stagingBuffer = {};
     }
 
+    // Fire deferred upload completion callbacks. These are set by the
+    // legacy staging path of uploadSlot() to transition chunk state from
+    // UploadingGPU → ReadyToSwap after the GPU transfer completes.
+    for (auto& cb : deferredUploadCallbacks_) {
+        if (cb) cb();
+    }
+    deferredUploadCallbacks_.clear();
+
     // Do NOT destroy the fence — processPendingCommandBuffers handles it.
     pendingTransfer = {};
 }
@@ -2161,7 +2169,8 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
     }
 }
 
-bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float priority)
+bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float priority,
+                                   std::function<void()> onComplete)
 {
     if (!slottedMode) return false;
 
@@ -2180,10 +2189,17 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     // Write metadata (indirect command + bounds) immediately — these are
     // host-visible, coherent buffers, so the writes are visible to the GPU
     // without an explicit flush (HOST_COHERENT).
+    // NOTE: The vertex/index data may not be on the GPU yet when using the
+    // async UploadManager path. The indirect command is updated eagerly so
+    // that once the data arrives, no further CPU write is needed. If the
+    // GPU reads this slot before the upload completes, it will see the new
+    // bounds/draw-count but stale vertex data — this is a brief 1-2 frame
+    // transient that resolves once the transfer completes.
     writeSlotMeta(slotIndex, *info);
 
     // If no vertex/index data, we're done (empty mesh)
     if (info->vertexCount == 0 || info->indexCount == 0) {
+        if (onComplete) onComplete();
         return true;
     }
 
@@ -2224,19 +2240,22 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     }
 
     if (useUploadMgr && (vertexBytes + indexBytes) <= uploadMgr_->slotSize()) {
-        // Route through the UploadManager (async, K concurrent slots)
+        // Route through the UploadManager (async, K concurrent staging slots).
+        // The onComplete callback fires when the GPU transfer is fully committed.
         streaming::UploadJob job;
         job.category  = streamCategory_;
         job.priority  = priority;
         job.chunkSlot = nullptr;
         job.uploads   = std::move(uploads);
-        job.onComplete = [this, slotIndex, info]() {
-            // Meta was already written synchronously above — nothing extra needed.
+        job.onComplete = [onComplete = std::move(onComplete)]() {
+            if (onComplete) onComplete();
         };
         uploadMgr_->enqueue(std::move(job));
     } else {
         // Fall back to the legacy ring-backed staging path.
-        // Use uploadMeshes with a single-element batch.
+        // Defer the onComplete callback — it will fire when the staging
+        // transfer fence signals.
+        deferredUploadCallbacks_.push_back(std::move(onComplete));
         return uploadMeshes(app, std::vector<uint32_t>{info->id}, priority);
     }
 

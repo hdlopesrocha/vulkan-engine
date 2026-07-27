@@ -83,7 +83,6 @@ public:
     Settings settings;
     SceneRenderer * sceneRenderer = nullptr;
     World * world = nullptr;
-    LocalScene * brushScene = nullptr;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
     Brush3dManager brushManager;
@@ -480,7 +479,7 @@ public:
 
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(&world->scene(), &camera);
         widgetManager.addWidget(octreeExplorerWidget);
-        brushScene = new LocalScene();
+        world->createBrushScene();
         brushManager.getEntries().clear();
         brushManager.getEntries().resize(3);
         brushManager.getEntries()[0].sdfType = 1;
@@ -2112,7 +2111,7 @@ void MyApp::preAllocateAsyncDescriptorPools() {
 
 // Implementation: rebuild the brush scene from Brush3dWidget entries
 void MyApp::rebuildBrushScene() {
-    if (!brushScene || !sceneRenderer || !brush3dWidget) return;
+    if (!world || !world->brushScene() || !sceneRenderer || !brush3dWidget) return;
 
     // No device-wide stall here. The brush flow uses the stable-slot indirect
     // pipeline: clearBrushMeshes() frees old slots, handleEvents() queues geometry,
@@ -2128,8 +2127,8 @@ void MyApp::rebuildBrushScene() {
     sceneRenderer->stageOldBrushChunks();
 
     // 2. Reset the brush octrees (clears spatial data without change events)
-    brushScene->getOpaqueOctree().reset();
-    brushScene->transparentOctree.reset();
+    world->brushScene()->getOpaqueOctree().reset();
+    world->brushScene()->transparentOctree.reset();
 
     if (!selectedEntry) {
         // Nothing to add — clearBrushMeshes() already freed all slots.
@@ -2137,8 +2136,8 @@ void MyApp::rebuildBrushScene() {
     }
 
     // 3. Create brush change handlers (use separate brush chunk maps)
-    SolidSpaceChangeHandler brushSolidHandler = sceneRenderer->makeBrushSolidSpaceChangeHandler(brushScene, this);
-    LiquidSpaceChangeHandler brushLiquidHandler = sceneRenderer->makeBrushLiquidSpaceChangeHandler(brushScene, this);
+    SolidSpaceChangeHandler brushSolidHandler = sceneRenderer->makeBrushSolidSpaceChangeHandler(world->brushScene(), this);
+    LiquidSpaceChangeHandler brushLiquidHandler = sceneRenderer->makeBrushLiquidSpaceChangeHandler(world->brushScene(), this);
     UniqueOctreeChangeHandler uniqueBrushSolidHandler = UniqueOctreeChangeHandler(brushSolidHandler);
     UniqueOctreeChangeHandler uniqueBrushLiquidHandler = UniqueOctreeChangeHandler(brushLiquidHandler);
 
@@ -2149,8 +2148,8 @@ void MyApp::rebuildBrushScene() {
     const auto& entry = *selectedEntry;
         // Select the target octree and handler based on targetLayer
         Octree& octree = (entry.targetLayer == 0)
-            ? brushScene->getOpaqueOctree()
-            : brushScene->transparentOctree;
+            ? world->brushScene()->getOpaqueOctree()
+            : world->brushScene()->transparentOctree;
         const OctreeChangeHandler& handler = (entry.targetLayer == 0)
             ? static_cast<const OctreeChangeHandler&>(uniqueBrushSolidHandler)
             : static_cast<const OctreeChangeHandler&>(uniqueBrushLiquidHandler);

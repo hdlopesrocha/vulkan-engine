@@ -1289,11 +1289,14 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // Upload the slot's vertex/index/meta data to GPU.
             // Meta (indirect command + bounds) is written synchronously to
             // host-visible buffers. Vertex/index data is async via UploadManager.
-            ir->uploadSlot(app, slotIdx);
-
-            // Signal completion to the chunk manager.
-            // The proxy swap is handled by processChunkSwapQueue on the next frame.
-            if (world_) world_->chunkManager().finishUpload(cid);
+            // The completion callback transitions UploadingGPU → ReadyToSwap
+            // when the GPU transfer actually finishes (not synchronously here).
+            ir->uploadSlot(app, slotIdx, 0.0f,
+                [this, cid]() {
+                    // GPU transfer complete — chunk data is now visible.
+                    // Transition UploadingGPU → ReadyToSwap.
+                    if (this->world_) this->world_->chunkManager().finishUpload(cid);
+                });
 
             // Generate vegetation instances for grass chunks.
             // (Legacy path does this inside updateMeshForNode; slotted mode
@@ -1458,15 +1461,12 @@ bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
 {
     if (!slottedModeEnabled) return false;
 
-    // Mark the chunk dirty via the World (thread-safe, deduplicates).
-    // The World owns the ChunkManager state machine; this wraps it with
-    // world-level chunk creation and optional dirty callback notification.
-    ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
-    if (world_) world_->markChunkDirty(cid, version, static_cast<uint32_t>(layer));
-
-    // Queue the geometry for main-thread processing.
-    // On the main thread, processPendingMeshes will call addMeshSlotted
-    // and uploadSlot using the appropriate IndirectRenderer.
+    // Queue the geometry for main-thread GPU upload.
+    // NOTE: markDirty + beginBuild were already called in the change handler
+    // BEFORE tessellation was dispatched. The chunk state is already
+    // UploadingGPU (from finishBuild). processPendingMeshes will call
+    // addMeshSlotted + uploadSlot, then the upload completion callback calls
+    // finishUpload → ReadyToSwap → processChunkSwapQueue atomically swaps.
     {
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
         pendingMeshQueue.push_back({layer, nid, nd, geom, version});
@@ -1522,18 +1522,49 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
 }
 
 // Return Solid/Liquid change handlers that reference the callbacks stored on this object
+//
+// The async rebuild pipeline now properly tracks all states:
+//   1. Change detected → markDirty (state = Queued)
+//   2. Before tessellation → beginBuild (state = BuildingCPU)
+//   3. Tessellation complete → finishBuild + proxy creation (state = UploadingGPU)
+//   4. GPU upload complete → finishUpload (state = ReadyToSwap)
+//   5. Main thread swap → processSwapQueue (state = Clean)
+//
+// This ensures the render thread can observe chunk progress without locking.
 SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
     solidNodeEventCallback = [this, scene](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
         if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
             this->updateDebugSDFCubesForChunk(nid, nd, localScene->getOpaqueOctree());
         }
+
+        // Phase 1: Mark dirty and begin build IMMEDIATELY when the octree
+        // change is detected (before tessellation is dispatched to the
+        // worker pool). This transitions Clean → Queued → BuildingCPU.
+        if (this->slottedModeEnabled && this->world_) {
+            this->world_->chunkManager().markDirty(cid, nd.node->version);
+            this->world_->chunkManager().beginBuild(cid);
+        }
+
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
-            [this](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
-                // Route through the slotted pipeline (markDirty + queue for main thread).
-                // ChunkManager prevents duplicate queue entries via queuedForRebuild flag.
-                this->processChunkSlotted(layer, nid_, nd_, geom, nd_.node->version);
+            [this, cid](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
+                // Phase 3: Tessellation complete on a worker thread.
+                // Create the immutable RenderProxy and transition BuildingCPU → UploadingGPU.
+                auto proxy = std::make_shared<RenderProxy>(
+                    static_cast<uint32_t>(nid_), nd_.node->version, UINT32_MAX, geom);
+                if (this->slottedModeEnabled && this->world_) {
+                    this->world_->chunkManager().finishBuild(cid, std::move(proxy));
+                }
+
+                // Phase 4: Queue for main-thread GPU upload.
+                // processPendingMeshes calls addMeshSlotted + uploadSlot, and
+                // the upload completion callback will call finishUpload → ReadyToSwap.
+                {
+                    std::lock_guard<std::mutex> lock(this->pendingMeshMutex);
+                    this->pendingMeshQueue.push_back({layer, nid_, nd_, geom, nd_.node->version});
+                }
             },
             &solidGenPool
         );
@@ -1569,14 +1600,32 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
 
     liquidNodeEventCallback = [this, scene](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
         if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
             this->updateDebugSDFCubesForChunk(nid, nd, localScene->transparentOctree);
         }
+
+        // Phase 1: Mark dirty and begin build before tessellation
+        if (this->slottedModeEnabled && this->world_) {
+            this->world_->chunkManager().markDirty(cid, nd.node->version);
+            this->world_->chunkManager().beginBuild(cid);
+        }
+
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
-            [this](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
-                // Route through the slotted pipeline (markDirty + queue for main thread).
-                this->processChunkSlotted(layer, nid_, nd_, geom, nd_.node->version);
+            [this, cid](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
+                // Phase 3: Tessellation complete — create proxy, transition to UploadingGPU
+                auto proxy = std::make_shared<RenderProxy>(
+                    static_cast<uint32_t>(nid_), nd_.node->version, UINT32_MAX, geom);
+                if (this->slottedModeEnabled && this->world_) {
+                    this->world_->chunkManager().finishBuild(cid, std::move(proxy));
+                }
+
+                // Phase 4: Queue for main-thread GPU upload
+                {
+                    std::lock_guard<std::mutex> lock(this->pendingMeshMutex);
+                    this->pendingMeshQueue.push_back({layer, nid_, nd_, geom, nd_.node->version});
+                }
             },
             &waterGenPool
         );

@@ -11,6 +11,7 @@
 #include <cstdint>
 
 #include <array>
+#include <functional>
 #include "CommandBufferState.hpp"
 #include "../streaming/StreamCommon.hpp"
 #include "SlotAllocator.hpp"
@@ -108,8 +109,12 @@ public:
     // indirect command + bounds into the host-visible metadata buffers.
     // This is the per-chunk equivalent of a full rebuild — but only touches
     // one slot. The GPU culling buffer layout is unchanged.
+    // When using the UploadManager path, `onComplete` is invoked after the
+    // transfer fence signals (async). For the legacy staging path, it's
+    // called when the pending transfer fence signals.
     // Returns true on success.
-    bool uploadSlot(VulkanApp* app, uint32_t slotIndex, float priority = 0.0f);
+    bool uploadSlot(VulkanApp* app, uint32_t slotIndex, float priority = 0.0f,
+                    std::function<void()> onComplete = nullptr);
 
     // Convenience: create a proxy, upload it, and return the slot index.
     uint32_t installProxy(VulkanApp* app, std::unique_ptr<RenderProxy> proxy);
@@ -256,6 +261,11 @@ private:
     // through it instead of the single-slot pendingTransfer path.
     streaming::UploadManager* uploadMgr_ = nullptr;
     streaming::StreamCategory streamCategory_ = streaming::StreamCategory::Solid;
+
+    // Deferred upload completion callbacks for the legacy staging path.
+    // Fired when publishPendingTransfer detects the staging fence has signaled.
+    // The UploadManager path uses job.onComplete instead.
+    std::vector<std::function<void()>> deferredUploadCallbacks_;
     uint32_t nextId = 1;
     std::unordered_map<uint32_t, MeshInfo> meshes; // chunkId -> MeshInfo
 
