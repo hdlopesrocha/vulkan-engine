@@ -178,14 +178,14 @@ public:
             std::cout << "\topaqueLayer.add(swept octahedron)"<< std::endl;
             float radius = 256.0f;
             glm::vec3 centerA = glm::vec3(512,512, 512*5);
-            glm::vec3 centerB = glm::vec3(512,512*1.25f, 512*5);
+            glm::vec3 centerB = glm::vec3(512,512*2, 512*5);
             Transformation modelA = Transformation(glm::vec3(radius), centerA, 0, 0, 0);
-            Transformation modelB = Transformation(glm::vec3(radius), centerB, 0, 0, 0);
+            Transformation modelB = Transformation(glm::vec3(radius), centerB, 45, 0, 0);
             Transformation sweepModel = Transformation(glm::vec3(radius), (centerA + centerB) * 0.5f, 0, 0, 0);
-            OctahedronDistanceFunction fn1(modelA, minSize);
-            OctahedronDistanceFunction fn2(modelB, minSize);
+            OctahedronDistanceFunction fn1(modelA, minSize*0.25f);
+            OctahedronDistanceFunction fn2(modelB, minSize*0.25f);
             SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(8), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), minSize, simplifier, opaqueHandler);
         }
 
         {
