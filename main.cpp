@@ -69,6 +69,7 @@
 #include "events/ApplyBrushToSceneEvent.hpp"
 #include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
+#include "world/World.hpp"
 #include "vulkan/renderer/DescriptorWriter.hpp"
 #include "utils/BillboardManager.hpp"
 #include "utils/AtlasManager.hpp"
@@ -81,7 +82,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 public:
     Settings settings;
     SceneRenderer * sceneRenderer = nullptr;
-    LocalScene * mainScene = nullptr;
+    World * world = nullptr;
     LocalScene * brushScene = nullptr;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
@@ -206,6 +207,9 @@ public:
 
     ~MyApp() {
         if (sceneProcessThread.joinable()) sceneProcessThread.join();
+        delete world;
+
+        delete sceneRenderer;
     }
 
     // setupTextures (defined out-of-line to avoid inline/member-definition issues)
@@ -467,8 +471,14 @@ public:
             reinterpret_cast<const char*>(u8"\uf07c##scene_bm_scenes"),
             "Go to project scenes folder",
             std::filesystem::path("scenes"));
-        mainScene = new LocalScene();
-        octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene, &camera);
+
+        // Create the World (owns Chunks, Octrees, and the ChunkManager state machine).
+        // The renderer receives a reference to the World for chunk state queries
+        // and proxy swap notifications.
+        world = new World();
+        sceneRenderer->setWorld(world);
+
+        octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(&world->scene(), &camera);
         widgetManager.addWidget(octreeExplorerWidget);
         brushScene = new LocalScene();
         brushManager.getEntries().clear();
@@ -485,8 +495,8 @@ public:
         brushManager.getEntries()[2].materialIndex = 2;
         brushManager.getEntries()[2].translate = glm::vec3(-512.0f, 0.0f, 0.0f);
         brushManager.getEntries()[2].scale = glm::vec3(256.0f);
-        sceneSolidHandler  = std::make_unique<SolidSpaceChangeHandler>(sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this));
-        sceneLiquidHandler = std::make_unique<LiquidSpaceChangeHandler>(sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this));
+        sceneSolidHandler  = std::make_unique<SolidSpaceChangeHandler>(sceneRenderer->makeSolidSpaceChangeHandler(&world->scene(), this));
+        sceneLiquidHandler = std::make_unique<LiquidSpaceChangeHandler>(sceneRenderer->makeLiquidSpaceChangeHandler(&world->scene(), this));
         sceneUniqueSolidHandler  = std::make_unique<UniqueOctreeChangeHandler>(*sceneSolidHandler);
         sceneUniqueLiquidHandler = std::make_unique<UniqueOctreeChangeHandler>(*sceneLiquidHandler);
 
@@ -667,7 +677,7 @@ public:
         // accelerometer translation, YPR rotation, joystick drag-and-drop).
         nunchukPublisher.applyControls(&eventManager, camera, deltaTime,
                                        &controllerManager, &brushManager,
-                                       mainScene ? &mainScene->getOpaqueOctree() : nullptr);
+                                        world ? &world->opaqueOctree() : nullptr);
         // Poll mouse input and publish camera events based on the mouse page.
         // Tell the publisher when ImGui is capturing the mouse so it yields.
         mousePublisher.update(&eventManager, camera, deltaTime, &controllerManager,
@@ -1541,7 +1551,7 @@ public:
                     sceneFolderBuf[s.size()] = '\0';
                 }
                 if (scenePicker_.isSaveMode()) {
-                    if (mainScene) mainScene->save(sceneFolderBuf, &settings);
+                    if (world) world->scene().save(sceneFolderBuf, &settings);
                 } else {
                     pendingLoadPath = sceneFolderBuf;
                     loadScenePending = true;
@@ -1710,17 +1720,21 @@ public:
             std::cerr << "[MyApp::draw] Error: sceneRenderer is nullptr, skipping draw." << std::endl;
             return;
         }
-        if (!mainScene) {
-            std::cerr << "[MyApp::draw] Error: mainScene is nullptr, skipping draw." << std::endl;
+        if (!world) {
+            std::cerr << "[MyApp::draw] Error: world is nullptr, skipping draw." << std::endl;
             return;
         }
 
-        // --- SAFETY: Ensure indirect buffers are rebuilt if dirty before first draw ---
-        if (sceneRenderer->solidRenderer->getIndirectRenderer().isDirty()) {
-            sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
-        }
-        if (sceneRenderer->waterRenderer->getIndirectRenderer().isDirty()) {
-            sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+        // In slotted mode, the indirect renderer should never be dirty.
+        // Each chunk updates its own fixed slot independently — no global rebuild.
+        // Legacy mode still handles dirty checks in processPendingMeshes().
+        if (!sceneRenderer->slottedModeEnabled) {
+            if (sceneRenderer->solidRenderer->getIndirectRenderer().isDirty()) {
+                sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
+            }
+            if (sceneRenderer->waterRenderer->getIndirectRenderer().isDirty()) {
+                sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+            }
         }
 
         uint32_t frameIdx = getCurrentFrame();
@@ -2263,7 +2277,7 @@ void MyApp::rebuildBrushScene() {
 }
 
 void MyApp::applyBrushToScene() {
-    if (!mainScene || !sceneRenderer) return;
+    if (!world || !sceneRenderer) return;
 
     const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
     if (!selectedEntry) return;
@@ -2284,8 +2298,8 @@ void MyApp::applyBrushToScene() {
 
     // Select target octree and handler based on targetLayer
     Octree& octree = (entry.targetLayer == 0)
-        ? mainScene->getOpaqueOctree()
-        : mainScene->transparentOctree;
+        ? world->opaqueOctree()
+        : world->transparentOctree();
 
     const OctreeChangeHandler& handler = (entry.targetLayer == 0)
         ? static_cast<const OctreeChangeHandler&>(*sceneUniqueSolidHandler)
@@ -2405,7 +2419,7 @@ void MyApp::action() {
     deviceWaitIdle();
 
     MainSceneLoader loader;
-    mainScene->action(loader, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
+    world->scene().action(loader, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
     std::cout << "[MyApp::action] Octree construction complete\n";
 
     // Tessellate chunks in a background thread. Solid and water are handled on
@@ -2436,7 +2450,7 @@ void MyApp::generateMap() {
     if (sceneRenderer) {
         sceneRenderer->removeAllRegisteredMeshes();
         sceneRenderer->removeAllTransparentMeshes();
-        sceneRenderer->chunkManager.removeAll();  // clear slotted-mode per-chunk state
+        world->chunkManager().removeAll();  // clear slotted-mode per-chunk state
         sceneRenderer->nodeDebugCubes.clear();
         sceneRenderer->clearDebugSDFCubes();
         // Clear vegetation chunk buffers and pending CPU-generation queue.
@@ -2449,8 +2463,8 @@ void MyApp::generateMap() {
     }
 
     // Reset both octrees (frees all node memory, keeps bounds)
-    mainScene->getOpaqueOctree().reset();
-    mainScene->transparentOctree.reset();
+    world->opaqueOctree().reset();
+    world->transparentOctree().reset();
 
     // Discard any stale pending change events
     sceneUniqueSolidHandler->clear();
@@ -2462,7 +2476,7 @@ void MyApp::generateMap() {
 
     // Build the octree (CPU only, no tessellation)
     MainSceneLoader loader;
-    mainScene->loadScene(loader, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
+    world->scene().loadScene(loader, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
     std::cout << "[MyApp::generateMap] Octree construction complete\n";
 
     // Tessellate chunks in a background thread. Solid and water are handled on
@@ -2487,7 +2501,7 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     if (sceneRenderer) {
         sceneRenderer->removeAllRegisteredMeshes();
         sceneRenderer->removeAllTransparentMeshes();
-        sceneRenderer->chunkManager.removeAll();  // clear slotted-mode per-chunk state
+        world->chunkManager().removeAll();  // clear slotted-mode per-chunk state
         sceneRenderer->nodeDebugCubes.clear();
         sceneRenderer->clearDebugSDFCubes();
         if (sceneRenderer->vegetationRenderer) {
@@ -2495,8 +2509,8 @@ void MyApp::loadSceneFromFile(const std::string& path) {
         }
     }
 
-    mainScene->getOpaqueOctree().reset();
-    mainScene->transparentOctree.reset();
+    world->opaqueOctree().reset();
+    world->transparentOctree().reset();
 
     sceneUniqueSolidHandler->clear();
     sceneUniqueLiquidHandler->clear();
@@ -2504,7 +2518,7 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     if (octreeExplorerWidget)
         octreeExplorerWidget->octreeReady.store(false, std::memory_order_release);
 
-    mainScene->load(path, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler, &settings);
+    world->scene().load(path, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler, &settings);
     std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '" << path << "'\n";
 
     // Solid and water tessellate on separate threads so both layers progress

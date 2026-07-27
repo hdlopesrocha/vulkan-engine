@@ -16,6 +16,7 @@
 class SolidSpaceChangeHandler;
 class LiquidSpaceChangeHandler;
 class Octree;
+class World;
 
 #include <vulkan/vulkan.h>
 #include "../VulkanApp.hpp"
@@ -40,7 +41,7 @@ class Octree;
 #include "ShadowRenderer.hpp"
 #include "WaterRenderer.hpp"
 #include "../../utils/UniqueOctreeChangeHandler.hpp"
-#include "ChunkManager.hpp"
+#include "../../world/World.hpp"
 
 #include "../ubo/PassUBO.hpp"
 #include "CommandBufferState.hpp"
@@ -145,10 +146,13 @@ public:
     std::unordered_map<NodeID, Model3DVersion> pendingOldBrushChunks;
     std::unordered_map<NodeID, Model3DVersion> pendingOldBrushTransparentChunks;
 
-    // ── New: per-chunk state machine and async rebuild pipeline ──
-    // Tracks every chunk's dirty state, current/pending RenderProxy,
-    // and drives the async rebuild pipeline without any global lock.
-    ChunkManager chunkManager;
+    // ── World reference (separates world logic from rendering) ──
+    // The World owns chunks, octrees, and the ChunkManager state machine.
+    // The SceneRenderer only reads chunk state and produces/consumes
+    // RenderProxy objects. Call setWorld() before scene loading.
+    void setWorld(World* world) { world_ = world; }
+    World* world() { return world_; }
+    const World* world() const { return world_; }
 
     // Enable the slot-based stable indirect renderer path.
     // When true, chunks use the slot-based API instead of the legacy
@@ -304,6 +308,10 @@ public:
 
 private:
     void updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree);
+
+    // World reference (null until setWorld is called).
+    // The World owns ChunkManager and all chunk state.
+    World* world_ = nullptr;
 
     // Callbacks stored here so handler references remain valid
     NodeDataCallback solidNodeEventCallback;

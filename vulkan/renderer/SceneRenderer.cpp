@@ -1293,7 +1293,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
 
             // Signal completion to the chunk manager.
             // The proxy swap is handled by processChunkSwapQueue on the next frame.
-            chunkManager.finishUpload(cid);
+            if (world_) world_->chunkManager().finishUpload(cid);
 
             // Generate vegetation instances for grass chunks.
             // (Legacy path does this inside updateMeshForNode; slotted mode
@@ -1458,10 +1458,11 @@ bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
 {
     if (!slottedModeEnabled) return false;
 
-    // Mark the chunk dirty in the state machine (thread-safe).
-    // This prevents duplicate queue entries.
+    // Mark the chunk dirty via the World (thread-safe, deduplicates).
+    // The World owns the ChunkManager state machine; this wraps it with
+    // world-level chunk creation and optional dirty callback notification.
     ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
-    chunkManager.markDirty(cid, version);
+    if (world_) world_->markChunkDirty(cid, version, static_cast<uint32_t>(layer));
 
     // Queue the geometry for main-thread processing.
     // On the main thread, processPendingMeshes will call addMeshSlotted
@@ -1480,7 +1481,7 @@ void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
 
     // Drain the swap queue: for each ready chunk, atomically swap its
     // RenderProxy and retire the old one.
-    auto retired = chunkManager.processSwapQueue();
+    auto retired = world_ ? world_->chunkManager().processSwapQueue() : std::vector<std::shared_ptr<const RenderProxy>>{};
 
     if (retired.empty()) return;
 
@@ -1541,13 +1542,13 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
     
     solidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        if (slottedModeEnabled) {
+        if (slottedModeEnabled && world_) {
             ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
-            auto proxy = chunkManager.getCurrentProxy(cid);
+            auto proxy = world_->chunkManager().getCurrentProxy(cid);
             if (proxy && proxy->isValid() && proxy->slotIndex != UINT32_MAX) {
                 solidRenderer->getIndirectRenderer().removeMeshSlotted(proxy->slotIndex);
             }
-            chunkManager.removeChunk(cid);
+            world_->chunkManager().removeChunk(cid);
         } else {
             std::lock_guard<std::recursive_mutex> lock(chunksMutex);
             auto it = solidChunks.find(nid);
@@ -1584,13 +1585,13 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
 
     liquidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        if (slottedModeEnabled) {
+        if (slottedModeEnabled && world_) {
             ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
-            auto proxy = chunkManager.getCurrentProxy(cid);
+            auto proxy = world_->chunkManager().getCurrentProxy(cid);
             if (proxy && proxy->isValid() && proxy->slotIndex != UINT32_MAX) {
                 waterRenderer->getIndirectRenderer().removeMeshSlotted(proxy->slotIndex);
             }
-            chunkManager.removeChunk(cid);
+            world_->chunkManager().removeChunk(cid);
         } else {
             std::lock_guard<std::recursive_mutex> lock(chunksMutex);
             auto it = transparentChunks.find(nid);
