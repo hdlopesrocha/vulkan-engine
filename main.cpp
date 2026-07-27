@@ -475,15 +475,15 @@ public:
         brushManager.getEntries().resize(3);
         brushManager.getEntries()[0].sdfType = 1;
         brushManager.getEntries()[0].materialIndex = 0;
-        brushManager.getEntries()[0].translate = glm::vec3(0.0f, 1024.0f, 0.0f);
+        brushManager.getEntries()[0].translate = glm::vec3(0.0f, 0.0f, 0.0f);
         brushManager.getEntries()[0].scale = glm::vec3(256.0f);
         brushManager.getEntries()[1].sdfType = 1;
         brushManager.getEntries()[1].materialIndex = 1;
-        brushManager.getEntries()[1].translate = glm::vec3(512.0f, 1024.0f, 0.0f);
+        brushManager.getEntries()[1].translate = glm::vec3(512.0f, 0.0f, 0.0f);
         brushManager.getEntries()[1].scale = glm::vec3(256.0f);
         brushManager.getEntries()[2].sdfType = 3;
         brushManager.getEntries()[2].materialIndex = 2;
-        brushManager.getEntries()[2].translate = glm::vec3(-512.0f, 1024.0f, 0.0f);
+        brushManager.getEntries()[2].translate = glm::vec3(-512.0f, 0.0f, 0.0f);
         brushManager.getEntries()[2].scale = glm::vec3(256.0f);
         sceneSolidHandler  = std::make_unique<SolidSpaceChangeHandler>(sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this));
         sceneLiquidHandler = std::make_unique<LiquidSpaceChangeHandler>(sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this));
@@ -2110,8 +2110,8 @@ void MyApp::rebuildBrushScene() {
     size_t selCount = selectedEntry ? 1 : 0;
     std::cerr << "[MyApp::rebuildBrushScene] Rebuilding with " << selCount << " selected entries" << std::endl;
 
-    // 1. Remove all existing brush meshes from GPU
-    sceneRenderer->clearBrushMeshes();
+    // 1. Stage existing brush meshes for smooth transition (don't clear until new ones are ready)
+    sceneRenderer->stageOldBrushChunks();
 
     // 2. Reset the brush octrees (clears spatial data without change events)
     brushScene->getOpaqueOctree().reset();

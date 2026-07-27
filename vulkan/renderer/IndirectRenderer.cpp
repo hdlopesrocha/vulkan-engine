@@ -63,13 +63,13 @@ void IndirectRenderer::pollPendingTransfers(VulkanApp* app) {
     // If processPendingCommandBuffers already cleaned up the fence, the
     // transfer is done — skip vkGetFenceStatus on the destroyed handle.
     if (!app->resources.find((uintptr_t)pendingTransfer.fence).has_value()) {
-        std::lock_guard<std::shared_mutex> lock(mutex);
+        std::lock_guard<std::recursive_mutex> lock(mutex);
         publishPendingTransfer(app);
         return;
     }
     VkResult r = vkGetFenceStatus(dev, pendingTransfer.fence);
     if (r == VK_NOT_READY) return;
-    std::lock_guard<std::shared_mutex> lock(mutex);
+    std::lock_guard<std::recursive_mutex> lock(mutex);
     publishPendingTransfer(app);
 }
 
@@ -107,13 +107,13 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
 }
 
 void IndirectRenderer::setVertexBufferForMesh(uint32_t meshId, Buffer vbuf) {
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     // For simplicity, just assign to the main vertexBuffer (per-mesh not tracked in this design)
     vertexBuffer = vbuf;
 }
 
 void IndirectRenderer::setIndexBufferForMesh(uint32_t meshId, Buffer ibuf) {
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     indexBuffer = ibuf;
 }
 
@@ -130,7 +130,7 @@ uint32_t IndirectRenderer::acquireGeomSlot() {
 }
 
 void IndirectRenderer::markGeomSlotFree(uint32_t slot) {
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     if (slot < MAX_GEOM_BUFFERS) geomSlotInUse[slot] = false;
 }
 
@@ -194,7 +194,7 @@ uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
     if (slottedMode) {
         return UINT32_MAX;
     }
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     //std::cout << "[IndirectRenderer::addMesh] Adding/replacing mesh ID " << customId << " with " << mesh.vertices.size() << " vertices and " << mesh.indices.size() << " indices.\n";
 
     MeshInfo m{};
@@ -242,7 +242,7 @@ void IndirectRenderer::removeMesh(uint32_t meshId) {
     if (slottedMode) {
         return;
     }
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     auto it = meshes.find(meshId);
     if (it == meshes.end()) return;
     it->second.active = false;
@@ -250,7 +250,7 @@ void IndirectRenderer::removeMesh(uint32_t meshId) {
 }
 
 void IndirectRenderer::removeAllMeshes() {
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     meshes.clear();
     metaBuffersWrittenCount = 0;
     dirty = true;
@@ -295,7 +295,7 @@ void IndirectRenderer::removeAllMeshes() {
 }
 
 bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, size_t meshCount) {
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     
     // Add 25% headroom for future growth
     size_t neededVertexCap = vertexCount + vertexCount / 4;
@@ -326,7 +326,7 @@ bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, siz
 }
 
 bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds, float priority) {
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     if (meshIds.empty()) return true;
 
     // Per-mesh copy request gathered before any GPU work is recorded.
@@ -491,7 +491,7 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
         }
 
         job.onComplete = [this, batchIds]() {
-            std::lock_guard<std::shared_mutex> lock(mutex);
+            std::lock_guard<std::recursive_mutex> lock(mutex);
             for (uint32_t id : batchIds) publishMeshMeta(id);
         };
 
@@ -605,12 +605,12 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
 }
 
 size_t IndirectRenderer::getMergedVertexCount() const {
-    std::shared_lock<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     return mergedVertices.size();
 }
 
 size_t IndirectRenderer::getMergedIndexCount() const {
-    std::shared_lock<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     return mergedIndices.size();
 }
 
@@ -624,7 +624,7 @@ bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
 
 // Write all mesh indirect/model/bounds buffers for all active meshes
 void IndirectRenderer::uploadMeshMetaBuffers(VulkanApp* app) {
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     doUploadMeshMetaBuffers(app);
 }
 
@@ -718,7 +718,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // onComplete → publishMeshMeta, which locks the same (non-recursive) mutex.
     if (uploadMgr_) uploadMgr_->flush();
 
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
 
     // Publish any pending async upload before rebuilding.
     if (pendingTransfer.fence != VK_NULL_HANDLE) {
@@ -1354,7 +1354,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     uint32_t numCmds = 0;
     uint32_t activeInMeshes = 0;
     {
-        std::shared_lock<std::shared_mutex> lock(mutex);
+        std::lock_guard<std::recursive_mutex> lock(mutex);
         numCmds = getCullDispatchCount(meshes, slotAlloc, slottedMode);
         for (const auto& kv : meshes) if (kv.second.active) ++activeInMeshes;
     }
@@ -1492,7 +1492,7 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
 
     uint32_t numCmds = 0;
     {
-        std::shared_lock<std::shared_mutex> lock(mutex);
+        std::lock_guard<std::recursive_mutex> lock(mutex);
         numCmds = getCullDispatchCount(meshes, slotAlloc, slottedMode);
     }
     // Fast return if nothing to cull — avoids touching the pipeline at all
@@ -1573,7 +1573,7 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
 
     static int frameCount = 0;
     if (frameCount < 10) {
-        std::shared_lock<std::shared_mutex> lock(mutex);
+        std::lock_guard<std::recursive_mutex> lock(mutex);
         size_t activeMeshCount = 0;
         int totalIndexCount = 0;
         for (const auto& kv : meshes) if (kv.second.active) { ++activeMeshCount; totalIndexCount += kv.second.indexCount; }
@@ -1681,7 +1681,7 @@ uint32_t IndirectRenderer::readVisibleCount(VulkanApp* app) const {
 
 IndirectRenderer::MeshInfo IndirectRenderer::getMeshInfo(uint32_t meshId) const {
     IndirectRenderer::MeshInfo empty;
-    std::shared_lock<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     auto it = meshes.find(meshId);
     if (it == meshes.end()) return empty;
     return it->second;
@@ -1694,7 +1694,7 @@ IndirectRenderer::MeshInfo IndirectRenderer::getMeshInfo(uint32_t meshId) const 
 // an immediate host-write to the `indirectBuffer` (if present) to zero
 // the VkDrawIndexedIndirectCommand for the specified mesh id.
 void IndirectRenderer::eraseMeshFromGPU(VulkanApp* app, uint32_t meshId) {
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
     auto it = meshes.find(meshId);
     if (it == meshes.end()) return;
     MeshInfo &info = it->second;
@@ -1738,7 +1738,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
                                  uint32_t vertexBytesPerChunk,
                                  uint32_t indexBytesPerChunk)
 {
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
 
     // Convert bytes to element counts
     uint32_t vertsPerChunk = static_cast<uint32_t>(vertexBytesPerChunk / sizeof(Vertex));
@@ -2005,7 +2005,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
 {
     if (!slottedMode) return UINT32_MAX;
 
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
 
     // Check if this chunk already has a slot (update case)
     auto existing = meshes.find(chunkId);
@@ -2071,7 +2071,7 @@ void IndirectRenderer::updateMeshSlotted(uint32_t slotIndex, const Geometry& mes
 {
     if (!slottedMode) return;
 
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
 
     // Find the MeshInfo for this slot
     MeshInfo* info = nullptr;
@@ -2122,7 +2122,7 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
 {
     if (!slottedMode) return;
 
-    std::lock_guard<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
 
     // Find and remove the MeshInfo for this slot
     for (auto it = meshes.begin(); it != meshes.end(); ) {
@@ -2165,7 +2165,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
 {
     if (!slottedMode) return false;
 
-    std::unique_lock<std::shared_mutex> guard(mutex);
+    std::lock_guard<std::recursive_mutex> guard(mutex);
 
     // Find the MeshInfo for this slot
     MeshInfo* info = nullptr;
@@ -2237,11 +2237,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     } else {
         // Fall back to the legacy ring-backed staging path.
         // Use uploadMeshes with a single-element batch.
-        // We must unlock before calling uploadMeshes to avoid recursive locking.
-        guard.unlock();
-        bool ok = uploadMeshes(app, std::vector<uint32_t>{info->id}, priority);
-        guard.lock();
-        return ok;
+        return uploadMeshes(app, std::vector<uint32_t>{info->id}, priority);
     }
 
     return true;
@@ -2259,7 +2255,7 @@ uint32_t IndirectRenderer::installProxy(VulkanApp* app, std::unique_ptr<RenderPr
 
     // Register or update the MeshInfo for this proxy
     {
-        std::lock_guard<std::shared_mutex> guard(mutex);
+        std::lock_guard<std::recursive_mutex> guard(mutex);
 
         MeshInfo m{};
         m.id          = proxy->chunkId;

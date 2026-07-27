@@ -142,6 +142,8 @@ public:
     // Brush scene chunk tracking (separate from main scene)
     std::unordered_map<NodeID, Model3DVersion> brushSolidChunks;
     std::unordered_map<NodeID, Model3DVersion> brushTransparentChunks;
+    std::unordered_map<NodeID, Model3DVersion> pendingOldBrushChunks;
+    std::unordered_map<NodeID, Model3DVersion> pendingOldBrushTransparentChunks;
 
     // ── New: per-chunk state machine and async rebuild pipeline ──
     // Tracks every chunk's dirty state, current/pending RenderProxy,
@@ -259,6 +261,7 @@ public:
 
     // Remove all brush meshes from GPU and clear brush chunk maps
     void clearBrushMeshes();
+    void stageOldBrushChunks();
 
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height);

@@ -1414,6 +1414,23 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
         Model3DVersion mv{slotIdx, pd.version};
         chunkMap[pd.nid] = mv;
     }
+
+    // Clean up staged old brush chunks now that new ones are ready and added
+    {
+        std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+        for (auto& entry : pendingOldBrushChunks) {
+            if (entry.second.meshId != UINT32_MAX) {
+                brushIR.removeMeshSlotted(entry.second.meshId);
+            }
+        }
+        pendingOldBrushChunks.clear();
+        for (auto& entry : pendingOldBrushTransparentChunks) {
+            if (entry.second.meshId != UINT32_MAX) {
+                waterIR.removeMeshSlotted(entry.second.meshId);
+            }
+        }
+        pendingOldBrushTransparentChunks.clear();
+    }
 }
 
 // ── Slotted mode chunk processing ──────────────────────────────────────────
@@ -1903,6 +1920,18 @@ void SceneRenderer::clearBrushMeshes() {
         if (entry.second.meshId != UINT32_MAX) {
             waterIR.removeMeshSlotted(entry.second.meshId);
         }
+    }
+    brushTransparentChunks.clear();
+}
+
+void SceneRenderer::stageOldBrushChunks() {
+    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+    for (auto& entry : brushSolidChunks) {
+        pendingOldBrushChunks[entry.first] = entry.second;
+    }
+    brushSolidChunks.clear();
+    for (auto& entry : brushTransparentChunks) {
+        pendingOldBrushTransparentChunks[entry.first] = entry.second;
     }
     brushTransparentChunks.clear();
 }

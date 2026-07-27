@@ -15,8 +15,13 @@ void UniqueOctreeChangeHandler::onNodeDeleted(const OctreeNodeData& data) const 
     updates[id] = {OctreeNodeData{data} , false };
 }
 void UniqueOctreeChangeHandler::handleEvents() {
-    std::lock_guard<std::mutex> guard(mtx);
-    for (const auto& e : updates) {
+    std::unordered_map<NodeID, std::pair<OctreeNodeData, bool>> localUpdates;
+    {
+        std::lock_guard<std::mutex> guard(mtx);
+        localUpdates = std::move(updates);
+        updates.clear();
+    }
+    for (const auto& e : localUpdates) {
         if(e.second.second) {
             handler.onNodeAdded(e.second.first);
         }

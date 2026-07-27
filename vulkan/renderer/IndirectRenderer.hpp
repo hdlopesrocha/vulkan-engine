@@ -8,7 +8,6 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
-#include <shared_mutex>
 #include <cstdint>
 
 #include <array>
@@ -145,7 +144,7 @@ public:
     // still contain stale data from a previous scene.  Callers should force a
     // full rebuild instead of the incremental path.
     bool needsFullRebuild() const {
-        std::shared_lock<std::shared_mutex> lock(mutex);
+        std::lock_guard<std::recursive_mutex> lock(mutex);
         return metaBuffersWrittenCount == 0 && !meshes.empty();
     }
 
@@ -195,7 +194,7 @@ public:
 
     // Get count of active meshes
     size_t getMeshCount() const {
-        std::shared_lock<std::shared_mutex> lock(mutex);
+        std::lock_guard<std::recursive_mutex> lock(mutex);
         size_t count = 0;
         for (const auto& m : meshes) {
             if (m.second.active) ++count;
@@ -217,7 +216,7 @@ public:
     // Avoids allocating a temporary vector.
     template<typename F>
     void visitActiveMeshInfos(F&& visitor) const {
-        std::shared_lock<std::shared_mutex> guard(mutex);
+        std::lock_guard<std::recursive_mutex> guard(mutex);
         for (const auto& kv : meshes) {
             if (kv.second.active) std::forward<F>(visitor)(kv.second);
         }
@@ -234,7 +233,7 @@ private:
     };
     PendingTransfer pendingTransfer = {};
 
-    mutable std::shared_mutex mutex;
+    mutable std::recursive_mutex mutex;
     void publishPendingTransfer(VulkanApp* app);
     // Unlocked variant — caller must hold mutex.
     void doUploadMeshMetaBuffers(VulkanApp* app);
