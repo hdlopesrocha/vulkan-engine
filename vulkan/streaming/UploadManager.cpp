@@ -208,7 +208,8 @@ void UploadManager::prepareFrameWaits(VulkanApp* app) {
             app->addExtraWaitSemaphore(s.signalSem,
                 VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
                 VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
-                VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT);
+                VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT |
+                VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
             s.waitRegistered = true;
         }
     }
