@@ -180,12 +180,12 @@ public:
             glm::vec3 centerA = glm::vec3(512,512, 512*5);
             glm::vec3 centerB = glm::vec3(512,512*2, 512*5);
             Transformation modelA = Transformation(glm::vec3(radius), centerA, 0, 0, 0);
-            Transformation modelB = Transformation(glm::vec3(radius), centerB, 45, 0, 0);
+            Transformation modelB = Transformation(glm::vec3(radius*0.5f), centerB, 45, 0, 0);
             Transformation sweepModel = Transformation(glm::vec3(radius), (centerA + centerB) * 0.5f, 0, 0, 0);
-            OctahedronDistanceFunction fn1(modelA, minSize*0.5f);
-            OctahedronDistanceFunction fn2(modelB, minSize*0.5f);
-            SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, minSize*0.5f);
-            opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), minSize*0.5f, simplifier, opaqueHandler);
+            OctahedronDistanceFunction fn1(modelA, minSize);
+            OctahedronDistanceFunction fn2(modelB, minSize);
+            SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, minSize*0.25f);
+            opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), minSize*0.25f, simplifier, opaqueHandler);
         }
 
         {
