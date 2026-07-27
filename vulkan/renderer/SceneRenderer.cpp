@@ -1293,24 +1293,34 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
 
             // If this chunk's spatial cube matches a pending-delete slot (from
             // an erased chunk at the same position but different NodeID), free
-            // the OLD slot only after the new upload completes. This keeps the
-            // old geometry visible until the replacement is resident on GPU.
+            // the OLD slot only after the new data is on GPU. This keeps the
+            // old geometry visible until the replacement is resident.
             uint32_t oldSlot = UINT32_MAX;
+            bool oldSlotFromUploadMgr = false;
             {
                 auto& deleteMap = (pd.layer == LAYER_OPAQUE)
                     ? pendingDeleteSolidSlotByCube : pendingDeleteWaterSlotByCube;
                 auto it = deleteMap.find(pd.nodeData.cube);
                 if (it != deleteMap.end()) {
                     oldSlot = it->second;
+                    oldSlotFromUploadMgr = ir->hasUploadManager();
                     deleteMap.erase(it);
                 }
             }
 
+            // For the UploadManager path the meta is written eagerly and the
+            // semaphore guarantees vertex data arrives before the render — free
+            // the old slot immediately to avoid a 1-frame z-fight with the old
+            // geometry. For the legacy path the meta is deferred, so the old
+            // slot must survive until the upload completes.
+            if (oldSlot != UINT32_MAX && oldSlotFromUploadMgr)
+                ir->removeMeshSlotted(oldSlot);
+
             // Upload the slot's vertex/index/meta data to GPU.
             ir->uploadSlot(app, slotIdx, 0.0f,
-                [ir, cid, oldSlot, this]() {
-                    // Free the old slot now that the new data is on GPU.
-                    if (oldSlot != UINT32_MAX)
+                [ir, cid, oldSlot, oldSlotFromUploadMgr, this]() {
+                    // Legacy path: free the old slot now that the upload is done.
+                    if (oldSlot != UINT32_MAX && !oldSlotFromUploadMgr)
                         ir->removeMeshSlotted(oldSlot);
                     // Transition UploadingGPU → ReadyToSwap.
                     if (this->world_) this->world_->chunkManager().finishUpload(cid);
