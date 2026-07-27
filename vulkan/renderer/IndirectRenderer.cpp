@@ -1787,17 +1787,34 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    // Indirect buffer (host-visible, persistently mapped for per-slot writes)
+    // Indirect buffer (host-visible, persistently mapped for per-slot writes).
+    // Zero the entire buffer so unallocated slots always have indexCount=0 and
+    // the GPU cull shader never reads garbage bounds for slots whose meta hasn't
+    // been written yet (between addMeshSlotted and the deferred writeSlotMeta).
     VkDeviceSize indirectBufferSize = sizeof(VkDrawIndexedIndirectCommand) * meshCapacity;
     indirectBuffer = app->createBuffer(indirectBufferSize,
         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    {
+        void* data = indirectBuffer.map(0);
+        if (data) {
+            std::memset(data, 0, (size_t)indirectBufferSize);
+            indirectBuffer.unmap();
+        }
+    }
 
-    // Bounds buffer (host-visible, persistently mapped)
+    // Bounds buffer (host-visible, persistently mapped). Same zeroing rationale.
     VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 2;
     boundsBuffer = app->createBuffer(boundsBufferSize,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    {
+        void* data = boundsBuffer.map(0);
+        if (data) {
+            std::memset(data, 0, (size_t)boundsBufferSize);
+            boundsBuffer.unmap();
+        }
+    }
 
     // Compact indirect buffers (one per cull frame, used by GPU culling)
     VkDeviceSize compactSize = indirectBufferSize;
@@ -2071,6 +2088,28 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
 
     // Store in mesh map
     meshes[chunkId] = m;
+
+    // Zero GPU indirect and bounds for this slot immediately, so the GPU
+    // cull shader never sees stale/garbage data during the window between
+    // this allocation and the deferred writeSlotMeta (upload completion).
+    // For fresh slots this is technically redundant with initSlots zeroing,
+    // but recycled slots may retain stale bounds from a prior occupant.
+    if (indirectBuffer.buffer != VK_NULL_HANDLE) {
+        VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(slotIdx) * sizeof(VkDrawIndexedIndirectCommand);
+        void* data = indirectBuffer.map(cmdOffset);
+        if (data) {
+            std::memset(data, 0, sizeof(VkDrawIndexedIndirectCommand));
+            indirectBuffer.unmap();
+        }
+    }
+    if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+        VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(slotIdx) * 2 * sizeof(glm::vec4);
+        void* data = boundsBuffer.map(boundsOffset);
+        if (data) {
+            std::memset(data, 0, 2 * sizeof(glm::vec4));
+            boundsBuffer.unmap();
+        }
+    }
 
     return slotIdx;
 }

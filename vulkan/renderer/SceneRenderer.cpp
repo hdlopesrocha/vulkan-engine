@@ -1444,11 +1444,9 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     }
 
     if (batch.empty()) {
-        // No new geometry — free all remaining old geometry immediately
-        for (auto& [nid, oldSlot] : oldSolidSlots)
-            brushIR.removeMeshSlotted(oldSlot);
-        for (auto& [nid, oldSlot] : oldTransparentSlots)
-            waterIR.removeMeshSlotted(oldSlot);
+        // No new geometry yet (tessellation hasn't completed). Keep old
+        // geometry visible — don't free anything. On the next rebuild,
+        // stageOldBrushChunks will re-capture these same slots.
         return;
     }
 

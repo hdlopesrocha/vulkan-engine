@@ -128,8 +128,9 @@ void BrushBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
 
     // Transition depth image to DEPTH_STENCIL_ATTACHMENT_OPTIMAL if needed
     if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+        VkImageLayout srcLayout = backFaceDepthImageLayouts[frameIndex];
         app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
-                             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                             srcLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                              1, 0, 1);
         backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
