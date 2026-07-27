@@ -724,27 +724,34 @@ public:
             sceneRenderer->skyRenderer->update(this);
         }
 
-        // ── Continuous brush apply (drag mode) ──────────────────────────────
-        // While SPACE (keyboard) or B (Wiimote) is HELD on the Brush page,
-        // apply the brush to the scene every frame at the current brush position.
-        // This enables drag-apply: move the brush with WASD/joystick while
-        // holding the apply key to paint a continuous trail.
+        // ── Brush apply mode (Click vs Drag) ────────────────────────────────
+        // In Drag mode, SPACE (keyboard) or B (Wiimote) applies continuously
+        // every frame while held, enabling drag-apply across the terrain.
+        // In Click mode, the edge-triggered event from the publisher handles
+        // the single press — the continuous check below is skipped.
         {
+            const ControllerParameters& cp = *controllerManager.getParameters();
             bool applyHeld = false;
 
-            // Keyboard: SPACE held on BRUSH page
+            // Keyboard: SPACE held on BRUSH page in Drag mode
             bool spaceHeld = glfwGetKey(getWindow(), GLFW_KEY_SPACE) == GLFW_PRESS;
-            if (spaceHeld && controllerManager.keyboardContext.activeCategory() == PageCategory::BRUSH) {
+            if (spaceHeld
+                && controllerManager.keyboardContext.activeCategory() == PageCategory::BRUSH
+                && cp.keyboardBrushMode == BrushApplyMode::Drag)
+            {
                 applyHeld = true;
             }
 
-            // Wiimote: B button held on BRUSH page
+            // Wiimote: B button held on BRUSH page in Drag mode
             // WIIMOTE_BUTTON_B = 0x0004 (defined in wiiuse.h)
             if (!applyHeld) {
                 static constexpr uint16_t kWiimoteButtonB = 0x0004;
                 WiimoteState wmState = nunchukPublisher.getState();
                 bool bHeld = (wmState.buttons & kWiimoteButtonB) != 0;
-                if (bHeld && controllerManager.wiimoteContext.activeCategory() == PageCategory::BRUSH) {
+                if (bHeld
+                    && controllerManager.wiimoteContext.activeCategory() == PageCategory::BRUSH
+                    && cp.wiimoteBrushMode == BrushApplyMode::Drag)
+                {
                     applyHeld = true;
                 }
             }

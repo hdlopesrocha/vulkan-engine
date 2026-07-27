@@ -62,6 +62,21 @@ void ControllerParametersWidget::render() {
     drawControllerSection(cm->wiimoteContext,  "Wiimote");
 
     ImGui::Separator();
+    ImGui::Text("Brush Apply Mode");
+    ImGui::Indent(16.0f);
+    auto drawModeToggle = [](const char* label, BrushApplyMode& mode) {
+        const char* items[] = { "Click (once per press)", "Drag (continuous while held)" };
+        int current = (mode == BrushApplyMode::Drag) ? 1 : 0;
+        if (ImGui::Combo(label, &current, items, IM_ARRAYSIZE(items))) {
+            mode = (current == 1) ? BrushApplyMode::Drag : BrushApplyMode::Click;
+        }
+    };
+    drawModeToggle("Keyboard", cm->getParameters()->keyboardBrushMode);
+    drawModeToggle("Mouse",    cm->getParameters()->mouseBrushMode);
+    drawModeToggle("Gamepad",  cm->getParameters()->gamepadBrushMode);
+    drawModeToggle("Wiimote",  cm->getParameters()->wiimoteBrushMode);
+    ImGui::Unindent(16.0f);
+    ImGui::Separator();
 
     ControllerContext& kb = cm->keyboardContext;
     ControllerParameters& params = *cm->getParameters();
