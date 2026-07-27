@@ -105,6 +105,7 @@ public:
         brush->category = PageCategory::BRUSH;
         brush->control = PageControl::TRANSLATE;
         brush->addChild("Transform", PageControl::TRANSLATE);
+        brush->addChild("Scale", PageControl::SCALE);
         brush->addChild("Texture", PageControl::TEXTURE);
         brush->addChild("Attributes", PageControl::ATTRIBUTE);
         brush->addChild("Aim", PageControl::AIM);

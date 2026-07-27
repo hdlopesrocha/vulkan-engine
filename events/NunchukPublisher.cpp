@@ -367,8 +367,14 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         em->publish(std::make_shared<ApplyBrushToSceneEvent>());
     }
 
-    // Wiimote 1 → snap reset / brush place
+    // Wiimote 1 → reset aim direction + snap reset / brush place
     if (pressed & WIIMOTE_BUTTON_ONE) {
+        aimOrient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        aimStartYaw = s.yaw;
+        aimStartPitch = s.pitch;
+        aimStartRoll = s.roll;
+        fprintf(stderr, "[Wiimote] aim direction reset to camera\n");
+
         if (brushManager) {
             BrushEntry* be = brushManager->getSelectedEntry();
             if (be) {
@@ -499,6 +505,41 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             }
         }
         prevZ = s.buttonZ;
+    }
+
+    // ========================================================================
+    // SCALE SUBPAGE: Nunchuk joystick → brush scale (world X/Y/Z axes)
+    // Joystick X/Y maps to scale X/Y, C/Z buttons map to scale Z+/Z-.
+    // Exponential acceleration (same as translate), clamped to ≥0.001.
+    // ========================================================================
+    {
+        const ControllerPage* sp = wctx.activeSubpage();
+        if (sp && sp->control == PageControl::SCALE && brushManager) {
+            if (hasNunchuk) {
+                BrushEntry* be = brushManager->getSelectedEntry();
+                if (be) {
+                    float sx = s.joystickX;
+                    float sy = s.joystickY;
+                    if (!std::isfinite(sx)) sx = 0.0f;
+                    if (!std::isfinite(sy)) sy = 0.0f;
+                    sx = glm::clamp(sx, -1.0f, 1.0f);
+                    sy = glm::clamp(sy, -1.0f, 1.0f);
+                    const float sdz = 0.30f;
+                    if (std::abs(sx) < sdz) sx = 0.0f;
+                    if (std::abs(sy) < sdz) sy = 0.0f;
+                    if (sx != 0.0f || sy != 0.0f || s.buttonC || s.buttonZ) {
+                        float sv = 256.0f * deltaTime * joystickAccel;
+                        glm::vec3 ds(0.0f);
+                        if (sx != 0.0f) ds.x += sx * sv;
+                        if (sy != 0.0f) ds.y += sy * sv;
+                        if (s.buttonC) ds.z += sv;
+                        if (s.buttonZ) ds.z -= sv;
+                        be->scale = glm::max(be->scale + ds, glm::vec3(0.001f));
+                        em->queue(std::make_shared<RebuildBrushEvent>());
+                    }
+                }
+            }
+        }
     }
 
     // ========================================================================
