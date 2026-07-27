@@ -147,13 +147,18 @@ public:
     std::unordered_map<NodeID, Model3DVersion> pendingOldBrushChunks;
     std::unordered_map<NodeID, Model3DVersion> pendingOldBrushTransparentChunks;
 
-    // Slots whose chunks were erased but may be replaced by a new chunk at the
-    // same spatial position (different NodeID). Keyed by BoundingCube so we can
-    // match old → new even after the octree restructures. The slot is kept alive
-    // until the replacement chunk's upload completes, preventing holes.
-    // Separate maps for solid and water layers (different IndirectRenderers).
-    std::unordered_map<BoundingCube, uint32_t, BoundingCubeHasher> pendingDeleteSolidSlotByCube;
-    std::unordered_map<BoundingCube, uint32_t, BoundingCubeHasher> pendingDeleteWaterSlotByCube;
+    // Slots whose chunks were erased but may be replaced (same NodeID, new
+    // version). For solid/water the octree node is reused on edit, so NodeID
+    // stays stable — addMeshSlotted finds the existing entry and updates it
+    // in-place (updateMeshSlotted). The old slot must survive until the new
+    // upload completes to avoid a 1-frame hole. Entries are matched by NodeID
+    // and aged out after MAX_FRAMES_IN_FLIGHT frames past their birth frame.
+    struct PendingDeleteEntry {
+        uint32_t slotIndex = UINT32_MAX;
+        uint32_t birthFrame = 0;
+    };
+    std::unordered_map<NodeID, PendingDeleteEntry> pendingDeleteSolidSlots;
+    std::unordered_map<NodeID, PendingDeleteEntry> pendingDeleteWaterSlots;
 
     // ── World reference (separates world logic from rendering) ──
     // The World owns chunks, octrees, and the ChunkManager state machine.

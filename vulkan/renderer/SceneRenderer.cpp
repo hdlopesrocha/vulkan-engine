@@ -1291,21 +1291,23 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // is created with slotIndex=UINT32_MAX and never updated).
             if (world_) world_->chunkManager().setSlotIndex(cid, slotIdx);
 
-            // If this chunk's spatial cube matches a pending-delete slot (from
-            // an erased chunk at the same position but different NodeID), free
-            // the OLD slot only after the new data is on GPU (in the upload
-            // completion callback). This avoids modifying the shared indirect/
-            // bounds buffer while in-flight frames may still read the old slot.
+            // If this chunk had a pending-delete entry (erase callback saved
+            // the old slot for this NodeID), defer cleanup until the new upload
+            // completes. For solid/water the NodeID is stable (node reused), so
+            // addMeshSlotted found the existing entry and updated it in-place
+            // (oldSlot == slotIdx) — no free needed.
             uint32_t oldSlot = UINT32_MAX;
             {
                 auto& deleteMap = (pd.layer == LAYER_OPAQUE)
-                    ? pendingDeleteSolidSlotByCube : pendingDeleteWaterSlotByCube;
-                auto it = deleteMap.find(pd.nodeData.cube);
+                    ? pendingDeleteSolidSlots : pendingDeleteWaterSlots;
+                auto it = deleteMap.find(pd.nid);
                 if (it != deleteMap.end()) {
-                    oldSlot = it->second;
+                    oldSlot = it->second.slotIndex;
                     deleteMap.erase(it);
                 }
             }
+            if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
+                oldSlot = UINT32_MAX;
 
             // Upload the slot's vertex/index data. The meta write and old-slot
             // free are deferred to the completion callback so in-flight frames
@@ -1325,14 +1327,23 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             }
         }
 
-        // Free any pending-delete slots that were NOT matched to a new chunk.
-        // These are genuine deletions (no replacement arrived this frame).
-        for (auto& [cube, sidx] : pendingDeleteSolidSlotByCube)
-            solidIR.removeMeshSlotted(sidx);
-        pendingDeleteSolidSlotByCube.clear();
-        for (auto& [cube, sidx] : pendingDeleteWaterSlotByCube)
-            waterIR.removeMeshSlotted(sidx);
-        pendingDeleteWaterSlotByCube.clear();
+        // Age out pending-delete entries that have been waiting longer than
+        // MAX_FRAMES_IN_FLIGHT. For solid/water the octree node is reused with
+        // the same NodeID, so a matching entry is normally consumed within 1
+        // frame. Entries that age out are genuine deletions (no replacement).
+        uint32_t curFrame = app ? app->getCurrentFrame() : 0;
+        auto ageOut = [&](auto& deleteMap, IndirectRenderer& ir) {
+            for (auto it = deleteMap.begin(); it != deleteMap.end(); ) {
+                if (curFrame - it->second.birthFrame > VulkanApp::MAX_FRAMES_IN_FLIGHT) {
+                    ir.removeMeshSlotted(it->second.slotIndex);
+                    it = deleteMap.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        };
+        ageOut(pendingDeleteSolidSlots, solidIR);
+        ageOut(pendingDeleteWaterSlots, waterIR);
     } else if (!slottedModeEnabled && !batch.empty()) {
         // ── Legacy mode: append-based with full rebuild ──
         // Compute per-layer totals for the incoming batch so we can pre-size
@@ -1664,18 +1675,18 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
     
     };
     
-    solidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
+    solidNodeEraseCallback = [this, scene, app](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         if (slottedModeEnabled && world_) {
             ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
             uint32_t sidx = world_->chunkManager().getSlotIndex(cid);
-            // Don't free the slot immediately — the octree may restructure and
-            // replace this chunk with a new one at the same spatial position but
-            // a different NodeID. Saving the slot in pendingDeleteSolidSlotByCube
-            // keeps the old geometry visible until the replacement is uploaded.
-            // If no replacement arrives, processPendingMeshes will free it.
+            // Don't free the slot immediately — for solid/water the octree node
+            // is reused on edit (same NodeID), so addMeshSlotted will find and
+            // update the same slot in-place. Keep the old geometry visible until
+            // the new upload completes. Unmatched entries are aged out after
+            // MAX_FRAMES_IN_FLIGHT frames in processPendingMeshes.
             if (sidx != UINT32_MAX)
-                pendingDeleteSolidSlotByCube[nd.cube] = sidx;
+                pendingDeleteSolidSlots[nid] = {sidx, app ? app->getCurrentFrame() : 0};
             world_->chunkManager().removeChunk(cid);
         } else {
             std::lock_guard<std::recursive_mutex> lock(chunksMutex);
@@ -1729,13 +1740,13 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
     
     };
 
-    liquidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
+    liquidNodeEraseCallback = [this, scene, app](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         if (slottedModeEnabled && world_) {
             ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
             uint32_t sidx = world_->chunkManager().getSlotIndex(cid);
             if (sidx != UINT32_MAX)
-                pendingDeleteWaterSlotByCube[nd.cube] = sidx;
+                pendingDeleteWaterSlots[nid] = {sidx, app ? app->getCurrentFrame() : 0};
             world_->chunkManager().removeChunk(cid);
         } else {
             std::lock_guard<std::recursive_mutex> lock(chunksMutex);
