@@ -2268,8 +2268,13 @@ void MyApp::rebuildBrushScene() {
     uniqueBrushSolidHandler.handleEvents();
     uniqueBrushLiquidHandler.handleEvents();
 
-    // 6. No global rebuild needed — processPendingBrushMeshes() commits
-    // each brush mesh incrementally via addMeshSlotted() + uploadSlot().
+    // 6. Process all brush meshes IMMEDIATELY (synchronous, not deferred to
+    // the next frame's update()). The brush scene is small — this avoids the
+    // 1-frame delay where old chunks are removed and new ones are not yet
+    // uploaded, eliminating the progressive "chunk by chunk" visual update.
+    // Old staged slots are freed BEFORE new slots are allocated so the
+    // 128-slot brush pool is never exhausted by stale old entries.
+    sceneRenderer->processPendingBrushMeshes(this, camera.getPosition());
 
     // std::cerr << "[MyApp::rebuildBrushScene] Done — brush opaque chunks: " << sceneRenderer->brushSolidChunks.size()
     //           << ", brush transparent chunks: " << sceneRenderer->brushTransparentChunks.size() << std::endl;

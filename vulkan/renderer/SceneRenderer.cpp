@@ -1409,21 +1409,14 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     brushIR.pollPendingTransfers(app);
     waterIR.pollPendingTransfers(app);
 
-    for (auto& pd : batch) {
-        IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &brushIR : &waterIR;
-        uint32_t slotIdx = ir->addMeshSlotted(pd.geom, static_cast<uint32_t>(pd.nid));
-        if (slotIdx == UINT32_MAX) {
-            std::cerr << "[BRUSH] addMeshSlotted FAILED for nid=" << (unsigned long long)pd.nid << std::endl;
-            continue;
-        }
-        std::cerr << "[BRUSH] added mesh slotIdx=" << slotIdx << " for nid=" << (unsigned long long)pd.nid << std::endl;
-        ir->uploadSlot(app, slotIdx);
-        auto& chunkMap = (pd.layer == LAYER_OPAQUE) ? brushSolidChunks : brushTransparentChunks;
-        Model3DVersion mv{slotIdx, pd.version};
-        chunkMap[pd.nid] = mv;
-    }
-
-    // Clean up staged old brush chunks now that new ones are ready and added
+    // CRITICAL: Free old staged slots BEFORE allocating new ones.
+    // If we allocate first and free after, new chunks may reuse the same
+    // slot indices as the pending-old chunks, which we then immediately
+    // free — destroying the new geometry (ABA problem). More importantly,
+    // if the pool is nearly full, new allocations fail because old slots
+    // are still occupied.
+    std::vector<uint32_t> freedSolidSlots;
+    std::vector<uint32_t> freedWaterSlots;
     {
         std::lock_guard<std::recursive_mutex> lock(chunksMutex);
         for (auto& entry : pendingOldBrushChunks) {
@@ -1438,6 +1431,20 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
             }
         }
         pendingOldBrushTransparentChunks.clear();
+    }
+
+    for (auto& pd : batch) {
+        IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &brushIR : &waterIR;
+        uint32_t slotIdx = ir->addMeshSlotted(pd.geom, static_cast<uint32_t>(pd.nid));
+        if (slotIdx == UINT32_MAX) {
+            std::cerr << "[BRUSH] addMeshSlotted FAILED for nid=" << (unsigned long long)pd.nid << std::endl;
+            continue;
+        }
+        std::cerr << "[BRUSH] added mesh slotIdx=" << slotIdx << " for nid=" << (unsigned long long)pd.nid << std::endl;
+        ir->uploadSlot(app, slotIdx);
+        auto& chunkMap = (pd.layer == LAYER_OPAQUE) ? brushSolidChunks : brushTransparentChunks;
+        Model3DVersion mv{slotIdx, pd.version};
+        chunkMap[pd.nid] = mv;
     }
 }
 
