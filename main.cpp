@@ -2383,6 +2383,14 @@ void MyApp::rebuildBrushScene() {
     // 128-slot brush pool is never exhausted by stale old entries.
     sceneRenderer->processPendingBrushMeshes(this, camera.getPosition());
 
+    // Advance previousTranslate for next frame's sweep (frame-by-frame trail)
+    if (selectedEntry && selectedEntry->sweepMode) {
+        BrushEntry* mutableEntry = brushManager.getSelectedEntry();
+        if (mutableEntry) {
+            mutableEntry->previousTranslate = mutableEntry->translate;
+        }
+    }
+
     // std::cerr << "[MyApp::rebuildBrushScene] Done — brush opaque chunks: " << sceneRenderer->brushSolidChunks.size()
     //           << ", brush transparent chunks: " << sceneRenderer->brushTransparentChunks.size() << std::endl;
 }
@@ -2425,9 +2433,8 @@ void MyApp::applyBrushToScene() {
         applyBrushWithEffect(entry, wrappedFunc, octree, brushOp, model, brush, simplifier, handler);
     };
 
-    // Read the current sweep start directly from the entry (avoids stale cachedSweepStart)
-    const glm::vec3 sweepStart = selectedEntry->previousTranslate;
-    forEachBrushSDF(entry, model, sweepStart, entry.minSize, "[applyBrushToScene]", applyEntry);
+    // Use cachedSweepStart from rebuild's START (before it advanced previousTranslate)
+    forEachBrushSDF(entry, model, cachedSweepStart, entry.minSize, "[applyBrushToScene]", applyEntry);
 
     // Flush queued change events to trigger mesh creation
     sceneUniqueSolidHandler->handleEvents();
