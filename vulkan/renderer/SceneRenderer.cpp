@@ -1286,6 +1286,11 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                 continue;
             }
 
+            // Store the slot index in the ChunkManager entry so the erase
+            // path can free it via removeMeshSlotted (the RenderProxy
+            // is created with slotIndex=UINT32_MAX and never updated).
+            if (world_) world_->chunkManager().setSlotIndex(cid, slotIdx);
+
             // Upload the slot's vertex/index/meta data to GPU.
             // Meta (indirect command + bounds) is written synchronously to
             // host-visible buffers. Vertex/index data is async via UploadManager.
@@ -1575,9 +1580,11 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         if (slottedModeEnabled && world_) {
             ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
-            auto proxy = world_->chunkManager().getCurrentProxy(cid);
-            if (proxy && proxy->isValid() && proxy->slotIndex != UINT32_MAX) {
-                solidRenderer->getIndirectRenderer().removeMeshSlotted(proxy->slotIndex);
+            // Free the IndirectRenderer slot using the slot index stored in
+            // ChunkEntry (not the proxy, which is created with UINT32_MAX).
+            uint32_t sidx = world_->chunkManager().getSlotIndex(cid);
+            if (sidx != UINT32_MAX) {
+                solidRenderer->getIndirectRenderer().removeMeshSlotted(sidx);
             }
             world_->chunkManager().removeChunk(cid);
         } else {
@@ -1636,9 +1643,9 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         if (slottedModeEnabled && world_) {
             ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
-            auto proxy = world_->chunkManager().getCurrentProxy(cid);
-            if (proxy && proxy->isValid() && proxy->slotIndex != UINT32_MAX) {
-                waterRenderer->getIndirectRenderer().removeMeshSlotted(proxy->slotIndex);
+            uint32_t sidx = world_->chunkManager().getSlotIndex(cid);
+            if (sidx != UINT32_MAX) {
+                waterRenderer->getIndirectRenderer().removeMeshSlotted(sidx);
             }
             world_->chunkManager().removeChunk(cid);
         } else {

@@ -36,6 +36,7 @@ public:
         ChunkState state = ChunkState::Clean;
         std::shared_ptr<const RenderProxy> currentProxy; // currently rendering (immutable)
         std::shared_ptr<const RenderProxy> pendingProxy; // being built (nullptr until ReadyToSwap)
+        uint32_t slotIndex = UINT32_MAX; // stable IndirectRenderer slot (assigned on upload)
         uint32_t version = 0;       // octree version at last rebuild
         uint32_t rebuildCount = 0;  // monotonically increasing
         bool queuedForRebuild = false; // in dirty queue (prevents duplicates)
@@ -75,6 +76,14 @@ public:
 
     // Remove all chunks (scene cleanup).
     void removeAll();
+
+    // Store the IndirectRenderer slot index for a chunk (called after
+    // addMeshSlotted in processPendingMeshes). The slot index is needed
+    // by the erase path to free the slot via removeMeshSlotted.
+    void setSlotIndex(ChunkId id, uint32_t slotIndex);
+
+    // Get the stored slot index (UINT32_MAX if not yet assigned).
+    uint32_t getSlotIndex(ChunkId id) const;
 
     // ── Worker thread API ────────────────────────────────────────────────────
 
@@ -266,6 +275,21 @@ inline std::vector<std::shared_ptr<const RenderProxy>> ChunkManager::processSwap
 inline size_t ChunkManager::dirtyQueueSize() const {
     std::lock_guard<std::mutex> lock(mapMutex_);
     return dirtyQueue_.size();
+}
+
+inline void ChunkManager::setSlotIndex(ChunkId id, uint32_t slotIndex) {
+    std::lock_guard<std::mutex> lock(mapMutex_);
+    auto it = stateMap_.find(id);
+    if (it != stateMap_.end()) {
+        it->second.slotIndex = slotIndex;
+    }
+}
+
+inline uint32_t ChunkManager::getSlotIndex(ChunkId id) const {
+    std::lock_guard<std::mutex> lock(mapMutex_);
+    auto it = stateMap_.find(id);
+    if (it == stateMap_.end()) return UINT32_MAX;
+    return it->second.slotIndex;
 }
 
 inline size_t ChunkManager::activeChunkCount() const {
