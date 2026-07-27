@@ -19,7 +19,8 @@ enum SdfType {
     TAPERED_CYLINDER,
     TAPERED_CAPSULE,
     ROAD,
-    TRIANGLE_STRIP
+    TRIANGLE_STRIP,
+    SWEEP
 };
 const char* toString(SdfType t);
 

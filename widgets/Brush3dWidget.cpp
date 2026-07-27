@@ -139,6 +139,21 @@ void Brush3dWidget::renderEntry(int index) {
         dirty = true;
     }
 
+    // Sweep mode toggle
+    if (ImGui::Checkbox("Sweep Mode", &e.sweepMode)) {
+        if (e.sweepMode) {
+            e.previousTranslate = e.translate;
+        }
+        dirty = true;
+    }
+    if (e.sweepMode) {
+        ImGui::Indent();
+        ImGui::Text("Prev: %.1f, %.1f, %.1f -> Cur: %.1f, %.1f, %.1f",
+                     e.previousTranslate.x, e.previousTranslate.y, e.previousTranslate.z,
+                     e.translate.x, e.translate.y, e.translate.z);
+        ImGui::Unindent();
+    }
+
     // Capsule-specific parameters
     if (e.sdfType == 2) { // Capsule
         ImGui::Text("Capsule Parameters:");
