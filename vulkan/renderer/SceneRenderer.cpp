@@ -1291,14 +1291,27 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // is created with slotIndex=UINT32_MAX and never updated).
             if (world_) world_->chunkManager().setSlotIndex(cid, slotIdx);
 
+            // If this chunk's spatial cube matches a pending-delete slot (from
+            // an erased chunk at the same position but different NodeID), free
+            // the OLD slot only after the new upload completes. This keeps the
+            // old geometry visible until the replacement is resident on GPU.
+            uint32_t oldSlot = UINT32_MAX;
+            {
+                auto& deleteMap = (pd.layer == LAYER_OPAQUE)
+                    ? pendingDeleteSolidSlotByCube : pendingDeleteWaterSlotByCube;
+                auto it = deleteMap.find(pd.nodeData.cube);
+                if (it != deleteMap.end()) {
+                    oldSlot = it->second;
+                    deleteMap.erase(it);
+                }
+            }
+
             // Upload the slot's vertex/index/meta data to GPU.
-            // Meta (indirect command + bounds) is written synchronously to
-            // host-visible buffers. Vertex/index data is async via UploadManager.
-            // The completion callback transitions UploadingGPU → ReadyToSwap
-            // when the GPU transfer actually finishes (not synchronously here).
             ir->uploadSlot(app, slotIdx, 0.0f,
-                [this, cid]() {
-                    // GPU transfer complete — chunk data is now visible.
+                [ir, cid, oldSlot, this]() {
+                    // Free the old slot now that the new data is on GPU.
+                    if (oldSlot != UINT32_MAX)
+                        ir->removeMeshSlotted(oldSlot);
                     // Transition UploadingGPU → ReadyToSwap.
                     if (this->world_) this->world_->chunkManager().finishUpload(cid);
                 });
@@ -1310,6 +1323,15 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                 generateVegetationForNode(app, pd.nid, pd.geom);
             }
         }
+
+        // Free any pending-delete slots that were NOT matched to a new chunk.
+        // These are genuine deletions (no replacement arrived this frame).
+        for (auto& [cube, sidx] : pendingDeleteSolidSlotByCube)
+            solidIR.removeMeshSlotted(sidx);
+        pendingDeleteSolidSlotByCube.clear();
+        for (auto& [cube, sidx] : pendingDeleteWaterSlotByCube)
+            waterIR.removeMeshSlotted(sidx);
+        pendingDeleteWaterSlotByCube.clear();
     } else if (!slottedModeEnabled && !batch.empty()) {
         // ── Legacy mode: append-based with full rebuild ──
         // Compute per-layer totals for the incoming batch so we can pre-size
@@ -1645,12 +1667,14 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         if (slottedModeEnabled && world_) {
             ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
-            // Free the IndirectRenderer slot using the slot index stored in
-            // ChunkEntry (not the proxy, which is created with UINT32_MAX).
             uint32_t sidx = world_->chunkManager().getSlotIndex(cid);
-            if (sidx != UINT32_MAX) {
-                solidRenderer->getIndirectRenderer().removeMeshSlotted(sidx);
-            }
+            // Don't free the slot immediately — the octree may restructure and
+            // replace this chunk with a new one at the same spatial position but
+            // a different NodeID. Saving the slot in pendingDeleteSolidSlotByCube
+            // keeps the old geometry visible until the replacement is uploaded.
+            // If no replacement arrives, processPendingMeshes will free it.
+            if (sidx != UINT32_MAX)
+                pendingDeleteSolidSlotByCube[nd.cube] = sidx;
             world_->chunkManager().removeChunk(cid);
         } else {
             std::lock_guard<std::recursive_mutex> lock(chunksMutex);
@@ -1709,9 +1733,8 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
         if (slottedModeEnabled && world_) {
             ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
             uint32_t sidx = world_->chunkManager().getSlotIndex(cid);
-            if (sidx != UINT32_MAX) {
-                waterRenderer->getIndirectRenderer().removeMeshSlotted(sidx);
-            }
+            if (sidx != UINT32_MAX)
+                pendingDeleteWaterSlotByCube[nd.cube] = sidx;
             world_->chunkManager().removeChunk(cid);
         } else {
             std::lock_guard<std::recursive_mutex> lock(chunksMutex);

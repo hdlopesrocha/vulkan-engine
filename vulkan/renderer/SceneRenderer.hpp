@@ -27,6 +27,7 @@ class World;
 #include "../ShaderStage.hpp"
 #include "../../utils/FileReader.hpp"
 #include "../../math/Vertex.hpp"
+#include "../../math/BoundingCubeHasher.hpp"
 #include <unordered_map>
 #include <memory>
 #include <mutex>
@@ -145,6 +146,14 @@ public:
     std::unordered_map<NodeID, Model3DVersion> brushTransparentChunks;
     std::unordered_map<NodeID, Model3DVersion> pendingOldBrushChunks;
     std::unordered_map<NodeID, Model3DVersion> pendingOldBrushTransparentChunks;
+
+    // Slots whose chunks were erased but may be replaced by a new chunk at the
+    // same spatial position (different NodeID). Keyed by BoundingCube so we can
+    // match old → new even after the octree restructures. The slot is kept alive
+    // until the replacement chunk's upload completes, preventing holes.
+    // Separate maps for solid and water layers (different IndirectRenderers).
+    std::unordered_map<BoundingCube, uint32_t, BoundingCubeHasher> pendingDeleteSolidSlotByCube;
+    std::unordered_map<BoundingCube, uint32_t, BoundingCubeHasher> pendingDeleteWaterSlotByCube;
 
     // ── World reference (separates world logic from rendering) ──
     // The World owns chunks, octrees, and the ChunkManager state machine.
