@@ -2336,7 +2336,8 @@ void MyApp::rebuildBrushScene() {
     world->brushScene()->transparentOctree.reset();
 
     if (!selectedEntry) {
-        // Nothing to add — clearBrushMeshes() already freed all slots.
+        // Nothing to add — free staged old slots immediately.
+        sceneRenderer->processPendingBrushMeshes(this, camera.getPosition());
         return;
     }
 

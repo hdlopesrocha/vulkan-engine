@@ -1388,22 +1388,26 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     {
         std::lock_guard<std::mutex> lock(brushPendingMutex);
         size_t qsize = brushPendingQueue.size();
-        std::sort(brushPendingQueue.begin(), brushPendingQueue.end(),
-            [&cameraPos](const PendingMeshData& a, const PendingMeshData& b) {
-                glm::vec3 da = cameraPos - a.nodeData.cube.getCenter();
-                glm::vec3 db = cameraPos - b.nodeData.cube.getCenter();
-                return glm::dot(da, da) < glm::dot(db, db);
-            });
-        batch.insert(batch.end(),
-                     std::make_move_iterator(brushPendingQueue.begin()),
-                     std::make_move_iterator(brushPendingQueue.end()));
-        brushPendingQueue.clear();
-        if (qsize > 0)
+        if (qsize > 0) {
+            std::sort(brushPendingQueue.begin(), brushPendingQueue.end(),
+                [&cameraPos](const PendingMeshData& a, const PendingMeshData& b) {
+                    glm::vec3 da = cameraPos - a.nodeData.cube.getCenter();
+                    glm::vec3 db = cameraPos - b.nodeData.cube.getCenter();
+                    return glm::dot(da, da) < glm::dot(db, db);
+                });
+            batch.insert(batch.end(),
+                         std::make_move_iterator(brushPendingQueue.begin()),
+                         std::make_move_iterator(brushPendingQueue.end()));
+            brushPendingQueue.clear();
             std::cerr << "[BRUSH] processPendingBrushMeshes: draining " << qsize << " entries" << std::endl;
+        }
     }
 
-    if (batch.empty()) return;
-
+    std::cerr << "[BRUSH] step=pollPendingTransfers" << std::endl;
+    if (!waterRenderer) {
+        std::cerr << "[BRUSH] FATAL: waterRenderer is null!" << std::endl;
+        return;
+    }
     IndirectRenderer& brushIR = brushSolidIndirectRenderer;
     IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
     brushIR.pollPendingTransfers(app);
@@ -1415,8 +1419,8 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     // free — destroying the new geometry (ABA problem). More importantly,
     // if the pool is nearly full, new allocations fail because old slots
     // are still occupied.
-    std::vector<uint32_t> freedSolidSlots;
-    std::vector<uint32_t> freedWaterSlots;
+    std::cerr << "[BRUSH] step=freeOld  oldSolid=" << pendingOldBrushChunks.size()
+              << " oldWater=" << pendingOldBrushTransparentChunks.size() << std::endl;
     {
         std::lock_guard<std::recursive_mutex> lock(chunksMutex);
         for (auto& entry : pendingOldBrushChunks) {
@@ -1433,11 +1437,19 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
         pendingOldBrushTransparentChunks.clear();
     }
 
+    if (batch.empty()) return;
+
+    uint32_t idx = 0;
     for (auto& pd : batch) {
         IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &brushIR : &waterIR;
+        std::cerr << "[BRUSH] step=addMesh idx=" << idx
+                  << " nid=" << (unsigned long long)pd.nid
+                  << " verts=" << pd.geom.vertices.size()
+                  << " idxs=" << pd.geom.indices.size() << std::endl;
         uint32_t slotIdx = ir->addMeshSlotted(pd.geom, static_cast<uint32_t>(pd.nid));
         if (slotIdx == UINT32_MAX) {
             std::cerr << "[BRUSH] addMeshSlotted FAILED for nid=" << (unsigned long long)pd.nid << std::endl;
+            ++idx;
             continue;
         }
         std::cerr << "[BRUSH] added mesh slotIdx=" << slotIdx << " for nid=" << (unsigned long long)pd.nid << std::endl;
@@ -1445,6 +1457,7 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
         auto& chunkMap = (pd.layer == LAYER_OPAQUE) ? brushSolidChunks : brushTransparentChunks;
         Model3DVersion mv{slotIdx, pd.version};
         chunkMap[pd.nid] = mv;
+        ++idx;
     }
 }
 
