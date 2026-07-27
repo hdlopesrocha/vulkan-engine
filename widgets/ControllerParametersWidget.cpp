@@ -20,10 +20,12 @@ static void drawContextPage(const ControllerContext& ctx, const ImVec4& col, con
     dl->AddText(ImVec2(pos.x + 22.0f, pos.y), ImGui::ColorConvertFloat4ToU32(ImVec4(1,1,1,1)), label);
 }
 
-// One collapsible/inline section per controller showing its active page and
-// navigation buttons. The contexts are independent, so each can be on a
-// different page/subpage at the same time.
-static void drawControllerSection(ControllerContext& ctx, const char* name) {
+// One collapsible/inline section per controller showing its active page,
+// navigation buttons, and brush apply mode toggle (Click vs Drag).
+// The contexts are independent, so each can be on a different page/subpage
+// at the same time.
+static void drawControllerSection(ControllerContext& ctx, const char* name,
+                                   BrushApplyMode& brushMode) {
     // Namespace this section so the buttons ("Prev Page", etc.) get unique IDs
     // across the four controllers instead of colliding on their labels.
     ImGui::PushID(name);
@@ -45,6 +47,15 @@ static void drawControllerSection(ControllerContext& ctx, const char* name) {
     if (ImGui::Button("Prev Sub"))   ctx.prevSubpage();
     ImGui::SameLine();
     if (ImGui::Button("Next Sub"))   ctx.nextSubpage();
+
+    // Brush apply mode (Click / Drag) — shown inline per controller
+    const char* items[] = { "Click", "Drag" };
+    int current = (brushMode == BrushApplyMode::Drag) ? 1 : 0;
+    ImGui::SameLine();
+    if (ImGui::Combo("Apply", &current, items, IM_ARRAYSIZE(items))) {
+        brushMode = (current == 1) ? BrushApplyMode::Drag : BrushApplyMode::Click;
+    }
+
     ImGui::Separator();
 
     ImGui::PopID();
@@ -55,35 +66,21 @@ void ControllerParametersWidget::render() {
     if (!wg.visible()) return;
     if (!cm) return;
 
-    // All per-controller page trees (keyboard / mouse / gamepad / wiimote).
-    drawControllerSection(cm->keyboardContext, "Keyboard");
-    drawControllerSection(cm->mouseContext,    "Mouse");
-    drawControllerSection(cm->gamepadContext,  "Gamepad");
-    drawControllerSection(cm->wiimoteContext,  "Wiimote");
+    // All per-controller page trees (keyboard / mouse / gamepad / wiimote),
+    // each with its own brush apply mode toggle shown inline.
+    auto* params = cm->getParameters();
+    drawControllerSection(cm->keyboardContext, "Keyboard", params->keyboardBrushMode);
+    drawControllerSection(cm->mouseContext,    "Mouse",    params->mouseBrushMode);
+    drawControllerSection(cm->gamepadContext,  "Gamepad",  params->gamepadBrushMode);
+    drawControllerSection(cm->wiimoteContext,  "Wiimote",  params->wiimoteBrushMode);
 
-    ImGui::Separator();
-    ImGui::Text("Brush Apply Mode");
-    ImGui::Indent(16.0f);
-    auto drawModeToggle = [](const char* label, BrushApplyMode& mode) {
-        const char* items[] = { "Click (once per press)", "Drag (continuous while held)" };
-        int current = (mode == BrushApplyMode::Drag) ? 1 : 0;
-        if (ImGui::Combo(label, &current, items, IM_ARRAYSIZE(items))) {
-            mode = (current == 1) ? BrushApplyMode::Drag : BrushApplyMode::Click;
-        }
-    };
-    drawModeToggle("Keyboard", cm->getParameters()->keyboardBrushMode);
-    drawModeToggle("Mouse",    cm->getParameters()->mouseBrushMode);
-    drawModeToggle("Gamepad",  cm->getParameters()->gamepadBrushMode);
-    drawModeToggle("Wiimote",  cm->getParameters()->wiimoteBrushMode);
-    ImGui::Unindent(16.0f);
     ImGui::Separator();
 
     ControllerContext& kb = cm->keyboardContext;
-    ControllerParameters& params = *cm->getParameters();
 
     if (kb.activeCategory() == PageCategory::CAMERA) {
-        ImGui::DragFloat("Move Speed", &params.cameraMoveSpeed, 0.1f, 0.0f, 1024.0f);
-        ImGui::DragFloat("Angular Speed (deg/s)", &params.cameraAngularSpeedDeg, 1.0f, 0.0f, 360.0f);
+        ImGui::DragFloat("Move Speed", &cm->getParameters()->cameraMoveSpeed, 0.1f, 0.0f, 1024.0f);
+        ImGui::DragFloat("Angular Speed (deg/s)", &cm->getParameters()->cameraAngularSpeedDeg, 1.0f, 0.0f, 360.0f);
     } else {
         // Brush attribute editing for the selected entry.
         if (!brushManager) { ImGui::Text("No Brush Manager available"); return; }
