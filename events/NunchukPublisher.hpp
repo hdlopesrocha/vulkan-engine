@@ -87,6 +87,16 @@ private:
     float aimGyroBiasPitch = 0.0f;
     float aimGyroBiasRoll = 0.0f;
 
+    // ── Color (HSV) state ──
+    bool colorWasActive = false;      // Color subpage was active last frame
+    float colorStartYaw = 0.0f;       // yaw when Color page was entered (fallback)
+    float colorStartPitch = 0.0f;     // pitch when Color page was entered (fallback)
+    float colorStartRoll = 0.0f;      // roll when Color page was entered (fallback)
+    glm::quat colorOrient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // accumulated M+ orientation
+    float colorGyroBiasYaw = 0.0f;
+    float colorGyroBiasPitch = 0.0f;
+    float colorGyroBiasRoll = 0.0f;
+
     void autoConnectLoop();
     void readState();
     void readStateLocked();

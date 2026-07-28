@@ -19,6 +19,7 @@ struct ControllerAction {
     glm::vec3 scaleDelta = glm::vec3(0.0f);// per-axis scale add this frame
     int textureDelta = 0;                  // material index increment
     int attributeDelta = 0;                // generic attribute increment
+    glm::vec3 hsvDelta = glm::vec3(0.0f); // HSV tint delta (H deg, S, V)
 };
 
 namespace {
@@ -74,6 +75,13 @@ inline bool applyControllerAction(const ControllerContext &ctx, EventManager *em
     if (ctrl == PageControl::ATTRIBUTE && a.attributeDelta != 0) {
         be->sdfType = (be->sdfType + a.attributeDelta) % 8;
         if (be->sdfType < 0) be->sdfType += 8;
+        changed = true;
+    }
+    if (ctrl == PageControl::COLOR && nonzero(a.hsvDelta)) {
+        be->hsv.x = glm::mod(be->hsv.x + a.hsvDelta.x, 360.0f);
+        if (be->hsv.x < 0.0f) be->hsv.x += 360.0f;
+        be->hsv.y = glm::clamp(be->hsv.y + a.hsvDelta.y, 0.0f, 1.0f);
+        be->hsv.z = glm::clamp(be->hsv.z + a.hsvDelta.z, 0.0f, 1.0f);
         changed = true;
     }
     return changed;

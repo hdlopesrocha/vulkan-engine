@@ -593,10 +593,11 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             if (y != 0.0f || p != 0.0f || r != 0.0f)
                 em->publish(std::make_shared<RotateCameraEvent>(y, p, r));
         } else if (brushManager) {
-            // Do NOT apply rotation when on the Aim subpage (it has its own
-            // gyro integration).
+            // Do NOT apply rotation when on the Aim or Color subpages
+            // (they have their own gyro integration).
             const ControllerPage* rotSub = wctx.activeSubpage();
-            if (!rotSub || rotSub->control != PageControl::AIM) {
+            if (!rotSub || (rotSub->control != PageControl::AIM
+                         && rotSub->control != PageControl::COLOR)) {
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) {
                     float brushScale = deltaTime * cp.wiimoteRotSpeed / 90.0f;
@@ -732,6 +733,71 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 glm::vec3 hitPos;
                 if (octree->intersect(ray, hitPos)) {
                     be->translate = hitPos + be->snapTranslation;
+                    em->queue(std::make_shared<RebuildBrushEvent>());
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // COLOR SUBPAGE: M+ rotation → HSV tint on brush
+    // A + Wiimote YPR rates → Hue (yaw), Saturation (pitch), Value (roll).
+    // Same gyro integration pattern as AIM: bias-corrected rates while A is
+    // held, leaky-integrator bias update when A is released.
+    // ========================================================================
+    {
+        const ControllerPage* subpage = wctx.activeSubpage();
+        bool onColor = subpage && subpage->control == PageControl::COLOR;
+
+        // ── Gyro bias: update when not actively adjusting color ──
+        if (!onColor || !aDown) {
+            colorGyroBiasYaw   += (s.gyroYawRate   - colorGyroBiasYaw)   * 0.02f;
+            colorGyroBiasPitch += (s.gyroPitchRate - colorGyroBiasPitch) * 0.02f;
+            colorGyroBiasRoll  += (s.gyroRollRate  - colorGyroBiasRoll)  * 0.02f;
+        }
+
+        if (onColor && !colorWasActive) {
+            colorStartYaw = s.yaw;
+            colorStartPitch = s.pitch;
+            colorStartRoll = s.roll;
+            colorOrient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        }
+        colorWasActive = onColor;
+
+        // ── A held → integrate rotation into HSV ──
+        if (onColor && aDown && brushManager) {
+            BrushEntry* be = brushManager->getSelectedEntry();
+            if (be) {
+                const float rdz = 2.0f;
+                float hueDelta = 0.0f;
+                float satDelta = 0.0f;
+                float valDelta = 0.0f;
+
+                if (s.hasMotionPlus) {
+                    float gy = std::isfinite(s.gyroYawRate)   ? glm::clamp(s.gyroYawRate   - colorGyroBiasYaw,   -720.0f, 720.0f)   : 0.0f;
+                    float gp = std::isfinite(s.gyroPitchRate) ? glm::clamp(s.gyroPitchRate - colorGyroBiasPitch, -720.0f, 720.0f) : 0.0f;
+                    float gr = std::isfinite(s.gyroRollRate)  ? glm::clamp(s.gyroRollRate  - colorGyroBiasRoll,  -720.0f, 720.0f)  : 0.0f;
+                    hueDelta = (std::abs(gy) > rdz) ? gy * deltaTime : 0.0f;
+                    satDelta = (std::abs(gp) > rdz) ? gp * deltaTime : 0.0f;
+                    valDelta = (std::abs(gr) > rdz) ? gr * deltaTime : 0.0f;
+                } else {
+                    float yawOff   = wrap180(s.yaw   - colorStartYaw);
+                    float pitchOff = wrap180(s.pitch - colorStartPitch);
+                    float rollOff  = wrap180(s.roll  - colorStartRoll);
+                    hueDelta = (std::abs(yawOff)   > rdz) ? yawOff   * deltaTime : 0.0f;
+                    satDelta = (std::abs(pitchOff) > rdz) ? pitchOff * deltaTime : 0.0f;
+                    valDelta = (std::abs(rollOff)  > rdz) ? rollOff  * deltaTime : 0.0f;
+                }
+
+                // Scale: yaw maps to hue (deg/s), pitch/roll to sat/val (unitless/s)
+                const float hueScale = 120.0f;  // deg/s at full tilt
+                const float svScale  = 0.8f;    // unit/s at full tilt
+
+                if (hueDelta != 0.0f || satDelta != 0.0f || valDelta != 0.0f) {
+                    be->hsv.x = glm::mod(be->hsv.x + hueDelta * hueScale, 360.0f);
+                    if (be->hsv.x < 0.0f) be->hsv.x += 360.0f;
+                    be->hsv.y = glm::clamp(be->hsv.y + satDelta * svScale, 0.0f, 1.0f);
+                    be->hsv.z = glm::clamp(be->hsv.z + valDelta * svScale, 0.0f, 1.0f);
                     em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
