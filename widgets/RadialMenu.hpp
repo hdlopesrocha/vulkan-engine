@@ -43,6 +43,14 @@ public:
     void SetBackgroundColor(ImU32 color);
     void SetOutlineColor(ImU32 color);
 
+    // Texture ring
+    void SetTextureRingActive(bool active);
+    bool GetTextureRingActive() const;
+    void SetTextures(const std::vector<ImTextureID>& textures);
+    int GetHoveredTexture() const;
+    void SetTextureRingRadius(float radius);
+    void SetTextureSectorHoverColor(ImU32 color);
+
 private:
     bool visible = false;
 
@@ -67,9 +75,19 @@ private:
     int hoveredPage = -1;
     int hoveredSubPage = -1;
 
+    // Texture ring state
+    bool textureRingActive = false;
+    std::vector<ImTextureID> textures;
+    float textureRingRadius = 170.0f;
+    ImU32 textureSectorHoverColor = IM_COL32(100, 200, 100, 220);
+    int hoveredTexture = -1;
+
     void DrawSector(ImDrawList* drawList, float startAngle, float endAngle,
                     float innerR, float outerR, ImU32 fillColor, ImU32 outlineCol);
     void DrawLabel(ImDrawList* drawList, const std::string& label,
                    float angleStart, float angleEnd,
                    float innerR, float outerR, ImU32 color);
+    void DrawTextureSector(ImDrawList* drawList, float startAngle, float endAngle,
+                           float innerR, float outerR, ImTextureID tex,
+                           bool hovered, ImU32 outlineCol);
 };

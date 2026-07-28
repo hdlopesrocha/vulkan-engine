@@ -47,6 +47,9 @@ public:
     // Returns true on the rising edge of the Home button press.
     bool homeButtonPressed();
 
+    // Returns true on the rising edge of the A button press.
+    bool aButtonPressed();
+
 private:
     WiimoteState state;
     std::atomic<bool> autoConnecting = false;
@@ -62,6 +65,7 @@ private:
     // Tracking state for control mapping
     uint16_t prevButtons = 0;
     bool homePrev = false;
+    bool aPrev = false;
     float startYaw = 0.0f;
     float startPitch = 0.0f;
     float startRoll = 0.0f;

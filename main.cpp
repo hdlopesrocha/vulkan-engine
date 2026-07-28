@@ -69,6 +69,7 @@
 #include "events/ToggleFullscreenEvent.hpp"
 #include "events/RebuildBrushEvent.hpp"
 #include "events/ApplyBrushToSceneEvent.hpp"
+#include "events/SetBrushTextureEvent.hpp"
 #include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
 #include "world/World.hpp"
@@ -137,7 +138,9 @@ public:
     std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     std::shared_ptr<RadialMenu> radialMenu;
+    std::vector<Page> radialMenuPages;
     bool tabPrev = false;
+    bool textureSelectPrev = false;
     WidgetManager widgetManager;
     FilePicker scenePicker_{"Scene File Picker", ".scene"};
     uint32_t loadedTextureLayers = 0;
@@ -576,14 +579,13 @@ public:
         // Radial menu (input-agnostic overlay, not a Widget subclass)
         radialMenu = std::make_shared<RadialMenu>();
         {
-            std::vector<Page> rmPages;
             // Camera page
             {
                 Page cam;
                 cam.label = "Camera";
                 cam.subPages.push_back({"Transform"});
                 cam.subPages.push_back({"UI"});
-                rmPages.push_back(cam);
+                radialMenuPages.push_back(cam);
             }
             // Brush page
             {
@@ -595,9 +597,9 @@ public:
                 brush.subPages.push_back({"Attributes"});
                 brush.subPages.push_back({"Aim"});
                 brush.subPages.push_back({"Color"});
-                rmPages.push_back(brush);
+                radialMenuPages.push_back(brush);
             }
-            radialMenu->SetPages(rmPages);
+            radialMenu->SetPages(radialMenuPages);
         }
   // Create octree explorer widget bound to loaded scene
 
@@ -702,21 +704,26 @@ public:
 
         if (deltaTime > 0.0f) profileFps = 1.0f / deltaTime;
         auto cpuUpdateT0 = std::chrono::high_resolution_clock::now();
-        // Poll keyboard input and publish events
-        keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
-        // Poll gamepad input and publish events (if a controller is connected)
-        gamepadPublisher.update(&eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
-        // Poll nunchuk state (if a Wiimote with nunchuk extension is connected)
-        nunchukPublisher.update();
-        // Map Wiimote / Nunchuk inputs to controller actions (page navigation,
-        // accelerometer translation, YPR rotation, joystick drag-and-drop).
-        nunchukPublisher.applyControls(&eventManager, camera, deltaTime,
-                                       &controllerManager, &brushManager,
-                                        world ? &world->opaqueOctree() : nullptr);
-        // Poll mouse input and publish camera events based on the mouse page.
-        // Tell the publisher when ImGui is capturing the mouse so it yields.
+
+        // Suppress all normal input when radial menu is visible
+        bool radialMenuVisible = radialMenu && radialMenu->IsVisible();
+
+        if (!radialMenuVisible) {
+            keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
+            gamepadPublisher.update(&eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
+            nunchukPublisher.update();
+            nunchukPublisher.applyControls(&eventManager, camera, deltaTime,
+                                           &controllerManager, &brushManager,
+                                            world ? &world->opaqueOctree() : nullptr);
+        } else {
+            // Still poll nunchuk state so Home/A button edge detection works
+            nunchukPublisher.update();
+        }
+
+        // Mouse: suppress when radial menu is visible or ImGui captures mouse
+        bool mouseSuppressed = ImGui::GetIO().WantCaptureMouse || radialMenuVisible;
         mousePublisher.update(&eventManager, camera, deltaTime, &controllerManager,
-                             &brushManager, ImGui::GetIO().WantCaptureMouse);
+                             &brushManager, mouseSuppressed);
         eventManager.processQueued();
 
         // ── Radial menu toggle and input ──
@@ -737,12 +744,13 @@ public:
                 radialMenu->SetCenter(ImVec2(getWidth() * 0.5f, getHeight() * 0.5f));
 
                 // Feed input vector: pixel-space offset from center.
-                // The widget compares this against its pixel-space radii.
                 ImVec2 vec(0, 0);
                 if (nunchukPublisher.isConnected()) {
                     WiimoteState ws = nunchukPublisher.getState();
-                    // Joystick is -1..1, scale to pixel units matching outer radius
-                    vec = ImVec2(ws.joystickX * 120.0f, ws.joystickY * 120.0f);
+                    // Scale to texture ring when active, outer radius otherwise
+                    float scale = radialMenu->GetTextureRingActive() ? 170.0f : 120.0f;
+                    // Nunchuk Y is positive-up, screen Y is positive-down
+                    vec = ImVec2(ws.joystickX * scale, -ws.joystickY * scale);
                 } else {
                     double mx, my;
                     glfwGetCursorPos(getWindow(), &mx, &my);
@@ -752,6 +760,54 @@ public:
                     );
                 }
                 radialMenu->SetInputVector(vec);
+
+                // Detect if the "Texture" subpage is hovered
+                bool textureSubpageHovered = false;
+                int hp = radialMenu->GetHoveredPage();
+                int hs = radialMenu->GetHoveredSubPage();
+                if (hp >= 0 && hp < static_cast<int>(radialMenuPages.size()) && hs >= 0) {
+                    const auto& subPages = radialMenuPages[hp].subPages;
+                    if (hs < static_cast<int>(subPages.size())) {
+                        textureSubpageHovered = (subPages[hs].label == "Texture");
+                    }
+                }
+
+                // Toggle texture ring on mouse click or Wiimote A (edge-triggered)
+                bool selectNow = false;
+                if (nunchukPublisher.isConnected()) {
+                    selectNow = nunchukPublisher.aButtonPressed();
+                } else {
+                    selectNow = (glfwGetMouseButton(getWindow(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+                }
+                bool selectEdge = selectNow && !textureSelectPrev;
+                textureSelectPrev = selectNow;
+
+                if (!radialMenu->GetTextureRingActive()) {
+                    // Open texture ring when Texture subpage is hovered and A/click pressed
+                    if (textureSubpageHovered && selectEdge) {
+                        radialMenu->SetTextureRingActive(true);
+                    }
+                } else {
+                    // Feed textures when ring is active
+                    std::vector<ImTextureID> texIds;
+                    for (uint32_t i = 0; i < loadedTextureLayers; ++i) {
+                        texIds.push_back(textureArrayManager.getImTexture(i, 0));
+                    }
+                    radialMenu->SetTextures(texIds);
+
+                    // Live-preview: apply texture on hover
+                    int ht = radialMenu->GetHoveredTexture();
+                    if (ht >= 0) {
+                        eventManager.queue(std::make_shared<SetBrushTextureEvent>(ht));
+                    }
+
+                    // A/click confirms selection and closes the ring
+                    if (selectEdge) {
+                        radialMenu->SetTextureRingActive(false);
+                    }
+                }
+            } else {
+                textureSelectPrev = false;
             }
         }
 
@@ -2013,6 +2069,14 @@ public:
         }
         if (auto applyEvent = std::dynamic_pointer_cast<ApplyBrushToSceneEvent>(event)) {
             brushApplyToScenePending = true;
+            return;
+        }
+        if (auto texEvent = std::dynamic_pointer_cast<SetBrushTextureEvent>(event)) {
+            BrushEntry* be = brushManager.getSelectedEntry();
+            if (be && be->materialIndex != texEvent->index) {
+                be->materialIndex = texEvent->index;
+                brushRebuildPending = true;
+            }
             return;
         }
     }

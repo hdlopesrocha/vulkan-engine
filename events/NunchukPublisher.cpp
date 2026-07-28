@@ -820,3 +820,11 @@ bool NunchukPublisher::homeButtonPressed() {
     homePrev = homeNow;
     return pressed;
 }
+
+bool NunchukPublisher::aButtonPressed() {
+    std::lock_guard<std::mutex> lock(mutex);
+    bool aNow = (state.buttons & WIIMOTE_BUTTON_A) != 0;
+    bool pressed = aNow && !aPrev;
+    aPrev = aNow;
+    return pressed;
+}

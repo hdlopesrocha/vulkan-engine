@@ -83,10 +83,41 @@ int RadialMenu::GetHoveredSubPage() const
     return hoveredSubPage;
 }
 
+void RadialMenu::SetTextureRingActive(bool active)
+{
+    textureRingActive = active;
+}
+
+bool RadialMenu::GetTextureRingActive() const
+{
+    return textureRingActive;
+}
+
+void RadialMenu::SetTextures(const std::vector<ImTextureID>& textures_)
+{
+    textures = textures_;
+}
+
+int RadialMenu::GetHoveredTexture() const
+{
+    return hoveredTexture;
+}
+
+void RadialMenu::SetTextureRingRadius(float radius)
+{
+    textureRingRadius = radius;
+}
+
+void RadialMenu::SetTextureSectorHoverColor(ImU32 color)
+{
+    textureSectorHoverColor = color;
+}
+
 void RadialMenu::Update()
 {
     hoveredPage = -1;
     hoveredSubPage = -1;
+    hoveredTexture = -1;
 
     if (!visible || pages.empty())
         return;
@@ -98,6 +129,22 @@ void RadialMenu::Update()
 
     if (currentRadius < deadZoneRadius)
         return;
+
+    // Texture ring hover detection (outermost ring)
+    if (textureRingActive && !textures.empty())
+    {
+        if (currentRadius > outerRadius + ringSpacing && currentRadius <= textureRingRadius)
+        {
+            int texCount = static_cast<int>(textures.size());
+            float texAngle = TWO_PI / static_cast<float>(texCount);
+            int texIdx = static_cast<int>(currentAngle / texAngle);
+            if (texIdx >= texCount)
+                texIdx = texCount - 1;
+            hoveredTexture = texIdx;
+        }
+        // When texture ring is active, don't process inner rings
+        return;
+    }
 
     if (currentRadius > outerRadius)
         return;
@@ -177,6 +224,24 @@ void RadialMenu::Draw()
         }
     }
 
+    // Texture ring: spans 360° (outerRadius + ringSpacing → textureRingRadius)
+    if (textureRingActive && !textures.empty())
+    {
+        int texCount = static_cast<int>(textures.size());
+        float texAngle = TWO_PI / static_cast<float>(texCount);
+
+        for (int t = 0; t < texCount; ++t)
+        {
+            float startAngle = static_cast<float>(t) * texAngle;
+            float endAngle = startAngle + texAngle;
+
+            bool hovered = (t == hoveredTexture);
+            DrawTextureSector(drawList, startAngle, endAngle,
+                              outerRadius + ringSpacing, textureRingRadius,
+                              textures[t], hovered, outlineColor);
+        }
+    }
+
     drawList->AddCircleFilled(center, deadZoneRadius, IM_COL32(20, 20, 30, 200), 64);
     drawList->AddCircle(center, deadZoneRadius, outlineColor, 64, 1.0f);
 }
@@ -227,4 +292,79 @@ void RadialMenu::DrawLabel(ImDrawList* drawList, const std::string& label,
     );
 
     drawList->AddText(textPos, color, label.c_str());
+}
+
+void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float endAngle,
+                                    float innerR, float outerR, ImTextureID tex,
+                                    bool hovered, ImU32 outlineCol)
+{
+    if (!tex)
+    {
+        DrawSector(drawList, startAngle, endAngle, innerR, outerR, backgroundColor, outlineCol);
+        return;
+    }
+
+    // Approximate the curved sector with UV-mapped quads
+    const int segments = 16;
+    float span = endAngle - startAngle;
+
+    for (int i = 0; i < segments; ++i)
+    {
+        float a0 = startAngle + span * static_cast<float>(i) / static_cast<float>(segments);
+        float a1 = startAngle + span * static_cast<float>(i + 1) / static_cast<float>(segments);
+        float c0 = std::cos(a0), s0 = std::sin(a0);
+        float c1 = std::cos(a1), s1 = std::sin(a1);
+
+        ImVec2 p0(center.x + c0 * innerR, center.y + s0 * innerR);
+        ImVec2 p1(center.x + c1 * innerR, center.y + s1 * innerR);
+        ImVec2 p2(center.x + c1 * outerR, center.y + s1 * outerR);
+        ImVec2 p3(center.x + c0 * outerR, center.y + s0 * outerR);
+
+        float u0 = static_cast<float>(i) / static_cast<float>(segments);
+        float u1 = static_cast<float>(i + 1) / static_cast<float>(segments);
+
+        if (hovered)
+        {
+            drawList->AddImageQuad(tex, p0, p1, p2, p3,
+                                   ImVec2(u0, 0), ImVec2(u1, 0), ImVec2(u1, 1), ImVec2(u0, 1),
+                                   textureSectorHoverColor);
+        }
+        else
+        {
+            drawList->AddImageQuad(tex, p0, p1, p2, p3,
+                                   ImVec2(u0, 0), ImVec2(u1, 0), ImVec2(u1, 1), ImVec2(u0, 1),
+                                   IM_COL32_WHITE);
+        }
+    }
+
+    // Outline
+    const int outlineSegments = 32;
+    for (int i = 0; i <= outlineSegments; ++i)
+    {
+        float t = static_cast<float>(i) / static_cast<float>(outlineSegments);
+        float a = startAngle + t * span;
+        float ca = std::cos(a), sa = std::sin(a);
+
+        ImVec2 inner(center.x + ca * innerR, center.y + sa * innerR);
+        ImVec2 outer(center.x + ca * outerR, center.y + sa * outerR);
+
+        if (i > 0)
+        {
+            float prevA = startAngle + static_cast<float>(i - 1) / static_cast<float>(outlineSegments) * span;
+            float cpa = std::cos(prevA), spa = std::sin(prevA);
+            drawList->AddLine(ImVec2(center.x + cpa * innerR, center.y + spa * innerR), inner, outlineCol, 1.0f);
+            drawList->AddLine(ImVec2(center.x + cpa * outerR, center.y + spa * outerR), outer, outlineCol, 1.0f);
+        }
+        if (i == 0 || i == outlineSegments)
+        {
+            drawList->AddLine(inner, outer, outlineCol, 1.0f);
+        }
+    }
+
+    // Hover highlight ring
+    if (hovered)
+    {
+        drawList->AddCircle(center, innerR, outlineCol, 64, 2.0f);
+        drawList->AddCircle(center, outerR, outlineCol, 64, 2.0f);
+    }
 }
