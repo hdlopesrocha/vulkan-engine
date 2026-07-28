@@ -12,7 +12,7 @@ enum class ControllerId { KEYBOARD, MOUSE, GAMEPAD, WIIMOTE };
 
 // Top-level category of control. The active category decides whether an input
 // acts on the camera or on the selected SDF brush.
-enum class PageCategory { CAMERA, BRUSH };
+enum class PageCategory { CAMERA, BRUSH, LIGHT };
 
 // Sub-control selected inside a category. This is what a given input axis /
 // button maps to for the active category. UI pages are non-propagating: the
@@ -27,7 +27,9 @@ enum class PageControl {
     AIM,         // wiimote M+ orient -> ray octree intersection -> snap brush pos
     COLOR,       // wiimote rotation -> HSV tint on brush
     CONTROL,     // opens outer ring to select Translate/Aim/Scale
-    UI           // non-propagating passthrough (ImGui / UI)
+    UI,          // non-propagating passthrough (ImGui / UI)
+    AZIMUTH,     // light horizontal angle
+    ELEVATION    // light vertical angle
 };
 
 // A node in the controller page tree. The tree is two levels deep:
@@ -111,6 +113,15 @@ public:
         brush->addChild("Attributes", PageControl::ATTRIBUTE);
         brush->addChild("Color",      PageControl::COLOR);
         root_->children.push_back(brush);
+
+        // Light category
+        auto light = std::make_shared<ControllerPage>();
+        light->name = "Light";
+        light->category = PageCategory::LIGHT;
+        light->control = PageControl::AZIMUTH;
+        light->addChild("Azimuth",   PageControl::AZIMUTH);
+        light->addChild("Elevation", PageControl::ELEVATION);
+        root_->children.push_back(light);
 
         pageIndex_ = 0;
         subpageIndex_ = 0;

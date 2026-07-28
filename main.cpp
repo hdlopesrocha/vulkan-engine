@@ -74,6 +74,7 @@
 #include "events/SetBrushPaintModeEvent.hpp"
 #include "events/SetBrushDragModeEvent.hpp"
 #include "events/SetBrushHSVEvent.hpp"
+#include "events/SetLightEvent.hpp"
 #include "events/SetPageEvent.hpp"
 #include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
@@ -147,7 +148,7 @@ public:
     bool tabPrev = false;
     bool textureSelectPrev = false;
     bool backPrev = false;
-    enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV };
+    enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV, LIGHT };
     LabelRingKind labelRingKind = LabelRingKind::CONTROL;
     bool hsvSliderConfirmed = false; // true after HSV component is selected from label ring
     WidgetManager widgetManager;
@@ -608,6 +609,14 @@ public:
                 brush.subPages.push_back({"Color"});
                 radialMenuPages.push_back(brush);
             }
+            // Light page
+            {
+                Page lgt;
+                lgt.label = "Light";
+                lgt.subPages.push_back({"Azimuth"});
+                lgt.subPages.push_back({"Elevation"});
+                radialMenuPages.push_back(lgt);
+            }
             radialMenu->SetPages(radialMenuPages);
         }
   // Create octree explorer widget bound to loaded scene
@@ -780,6 +789,8 @@ public:
                 bool paintSubpageHovered = false;
                 bool dragModeSubpageHovered = false;
                 bool colorSubpageHovered = false;
+                bool azimuthSubpageHovered = false;
+                bool elevationSubpageHovered = false;
                 int hp = radialMenu->GetHoveredPage();
                 int hs = radialMenu->GetHoveredSubPage();
                 if (hp >= 0 && hp < static_cast<int>(radialMenuPages.size()) && hs >= 0) {
@@ -790,6 +801,8 @@ public:
                         paintSubpageHovered = (subPages[hs].label == "Mode");
                         dragModeSubpageHovered = (subPages[hs].label == "Drag Mode");
                         colorSubpageHovered = (subPages[hs].label == "Color");
+                        azimuthSubpageHovered = (subPages[hs].label == "Azimuth");
+                        elevationSubpageHovered = (subPages[hs].label == "Elevation");
                     }
                 }
 
@@ -830,6 +843,22 @@ public:
                             radialMenu->SetLabelItems({"Hue", "Saturation", "Value"});
                             labelRingKind = LabelRingKind::HSV;
                             radialMenu->SetLabelRingActive(true);
+                        } else if (azimuthSubpageHovered) {
+                            float azi, ele;
+                            light.getSpherical(azi, ele);
+                            radialMenu->SetLabelRingActive(false);
+                            radialMenu->SetHSVComponent("Azimuth", azi + 180.0f, 0.0f, 360.0f);
+                            radialMenu->SetHSVSliderActive(true);
+                            hsvSliderConfirmed = false;
+                            textureSelectPrev = true;
+                        } else if (elevationSubpageHovered) {
+                            float azi, ele;
+                            light.getSpherical(azi, ele);
+                            radialMenu->SetLabelRingActive(false);
+                            radialMenu->SetHSVComponent("Elevation", ele + 90.0f, 0.0f, 180.0f);
+                            radialMenu->SetHSVSliderActive(true);
+                            hsvSliderConfirmed = false;
+                            textureSelectPrev = true;
                         } else if (hp >= 0 && hs >= 0) {
                             // Directly select subpage (Translate, UI, Attributes, Color)
                             const auto& subPages = radialMenuPages[hp].subPages;
@@ -910,7 +939,11 @@ public:
                     // HSV slider ring active: publish value while dragging
                     float val = radialMenu->GetHSVSliderValue();
                     std::string comp = radialMenu->GetHSVComponentName();
-                    eventManager.queue(std::make_shared<SetBrushHSVEvent>(comp, val));
+                    if (comp == "Azimuth" || comp == "Elevation") {
+                        eventManager.queue(std::make_shared<SetLightEvent>(comp, val));
+                    } else {
+                        eventManager.queue(std::make_shared<SetBrushHSVEvent>(comp, val));
+                    }
 
                     // Close slider on select (confirm) — back is handled by the general handler below
                     if (selectEdge) {
@@ -2288,6 +2321,16 @@ public:
                     be->hsv.z = hsvEvent->value / 100.0f;
                 }
                 eventManager.queue(std::make_shared<RebuildBrushEvent>());
+            }
+            return;
+        }
+        if (auto lightEvent = std::dynamic_pointer_cast<SetLightEvent>(event)) {
+            float azi, ele;
+            light.getSpherical(azi, ele);
+            if (lightEvent->component == "Azimuth") {
+                light.setFromSpherical(lightEvent->value - 180.0f, ele);
+            } else if (lightEvent->component == "Elevation") {
+                light.setFromSpherical(azi, lightEvent->value - 90.0f);
             }
             return;
         }
