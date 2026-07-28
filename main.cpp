@@ -900,21 +900,32 @@ public:
                             } else if (subLabel == "Control") {
                                 labelRingKind = LabelRingKind::CONTROL;
                                 radialMenu->PushLabelRing({"Translate", "Aim", "Scale"});
+                                int ci = 0;
+                                if (brushManager.controlMode == BrushControlMode::AIM) ci = 1;
+                                else if (brushManager.controlMode == BrushControlMode::SCALE) ci = 2;
+                                radialMenu->SetCurrentItem(ci);
 
                             // Mode subpage → label ring
                             } else if (subLabel == "Mode") {
                                 labelRingKind = LabelRingKind::PAINT;
                                 radialMenu->PushLabelRing({"Add", "Remove", "Paint"});
+                                int ci = 0;
+                                if (brushManager.paintMode == BrushPaintMode::REMOVE) ci = 1;
+                                else if (brushManager.paintMode == BrushPaintMode::PAINT) ci = 2;
+                                radialMenu->SetCurrentItem(ci);
 
                             // Drag Mode subpage → label ring
                             } else if (subLabel == "Drag Mode") {
                                 labelRingKind = LabelRingKind::DRAG;
                                 radialMenu->PushLabelRing({"Drag", "Click"});
+                                int ci = (brushManager.dragMode == BrushDragMode::CLICK) ? 1 : 0;
+                                radialMenu->SetCurrentItem(ci);
 
                             // Color subpage → HSV label ring
                             } else if (subLabel == "Color") {
                                 labelRingKind = LabelRingKind::HSV;
                                 radialMenu->PushLabelRing({"Hue", "Saturation", "Value"});
+                                radialMenu->SetCurrentItem(-1);
 
                             // Azimuth subpage → slider
                             } else if (subLabel == "Azimuth") {

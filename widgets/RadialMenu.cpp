@@ -172,6 +172,12 @@ int RadialMenu::GetHoveredLabel() const
     return stack.back().hoveredLabel;
 }
 
+void RadialMenu::SetCurrentItem(int index)
+{
+    if (!stack.empty() && stack.back().type == RingType::LABEL)
+        stack.back().currentItem = index;
+}
+
 // ---- HSV slider queries ----
 
 void RadialMenu::SetHSVSliderValue(float value)
@@ -520,6 +526,8 @@ void RadialMenu::Draw()
                     fillColor = labelSectorHoverColor;
                 else if (!isTop && i == entry.selectedIndex)
                     fillColor = subpageSelectedColor;
+                else if (i == entry.currentItem)
+                    fillColor = labelCurrentItemColor;
 
                 DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, fillColor, outlineColor);
                 DrawLabel(drawList, entry.items[i], startAngle, endAngle, layerInnerR, layerOuterR, IM_COL32(255, 255, 255, 255));

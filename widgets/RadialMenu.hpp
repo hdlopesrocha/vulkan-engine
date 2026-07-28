@@ -66,6 +66,7 @@ public:
 
     // Label ring queries (active ring must be LABEL)
     int GetHoveredLabel() const;
+    void SetCurrentItem(int index);
 
     // HSV slider queries (active ring must be HSV_SLIDER)
     void SetHSVSliderValue(float value);
@@ -132,6 +133,7 @@ private:
         // LABEL
         std::vector<std::string> items;
         int hoveredLabel = -1;
+        int currentItem = -1;     // index of the currently active option
 
         // HSV_SLIDER
         std::string sliderName;
@@ -150,6 +152,7 @@ private:
     ImU32 textureSectorHoverColor = IM_COL32(100, 200, 100, 220);
     ImU32 navSectorHoverColor = IM_COL32(180, 180, 60, 220);
     ImU32 labelSectorHoverColor = IM_COL32(100, 200, 100, 220);
+    ImU32 labelCurrentItemColor = IM_COL32(80, 120, 200, 200);
     ImU32 sliderFillColor = IM_COL32(220, 180, 50, 220);
     ImU32 sliderTrackColor = IM_COL32(60, 60, 70, 180);
 
