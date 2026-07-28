@@ -14,76 +14,14 @@ class SweepSignedDistanceFunction : public SignedDistanceFunction {
     BoundingSphere sphere;
 public:
     SweepSignedDistanceFunction(const T &f1, const T &f2,
-                                const Transformation &model, float bias)
-        : SignedDistanceFunction(SdfType::SWEEP, model)
-        , function1(f1)
-        , function2(f2)
-        , posA(f1.getCenter())
-        , posB(f2.getCenter())
-    {
-        m_center = (posA + posB) * 0.5f;
-        BoundingSphere s1 = function1.getSphere(model, bias);
-        BoundingSphere s2 = function2.getSphere(model, bias);
-        glm::vec3 delta = s2.center - s1.center;
-        float dist = glm::length(delta);
-        if (dist < 1e-6f) {
-            sphere = BoundingSphere(s1.center, glm::max(s1.radius, s2.radius));
-        } else {
-            float r = (dist + s1.radius + s2.radius) * 0.5f;
-            glm::vec3 c = s1.center + delta * ((r - s1.radius) / dist);
-            sphere = BoundingSphere(c, r);
-        }
-    }
-
+                                const Transformation &model, float bias);
     virtual ~SweepSignedDistanceFunction() = default;
 
-    float distance(const glm::vec3 &p) const override {
-        glm::vec3 seg = posB - posA;
-        float segLenSq = glm::dot(seg, seg);
-        if (segLenSq < 1e-6f) {
-            return function1.distance(p);
-        }
-        float t = glm::clamp(glm::dot(p - posA, seg) / segLenSq, 0.0f, 1.0f);
-        glm::vec3 closest = posA + t * seg;
-        // Interpolate transform at the closest point
-        glm::quat rotInterp = glm::slerp(function1.getRotation(), function2.getRotation(), t);
-        glm::quat rotA = function1.getRotation();
-        glm::vec3 scaleInterp = glm::mix(function1.getScale(), function2.getScale(), t);
-        glm::vec3 scaleA = function1.getScale();
-        // Transform point so fn1 evaluates at the interpolated position/rotation/scale
-        glm::vec3 q = posA + rotA * ((scaleA / scaleInterp) * (glm::inverse(rotInterp) * (p - closest)));
-        float minScaleInterp = glm::min(glm::min(scaleInterp.x, scaleInterp.y), scaleInterp.z);
-        float minScaleA = glm::min(glm::min(scaleA.x, scaleA.y), scaleA.z);
-        return function1.distance(q) * minScaleInterp / minScaleA;
-    }
-
-    BoundingSphere getSphere(const Transformation &model, float bias) const override {
-        return sphere;
-    }
-
-    BoundingBox getBox(float bias) const override {
-        BoundingSphere s1 = function1.getSphere(m_model, bias);
-        BoundingSphere s2 = function2.getSphere(m_model, bias);
-        glm::vec3 min1 = s1.center - glm::vec3(s1.radius);
-        glm::vec3 max1 = s1.center + glm::vec3(s1.radius);
-        glm::vec3 min2 = s2.center - glm::vec3(s2.radius);
-        glm::vec3 max2 = s2.center + glm::vec3(s2.radius);
-        return BoundingBox(glm::min(min1, min2), glm::max(max1, max2));
-    }
-
-    ContainmentType check(const BoundingCube &cube) const override {
-        return sphere.test(cube);
-    }
-
-    bool isContained(const BoundingCube &cube) const override {
-        return cube.contains(sphere);
-    }
-
-    const char* getLabel() const override {
-        return "Sweep";
-    }
-
-    glm::vec3 getCenter() const override {
-        return m_center;
-    }
+    float distance(const glm::vec3 &p) const override;
+    BoundingSphere getSphere(const Transformation &model, float bias) const override;
+    BoundingBox getBox(float bias) const override;
+    ContainmentType check(const BoundingCube &cube) const override;
+    bool isContained(const BoundingCube &cube) const override;
+    const char* getLabel() const override;
+    glm::vec3 getCenter() const override;
 };
