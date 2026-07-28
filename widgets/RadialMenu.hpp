@@ -168,7 +168,7 @@ private:
                    float innerR, float outerR, bool right, ImU32 color);
     void DrawTextureSector(ImDrawList* drawList, float startAngle, float endAngle,
                            float innerR, float outerR, ImTextureID tex,
-                           bool hovered, ImU32 outlineCol);
+                           bool hovered, bool selected, ImU32 outlineCol);
     void DrawSliderRing(ImDrawList* drawList, float innerR, float outerR,
                         float value, float minVal, float maxVal,
                         const std::string& label, ImU32 trackCol, ImU32 fillCol,

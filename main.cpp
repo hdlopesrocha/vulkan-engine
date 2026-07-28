@@ -812,18 +812,15 @@ public:
                     }
                     radialMenu->SetTextures(texIds);
 
-                    int ht = radialMenu->GetHoveredTexture();
-                    if (ht >= 0) {
-                        eventManager.queue(std::make_shared<SetBrushTextureEvent>(ht));
-                    }
-
                     if (selectEdge) {
-                        if (radialMenu->GetHoveredNavPrev()) {
+                        int ht = radialMenu->GetHoveredTexture();
+                        if (ht >= 0) {
+                            radialMenu->SetSelectedIndex(ht);
+                            eventManager.queue(std::make_shared<SetBrushTextureEvent>(ht));
+                        } else if (radialMenu->GetHoveredNavPrev()) {
                             radialMenu->SetTexturePage(radialMenu->GetTexturePage() - 1);
                         } else if (radialMenu->GetHoveredNavNext()) {
                             radialMenu->SetTexturePage(radialMenu->GetTexturePage() + 1);
-                        } else {
-                            radialMenu->PopRing();
                         }
                     }
                 } else if (activeType == RadialMenu::RingType::LABEL) {

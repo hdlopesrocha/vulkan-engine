@@ -479,10 +479,10 @@ void RadialMenu::Draw()
                     int pageOffset = entry.texturePage * kTexturesPerPage;
                     int texIdx = pageOffset + s;
                     bool hovered = isTop && (texIdx == entry.hoveredTexture);
-                    bool selected = !isTop && (texIdx == entry.selectedIndex);
+                    bool selected = (texIdx == entry.selectedIndex);
                     if (texIdx < totalTex)
                         DrawTextureSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR,
-                                          entry.textures[texIdx], hovered || selected, outlineColor);
+                                          entry.textures[texIdx], hovered, selected, outlineColor);
                     else
                         DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
                 }
@@ -603,13 +603,19 @@ void RadialMenu::DrawArrow(ImDrawList* drawList, float angleStart, float angleEn
 
 void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float endAngle,
                                     float innerR, float outerR, ImTextureID tex,
-                                    bool hovered, ImU32 outlineCol)
+                                    bool hovered, bool selected, ImU32 outlineCol)
 {
     if (!tex)
     {
         DrawSector(drawList, startAngle, endAngle, innerR, outerR, backgroundColor, outlineCol);
         return;
     }
+
+    ImU32 tint = IM_COL32_WHITE;
+    if (hovered)
+        tint = textureSectorHoverColor;
+    else if (selected)
+        tint = subpageSelectedColor;
 
     const int segments = 16;
     float span = endAngle - startAngle;
@@ -629,14 +635,9 @@ void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float
         float u0 = static_cast<float>(i) / static_cast<float>(segments);
         float u1 = static_cast<float>(i + 1) / static_cast<float>(segments);
 
-        if (hovered)
-            drawList->AddImageQuad(tex, p0, p1, p2, p3,
-                                   ImVec2(u0, 0), ImVec2(u1, 0), ImVec2(u1, 1), ImVec2(u0, 1),
-                                   textureSectorHoverColor);
-        else
-            drawList->AddImageQuad(tex, p0, p1, p2, p3,
-                                   ImVec2(u0, 0), ImVec2(u1, 0), ImVec2(u1, 1), ImVec2(u0, 1),
-                                   IM_COL32_WHITE);
+        drawList->AddImageQuad(tex, p0, p1, p2, p3,
+                               ImVec2(u0, 0), ImVec2(u1, 0), ImVec2(u1, 1), ImVec2(u0, 1),
+                               tint);
     }
 
     const int outlineSegments = 32;
@@ -662,7 +663,7 @@ void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float
         }
     }
 
-    if (hovered)
+    if (hovered || selected)
     {
         drawList->AddCircle(center, innerR, outlineCol, 64, 2.0f);
         drawList->AddCircle(center, outerR, outlineCol, 64, 2.0f);
