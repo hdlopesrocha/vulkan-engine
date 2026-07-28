@@ -1,11 +1,12 @@
 #pragma once
 
 #include "SignedDistanceOperation.hpp"
+#include "SDF.hpp"
 
 class PaintSignedDistanceOperation final : public SignedDistanceOperation {
 public:
     float combine(float existing, float shape) const override {
-        return existing;
+        return SDF::opPaint(existing, shape);
     }
 
     bool propagatesFromInfinity() const override { return false; }

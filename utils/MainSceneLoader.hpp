@@ -339,26 +339,6 @@ public:
         }
         
         {
-            std::cout << "\topaqueLayer.add(box)"<< std::endl;
-            glm::vec3 min = glm::vec3(2500+128,256+128,-1000+128);
-            glm::vec3 len = glm::vec3(256.0f);
-            BoundingBox box = BoundingBox(min,min+len);
-            Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
-            BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), minSize*4.0, simplifier, opaqueHandler);
-        }
-        
-        {
-            std::cout << "\topaqueLayer.add(box)"<< std::endl;
-            glm::vec3 min = glm::vec3(1500+128,256+128,-1000+128);
-            glm::vec3 len = glm::vec3(256.0f);
-            BoundingBox box = BoundingBox(min,min+len);
-            Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
-            BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), minSize*0.25, simplifier, opaqueHandler);
-        }
-
-        {
             std::cout << "\topaqueLayer.add(road)"<< std::endl;
             std::vector<RoadSpline::ControlPoint> ctrlPts;
             glm::vec3 up(0.0f, 1.0f, 0.0f);
@@ -445,6 +425,28 @@ public:
                 }
             }
         }
+
+
+        {
+            std::cout << "\topaqueLayer.paint(box)"<< std::endl;
+            glm::vec3 min = glm::vec3(2500+128,256-128,-1000+128);
+            glm::vec3 len = glm::vec3(256.0f, 512.0f, 512.0f);
+            BoundingBox box = BoundingBox(min,min+len);
+            Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
+            BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
+            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, opaqueHandler);
+        }
+        
+        {
+            std::cout << "\topaqueLayer.paint(box)"<< std::endl;
+            glm::vec3 min = glm::vec3(1500+128,256-128,-1000+128);
+            glm::vec3 len = glm::vec3(256.0f, 512.0f, 512.0f);
+            BoundingBox box = BoundingBox(min,min+len);
+            Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
+            BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
+            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, opaqueHandler);
+        }
+
 
     }
 
