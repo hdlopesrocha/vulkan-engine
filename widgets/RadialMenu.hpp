@@ -155,7 +155,7 @@ private:
     ImU32 sliderFillColor = IM_COL32(220, 180, 50, 220);
     ImU32 sliderTrackColor = IM_COL32(60, 60, 70, 180);
 
-    static constexpr int kTexturesPerPage = 14;
+    static constexpr int kTexturesPerPage = 6;
     static constexpr int kNavSectors = 2;
     static constexpr int kTotalTexSectors = kTexturesPerPage + kNavSectors;
 

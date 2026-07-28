@@ -212,9 +212,7 @@ void RadialMenu::Update()
         stack.back().textures = pendingTextures;
 
     currentRadius = std::sqrt(inputVector.x * inputVector.x + inputVector.y * inputVector.y);
-    currentAngle = std::atan2(inputVector.y, inputVector.x);
-    if (currentAngle < 0.0f)
-        currentAngle += TWO_PI;
+    currentAngle = std::fmod(std::atan2(inputVector.y, inputVector.x) + PI * 0.5f + TWO_PI, TWO_PI);
 
     if (currentRadius < deadZoneRadius)
         return;
@@ -242,9 +240,7 @@ void RadialMenu::Update()
         {
             if (currentRadius > topInnerR)
             {
-                float sliderAngle = currentAngle + PI * 0.5f;
-                if (sliderAngle >= TWO_PI) sliderAngle -= TWO_PI;
-                if (sliderAngle < 0.0f)    sliderAngle += TWO_PI;
+                float sliderAngle = currentAngle;
 
                 float range = active.sliderMax - active.sliderMin;
                 float rawValue = active.sliderMin + (sliderAngle / TWO_PI) * range;
@@ -392,10 +388,11 @@ void RadialMenu::Draw()
 
     // 1. Inner ring: pages (deadZone → innerRadius)
     int selectedPageIndex = GetStackPageIndex();
+    float angleOffset = -PI * 0.5f; // Start sectors at 12 o'clock
 
     for (int i = 0; i < pageCount; ++i)
     {
-        float startAngle = static_cast<float>(i) * pageAngle;
+        float startAngle = angleOffset + static_cast<float>(i) * pageAngle;
         float endAngle = startAngle + pageAngle;
 
         ImU32 fillColor = backgroundColor;
@@ -437,7 +434,7 @@ void RadialMenu::Draw()
 
             for (int j = 0; j < subCount; ++j)
             {
-                float startAngle = static_cast<float>(j) * subAngle;
+                float startAngle = angleOffset + static_cast<float>(j) * subAngle;
                 float endAngle = startAngle + subAngle;
 
                 ImU32 fillColor = backgroundColor;
@@ -460,7 +457,7 @@ void RadialMenu::Draw()
 
             for (int s = 0; s < kTotalTexSectors; ++s)
             {
-                float startAngle = static_cast<float>(s) * sectorAngle;
+                float startAngle = angleOffset + static_cast<float>(s) * sectorAngle;
                 float endAngle = startAngle + sectorAngle;
 
                 if (s == kTexturesPerPage)
@@ -501,7 +498,7 @@ void RadialMenu::Draw()
 
             for (int i = 0; i < count; ++i)
             {
-                float startAngle = static_cast<float>(i) * itemAngle;
+                float startAngle = angleOffset + static_cast<float>(i) * itemAngle;
                 float endAngle = startAngle + itemAngle;
 
                 ImU32 fillColor = backgroundColor;
