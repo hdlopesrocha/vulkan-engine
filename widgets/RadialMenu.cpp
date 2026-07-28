@@ -195,7 +195,6 @@ void RadialMenu::SetHSVComponent(const std::string& name, float value, float min
     hsvMin = minVal;
     hsvMax = maxVal;
     prevSliderAngle = -1.0f;
-
 }
 
 float RadialMenu::GetHSVSliderValue() const
@@ -233,8 +232,7 @@ void RadialMenu::Update()
     if (currentRadius < deadZoneRadius)
         return;
 
-    // HSV slider ring: delta-based with clamping at extremes
-    // CW increases, CCW decreases. At min/max, movement past the boundary is clamped.
+    // HSV slider ring: delta-based, clamped at min/max (no wraparound)
     if (hsvSliderActive)
     {
         if (currentRadius > sliderRingInnerRadius)
@@ -256,7 +254,6 @@ void RadialMenu::Update()
                 float range = hsvMax - hsvMin;
                 float newVal = hsvValue + (delta / TWO_PI) * range;
 
-                // Clamp at extremes — once at min or max, reset reference to prevent wraparound
                 if (newVal <= hsvMin) {
                     newVal = hsvMin;
                     prevSliderAngle = sliderAngle;
@@ -266,8 +263,8 @@ void RadialMenu::Update()
                 }
 
                 hsvValue = newVal;
-                prevSliderAngle = sliderAngle;
             }
+            prevSliderAngle = sliderAngle;
         }
         return;
     }
