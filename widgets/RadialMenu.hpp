@@ -65,6 +65,17 @@ public:
     void SetLabelRingRadius(float radius);
     void SetLabelSectorHoverColor(ImU32 color);
 
+    // HSV slider ring (clock-like circular slider)
+    void SetHSVSliderActive(bool active);
+    bool GetHSVSliderActive() const;
+    void SetHSVComponent(const std::string& name, float value, float minVal, float maxVal);
+    float GetHSVSliderValue() const;
+    std::string GetHSVComponentName() const;
+    void SetSliderRingInnerRadius(float r);
+    void SetSliderRingOuterRadius(float r);
+    void SetSliderFillColor(ImU32 color);
+    void SetSliderTrackColor(ImU32 color);
+
 private:
     bool visible = false;
 
@@ -110,6 +121,18 @@ private:
     ImU32 labelSectorHoverColor = IM_COL32(100, 200, 100, 220);
     int hoveredLabel = -1;
 
+    // HSV slider ring state
+    bool hsvSliderActive = false;
+    std::string hsvComponentName;
+    float hsvValue = 0.0f;
+    float hsvMin = 0.0f;
+    float hsvMax = 1.0f;
+    float prevSliderAngle = -1.0f; // -1 = uninitialized
+    float sliderRingInnerRadius = 180.0f;
+    float sliderRingOuterRadius = 220.0f;
+    ImU32 sliderFillColor = IM_COL32(220, 180, 50, 220);
+    ImU32 sliderTrackColor = IM_COL32(60, 60, 70, 180);
+
     void DrawSector(ImDrawList* drawList, float startAngle, float endAngle,
                     float innerR, float outerR, ImU32 fillColor, ImU32 outlineCol);
     void DrawLabel(ImDrawList* drawList, const std::string& label,
@@ -120,4 +143,8 @@ private:
     void DrawTextureSector(ImDrawList* drawList, float startAngle, float endAngle,
                            float innerR, float outerR, ImTextureID tex,
                            bool hovered, ImU32 outlineCol);
+    void DrawSliderRing(ImDrawList* drawList, float innerR, float outerR,
+                        float value, float minVal, float maxVal,
+                        const std::string& label, ImU32 trackCol, ImU32 fillCol,
+                        ImU32 textCol);
 };

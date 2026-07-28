@@ -73,6 +73,7 @@
 #include "events/SetBrushControlEvent.hpp"
 #include "events/SetBrushPaintModeEvent.hpp"
 #include "events/SetBrushDragModeEvent.hpp"
+#include "events/SetBrushHSVEvent.hpp"
 #include "events/SetPageEvent.hpp"
 #include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
@@ -145,8 +146,9 @@ public:
     std::vector<Page> radialMenuPages;
     bool tabPrev = false;
     bool textureSelectPrev = false;
-    enum class LabelRingKind { CONTROL, PAINT, DRAG };
+    enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV };
     LabelRingKind labelRingKind = LabelRingKind::CONTROL;
+    bool hsvSliderConfirmed = false; // true after HSV component is selected from label ring
     WidgetManager widgetManager;
     FilePicker scenePicker_{"Scene File Picker", ".scene"};
     uint32_t loadedTextureLayers = 0;
@@ -753,8 +755,12 @@ public:
                 ImVec2 vec(0, 0);
                 if (nunchukPublisher.isConnected()) {
                     WiimoteState ws = nunchukPublisher.getState();
-                    // Scale to outer ring when any ring is active
-                    float scale = (radialMenu->GetTextureRingActive() || radialMenu->GetLabelRingActive()) ? 170.0f : 120.0f;
+                    // Scale to ring when any ring is active
+                    float scale = 120.0f;
+                    if (radialMenu->GetTextureRingActive() || radialMenu->GetLabelRingActive())
+                        scale = 170.0f;
+                    else if (radialMenu->GetHSVSliderActive())
+                        scale = 250.0f;
                     // Nunchuk Y is positive-up, screen Y is positive-down
                     vec = ImVec2(ws.joystickX * scale, -ws.joystickY * scale);
                 } else {
@@ -772,6 +778,7 @@ public:
                 bool controlSubpageHovered = false;
                 bool paintSubpageHovered = false;
                 bool dragModeSubpageHovered = false;
+                bool colorSubpageHovered = false;
                 int hp = radialMenu->GetHoveredPage();
                 int hs = radialMenu->GetHoveredSubPage();
                 if (hp >= 0 && hp < static_cast<int>(radialMenuPages.size()) && hs >= 0) {
@@ -781,6 +788,7 @@ public:
                         controlSubpageHovered = (subPages[hs].label == "Control");
                         paintSubpageHovered = (subPages[hs].label == "Mode");
                         dragModeSubpageHovered = (subPages[hs].label == "Drag Mode");
+                        colorSubpageHovered = (subPages[hs].label == "Color");
                     }
                 }
 
@@ -794,7 +802,7 @@ public:
                 bool selectEdge = selectNow && !textureSelectPrev;
                 textureSelectPrev = selectNow;
 
-                bool anyRingActive = radialMenu->GetTextureRingActive() || radialMenu->GetLabelRingActive();
+                bool anyRingActive = radialMenu->GetTextureRingActive() || radialMenu->GetLabelRingActive() || radialMenu->GetHSVSliderActive();
 
                 if (!anyRingActive) {
                     if (selectEdge) {
@@ -812,6 +820,10 @@ public:
                         } else if (dragModeSubpageHovered) {
                             radialMenu->SetLabelItems({"Drag", "Click"});
                             labelRingKind = LabelRingKind::DRAG;
+                            radialMenu->SetLabelRingActive(true);
+                        } else if (colorSubpageHovered) {
+                            radialMenu->SetLabelItems({"Hue", "Saturation", "Value"});
+                            labelRingKind = LabelRingKind::HSV;
                             radialMenu->SetLabelRingActive(true);
                         } else if (hp >= 0 && hs >= 0) {
                             // Directly select subpage (Translate, UI, Attributes, Color)
@@ -854,28 +866,51 @@ public:
                         }
                     }
                 } else if (radialMenu->GetLabelRingActive()) {
-                    // Label ring active (Control, Paint, or Drag Mode)
+                    // Label ring active (Control, Paint, Drag Mode, or HSV)
                     int hl = radialMenu->GetHoveredLabel();
                     if (hl >= 0 && selectEdge) {
-                        if (labelRingKind == LabelRingKind::PAINT) {
+                        if (labelRingKind == LabelRingKind::HSV) {
+                            // Open HSV slider ring for selected component
+                            const char* compNames[] = { "Hue", "Saturation", "Value" };
+                            float compVals[] = { brushManager.getHue(), brushManager.getSaturation(), brushManager.getValue() };
+                            float compMax[] = { 360.0f, 100.0f, 100.0f };
+                            radialMenu->SetLabelRingActive(false);
+                            radialMenu->SetHSVComponent(compNames[hl], compVals[hl], 0.0f, compMax[hl]);
+                            radialMenu->SetHSVSliderActive(true);
+                            hsvSliderConfirmed = false;
+                            textureSelectPrev = true; // consume the edge so slider doesn't close immediately
+                        } else if (labelRingKind == LabelRingKind::PAINT) {
                             BrushPaintMode pm = BrushPaintMode::ADD;
                             if (hl == 0) pm = BrushPaintMode::ADD;
                             else if (hl == 1) pm = BrushPaintMode::REMOVE;
                             else if (hl == 2) pm = BrushPaintMode::PAINT;
                             eventManager.queue(std::make_shared<SetBrushPaintModeEvent>(pm));
+                            radialMenu->SetLabelRingActive(false);
                         } else if (labelRingKind == LabelRingKind::DRAG) {
                             BrushDragMode dm = BrushDragMode::DRAG;
                             if (hl == 0) dm = BrushDragMode::DRAG;
                             else if (hl == 1) dm = BrushDragMode::CLICK;
                             eventManager.queue(std::make_shared<SetBrushDragModeEvent>(dm));
+                            radialMenu->SetLabelRingActive(false);
                         } else {
                             BrushControlMode mode = BrushControlMode::TRANSLATE;
                             if (hl == 0) mode = BrushControlMode::TRANSLATE;
                             else if (hl == 1) mode = BrushControlMode::AIM;
                             else if (hl == 2) mode = BrushControlMode::SCALE;
                             eventManager.queue(std::make_shared<SetBrushControlEvent>(mode));
+                            radialMenu->SetLabelRingActive(false);
                         }
-                        radialMenu->SetLabelRingActive(false);
+                    }
+                } else if (radialMenu->GetHSVSliderActive()) {
+                    // HSV slider ring active: publish value while dragging
+                    float val = radialMenu->GetHSVSliderValue();
+                    std::string comp = radialMenu->GetHSVComponentName();
+                    eventManager.queue(std::make_shared<SetBrushHSVEvent>(comp, val));
+
+                    // Close slider on select
+                    if (selectEdge) {
+                        radialMenu->SetHSVSliderActive(false);
+                        hsvSliderConfirmed = false;
                     }
                 }
             } else {
@@ -2222,6 +2257,20 @@ public:
             switchCtx(controllerManager.mouseContext);
             switchCtx(controllerManager.gamepadContext);
             switchCtx(controllerManager.wiimoteContext);
+            return;
+        }
+        if (auto hsvEvent = std::dynamic_pointer_cast<SetBrushHSVEvent>(event)) {
+            BrushEntry* be = brushManager.getSelectedEntry();
+            if (be) {
+                if (hsvEvent->component == "Hue") {
+                    be->hsv.x = hsvEvent->value;
+                } else if (hsvEvent->component == "Saturation") {
+                    be->hsv.y = hsvEvent->value / 100.0f;
+                } else if (hsvEvent->component == "Value") {
+                    be->hsv.z = hsvEvent->value / 100.0f;
+                }
+                eventManager.queue(std::make_shared<RebuildBrushEvent>());
+            }
             return;
         }
     }

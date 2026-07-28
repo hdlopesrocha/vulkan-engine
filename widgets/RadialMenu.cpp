@@ -2,6 +2,7 @@
 #include <cmath>
 
 static constexpr float TWO_PI = 6.28318530718f;
+static constexpr float PI = 3.14159265358f;
 
 void RadialMenu::SetVisible(bool visible_)
 {
@@ -177,6 +178,40 @@ void RadialMenu::SetLabelSectorHoverColor(ImU32 color)
     labelSectorHoverColor = color;
 }
 
+void RadialMenu::SetHSVSliderActive(bool active)
+{
+    hsvSliderActive = active;
+}
+
+bool RadialMenu::GetHSVSliderActive() const
+{
+    return hsvSliderActive;
+}
+
+void RadialMenu::SetHSVComponent(const std::string& name, float value, float minVal, float maxVal)
+{
+    hsvComponentName = name;
+    hsvValue = value;
+    hsvMin = minVal;
+    hsvMax = maxVal;
+    prevSliderAngle = -1.0f; // reset tracking
+}
+
+float RadialMenu::GetHSVSliderValue() const
+{
+    return hsvValue;
+}
+
+std::string RadialMenu::GetHSVComponentName() const
+{
+    return hsvComponentName;
+}
+
+void RadialMenu::SetSliderRingInnerRadius(float r) { sliderRingInnerRadius = r; }
+void RadialMenu::SetSliderRingOuterRadius(float r) { sliderRingOuterRadius = r; }
+void RadialMenu::SetSliderFillColor(ImU32 color) { sliderFillColor = color; }
+void RadialMenu::SetSliderTrackColor(ImU32 color) { sliderTrackColor = color; }
+
 void RadialMenu::Update()
 {
     hoveredPage = -1;
@@ -196,6 +231,37 @@ void RadialMenu::Update()
 
     if (currentRadius < deadZoneRadius)
         return;
+
+    // HSV slider ring: delta-based angle tracking (CW increases, CCW decreases)
+    // Min is at top (-π/2), aligned with analog stick up
+    if (hsvSliderActive)
+    {
+        if (currentRadius > sliderRingInnerRadius)
+        {
+            // Offset angle so top (12 o'clock) = min value
+            float sliderAngle = currentAngle + PI * 0.5f;
+            if (sliderAngle >= TWO_PI) sliderAngle -= TWO_PI;
+
+            if (prevSliderAngle < 0.0f)
+            {
+                prevSliderAngle = sliderAngle;
+            }
+            else
+            {
+                float delta = sliderAngle - prevSliderAngle;
+                // Wrap delta to shortest path [-π, π]
+                if (delta > PI)  delta -= TWO_PI;
+                if (delta < -PI) delta += TWO_PI;
+
+                float range = hsvMax - hsvMin;
+                hsvValue += (delta / TWO_PI) * range;
+                if (hsvValue < hsvMin) hsvValue = hsvMin;
+                if (hsvValue > hsvMax) hsvValue = hsvMax;
+            }
+            prevSliderAngle = sliderAngle;
+        }
+        return;
+    }
 
     // Texture ring hover detection (paginated: 16 equal sectors)
     if (textureRingActive && !textures.empty())
@@ -380,6 +446,14 @@ void RadialMenu::Draw()
         }
     }
 
+    // HSV slider ring (clock-like circular slider)
+    if (hsvSliderActive)
+    {
+        DrawSliderRing(drawList, sliderRingInnerRadius, sliderRingOuterRadius,
+                       hsvValue, hsvMin, hsvMax, hsvComponentName,
+                       sliderTrackColor, sliderFillColor, IM_COL32(255, 255, 255, 255));
+    }
+
     drawList->AddCircleFilled(center, deadZoneRadius, IM_COL32(20, 20, 30, 200), 64);
     drawList->AddCircle(center, deadZoneRadius, outlineColor, 64, 1.0f);
 }
@@ -520,5 +594,63 @@ void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float
     {
         drawList->AddCircle(center, innerR, outlineCol, 64, 2.0f);
         drawList->AddCircle(center, outerR, outlineCol, 64, 2.0f);
+    }
+}
+
+void RadialMenu::DrawSliderRing(ImDrawList* drawList, float innerR, float outerR,
+                                float value, float minVal, float maxVal,
+                                const std::string& label, ImU32 trackCol, ImU32 fillCol,
+                                ImU32 textCol)
+{
+    float range = maxVal - minVal;
+    if (range <= 0.0f) range = 1.0f;
+    float t = (value - minVal) / range;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+
+    float startAngle = -PI * 0.5f; // top (12 o'clock)
+    float fillAngle = startAngle + t * TWO_PI;
+
+    // Track (full circle)
+    DrawSector(drawList, startAngle, startAngle + TWO_PI, innerR, outerR, trackCol, outlineColor);
+
+    // Filled arc (from top to current value)
+    if (t > 0.01f)
+    {
+        DrawSector(drawList, startAngle, fillAngle, innerR, outerR, fillCol, outlineColor);
+    }
+
+    // Value text in center of ring
+    char buf[64];
+    if (label == "Hue")
+        snprintf(buf, sizeof(buf), "%s: %.0f", label.c_str(), value);
+    else
+        snprintf(buf, sizeof(buf), "%s: %.1f%%", label.c_str(), value);
+
+    ImVec2 textSize_ = ImGui::CalcTextSize(buf);
+    drawList->AddText(
+        ImVec2(center.x - textSize_.x * 0.5f, center.y - textSize_.y * 0.5f),
+        textCol, buf);
+
+    // Tick marks at 0%, 25%, 50%, 75%, 100%
+    for (int i = 0; i <= 4; ++i)
+    {
+        float angle = startAngle + static_cast<float>(i) / 4.0f * TWO_PI;
+        float cosA = std::cos(angle);
+        float sinA = std::sin(angle);
+        drawList->AddLine(
+            ImVec2(center.x + cosA * innerR, center.y + sinA * innerR),
+            ImVec2(center.x + cosA * (innerR + 4.0f), center.y + sinA * (innerR + 4.0f)),
+            outlineColor, 1.5f);
+    }
+
+    // Indicator dot at current value
+    {
+        float cosA = std::cos(fillAngle);
+        float sinA = std::sin(fillAngle);
+        float dotR = (innerR + outerR) * 0.5f;
+        drawList->AddCircleFilled(
+            ImVec2(center.x + cosA * dotR, center.y + sinA * dotR),
+            5.0f, IM_COL32(255, 255, 255, 255), 16);
     }
 }

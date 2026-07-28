@@ -89,6 +89,20 @@ public:
         return &entries[selectedIndex];
     }
 
+    // HSV helpers (hsv.x=Hue 0..360, hsv.y=Saturation 0..1, hsv.z=Value 0..1)
+    float getHue() const {
+        const BrushEntry* e = getSelectedEntry();
+        return e ? e->hsv.x : 0.0f;
+    }
+    float getSaturation() const {
+        const BrushEntry* e = getSelectedEntry();
+        return e ? e->hsv.y * 100.0f : 0.0f;
+    }
+    float getValue() const {
+        const BrushEntry* e = getSelectedEntry();
+        return e ? e->hsv.z * 100.0f : 0.0f;
+    }
+
     void next() { if (!entries.empty() && selectedIndex + 1 < static_cast<int>(entries.size())) ++selectedIndex; }
     void prev() { if (selectedIndex > 0) --selectedIndex; }
 };
