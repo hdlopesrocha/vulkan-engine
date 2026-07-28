@@ -79,6 +79,7 @@ public:
     void SetSliderRingOuterRadius(float r);
     void SetSliderFillColor(ImU32 color);
     void SetSliderTrackColor(ImU32 color);
+    void SetLabelRingGhost(const std::vector<std::string>& items, int selected);
 
 private:
     bool visible = false;
@@ -141,6 +142,11 @@ private:
     float sliderRingOuterRadius = 220.0f;
     ImU32 sliderFillColor = IM_COL32(220, 180, 50, 220);
     ImU32 sliderTrackColor = IM_COL32(60, 60, 70, 180);
+
+    // Ghost label ring state (shown when HSV slider is active)
+    bool labelRingGhost = false;
+    std::vector<std::string> ghostLabelItems;
+    int ghostSelectedLabel = -1;
 
     void DrawSector(ImDrawList* drawList, float startAngle, float endAngle,
                     float innerR, float outerR, ImU32 fillColor, ImU32 outlineCol);

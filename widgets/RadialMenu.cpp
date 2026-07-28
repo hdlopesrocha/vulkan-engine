@@ -203,6 +203,8 @@ void RadialMenu::SetLabelSectorHoverColor(ImU32 color)
 void RadialMenu::SetHSVSliderActive(bool active)
 {
     hsvSliderActive = active;
+    if (!active)
+        labelRingGhost = false;
 }
 
 bool RadialMenu::GetHSVSliderActive() const
@@ -233,6 +235,13 @@ void RadialMenu::SetSliderRingInnerRadius(float r) { sliderRingInnerRadius = r; 
 void RadialMenu::SetSliderRingOuterRadius(float r) { sliderRingOuterRadius = r; }
 void RadialMenu::SetSliderFillColor(ImU32 color) { sliderFillColor = color; }
 void RadialMenu::SetSliderTrackColor(ImU32 color) { sliderTrackColor = color; }
+
+void RadialMenu::SetLabelRingGhost(const std::vector<std::string>& items, int selected)
+{
+    ghostLabelItems = items;
+    ghostSelectedLabel = selected;
+    labelRingGhost = !items.empty();
+}
 
 void RadialMenu::Update()
 {
@@ -489,6 +498,23 @@ void RadialMenu::Draw()
         DrawSliderRing(drawList, sliderRingInnerRadius, sliderRingOuterRadius,
                        hsvValue, hsvMin, hsvMax, hsvComponentName,
                        sliderTrackColor, sliderFillColor, IM_COL32(255, 255, 255, 255));
+    }
+
+    // Ghost label ring (visible when HSV slider is active, showing which label was selected)
+    if (hsvSliderActive && labelRingGhost && !ghostLabelItems.empty())
+    {
+        int count = static_cast<int>(ghostLabelItems.size());
+        float itemAngle = TWO_PI / static_cast<float>(count);
+
+        for (int i = 0; i < count; ++i)
+        {
+            float startAngle = static_cast<float>(i) * itemAngle;
+            float endAngle = startAngle + itemAngle;
+
+            ImU32 fillColor = (i == ghostSelectedLabel) ? subpageSelectedColor : backgroundColor;
+            DrawSector(drawList, startAngle, endAngle, outerRadius + ringSpacing, labelRingRadius, fillColor, outlineColor);
+            DrawLabel(drawList, ghostLabelItems[i], startAngle, endAngle, outerRadius + ringSpacing, labelRingRadius, IM_COL32(255, 255, 255, 255));
+        }
     }
 
     drawList->AddCircleFilled(center, deadZoneRadius, IM_COL32(20, 20, 30, 200), 64);

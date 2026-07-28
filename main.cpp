@@ -915,6 +915,7 @@ public:
                             const char* compNames[] = { "Hue", "Saturation", "Value" };
                             float compVals[] = { brushManager.getHue(), brushManager.getSaturation(), brushManager.getValue() };
                             float compMax[] = { 360.0f, 100.0f, 100.0f };
+                            radialMenu->SetLabelRingGhost({"Hue", "Saturation", "Value"}, hl);
                             radialMenu->SetLabelRingActive(false);
                             radialMenu->SetHSVComponent(compNames[hl], compVals[hl], 0.0f, compMax[hl]);
                             radialMenu->SetHSVSliderActive(true);
