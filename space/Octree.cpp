@@ -802,6 +802,9 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
     }
 
     int brushIndex = node ? node->vertex.brushIndex : frame.brushIndex;
+    if(brushIndex == DISCARD_BRUSH_INDEX) {
+        brushIndex = frame.brushIndex;
+    }
     glm::vec3 hsv = node ? node->vertex.hsv : frame.hsv;
 
     // Iterate nodes and submit threaded children to the pool
@@ -813,6 +816,9 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
 
         float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
         int childBrushIndex = child ? child->vertex.brushIndex : brushIndex;
+        if(childBrushIndex == DISCARD_BRUSH_INDEX) {
+            childBrushIndex = brushIndex;
+        }
         glm::vec3 childHsv = child ? child->vertex.hsv : hsv;
 
         if(child != NULL) {
@@ -1009,7 +1015,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                                 && frame.type == SpaceType::Surface
                                 ;
 
-    if(r.shapeType != SpaceType::Empty || interpolatedSurface) {
+    if((r.shapeType != SpaceType::Empty || interpolatedSurface) && (process || r.node == NULL)) {
         if(r.resultType == SpaceType::Surface) {
             // Create nodes for surface results if they don't exist
             if(r.node == NULL) {
@@ -1026,6 +1032,14 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                         r.node->vertex.hsv = args.painter.paintHSV(r.node->vertex);
                         r.hsv = r.node->vertex.hsv;
                     }  
+                } else if(!process) {
+                    // process=false and non-leaf: shapeChildren() was never called,
+                    // so children[] is all default (Surface, NULL nodes, not simplified).
+                    // Running the simplifier + setChildren with defaults would destroy
+                    // the node's children (setChildren writes all NULLs) or create a
+                    // Surface node with no children. Instead, mark as simplified so
+                    // iterateTriangles can generate geometry directly from this node's SDF.
+                    r.isSimplified = true;
                 } else {    
                     if (!r.isChunk) {
                         // Pass frame.chunkCube so the simplifier can guard chunk borders.
@@ -1055,8 +1069,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                             childNode->setSDF(child.resultSDF);
                             childNode->setSimplification(child.isSimplified);
                             childNode->setChunk(child.isChunk);
-                            childNode->setBrush(child.brushIndex);
-                            childNode->vertex.hsv = child.hsv;                        
+                            childNode->setBrush(child.brushIndex != DISCARD_BRUSH_INDEX ? child.brushIndex : frame.brushIndex);
+                            childNode->vertex.hsv = child.hsv;
                         }
                                                 
                         if(frame.node != NULL && childNode == r.node) {
