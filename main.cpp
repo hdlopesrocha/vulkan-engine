@@ -912,8 +912,8 @@ public:
                     std::string comp = radialMenu->GetHSVComponentName();
                     eventManager.queue(std::make_shared<SetBrushHSVEvent>(comp, val));
 
-                    // Close slider on select or back
-                    if (selectEdge || backEdge) {
+                    // Close slider on select (confirm) — back is handled by the general handler below
+                    if (selectEdge) {
                         radialMenu->SetHSVSliderActive(false);
                         hsvSliderConfirmed = false;
                     }
