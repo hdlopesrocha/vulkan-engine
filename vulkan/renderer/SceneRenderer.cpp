@@ -224,6 +224,39 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
             solid360Renderer->destroySolid360Targets(app);
             solid360Renderer->createSolid360Targets(app, waterRenderer->getLinearSampler());
             solid360Renderer->createSolid360Pipelines(app);
+            // Rewrite binding 11 (cubemap) in all descriptor sets since the
+            // old VkImageView handles were destroyed and new ones created.
+            VkImageView cubeView = solid360Renderer->getSolid360View();
+            VkSampler cubeSampler = solid360Renderer->getSolid360Sampler();
+            if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE) {
+                VkDescriptorSet staticDs = app->getStaticDescriptorSet();
+                if (staticDs != VK_NULL_HANDLE) {
+                    DescriptorWriter(app->getDevice())
+                        .writeImage(staticDs, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                    cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                        .flush();
+                }
+                // Propagate to per-frame descriptor sets
+                for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi) {
+                    VkDescriptorSet dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
+                    if (dstSet == VK_NULL_HANDLE) continue;
+                    VkCopyDescriptorSet c{};
+                    c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+                    c.srcSet = staticDs; c.srcBinding = 11; c.srcArrayElement = 0;
+                    c.dstSet = dstSet; c.dstBinding = 11; c.dstArrayElement = 0;
+                    c.descriptorCount = 1;
+                    vkUpdateDescriptorSets(app->getDevice(), 0, nullptr, 1, &c);
+                }
+                // Propagate to shadow descriptor sets
+                for (size_t fi = 0; fi < shadowDescriptorSets.size(); ++fi) {
+                    VkDescriptorSet ds = shadowDescriptorSets[fi];
+                    if (ds == VK_NULL_HANDLE) continue;
+                    DescriptorWriter(app->getDevice())
+                        .writeImage(ds, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                    cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                        .flush();
+                }
+            }
         }
     }
     if (postProcessRenderer) {
