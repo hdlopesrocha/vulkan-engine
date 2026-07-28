@@ -150,7 +150,6 @@ public:
     bool backPrev = false;
     enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV, LIGHT };
     LabelRingKind labelRingKind = LabelRingKind::CONTROL;
-    bool hsvSliderConfirmed = false; // true after HSV component is selected from label ring
     WidgetManager widgetManager;
     FilePicker scenePicker_{"Scene File Picker", ".scene"};
     uint32_t loadedTextureLayers = 0;
@@ -767,9 +766,10 @@ public:
                     WiimoteState ws = nunchukPublisher.getState();
                     // Scale to ring when any ring is active
                     float scale = 120.0f;
-                    if (radialMenu->GetTextureRingActive() || radialMenu->GetLabelRingActive())
+                    auto activeType = radialMenu->GetActiveRingType();
+                    if (activeType == RadialMenu::RingType::TEXTURE || activeType == RadialMenu::RingType::LABEL)
                         scale = 170.0f;
-                    else if (radialMenu->GetHSVSliderActive())
+                    else if (activeType == RadialMenu::RingType::HSV_SLIDER)
                         scale = 250.0f;
                     // Nunchuk Y is positive-up, screen Y is positive-down
                     vec = ImVec2(ws.joystickX * scale, -ws.joystickY * scale);
@@ -783,30 +783,11 @@ public:
                 }
                 radialMenu->SetInputVector(vec);
 
-                // Detect if the "Texture" subpage is hovered
-                bool textureSubpageHovered = false;
-                bool controlSubpageHovered = false;
-                bool paintSubpageHovered = false;
-                bool dragModeSubpageHovered = false;
-                bool colorSubpageHovered = false;
-                bool azimuthSubpageHovered = false;
-                bool elevationSubpageHovered = false;
+                // Detect which page/subpage is hovered
                 int hp = radialMenu->GetHoveredPage();
                 int hs = radialMenu->GetHoveredSubPage();
-                if (hp >= 0 && hp < static_cast<int>(radialMenuPages.size()) && hs >= 0) {
-                    const auto& subPages = radialMenuPages[hp].subPages;
-                    if (hs < static_cast<int>(subPages.size())) {
-                        textureSubpageHovered = (subPages[hs].label == "Texture");
-                        controlSubpageHovered = (subPages[hs].label == "Control");
-                        paintSubpageHovered = (subPages[hs].label == "Mode");
-                        dragModeSubpageHovered = (subPages[hs].label == "Drag Mode");
-                        colorSubpageHovered = (subPages[hs].label == "Color");
-                        azimuthSubpageHovered = (subPages[hs].label == "Azimuth");
-                        elevationSubpageHovered = (subPages[hs].label == "Elevation");
-                    }
-                }
 
-                // C/click = select, Z = back to previous ring
+                // C/click = select, Z = back
                 bool selectNow = false;
                 bool backNow = false;
                 if (nunchukPublisher.isConnected()) {
@@ -820,72 +801,11 @@ public:
                 textureSelectPrev = selectNow;
                 backPrev = backNow;
 
-                bool anyRingActive = radialMenu->GetTextureRingActive() || radialMenu->GetLabelRingActive() || radialMenu->GetHSVSliderActive();
+                auto activeType = radialMenu->GetActiveRingType();
 
-                if (!anyRingActive) {
-                    if (selectEdge) {
-                        if (textureSubpageHovered) {
-                            radialMenu->SetSelectedSubPage(hp, hs);
-                            radialMenu->ResetTexturePage();
-                            radialMenu->SetTextureRingActive(true);
-                        } else if (controlSubpageHovered) {
-                            radialMenu->SetSelectedSubPage(hp, hs);
-                            radialMenu->SetLabelItems({"Translate", "Aim", "Scale"});
-                            labelRingKind = LabelRingKind::CONTROL;
-                            radialMenu->SetLabelRingActive(true);
-                        } else if (paintSubpageHovered) {
-                            radialMenu->SetSelectedSubPage(hp, hs);
-                            radialMenu->SetLabelItems({"Add", "Remove", "Paint"});
-                            labelRingKind = LabelRingKind::PAINT;
-                            radialMenu->SetLabelRingActive(true);
-                        } else if (dragModeSubpageHovered) {
-                            radialMenu->SetSelectedSubPage(hp, hs);
-                            radialMenu->SetLabelItems({"Drag", "Click"});
-                            labelRingKind = LabelRingKind::DRAG;
-                            radialMenu->SetLabelRingActive(true);
-                        } else if (colorSubpageHovered) {
-                            radialMenu->SetSelectedSubPage(hp, hs);
-                            radialMenu->SetLabelItems({"Hue", "Saturation", "Value"});
-                            labelRingKind = LabelRingKind::HSV;
-                            radialMenu->SetLabelRingActive(true);
-                        } else if (azimuthSubpageHovered) {
-                            radialMenu->SetSelectedSubPage(hp, hs);
-                            float azi, ele;
-                            light.getSpherical(azi, ele);
-                            radialMenu->SetLabelRingActive(false);
-                            radialMenu->SetHSVComponent("Azimuth", azi + 180.0f, 0.0f, 360.0f);
-                            radialMenu->SetHSVSliderActive(true);
-                            hsvSliderConfirmed = false;
-                            textureSelectPrev = true;
-                        } else if (elevationSubpageHovered) {
-                            radialMenu->SetSelectedSubPage(hp, hs);
-                            float azi, ele;
-                            light.getSpherical(azi, ele);
-                            radialMenu->SetLabelRingActive(false);
-                            radialMenu->SetHSVComponent("Elevation", ele + 90.0f, 0.0f, 180.0f);
-                            radialMenu->SetHSVSliderActive(true);
-                            hsvSliderConfirmed = false;
-                            textureSelectPrev = true;
-                        } else if (hp >= 0 && hs >= 0) {
-                            // Directly select subpage (Translate, UI, Attributes, Color)
-                            const auto& subPages = radialMenuPages[hp].subPages;
-                            if (hs < static_cast<int>(subPages.size())) {
-                                const std::string& label = subPages[hs].label;
-                                PageCategory cat = (radialMenuPages[hp].label == "Camera")
-                                    ? PageCategory::CAMERA : PageCategory::BRUSH;
-                                PageControl pc = PageControl::TRANSLATE;
-                                BrushControlMode bm = BrushControlMode::TRANSLATE;
-                                if (label == "UI")           { pc = PageControl::UI; }
-                                else if (label == "Texture")    { pc = PageControl::TEXTURE;    bm = BrushControlMode::TEXTURE; }
-                                else if (label == "Attributes") { pc = PageControl::ATTRIBUTE;  bm = BrushControlMode::ATTRIBUTE; }
-                                else if (label == "Color")      { pc = PageControl::COLOR;      bm = BrushControlMode::COLOR; }
-                                eventManager.queue(std::make_shared<SetPageEvent>(cat, pc, bm));
-                                radialMenu->SetVisible(false);
-                            }
-                        }
-                    }
-                } else if (radialMenu->GetTextureRingActive()) {
-                    // Texture ring active (paginated: 14 textures + 2 nav)
+                // --- Active ring handling ---
+                if (activeType == RadialMenu::RingType::TEXTURE) {
+                    // Texture ring: feed textures each frame
                     std::vector<ImTextureID> texIds;
                     for (uint32_t i = 0; i < loadedTextureLayers; ++i) {
                         texIds.push_back(textureArrayManager.getImTexture(i, 0));
@@ -903,74 +823,136 @@ public:
                         } else if (radialMenu->GetHoveredNavNext()) {
                             radialMenu->SetTexturePage(radialMenu->GetTexturePage() + 1);
                         } else {
-                            radialMenu->SetTextureRingActive(false);
+                            radialMenu->PopRing();
                         }
                     }
-                } else if (radialMenu->GetLabelRingActive()) {
-                    // Label ring active (Control, Paint, Drag Mode, or HSV)
+                } else if (activeType == RadialMenu::RingType::LABEL) {
+                    // Label ring: handle selection
                     int hl = radialMenu->GetHoveredLabel();
                     if (hl >= 0 && selectEdge) {
+                        radialMenu->SetSelectedIndex(hl);
                         if (labelRingKind == LabelRingKind::HSV) {
-                            // Open HSV slider ring for selected component
                             const char* compNames[] = { "Hue", "Saturation", "Value" };
                             float compVals[] = { brushManager.getHue(), brushManager.getSaturation(), brushManager.getValue() };
                             float compMax[] = { 360.0f, 100.0f, 100.0f };
-                            radialMenu->SetLabelRingGhost({"Hue", "Saturation", "Value"}, hl);
-                            radialMenu->SetLabelRingActive(false);
-                            radialMenu->SetHSVComponent(compNames[hl], compVals[hl], 0.0f, compMax[hl]);
-                            radialMenu->SetHSVSliderActive(true);
-                            hsvSliderConfirmed = false;
-                            textureSelectPrev = true; // consume the edge so slider doesn't close immediately
+                            radialMenu->PushHSVSliderRing(compNames[hl], compVals[hl], 0.0f, compMax[hl]);
+
+                            textureSelectPrev = true;
                         } else if (labelRingKind == LabelRingKind::PAINT) {
                             BrushPaintMode pm = BrushPaintMode::ADD;
                             if (hl == 0) pm = BrushPaintMode::ADD;
                             else if (hl == 1) pm = BrushPaintMode::REMOVE;
                             else if (hl == 2) pm = BrushPaintMode::PAINT;
                             eventManager.queue(std::make_shared<SetBrushPaintModeEvent>(pm));
-                            radialMenu->SetLabelRingActive(false);
+                            radialMenu->PopRing();
                         } else if (labelRingKind == LabelRingKind::DRAG) {
                             BrushDragMode dm = BrushDragMode::DRAG;
                             if (hl == 0) dm = BrushDragMode::DRAG;
                             else if (hl == 1) dm = BrushDragMode::CLICK;
                             eventManager.queue(std::make_shared<SetBrushDragModeEvent>(dm));
-                            radialMenu->SetLabelRingActive(false);
+                            radialMenu->PopRing();
                         } else {
                             BrushControlMode mode = BrushControlMode::TRANSLATE;
                             if (hl == 0) mode = BrushControlMode::TRANSLATE;
                             else if (hl == 1) mode = BrushControlMode::AIM;
                             else if (hl == 2) mode = BrushControlMode::SCALE;
                             eventManager.queue(std::make_shared<SetBrushControlEvent>(mode));
-                            radialMenu->SetLabelRingActive(false);
+                            radialMenu->PopRing();
                         }
                     }
-                } else if (radialMenu->GetHSVSliderActive()) {
-                    // HSV slider ring active: publish value while dragging
+                } else if (activeType == RadialMenu::RingType::HSV_SLIDER) {
+                    // HSV slider: publish value while dragging
                     float val = radialMenu->GetHSVSliderValue();
-                    std::string comp = radialMenu->GetHSVComponentName();
+                    std::string comp = radialMenu->GetHSVSliderName();
                     if (comp == "Azimuth" || comp == "Elevation") {
                         eventManager.queue(std::make_shared<SetLightEvent>(comp, val));
                     } else {
                         eventManager.queue(std::make_shared<SetBrushHSVEvent>(comp, val));
                     }
 
-                    // Close slider on select (confirm) — back is handled by the general handler below
                     if (selectEdge) {
-                        radialMenu->SetHSVSliderActive(false);
-                        hsvSliderConfirmed = false;
+                        radialMenu->PopRing();
+                    }
+                } else if (activeType == RadialMenu::RingType::NONE) {
+                    // No rings: select page → push subpage ring
+                    if (selectEdge && hp >= 0 && hp < static_cast<int>(radialMenuPages.size())) {
+                        radialMenu->PushSubpageRing(hp);
+                    }
+                } else if (activeType == RadialMenu::RingType::SUBPAGE) {
+                    // Subpage ring: select subpage → push appropriate extra ring
+                    int stackPage = radialMenu->GetStackPageIndex();
+                    if (selectEdge && stackPage >= 0 && hs >= 0
+                        && stackPage < static_cast<int>(radialMenuPages.size()))
+                    {
+                        const auto& subPages = radialMenuPages[stackPage].subPages;
+                        if (hs < static_cast<int>(subPages.size())) {
+                            const std::string& pageLabel = radialMenuPages[stackPage].label;
+                            const std::string& subLabel = subPages[hs].label;
+
+                            radialMenu->SetSelectedIndex(hs);
+
+                            // Texture subpage → texture ring
+                            if (subLabel == "Texture") {
+                                radialMenu->ResetTexturePage();
+                                radialMenu->PushTextureRing({});
+
+                            // Control subpage → label ring
+                            } else if (subLabel == "Control") {
+                                labelRingKind = LabelRingKind::CONTROL;
+                                radialMenu->PushLabelRing({"Translate", "Aim", "Scale"});
+
+                            // Mode subpage → label ring
+                            } else if (subLabel == "Mode") {
+                                labelRingKind = LabelRingKind::PAINT;
+                                radialMenu->PushLabelRing({"Add", "Remove", "Paint"});
+
+                            // Drag Mode subpage → label ring
+                            } else if (subLabel == "Drag Mode") {
+                                labelRingKind = LabelRingKind::DRAG;
+                                radialMenu->PushLabelRing({"Drag", "Click"});
+
+                            // Color subpage → HSV label ring
+                            } else if (subLabel == "Color") {
+                                labelRingKind = LabelRingKind::HSV;
+                                radialMenu->PushLabelRing({"Hue", "Saturation", "Value"});
+
+                            // Azimuth subpage → slider
+                            } else if (subLabel == "Azimuth") {
+                                float azi, ele;
+                                light.getSpherical(azi, ele);
+                                radialMenu->PushHSVSliderRing("Azimuth", azi + 180.0f, 0.0f, 360.0f);
+                                textureSelectPrev = true;
+
+                            // Elevation subpage → slider
+                            } else if (subLabel == "Elevation") {
+                                float azi, ele;
+                                light.getSpherical(azi, ele);
+                                radialMenu->PushHSVSliderRing("Elevation", ele + 90.0f, 0.0f, 180.0f);
+                                textureSelectPrev = true;
+
+                            // Direct action subpages (Translate, UI, Attributes)
+                            } else {
+                                PageCategory cat = (pageLabel == "Camera")
+                                    ? PageCategory::CAMERA : PageCategory::BRUSH;
+                                PageControl pc = PageControl::TRANSLATE;
+                                BrushControlMode bm = BrushControlMode::TRANSLATE;
+                                if (subLabel == "UI")           { pc = PageControl::UI; }
+                                else if (subLabel == "Texture")    { pc = PageControl::TEXTURE;    bm = BrushControlMode::TEXTURE; }
+                                else if (subLabel == "Attributes") { pc = PageControl::ATTRIBUTE;  bm = BrushControlMode::ATTRIBUTE; }
+                                else if (subLabel == "Color")      { pc = PageControl::COLOR;      bm = BrushControlMode::COLOR; }
+                                eventManager.queue(std::make_shared<SetPageEvent>(cat, pc, bm));
+                                radialMenu->SetVisible(false);
+                            }
+                        }
                     }
                 }
 
-                // Z = back: navigate to previous ring or close menu
+                // Z = back: pop last ring or close menu
                 if (backEdge && !selectEdge) {
-                    if (radialMenu->GetHSVSliderActive()) {
-                        radialMenu->SetHSVSliderActive(false);
-                    } else if (radialMenu->GetLabelRingActive()) {
-                        radialMenu->SetLabelRingActive(false);
-                    } else if (radialMenu->GetTextureRingActive()) {
-                        radialMenu->SetTextureRingActive(false);
-                    } else {
+                    if (radialMenu->GetStackDepth() > 0)
+                        radialMenu->PopRing();
+                    else
                         radialMenu->SetVisible(false);
-                    }
                 }
             } else {
                 textureSelectPrev = false;

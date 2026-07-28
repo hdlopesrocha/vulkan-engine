@@ -29,57 +29,67 @@ public:
     void Update();
     void Draw();
 
+    // Page/subpage hover
     int GetHoveredPage() const;
     int GetHoveredSubPage() const;
 
-    void SetSelectedSubPage(int page, int subPage);
-    void ClearSelectedSubPage();
+    // Push a subpage ring for the given page index
+    void PushSubpageRing(int pageIndex);
+    // Push an extra ring on top of the subpage ring
+    void PushTextureRing(const std::vector<ImTextureID>& textures);
+    void PushLabelRing(const std::vector<std::string>& items);
+    void PushHSVSliderRing(const std::string& name, float value, float minVal, float maxVal);
+    // Set which item is selected in the current top ring (for ghost highlighting)
+    void SetSelectedIndex(int index);
+    // Pop the last ring (back navigation)
+    void PopRing();
+    // Clear all rings
+    void ClearRings();
 
+    int GetStackDepth() const;
+
+    // Query the active (top) ring
+    enum class RingType { NONE, SUBPAGE, TEXTURE, LABEL, HSV_SLIDER };
+    RingType GetActiveRingType() const;
+
+    // Get the page index from the first SUBPAGE ring in the stack (-1 if none)
+    int GetStackPageIndex() const;
+
+    // Texture ring queries (active ring must be TEXTURE)
+    void SetTextures(const std::vector<ImTextureID>& textures);
+    int GetHoveredTexture() const;
+    bool GetHoveredNavPrev() const;
+    bool GetHoveredNavNext() const;
+    void SetTexturePage(int page);
+    int GetTexturePage() const;
+    void ResetTexturePage();
+
+    // Label ring queries (active ring must be LABEL)
+    int GetHoveredLabel() const;
+
+    // HSV slider queries (active ring must be HSV_SLIDER)
+    void SetHSVSliderValue(float value);
+    float GetHSVSliderValue() const;
+    std::string GetHSVSliderName() const;
+
+    // Layout setters
     void SetDeadZoneRadius(float radius);
     void SetInnerRadius(float radius);
     void SetOuterRadius(float radius);
     void SetRingSpacing(float spacing);
     void SetTextSize(float size);
 
+    // Color setters
     void SetPageHoverColor(ImU32 color);
     void SetSubpageHoverColor(ImU32 color);
     void SetSubpageSelectedColor(ImU32 color);
     void SetBackgroundColor(ImU32 color);
     void SetOutlineColor(ImU32 color);
-
-    // Texture ring (paginated: 14 texture slots + 2 nav buttons = 16 equal sectors)
-    void SetTextureRingActive(bool active);
-    bool GetTextureRingActive() const;
-    void SetTextures(const std::vector<ImTextureID>& textures);
-    int GetHoveredTexture() const;
-    bool GetHoveredNavPrev() const;
-    bool GetHoveredNavNext() const;
-    void SetTextureRingRadius(float radius);
     void SetTextureSectorHoverColor(ImU32 color);
     void SetNavSectorHoverColor(ImU32 color);
-    void ResetTexturePage();
-    int GetTexturePage() const;
-    void SetTexturePage(int page);
-
-    // Label ring (generic text ring, e.g. control modes)
-    void SetLabelRingActive(bool active);
-    bool GetLabelRingActive() const;
-    void SetLabelItems(const std::vector<std::string>& items);
-    int GetHoveredLabel() const;
-    void SetLabelRingRadius(float radius);
     void SetLabelSectorHoverColor(ImU32 color);
-
-    // HSV slider ring (clock-like circular slider)
-    void SetHSVSliderActive(bool active);
-    bool GetHSVSliderActive() const;
-    void SetHSVComponent(const std::string& name, float value, float minVal, float maxVal);
-    float GetHSVSliderValue() const;
-    std::string GetHSVComponentName() const;
-    void SetSliderRingInnerRadius(float r);
-    void SetSliderRingOuterRadius(float r);
     void SetSliderFillColor(ImU32 color);
     void SetSliderTrackColor(ImU32 color);
-    void SetLabelRingGhost(const std::vector<std::string>& items, int selected);
 
 private:
     bool visible = false;
@@ -106,47 +116,46 @@ private:
     int hoveredPage = -1;
     int hoveredSubPage = -1;
 
-    // Track which subpage is selected (stays visible when an extra ring opens)
-    int selectedPage = -1;
-    int selectedSubPage = -1;
+    // --- Navigation stack ---
+    struct RingEntry {
+        RingType type = RingType::NONE;
+        int pageIndex = -1;        // SUBPAGE: which page
+        int selectedIndex = -1;    // selected item in this ring
 
-    // Texture ring state
-    bool textureRingActive = false;
-    std::vector<ImTextureID> textures;
-    float textureRingRadius = 170.0f;
+        // TEXTURE
+        std::vector<ImTextureID> textures;
+        int texturePage = 0;
+        int hoveredTexture = -1;
+        bool hoveredNavPrev = false;
+        bool hoveredNavNext = false;
+
+        // LABEL
+        std::vector<std::string> items;
+        int hoveredLabel = -1;
+
+        // HSV_SLIDER
+        std::string sliderName;
+        float sliderValue = 0.0f;
+        float sliderMin = 0.0f;
+        float sliderMax = 1.0f;
+        float prevSliderAngle = -1.0f;
+    };
+
+    std::vector<RingEntry> stack;
+
+    // Textures to set on next texture ring push
+    std::vector<ImTextureID> pendingTextures;
+
+    // Ring colors
     ImU32 textureSectorHoverColor = IM_COL32(100, 200, 100, 220);
-    int hoveredTexture = -1;
-    int hoveredNavPrev = false;
-    int hoveredNavNext = false;
-    int texturePage = 0;
-    static constexpr int kTexturesPerPage = 14;
-    static constexpr int kNavSectors = 2;
-    static constexpr int kTotalTexSectors = kTexturesPerPage + kNavSectors;
     ImU32 navSectorHoverColor = IM_COL32(180, 180, 60, 220);
-
-    // Label ring state
-    bool labelRingActive = false;
-    std::vector<std::string> labelItems;
-    float labelRingRadius = 170.0f;
     ImU32 labelSectorHoverColor = IM_COL32(100, 200, 100, 220);
-    int hoveredLabel = -1;
-
-    // HSV slider ring state
-    bool hsvSliderActive = false;
-    std::string hsvComponentName;
-    float hsvValue = 0.0f;
-    float hsvMin = 0.0f;
-    float hsvMax = 1.0f;
-    float prevSliderAngle = -1.0f;
-    float sliderRingInnerRadius = 180.0f;
-    float sliderRingOuterRadius = 220.0f;
     ImU32 sliderFillColor = IM_COL32(220, 180, 50, 220);
     ImU32 sliderTrackColor = IM_COL32(60, 60, 70, 180);
 
-    // Ghost label ring state (shown when HSV slider is active)
-    bool labelRingGhost = false;
-    std::vector<std::string> ghostLabelItems;
-    int ghostSelectedLabel = -1;
+    static constexpr int kTexturesPerPage = 14;
+    static constexpr int kNavSectors = 2;
+    static constexpr int kTotalTexSectors = kTexturesPerPage + kNavSectors;
 
     void DrawSector(ImDrawList* drawList, float startAngle, float endAngle,
                     float innerR, float outerR, ImU32 fillColor, ImU32 outlineCol);

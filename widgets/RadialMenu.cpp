@@ -4,256 +4,207 @@
 static constexpr float TWO_PI = 6.28318530718f;
 static constexpr float PI = 3.14159265358f;
 
+// ---- Visibility ----
+
 void RadialMenu::SetVisible(bool visible_)
 {
     visible = visible_;
     if (!visible_)
+        stack.clear();
+}
+
+bool RadialMenu::IsVisible() const { return visible; }
+
+// ---- Basic setters ----
+
+void RadialMenu::SetCenter(ImVec2 center_) { center = center_; }
+void RadialMenu::SetInputVector(const ImVec2& vector) { inputVector = vector; }
+void RadialMenu::SetPages(const std::vector<Page>& pages_) { pages = pages_; }
+
+void RadialMenu::SetDeadZoneRadius(float r) { deadZoneRadius = r; }
+void RadialMenu::SetInnerRadius(float r) { innerRadius = r; }
+void RadialMenu::SetOuterRadius(float r) { outerRadius = r; }
+void RadialMenu::SetRingSpacing(float s) { ringSpacing = s; }
+void RadialMenu::SetTextSize(float s) { textSize = s; }
+
+void RadialMenu::SetPageHoverColor(ImU32 c) { pageHoverColor = c; }
+void RadialMenu::SetSubpageHoverColor(ImU32 c) { subpageHoverColor = c; }
+void RadialMenu::SetSubpageSelectedColor(ImU32 c) { subpageSelectedColor = c; }
+void RadialMenu::SetBackgroundColor(ImU32 c) { backgroundColor = c; }
+void RadialMenu::SetOutlineColor(ImU32 c) { outlineColor = c; }
+void RadialMenu::SetTextureSectorHoverColor(ImU32 c) { textureSectorHoverColor = c; }
+void RadialMenu::SetNavSectorHoverColor(ImU32 c) { navSectorHoverColor = c; }
+void RadialMenu::SetLabelSectorHoverColor(ImU32 c) { labelSectorHoverColor = c; }
+void RadialMenu::SetSliderFillColor(ImU32 c) { sliderFillColor = c; }
+void RadialMenu::SetSliderTrackColor(ImU32 c) { sliderTrackColor = c; }
+
+// ---- Hover queries ----
+
+int RadialMenu::GetHoveredPage() const { return hoveredPage; }
+int RadialMenu::GetHoveredSubPage() const { return hoveredSubPage; }
+
+// ---- Stack navigation ----
+
+void RadialMenu::PushSubpageRing(int pageIndex)
+{
+    RingEntry e;
+    e.type = RingType::SUBPAGE;
+    e.pageIndex = pageIndex;
+    e.selectedIndex = -1;
+    stack.push_back(e);
+}
+
+void RadialMenu::PushTextureRing(const std::vector<ImTextureID>& textures)
+{
+    RingEntry e;
+    e.type = RingType::TEXTURE;
+    e.textures = textures;
+    e.texturePage = 0;
+    e.selectedIndex = -1;
+    stack.push_back(e);
+}
+
+void RadialMenu::PushLabelRing(const std::vector<std::string>& items)
+{
+    RingEntry e;
+    e.type = RingType::LABEL;
+    e.items = items;
+    e.selectedIndex = -1;
+    stack.push_back(e);
+}
+
+void RadialMenu::PushHSVSliderRing(const std::string& name, float value, float minVal, float maxVal)
+{
+    RingEntry e;
+    e.type = RingType::HSV_SLIDER;
+    e.sliderName = name;
+    e.sliderValue = value;
+    e.sliderMin = minVal;
+    e.sliderMax = maxVal;
+    e.prevSliderAngle = -1.0f;
+    e.selectedIndex = -1;
+    stack.push_back(e);
+}
+
+void RadialMenu::PopRing()
+{
+    if (!stack.empty())
+        stack.pop_back();
+}
+
+void RadialMenu::SetSelectedIndex(int index)
+{
+    if (!stack.empty())
+        stack.back().selectedIndex = index;
+}
+
+void RadialMenu::ClearRings() { stack.clear(); }
+
+int RadialMenu::GetStackDepth() const { return static_cast<int>(stack.size()); }
+
+RadialMenu::RingType RadialMenu::GetActiveRingType() const
+{
+    return stack.empty() ? RingType::NONE : stack.back().type;
+}
+
+int RadialMenu::GetStackPageIndex() const
+{
+    for (int i = 0; i < static_cast<int>(stack.size()); ++i)
     {
-        selectedPage = -1;
-        selectedSubPage = -1;
+        if (stack[i].type == RingType::SUBPAGE)
+            return stack[i].pageIndex;
     }
+    return -1;
 }
 
-bool RadialMenu::IsVisible() const
-{
-    return visible;
-}
+// ---- Texture ring queries ----
 
-void RadialMenu::SetCenter(ImVec2 center_)
+void RadialMenu::SetTextures(const std::vector<ImTextureID>& textures)
 {
-    center = center_;
-}
-
-void RadialMenu::SetInputVector(const ImVec2& vector)
-{
-    inputVector = vector;
-}
-
-void RadialMenu::SetPages(const std::vector<Page>& pages_)
-{
-    pages = pages_;
-}
-
-void RadialMenu::SetDeadZoneRadius(float radius)
-{
-    deadZoneRadius = radius;
-}
-
-void RadialMenu::SetInnerRadius(float radius)
-{
-    innerRadius = radius;
-}
-
-void RadialMenu::SetOuterRadius(float radius)
-{
-    outerRadius = radius;
-}
-
-void RadialMenu::SetRingSpacing(float spacing)
-{
-    ringSpacing = spacing;
-}
-
-void RadialMenu::SetTextSize(float size)
-{
-    textSize = size;
-}
-
-void RadialMenu::SetPageHoverColor(ImU32 color)
-{
-    pageHoverColor = color;
-}
-
-void RadialMenu::SetSubpageHoverColor(ImU32 color)
-{
-    subpageHoverColor = color;
-}
-
-void RadialMenu::SetSubpageSelectedColor(ImU32 color)
-{
-    subpageSelectedColor = color;
-}
-
-void RadialMenu::SetBackgroundColor(ImU32 color)
-{
-    backgroundColor = color;
-}
-
-void RadialMenu::SetOutlineColor(ImU32 color)
-{
-    outlineColor = color;
-}
-
-int RadialMenu::GetHoveredPage() const
-{
-    return hoveredPage;
-}
-
-int RadialMenu::GetHoveredSubPage() const
-{
-    return hoveredSubPage;
-}
-
-void RadialMenu::SetSelectedSubPage(int page, int subPage)
-{
-    selectedPage = page;
-    selectedSubPage = subPage;
-}
-
-void RadialMenu::ClearSelectedSubPage()
-{
-    selectedPage = -1;
-    selectedSubPage = -1;
-}
-
-void RadialMenu::SetTextureRingActive(bool active)
-{
-    textureRingActive = active;
-}
-
-bool RadialMenu::GetTextureRingActive() const
-{
-    return textureRingActive;
-}
-
-void RadialMenu::SetTextures(const std::vector<ImTextureID>& textures_)
-{
-    textures = textures_;
+    pendingTextures = textures;
 }
 
 int RadialMenu::GetHoveredTexture() const
 {
-    return hoveredTexture;
+    if (stack.empty() || stack.back().type != RingType::TEXTURE) return -1;
+    return stack.back().hoveredTexture;
 }
 
 bool RadialMenu::GetHoveredNavPrev() const
 {
-    return hoveredNavPrev;
+    if (stack.empty() || stack.back().type != RingType::TEXTURE) return false;
+    return stack.back().hoveredNavPrev;
 }
 
 bool RadialMenu::GetHoveredNavNext() const
 {
-    return hoveredNavNext;
-}
-
-void RadialMenu::SetTextureRingRadius(float radius)
-{
-    textureRingRadius = radius;
-}
-
-void RadialMenu::SetTextureSectorHoverColor(ImU32 color)
-{
-    textureSectorHoverColor = color;
-}
-
-void RadialMenu::SetNavSectorHoverColor(ImU32 color)
-{
-    navSectorHoverColor = color;
-}
-
-void RadialMenu::ResetTexturePage()
-{
-    texturePage = 0;
-}
-
-int RadialMenu::GetTexturePage() const
-{
-    return texturePage;
+    if (stack.empty() || stack.back().type != RingType::TEXTURE) return false;
+    return stack.back().hoveredNavNext;
 }
 
 void RadialMenu::SetTexturePage(int page)
 {
-    int totalPages = (static_cast<int>(textures.size()) + kTexturesPerPage - 1) / kTexturesPerPage;
+    if (stack.empty() || stack.back().type != RingType::TEXTURE) return;
+    RingEntry& e = stack.back();
+    int totalPages = (static_cast<int>(e.textures.size()) + kTexturesPerPage - 1) / kTexturesPerPage;
     if (totalPages <= 0) totalPages = 1;
-    texturePage = page % totalPages;
-    if (texturePage < 0)
-        texturePage += totalPages;
+    e.texturePage = page % totalPages;
+    if (e.texturePage < 0) e.texturePage += totalPages;
 }
 
-void RadialMenu::SetLabelRingActive(bool active)
+int RadialMenu::GetTexturePage() const
 {
-    labelRingActive = active;
+    if (stack.empty() || stack.back().type != RingType::TEXTURE) return 0;
+    return stack.back().texturePage;
 }
 
-bool RadialMenu::GetLabelRingActive() const
+void RadialMenu::ResetTexturePage()
 {
-    return labelRingActive;
+    if (stack.empty() || stack.back().type != RingType::TEXTURE) return;
+    stack.back().texturePage = 0;
 }
 
-void RadialMenu::SetLabelItems(const std::vector<std::string>& items)
-{
-    labelItems = items;
-}
+// ---- Label ring queries ----
 
 int RadialMenu::GetHoveredLabel() const
 {
-    return hoveredLabel;
+    if (stack.empty() || stack.back().type != RingType::LABEL) return -1;
+    return stack.back().hoveredLabel;
 }
 
-void RadialMenu::SetLabelRingRadius(float radius)
-{
-    labelRingRadius = radius;
-}
+// ---- HSV slider queries ----
 
-void RadialMenu::SetLabelSectorHoverColor(ImU32 color)
+void RadialMenu::SetHSVSliderValue(float value)
 {
-    labelSectorHoverColor = color;
-}
-
-void RadialMenu::SetHSVSliderActive(bool active)
-{
-    hsvSliderActive = active;
-    if (!active)
-        labelRingGhost = false;
-}
-
-bool RadialMenu::GetHSVSliderActive() const
-{
-    return hsvSliderActive;
-}
-
-void RadialMenu::SetHSVComponent(const std::string& name, float value, float minVal, float maxVal)
-{
-    hsvComponentName = name;
-    hsvValue = value;
-    hsvMin = minVal;
-    hsvMax = maxVal;
-    prevSliderAngle = -1.0f;
+    if (stack.empty() || stack.back().type != RingType::HSV_SLIDER) return;
+    stack.back().sliderValue = value;
 }
 
 float RadialMenu::GetHSVSliderValue() const
 {
-    return hsvValue;
+    if (stack.empty() || stack.back().type != RingType::HSV_SLIDER) return 0.0f;
+    return stack.back().sliderValue;
 }
 
-std::string RadialMenu::GetHSVComponentName() const
+std::string RadialMenu::GetHSVSliderName() const
 {
-    return hsvComponentName;
+    if (stack.empty() || stack.back().type != RingType::HSV_SLIDER) return {};
+    return stack.back().sliderName;
 }
 
-void RadialMenu::SetSliderRingInnerRadius(float r) { sliderRingInnerRadius = r; }
-void RadialMenu::SetSliderRingOuterRadius(float r) { sliderRingOuterRadius = r; }
-void RadialMenu::SetSliderFillColor(ImU32 color) { sliderFillColor = color; }
-void RadialMenu::SetSliderTrackColor(ImU32 color) { sliderTrackColor = color; }
-
-void RadialMenu::SetLabelRingGhost(const std::vector<std::string>& items, int selected)
-{
-    ghostLabelItems = items;
-    ghostSelectedLabel = selected;
-    labelRingGhost = !items.empty();
-}
+// ---- Update ----
 
 void RadialMenu::Update()
 {
     hoveredPage = -1;
     hoveredSubPage = -1;
-    hoveredTexture = -1;
-    hoveredLabel = -1;
-    hoveredNavPrev = false;
-    hoveredNavNext = false;
 
     if (!visible || pages.empty())
         return;
+
+    // Apply pending textures to the active ring if it's a TEXTURE ring
+    if (!stack.empty() && stack.back().type == RingType::TEXTURE && !pendingTextures.empty())
+        stack.back().textures = pendingTextures;
 
     currentRadius = std::sqrt(inputVector.x * inputVector.x + inputVector.y * inputVector.y);
     currentAngle = std::atan2(inputVector.y, inputVector.x);
@@ -263,114 +214,183 @@ void RadialMenu::Update()
     if (currentRadius < deadZoneRadius)
         return;
 
-    // HSV slider ring: delta-based, clamped at min/max (no wraparound)
-    if (hsvSliderActive)
+    float bandWidth = outerRadius - innerRadius;
+
+    // Find the active (topmost) ring's band and handle input
+    if (!stack.empty())
     {
-        if (currentRadius > sliderRingInnerRadius)
+        RingEntry& active = stack.back();
+        int topIdx = static_cast<int>(stack.size()) - 1;
+
+        // Compute the top ring's band
+        float topInnerR = innerRadius + ringSpacing;
+        float topOuterR = innerRadius + ringSpacing + bandWidth;
+        for (int i = 0; i < topIdx; ++i)
         {
-            float sliderAngle = currentAngle + PI * 0.5f;
-            if (sliderAngle >= TWO_PI) sliderAngle -= TWO_PI;
-            if (sliderAngle < 0.0f)    sliderAngle += TWO_PI;
+            topInnerR = topOuterR + ringSpacing;
+            topOuterR = topInnerR + bandWidth;
+        }
 
-            if (prevSliderAngle < 0.0f)
+        switch (active.type)
+        {
+        case RingType::HSV_SLIDER:
+        {
+            if (currentRadius > topInnerR)
             {
-                prevSliderAngle = sliderAngle;
-            }
-            else
-            {
-                float delta = sliderAngle - prevSliderAngle;
-                if (delta > PI)  delta -= TWO_PI;
-                if (delta < -PI) delta += TWO_PI;
+                float sliderAngle = currentAngle + PI * 0.5f;
+                if (sliderAngle >= TWO_PI) sliderAngle -= TWO_PI;
+                if (sliderAngle < 0.0f)    sliderAngle += TWO_PI;
 
-                float range = hsvMax - hsvMin;
-                float newVal = hsvValue + (delta / TWO_PI) * range;
-
-                if (newVal <= hsvMin) {
-                    newVal = hsvMin;
-                    prevSliderAngle = sliderAngle;
-                } else if (newVal >= hsvMax) {
-                    newVal = hsvMax;
-                    prevSliderAngle = sliderAngle;
+                if (active.prevSliderAngle < 0.0f)
+                {
+                    active.prevSliderAngle = sliderAngle;
                 }
+                else
+                {
+                    float delta = sliderAngle - active.prevSliderAngle;
+                    if (delta > PI)  delta -= TWO_PI;
+                    if (delta < -PI) delta += TWO_PI;
 
-                hsvValue = newVal;
+                    float range = active.sliderMax - active.sliderMin;
+                    float newVal = active.sliderValue + (delta / TWO_PI) * range;
+
+                    if (newVal <= active.sliderMin) {
+                        newVal = active.sliderMin;
+                        active.prevSliderAngle = sliderAngle;
+                    } else if (newVal >= active.sliderMax) {
+                        newVal = active.sliderMax;
+                        active.prevSliderAngle = sliderAngle;
+                    }
+
+                    active.sliderValue = newVal;
+                }
+                active.prevSliderAngle = sliderAngle;
             }
-            prevSliderAngle = sliderAngle;
+            return;
         }
-        return;
-    }
 
-    // Texture ring hover detection (paginated: 16 equal sectors)
-    if (textureRingActive && !textures.empty())
-    {
-        if (currentRadius > outerRadius + ringSpacing && currentRadius <= textureRingRadius)
+        case RingType::TEXTURE:
         {
-            float sectorAngle = TWO_PI / static_cast<float>(kTotalTexSectors);
-            int idx = static_cast<int>(currentAngle / sectorAngle);
-            if (idx >= kTotalTexSectors)
-                idx = kTotalTexSectors - 1;
-
-            hoveredNavPrev = (idx == kTexturesPerPage);
-            hoveredNavNext = (idx == kTexturesPerPage + 1);
-
-            if (!hoveredNavPrev && !hoveredNavNext)
+            active.hoveredTexture = -1;
+            active.hoveredNavPrev = false;
+            active.hoveredNavNext = false;
+            if (currentRadius > topInnerR && currentRadius <= topOuterR)
             {
-                int pageOffset = texturePage * kTexturesPerPage;
-                int absIdx = pageOffset + idx;
-                if (absIdx < static_cast<int>(textures.size()))
-                    hoveredTexture = absIdx;
+                float sectorAngle = TWO_PI / static_cast<float>(kTotalTexSectors);
+                int idx = static_cast<int>(currentAngle / sectorAngle);
+                if (idx >= kTotalTexSectors)
+                    idx = kTotalTexSectors - 1;
+
+                active.hoveredNavPrev = (idx == kTexturesPerPage);
+                active.hoveredNavNext = (idx == kTexturesPerPage + 1);
+
+                if (!active.hoveredNavPrev && !active.hoveredNavNext)
+                {
+                    int pageOffset = active.texturePage * kTexturesPerPage;
+                    int absIdx = pageOffset + idx;
+                    if (absIdx < static_cast<int>(active.textures.size()))
+                        active.hoveredTexture = absIdx;
+                }
             }
+            return;
         }
-        return;
-    }
 
-    // Label ring hover detection (outermost ring)
-    if (labelRingActive && !labelItems.empty())
-    {
-        if (currentRadius > outerRadius + ringSpacing && currentRadius <= labelRingRadius)
+        case RingType::LABEL:
         {
-            int count = static_cast<int>(labelItems.size());
-            float itemAngle = TWO_PI / static_cast<float>(count);
-            int idx = static_cast<int>(currentAngle / itemAngle);
-            if (idx >= count)
-                idx = count - 1;
-            hoveredLabel = idx;
+            active.hoveredLabel = -1;
+            if (currentRadius > topInnerR && currentRadius <= topOuterR)
+            {
+                int count = static_cast<int>(active.items.size());
+                float itemAngle = TWO_PI / static_cast<float>(count);
+                int idx = static_cast<int>(currentAngle / itemAngle);
+                if (idx >= count)
+                    idx = count - 1;
+                active.hoveredLabel = idx;
+            }
+            return;
         }
-        // When label ring is active, don't process inner rings
-        return;
+
+        case RingType::SUBPAGE:
+        {
+            // Subpage is the active ring — detect subpage hover in its band
+            if (active.pageIndex >= 0 && active.pageIndex < static_cast<int>(pages.size()))
+            {
+                const Page& page = pages[active.pageIndex];
+                if (!page.subPages.empty())
+                {
+                    float subAngle = TWO_PI / static_cast<float>(page.subPages.size());
+                    if (currentRadius > topInnerR && currentRadius <= topOuterR)
+                    {
+                        int subIdx = static_cast<int>(currentAngle / subAngle);
+                        if (subIdx >= static_cast<int>(page.subPages.size()))
+                            subIdx = static_cast<int>(page.subPages.size()) - 1;
+                        hoveredSubPage = subIdx;
+                    }
+                }
+            }
+            return;
+        }
+
+        case RingType::NONE:
+            break;
+        }
     }
 
-    if (currentRadius > outerRadius)
-        return;
+    // If a SUBPAGE ring is in the stack (but not the top), detect subpage hover in its band
+    for (int si = 0; si < static_cast<int>(stack.size()); ++si)
+    {
+        if (stack[si].type == RingType::SUBPAGE)
+        {
+            // Compute this layer's band
+            float layerInnerR = innerRadius + ringSpacing;
+            float layerOuterR = innerRadius + ringSpacing + bandWidth;
+            for (int i = 0; i < si; ++i)
+            {
+                layerInnerR = layerOuterR + ringSpacing;
+                layerOuterR = layerInnerR + bandWidth;
+            }
 
-    int pageCount = static_cast<int>(pages.size());
-    float pageAngle = TWO_PI / static_cast<float>(pageCount);
+            if (stack[si].pageIndex >= 0 && stack[si].pageIndex < static_cast<int>(pages.size()))
+            {
+                const Page& page = pages[stack[si].pageIndex];
+                if (!page.subPages.empty())
+                {
+                    float subAngle = TWO_PI / static_cast<float>(page.subPages.size());
+                    if (currentRadius > layerInnerR && currentRadius <= layerOuterR)
+                    {
+                        int subIdx = static_cast<int>(currentAngle / subAngle);
+                        if (subIdx >= static_cast<int>(page.subPages.size()))
+                            subIdx = static_cast<int>(page.subPages.size()) - 1;
+                        hoveredSubPage = subIdx;
+                    }
+                }
+            }
+            break;
+        }
+    }
 
-    int pageIdx = static_cast<int>(currentAngle / pageAngle);
-    if (pageIdx >= pageCount)
-        pageIdx = pageCount - 1;
+    // Detect page hover only when no SUBPAGE ring is in the stack
+    bool hasSubpage = false;
+    for (int i = 0; i < static_cast<int>(stack.size()); ++i)
+    {
+        if (stack[i].type == RingType::SUBPAGE) { hasSubpage = true; break; }
+    }
 
-    hoveredPage = pageIdx;
+    if (!hasSubpage && currentRadius <= outerRadius)
+    {
+        int pageCount = static_cast<int>(pages.size());
+        float pageAngle = TWO_PI / static_cast<float>(pageCount);
+        int pageIdx = static_cast<int>(currentAngle / pageAngle);
+        if (pageIdx >= pageCount)
+            pageIdx = pageCount - 1;
+        hoveredPage = pageIdx;
 
-    if (currentRadius < innerRadius)
-        return;
-
-    const Page& page = pages[pageIdx];
-    if (page.subPages.empty())
-        return;
-
-    int subCount = static_cast<int>(page.subPages.size());
-    float subAngle = pageAngle / static_cast<float>(subCount);
-
-    float pageStart = static_cast<float>(pageIdx) * pageAngle;
-    float localAngle = currentAngle - pageStart;
-
-    int subIdx = static_cast<int>(localAngle / subAngle);
-    if (subIdx >= subCount)
-        subIdx = subCount - 1;
-
-    hoveredSubPage = subIdx;
+        if (currentRadius < innerRadius)
+            return;
+    }
 }
+
+// ---- Draw ----
 
 void RadialMenu::Draw()
 {
@@ -381,145 +401,153 @@ void RadialMenu::Draw()
     int pageCount = static_cast<int>(pages.size());
     float pageAngle = TWO_PI / static_cast<float>(pageCount);
 
-    // Inner ring: pages (deadZone → innerRadius)
+    // 1. Inner ring: pages (deadZone → innerRadius)
+    int selectedPageIndex = GetStackPageIndex();
+
     for (int i = 0; i < pageCount; ++i)
     {
         float startAngle = static_cast<float>(i) * pageAngle;
         float endAngle = startAngle + pageAngle;
 
-        ImU32 fillColor = (i == hoveredPage) ? pageHoverColor : backgroundColor;
+        ImU32 fillColor = backgroundColor;
+        if (i == selectedPageIndex)
+            fillColor = subpageSelectedColor;
+        else if (i == hoveredPage)
+            fillColor = pageHoverColor;
 
         DrawSector(drawList, startAngle, endAngle, deadZoneRadius, innerRadius, fillColor, outlineColor);
-
         DrawLabel(drawList, pages[i].label, startAngle, endAngle, deadZoneRadius, innerRadius, IM_COL32(255, 255, 255, 255));
     }
 
-    // Outer ring: subpages of hovered/selected page (innerRadius → outerRadius)
-    bool anyRingActive = textureRingActive || labelRingActive || hsvSliderActive;
-    int outerPageIdx = hoveredPage;
-    if (anyRingActive && selectedPage >= 0 && selectedPage < pageCount)
-        outerPageIdx = selectedPage;
+    // 2. Draw all rings from the stack (bottom to top), each at its own band
+    float bandInner = innerRadius + ringSpacing;
+    float bandWidth = outerRadius - innerRadius;
 
-    if (outerPageIdx >= 0 && outerPageIdx < pageCount)
+    for (int si = 0; si < static_cast<int>(stack.size()); ++si)
     {
-        const Page& page = pages[outerPageIdx];
-        if (!page.subPages.empty())
+        const RingEntry& entry = stack[si];
+        bool isTop = (si == static_cast<int>(stack.size()) - 1);
+
+        float layerInnerR = bandInner;
+        float layerOuterR = bandInner + bandWidth;
+
+        switch (entry.type)
         {
+        case RingType::SUBPAGE:
+        {
+            if (entry.pageIndex < 0 || entry.pageIndex >= pageCount)
+                break;
+            const Page& page = pages[entry.pageIndex];
+            if (page.subPages.empty())
+                break;
+
             int subCount = static_cast<int>(page.subPages.size());
-            float subAngle = pageAngle / static_cast<float>(subCount);
-            float pageStart = static_cast<float>(outerPageIdx) * pageAngle;
+            float subAngle = TWO_PI / static_cast<float>(subCount);
+
+            bool hasActiveRing = !isTop;
 
             for (int j = 0; j < subCount; ++j)
             {
-                float startAngle = pageStart + static_cast<float>(j) * subAngle;
+                float startAngle = static_cast<float>(j) * subAngle;
                 float endAngle = startAngle + subAngle;
 
                 ImU32 fillColor = backgroundColor;
-                if (anyRingActive && j == selectedSubPage)
+                if (hasActiveRing && j == entry.selectedIndex)
                     fillColor = subpageSelectedColor;
-                else if (j == hoveredSubPage)
+                else if (isTop && j == hoveredSubPage)
                     fillColor = subpageHoverColor;
 
-                DrawSector(drawList, startAngle, endAngle, innerRadius + ringSpacing, outerRadius, fillColor, outlineColor);
-
-                DrawLabel(drawList, page.subPages[j].label, startAngle, endAngle, innerRadius + ringSpacing, outerRadius, IM_COL32(255, 255, 255, 255));
+                DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, fillColor, outlineColor);
+                DrawLabel(drawList, page.subPages[j].label, startAngle, endAngle, layerInnerR, layerOuterR, IM_COL32(255, 255, 255, 255));
             }
+            break;
         }
-    }
 
-    // Texture ring: 14 texture slots + 2 nav buttons = 16 equal sectors
-    if (textureRingActive && !textures.empty())
-    {
-        int totalTex = static_cast<int>(textures.size());
-        float sectorAngle = TWO_PI / static_cast<float>(kTotalTexSectors);
-
-        for (int s = 0; s < kTotalTexSectors; ++s)
+        case RingType::TEXTURE:
         {
-            float startAngle = static_cast<float>(s) * sectorAngle;
-            float endAngle = startAngle + sectorAngle;
+            if (entry.textures.empty()) break;
+            int totalTex = static_cast<int>(entry.textures.size());
+            float sectorAngle = TWO_PI / static_cast<float>(kTotalTexSectors);
 
-            if (s == kTexturesPerPage)
+            for (int s = 0; s < kTotalTexSectors; ++s)
             {
-                // Prev page button
-                bool hovered = (s == kTexturesPerPage) && hoveredNavPrev;
-                ImU32 fillColor = hovered ? navSectorHoverColor : backgroundColor;
-                DrawSector(drawList, startAngle, endAngle,
-                           outerRadius + ringSpacing, textureRingRadius, fillColor, outlineColor);
-                DrawArrow(drawList, startAngle, endAngle,
-                          outerRadius + ringSpacing, textureRingRadius, false, IM_COL32(255, 255, 255, 255));
-            }
-            else if (s == kTexturesPerPage + 1)
-            {
-                // Next page button
-                bool hovered = (s == kTexturesPerPage + 1) && hoveredNavNext;
-                ImU32 fillColor = hovered ? navSectorHoverColor : backgroundColor;
-                DrawSector(drawList, startAngle, endAngle,
-                           outerRadius + ringSpacing, textureRingRadius, fillColor, outlineColor);
-                DrawArrow(drawList, startAngle, endAngle,
-                          outerRadius + ringSpacing, textureRingRadius, true, IM_COL32(255, 255, 255, 255));
-            }
-            else
-            {
-                // Texture slot
-                int pageOffset = texturePage * kTexturesPerPage;
-                int texIdx = pageOffset + s;
-                bool hovered = (texIdx == hoveredTexture);
-                if (texIdx < totalTex)
-                    DrawTextureSector(drawList, startAngle, endAngle,
-                                      outerRadius + ringSpacing, textureRingRadius,
-                                      textures[texIdx], hovered, outlineColor);
+                float startAngle = static_cast<float>(s) * sectorAngle;
+                float endAngle = startAngle + sectorAngle;
+
+                if (s == kTexturesPerPage)
+                {
+                    bool hovered = isTop && entry.hoveredNavPrev;
+                    ImU32 fillColor = hovered ? navSectorHoverColor : backgroundColor;
+                    DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, fillColor, outlineColor);
+                    DrawArrow(drawList, startAngle, endAngle, layerInnerR, layerOuterR, false, IM_COL32(255, 255, 255, 255));
+                }
+                else if (s == kTexturesPerPage + 1)
+                {
+                    bool hovered = isTop && entry.hoveredNavNext;
+                    ImU32 fillColor = hovered ? navSectorHoverColor : backgroundColor;
+                    DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, fillColor, outlineColor);
+                    DrawArrow(drawList, startAngle, endAngle, layerInnerR, layerOuterR, true, IM_COL32(255, 255, 255, 255));
+                }
                 else
-                    DrawSector(drawList, startAngle, endAngle,
-                               outerRadius + ringSpacing, textureRingRadius, backgroundColor, outlineColor);
+                {
+                    int pageOffset = entry.texturePage * kTexturesPerPage;
+                    int texIdx = pageOffset + s;
+                    bool hovered = isTop && (texIdx == entry.hoveredTexture);
+                    bool selected = !isTop && (texIdx == entry.selectedIndex);
+                    if (texIdx < totalTex)
+                        DrawTextureSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR,
+                                          entry.textures[texIdx], hovered || selected, outlineColor);
+                    else
+                        DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
+                }
             }
+            break;
         }
-    }
 
-    // Label ring: spans 360° (outerRadius + ringSpacing → labelRingRadius)
-    if (labelRingActive && !labelItems.empty())
-    {
-        int count = static_cast<int>(labelItems.size());
-        float itemAngle = TWO_PI / static_cast<float>(count);
-
-        for (int i = 0; i < count; ++i)
+        case RingType::LABEL:
         {
-            float startAngle = static_cast<float>(i) * itemAngle;
-            float endAngle = startAngle + itemAngle;
+            if (entry.items.empty()) break;
+            int count = static_cast<int>(entry.items.size());
+            float itemAngle = TWO_PI / static_cast<float>(count);
 
-            ImU32 fillColor = (i == hoveredLabel) ? labelSectorHoverColor : backgroundColor;
-            DrawSector(drawList, startAngle, endAngle, outerRadius + ringSpacing, labelRingRadius, fillColor, outlineColor);
-            DrawLabel(drawList, labelItems[i], startAngle, endAngle, outerRadius + ringSpacing, labelRingRadius, IM_COL32(255, 255, 255, 255));
+            for (int i = 0; i < count; ++i)
+            {
+                float startAngle = static_cast<float>(i) * itemAngle;
+                float endAngle = startAngle + itemAngle;
+
+                ImU32 fillColor = backgroundColor;
+                if (isTop && i == entry.hoveredLabel)
+                    fillColor = labelSectorHoverColor;
+                else if (!isTop && i == entry.selectedIndex)
+                    fillColor = subpageSelectedColor;
+
+                DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, fillColor, outlineColor);
+                DrawLabel(drawList, entry.items[i], startAngle, endAngle, layerInnerR, layerOuterR, IM_COL32(255, 255, 255, 255));
+            }
+            break;
         }
-    }
 
-    // HSV slider ring (clock-like circular slider)
-    if (hsvSliderActive)
-    {
-        DrawSliderRing(drawList, sliderRingInnerRadius, sliderRingOuterRadius,
-                       hsvValue, hsvMin, hsvMax, hsvComponentName,
-                       sliderTrackColor, sliderFillColor, IM_COL32(255, 255, 255, 255));
-    }
-
-    // Ghost label ring (visible when HSV slider is active, showing which label was selected)
-    if (hsvSliderActive && labelRingGhost && !ghostLabelItems.empty())
-    {
-        int count = static_cast<int>(ghostLabelItems.size());
-        float itemAngle = TWO_PI / static_cast<float>(count);
-
-        for (int i = 0; i < count; ++i)
+        case RingType::HSV_SLIDER:
         {
-            float startAngle = static_cast<float>(i) * itemAngle;
-            float endAngle = startAngle + itemAngle;
-
-            ImU32 fillColor = (i == ghostSelectedLabel) ? subpageSelectedColor : backgroundColor;
-            DrawSector(drawList, startAngle, endAngle, outerRadius + ringSpacing, labelRingRadius, fillColor, outlineColor);
-            DrawLabel(drawList, ghostLabelItems[i], startAngle, endAngle, outerRadius + ringSpacing, labelRingRadius, IM_COL32(255, 255, 255, 255));
+            DrawSliderRing(drawList, layerInnerR, layerOuterR,
+                           entry.sliderValue, entry.sliderMin, entry.sliderMax, entry.sliderName,
+                           sliderTrackColor, sliderFillColor, IM_COL32(255, 255, 255, 255));
+            break;
         }
+
+        case RingType::NONE:
+            break;
+        }
+
+        bandInner = layerOuterR + ringSpacing;
     }
 
+    // Center circle
     drawList->AddCircleFilled(center, deadZoneRadius, IM_COL32(20, 20, 30, 200), 64);
     drawList->AddCircle(center, deadZoneRadius, outlineColor, 64, 1.0f);
 }
+
+// ---- Drawing primitives ----
 
 void RadialMenu::DrawSector(ImDrawList* drawList, float startAngle, float endAngle,
                              float innerR, float outerR, ImU32 fillColor, ImU32 outlineCol)
@@ -595,7 +623,6 @@ void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float
         return;
     }
 
-    // Approximate the curved sector with UV-mapped quads
     const int segments = 16;
     float span = endAngle - startAngle;
 
@@ -615,20 +642,15 @@ void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float
         float u1 = static_cast<float>(i + 1) / static_cast<float>(segments);
 
         if (hovered)
-        {
             drawList->AddImageQuad(tex, p0, p1, p2, p3,
                                    ImVec2(u0, 0), ImVec2(u1, 0), ImVec2(u1, 1), ImVec2(u0, 1),
                                    textureSectorHoverColor);
-        }
         else
-        {
             drawList->AddImageQuad(tex, p0, p1, p2, p3,
                                    ImVec2(u0, 0), ImVec2(u1, 0), ImVec2(u1, 1), ImVec2(u0, 1),
                                    IM_COL32_WHITE);
-        }
     }
 
-    // Outline
     const int outlineSegments = 32;
     for (int i = 0; i <= outlineSegments; ++i)
     {
@@ -652,7 +674,6 @@ void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float
         }
     }
 
-    // Hover highlight ring
     if (hovered)
     {
         drawList->AddCircle(center, innerR, outlineCol, 64, 2.0f);
@@ -671,21 +692,18 @@ void RadialMenu::DrawSliderRing(ImDrawList* drawList, float innerR, float outerR
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
 
-    float startAngle = -PI * 0.5f; // top (12 o'clock)
+    float startAngle = -PI * 0.5f;
     float fillAngle = startAngle + t * TWO_PI;
 
-    // Track (full circle)
     DrawSector(drawList, startAngle, startAngle + TWO_PI, innerR, outerR, trackCol, outlineColor);
 
-    // Filled arc (from top to current value)
     if (t > 0.01f)
     {
         DrawSector(drawList, startAngle, fillAngle, innerR, outerR, fillCol, outlineColor);
     }
 
-    // Value text in center of ring
     char buf[64];
-    if (label == "Hue")
+    if (label == "Hue" || label == "Azimuth" || label == "Elevation")
         snprintf(buf, sizeof(buf), "%s: %.0f", label.c_str(), value);
     else
         snprintf(buf, sizeof(buf), "%s: %.1f%%", label.c_str(), value);
@@ -695,7 +713,6 @@ void RadialMenu::DrawSliderRing(ImDrawList* drawList, float innerR, float outerR
         ImVec2(center.x - textSize_.x * 0.5f, center.y - textSize_.y * 0.5f),
         textCol, buf);
 
-    // Tick marks at 0%, 25%, 50%, 75%, 100%
     for (int i = 0; i <= 4; ++i)
     {
         float angle = startAngle + static_cast<float>(i) / 4.0f * TWO_PI;
@@ -707,7 +724,6 @@ void RadialMenu::DrawSliderRing(ImDrawList* drawList, float innerR, float outerR
             outlineColor, 1.5f);
     }
 
-    // Indicator dot at current value
     {
         float cosA = std::cos(fillAngle);
         float sinA = std::sin(fillAngle);
