@@ -81,7 +81,6 @@ void RadialMenu::PushHSVSliderRing(const std::string& name, float value, float m
     e.sliderValue = value;
     e.sliderMin = minVal;
     e.sliderMax = maxVal;
-    e.prevSliderAngle = -1.0f;
     e.selectedIndex = -1;
     stack.push_back(e);
 }
@@ -247,30 +246,14 @@ void RadialMenu::Update()
                 if (sliderAngle >= TWO_PI) sliderAngle -= TWO_PI;
                 if (sliderAngle < 0.0f)    sliderAngle += TWO_PI;
 
-                if (active.prevSliderAngle < 0.0f)
-                {
-                    active.prevSliderAngle = sliderAngle;
-                }
-                else
-                {
-                    float delta = sliderAngle - active.prevSliderAngle;
-                    if (delta > PI)  delta -= TWO_PI;
-                    if (delta < -PI) delta += TWO_PI;
+                float range = active.sliderMax - active.sliderMin;
+                float rawValue = active.sliderMin + (sliderAngle / TWO_PI) * range;
 
-                    float range = active.sliderMax - active.sliderMin;
-                    float newVal = active.sliderValue + (delta / TWO_PI) * range;
+                float halfRange = range * 0.5f;
+                if (std::abs(rawValue - active.sliderValue) > halfRange)
+                    rawValue = (rawValue > active.sliderValue) ? active.sliderMin : active.sliderMax;
 
-                    if (newVal <= active.sliderMin) {
-                        newVal = active.sliderMin;
-                        active.prevSliderAngle = sliderAngle;
-                    } else if (newVal >= active.sliderMax) {
-                        newVal = active.sliderMax;
-                        active.prevSliderAngle = sliderAngle;
-                    }
-
-                    active.sliderValue = newVal;
-                }
-                active.prevSliderAngle = sliderAngle;
+                active.sliderValue = rawValue;
             }
             return;
         }

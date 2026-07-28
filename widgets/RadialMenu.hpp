@@ -140,7 +140,6 @@ private:
         float sliderValue = 0.0f;
         float sliderMin = 0.0f;
         float sliderMax = 1.0f;
-        float prevSliderAngle = -1.0f;
     };
 
     std::vector<RingEntry> stack;
