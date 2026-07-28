@@ -7,6 +7,11 @@ static constexpr float PI = 3.14159265358f;
 void RadialMenu::SetVisible(bool visible_)
 {
     visible = visible_;
+    if (!visible_)
+    {
+        selectedPage = -1;
+        selectedSubPage = -1;
+    }
 }
 
 bool RadialMenu::IsVisible() const
@@ -64,6 +69,11 @@ void RadialMenu::SetSubpageHoverColor(ImU32 color)
     subpageHoverColor = color;
 }
 
+void RadialMenu::SetSubpageSelectedColor(ImU32 color)
+{
+    subpageSelectedColor = color;
+}
+
 void RadialMenu::SetBackgroundColor(ImU32 color)
 {
     backgroundColor = color;
@@ -82,6 +92,18 @@ int RadialMenu::GetHoveredPage() const
 int RadialMenu::GetHoveredSubPage() const
 {
     return hoveredSubPage;
+}
+
+void RadialMenu::SetSelectedSubPage(int page, int subPage)
+{
+    selectedPage = page;
+    selectedSubPage = subPage;
+}
+
+void RadialMenu::ClearSelectedSubPage()
+{
+    selectedPage = -1;
+    selectedSubPage = -1;
 }
 
 void RadialMenu::SetTextureRingActive(bool active)
@@ -363,22 +385,31 @@ void RadialMenu::Draw()
         DrawLabel(drawList, pages[i].label, startAngle, endAngle, deadZoneRadius, innerRadius, IM_COL32(255, 255, 255, 255));
     }
 
-    // Outer ring: subpages of hovered page (innerRadius → outerRadius)
-    if (hoveredPage >= 0 && hoveredPage < pageCount)
+    // Outer ring: subpages of hovered/selected page (innerRadius → outerRadius)
+    bool anyRingActive = textureRingActive || labelRingActive || hsvSliderActive;
+    int outerPageIdx = hoveredPage;
+    if (anyRingActive && selectedPage >= 0 && selectedPage < pageCount)
+        outerPageIdx = selectedPage;
+
+    if (outerPageIdx >= 0 && outerPageIdx < pageCount)
     {
-        const Page& page = pages[hoveredPage];
+        const Page& page = pages[outerPageIdx];
         if (!page.subPages.empty())
         {
             int subCount = static_cast<int>(page.subPages.size());
             float subAngle = pageAngle / static_cast<float>(subCount);
-            float pageStart = static_cast<float>(hoveredPage) * pageAngle;
+            float pageStart = static_cast<float>(outerPageIdx) * pageAngle;
 
             for (int j = 0; j < subCount; ++j)
             {
                 float startAngle = pageStart + static_cast<float>(j) * subAngle;
                 float endAngle = startAngle + subAngle;
 
-                ImU32 fillColor = (j == hoveredSubPage) ? subpageHoverColor : backgroundColor;
+                ImU32 fillColor = backgroundColor;
+                if (anyRingActive && j == selectedSubPage)
+                    fillColor = subpageSelectedColor;
+                else if (j == hoveredSubPage)
+                    fillColor = subpageHoverColor;
 
                 DrawSector(drawList, startAngle, endAngle, innerRadius + ringSpacing, outerRadius, fillColor, outlineColor);
 

@@ -825,25 +825,31 @@ public:
                 if (!anyRingActive) {
                     if (selectEdge) {
                         if (textureSubpageHovered) {
+                            radialMenu->SetSelectedSubPage(hp, hs);
                             radialMenu->ResetTexturePage();
                             radialMenu->SetTextureRingActive(true);
                         } else if (controlSubpageHovered) {
+                            radialMenu->SetSelectedSubPage(hp, hs);
                             radialMenu->SetLabelItems({"Translate", "Aim", "Scale"});
                             labelRingKind = LabelRingKind::CONTROL;
                             radialMenu->SetLabelRingActive(true);
                         } else if (paintSubpageHovered) {
+                            radialMenu->SetSelectedSubPage(hp, hs);
                             radialMenu->SetLabelItems({"Add", "Remove", "Paint"});
                             labelRingKind = LabelRingKind::PAINT;
                             radialMenu->SetLabelRingActive(true);
                         } else if (dragModeSubpageHovered) {
+                            radialMenu->SetSelectedSubPage(hp, hs);
                             radialMenu->SetLabelItems({"Drag", "Click"});
                             labelRingKind = LabelRingKind::DRAG;
                             radialMenu->SetLabelRingActive(true);
                         } else if (colorSubpageHovered) {
+                            radialMenu->SetSelectedSubPage(hp, hs);
                             radialMenu->SetLabelItems({"Hue", "Saturation", "Value"});
                             labelRingKind = LabelRingKind::HSV;
                             radialMenu->SetLabelRingActive(true);
                         } else if (azimuthSubpageHovered) {
+                            radialMenu->SetSelectedSubPage(hp, hs);
                             float azi, ele;
                             light.getSpherical(azi, ele);
                             radialMenu->SetLabelRingActive(false);
@@ -852,6 +858,7 @@ public:
                             hsvSliderConfirmed = false;
                             textureSelectPrev = true;
                         } else if (elevationSubpageHovered) {
+                            radialMenu->SetSelectedSubPage(hp, hs);
                             float azi, ele;
                             light.getSpherical(azi, ele);
                             radialMenu->SetLabelRingActive(false);

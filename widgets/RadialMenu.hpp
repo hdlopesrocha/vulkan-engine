@@ -32,6 +32,9 @@ public:
     int GetHoveredPage() const;
     int GetHoveredSubPage() const;
 
+    void SetSelectedSubPage(int page, int subPage);
+    void ClearSelectedSubPage();
+
     void SetDeadZoneRadius(float radius);
     void SetInnerRadius(float radius);
     void SetOuterRadius(float radius);
@@ -40,6 +43,7 @@ public:
 
     void SetPageHoverColor(ImU32 color);
     void SetSubpageHoverColor(ImU32 color);
+    void SetSubpageSelectedColor(ImU32 color);
     void SetBackgroundColor(ImU32 color);
     void SetOutlineColor(ImU32 color);
 
@@ -92,6 +96,7 @@ private:
 
     ImU32 pageHoverColor = IM_COL32(100, 150, 255, 200);
     ImU32 subpageHoverColor = IM_COL32(150, 200, 255, 220);
+    ImU32 subpageSelectedColor = IM_COL32(80, 200, 120, 220);
     ImU32 backgroundColor = IM_COL32(30, 30, 40, 180);
     ImU32 outlineColor = IM_COL32(200, 200, 210, 255);
 
@@ -99,6 +104,10 @@ private:
     float currentRadius = 0.0f;
     int hoveredPage = -1;
     int hoveredSubPage = -1;
+
+    // Track which subpage is selected (stays visible when an extra ring opens)
+    int selectedPage = -1;
+    int selectedSubPage = -1;
 
     // Texture ring state
     bool textureRingActive = false;
