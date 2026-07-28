@@ -194,7 +194,7 @@ void RadialMenu::SetHSVComponent(const std::string& name, float value, float min
     hsvValue = value;
     hsvMin = minVal;
     hsvMax = maxVal;
-    prevSliderAngle = -1.0f; // reset tracking
+
 }
 
 float RadialMenu::GetHSVSliderValue() const
@@ -232,33 +232,20 @@ void RadialMenu::Update()
     if (currentRadius < deadZoneRadius)
         return;
 
-    // HSV slider ring: delta-based angle tracking (CW increases, CCW decreases)
-    // Min is at top (-π/2), aligned with analog stick up
+    // HSV slider ring: direct position mapping
+    // Stick at top = min, stick rotated CW = value increases, full circle back to top = max
     if (hsvSliderActive)
     {
         if (currentRadius > sliderRingInnerRadius)
         {
-            // Offset angle so top (12 o'clock) = min value
+            // Offset angle so top (12 o'clock) = min (0%), CW increases to max (100%)
             float sliderAngle = currentAngle + PI * 0.5f;
             if (sliderAngle >= TWO_PI) sliderAngle -= TWO_PI;
+            if (sliderAngle < 0.0f)    sliderAngle += TWO_PI;
 
-            if (prevSliderAngle < 0.0f)
-            {
-                prevSliderAngle = sliderAngle;
-            }
-            else
-            {
-                float delta = sliderAngle - prevSliderAngle;
-                // Wrap delta to shortest path [-π, π]
-                if (delta > PI)  delta -= TWO_PI;
-                if (delta < -PI) delta += TWO_PI;
-
-                float range = hsvMax - hsvMin;
-                hsvValue += (delta / TWO_PI) * range;
-                if (hsvValue < hsvMin) hsvValue = hsvMin;
-                if (hsvValue > hsvMax) hsvValue = hsvMax;
-            }
-            prevSliderAngle = sliderAngle;
+            float t = sliderAngle / TWO_PI;
+            float range = hsvMax - hsvMin;
+            hsvValue = hsvMin + t * range;
         }
         return;
     }
