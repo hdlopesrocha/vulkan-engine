@@ -2864,16 +2864,7 @@ void MyApp::postSubmit() {
         textureMixer->pollPendingGenerations(this);
     }
 
-    // If a rebuild was requested from the UI (Apply Brush), perform it now
-    // after the frame was submitted so GPU fences can be waited on safely.
-    if (!isLoading && settings.animateBrush) {
-        // Animate the selected brush entry along a circular trajectory, then
-        // rebuild the brush scene from it. Runs in postSubmit (after submit)
-        // so the indirect-buffer fill (this frame) is fenced off from the
-        // indirect draw (next frame), avoiding a READ_AFTER_WRITE hazard.
-        updateBrushAnimation(lastFrameDelta);
-        rebuildBrushScene();
-    } else if (brushRebuildPending) {
+    if (brushRebuildPending) {
         brushRebuildPending = false;
         rebuildBrushScene();
     }
