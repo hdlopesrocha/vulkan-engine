@@ -35,25 +35,7 @@ layout(set = 2, binding = 4) uniform samplerCube sceneSkyCube;    // solid 360 c
 // Near/far planes for linearizing depth – read from UBO passParams (z = near, w = far)
 // so they always match the glm::perspective call on the CPU side.
 
-// Convert HSV to RGB (H in [0,360], S/V in [0,1])
-vec3 hsvToRgb(vec3 hsv) {
-    vec3 c = clamp(hsv, vec3(0.0), vec3(360.0, 1.0, 1.0));
-    float h = c.x / 60.0;
-    float s = c.y;
-    float v = c.z;
-    float hi = floor(h);
-    float f = h - hi;
-    float p = v * (1.0 - s);
-    float q = v * (1.0 - s * f);
-    float t = v * (1.0 - s * (1.0 - f));
-    int i = int(hi) % 6;
-    if (i == 0) return vec3(v, t, p);
-    if (i == 1) return vec3(q, v, p);
-    if (i == 2) return vec3(p, v, t);
-    if (i == 3) return vec3(p, q, v);
-    if (i == 4) return vec3(t, p, v);
-    return vec3(v, p, q);
-}
+#include "includes/hsv.glsl"
 
 // Linearize depth from Vulkan [0,1] depth buffer to eye-space distance.
 // With GLM_FORCE_DEPTH_ZERO_TO_ONE the projection maps z_eye to [0,1]:
@@ -510,10 +492,13 @@ void main() {
 
     waterColor += causticColor * caustic;
 
-    // Apply per-vertex HSV tint (uses a local variable for potential override, e.g. from brushHSV in ubo)
+    // Apply per-vertex HSV: rotate hue, offset saturation, scale value
     vec3 hsvColor = fragHSV;
-    vec3 hsvTint = hsvToRgb(hsvColor);
-    waterColor *= hsvTint;
+    vec3 texHSV = rgbToHsv(waterColor);
+    texHSV.x = mod(texHSV.x + hsvColor.x, 360.0);
+    texHSV.y = clamp(texHSV.y * (hsvColor.y * 2.0), 0.0, 1.0);
+    texHSV.z *= hsvColor.z * 2.0;
+    waterColor = hsvToRgb(texHSV);
 
     // === FINAL OUTPUT ===
     float alpha = 1.0;

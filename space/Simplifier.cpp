@@ -19,7 +19,7 @@ SimplificationResult Simplifier::simplify(
 {
     SimplificationResult res(0u, DISCARD_BRUSH_INDEX);
     int brushIndex = DISCARD_BRUSH_INDEX;
-    glm::vec3 hsv(0.0f, 0.0f, 1.0f);
+    glm::vec3 hsv(0.0f, 0.5f, 0.5f);
 
     // --- 1. Brush consistency and simplification-chain check (unchanged) ---
     // With texturing enabled all surface children must share the same brush index

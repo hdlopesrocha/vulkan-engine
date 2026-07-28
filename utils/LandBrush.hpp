@@ -18,5 +18,5 @@ class LandBrush : public TexturePainter {
 	public: 
 	LandBrush();
 	int paint(const Vertex &vertex) const override;
-	glm::vec3 paintHSV(const Vertex &vertex) const override { return glm::vec3(0.0f, 0.0f, 1.0f); }
+	glm::vec3 paintHSV(const Vertex &vertex) const override { return glm::vec3(0.0f, 0.5f, 0.5f); }
 };

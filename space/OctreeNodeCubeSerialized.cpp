@@ -1,7 +1,7 @@
 #include "OctreeNodeCubeSerialized.hpp"
 
 OctreeNodeCubeSerialized::OctreeNodeCubeSerialized()
-    : position(0.0f), normal(0.0f), texCoord(0.0f), brushIndex(DISCARD_BRUSH_INDEX), hsv(0.0f, 0.0f, 1.0f), min(0.0f), bits(0), length(0.0f), level(0)
+    : position(0.0f), normal(0.0f), texCoord(0.0f), brushIndex(DISCARD_BRUSH_INDEX), hsv(0.0f, 0.5f, 0.5f), min(0.0f), bits(0), length(0.0f), level(0)
 {
     for(int i=0;i<8;++i) children[i]=UINT_MAX;
 }

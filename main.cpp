@@ -504,7 +504,7 @@ public:
         brushManager.getEntries()[0].materialIndex = 0;
         brushManager.getEntries()[0].translate = glm::vec3(0.0f, 0.0f, 0.0f);
         brushManager.getEntries()[0].scale = glm::vec3(256.0f);
-        brushManager.getEntries()[0].hsv = glm::vec3(0.0f, 0.0f, 1.0f);
+        brushManager.getEntries()[0].hsv = glm::vec3(0.0f, 0.5f, 0.5f);
         brushManager.getEntries()[1].sdfType = 1;
         brushManager.getEntries()[1].materialIndex = 1;
         brushManager.getEntries()[1].translate = glm::vec3(512.0f, 0.0f, 0.0f);
@@ -1103,7 +1103,7 @@ public:
         {
             float brushTexIdx = 0.0f;
             float brushMode = 0.0f;
-            glm::vec3 brushHSV(0.0f, 0.0f, 1.0f);
+            glm::vec3 brushHSV(0.0f, 0.5f, 0.5f);
             const BrushEntry* brushEntry = brushManager.getSelectedEntry();
             if (brushEntry) {
                 brushTexIdx = static_cast<float>(brushEntry->materialIndex);

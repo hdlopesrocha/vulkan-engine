@@ -12,7 +12,7 @@ struct SimplificationResult {
     uint8_t isSimplified;
     int brushIndex;
     glm::vec3 hsv;
-    SimplificationResult(uint8_t simplified, int brushIdx, glm::vec3 hsv_ = glm::vec3(0.0f, 0.0f, 1.0f))
+    SimplificationResult(uint8_t simplified, int brushIdx, glm::vec3 hsv_ = glm::vec3(0.0f, 0.5f, 0.5f))
         : isSimplified(simplified), brushIndex(brushIdx), hsv(hsv_) {
         
     }

@@ -50,5 +50,5 @@ struct BrushEntry {
     // Rendering opacity (0 = fully transparent, 1 = fully opaque)
     float opacity = 0.5f;
     // Per-vertex HSV tint (H=0..360, S=0..1, V=0..1)
-    glm::vec3 hsv = glm::vec3(0.0f, 0.0f, 1.0f);
+    glm::vec3 hsv = glm::vec3(0.0f, 0.5f, 0.5f);
 };
