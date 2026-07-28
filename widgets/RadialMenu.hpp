@@ -127,6 +127,7 @@ private:
     float hsvValue = 0.0f;
     float hsvMin = 0.0f;
     float hsvMax = 1.0f;
+    float prevSliderAngle = -1.0f;
     float sliderRingInnerRadius = 180.0f;
     float sliderRingOuterRadius = 220.0f;
     ImU32 sliderFillColor = IM_COL32(220, 180, 50, 220);

@@ -194,6 +194,7 @@ void RadialMenu::SetHSVComponent(const std::string& name, float value, float min
     hsvValue = value;
     hsvMin = minVal;
     hsvMax = maxVal;
+    prevSliderAngle = -1.0f;
 
 }
 
@@ -232,20 +233,41 @@ void RadialMenu::Update()
     if (currentRadius < deadZoneRadius)
         return;
 
-    // HSV slider ring: direct position mapping
-    // Stick at top = min, stick rotated CW = value increases, full circle back to top = max
+    // HSV slider ring: delta-based with clamping at extremes
+    // CW increases, CCW decreases. At min/max, movement past the boundary is clamped.
     if (hsvSliderActive)
     {
         if (currentRadius > sliderRingInnerRadius)
         {
-            // Offset angle so top (12 o'clock) = min (0%), CW increases to max (100%)
             float sliderAngle = currentAngle + PI * 0.5f;
             if (sliderAngle >= TWO_PI) sliderAngle -= TWO_PI;
             if (sliderAngle < 0.0f)    sliderAngle += TWO_PI;
 
-            float t = sliderAngle / TWO_PI;
-            float range = hsvMax - hsvMin;
-            hsvValue = hsvMin + t * range;
+            if (prevSliderAngle < 0.0f)
+            {
+                prevSliderAngle = sliderAngle;
+            }
+            else
+            {
+                float delta = sliderAngle - prevSliderAngle;
+                if (delta > PI)  delta -= TWO_PI;
+                if (delta < -PI) delta += TWO_PI;
+
+                float range = hsvMax - hsvMin;
+                float newVal = hsvValue + (delta / TWO_PI) * range;
+
+                // Clamp at extremes — once at min or max, reset reference to prevent wraparound
+                if (newVal <= hsvMin) {
+                    newVal = hsvMin;
+                    prevSliderAngle = sliderAngle;
+                } else if (newVal >= hsvMax) {
+                    newVal = hsvMax;
+                    prevSliderAngle = sliderAngle;
+                }
+
+                hsvValue = newVal;
+                prevSliderAngle = sliderAngle;
+            }
         }
         return;
     }
