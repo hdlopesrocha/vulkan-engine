@@ -37,6 +37,4 @@ private:
     bool f11Prev = false;
     bool escPrev = false;
     bool spacePrev = false;
-    bool k1Prev = false, k2Prev = false, k3Prev = false, k4Prev = false;
-    bool k5Prev = false, k6Prev = false, k7Prev = false, k8Prev = false;
 };

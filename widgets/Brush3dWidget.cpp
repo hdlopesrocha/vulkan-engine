@@ -2,6 +2,9 @@
 #include "../vulkan/TextureArrayManager.hpp"
 #include "../events/EventManager.hpp"
 #include "../events/RebuildBrushEvent.hpp"
+#include "../events/SetBrushControlEvent.hpp"
+#include "../events/SetBrushPaintModeEvent.hpp"
+#include "../events/SetBrushDragModeEvent.hpp"
 #include <imgui.h>
 #include <cstring>
 #include <memory>
@@ -16,6 +19,12 @@ const char* Brush3dWidget::layerNames[] = { "Opaque", "Transparent" };
 const char* Brush3dWidget::effectTypeNames[] = {
     "Perlin Distort", "Perlin Carve", "Sine Distort", "Voronoi Carve"
 };
+
+static const char* brushControlModeNames[] = {
+    "Translate", "Aim", "Scale", "Texture", "Attributes", "Color"
+};
+
+static const char* brushDragModeNames[] = { "Drag", "Click" };
 
 Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, Brush3dManager& mgr, EventManager* eventMgr)
     : Widget("Brush 3D", u8"\uf1fc"),
@@ -100,6 +109,18 @@ void Brush3dWidget::renderEntry(int index) {
     auto &entriesRef = manager.getEntries();
     BrushEntry& e = entriesRef[index];
 
+    // Brush control mode (synced with radial menu via SetBrushControlEvent)
+    {
+        int mode = static_cast<int>(manager.controlMode);
+        if (ImGui::Combo("Control Mode", &mode, brushControlModeNames, IM_ARRAYSIZE(brushControlModeNames))) {
+            manager.controlMode = static_cast<BrushControlMode>(mode);
+            if (eventManager) {
+                eventManager->queue(std::make_shared<SetBrushControlEvent>(manager.controlMode));
+            }
+            dirty = true;
+        }
+    }
+
     // SDF Type
     if (ImGui::Combo("SDF Type", &e.sdfType, sdfTypeNames, IM_ARRAYSIZE(sdfTypeNames))) {
         dirty = true;
@@ -107,7 +128,26 @@ void Brush3dWidget::renderEntry(int index) {
 
     // Brush Mode
     if (ImGui::Combo("Mode", &e.brushMode, brushModeNames, IM_ARRAYSIZE(brushModeNames))) {
+        BrushPaintMode pm = BrushPaintMode::ADD;
+        if (e.brushMode == 1) pm = BrushPaintMode::REMOVE;
+        else if (e.brushMode == 2) pm = BrushPaintMode::PAINT;
+        manager.paintMode = pm;
+        if (eventManager) {
+            eventManager->queue(std::make_shared<SetBrushPaintModeEvent>(pm));
+        }
         dirty = true;
+    }
+
+    // Drag Mode
+    {
+        int dm = static_cast<int>(manager.dragMode);
+        if (ImGui::Combo("Drag Mode", &dm, brushDragModeNames, IM_ARRAYSIZE(brushDragModeNames))) {
+            manager.dragMode = static_cast<BrushDragMode>(dm);
+            if (eventManager) {
+                eventManager->queue(std::make_shared<SetBrushDragModeEvent>(manager.dragMode));
+            }
+            dirty = true;
+        }
     }
 
     // Target Layer

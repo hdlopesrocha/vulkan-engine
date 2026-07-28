@@ -43,13 +43,27 @@ public:
     void SetBackgroundColor(ImU32 color);
     void SetOutlineColor(ImU32 color);
 
-    // Texture ring
+    // Texture ring (paginated: 14 texture slots + 2 nav buttons = 16 equal sectors)
     void SetTextureRingActive(bool active);
     bool GetTextureRingActive() const;
     void SetTextures(const std::vector<ImTextureID>& textures);
     int GetHoveredTexture() const;
+    bool GetHoveredNavPrev() const;
+    bool GetHoveredNavNext() const;
     void SetTextureRingRadius(float radius);
     void SetTextureSectorHoverColor(ImU32 color);
+    void SetNavSectorHoverColor(ImU32 color);
+    void ResetTexturePage();
+    int GetTexturePage() const;
+    void SetTexturePage(int page);
+
+    // Label ring (generic text ring, e.g. control modes)
+    void SetLabelRingActive(bool active);
+    bool GetLabelRingActive() const;
+    void SetLabelItems(const std::vector<std::string>& items);
+    int GetHoveredLabel() const;
+    void SetLabelRingRadius(float radius);
+    void SetLabelSectorHoverColor(ImU32 color);
 
 private:
     bool visible = false;
@@ -81,12 +95,28 @@ private:
     float textureRingRadius = 170.0f;
     ImU32 textureSectorHoverColor = IM_COL32(100, 200, 100, 220);
     int hoveredTexture = -1;
+    int hoveredNavPrev = false;
+    int hoveredNavNext = false;
+    int texturePage = 0;
+    static constexpr int kTexturesPerPage = 14;
+    static constexpr int kNavSectors = 2;
+    static constexpr int kTotalTexSectors = kTexturesPerPage + kNavSectors;
+    ImU32 navSectorHoverColor = IM_COL32(180, 180, 60, 220);
+
+    // Label ring state
+    bool labelRingActive = false;
+    std::vector<std::string> labelItems;
+    float labelRingRadius = 170.0f;
+    ImU32 labelSectorHoverColor = IM_COL32(100, 200, 100, 220);
+    int hoveredLabel = -1;
 
     void DrawSector(ImDrawList* drawList, float startAngle, float endAngle,
                     float innerR, float outerR, ImU32 fillColor, ImU32 outlineCol);
     void DrawLabel(ImDrawList* drawList, const std::string& label,
                    float angleStart, float angleEnd,
                    float innerR, float outerR, ImU32 color);
+    void DrawArrow(ImDrawList* drawList, float angleStart, float angleEnd,
+                   float innerR, float outerR, bool right, ImU32 color);
     void DrawTextureSector(ImDrawList* drawList, float startAngle, float endAngle,
                            float innerR, float outerR, ImTextureID tex,
                            bool hovered, ImU32 outlineCol);

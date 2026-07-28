@@ -55,18 +55,6 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
     }
     float translateAccel = (std::exp(translateTimer) - 1.0f) / (std::exp(1.0f) - 1.0f);
 
-    // ---- Page navigation (edge-triggered) ----
-    // Keyboard's own pages: F1/F2 page, F3/F4 subpage.
-    if (edgePressed(window, GLFW_KEY_F1, k1Prev)) em->publish(std::make_shared<PageNavigationEvent>(ControllerId::KEYBOARD, PageNavigationEvent::Action::PREV_PAGE));
-    if (edgePressed(window, GLFW_KEY_F2, k2Prev)) em->publish(std::make_shared<PageNavigationEvent>(ControllerId::KEYBOARD, PageNavigationEvent::Action::NEXT_PAGE));
-    if (edgePressed(window, GLFW_KEY_F3, k3Prev)) em->publish(std::make_shared<PageNavigationEvent>(ControllerId::KEYBOARD, PageNavigationEvent::Action::PREV_SUBPAGE));
-    if (edgePressed(window, GLFW_KEY_F4, k4Prev)) em->publish(std::make_shared<PageNavigationEvent>(ControllerId::KEYBOARD, PageNavigationEvent::Action::NEXT_SUBPAGE));
-    // Mouse pages controlled from the keyboard: F5/F6 page, F7/F8 subpage.
-    if (edgePressed(window, GLFW_KEY_F5, k5Prev)) em->publish(std::make_shared<PageNavigationEvent>(ControllerId::MOUSE, PageNavigationEvent::Action::PREV_PAGE));
-    if (edgePressed(window, GLFW_KEY_F6, k6Prev)) em->publish(std::make_shared<PageNavigationEvent>(ControllerId::MOUSE, PageNavigationEvent::Action::NEXT_PAGE));
-    if (edgePressed(window, GLFW_KEY_F7, k7Prev)) em->publish(std::make_shared<PageNavigationEvent>(ControllerId::MOUSE, PageNavigationEvent::Action::PREV_SUBPAGE));
-    if (edgePressed(window, GLFW_KEY_F8, k8Prev)) em->publish(std::make_shared<PageNavigationEvent>(ControllerId::MOUSE, PageNavigationEvent::Action::NEXT_SUBPAGE));
-
     // ---- Map raw keys into a controller-agnostic action based on active page ----
     ControllerAction action;
     glm::vec3 forward = cam.getForward();

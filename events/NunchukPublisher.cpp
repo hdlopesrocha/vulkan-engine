@@ -327,18 +327,8 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         return;
     }
 
-    // ---- Wiimote D-PAD page navigation (edge-triggered) ----
-    uint16_t pressed = s.buttons & ~prevButtons;
-    if (pressed & WIIMOTE_BUTTON_UP)
-        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::WIIMOTE, PageNavigationEvent::Action::PREV_PAGE));
-    if (pressed & WIIMOTE_BUTTON_DOWN)
-        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::WIIMOTE, PageNavigationEvent::Action::NEXT_PAGE));
-    if (pressed & WIIMOTE_BUTTON_LEFT)
-        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::WIIMOTE, PageNavigationEvent::Action::PREV_SUBPAGE));
-    if (pressed & WIIMOTE_BUTTON_RIGHT)
-        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::WIIMOTE, PageNavigationEvent::Action::NEXT_SUBPAGE));
-
     // Wiimote +/- → cycle brush SDF primitive type (only on Brush page)
+    uint16_t pressed = s.buttons & ~prevButtons;
     if (brushManager) {
         if (pressed & WIIMOTE_BUTTON_PLUS) {
             if (wctx.activeCategory() == PageCategory::BRUSH) {
@@ -378,8 +368,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         if (brushManager) {
             BrushEntry* be = brushManager->getSelectedEntry();
             if (be) {
-                const ControllerPage* sub = wctx.activeSubpage();
-                if (sub && sub->control == PageControl::AIM) {
+                if (brushManager && brushManager->controlMode == BrushControlMode::AIM) {
                     be->snapTranslation = glm::vec3(0.0f);
                     fprintf(stderr, "[Wiimote] snapTranslation reset\n");
                 } else if (wctx.activeCategory() == PageCategory::BRUSH) {
@@ -449,10 +438,9 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 if (jy != 0.0f) delta += forward * (jy * vel);
                 em->publish(std::make_shared<TranslateCameraEvent>(delta));
             } else if (brushManager) {
-                // Check that we are NOT on the Aim subpage (Aim handles nunchuk
+                // Check that we are NOT in Aim mode (Aim handles nunchuk
                 // as a relative shift from the intersection point instead).
-                const ControllerPage* bp = wctx.activeSubpage();
-                if (!bp || bp->control != PageControl::AIM) {
+                if (brushManager->controlMode != BrushControlMode::AIM) {
                     BrushEntry* be = brushManager->getSelectedEntry();
                     if (be) {
                         if (jx != 0.0f) be->translate += right * (jx * vel);
@@ -471,8 +459,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     // ========================================================================
     if (hasNunchuk) {
         // ── Check if Aim subpage is active (C/Z are handled as shift below) ──
-        const ControllerPage* aimCheck = wctx.activeSubpage();
-        bool aimActive = aimCheck && aimCheck->control == PageControl::AIM;
+        bool aimActive = brushManager && brushManager->controlMode == BrushControlMode::AIM;
 
         float vel = cam.speed * deltaTime * joystickAccel;
         glm::vec3 upDelta = up * vel;
@@ -513,8 +500,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     // Exponential acceleration (same as translate), clamped to ≥0.001.
     // ========================================================================
     {
-        const ControllerPage* sp = wctx.activeSubpage();
-        if (sp && sp->control == PageControl::SCALE && brushManager) {
+        if (brushManager && brushManager->controlMode == BrushControlMode::SCALE) {
             if (hasNunchuk) {
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) {
@@ -595,9 +581,8 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         } else if (brushManager) {
             // Do NOT apply rotation when on the Aim or Color subpages
             // (they have their own gyro integration).
-            const ControllerPage* rotSub = wctx.activeSubpage();
-            if (!rotSub || (rotSub->control != PageControl::AIM
-                         && rotSub->control != PageControl::COLOR)) {
+            if (brushManager->controlMode != BrushControlMode::AIM
+                         && brushManager->controlMode != BrushControlMode::COLOR) {
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) {
                     float brushScale = deltaTime * cp.wiimoteRotSpeed / 90.0f;
@@ -631,8 +616,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     //   • Fallback to absolute YPR offsets when M+ is unavailable
     // ========================================================================
     {
-        const ControllerPage* subpage = wctx.activeSubpage();
-        bool onAim = subpage && subpage->control == PageControl::AIM;
+        bool onAim = brushManager && brushManager->controlMode == BrushControlMode::AIM;
 
         // ── Gyro bias: update when not actively aiming ──
         if (!onAim || !aDown) {
@@ -746,8 +730,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     // held, leaky-integrator bias update when A is released.
     // ========================================================================
     {
-        const ControllerPage* subpage = wctx.activeSubpage();
-        bool onColor = subpage && subpage->control == PageControl::COLOR;
+        bool onColor = brushManager && brushManager->controlMode == BrushControlMode::COLOR;
 
         // ── Gyro bias: update when not actively adjusting color ──
         if (!onColor || !aDown) {

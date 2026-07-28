@@ -103,6 +103,16 @@ int RadialMenu::GetHoveredTexture() const
     return hoveredTexture;
 }
 
+bool RadialMenu::GetHoveredNavPrev() const
+{
+    return hoveredNavPrev;
+}
+
+bool RadialMenu::GetHoveredNavNext() const
+{
+    return hoveredNavNext;
+}
+
 void RadialMenu::SetTextureRingRadius(float radius)
 {
     textureRingRadius = radius;
@@ -113,11 +123,68 @@ void RadialMenu::SetTextureSectorHoverColor(ImU32 color)
     textureSectorHoverColor = color;
 }
 
+void RadialMenu::SetNavSectorHoverColor(ImU32 color)
+{
+    navSectorHoverColor = color;
+}
+
+void RadialMenu::ResetTexturePage()
+{
+    texturePage = 0;
+}
+
+int RadialMenu::GetTexturePage() const
+{
+    return texturePage;
+}
+
+void RadialMenu::SetTexturePage(int page)
+{
+    int totalPages = (static_cast<int>(textures.size()) + kTexturesPerPage - 1) / kTexturesPerPage;
+    if (totalPages <= 0) totalPages = 1;
+    texturePage = page % totalPages;
+    if (texturePage < 0)
+        texturePage += totalPages;
+}
+
+void RadialMenu::SetLabelRingActive(bool active)
+{
+    labelRingActive = active;
+}
+
+bool RadialMenu::GetLabelRingActive() const
+{
+    return labelRingActive;
+}
+
+void RadialMenu::SetLabelItems(const std::vector<std::string>& items)
+{
+    labelItems = items;
+}
+
+int RadialMenu::GetHoveredLabel() const
+{
+    return hoveredLabel;
+}
+
+void RadialMenu::SetLabelRingRadius(float radius)
+{
+    labelRingRadius = radius;
+}
+
+void RadialMenu::SetLabelSectorHoverColor(ImU32 color)
+{
+    labelSectorHoverColor = color;
+}
+
 void RadialMenu::Update()
 {
     hoveredPage = -1;
     hoveredSubPage = -1;
     hoveredTexture = -1;
+    hoveredLabel = -1;
+    hoveredNavPrev = false;
+    hoveredNavNext = false;
 
     if (!visible || pages.empty())
         return;
@@ -130,19 +197,43 @@ void RadialMenu::Update()
     if (currentRadius < deadZoneRadius)
         return;
 
-    // Texture ring hover detection (outermost ring)
+    // Texture ring hover detection (paginated: 16 equal sectors)
     if (textureRingActive && !textures.empty())
     {
         if (currentRadius > outerRadius + ringSpacing && currentRadius <= textureRingRadius)
         {
-            int texCount = static_cast<int>(textures.size());
-            float texAngle = TWO_PI / static_cast<float>(texCount);
-            int texIdx = static_cast<int>(currentAngle / texAngle);
-            if (texIdx >= texCount)
-                texIdx = texCount - 1;
-            hoveredTexture = texIdx;
+            float sectorAngle = TWO_PI / static_cast<float>(kTotalTexSectors);
+            int idx = static_cast<int>(currentAngle / sectorAngle);
+            if (idx >= kTotalTexSectors)
+                idx = kTotalTexSectors - 1;
+
+            hoveredNavPrev = (idx == kTexturesPerPage);
+            hoveredNavNext = (idx == kTexturesPerPage + 1);
+
+            if (!hoveredNavPrev && !hoveredNavNext)
+            {
+                int pageOffset = texturePage * kTexturesPerPage;
+                int absIdx = pageOffset + idx;
+                if (absIdx < static_cast<int>(textures.size()))
+                    hoveredTexture = absIdx;
+            }
         }
-        // When texture ring is active, don't process inner rings
+        return;
+    }
+
+    // Label ring hover detection (outermost ring)
+    if (labelRingActive && !labelItems.empty())
+    {
+        if (currentRadius > outerRadius + ringSpacing && currentRadius <= labelRingRadius)
+        {
+            int count = static_cast<int>(labelItems.size());
+            float itemAngle = TWO_PI / static_cast<float>(count);
+            int idx = static_cast<int>(currentAngle / itemAngle);
+            if (idx >= count)
+                idx = count - 1;
+            hoveredLabel = idx;
+        }
+        // When label ring is active, don't process inner rings
         return;
     }
 
@@ -224,21 +315,68 @@ void RadialMenu::Draw()
         }
     }
 
-    // Texture ring: spans 360° (outerRadius + ringSpacing → textureRingRadius)
+    // Texture ring: 14 texture slots + 2 nav buttons = 16 equal sectors
     if (textureRingActive && !textures.empty())
     {
-        int texCount = static_cast<int>(textures.size());
-        float texAngle = TWO_PI / static_cast<float>(texCount);
+        int totalTex = static_cast<int>(textures.size());
+        float sectorAngle = TWO_PI / static_cast<float>(kTotalTexSectors);
 
-        for (int t = 0; t < texCount; ++t)
+        for (int s = 0; s < kTotalTexSectors; ++s)
         {
-            float startAngle = static_cast<float>(t) * texAngle;
-            float endAngle = startAngle + texAngle;
+            float startAngle = static_cast<float>(s) * sectorAngle;
+            float endAngle = startAngle + sectorAngle;
 
-            bool hovered = (t == hoveredTexture);
-            DrawTextureSector(drawList, startAngle, endAngle,
-                              outerRadius + ringSpacing, textureRingRadius,
-                              textures[t], hovered, outlineColor);
+            if (s == kTexturesPerPage)
+            {
+                // Prev page button
+                bool hovered = (s == kTexturesPerPage) && hoveredNavPrev;
+                ImU32 fillColor = hovered ? navSectorHoverColor : backgroundColor;
+                DrawSector(drawList, startAngle, endAngle,
+                           outerRadius + ringSpacing, textureRingRadius, fillColor, outlineColor);
+                DrawArrow(drawList, startAngle, endAngle,
+                          outerRadius + ringSpacing, textureRingRadius, false, IM_COL32(255, 255, 255, 255));
+            }
+            else if (s == kTexturesPerPage + 1)
+            {
+                // Next page button
+                bool hovered = (s == kTexturesPerPage + 1) && hoveredNavNext;
+                ImU32 fillColor = hovered ? navSectorHoverColor : backgroundColor;
+                DrawSector(drawList, startAngle, endAngle,
+                           outerRadius + ringSpacing, textureRingRadius, fillColor, outlineColor);
+                DrawArrow(drawList, startAngle, endAngle,
+                          outerRadius + ringSpacing, textureRingRadius, true, IM_COL32(255, 255, 255, 255));
+            }
+            else
+            {
+                // Texture slot
+                int pageOffset = texturePage * kTexturesPerPage;
+                int texIdx = pageOffset + s;
+                bool hovered = (texIdx == hoveredTexture);
+                if (texIdx < totalTex)
+                    DrawTextureSector(drawList, startAngle, endAngle,
+                                      outerRadius + ringSpacing, textureRingRadius,
+                                      textures[texIdx], hovered, outlineColor);
+                else
+                    DrawSector(drawList, startAngle, endAngle,
+                               outerRadius + ringSpacing, textureRingRadius, backgroundColor, outlineColor);
+            }
+        }
+    }
+
+    // Label ring: spans 360° (outerRadius + ringSpacing → labelRingRadius)
+    if (labelRingActive && !labelItems.empty())
+    {
+        int count = static_cast<int>(labelItems.size());
+        float itemAngle = TWO_PI / static_cast<float>(count);
+
+        for (int i = 0; i < count; ++i)
+        {
+            float startAngle = static_cast<float>(i) * itemAngle;
+            float endAngle = startAngle + itemAngle;
+
+            ImU32 fillColor = (i == hoveredLabel) ? labelSectorHoverColor : backgroundColor;
+            DrawSector(drawList, startAngle, endAngle, outerRadius + ringSpacing, labelRingRadius, fillColor, outlineColor);
+            DrawLabel(drawList, labelItems[i], startAngle, endAngle, outerRadius + ringSpacing, labelRingRadius, IM_COL32(255, 255, 255, 255));
         }
     }
 
@@ -270,7 +408,7 @@ void RadialMenu::DrawSector(ImDrawList* drawList, float startAngle, float endAng
         points.push_back(ImVec2(center.x + cosA * innerR, center.y + sinA * innerR));
     }
 
-    drawList->AddConvexPolyFilled(points.Data, points.Size, fillColor);
+    drawList->AddConcavePolyFilled(points.Data, points.Size, fillColor);
 
     for (int i = 0; i < points.Size; ++i)
     {
@@ -292,6 +430,22 @@ void RadialMenu::DrawLabel(ImDrawList* drawList, const std::string& label,
     );
 
     drawList->AddText(textPos, color, label.c_str());
+}
+
+void RadialMenu::DrawArrow(ImDrawList* drawList, float angleStart, float angleEnd,
+                            float innerR, float outerR, bool right, ImU32 color)
+{
+    float midAngle = (angleStart + angleEnd) * 0.5f;
+    float midRadius = (innerR + outerR) * 0.5f;
+
+    const char* str = right ? ">" : "<";
+    ImVec2 textSize_ = ImGui::CalcTextSize(str);
+    ImVec2 textPos = ImVec2(
+        center.x + std::cos(midAngle) * midRadius - textSize_.x * 0.5f,
+        center.y + std::sin(midAngle) * midRadius - textSize_.y * 0.5f
+    );
+
+    drawList->AddText(textPos, color, str);
 }
 
 void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float endAngle,

@@ -70,6 +70,10 @@
 #include "events/RebuildBrushEvent.hpp"
 #include "events/ApplyBrushToSceneEvent.hpp"
 #include "events/SetBrushTextureEvent.hpp"
+#include "events/SetBrushControlEvent.hpp"
+#include "events/SetBrushPaintModeEvent.hpp"
+#include "events/SetBrushDragModeEvent.hpp"
+#include "events/SetPageEvent.hpp"
 #include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
 #include "world/World.hpp"
@@ -141,6 +145,8 @@ public:
     std::vector<Page> radialMenuPages;
     bool tabPrev = false;
     bool textureSelectPrev = false;
+    enum class LabelRingKind { CONTROL, PAINT, DRAG };
+    LabelRingKind labelRingKind = LabelRingKind::CONTROL;
     WidgetManager widgetManager;
     FilePicker scenePicker_{"Scene File Picker", ".scene"};
     uint32_t loadedTextureLayers = 0;
@@ -583,7 +589,7 @@ public:
             {
                 Page cam;
                 cam.label = "Camera";
-                cam.subPages.push_back({"Transform"});
+                cam.subPages.push_back({"Translate"});
                 cam.subPages.push_back({"UI"});
                 radialMenuPages.push_back(cam);
             }
@@ -591,11 +597,11 @@ public:
             {
                 Page brush;
                 brush.label = "Brush";
-                brush.subPages.push_back({"Transform"});
-                brush.subPages.push_back({"Scale"});
+                brush.subPages.push_back({"Control"});
+                brush.subPages.push_back({"Mode"});
+                brush.subPages.push_back({"Drag Mode"});
                 brush.subPages.push_back({"Texture"});
                 brush.subPages.push_back({"Attributes"});
-                brush.subPages.push_back({"Aim"});
                 brush.subPages.push_back({"Color"});
                 radialMenuPages.push_back(brush);
             }
@@ -747,8 +753,8 @@ public:
                 ImVec2 vec(0, 0);
                 if (nunchukPublisher.isConnected()) {
                     WiimoteState ws = nunchukPublisher.getState();
-                    // Scale to texture ring when active, outer radius otherwise
-                    float scale = radialMenu->GetTextureRingActive() ? 170.0f : 120.0f;
+                    // Scale to outer ring when any ring is active
+                    float scale = (radialMenu->GetTextureRingActive() || radialMenu->GetLabelRingActive()) ? 170.0f : 120.0f;
                     // Nunchuk Y is positive-up, screen Y is positive-down
                     vec = ImVec2(ws.joystickX * scale, -ws.joystickY * scale);
                 } else {
@@ -763,16 +769,22 @@ public:
 
                 // Detect if the "Texture" subpage is hovered
                 bool textureSubpageHovered = false;
+                bool controlSubpageHovered = false;
+                bool paintSubpageHovered = false;
+                bool dragModeSubpageHovered = false;
                 int hp = radialMenu->GetHoveredPage();
                 int hs = radialMenu->GetHoveredSubPage();
                 if (hp >= 0 && hp < static_cast<int>(radialMenuPages.size()) && hs >= 0) {
                     const auto& subPages = radialMenuPages[hp].subPages;
                     if (hs < static_cast<int>(subPages.size())) {
                         textureSubpageHovered = (subPages[hs].label == "Texture");
+                        controlSubpageHovered = (subPages[hs].label == "Control");
+                        paintSubpageHovered = (subPages[hs].label == "Mode");
+                        dragModeSubpageHovered = (subPages[hs].label == "Drag Mode");
                     }
                 }
 
-                // Toggle texture ring on mouse click or Wiimote A (edge-triggered)
+                // A/click (edge-triggered)
                 bool selectNow = false;
                 if (nunchukPublisher.isConnected()) {
                     selectNow = nunchukPublisher.aButtonPressed();
@@ -782,28 +794,88 @@ public:
                 bool selectEdge = selectNow && !textureSelectPrev;
                 textureSelectPrev = selectNow;
 
-                if (!radialMenu->GetTextureRingActive()) {
-                    // Open texture ring when Texture subpage is hovered and A/click pressed
-                    if (textureSubpageHovered && selectEdge) {
-                        radialMenu->SetTextureRingActive(true);
+                bool anyRingActive = radialMenu->GetTextureRingActive() || radialMenu->GetLabelRingActive();
+
+                if (!anyRingActive) {
+                    if (selectEdge) {
+                        if (textureSubpageHovered) {
+                            radialMenu->ResetTexturePage();
+                            radialMenu->SetTextureRingActive(true);
+                        } else if (controlSubpageHovered) {
+                            radialMenu->SetLabelItems({"Translate", "Aim", "Scale"});
+                            labelRingKind = LabelRingKind::CONTROL;
+                            radialMenu->SetLabelRingActive(true);
+                        } else if (paintSubpageHovered) {
+                            radialMenu->SetLabelItems({"Add", "Remove", "Paint"});
+                            labelRingKind = LabelRingKind::PAINT;
+                            radialMenu->SetLabelRingActive(true);
+                        } else if (dragModeSubpageHovered) {
+                            radialMenu->SetLabelItems({"Drag", "Click"});
+                            labelRingKind = LabelRingKind::DRAG;
+                            radialMenu->SetLabelRingActive(true);
+                        } else if (hp >= 0 && hs >= 0) {
+                            // Directly select subpage (Translate, UI, Attributes, Color)
+                            const auto& subPages = radialMenuPages[hp].subPages;
+                            if (hs < static_cast<int>(subPages.size())) {
+                                const std::string& label = subPages[hs].label;
+                                PageCategory cat = (radialMenuPages[hp].label == "Camera")
+                                    ? PageCategory::CAMERA : PageCategory::BRUSH;
+                                PageControl pc = PageControl::TRANSLATE;
+                                BrushControlMode bm = BrushControlMode::TRANSLATE;
+                                if (label == "UI")           { pc = PageControl::UI; }
+                                else if (label == "Texture")    { pc = PageControl::TEXTURE;    bm = BrushControlMode::TEXTURE; }
+                                else if (label == "Attributes") { pc = PageControl::ATTRIBUTE;  bm = BrushControlMode::ATTRIBUTE; }
+                                else if (label == "Color")      { pc = PageControl::COLOR;      bm = BrushControlMode::COLOR; }
+                                eventManager.queue(std::make_shared<SetPageEvent>(cat, pc, bm));
+                                radialMenu->SetVisible(false);
+                            }
+                        }
                     }
-                } else {
-                    // Feed textures when ring is active
+                } else if (radialMenu->GetTextureRingActive()) {
+                    // Texture ring active (paginated: 14 textures + 2 nav)
                     std::vector<ImTextureID> texIds;
                     for (uint32_t i = 0; i < loadedTextureLayers; ++i) {
                         texIds.push_back(textureArrayManager.getImTexture(i, 0));
                     }
                     radialMenu->SetTextures(texIds);
 
-                    // Live-preview: apply texture on hover
                     int ht = radialMenu->GetHoveredTexture();
                     if (ht >= 0) {
                         eventManager.queue(std::make_shared<SetBrushTextureEvent>(ht));
                     }
 
-                    // A/click confirms selection and closes the ring
                     if (selectEdge) {
-                        radialMenu->SetTextureRingActive(false);
+                        if (radialMenu->GetHoveredNavPrev()) {
+                            radialMenu->SetTexturePage(radialMenu->GetTexturePage() - 1);
+                        } else if (radialMenu->GetHoveredNavNext()) {
+                            radialMenu->SetTexturePage(radialMenu->GetTexturePage() + 1);
+                        } else {
+                            radialMenu->SetTextureRingActive(false);
+                        }
+                    }
+                } else if (radialMenu->GetLabelRingActive()) {
+                    // Label ring active (Control, Paint, or Drag Mode)
+                    int hl = radialMenu->GetHoveredLabel();
+                    if (hl >= 0 && selectEdge) {
+                        if (labelRingKind == LabelRingKind::PAINT) {
+                            BrushPaintMode pm = BrushPaintMode::ADD;
+                            if (hl == 0) pm = BrushPaintMode::ADD;
+                            else if (hl == 1) pm = BrushPaintMode::REMOVE;
+                            else if (hl == 2) pm = BrushPaintMode::PAINT;
+                            eventManager.queue(std::make_shared<SetBrushPaintModeEvent>(pm));
+                        } else if (labelRingKind == LabelRingKind::DRAG) {
+                            BrushDragMode dm = BrushDragMode::DRAG;
+                            if (hl == 0) dm = BrushDragMode::DRAG;
+                            else if (hl == 1) dm = BrushDragMode::CLICK;
+                            eventManager.queue(std::make_shared<SetBrushDragModeEvent>(dm));
+                        } else {
+                            BrushControlMode mode = BrushControlMode::TRANSLATE;
+                            if (hl == 0) mode = BrushControlMode::TRANSLATE;
+                            else if (hl == 1) mode = BrushControlMode::AIM;
+                            else if (hl == 2) mode = BrushControlMode::SCALE;
+                            eventManager.queue(std::make_shared<SetBrushControlEvent>(mode));
+                        }
+                        radialMenu->SetLabelRingActive(false);
                     }
                 }
             } else {
@@ -2077,6 +2149,79 @@ public:
                 be->materialIndex = texEvent->index;
                 brushRebuildPending = true;
             }
+            return;
+        }
+        if (auto ctrlEvent = std::dynamic_pointer_cast<SetBrushControlEvent>(event)) {
+            brushManager.controlMode = ctrlEvent->mode;
+
+            // Map BrushControlMode to PageControl
+            PageControl pc = PageControl::TRANSLATE;
+            switch (ctrlEvent->mode) {
+                case BrushControlMode::TRANSLATE:  pc = PageControl::TRANSLATE;  break;
+                case BrushControlMode::AIM:        pc = PageControl::AIM;        break;
+                case BrushControlMode::SCALE:      pc = PageControl::SCALE;      break;
+                case BrushControlMode::TEXTURE:    pc = PageControl::TEXTURE;    break;
+                case BrushControlMode::ATTRIBUTE:  pc = PageControl::ATTRIBUTE;  break;
+                case BrushControlMode::COLOR:      pc = PageControl::COLOR;      break;
+                default: break;
+            }
+
+            // Switch all controller contexts to Brush page + selected subpage
+            auto switchCtx = [&](ControllerContext& ctx) {
+                ctx.selectPage(PageCategory::BRUSH, pc);
+            };
+            switchCtx(controllerManager.keyboardContext);
+            switchCtx(controllerManager.mouseContext);
+            switchCtx(controllerManager.gamepadContext);
+            switchCtx(controllerManager.wiimoteContext);
+            return;
+        }
+        if (auto pageEvent = std::dynamic_pointer_cast<SetPageEvent>(event)) {
+            brushManager.controlMode = pageEvent->brushMode;
+
+            auto switchCtx = [&](ControllerContext& ctx) {
+                ctx.selectPage(pageEvent->category, pageEvent->control);
+            };
+            switchCtx(controllerManager.keyboardContext);
+            switchCtx(controllerManager.mouseContext);
+            switchCtx(controllerManager.gamepadContext);
+            switchCtx(controllerManager.wiimoteContext);
+            return;
+        }
+        if (auto paintEvent = std::dynamic_pointer_cast<SetBrushPaintModeEvent>(event)) {
+            brushManager.paintMode = paintEvent->mode;
+
+            // Update brushMode on the selected entry so the renderer sees it
+            BrushEntry* be = brushManager.getSelectedEntry();
+            if (be) {
+                switch (paintEvent->mode) {
+                    case BrushPaintMode::ADD:    be->brushMode = 0; break;
+                    case BrushPaintMode::REMOVE: be->brushMode = 1; break;
+                    case BrushPaintMode::PAINT:  be->brushMode = 2; break;
+                    default: break;
+                }
+                eventManager.queue(std::make_shared<RebuildBrushEvent>());
+            }
+
+            auto switchCtx = [&](ControllerContext& ctx) {
+                ctx.selectPage(PageCategory::BRUSH, PageControl::ATTRIBUTE);
+            };
+            switchCtx(controllerManager.keyboardContext);
+            switchCtx(controllerManager.mouseContext);
+            switchCtx(controllerManager.gamepadContext);
+            switchCtx(controllerManager.wiimoteContext);
+            return;
+        }
+        if (auto dragEvent = std::dynamic_pointer_cast<SetBrushDragModeEvent>(event)) {
+            brushManager.dragMode = dragEvent->mode;
+
+            auto switchCtx = [&](ControllerContext& ctx) {
+                ctx.selectPage(PageCategory::BRUSH, PageControl::ATTRIBUTE);
+            };
+            switchCtx(controllerManager.keyboardContext);
+            switchCtx(controllerManager.mouseContext);
+            switchCtx(controllerManager.gamepadContext);
+            switchCtx(controllerManager.wiimoteContext);
             return;
         }
     }

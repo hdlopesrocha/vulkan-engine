@@ -26,6 +26,7 @@ enum class PageControl {
     ATTRIBUTE,   // change SDF-specific attributes
     AIM,         // wiimote M+ orient -> ray octree intersection -> snap brush pos
     COLOR,       // wiimote rotation -> HSV tint on brush
+    CONTROL,     // opens outer ring to select Translate/Aim/Scale
     UI           // non-propagating passthrough (ImGui / UI)
 };
 
@@ -94,7 +95,7 @@ public:
         camera->category = PageCategory::CAMERA;
         camera->control = PageControl::TRANSLATE;
         // A single Transform subpage combines translate + rotate.
-        camera->addChild("Transform", PageControl::TRANSLATE);
+        camera->addChild("Translate", PageControl::TRANSLATE);
         // Non-propagating page: raw mouse / input is handed to ImGui / UI.
         camera->addChild("UI", PageControl::UI, /*propagate=*/false);
         root_->children.push_back(camera);
@@ -105,12 +106,10 @@ public:
         brush->name = "Brush";
         brush->category = PageCategory::BRUSH;
         brush->control = PageControl::TRANSLATE;
-        brush->addChild("Transform", PageControl::TRANSLATE);
-        brush->addChild("Scale", PageControl::SCALE);
-        brush->addChild("Texture", PageControl::TEXTURE);
+        brush->addChild("Control",    PageControl::CONTROL);
+        brush->addChild("Texture",    PageControl::TEXTURE);
         brush->addChild("Attributes", PageControl::ATTRIBUTE);
-        brush->addChild("Aim", PageControl::AIM);
-        brush->addChild("Color", PageControl::COLOR);
+        brush->addChild("Color",      PageControl::COLOR);
         root_->children.push_back(brush);
 
         pageIndex_ = 0;
@@ -147,6 +146,17 @@ public:
         if (!p) return;
         for (int i = 0; i < p->childCount(); ++i) {
             if (p->child(i) && p->child(i)->control == ctrl) { subpageIndex_ = i; return; }
+        }
+    }
+    // Switch to the page with the given category, then select the subpage.
+    void selectPage(PageCategory cat, PageControl ctrl = PageControl::TRANSLATE) {
+        for (int i = 0; i < static_cast<int>(root_->children.size()); ++i) {
+            if (root_->children[i]->category == cat) {
+                pageIndex_ = i;
+                clampSubpage();
+                selectControl(ctrl);
+                return;
+            }
         }
     }
     void applyAction(PageNavigationEvent::Action a) {
