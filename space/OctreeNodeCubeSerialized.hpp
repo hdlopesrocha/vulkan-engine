@@ -13,6 +13,7 @@ struct alignas(16) OctreeNodeCubeSerialized {
     glm::vec3 normal;
     glm::vec2 texCoord;
     int brushIndex;
+    glm::vec3 hsv;
     uint children[8];
     glm::vec3 min;
     uint bits;

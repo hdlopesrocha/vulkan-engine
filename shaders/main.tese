@@ -15,6 +15,7 @@ layout(location = VARY_BRUSHPATCH) flat in ivec3 tc_fragBrushIndex[];
 layout(location = VARY_LOCALPOS) in vec3 tc_fragLocalPos[]; // local-space position
 layout(location = VARY_LOCALNORMAL) in vec3 tc_fragLocalNormal[];
 layout(location = VARY_TEXWEIGHTS) in vec3 tc_fragTexWeights[];
+layout(location = VARY_HSV) in vec3 tc_fragHSV[];
 
 // Outputs to fragment shader (match main.frag inputs)
 
@@ -27,6 +28,7 @@ layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace;
 layout(location = VARY_LOCALPOS) out vec3 fragPosWorldNotDisplaced;
 layout(location = VARY_SHARPNORMAL) out vec3 fragSharpNormal; // face normal computed from triangle corners (sharp)
 layout(location = VARY_TEXWEIGHTS) out vec3 fragTexWeights;
+layout(location = VARY_HSV) out vec3 fragHSV;
 
 #include "includes/textures.glsl"
 
@@ -48,6 +50,7 @@ void main() {
     vec2 uv = tc_fragUV[0] * bc.x + tc_fragUV[1] * bc.y + tc_fragUV[2] * bc.z;
     ivec3 texIndices = max(tc_fragBrushIndex[0], ivec3(0));
     vec3 weights = tc_fragTexWeights[0] * bc.x + tc_fragTexWeights[1] * bc.y + tc_fragTexWeights[2] * bc.z;
+    vec3 hsv = tc_fragHSV[0] * bc.x + tc_fragHSV[1] * bc.y + tc_fragHSV[2] * bc.z;
 
 
     // Calculate position with displacement (needed for both passes)
@@ -71,9 +74,11 @@ void main() {
         fragPosWorldNotDisplaced = vec3(0.0);
         fragPosLightSpace = vec4(0.0);
         fragSharpNormal = vec3(0.0);
+        fragHSV = vec3(0.0);
     } else {
         // Full pass: calculate all outputs for shading
         fragColor = tc_fragColor[0] * bc.x + tc_fragColor[1] * bc.y + tc_fragColor[2] * bc.z;
+        fragHSV = hsv;
         
         fragPosWorldNotDisplaced = worldPos.xyz;
         worldPos = vec4(displacedLocalPos, 1.0);

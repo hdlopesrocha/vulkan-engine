@@ -13,6 +13,7 @@ layout(location = VARY_POSWORLD) in vec3 pc_inPosWorld[];
 layout(location = VARY_BRUSHPATCH) in int pc_inBrushIndex[];
 layout(location = VARY_LOCALPOS) in vec3 pc_inLocalPos[];
 layout(location = VARY_LOCALNORMAL) in vec3 pc_inLocalNormal[];
+layout(location = VARY_HSV) in vec3 pc_inHSV[];
 
 
 layout(location = VARY_COLOR) out vec3 tc_fragColor[];
@@ -23,6 +24,7 @@ layout(location = VARY_BRUSHPATCH) flat out ivec3 tc_fragBrushIndex[];
 layout(location = VARY_LOCALPOS) out vec3 tc_fragLocalPos[];
 layout(location = VARY_LOCALNORMAL) out vec3 tc_fragLocalNormal[];
 layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
+layout(location = VARY_HSV) out vec3 tc_fragHSV[];
 
 
 // Compute tessellation factor for a single edge.  All inputs come from the
@@ -94,6 +96,7 @@ void main() {
         else if (myIdx == u2) texWeights.z = 1.0;
     }
 
+    tc_fragHSV[gl_InvocationID] = pc_inHSV[gl_InvocationID];
     tc_fragTexWeights[gl_InvocationID] = texWeights;
     tc_fragLocalPos[gl_InvocationID] = pc_inLocalPos[gl_InvocationID];
     tc_fragLocalNormal[gl_InvocationID] = pc_inLocalNormal[gl_InvocationID];

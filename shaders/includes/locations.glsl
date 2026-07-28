@@ -7,6 +7,7 @@
 #define ATTR_UV 2
 #define ATTR_NORMAL 3
 #define ATTR_BRUSH_INDEX 4
+#define ATTR_HSV 6
 #define ATTR_INSTANCE 5
 
 // Fragment outputs (color attachments)
@@ -37,6 +38,7 @@
 #define VARY_TANGENTWS 19
 #define VARY_LOCALPOS 20
 #define VARY_SDF 21
+#define VARY_HSV 23
 #define VARY_SHARPNORMAL 6
 #define VARY_BASEPOS 21   // water: undisplaced base world position + TES bump amplitude (xyz=pos, w=amp)
 

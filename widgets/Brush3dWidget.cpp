@@ -139,6 +139,12 @@ void Brush3dWidget::renderEntry(int index) {
         dirty = true;
     }
 
+    // HSV tint controls
+    ImGui::SeparatorText("Vertex HSV Tint");
+    if (ImGui::SliderFloat("Hue", &e.hsv.x, 0.0f, 360.0f, "%.0f°")) dirty = true;
+    if (ImGui::SliderFloat("Saturation", &e.hsv.y, 0.0f, 1.0f, "%.2f")) dirty = true;
+    if (ImGui::SliderFloat("Value", &e.hsv.z, 0.0f, 1.0f, "%.2f")) dirty = true;
+
     // Sweep mode toggle
     if (ImGui::Checkbox("Sweep Mode", &e.sweepMode)) {
         if (e.sweepMode) {

@@ -13,6 +13,7 @@ layout(location = VARY_SHARPNORMAL) in vec3 inBaseNormal[];
 layout(location = VARY_UV) in vec2 inTexCoord[];
 layout(location = VARY_BRUSHPATCH) in ivec3 tc_fragBrushIndex[];
 layout(location = VARY_TEXWEIGHTS) in vec3 tc_fragTexWeights[];
+layout(location = VARY_HSV) in vec3 tc_fragHSV[];
 
 layout(location = VARY_LOCALPOS) out vec3 fragPos;
 layout(location = VARY_NORMAL) out vec3 fragNormal;
@@ -24,6 +25,7 @@ layout(location = VARY_DEBUG) out vec3 fragDebug;   // debug visual (displacemen
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;  // world-space position for shadow cascades
 layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
 layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
+layout(location = VARY_HSV) out vec3 fragHSV;
 
 #include "includes/ubo.glsl"
 
@@ -75,6 +77,9 @@ void main() {
                        bary.y * inTexCoord[1] +
                        bary.z * inTexCoord[2];
     
+    // Interpolate HSV
+    fragHSV = tc_fragHSV[0] * bary.x + tc_fragHSV[1] * bary.y + tc_fragHSV[2] * bary.z;
+
     // Select per-patch brushIndex from compressed TCS outputs (tc_fragBrushIndex / tc_fragTexWeights)
     ivec3 texIndices = max(tc_fragBrushIndex[0], ivec3(0));
     vec3 weights = tc_fragTexWeights[0] * bary.x + tc_fragTexWeights[1] * bary.y + tc_fragTexWeights[2] * bary.z;

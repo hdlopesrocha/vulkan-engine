@@ -23,8 +23,9 @@ struct UniformObject {
     glm::mat4 lightSpaceMatrix2;     // offset 336, size 64  (cascade 2 = 16x ortho0)
     glm::mat4 invViewProjection;     // offset 400, size 64  inverse of viewProjection (camera-constant)
     glm::vec4 brushParams;           // offset 464, size 16  x=brushTextureIndex, y=brushMode (0=overlay, 2=PAINT)
+    glm::vec4 brushHSV;              // offset 480, size 16  x=H(0..360), y=S(0..1), z=V(0..1), w=unused
 
-    // Total size: 480 bytes
+    // Total size: 496 bytes
 
     // Note: sky-related data moved to SkyUniform
 

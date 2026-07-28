@@ -10,6 +10,7 @@ layout(location = VARY_BRUSHPATCH) flat in ivec3 fragTexIndices;
 layout(location = VARY_POSLIGHT) in vec4 fragPosLightSpace;
 layout(location = VARY_LOCALPOS) in vec3 fragPosWorldNotDisplaced;
 layout(location = VARY_TEXWEIGHTS) in vec3 fragTexWeights;
+layout(location = VARY_HSV) in vec3 fragHSV;
 layout(location = VARY_SHARPNORMAL) in vec3 fragSharpNormal; // face normal computed in TES (sharp)
 
 #include "includes/ubo.glsl"
@@ -32,6 +33,26 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 #include "includes/shadows.glsl"
 #endif
 
+// Convert HSV to RGB (H in [0,360], S/V in [0,1])
+vec3 hsvToRgb(vec3 hsv) {
+    vec3 c = clamp(hsv, vec3(0.0), vec3(360.0, 1.0, 1.0));
+    float h = c.x / 60.0;
+    float s = c.y;
+    float v = c.z;
+    float hi = floor(h);
+    float f = h - hi;
+    float p = v * (1.0 - s);
+    float q = v * (1.0 - s * f);
+    float t = v * (1.0 - s * (1.0 - f));
+    int i = int(hi) % 6;
+    if (i == 0) return vec3(v, t, p);
+    if (i == 1) return vec3(q, v, p);
+    if (i == 2) return vec3(p, v, t);
+    if (i == 3) return vec3(p, q, v);
+    if (i == 4) return vec3(t, p, v);
+    return vec3(v, p, q);
+}
+
 // Global toggles
 bool roughnessEnabled = ubo.debugParams.y > 0.5;
 bool aoEnabled = ubo.debugParams.z > 0.5;
@@ -50,6 +71,7 @@ void main() {
 
     // Texture indices, optionally overridden by PAINT/REMOVE mode
     ivec3 texIndices = fragTexIndices;
+    vec3 hsvColor = fragHSV;
     float brushRedFade = 0.0;
 #ifndef BRUSH_PASS
     bool isPaintMode = ubo.brushParams.y > 1.5;
@@ -62,6 +84,8 @@ void main() {
         if (fragDepth >= brushFront && fragDepth <= brushBack) {
             int brushTexIndex = int(ubo.brushParams.x + 0.5);
             texIndices = ivec3(brushTexIndex);
+            // Override vertex HSV with the brush's HSV so painted areas get the brush tint
+            hsvColor = ubo.brushHSV.xyz;
             if (isRemoveMode) {
                 brushRedFade = (sin(ubo.brushParams.w * 6.28318) + 1.0) * 0.5;
             }
@@ -558,6 +582,11 @@ void main() {
     // if (length(finalColor) < 0.01) { outColor = vec4(0.0, 1.0, 0.0, 1.0); return; } // Green if no lighting
     // outColor = vec4(albedoColor, 1.0); return; // Show raw albedo
     // outColor = vec4(vec3(NdotL), 1.0); return; // Show N·L term
+    
+    // Apply per-vertex HSV tint (convert to RGB and modulate final color)
+    // In paint mode, hsvColor is overridden with the brush's HSV from the UBO
+    vec3 hsvTint = hsvToRgb(hsvColor);
+    finalColor *= hsvTint;
     
     // Final output (single color target)
     outColor = vec4(finalColor, 1.0);

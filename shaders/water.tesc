@@ -13,6 +13,7 @@ layout(location = VARY_NORMAL) in vec3 inNormal[];
 layout(location = VARY_SHARPNORMAL) in vec3 inBaseNormal[];
 layout(location = VARY_UV) in vec2 inTexCoord[];
 layout(location = VARY_BRUSHPATCH) flat in int pc_inBrushIndex[];
+layout(location = VARY_HSV) in vec3 inHSV[];
 
 layout(location = VARY_LOCALPOS) out vec3 outPos[];
 layout(location = VARY_NORMAL) out vec3 outNormal[];
@@ -20,6 +21,7 @@ layout(location = VARY_SHARPNORMAL) out vec3 outBaseNormal[];
 layout(location = VARY_UV) out vec2 outTexCoord[];
 layout(location = VARY_BRUSHPATCH) flat out ivec3 tc_fragBrushIndex[];
 layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
+layout(location = VARY_HSV) out vec3 tc_fragHSV[];
 
 #include "includes/ubo.glsl"
 #include "includes/perlin.glsl"
@@ -49,6 +51,7 @@ void main() {
     else if (myIdx == u1) texWeights.y = 1.0;
     else if (myIdx == u2) texWeights.z = 1.0;
 
+    tc_fragHSV[gl_InvocationID] = inHSV[gl_InvocationID];
     tc_fragTexWeights[gl_InvocationID] = texWeights;
 
     if (gl_InvocationID == 0) {

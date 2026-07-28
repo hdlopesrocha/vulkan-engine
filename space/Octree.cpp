@@ -802,6 +802,7 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
     }
 
     int brushIndex = node ? node->vertex.brushIndex : frame.brushIndex;
+    glm::vec3 hsv = node ? node->vertex.hsv : frame.hsv;
 
     // Iterate nodes and submit threaded children to the pool
     for (uint i = 0; i < 8; ++i) {
@@ -812,6 +813,7 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
 
         float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
         int childBrushIndex = child ? child->vertex.brushIndex : brushIndex;
+        glm::vec3 childHsv = child ? child->vertex.hsv : hsv;
 
         if(child != NULL) {
             SDF::copySDF(child->sdf, childSDF);
@@ -829,6 +831,7 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
             childBrushIndex,
             isChildChunk ? childCube : frame.chunkCube
         );
+        childFrame.hsv = childHsv;
 
     
         if(isChildThread) {
@@ -859,6 +862,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
     const bool isShapeLeaf = nodeLength <= args.minSize;
     const bool isNodeLeaf = r.node == NULL || r.node->isLeaf();
     r.brushIndex = r.node ? r.node->vertex.brushIndex : frame.brushIndex;
+    r.hsv = r.node ? r.node->vertex.hsv : frame.hsv;
     r.isChunk = isChunkNode(nodeLength);
     r.isLeaf = isShapeLeaf && isNodeLeaf;
     r.isSimplified = r.isLeaf;
@@ -1019,6 +1023,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 if(r.isLeaf) {
                     if(r.shapeType != SpaceType::Empty) {
                         r.brushIndex = args.painter.paint(r.node->vertex);
+                        r.node->vertex.hsv = args.painter.paintHSV(r.node->vertex);
+                        r.hsv = r.node->vertex.hsv;
                     }  
                 } else {    
                     if (!r.isChunk) {
@@ -1027,9 +1033,11 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                         r.isSimplified = simplificationResult.isSimplified;
                         if(r.isSimplified) {
                             r.brushIndex = simplificationResult.brushIndex;
+                            r.hsv = simplificationResult.hsv;
                             // Fall back to inherited brush if simplifier had no surface children
                             if(r.brushIndex == DISCARD_BRUSH_INDEX) {
                                 r.brushIndex = frame.brushIndex;
+                                r.hsv = frame.hsv;
                             }
                         } 
                     }
@@ -1047,7 +1055,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                             childNode->setSDF(child.resultSDF);
                             childNode->setSimplification(child.isSimplified);
                             childNode->setChunk(child.isChunk);
-                            childNode->setBrush(child.brushIndex);                        
+                            childNode->setBrush(child.brushIndex);
+                            childNode->vertex.hsv = child.hsv;                        
                         }
                                                 
                         if(frame.node != NULL && childNode == r.node) {
@@ -1066,6 +1075,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             r.node->setSimplification(r.isSimplified);
             r.node->setChunk(r.isChunk);
             r.node->setBrush(r.brushIndex);
+            r.node->vertex.hsv = r.hsv;
             if (r.isChunk) {
                 ++r.node->version;
                 OctreeNodeData nodeData(frame.level, r.node, frame.cube, nullptr);
@@ -1167,6 +1177,7 @@ void Octree::exportToJson(const std::string &filename) const {
         file << "\"normal\":[" << v.normal.x << "," << v.normal.y << "," << v.normal.z << "],";
         file << "\"texCoord\":[" << v.texCoord.x << "," << v.texCoord.y << "],";
         file << "\"brushIndex\":" << v.brushIndex << ",";
+        file << "\"hsv\":[" << v.hsv.x << "," << v.hsv.y << "," << v.hsv.z << "],";
         file << "\"bits\":" << (int)node->bits << ",";
         glm::vec3 cubeMin = cube.getMin();
         glm::vec3 cubeLen = cube.getLength();
@@ -1273,6 +1284,10 @@ void Octree::exportToBson(const std::string &filename) const {
 
         // brushIndex (int32)
         doc.push_back(0x10); appendCString(doc, "brushIndex"); appendInt32(doc, node->vertex.brushIndex);
+        // hsv
+        std::vector<double> hsvArr = { node->vertex.hsv.x, node->vertex.hsv.y, node->vertex.hsv.z };
+        std::vector<uint8_t> hsvDoc = makeDoubleArrayDoc(hsvArr);
+        doc.push_back(0x04); appendCString(doc, "hsv"); doc.insert(doc.end(), hsvDoc.begin(), hsvDoc.end());
 
         // bits (int32)
         doc.push_back(0x10); appendCString(doc, "bits"); appendInt32(doc, (int32_t)node->bits);

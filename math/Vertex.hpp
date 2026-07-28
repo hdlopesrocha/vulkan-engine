@@ -35,9 +35,10 @@ public:
     // per-vertex tangent removed: compute in fragment shader for triplanar mapping
     int brushIndex;
     int _pad0;
+    glm::vec3 hsv;
 
     Vertex(glm::vec3 pos, glm::vec3 norm, glm::vec2 tex, int brushIdx)
-        : position(pos), color(glm::vec3(1.0f)), texCoord(tex), normal(norm), brushIndex(brushIdx), _pad0(0) {
+        : position(pos), color(glm::vec3(1.0f)), texCoord(tex), normal(norm), brushIndex(brushIdx), _pad0(0), hsv(0.0f, 0.0f, 1.0f) {
     }
 
     // Compatibility constructor to allow aggregate-style initialization used across the codebase
@@ -46,11 +47,11 @@ public:
           color(colorArr[0], colorArr[1], colorArr[2]),
           texCoord(texArr[0], texArr[1]),
           normal(normalArr[0], normalArr[1], normalArr[2]),
-          brushIndex(static_cast<int>(brushIndexF)), _pad0(0) {}
+          brushIndex(static_cast<int>(brushIndexF)), _pad0(0), hsv(0.0f, 0.0f, 1.0f) {}
 
-    Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), _pad0(0) {}
+    Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), _pad0(0), hsv(0.0f, 0.0f, 1.0f) {}
 
-    Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), _pad0(0) {}
+    Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), _pad0(0), hsv(0.0f, 0.0f, 1.0f) {}
 
     bool operator<(const Vertex& other) const {
            return std::tie(position.x, position.y, position.z, normal.x, normal.y, normal.z, texCoord.x, texCoord.y, brushIndex)

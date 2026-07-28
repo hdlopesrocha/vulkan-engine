@@ -15,6 +15,7 @@ layout(location = VARY_DEBUG) in vec3 fragDebug;   // debug visual (displacement
 layout(location = VARY_POSWORLD) in vec3 fragPosWorld;  // world-space position for shadow cascades
 layout(location = VARY_POSLIGHT) in vec4 fragPosLightSpace; // light-space pos (cascade 0)
 layout(location = VARY_BRUSHPATCH) flat in int fragBrushIndex;
+layout(location = VARY_HSV) in vec3 fragHSV;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -33,6 +34,26 @@ layout(set = 2, binding = 4) uniform samplerCube sceneSkyCube;    // solid 360 c
 
 // Near/far planes for linearizing depth – read from UBO passParams (z = near, w = far)
 // so they always match the glm::perspective call on the CPU side.
+
+// Convert HSV to RGB (H in [0,360], S/V in [0,1])
+vec3 hsvToRgb(vec3 hsv) {
+    vec3 c = clamp(hsv, vec3(0.0), vec3(360.0, 1.0, 1.0));
+    float h = c.x / 60.0;
+    float s = c.y;
+    float v = c.z;
+    float hi = floor(h);
+    float f = h - hi;
+    float p = v * (1.0 - s);
+    float q = v * (1.0 - s * f);
+    float t = v * (1.0 - s * (1.0 - f));
+    int i = int(hi) % 6;
+    if (i == 0) return vec3(v, t, p);
+    if (i == 1) return vec3(q, v, p);
+    if (i == 2) return vec3(p, v, t);
+    if (i == 3) return vec3(p, q, v);
+    if (i == 4) return vec3(t, p, v);
+    return vec3(v, p, q);
+}
 
 // Linearize depth from Vulkan [0,1] depth buffer to eye-space distance.
 // With GLM_FORCE_DEPTH_ZERO_TO_ONE the projection maps z_eye to [0,1]:
@@ -488,6 +509,11 @@ void main() {
     float caustic = caustRaw * causticIntensity * depthRampCaust * angularCaust * edgeFade * (1.0 - shadow);
 
     waterColor += causticColor * caustic;
+
+    // Apply per-vertex HSV tint (uses a local variable for potential override, e.g. from brushHSV in ubo)
+    vec3 hsvColor = fragHSV;
+    vec3 hsvTint = hsvToRgb(hsvColor);
+    waterColor *= hsvTint;
 
     // === FINAL OUTPUT ===
     float alpha = 1.0;

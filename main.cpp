@@ -489,14 +489,17 @@ public:
         brushManager.getEntries()[0].materialIndex = 0;
         brushManager.getEntries()[0].translate = glm::vec3(0.0f, 0.0f, 0.0f);
         brushManager.getEntries()[0].scale = glm::vec3(256.0f);
+        brushManager.getEntries()[0].hsv = glm::vec3(0.0f, 0.0f, 1.0f);
         brushManager.getEntries()[1].sdfType = 1;
         brushManager.getEntries()[1].materialIndex = 1;
         brushManager.getEntries()[1].translate = glm::vec3(512.0f, 0.0f, 0.0f);
         brushManager.getEntries()[1].scale = glm::vec3(256.0f);
+        brushManager.getEntries()[1].hsv = glm::vec3(120.0f, 0.8f, 1.0f);
         brushManager.getEntries()[2].sdfType = 3;
         brushManager.getEntries()[2].materialIndex = 2;
         brushManager.getEntries()[2].translate = glm::vec3(-512.0f, 0.0f, 0.0f);
         brushManager.getEntries()[2].scale = glm::vec3(256.0f);
+        brushManager.getEntries()[2].hsv = glm::vec3(240.0f, 0.7f, 1.0f);
         sceneSolidHandler  = std::make_unique<SolidSpaceChangeHandler>(sceneRenderer->makeSolidSpaceChangeHandler(&world->scene(), this));
         sceneLiquidHandler = std::make_unique<LiquidSpaceChangeHandler>(sceneRenderer->makeLiquidSpaceChangeHandler(&world->scene(), this));
         sceneUniqueSolidHandler  = std::make_unique<UniqueOctreeChangeHandler>(*sceneSolidHandler);
@@ -849,17 +852,20 @@ public:
         // shadowEffects.w = global shadow toggle (shader checks ubo.shadowEffects.w > 0.5)
         uboStatic.shadowEffects.w = settings.enableShadows ? 1.0f : 0.0f;
 
-        // Brush params: brushTextureIndex, brushMode
+        // Brush params: brushTextureIndex, brushMode, brushHSV
         {
             float brushTexIdx = 0.0f;
             float brushMode = 0.0f;
+            glm::vec3 brushHSV(0.0f, 0.0f, 1.0f);
             const BrushEntry* brushEntry = brushManager.getSelectedEntry();
             if (brushEntry) {
                 brushTexIdx = static_cast<float>(brushEntry->materialIndex);
                 brushMode = static_cast<float>(brushEntry->brushMode);
+                brushHSV = brushEntry->hsv;
             }
             float brushTime = static_cast<float>(glfwGetTime());
             uboStatic.brushParams = glm::vec4(brushTexIdx, brushMode, 0.0f, brushTime);
+            uboStatic.brushHSV = glm::vec4(brushHSV, 0.0f);
         }
 
         // Reset command buffer state tracker and wire it to all sub-renderers.
@@ -2349,7 +2355,7 @@ void MyApp::rebuildBrushScene() {
             : static_cast<const OctreeChangeHandler&>(uniqueBrushLiquidHandler);
 
         Transformation model(entry.scale, entry.translate, entry.rot);
-        SimpleBrush brush(entry.materialIndex);
+        SimpleBrush brush(entry.materialIndex, entry.hsv);
 
         // Create the base SDF primitive (stack-allocated, octree copies during add)
         // sdfType: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
@@ -2415,7 +2421,7 @@ void MyApp::applyBrushToScene() {
 
     // cachedSweepStart was already set by rebuildBrushScene — use the same pair
     Transformation model(entry.scale, entry.translate, entry.rot);
-    SimpleBrush brush(entry.materialIndex);
+    SimpleBrush brush(entry.materialIndex, entry.hsv);
 
     Simplifier simplifier(0.95f, 0.2f, true);
     auto applyEntry = [&](SignedDistanceFunction& wrappedFunc) {

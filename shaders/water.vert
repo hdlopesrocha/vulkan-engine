@@ -9,6 +9,7 @@ layout(location = ATTR_COLOR) in vec3 inColor;
 layout(location = ATTR_UV) in vec2 inTexCoord;
 layout(location = ATTR_NORMAL) in vec3 inNormal;
 layout(location = ATTR_BRUSH_INDEX) in int inBrushIndex;
+layout(location = ATTR_HSV) in vec3 inHSV;
 
 layout(location = VARY_LOCALPOS) out vec3 fragPos;
 layout(location = VARY_NORMAL) out vec3 fragNormal;
@@ -18,6 +19,7 @@ layout(location = VARY_POSCLIP) out vec4 fragPosClip;  // clip-space position fo
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;  // world-space position for shadow cascades
 layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
 layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
+layout(location = VARY_HSV) out vec3 fragHSV;
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 viewProjection;
@@ -33,6 +35,7 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     vec4 passParams;   // x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
     mat4 lightSpaceMatrix1; // cascade 1
     mat4 lightSpaceMatrix2; // cascade 2
+    vec4 brushHSV;          // x=H(0..360), y=S(0..1), z=V(0..1), w=unused
 } ubo;
 
 void main() {
@@ -46,5 +49,6 @@ void main() {
     vec4 clipPos = ubo.viewProjection * vec4(inPosition, 1.0);
     fragPosClip = clipPos;
     fragBrushIndex = inBrushIndex;
+    fragHSV = inHSV;
     gl_Position = clipPos;
 }

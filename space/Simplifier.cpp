@@ -19,6 +19,7 @@ SimplificationResult Simplifier::simplify(
 {
     SimplificationResult res(0u, DISCARD_BRUSH_INDEX);
     int brushIndex = DISCARD_BRUSH_INDEX;
+    glm::vec3 hsv(0.0f, 0.0f, 1.0f);
 
     // --- 1. Brush consistency and simplification-chain check (unchanged) ---
     // With texturing enabled all surface children must share the same brush index
@@ -29,6 +30,7 @@ SimplificationResult Simplifier::simplify(
             if(child && child->resultType == SpaceType::Surface) {
                 if(brushIndex == DISCARD_BRUSH_INDEX) {
                     brushIndex = child->brushIndex;
+                    hsv = child->hsv;
                 } else if(child->brushIndex != DISCARD_BRUSH_INDEX
                            && child->brushIndex != brushIndex) {
                     return res;   // material boundary: preserve full detail
@@ -122,5 +124,6 @@ SimplificationResult Simplifier::simplify(
 
     res.isSimplified = true;
     res.brushIndex = brushIndex;
+    res.hsv = hsv;
     return res;
 }

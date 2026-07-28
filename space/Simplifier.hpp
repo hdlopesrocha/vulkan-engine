@@ -1,5 +1,6 @@
 #pragma once
 #include "../math/BoundingCube.hpp"
+#include <glm/glm.hpp>
 #include <utility>
 
 struct NodeOperationResult;
@@ -10,7 +11,9 @@ struct NodeOperationResult;
 struct SimplificationResult {
     uint8_t isSimplified;
     int brushIndex;
-    SimplificationResult(uint8_t simplified, int brushIdx) : isSimplified(simplified), brushIndex(brushIdx) {
+    glm::vec3 hsv;
+    SimplificationResult(uint8_t simplified, int brushIdx, glm::vec3 hsv_ = glm::vec3(0.0f, 0.0f, 1.0f))
+        : isSimplified(simplified), brushIndex(brushIdx), hsv(hsv_) {
         
     }
 };

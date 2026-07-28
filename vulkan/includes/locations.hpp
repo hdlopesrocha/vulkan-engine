@@ -9,6 +9,7 @@ static constexpr uint32_t ATTR_COLOR = 1u;
 static constexpr uint32_t ATTR_UV = 2u;
 static constexpr uint32_t ATTR_NORMAL = 3u;
 static constexpr uint32_t ATTR_BRUSH_INDEX = 4u;
+static constexpr uint32_t ATTR_HSV = 6u;
 static constexpr uint32_t ATTR_INSTANCE = 5u;
 
 // Fragment output locations (match render pass attachments)
@@ -34,4 +35,5 @@ static constexpr uint32_t VARY_DEBUG = 18u;
 static constexpr uint32_t VARY_TANGENTWS = 19u;
 static constexpr uint32_t VARY_LOCALPOS = 20u;
 static constexpr uint32_t VARY_SDF = 21u;
+static constexpr uint32_t VARY_HSV = 23u;
 static constexpr uint32_t VARY_SHARPNORMAL = 6u;

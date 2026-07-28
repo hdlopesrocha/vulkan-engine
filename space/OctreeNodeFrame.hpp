@@ -3,6 +3,7 @@
 #include "OctreeNode.hpp"
 #include "../math/BoundingCube.hpp"
 #include "../math/BrushMode.hpp"
+#include <glm/glm.hpp>
 
 typedef unsigned int uint;
 
@@ -14,6 +15,7 @@ struct OctreeNodeFrame {
     uint level;
     float sdf[8];
     int brushIndex;
+    glm::vec3 hsv;
     BoundingCube chunkCube;
     OctreeNodeFrame();
     OctreeNodeFrame(const OctreeNodeFrame &t);

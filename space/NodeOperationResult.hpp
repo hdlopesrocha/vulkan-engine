@@ -4,6 +4,7 @@
 #include "../math/BrushMode.hpp"
 #include "../math/ContainmentType.hpp"
 #include "../math/Math.hpp"
+#include <glm/glm.hpp>
 class OctreeNode;
 
 struct NodeOperationResult {
@@ -17,6 +18,7 @@ struct NodeOperationResult {
     bool isLeaf;
     bool isChunk;
     int brushIndex;
+    glm::vec3 hsv;
     ContainmentType check;
     NodeOperationResult();
     NodeOperationResult(
