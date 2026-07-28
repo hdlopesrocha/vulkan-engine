@@ -811,3 +811,19 @@ bool NunchukPublisher::aButtonPressed() {
     aPrev = aNow;
     return pressed;
 }
+
+bool NunchukPublisher::cButtonPressed() {
+    std::lock_guard<std::mutex> lock(mutex);
+    bool cNow = state.buttonC;
+    bool pressed = cNow && !cPrev;
+    cPrev = cNow;
+    return pressed;
+}
+
+bool NunchukPublisher::zButtonPressed() {
+    std::lock_guard<std::mutex> lock(mutex);
+    bool zNow = state.buttonZ;
+    bool pressed = zNow && !zPrev;
+    zPrev = zNow;
+    return pressed;
+}

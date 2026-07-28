@@ -50,6 +50,12 @@ public:
     // Returns true on the rising edge of the A button press.
     bool aButtonPressed();
 
+    // Returns true on the rising edge of the Nunchuk C button press.
+    bool cButtonPressed();
+
+    // Returns true on the rising edge of the Nunchuk Z button press.
+    bool zButtonPressed();
+
 private:
     WiimoteState state;
     std::atomic<bool> autoConnecting = false;
@@ -66,6 +72,8 @@ private:
     uint16_t prevButtons = 0;
     bool homePrev = false;
     bool aPrev = false;
+    bool cPrev = false;
+    bool zPrev = false;
     float startYaw = 0.0f;
     float startPitch = 0.0f;
     float startRoll = 0.0f;

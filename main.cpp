@@ -146,6 +146,7 @@ public:
     std::vector<Page> radialMenuPages;
     bool tabPrev = false;
     bool textureSelectPrev = false;
+    bool backPrev = false;
     enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV };
     LabelRingKind labelRingKind = LabelRingKind::CONTROL;
     bool hsvSliderConfirmed = false; // true after HSV component is selected from label ring
@@ -792,15 +793,19 @@ public:
                     }
                 }
 
-                // A/click (edge-triggered)
+                // C/click = select, Z = back to previous ring
                 bool selectNow = false;
+                bool backNow = false;
                 if (nunchukPublisher.isConnected()) {
-                    selectNow = nunchukPublisher.aButtonPressed();
+                    selectNow = nunchukPublisher.cButtonPressed();
+                    backNow = nunchukPublisher.zButtonPressed();
                 } else {
                     selectNow = (glfwGetMouseButton(getWindow(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
                 }
                 bool selectEdge = selectNow && !textureSelectPrev;
+                bool backEdge = backNow && !backPrev;
                 textureSelectPrev = selectNow;
+                backPrev = backNow;
 
                 bool anyRingActive = radialMenu->GetTextureRingActive() || radialMenu->GetLabelRingActive() || radialMenu->GetHSVSliderActive();
 
@@ -907,10 +912,23 @@ public:
                     std::string comp = radialMenu->GetHSVComponentName();
                     eventManager.queue(std::make_shared<SetBrushHSVEvent>(comp, val));
 
-                    // Close slider on select
-                    if (selectEdge) {
+                    // Close slider on select or back
+                    if (selectEdge || backEdge) {
                         radialMenu->SetHSVSliderActive(false);
                         hsvSliderConfirmed = false;
+                    }
+                }
+
+                // Z = back: navigate to previous ring or close menu
+                if (backEdge && !selectEdge) {
+                    if (radialMenu->GetHSVSliderActive()) {
+                        radialMenu->SetHSVSliderActive(false);
+                    } else if (radialMenu->GetLabelRingActive()) {
+                        radialMenu->SetLabelRingActive(false);
+                    } else if (radialMenu->GetTextureRingActive()) {
+                        radialMenu->SetTextureRingActive(false);
+                    } else {
+                        radialMenu->SetVisible(false);
                     }
                 }
             } else {
