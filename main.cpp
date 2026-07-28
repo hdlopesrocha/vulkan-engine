@@ -57,6 +57,7 @@
 #include "utils/MainSceneLoader.hpp"
 #include "utils/Settings.hpp"
 #include "widgets/WidgetManager.hpp"
+#include "widgets/RadialMenu.hpp"
 #include "math/Camera.hpp"
 #include "math/Light.hpp"
 #include "events/EventManager.hpp"
@@ -135,6 +136,8 @@ public:
     std::shared_ptr<WindWidget> windWidget;
     std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
+    std::shared_ptr<RadialMenu> radialMenu;
+    bool tabPrev = false;
     WidgetManager widgetManager;
     FilePicker scenePicker_{"Scene File Picker", ".scene"};
     uint32_t loadedTextureLayers = 0;
@@ -569,6 +572,33 @@ public:
         vulkanResourcesManagerWidget->updateWithApp(this);
         windWidget = std::make_shared<WindWidget>(sceneRenderer->vegetationRenderer.get());
         mp3Widget = std::make_shared<MusicWidget>();
+
+        // Radial menu (input-agnostic overlay, not a Widget subclass)
+        radialMenu = std::make_shared<RadialMenu>();
+        {
+            std::vector<Page> rmPages;
+            // Camera page
+            {
+                Page cam;
+                cam.label = "Camera";
+                cam.subPages.push_back({"Transform"});
+                cam.subPages.push_back({"UI"});
+                rmPages.push_back(cam);
+            }
+            // Brush page
+            {
+                Page brush;
+                brush.label = "Brush";
+                brush.subPages.push_back({"Transform"});
+                brush.subPages.push_back({"Scale"});
+                brush.subPages.push_back({"Texture"});
+                brush.subPages.push_back({"Attributes"});
+                brush.subPages.push_back({"Aim"});
+                brush.subPages.push_back({"Color"});
+                rmPages.push_back(brush);
+            }
+            radialMenu->SetPages(rmPages);
+        }
   // Create octree explorer widget bound to loaded scene
 
  
@@ -688,6 +718,42 @@ public:
         mousePublisher.update(&eventManager, camera, deltaTime, &controllerManager,
                              &brushManager, ImGui::GetIO().WantCaptureMouse);
         eventManager.processQueued();
+
+        // ── Radial menu toggle and input ──
+        if (radialMenu) {
+            // Tab key toggle (edge-triggered)
+            bool tabNow = glfwGetKey(getWindow(), GLFW_KEY_TAB) == GLFW_PRESS;
+            if (tabNow && !tabPrev)
+                radialMenu->SetVisible(!radialMenu->IsVisible());
+            tabPrev = tabNow;
+
+            // Wiimote Home button toggle (edge-triggered)
+            if (nunchukPublisher.isConnected()) {
+                if (nunchukPublisher.homeButtonPressed())
+                    radialMenu->SetVisible(!radialMenu->IsVisible());
+            }
+
+            if (radialMenu->IsVisible()) {
+                radialMenu->SetCenter(ImVec2(getWidth() * 0.5f, getHeight() * 0.5f));
+
+                // Feed input vector: pixel-space offset from center.
+                // The widget compares this against its pixel-space radii.
+                ImVec2 vec(0, 0);
+                if (nunchukPublisher.isConnected()) {
+                    WiimoteState ws = nunchukPublisher.getState();
+                    // Joystick is -1..1, scale to pixel units matching outer radius
+                    vec = ImVec2(ws.joystickX * 120.0f, ws.joystickY * 120.0f);
+                } else {
+                    double mx, my;
+                    glfwGetCursorPos(getWindow(), &mx, &my);
+                    vec = ImVec2(
+                        static_cast<float>(mx) - getWidth() * 0.5f,
+                        static_cast<float>(my) - getHeight() * 0.5f
+                    );
+                }
+                radialMenu->SetInputVector(vec);
+            }
+        }
 
         shadowParams.update(camera.getPosition(), light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
 
@@ -1739,6 +1805,12 @@ public:
         // Update per-frame widget state (avoid storing VulkanApp* inside widgets)
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
         if (vulkanResourcesManagerWidget) vulkanResourcesManagerWidget->updateWithApp(this);
+
+        // Render radial menu (behind all widgets)
+        if (radialMenu) {
+            radialMenu->Update();
+            radialMenu->Draw();
+        }
 
         // Render all widgets
         widgetManager.renderAll();

@@ -44,6 +44,9 @@ public:
     bool isAutoConnecting() const { return autoConnecting.load(); }
     bool isConnected() const { return state.connected; }
 
+    // Returns true on the rising edge of the Home button press.
+    bool homeButtonPressed();
+
 private:
     WiimoteState state;
     std::atomic<bool> autoConnecting = false;
@@ -58,6 +61,7 @@ private:
 
     // Tracking state for control mapping
     uint16_t prevButtons = 0;
+    bool homePrev = false;
     float startYaw = 0.0f;
     float startPitch = 0.0f;
     float startRoll = 0.0f;

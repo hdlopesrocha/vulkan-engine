@@ -812,3 +812,11 @@ WiimoteState NunchukPublisher::getState() const {
     std::lock_guard<std::mutex> lock(mutex);
     return state;
 }
+
+bool NunchukPublisher::homeButtonPressed() {
+    std::lock_guard<std::mutex> lock(mutex);
+    bool homeNow = (state.buttons & WIIMOTE_BUTTON_HOME) != 0;
+    bool pressed = homeNow && !homePrev;
+    homePrev = homeNow;
+    return pressed;
+}
