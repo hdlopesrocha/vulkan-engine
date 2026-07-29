@@ -525,6 +525,11 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
     // Submit the recorded command buffer synchronously and wait for completion.
     // Synchronous submission avoids races where descriptor sets or image
     // layouts are updated while other command buffers are still recording.
+    // Wait for ALL in-flight fences first to drain the graphics queue. This
+    // prevents SYNC-HAZARD-WRITE-AFTER-READ: the linearize pass transitions
+    // (writes) the source image layout, but a previously submitted command
+    // buffer on the same queue may still be reading it in a fragment shader.
+    app_->waitForFrameFences();
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         app->freeCommandBuffer(cmd);
         return false;
@@ -586,7 +591,8 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
 
     if (dstView != VK_NULL_HANDLE) {
         if (dstDescriptorOwned) {
-            ImGui_ImplVulkan_RemoveTexture(dstDescriptor);
+            VkDescriptorSet tmp = dstDescriptor;
+            if (app_) app_->deferDestroyUntilAllPending([tmp](){ ImGui_ImplVulkan_RemoveTexture(tmp); });
             dstDescriptorOwned = false;
         }
         dstDescriptor = ImGui_ImplVulkan_AddTexture(previewSampler, dstView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -940,44 +946,37 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
 
 
+    auto removeDescDeferred = [&](VkDescriptorSet& ds, bool& owned) {
+        if (ds == VK_NULL_HANDLE || !owned) { owned = false; return; }
+        VkDescriptorSet tmp = ds;
+        if (app) app->deferDestroyUntilAllPending([tmp](){ ImGui_ImplVulkan_RemoveTexture(tmp); });
+        owned = false;
+    };
+
     switch (selectedPreview) {
         case PreviewTarget::Sky: {
-            if (skyDescriptorOwned) {
-                ImGui_ImplVulkan_RemoveTexture(skyDescriptor);
-                skyDescriptorOwned = false;
-            }
+            removeDescDeferred(skyDescriptor, skyDescriptorOwned);
             skyDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, skyRenderer->getSkyView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             skyDescriptorOwned = true;
         } break;
 
         case PreviewTarget::SolidColor: {
-            if (solidColorDescriptorOwned) {
-                ImGui_ImplVulkan_RemoveTexture(solidColorDescriptor);
-                solidColorDescriptorOwned = false;
-            }
+            removeDescDeferred(solidColorDescriptor, solidColorDescriptorOwned);
             solidColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, solidRenderer->getColorView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             solidColorDescriptorOwned = true;
         } break;
 
         case PreviewTarget::SolidDepth: {
-            if (solidDepthDescriptorOwned) {
-                ImGui_ImplVulkan_RemoveTexture(solidDepthDescriptor);
-                solidDepthDescriptorOwned = false;
-            }
+            removeDescDeferred(solidDepthDescriptor, solidDepthDescriptorOwned);
             VkSampler depthSampler = widgetSampler;
-            // Sample the previously-produced frame's depth (one-frame latency)
-            // to avoid binding the current-frame attachment before it's rendered.
-            uint32_t producerFrame = (frameIndex + 1) % 2;
+            uint32_t producerFrame = frameIndex;
             solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler,  solidRenderer->getDepthView(producerFrame), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             solidDepthDescriptorOwned = true;
         } break;
 
         case PreviewTarget::Solid360Equirect: {
             cube360EquirectRenderer.render(app, widgetSampler, sceneRenderer->solid360Renderer->getSolid360View());
-            if (cube360EquirectDescriptorOwned) {
-                ImGui_ImplVulkan_RemoveTexture(cube360EquirectDescriptor);
-                cube360EquirectDescriptorOwned = false;
-            }
+            removeDescDeferred(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
             cube360EquirectDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, cube360EquirectRenderer.getEquirectView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             cube360EquirectDescriptorOwned = true;
         } break;
@@ -986,10 +985,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
             VkImageView faceView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360FaceView(f) : VK_NULL_HANDLE;
             if (faceView != VK_NULL_HANDLE) {
-                if (cube360FaceDescriptorOwned[f]) {
-                    ImGui_ImplVulkan_RemoveTexture(cube360FaceDescriptor[f]);
-                    cube360FaceDescriptorOwned[f] = false;
-                }
+                removeDescDeferred(cube360FaceDescriptor[f], cube360FaceDescriptorOwned[f]);
                 cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(widgetSampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 cube360FaceDescriptorOwned[f] = true;
             }
@@ -1012,10 +1008,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         case PreviewTarget::WaterColor: {
             VkImageView waterView = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
             if (waterView != VK_NULL_HANDLE) {
-                if (waterColorDescriptorOwned) {
-                    ImGui_ImplVulkan_RemoveTexture(waterColorDescriptor);
-                    waterColorDescriptorOwned = false;
-                }
+                removeDescDeferred(waterColorDescriptor, waterColorDescriptorOwned);
                 waterColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 waterColorDescriptorOwned = true;
             }
@@ -1052,10 +1045,12 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         // Prepare a sampler for sampling depth textures (use non-compare widget sampler)
         // Run the pass for scene depth (use perspective linearization)
         if (solidRenderer && linearizePipeline != VK_NULL_HANDLE && linearSceneDepthView != VK_NULL_HANDLE) {
-            // Sample the previously-produced frame's depth (one-frame latency)
-            // to avoid sampling an attachment that will be written later in
-            // the same frame while ImGui is being built.
-            uint32_t producerFrame = (frameIndex + 1) % 2;
+            // Use the current frame slot's depth image (from the previous
+            // cycle). drawFrame() already waited for inFlightFences[currentFrame]
+            // at the start, so this image is guaranteed complete. Using any
+            // other slot risks a WRITE_AFTER_READ hazard if that slot's
+            // command buffer is still in-flight.
+            uint32_t producerFrame = frameIndex;
             VkImageView src = solidRenderer->getDepthView(producerFrame);
                 if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
@@ -1069,9 +1064,10 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         // Back-face depth pass
         // Back-face depth pass (use perspective linearization)
         if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE) {
-            // Use previous producer frame for the back-face source to avoid
-            // sampling images that may still be in-flight.
-            uint32_t producerFrame = (frameIndex + 1) % 2;
+            // Use the current frame slot's depth image — its in-flight fence
+            // was already waited on by drawFrame(). Any other slot may still
+            // be executing on the GPU, causing a sync hazard.
+            uint32_t producerFrame = frameIndex;
             VkImageView src = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(producerFrame) : VK_NULL_HANDLE;
                 if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
@@ -1084,13 +1080,10 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         // Water front-face depth pass (linearize the water geometry depth buffer)
         if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE && waterDepthLinearView != VK_NULL_HANDLE) {
-            // The water geometry depth is written during the main render pass for
-            // the current CPU frame. The widget runs its linearize pass while
-            // building ImGui (before the main render pass is submitted), so
-            // sampling the *current* frame's depth can read undefined/attachment
-            // layout contents. Use the previous producer frame's depth view so
-            // we sample a completed image (one-frame latency) and avoid hazards.
-            uint32_t producerFrame = (frameIndex + 1) % 2;
+            // Use the current frame slot's depth image — its in-flight fence
+            // was already waited on by drawFrame(). Any other slot may still
+            // be executing on the GPU, causing a sync hazard.
+            uint32_t producerFrame = frameIndex;
             VkImageView src = sceneRenderer->waterRenderer->getWaterGeomDepthView(producerFrame);
             if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
@@ -1133,7 +1126,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     if (linearSceneDepthDescriptor == VK_NULL_HANDLE && solidRenderer) {
         // Try to produce a GPU-linearized RGBA preview first. If linearization
         // fails or is unavailable, fall back to aliasing the raw depth view.
-        uint32_t producerFrame = (frameIndex + 1) % 2;
+        uint32_t producerFrame = frameIndex;
         VkImageView sceneDepthView = solidRenderer->getDepthView(producerFrame);
         VkImage sceneDepthImage = solidRenderer->getDepthImage(producerFrame);
         if (sceneDepthView != VK_NULL_HANDLE) {
