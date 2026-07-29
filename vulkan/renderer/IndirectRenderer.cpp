@@ -919,6 +919,22 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
                     vkCmdCopyBuffer(cmd, staging.buffer, vertexBuffer.buffer, 1, &vCopy);
                     off += vertexDataSize;
                 }
+                if (doVertexUpload && doIndexUpload) {
+                    VkBufferMemoryBarrier2 barrier{};
+                    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+                    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                    barrier.buffer = vertexBuffer.buffer;
+                    barrier.offset = 0;
+                    barrier.size = vertexDataSize;
+                    VkDependencyInfo depInfo{};
+                    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                    depInfo.bufferMemoryBarrierCount = 1;
+                    depInfo.pBufferMemoryBarriers = &barrier;
+                    vkCmdPipelineBarrier2(cmd, &depInfo);
+                }
                 if (doIndexUpload) {
                     VkBufferCopy iCopy{};
                     iCopy.srcOffset = off;
