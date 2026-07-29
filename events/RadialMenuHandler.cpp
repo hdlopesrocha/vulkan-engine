@@ -14,6 +14,7 @@
 #include "SetBrushPaintModeEvent.hpp"
 #include "SetBrushDragModeEvent.hpp"
 #include "SetBrushHSVEvent.hpp"
+#include "SetBrushSdfTypeEvent.hpp"
 #include "SetLightEvent.hpp"
 #include "SetPageEvent.hpp"
 #include <GLFW/glfw3.h>
@@ -57,6 +58,7 @@ void RadialMenuHandler::setupPages() {
         brush.subPages.push_back({"Control"});
         brush.subPages.push_back({"Mode"});
         brush.subPages.push_back({"Drag Mode"});
+        brush.subPages.push_back({"Shape"});
         brush.subPages.push_back({"Texture"});
         brush.subPages.push_back({"Attributes"});
         brush.subPages.push_back({"Color"});
@@ -274,6 +276,9 @@ bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
                     else if (hl == 1) dm = BrushDragMode::CLICK;
                     em_->queue(std::make_shared<SetBrushDragModeEvent>(dm));
                     menu_->PopRing();
+                } else if (labelRingKind == LabelRingKind::SHAPE) {
+                    em_->queue(std::make_shared<SetBrushSdfTypeEvent>(hl));
+                    menu_->PopRing();
                 } else {
                     BrushControlMode mode = BrushControlMode::TRANSLATE;
                     if (hl == 0) mode = BrushControlMode::TRANSLATE;
@@ -331,6 +336,12 @@ bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
                         menu_->PushLabelRing({"Drag", "Click"});
                         int ci = (brush_->dragMode == BrushDragMode::CLICK) ? 1 : 0;
                         menu_->SetCurrentItem(ci);
+                    } else if (subLabel == "Shape") {
+                        labelRingKind = LabelRingKind::SHAPE;
+                        menu_->PushLabelRing({"Sphere", "Box", "Capsule", "Octahedron", "Pyramid",
+                                              "Torus", "Cone", "Cylinder", "Tapered Cylinder", "Tapered Capsule"});
+                        BrushEntry* be = brush_->getSelectedEntry();
+                        menu_->SetCurrentItem(be ? be->sdfType : -1);
                     } else if (subLabel == "Color") {
                         labelRingKind = LabelRingKind::HSV;
                         menu_->PushLabelRing({"Hue", "Saturation", "Value"});

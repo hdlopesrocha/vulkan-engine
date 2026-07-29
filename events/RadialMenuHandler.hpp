@@ -21,7 +21,7 @@ class Light;
 // for all input sources (keyboard, gamepad, nunchuk, mouse).
 class RadialMenuHandler {
 public:
-    enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV, LIGHT };
+    enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV, LIGHT, SHAPE };
 
     RadialMenuHandler(
         GLFWwindow* window,
