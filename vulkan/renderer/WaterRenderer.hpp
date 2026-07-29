@@ -116,10 +116,6 @@ public:
                        VkImageView sceneColorView, VkImageView sceneDepthView,
                        VkImageView skyView = VK_NULL_HANDLE);
 
-    // Emit post-geometry-pass barrier for fragment shader sampling.
-    // Ensures per-frame water images are available to fragment shaders.
-    void postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex);
-    
     // Get water depth descriptor set (for binding scene depth texture)
     VkDescriptorSet getWaterDepthDescriptorSet(uint32_t frameIndex) const { return (frameIndex < FRAMES) ? waterDepthDescriptorSets[frameIndex] : VK_NULL_HANDLE; }
     

@@ -661,7 +661,6 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
             }
 
             waterRenderer->endWaterGeometryPass(commandBuffer);
-            waterRenderer->postRenderBarrier(commandBuffer, frameIdx);
         } else {
             // Skipping water geometry operations as requested by env guard
         }

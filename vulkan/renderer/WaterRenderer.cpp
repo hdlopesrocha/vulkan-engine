@@ -846,29 +846,6 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 }
 
 // Back-face pass implementation moved to WaterBackFaceRenderer
-void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) {
-    if (cmd == VK_NULL_HANDLE) return;
-
-    // endWaterGeometryPass already transitions the water color output to
-    // SHADER_READ_ONLY_OPTIMAL with COLOR_ATTACHMENT_OUTPUT → ALL_GRAPHICS
-    // visibility.  However, that barrier covers the image layout transition
-    // on the specific sub-resource; this memory barrier ensures that *any*
-    // color-attachment writes from the water geometry pass are globally
-    // visible to subsequent fragment-shader reads in the swapchain pass.
-    VkMemoryBarrier2 memBarrier{};
-    memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    memBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-
-    VkDependencyInfo depInfo{};
-    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    depInfo.memoryBarrierCount = 1;
-    depInfo.pMemoryBarriers = &memBarrier;
-    vkCmdPipelineBarrier2(cmd, &depInfo);
-}
-
 void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, VkImageView skyView) {
     if (!app || cmd == VK_NULL_HANDLE) return;
 
@@ -910,8 +887,6 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     }
 
     endWaterGeometryPass(cmd);
-
-    postRenderBarrier(cmd, frameIndex);
 }
 
 // Helper: create a 1x1 image with given format, initialize to black (color) or 1.0 (depth).
