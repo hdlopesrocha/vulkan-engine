@@ -18,6 +18,7 @@
 #include "SetPageEvent.hpp"
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+#include <cmath>
 
 RadialMenuHandler::RadialMenuHandler(
     GLFWwindow* window,
@@ -114,25 +115,43 @@ void RadialMenuHandler::feedInputVector() {
     glfwGetWindowSize(window_, &w, &h);
     menu_->SetCenter(ImVec2(w * 0.5f, h * 0.5f));
 
+    auto getScale = [&]() {
+        float scale = 120.0f;
+        auto activeType = menu_->GetActiveRingType();
+        if (activeType == RadialMenu::RingType::TEXTURE || activeType == RadialMenu::RingType::LABEL)
+            scale = 170.0f;
+        else if (activeType == RadialMenu::RingType::HSV_SLIDER)
+            scale = 250.0f;
+        return scale;
+    };
+
     ImVec2 vec(0, 0);
+    bool usedAnalog = false;
+
+    // Nunchuk joystick — use only when outside deadzone
     if (nunchuk_->isConnected()) {
         WiimoteState ws = nunchuk_->getState();
-        float scale = 120.0f;
-        auto activeType = menu_->GetActiveRingType();
-        if (activeType == RadialMenu::RingType::TEXTURE || activeType == RadialMenu::RingType::LABEL)
-            scale = 170.0f;
-        else if (activeType == RadialMenu::RingType::HSV_SLIDER)
-            scale = 250.0f;
-        vec = ImVec2(ws.joystickX * scale, -ws.joystickY * scale);
-    } else if (gamepad_->isConnected()) {
-        float scale = 120.0f;
-        auto activeType = menu_->GetActiveRingType();
-        if (activeType == RadialMenu::RingType::TEXTURE || activeType == RadialMenu::RingType::LABEL)
-            scale = 170.0f;
-        else if (activeType == RadialMenu::RingType::HSV_SLIDER)
-            scale = 250.0f;
-        vec = ImVec2(gamepad_->getLeftStickX() * scale, gamepad_->getLeftStickY() * scale);
-    } else {
+        constexpr float deadzone = 0.15f;
+        if (std::abs(ws.joystickX) > deadzone || std::abs(ws.joystickY) > deadzone) {
+            float scale = getScale();
+            vec = ImVec2(ws.joystickX * scale, -ws.joystickY * scale);
+            usedAnalog = true;
+        }
+    }
+
+    // Gamepad left stick — use only when outside deadzone
+    if (!usedAnalog && gamepad_->isConnected()) {
+        float lx = gamepad_->getLeftStickX();
+        float ly = gamepad_->getLeftStickY();
+        if (lx != 0.0f || ly != 0.0f) {
+            float scale = getScale();
+            vec = ImVec2(lx * scale, ly * scale);
+            usedAnalog = true;
+        }
+    }
+
+    // Mouse fallback — use when no analog stick is active
+    if (!usedAnalog) {
         double mx, my;
         glfwGetCursorPos(window_, &mx, &my);
         vec = ImVec2(
@@ -140,6 +159,7 @@ void RadialMenuHandler::feedInputVector() {
             static_cast<float>(my) - h * 0.5f
         );
     }
+
     menu_->SetInputVector(vec);
 }
 
@@ -189,16 +209,19 @@ bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
         int hp = menu_->GetHoveredPage();
         int hs = menu_->GetHoveredSubPage();
 
-        // Detect select/back edges
+        // Detect select/back edges — prefer analog buttons when pressed,
+        // otherwise fall through to mouse so mouse can navigate freely.
         bool selectNow = false;
         bool backNow = false;
         if (nunchuk_->isConnected()) {
             selectNow = nunchuk_->cButtonPressed();
             backNow = nunchuk_->zButtonPressed();
-        } else if (gamepad_->isConnected()) {
+        }
+        if (!selectNow && !backNow && gamepad_->isConnected()) {
             selectNow = gamepad_->aButtonPressed();
             backNow = gamepad_->bButtonPressed();
-        } else {
+        }
+        if (!selectNow && !backNow) {
             selectNow = (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
             backNow = (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
         }
