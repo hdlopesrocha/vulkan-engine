@@ -72,6 +72,16 @@ bool GamepadPublisher::menuButtonPressed()
     return pressed;
 }
 
+bool GamepadPublisher::startButtonPressed()
+{
+    GLFWgamepadstate state;
+    if (!glfwGetGamepadState(joystickId, &state)) return false;
+    bool now = state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS;
+    bool pressed = now && !startPrev;
+    startPrev = now;
+    return pressed;
+}
+
 void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTime, ControllerManager* cm, Brush3dManager* brushManager, bool flipRotation) {
     if (!em || !cm) return;
 
@@ -91,10 +101,10 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     ControllerContext& gctx = cm->gamepadContext;
     const ControllerParameters& cp = *cm->getParameters();
 
-    // START -> toggle fullscreen
-    bool startNow = (state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS);
-    if (startNow && !startPrev) em->publish(std::make_shared<ToggleFullscreenEvent>());
-    startPrev = startNow;
+    // BACK (View / two squares) -> toggle fullscreen
+    bool backNow = (state.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS);
+    if (backNow && !backPrev) em->publish(std::make_shared<ToggleFullscreenEvent>());
+    backPrev = backNow;
 
     // Cache left stick for radial menu access (with deadzone applied)
     float lx = state.axes[GLFW_GAMEPAD_AXIS_LEFT_X];

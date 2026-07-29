@@ -775,9 +775,9 @@ public:
                 }
             }
 
-            // Gamepad BACK (3-stripes) button toggle (edge-triggered)
+            // Gamepad START (Menu / three lines) button toggle (edge-triggered)
             if (gamepadPublisher.isConnected()) {
-                if (gamepadPublisher.menuButtonPressed()) {
+                if (gamepadPublisher.startButtonPressed()) {
                     radialMenu->SetVisible(!radialMenu->IsVisible());
                     if (radialMenu->IsVisible())
                         glfwSetCursorPos(getWindow(), getWidth() * 0.5, getHeight() * 0.5);

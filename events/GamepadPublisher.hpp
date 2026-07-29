@@ -24,6 +24,7 @@ public:
     bool aButtonPressed();
     bool bButtonPressed();
     bool menuButtonPressed();
+    bool startButtonPressed();
 
 private:
     float moveSpeed;
