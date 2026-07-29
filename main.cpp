@@ -146,6 +146,7 @@ public:
     std::shared_ptr<RadialMenu> radialMenu;
     std::vector<Page> radialMenuPages;
     bool homePrev = false;
+    bool middleMousePrev = false;
     bool textureSelectPrev = false;
     bool backPrev = false;
     enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV, LIGHT };
@@ -747,14 +748,29 @@ public:
         if (radialMenu) {
             // Home key toggle (edge-triggered)
             bool homeNow = glfwGetKey(getWindow(), GLFW_KEY_HOME) == GLFW_PRESS;
-            if (homeNow && !homePrev)
+            if (homeNow && !homePrev) {
                 radialMenu->SetVisible(!radialMenu->IsVisible());
+                if (radialMenu->IsVisible())
+                    glfwSetCursorPos(getWindow(), getWidth() * 0.5, getHeight() * 0.5);
+            }
             homePrev = homeNow;
+
+            // Middle mouse button toggle (edge-triggered)
+            bool middleMouseNow = glfwGetMouseButton(getWindow(), GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+            if (middleMouseNow && !middleMousePrev) {
+                radialMenu->SetVisible(!radialMenu->IsVisible());
+                if (radialMenu->IsVisible())
+                    glfwSetCursorPos(getWindow(), getWidth() * 0.5, getHeight() * 0.5);
+            }
+            middleMousePrev = middleMouseNow;
 
             // Wiimote Home button toggle (edge-triggered)
             if (nunchukPublisher.isConnected()) {
-                if (nunchukPublisher.homeButtonPressed())
+                if (nunchukPublisher.homeButtonPressed()) {
                     radialMenu->SetVisible(!radialMenu->IsVisible());
+                    if (radialMenu->IsVisible())
+                        glfwSetCursorPos(getWindow(), getWidth() * 0.5, getHeight() * 0.5);
+                }
             }
 
             if (radialMenu->IsVisible()) {
@@ -795,6 +811,7 @@ public:
                     backNow = nunchukPublisher.zButtonPressed();
                 } else {
                     selectNow = (glfwGetMouseButton(getWindow(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+                    backNow = (glfwGetMouseButton(getWindow(), GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
                 }
                 bool selectEdge = selectNow && !textureSelectPrev;
                 bool backEdge = backNow && !backPrev;
