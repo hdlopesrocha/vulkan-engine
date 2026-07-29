@@ -139,7 +139,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 
     for (uint32_t frameIdx = 0; frameIdx < FRAMES; ++frameIdx) {
         createImage(VK_FORMAT_R32G32B32A32_SFLOAT,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
                     waterDepthImages[frameIdx], waterDepthAllocations[frameIdx], waterDepthMemories[frameIdx], waterDepthImageViews[frameIdx]);
         waterDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -273,68 +273,48 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
     if (cmd == VK_NULL_HANDLE) return;
     if (frameIndex >= 3) return;
 
-    // Only clear the water offscreen targets (color + depth) using dynamic
-    // rendering with loadOp = CLEAR. This is safe and does not require
-    // TRANSFER_DST usage on the images.
-    VkImageView colorView = waterDepthImageViews[frameIndex];
-    VkImageView depthView = waterGeomDepthImageViews[frameIndex];
+    // Clear the water offscreen targets using vkCmdClearColorImage /
+    // vkCmdClearDepthStencilImage.  This is cheaper than a full dynamic
+    // rendering begin/end pass and requires TRANSFER_DST on both images.
+    VkImage colorImg = waterDepthImages[frameIndex];
+    VkImage depthImg = waterGeomDepthImages[frameIndex];
 
-    if (colorView == VK_NULL_HANDLE && depthView == VK_NULL_HANDLE) return;
+    if (colorImg == VK_NULL_HANDLE && depthImg == VK_NULL_HANDLE) return;
 
-    // Barrier: transition water color from its tracked layout → COLOR_ATTACHMENT_OPTIMAL
-    // so the clear rendering pass can write black.
-    if (waterDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        app->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex], VK_FORMAT_R32G32B32A32_SFLOAT,
-            waterDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
-        app->recordTrackedLayoutForCommandBuffer(cmd, waterDepthImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+    // Transition both images to TRANSFER_DST_OPTIMAL for the clear.
+    if (colorImg != VK_NULL_HANDLE) {
+        app->recordTransitionImageLayoutLayer(cmd, colorImg, VK_FORMAT_R32G32B32A32_SFLOAT,
+            waterDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
     }
-    // Barrier: transition water geometry depth from its tracked layout → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    // for a clear-to-1.0 before the geometry pass.
-    if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        app->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
-            waterGeomDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-        app->recordTrackedLayoutForCommandBuffer(cmd, waterGeomDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+    if (depthImg != VK_NULL_HANDLE) {
+        app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT,
+            waterGeomDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
     }
 
-    VkRenderingAttachmentInfo colorAttachment{};
-    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = colorView;
-    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+    // Clear water color to transparent black and depth to 1.0.
+    VkClearColorValue clearValue{};
+    clearValue.float32[0] = 0.0f; clearValue.float32[1] = 0.0f;
+    clearValue.float32[2] = 0.0f; clearValue.float32[3] = 0.0f;
+    if (colorImg != VK_NULL_HANDLE) {
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, colorImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearValue, 1, &range);
+    }
+    if (depthImg != VK_NULL_HANDLE) {
+        VkClearDepthStencilValue depthClear{1.0f, 0};
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        vkCmdClearDepthStencilImage(cmd, depthImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &depthClear, 1, &range);
+    }
 
-    VkRenderingAttachmentInfo depthAttachment{};
-    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depthAttachment.imageView = depthView;
-    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    // Clear depth to 1.0 so all water fragments pass the depth test (water
-    // compositing in the forward pass handles solid-geometry occlusion).
-    // No scene-depth copy is needed.
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depthAttachment.clearValue.depthStencil = {1.0f, 0};
-
-    VkRenderingInfo renderingInfo{};
-    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = {renderWidth, renderHeight};
-    renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = (colorView != VK_NULL_HANDLE) ? 1 : 0;
-    renderingInfo.pColorAttachments = (colorView != VK_NULL_HANDLE) ? &colorAttachment : nullptr;
-    renderingInfo.pDepthAttachment = (depthView != VK_NULL_HANDLE) ? &depthAttachment : nullptr;
-
-    // Begin and immediately end dynamic rendering to perform clears.
-    vkCmdBeginRendering(cmd, &renderingInfo);
-    vkCmdEndRendering(cmd);
-
-    // Barrier: transition water color from COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
-    // after the clear so the geometry pass can read it (if needed) or leave it
-    // in a known layout for the next beginWaterGeometryPass transition.
-    if (waterDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        app->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex], VK_FORMAT_R32G32B32A32_SFLOAT,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+    // Transition to SHADER_READ_ONLY_OPTIMAL for the post-process compositor.
+    if (colorImg != VK_NULL_HANDLE) {
+        app->recordTransitionImageLayoutLayer(cmd, colorImg, VK_FORMAT_R32G32B32A32_SFLOAT,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
         waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    if (depthImg != VK_NULL_HANDLE) {
+        app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        waterGeomDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 }
 
