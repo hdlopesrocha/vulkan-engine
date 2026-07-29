@@ -773,6 +773,15 @@ public:
                 }
             }
 
+            // Gamepad BACK (3-stripes) button toggle (edge-triggered)
+            if (gamepadPublisher.isConnected()) {
+                if (gamepadPublisher.menuButtonPressed()) {
+                    radialMenu->SetVisible(!radialMenu->IsVisible());
+                    if (radialMenu->IsVisible())
+                        glfwSetCursorPos(getWindow(), getWidth() * 0.5, getHeight() * 0.5);
+                }
+            }
+
             if (radialMenu->IsVisible()) {
                 radialMenu->SetCenter(ImVec2(getWidth() * 0.5f, getHeight() * 0.5f));
 
@@ -780,15 +789,21 @@ public:
                 ImVec2 vec(0, 0);
                 if (nunchukPublisher.isConnected()) {
                     WiimoteState ws = nunchukPublisher.getState();
-                    // Scale to ring when any ring is active
                     float scale = 120.0f;
                     auto activeType = radialMenu->GetActiveRingType();
                     if (activeType == RadialMenu::RingType::TEXTURE || activeType == RadialMenu::RingType::LABEL)
                         scale = 170.0f;
                     else if (activeType == RadialMenu::RingType::HSV_SLIDER)
                         scale = 250.0f;
-                    // Nunchuk Y is positive-up, screen Y is positive-down
                     vec = ImVec2(ws.joystickX * scale, -ws.joystickY * scale);
+                } else if (gamepadPublisher.isConnected()) {
+                    float scale = 120.0f;
+                    auto activeType = radialMenu->GetActiveRingType();
+                    if (activeType == RadialMenu::RingType::TEXTURE || activeType == RadialMenu::RingType::LABEL)
+                        scale = 170.0f;
+                    else if (activeType == RadialMenu::RingType::HSV_SLIDER)
+                        scale = 250.0f;
+                    vec = ImVec2(gamepadPublisher.getLeftStickX() * scale, -gamepadPublisher.getLeftStickY() * scale);
                 } else {
                     double mx, my;
                     glfwGetCursorPos(getWindow(), &mx, &my);
@@ -803,12 +818,15 @@ public:
                 int hp = radialMenu->GetHoveredPage();
                 int hs = radialMenu->GetHoveredSubPage();
 
-                // C/click = select, Z = back
+                // C/click/A = select, Z/right-click/B = back
                 bool selectNow = false;
                 bool backNow = false;
                 if (nunchukPublisher.isConnected()) {
                     selectNow = nunchukPublisher.cButtonPressed();
                     backNow = nunchukPublisher.zButtonPressed();
+                } else if (gamepadPublisher.isConnected()) {
+                    selectNow = gamepadPublisher.aButtonPressed();
+                    backNow = gamepadPublisher.bButtonPressed();
                 } else {
                     selectNow = (glfwGetMouseButton(getWindow(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
                     backNow = (glfwGetMouseButton(getWindow(), GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);

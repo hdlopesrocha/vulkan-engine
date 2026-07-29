@@ -6,12 +6,6 @@
 class EventManager;
 class Camera;
 
-// Polls the first connected gamepad using GLFW's gamepad API and publishes
-// translation events according to left stick and shoulder bumpers:
-// - Left stick X -> translate sideways (right/left)
-// - Left stick Y -> translate up/down (up when stick up)
-// - Left bumper (L1) -> translate backward
-// - Right bumper (R1) -> translate forward
 class ControllerManager;
 class Brush3dManager;
 
@@ -19,23 +13,29 @@ class GamepadPublisher {
 public:
     GamepadPublisher(float moveSpeed = 2.5f, float angularSpeedDeg = 45.0f);
 
-    // Call each frame to poll gamepad and publish events via EventManager.
-    // - em: EventManager to publish to
-    // - cam: reference to Camera for axis vectors
-    // - deltaTime: frame delta seconds
     void update(EventManager* em, const Camera& cam, float deltaTime, ControllerManager* controllerManager, Brush3dManager* brushManager, bool flipRotation);
     void setMoveSpeed(float v) { moveSpeed = v; }
     void setAngularSpeed(float deg) { angularSpeedDeg = deg; }
 
+    bool isConnected() const;
+    float getLeftStickX() const;
+    float getLeftStickY() const;
+    bool aButtonPressed();
+    bool bButtonPressed();
+    bool menuButtonPressed();
+
 private:
     float moveSpeed;
-    float angularSpeedDeg; // degrees per second for right stick / triggers
-    int joystickId = GLFW_JOYSTICK_1; // current joystick id to poll (defaults to GLFW_JOYSTICK_1)
+    float angularSpeedDeg;
+    int joystickId = GLFW_JOYSTICK_1;
 
-    // deadzone for thumbstick
     const float deadzone = 0.15f;
 
-    // track toggled buttons to detect button-down events for single-action buttons
     bool startPrev = false;
     bool backPrev = false;
+    bool aPrev = false;
+    bool bPrev = false;
+    bool menuPrev = false;
+    float cachedLx = 0.0f;
+    float cachedLy = 0.0f;
 };
