@@ -58,4 +58,17 @@ public:
         em.subscribe(&gamepadContext);
         em.subscribe(&wiimoteContext);
     }
+
+    // Switch all four controller contexts to the given page category and control.
+    void switchAllContexts(PageCategory cat, PageControl ctrl) {
+        keyboardContext.selectPage(cat, ctrl);
+        mouseContext.selectPage(cat, ctrl);
+        gamepadContext.selectPage(cat, ctrl);
+        wiimoteContext.selectPage(cat, ctrl);
+    }
+
+    // Switch all four controller contexts to Brush page with the given subpage control.
+    void switchAllToBrush(PageControl ctrl) {
+        switchAllContexts(PageCategory::BRUSH, ctrl);
+    }
 };

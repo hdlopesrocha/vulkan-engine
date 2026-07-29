@@ -76,6 +76,7 @@
 #include "events/SetBrushHSVEvent.hpp"
 #include "events/SetLightEvent.hpp"
 #include "events/SetPageEvent.hpp"
+#include "events/RadialMenuHandler.hpp"
 #include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
 #include "world/World.hpp"
@@ -144,13 +145,7 @@ public:
     std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     std::shared_ptr<RadialMenu> radialMenu;
-    std::vector<Page> radialMenuPages;
-    bool homePrev = false;
-    bool middleMousePrev = false;
-    bool textureSelectPrev = false;
-    bool backPrev = false;
-    enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV, LIGHT };
-    LabelRingKind labelRingKind = LabelRingKind::CONTROL;
+    std::unique_ptr<RadialMenuHandler> radialMenuHandler;
     WidgetManager widgetManager;
     FilePicker scenePicker_{"Scene File Picker", ".scene"};
     uint32_t loadedTextureLayers = 0;
@@ -588,37 +583,11 @@ public:
 
         // Radial menu (input-agnostic overlay, not a Widget subclass)
         radialMenu = std::make_shared<RadialMenu>();
-        {
-            // Camera page
-            {
-                Page cam;
-                cam.label = "Camera";
-                cam.subPages.push_back({"Translate"});
-                cam.subPages.push_back({"UI"});
-                radialMenuPages.push_back(cam);
-            }
-            // Brush page
-            {
-                Page brush;
-                brush.label = "Brush";
-                brush.subPages.push_back({"Control"});
-                brush.subPages.push_back({"Mode"});
-                brush.subPages.push_back({"Drag Mode"});
-                brush.subPages.push_back({"Texture"});
-                brush.subPages.push_back({"Attributes"});
-                brush.subPages.push_back({"Color"});
-                radialMenuPages.push_back(brush);
-            }
-            // Light page
-            {
-                Page lgt;
-                lgt.label = "Light";
-                lgt.subPages.push_back({"Azimuth"});
-                lgt.subPages.push_back({"Elevation"});
-                radialMenuPages.push_back(lgt);
-            }
-            radialMenu->SetPages(radialMenuPages);
-        }
+        radialMenuHandler = std::make_unique<RadialMenuHandler>(
+            getWindow(), &eventManager, radialMenu.get(),
+            &nunchukPublisher, &gamepadPublisher, &controllerManager,
+            &brushManager, &textureArrayManager, &light);
+        radialMenuHandler->setupPages();
   // Create octree explorer widget bound to loaded scene
 
  
@@ -715,6 +684,8 @@ public:
     void action();
     // Clear GPU meshes, reset octrees, load from file and tessellate
     void loadSceneFromFile(const std::string& path);
+    // Shared scene state reset (join thread, wait GPU, clear meshes/octrees/handlers)
+    void resetSceneState();
 
 // (setup implementation defined out-of-line below)
 
@@ -747,261 +718,8 @@ public:
         eventManager.processQueued();
 
         // ── Radial menu toggle and input ──
-        if (radialMenu) {
-            // Home key toggle (edge-triggered)
-            bool homeNow = glfwGetKey(getWindow(), GLFW_KEY_HOME) == GLFW_PRESS;
-            if (homeNow && !homePrev) {
-                radialMenu->SetVisible(!radialMenu->IsVisible());
-                if (radialMenu->IsVisible())
-                    glfwSetCursorPos(getWindow(), getWidth() * 0.5, getHeight() * 0.5);
-            }
-            homePrev = homeNow;
-
-            // Middle mouse button toggle (edge-triggered)
-            bool middleMouseNow = glfwGetMouseButton(getWindow(), GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
-            if (middleMouseNow && !middleMousePrev) {
-                radialMenu->SetVisible(!radialMenu->IsVisible());
-                if (radialMenu->IsVisible())
-                    glfwSetCursorPos(getWindow(), getWidth() * 0.5, getHeight() * 0.5);
-            }
-            middleMousePrev = middleMouseNow;
-
-            // Wiimote Home button toggle (edge-triggered)
-            if (nunchukPublisher.isConnected()) {
-                if (nunchukPublisher.homeButtonPressed()) {
-                    radialMenu->SetVisible(!radialMenu->IsVisible());
-                    if (radialMenu->IsVisible())
-                        glfwSetCursorPos(getWindow(), getWidth() * 0.5, getHeight() * 0.5);
-                }
-            }
-
-            // Gamepad START (Menu / three lines) button toggle (edge-triggered)
-            if (gamepadPublisher.isConnected()) {
-                if (gamepadPublisher.startButtonPressed()) {
-                    radialMenu->SetVisible(!radialMenu->IsVisible());
-                    if (radialMenu->IsVisible())
-                        glfwSetCursorPos(getWindow(), getWidth() * 0.5, getHeight() * 0.5);
-                }
-            }
-
-            if (radialMenu->IsVisible()) {
-                radialMenu->SetCenter(ImVec2(getWidth() * 0.5f, getHeight() * 0.5f));
-
-                // Feed input vector: pixel-space offset from center.
-                ImVec2 vec(0, 0);
-                if (nunchukPublisher.isConnected()) {
-                    WiimoteState ws = nunchukPublisher.getState();
-                    float scale = 120.0f;
-                    auto activeType = radialMenu->GetActiveRingType();
-                    if (activeType == RadialMenu::RingType::TEXTURE || activeType == RadialMenu::RingType::LABEL)
-                        scale = 170.0f;
-                    else if (activeType == RadialMenu::RingType::HSV_SLIDER)
-                        scale = 250.0f;
-                    vec = ImVec2(ws.joystickX * scale, -ws.joystickY * scale);
-                } else if (gamepadPublisher.isConnected()) {
-                    float scale = 120.0f;
-                    auto activeType = radialMenu->GetActiveRingType();
-                    if (activeType == RadialMenu::RingType::TEXTURE || activeType == RadialMenu::RingType::LABEL)
-                        scale = 170.0f;
-                    else if (activeType == RadialMenu::RingType::HSV_SLIDER)
-                        scale = 250.0f;
-                    vec = ImVec2(gamepadPublisher.getLeftStickX() * scale, gamepadPublisher.getLeftStickY() * scale);
-                } else {
-                    double mx, my;
-                    glfwGetCursorPos(getWindow(), &mx, &my);
-                    vec = ImVec2(
-                        static_cast<float>(mx) - getWidth() * 0.5f,
-                        static_cast<float>(my) - getHeight() * 0.5f
-                    );
-                }
-                radialMenu->SetInputVector(vec);
-
-                // Detect which page/subpage is hovered
-                int hp = radialMenu->GetHoveredPage();
-                int hs = radialMenu->GetHoveredSubPage();
-
-                // C/click/A = select, Z/right-click/B = back
-                bool selectNow = false;
-                bool backNow = false;
-                if (nunchukPublisher.isConnected()) {
-                    selectNow = nunchukPublisher.cButtonPressed();
-                    backNow = nunchukPublisher.zButtonPressed();
-                } else if (gamepadPublisher.isConnected()) {
-                    selectNow = gamepadPublisher.aButtonPressed();
-                    backNow = gamepadPublisher.bButtonPressed();
-                } else {
-                    selectNow = (glfwGetMouseButton(getWindow(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
-                    backNow = (glfwGetMouseButton(getWindow(), GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
-                }
-                bool selectEdge = selectNow && !textureSelectPrev;
-                bool backEdge = backNow && !backPrev;
-                textureSelectPrev = selectNow;
-                backPrev = backNow;
-
-                auto activeType = radialMenu->GetActiveRingType();
-
-                // --- Active ring handling ---
-                if (activeType == RadialMenu::RingType::TEXTURE) {
-                    // Texture ring: feed textures each frame
-                    std::vector<ImTextureID> texIds;
-                    for (uint32_t i = 0; i < loadedTextureLayers; ++i) {
-                        texIds.push_back(textureArrayManager.getImTexture(i, 0));
-                    }
-                    radialMenu->SetTextures(texIds);
-
-                    if (selectEdge) {
-                        int ht = radialMenu->GetHoveredTexture();
-                        if (ht >= 0) {
-                            radialMenu->SetSelectedIndex(ht);
-                            eventManager.queue(std::make_shared<SetBrushTextureEvent>(ht));
-                        } else if (radialMenu->GetHoveredNavPrev()) {
-                            radialMenu->SetTexturePage(radialMenu->GetTexturePage() - 1);
-                        } else if (radialMenu->GetHoveredNavNext()) {
-                            radialMenu->SetTexturePage(radialMenu->GetTexturePage() + 1);
-                        }
-                    }
-                } else if (activeType == RadialMenu::RingType::LABEL) {
-                    // Label ring: handle selection
-                    int hl = radialMenu->GetHoveredLabel();
-                    if (hl >= 0 && selectEdge) {
-                        radialMenu->SetSelectedIndex(hl);
-                        if (labelRingKind == LabelRingKind::HSV) {
-                            const char* compNames[] = { "Hue", "Saturation", "Value" };
-                            float compVals[] = { brushManager.getHue(), brushManager.getSaturation(), brushManager.getValue() };
-                            float compMax[] = { 360.0f, 100.0f, 100.0f };
-                            radialMenu->PushHSVSliderRing(compNames[hl], compVals[hl], 0.0f, compMax[hl]);
-
-                            textureSelectPrev = true;
-                        } else if (labelRingKind == LabelRingKind::PAINT) {
-                            BrushPaintMode pm = BrushPaintMode::ADD;
-                            if (hl == 0) pm = BrushPaintMode::ADD;
-                            else if (hl == 1) pm = BrushPaintMode::REMOVE;
-                            else if (hl == 2) pm = BrushPaintMode::PAINT;
-                            eventManager.queue(std::make_shared<SetBrushPaintModeEvent>(pm));
-                            radialMenu->PopRing();
-                        } else if (labelRingKind == LabelRingKind::DRAG) {
-                            BrushDragMode dm = BrushDragMode::DRAG;
-                            if (hl == 0) dm = BrushDragMode::DRAG;
-                            else if (hl == 1) dm = BrushDragMode::CLICK;
-                            eventManager.queue(std::make_shared<SetBrushDragModeEvent>(dm));
-                            radialMenu->PopRing();
-                        } else {
-                            BrushControlMode mode = BrushControlMode::TRANSLATE;
-                            if (hl == 0) mode = BrushControlMode::TRANSLATE;
-                            else if (hl == 1) mode = BrushControlMode::AIM;
-                            else if (hl == 2) mode = BrushControlMode::SCALE;
-                            eventManager.queue(std::make_shared<SetBrushControlEvent>(mode));
-                            radialMenu->PopRing();
-                        }
-                    }
-                } else if (activeType == RadialMenu::RingType::HSV_SLIDER) {
-                    // HSV slider: publish value while dragging
-                    float val = radialMenu->GetHSVSliderValue();
-                    std::string comp = radialMenu->GetHSVSliderName();
-                    if (comp == "Azimuth" || comp == "Elevation") {
-                        eventManager.queue(std::make_shared<SetLightEvent>(comp, val));
-                    } else {
-                        eventManager.queue(std::make_shared<SetBrushHSVEvent>(comp, val));
-                    }
-
-                    if (selectEdge) {
-                        radialMenu->PopRing();
-                    }
-                } else if (activeType == RadialMenu::RingType::NONE) {
-                    // No rings: select page → push subpage ring
-                    if (selectEdge && hp >= 0 && hp < static_cast<int>(radialMenuPages.size())) {
-                        radialMenu->PushSubpageRing(hp);
-                    }
-                } else if (activeType == RadialMenu::RingType::SUBPAGE) {
-                    // Subpage ring: select subpage → push appropriate extra ring
-                    int stackPage = radialMenu->GetStackPageIndex();
-                    if (selectEdge && stackPage >= 0 && hs >= 0
-                        && stackPage < static_cast<int>(radialMenuPages.size()))
-                    {
-                        const auto& subPages = radialMenuPages[stackPage].subPages;
-                        if (hs < static_cast<int>(subPages.size())) {
-                            const std::string& pageLabel = radialMenuPages[stackPage].label;
-                            const std::string& subLabel = subPages[hs].label;
-
-                            radialMenu->SetSelectedIndex(hs);
-
-                            // Texture subpage → texture ring
-                            if (subLabel == "Texture") {
-                                radialMenu->ResetTexturePage();
-                                radialMenu->PushTextureRing({});
-
-                            // Control subpage → label ring
-                            } else if (subLabel == "Control") {
-                                labelRingKind = LabelRingKind::CONTROL;
-                                radialMenu->PushLabelRing({"Translate", "Aim", "Scale"});
-                                int ci = 0;
-                                if (brushManager.controlMode == BrushControlMode::AIM) ci = 1;
-                                else if (brushManager.controlMode == BrushControlMode::SCALE) ci = 2;
-                                radialMenu->SetCurrentItem(ci);
-
-                            // Mode subpage → label ring
-                            } else if (subLabel == "Mode") {
-                                labelRingKind = LabelRingKind::PAINT;
-                                radialMenu->PushLabelRing({"Add", "Remove", "Paint"});
-                                int ci = 0;
-                                if (brushManager.paintMode == BrushPaintMode::REMOVE) ci = 1;
-                                else if (brushManager.paintMode == BrushPaintMode::PAINT) ci = 2;
-                                radialMenu->SetCurrentItem(ci);
-
-                            // Drag Mode subpage → label ring
-                            } else if (subLabel == "Drag Mode") {
-                                labelRingKind = LabelRingKind::DRAG;
-                                radialMenu->PushLabelRing({"Drag", "Click"});
-                                int ci = (brushManager.dragMode == BrushDragMode::CLICK) ? 1 : 0;
-                                radialMenu->SetCurrentItem(ci);
-
-                            // Color subpage → HSV label ring
-                            } else if (subLabel == "Color") {
-                                labelRingKind = LabelRingKind::HSV;
-                                radialMenu->PushLabelRing({"Hue", "Saturation", "Value"});
-                                radialMenu->SetCurrentItem(-1);
-
-                            // Azimuth subpage → slider
-                            } else if (subLabel == "Azimuth") {
-                                float azi, ele;
-                                light.getSpherical(azi, ele);
-                                radialMenu->PushHSVSliderRing("Azimuth", azi + 180.0f, 0.0f, 360.0f);
-                                textureSelectPrev = true;
-
-                            // Elevation subpage → slider
-                            } else if (subLabel == "Elevation") {
-                                float azi, ele;
-                                light.getSpherical(azi, ele);
-                                radialMenu->PushHSVSliderRing("Elevation", ele + 90.0f, 0.0f, 180.0f);
-                                textureSelectPrev = true;
-
-                            // Direct action subpages (Translate, UI, Attributes)
-                            } else {
-                                PageCategory cat = (pageLabel == "Camera")
-                                    ? PageCategory::CAMERA : PageCategory::BRUSH;
-                                PageControl pc = PageControl::TRANSLATE;
-                                BrushControlMode bm = BrushControlMode::TRANSLATE;
-                                if (subLabel == "UI")           { pc = PageControl::UI; }
-                                else if (subLabel == "Texture")    { pc = PageControl::TEXTURE;    bm = BrushControlMode::TEXTURE; }
-                                else if (subLabel == "Attributes") { pc = PageControl::ATTRIBUTE;  bm = BrushControlMode::ATTRIBUTE; }
-                                else if (subLabel == "Color")      { pc = PageControl::COLOR;      bm = BrushControlMode::COLOR; }
-                                eventManager.queue(std::make_shared<SetPageEvent>(cat, pc, bm));
-                                radialMenu->SetVisible(false);
-                            }
-                        }
-                    }
-                }
-
-                // Z = back: pop last ring or close menu
-                if (backEdge && !selectEdge) {
-                    if (radialMenu->GetStackDepth() > 0)
-                        radialMenu->PopRing();
-                    else
-                        radialMenu->SetVisible(false);
-                }
-            } else {
-                textureSelectPrev = false;
-            }
+        if (radialMenuHandler) {
+            radialMenuVisible = radialMenuHandler->update(loadedTextureLayers);
         }
 
         shadowParams.update(camera.getPosition(), light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
@@ -2288,25 +2006,13 @@ public:
             }
 
             // Switch all controller contexts to Brush page + selected subpage
-            auto switchCtx = [&](ControllerContext& ctx) {
-                ctx.selectPage(PageCategory::BRUSH, pc);
-            };
-            switchCtx(controllerManager.keyboardContext);
-            switchCtx(controllerManager.mouseContext);
-            switchCtx(controllerManager.gamepadContext);
-            switchCtx(controllerManager.wiimoteContext);
+            controllerManager.switchAllToBrush(pc);
             return;
         }
         if (auto pageEvent = std::dynamic_pointer_cast<SetPageEvent>(event)) {
             brushManager.controlMode = pageEvent->brushMode;
 
-            auto switchCtx = [&](ControllerContext& ctx) {
-                ctx.selectPage(pageEvent->category, pageEvent->control);
-            };
-            switchCtx(controllerManager.keyboardContext);
-            switchCtx(controllerManager.mouseContext);
-            switchCtx(controllerManager.gamepadContext);
-            switchCtx(controllerManager.wiimoteContext);
+            controllerManager.switchAllContexts(pageEvent->category, pageEvent->control);
             return;
         }
         if (auto paintEvent = std::dynamic_pointer_cast<SetBrushPaintModeEvent>(event)) {
@@ -2324,25 +2030,13 @@ public:
                 eventManager.queue(std::make_shared<RebuildBrushEvent>());
             }
 
-            auto switchCtx = [&](ControllerContext& ctx) {
-                ctx.selectPage(PageCategory::BRUSH, PageControl::ATTRIBUTE);
-            };
-            switchCtx(controllerManager.keyboardContext);
-            switchCtx(controllerManager.mouseContext);
-            switchCtx(controllerManager.gamepadContext);
-            switchCtx(controllerManager.wiimoteContext);
+            controllerManager.switchAllToBrush(PageControl::ATTRIBUTE);
             return;
         }
         if (auto dragEvent = std::dynamic_pointer_cast<SetBrushDragModeEvent>(event)) {
             brushManager.dragMode = dragEvent->mode;
 
-            auto switchCtx = [&](ControllerContext& ctx) {
-                ctx.selectPage(PageCategory::BRUSH, PageControl::ATTRIBUTE);
-            };
-            switchCtx(controllerManager.keyboardContext);
-            switchCtx(controllerManager.mouseContext);
-            switchCtx(controllerManager.gamepadContext);
-            switchCtx(controllerManager.wiimoteContext);
+            controllerManager.switchAllToBrush(PageControl::ATTRIBUTE);
             return;
         }
         if (auto hsvEvent = std::dynamic_pointer_cast<SetBrushHSVEvent>(event)) {
@@ -2937,43 +2631,34 @@ void MyApp::action() {
     });
 }
 
-void MyApp::generateMap() {
-    // Join any previous background tessellation thread
+void MyApp::resetSceneState() {
     if (sceneProcessThread.joinable()) sceneProcessThread.join();
-
-    // Wait for the GPU to finish all in-flight work before clearing GPU resources
     deviceWaitIdle();
-
-    // Drain any pending deferred-destroy callbacks while the GPU is idle.
     processPendingCommandBuffers();
 
-    // Remove all existing GPU-side meshes
     if (sceneRenderer) {
         sceneRenderer->removeAllRegisteredMeshes();
         sceneRenderer->removeAllTransparentMeshes();
-        world->chunkManager().removeAll();  // clear slotted-mode per-chunk state
+        world->chunkManager().removeAll();
         sceneRenderer->nodeDebugCubes.clear();
         sceneRenderer->clearDebugSDFCubes();
-        // Clear vegetation chunk buffers and pending CPU-generation queue.
-        // Stale instance buffers from the previous scene reference freed octree
-        // memory and cause GPUVM faults (TCP read permission) on RADV when
-        // the next frame's shadow pass binds the vegetation pipeline.
         if (sceneRenderer->vegetationRenderer) {
             sceneRenderer->vegetationRenderer->clearAllInstances();
         }
     }
 
-    // Reset both octrees (frees all node memory, keeps bounds)
     world->opaqueOctree().reset();
     world->transparentOctree().reset();
 
-    // Discard any stale pending change events
     sceneUniqueSolidHandler->clear();
     sceneUniqueLiquidHandler->clear();
 
-    // Reset octree explorer ready flag
     if (octreeExplorerWidget)
         octreeExplorerWidget->octreeReady.store(false, std::memory_order_release);
+}
+
+void MyApp::generateMap() {
+    resetSceneState();
 
     // Build the octree (CPU only, no tessellation)
     MainSceneLoader loader;
@@ -2995,29 +2680,7 @@ void MyApp::generateMap() {
 }
 
 void MyApp::loadSceneFromFile(const std::string& path) {
-    if (sceneProcessThread.joinable()) sceneProcessThread.join();
-
-    deviceWaitIdle();
-
-    if (sceneRenderer) {
-        sceneRenderer->removeAllRegisteredMeshes();
-        sceneRenderer->removeAllTransparentMeshes();
-        world->chunkManager().removeAll();  // clear slotted-mode per-chunk state
-        sceneRenderer->nodeDebugCubes.clear();
-        sceneRenderer->clearDebugSDFCubes();
-        if (sceneRenderer->vegetationRenderer) {
-            sceneRenderer->vegetationRenderer->clearAllInstances();
-        }
-    }
-
-    world->opaqueOctree().reset();
-    world->transparentOctree().reset();
-
-    sceneUniqueSolidHandler->clear();
-    sceneUniqueLiquidHandler->clear();
-
-    if (octreeExplorerWidget)
-        octreeExplorerWidget->octreeReady.store(false, std::memory_order_release);
+    resetSceneState();
 
     world->scene().load(path, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler, &settings);
     std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '" << path << "'\n";
