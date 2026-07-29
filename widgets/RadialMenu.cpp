@@ -489,7 +489,7 @@ void RadialMenu::Draw()
                     DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
                     DrawArrow(drawList, startAngle, endAngle, layerInnerR, layerOuterR, false, IM_COL32(255, 255, 255, 255));
                     if (hovered)
-                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 10.0f);
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 4.0f);
                 }
                 else if (s == kTexturesPerPage + 1)
                 {
@@ -497,7 +497,7 @@ void RadialMenu::Draw()
                     DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
                     DrawArrow(drawList, startAngle, endAngle, layerInnerR, layerOuterR, true, IM_COL32(255, 255, 255, 255));
                     if (hovered)
-                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 10.0f);
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 4.0f);
                 }
                 else
                 {
@@ -512,9 +512,9 @@ void RadialMenu::Draw()
                         DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
 
                     if (hovered)
-                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 10.0f);
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 4.0f);
                     else if (selected)
-                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, selectedColor, 10.0f);
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, selectedColor, 4.0f);
                 }
             }
             break;
@@ -718,7 +718,7 @@ void RadialMenu::DrawSectorRing(ImDrawList* drawList, int sectorCount, float inn
 
         ImU32 borderColor = borderColorForIndex(i);
         if (borderColor)
-            DrawInnerBorder(drawList, startAngle, endAngle, innerR, borderColor, 10.0f);
+            DrawInnerBorder(drawList, startAngle, endAngle, innerR, borderColor, 4.0f);
     }
 }
 
