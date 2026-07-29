@@ -273,9 +273,11 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     // Barrier: transition cascade color from SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
     // so the shadow pipeline can write EVSM moments.  The previous pass sampled
     // this image as a texture; after the barrier it becomes a render target.
+    // The blur pass that last wrote this image uses only fragment shaders, so
+    // COMPUTE_SHADER_BIT is not needed in the source mask.
     VkImageMemoryBarrier2 beginBarriers[2]{};
     beginBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    beginBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    beginBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     beginBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     beginBarriers[0].srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
     beginBarriers[0].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
@@ -369,12 +371,13 @@ void ShadowRenderer::endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer
     auto& cas = cascades[cascadeIndex];
 
     // Barrier: transition cascade color from COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
-    // after the shadow pass finishes rendering EVSM moments.  The next cascade
-    // (or the main scene pass) samples this as a texture.
+    // after the shadow pass finishes rendering EVSM moments.  The next consumer
+    // is the EVSM blur pass (fragment shader only), followed by main-scene
+    // fragment sampling.  VERTEX/TESSELLATION/GEOMETRY/COMPUTE are not needed.
     VkImageMemoryBarrier2 endBarriers[2]{};
     endBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     endBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    endBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    endBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     endBarriers[0].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     endBarriers[0].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
     endBarriers[0].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
