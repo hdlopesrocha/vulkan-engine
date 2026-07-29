@@ -1,5 +1,6 @@
 #pragma once
 #include <imgui.h>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -177,6 +178,9 @@ private:
                            ImU32 outlineCol);
     void DrawInnerBorder(ImDrawList* drawList, float startAngle, float endAngle,
                          float innerR, ImU32 color, float width);
+    void DrawSectorRing(ImDrawList* drawList, int sectorCount, float innerR, float outerR,
+                        const std::function<std::string(int)>& labelForIndex,
+                        const std::function<ImU32(int)>& borderColorForIndex);
     void DrawSliderRing(ImDrawList* drawList, float innerR, float outerR,
                         float value, float minVal, float maxVal,
                         const std::string& label, ImU32 trackCol, ImU32 fillCol,

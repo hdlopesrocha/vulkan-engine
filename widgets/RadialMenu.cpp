@@ -425,25 +425,18 @@ void RadialMenu::Draw()
 
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
     int pageCount = static_cast<int>(pages.size());
-    float pageAngle = TWO_PI / static_cast<float>(pageCount);
+    float angleOffset = -PI * 0.5f; // Start sectors at 12 o'clock
 
     // 1. Inner ring: pages (deadZone → innerRadius)
     int selectedPageIndex = GetStackPageIndex();
-    float angleOffset = -PI * 0.5f; // Start sectors at 12 o'clock
 
-    for (int i = 0; i < pageCount; ++i)
-    {
-        float startAngle = angleOffset - pageAngle * 0.5f + static_cast<float>(i) * pageAngle;
-        float endAngle = startAngle + pageAngle;
-
-        DrawSector(drawList, startAngle, endAngle, deadZoneRadius, innerRadius, backgroundColor, outlineColor);
-        DrawLabel(drawList, pages[i].label, startAngle, endAngle, deadZoneRadius, innerRadius, IM_COL32(255, 255, 255, 255));
-
-        if (i == selectedPageIndex)
-            DrawInnerBorder(drawList, startAngle, endAngle, deadZoneRadius, selectedColor, 10.0f);
-        else if (i == hoveredPage)
-            DrawInnerBorder(drawList, startAngle, endAngle, deadZoneRadius, hoverColor, 10.0f);
-    }
+    DrawSectorRing(drawList, pageCount, deadZoneRadius, innerRadius,
+        [&](int i) -> std::string { return pages[i].label; },
+        [&](int i) -> ImU32 {
+            if (i == selectedPageIndex) return selectedColor;
+            if (i == hoveredPage) return hoverColor;
+            return 0;
+        });
 
     // 2. Draw all rings from the stack (bottom to top), each at its own band
     float bandInner = innerRadius + ringSpacing;
@@ -467,24 +460,15 @@ void RadialMenu::Draw()
             if (page.subPages.empty())
                 break;
 
-            int subCount = static_cast<int>(page.subPages.size());
-            float subAngle = TWO_PI / static_cast<float>(subCount);
-
             bool hasActiveRing = !isTop;
 
-            for (int j = 0; j < subCount; ++j)
-            {
-                float startAngle = angleOffset - subAngle * 0.5f + static_cast<float>(j) * subAngle;
-                float endAngle = startAngle + subAngle;
-
-                DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
-                DrawLabel(drawList, page.subPages[j].label, startAngle, endAngle, layerInnerR, layerOuterR, IM_COL32(255, 255, 255, 255));
-
-                if (hasActiveRing && j == entry.selectedIndex)
-                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, selectedColor, 10.0f);
-                else if (isTop && j == hoveredSubPage)
-                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 10.0f);
-            }
+            DrawSectorRing(drawList, static_cast<int>(page.subPages.size()), layerInnerR, layerOuterR,
+                [&](int j) -> std::string { return page.subPages[j].label; },
+                [&](int j) -> ImU32 {
+                    if (hasActiveRing && j == entry.selectedIndex) return selectedColor;
+                    if (isTop && j == hoveredSubPage) return hoverColor;
+                    return 0;
+                });
             break;
         }
 
@@ -539,24 +523,15 @@ void RadialMenu::Draw()
         case RingType::LABEL:
         {
             if (entry.items.empty()) break;
-            int count = static_cast<int>(entry.items.size());
-            float itemAngle = TWO_PI / static_cast<float>(count);
 
-            for (int i = 0; i < count; ++i)
-            {
-                float startAngle = angleOffset - itemAngle * 0.5f + static_cast<float>(i) * itemAngle;
-                float endAngle = startAngle + itemAngle;
-
-                DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
-                DrawLabel(drawList, entry.items[i], startAngle, endAngle, layerInnerR, layerOuterR, IM_COL32(255, 255, 255, 255));
-
-                if (isTop && i == entry.hoveredLabel)
-                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 10.0f);
-                else if (!isTop && i == entry.selectedIndex)
-                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, selectedColor, 10.0f);
-                else if (i == entry.currentItem)
-                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, selectedColor, 10.0f);
-            }
+            DrawSectorRing(drawList, static_cast<int>(entry.items.size()), layerInnerR, layerOuterR,
+                [&](int i) -> std::string { return entry.items[i]; },
+                [&](int i) -> ImU32 {
+                    if (isTop && i == entry.hoveredLabel) return hoverColor;
+                    if (!isTop && i == entry.selectedIndex) return selectedColor;
+                    if (i == entry.currentItem) return selectedColor;
+                    return 0;
+                });
             break;
         }
 
@@ -721,6 +696,30 @@ void RadialMenu::DrawInnerBorder(ImDrawList* drawList, float startAngle, float e
     ImVector<ImVec2> points;
     GenerateArc(startAngle, endAngle, innerR, innerR + width, points);
     drawList->AddConcavePolyFilled(points.Data, points.Size, color);
+}
+
+void RadialMenu::DrawSectorRing(ImDrawList* drawList, int sectorCount, float innerR, float outerR,
+                                 const std::function<std::string(int)>& labelForIndex,
+                                 const std::function<ImU32(int)>& borderColorForIndex)
+{
+    float sectorAngle = TWO_PI / static_cast<float>(sectorCount);
+    float angleOffset = -PI * 0.5f;
+
+    for (int i = 0; i < sectorCount; ++i)
+    {
+        float startAngle = angleOffset - sectorAngle * 0.5f + static_cast<float>(i) * sectorAngle;
+        float endAngle = startAngle + sectorAngle;
+
+        DrawSector(drawList, startAngle, endAngle, innerR, outerR, backgroundColor, outlineColor);
+
+        std::string label = labelForIndex(i);
+        if (!label.empty())
+            DrawLabel(drawList, label, startAngle, endAngle, innerR, outerR, IM_COL32(255, 255, 255, 255));
+
+        ImU32 borderColor = borderColorForIndex(i);
+        if (borderColor)
+            DrawInnerBorder(drawList, startAngle, endAngle, innerR, borderColor, 10.0f);
+    }
 }
 
 void RadialMenu::DrawSliderRing(ImDrawList* drawList, float innerR, float outerR,
