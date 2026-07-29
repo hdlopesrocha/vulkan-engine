@@ -566,9 +566,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
                                                     skyView, wBack, wCube);
     }
 
-    const char* _wg_dis = std::getenv("VULKAN_DISABLE_WATERGEOM");
-    bool _wg_env_skip = (_wg_dis && _wg_dis[0] != '\0');
-    if (_wg_env_skip) std::cerr << "[SceneRenderer] VULKAN_DISABLE_WATERGEOM set; skipping water geometry operations" << std::endl;
+    bool _wg_env_skip = envDisableWaterGeom;
 
     // Scene textures were already bound before the async back-face/solid360 tasks were
     // launched (see main.cpp), so we must NOT call updateSceneTexturesBinding here.
@@ -582,9 +580,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
         // but bind the wireframe pipeline instead of the normal one.
         if (!_wg_env_skip) {
             waterRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
-            const char* _bf_dis = std::getenv("VULKAN_DISABLE_BACKFACE");
-            bool _bf_env_skip = (_bf_dis && _bf_dis[0] != '\0');
-            if (_bf_env_skip) std::cerr << "[SceneRenderer] VULKAN_DISABLE_BACKFACE set; skipping back-face pass" << std::endl;
+            bool _bf_env_skip = envDisableBackface;
             if (backFaceRenderer && !skipBackFace && !_bf_env_skip) {
                 VkDescriptorSet bfSceneDs = VK_NULL_HANDLE;
                 VkDescriptorPool asyncPool = waterRenderer->getAsyncWaterDepthPool();
@@ -670,9 +666,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
             // Skipping water geometry operations as requested by env guard
         }
     } else {
-        const char* _bf_dis2 = std::getenv("VULKAN_DISABLE_BACKFACE");
-        bool _bf_env_skip2 = (_bf_dis2 && _bf_dis2[0] != '\0');
-        if (_bf_env_skip2) std::cerr << "[SceneRenderer] VULKAN_DISABLE_BACKFACE set; skipping back-face pass" << std::endl;
+        bool _bf_env_skip2 = envDisableBackface;
         if (backFaceRenderer && !skipBackFace && !_bf_env_skip2) {
             // Allocate a temporary descriptor set from the async pool so we never
             // modify the per-frame set during command-buffer recording. This set
@@ -722,6 +716,12 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         std::cerr << "[SceneRenderer::init] app is nullptr!" << std::endl;
         return;
     }
+
+    // Cache env-var flags once at startup instead of per-frame getenv() calls
+    envDisableWaterGeom = (std::getenv("VULKAN_DISABLE_WATERGEOM") != nullptr);
+    envDisableBackface  = (std::getenv("VULKAN_DISABLE_BACKFACE") != nullptr);
+    if (envDisableWaterGeom) std::cerr << "[SceneRenderer] VULKAN_DISABLE_WATERGEOM set; skipping water geometry operations" << std::endl;
+    if (envDisableBackface)  std::cerr << "[SceneRenderer] VULKAN_DISABLE_BACKFACE set; skipping back-face pass" << std::endl;
 
     // Initialize the async streaming orchestrator. It is now the real transfer
     // engine: solid/water incremental chunk uploads route through it (K

@@ -172,6 +172,10 @@ public:
     World* world() { return world_; }
     const World* world() const { return world_; }
 
+    // Cached env-var flags (read once in init(), never per frame)
+    bool envDisableWaterGeom = false;
+    bool envDisableBackface  = false;
+
     // Enable the slot-based stable indirect renderer path.
     // When true, chunks use the slot-based API instead of the legacy
     // append+rebuild path. This must be set before any chunks are created.
