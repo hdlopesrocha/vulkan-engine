@@ -418,15 +418,14 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         bindingFlags,
         "WaterRenderer: waterDepthDescriptorSetLayout");
 
-    // Pool for the per-frame main scene-texture set. Sets are allocated fresh each
-    // frame and the previous one is freed after its command buffer completes, so
-    // no UPDATE_AFTER_BIND is needed (and it would trip GPU-assisted validation).
-    // Capacity covers the 3 cubemap sets plus the 3 main sets (one per slot,
-    // reallocated each cycle) with headroom: 6 sets × 5 descriptors = 30, use 50.
+    // Pool for the per-frame main scene-texture set.  Each frame's set is
+    // allocated once and updated in-place via vkUpdateDescriptorSets (no
+    // per-frame alloc/free).  The pool is bulk-reset on swapchain recreate.
+    // Capacity covers the 3 cubemap sets plus the 3 main sets with headroom.
     VkDescriptorPoolSize wrPoolSize = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 50};
     waterDepthDescriptorPool = descAlloc.createPool(
         &wrPoolSize, 1, 10,
-        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        0,
         "WaterRenderer: waterDepthDescriptorPool");
 
     // Separate pool for per-task async back-face descriptor sets. The async task
@@ -792,36 +791,30 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
 }
 
 VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint32_t frameIndex,
-                                                            VkImageView colorImageView, VkImageView depthImageView,
-                                                            VkImageView skyImageView, VkImageView backFaceDepthView,
-                                                            VkImageView cube360View) {
+                                                             VkImageView colorImageView, VkImageView depthImageView,
+                                                             VkImageView skyImageView, VkImageView backFaceDepthView,
+                                                             VkImageView cube360View) {
     if (app == nullptr || waterDepthDescriptorPool == VK_NULL_HANDLE ||
         waterDepthDescriptorSetLayout == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return VK_NULL_HANDLE;
     }
     if (frameIndex >= FRAMES) return VK_NULL_HANDLE;
 
-    // Free this slot's previous set. Safe because waterPass (the caller) runs
-    // only after drawFrame has waited on the per-slot in-flight fence for
-    // `frameIndex`, which guarantees the slot's previous command buffer — the
-    // only consumer of this slot's set — has completed. Reallocating the set
-    // each cycle means it is never updated while a pending command buffer
-    // references it, and no UPDATE_AFTER_BIND is required.
-    if (waterDepthDescriptorSets[frameIndex] != VK_NULL_HANDLE) {
-        vkFreeDescriptorSets(app->getDevice(), waterDepthDescriptorPool, 1, &waterDepthDescriptorSets[frameIndex]);
-        waterDepthDescriptorSets[frameIndex] = VK_NULL_HANDLE;
+    // Allocate this slot's descriptor set once; subsequent frames just rebind
+    // the (potentially different) image views via vkUpdateDescriptorSets.
+    // The pool is reset on swapchain recreate, which drops all sets, so
+    // allocation only happens after a fresh pool is available.
+    if (waterDepthDescriptorSets[frameIndex] == VK_NULL_HANDLE) {
+        DescriptorAllocator descAlloc{app->getDevice(), app};
+        descAlloc.allocateSets(waterDepthDescriptorPool, waterDepthDescriptorSetLayout, 1,
+                               &waterDepthDescriptorSets[frameIndex],
+                               "WaterRenderer: waterDepthDescriptorSet");
+        if (waterDepthDescriptorSets[frameIndex] == VK_NULL_HANDLE) return VK_NULL_HANDLE;
     }
 
-    DescriptorAllocator descAlloc{app->getDevice(), app};
-    VkDescriptorSet ds = VK_NULL_HANDLE;
-    descAlloc.allocateSets(waterDepthDescriptorPool, waterDepthDescriptorSetLayout, 1, &ds,
-                           "WaterRenderer: waterDepthDescriptorSet");
-    if (ds == VK_NULL_HANDLE) return VK_NULL_HANDLE;
-
-    waterDepthDescriptorSets[frameIndex] = ds;
-    updateSceneTexturesBinding(app, ds, colorImageView, depthImageView, frameIndex,
+    updateSceneTexturesBinding(app, waterDepthDescriptorSets[frameIndex], colorImageView, depthImageView, frameIndex,
                                skyImageView, backFaceDepthView, cube360View);
-    return ds;
+    return waterDepthDescriptorSets[frameIndex];
 }
 
 void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams) {
