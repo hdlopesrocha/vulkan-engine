@@ -221,23 +221,7 @@ public:
     VkDescriptorSet cube360WaterComputeDs = VK_NULL_HANDLE;
     uint32_t cube360TexVersion = 0;
 
-    ~MyApp() {
-        // Stop the async pool first — its tasks capture `this` and may
-        // reference world/sceneRenderer, which are about to be destroyed.
-        asyncThreadPool.stop();
-        if (sceneProcessThread.joinable()) sceneProcessThread.join();
-        // Stop the Octree/LocalScene pools FIRST.  Their workers invoke
-        // changeHandler callbacks that enqueue work to SceneRenderer's gen
-        // pools (capturing SceneRenderer `this`).  We must drain these
-        // workers while SceneRenderer is still alive.
-        if (world) world->stopPools();
-        // Now stop the gen pools.  All Octree workers have finished, so no
-        // new tasks will be enqueued.  Drain remaining tasks (which safely
-        // reference the still-alive SceneRenderer).
-        sceneRenderer->stopGenPools();
-        delete sceneRenderer;
-        delete world;
-    }
+    ~MyApp() {}
 
     // setupTextures (defined out-of-line to avoid inline/member-definition issues)
     void setupTextures() {
@@ -1896,9 +1880,14 @@ public:
     }
 
     void clean() override {
+    // Ensure all GPU work is finished before tearing down any Vulkan resources.
+    // Belt-and-suspenders: VulkanApp::cleanup() already calls deviceWaitIdle()
+    // before clean(), but draining the upload queues and stopping thread pools
+    // may have left work in flight.
+    deviceWaitIdle();
+
     // Join tessellation thread before tearing down Vulkan resources.
     if (sceneProcessThread.joinable()) sceneProcessThread.join();
-
 
         // Free all ImGui descriptor sets owned by the widget while ImGui is still
         // alive. clean() is called before cleanupImGui(), so this is safe.
@@ -1913,7 +1902,18 @@ public:
             impostorService->cleanup();
         }
 
-        // Cleanup scene renderer and all sub-renderers
+        // Stop ALL thread pools BEFORE sceneRenderer->cleanup() drains the
+        // upload queues. Workers may push new upload jobs via tessellation
+        // callbacks; if pools are still running when streamer.destroy()
+        // drains the MPSCQueues, new jobs pushed after the drain will be
+        // left as orphans and crash during ~MPSCQueue().
+        asyncThreadPool.stop();
+        if (world) world->stopPools();
+        if (sceneRenderer) sceneRenderer->stopGenPools();
+
+        // Cleanup scene renderer and all sub-renderers (must happen while
+        // the Vulkan device is still alive). streamer.destroy() drains the
+        // upload queues — safe now because all pools are stopped.
         if (sceneRenderer) {
             sceneRenderer->cleanup(this);
         }
@@ -1934,6 +1934,12 @@ public:
         // destroy/cleanup routines here that perform Vulkan destroys to prevent
         // double-destruction ordering issues. If a manager needs CPU-only
         // cleanup, add a dedicated method and call it here.
+
+        // Delete scene objects while the Vulkan device is still alive. Their
+        // destructors (TerrainStreamer → UploadManager → MPSCQueue) must not
+        // run after vkDestroyDevice().
+        delete sceneRenderer; sceneRenderer = nullptr;
+        delete world; world = nullptr;
     }
 
     void onSwapchainResized(uint32_t width, uint32_t height) override {
