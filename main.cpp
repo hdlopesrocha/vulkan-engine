@@ -99,18 +99,20 @@ public:
     Brush3dManager brushManager;
     // Cached sweep start position so applyBrushToScene uses the same pair as the preview
     glm::vec3 cachedSweepStart = glm::vec3(0.0f);
-    static constexpr uint32_t QUERY_COUNT = 18; // 9 intervals × 2 timestamps each
+    static constexpr uint32_t QUERY_COUNT = 20; // 10 intervals × 2 timestamps each
     std::array<VkQueryPool, 3> queryPools = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
     bool queryPoolReady[2] = {false, false};
     float timestampPeriod = 0.0f;
     bool profilingEnabled = true;
     float profileShadow = 0.0f;
     float profileMainCull = 0.0f;
+    float profileBrush = 0.0f;
+    float profileDepthPrepass = 0.0f;
     float profileSky = 0.0f;
     float profileSolidDraw = 0.0f;
-    float profileVegetationReal = 0.0f;
     float profileVegetationImpostor = 0.0f;
     float profileWater = 0.0f;
+    float profilePostProcess = 0.0f;
     float profileImGui = 0.0f;
     float profileSolid360 = 0.0f;
     float profileBackface = 0.0f;
@@ -816,34 +818,29 @@ public:
                 auto msDiff = [&](uint64_t endTs, uint64_t startTs) -> float {
                     return static_cast<float>(endTs - startTs) * timestampPeriod * 1e-6f;
                 };
-                // Group A: indices 0-9 (always written by main command buffer)
+                // Group A: indices 0-9 (shadow, cull, brush, depth prepass, sky)
                 struct { uint64_t value; uint64_t availability; } tsA[10] = {};
                 if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 0, 10,
                         sizeof(tsA), tsA, sizeof(tsA[0]),
                         VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS
                         && timestampPeriod > 0.0f) {
-                    if (tsA[0].availability) profileShadow        = msDiff(tsA[1].value, tsA[0].value);
-                    if (tsA[2].availability) profileMainCull      = msDiff(tsA[3].value, tsA[2].value);
-                    if (tsA[4].availability) profileSky           = msDiff(tsA[5].value, tsA[4].value);
-                    if (tsA[6].availability) profileSolidDraw     = msDiff(tsA[7].value, tsA[6].value);
-                    if (tsA[8].availability) profileVegetationReal = msDiff(tsA[9].value, tsA[8].value);
+                    if (tsA[0].availability) profileShadow       = msDiff(tsA[1].value, tsA[0].value);
+                    if (tsA[2].availability) profileMainCull     = msDiff(tsA[3].value, tsA[2].value);
+                    if (tsA[4].availability) profileBrush        = msDiff(tsA[5].value, tsA[4].value);
+                    if (tsA[6].availability) profileDepthPrepass = msDiff(tsA[7].value, tsA[6].value);
+                    if (tsA[8].availability) profileSky          = msDiff(tsA[9].value, tsA[8].value);
                 }
-                // Group B: indices 10-13 (written by main command buffer for color pass)
-                struct { uint64_t value; uint64_t availability; } tsB[4] = {};
-                if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 10, 4,
+                // Group B: indices 10-19 (solid draw, veg impostor, water, postprocess, imgui)
+                struct { uint64_t value; uint64_t availability; } tsB[10] = {};
+                if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 10, 10,
                         sizeof(tsB), tsB, sizeof(tsB[0]),
                         VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS
                         && timestampPeriod > 0.0f) {
-                    if (tsB[0].availability) profileVegetationImpostor = msDiff(tsB[1].value, tsB[0].value);
-                }
-                // Group C: indices 14-17 (always written by main command buffer)
-                struct { uint64_t value; uint64_t availability; } tsC[4] = {};
-                if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 14, 4,
-                        sizeof(tsC), tsC, sizeof(tsC[0]),
-                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS
-                        && timestampPeriod > 0.0f) {
-                    if (tsC[0].availability) profileWater = msDiff(tsC[1].value, tsC[0].value);
-                    if (tsC[2].availability) profileImGui = msDiff(tsC[3].value, tsC[2].value);
+                    if (tsB[0].availability) profileSolidDraw          = msDiff(tsB[1].value, tsB[0].value);
+                    if (tsB[2].availability) profileVegetationImpostor = msDiff(tsB[3].value, tsB[2].value);
+                    if (tsB[4].availability) profileWater              = msDiff(tsB[5].value, tsB[4].value);
+                    if (tsB[6].availability) profilePostProcess        = msDiff(tsB[7].value, tsB[6].value);
+                    if (tsB[8].availability) profileImGui              = msDiff(tsB[9].value, tsB[8].value);
                 }
             }
             vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 0, QUERY_COUNT);
@@ -956,8 +953,6 @@ public:
 
         // Render sky + solids/vegetation into the solid offscreen framebuffer (one per frame)
 
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 4);
         if (sceneRenderer->skyRenderer) {
             SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
             sceneRenderer->skyRenderer->renderOffscreen(this, commandBuffer, frameIdx,
@@ -997,6 +992,8 @@ public:
         // and brush color are all written here before solid geometry touches the
         // scene depth buffer. A later overlay pass renders brush with opacity on top
         // of solid/water using the scene depth buffer for occlusion culling.
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 4);
         {
             VkImage brushColorImg = sceneRenderer->getBrushColorImage(frameIdx);
             VkImage brushDepthImg = sceneRenderer->getBrushDepthImage(frameIdx);
@@ -1125,6 +1122,8 @@ public:
                 sceneRenderer->brushDepthLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
         }
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
 
         // ── Cubemap render on main CB (after brush pass, reads brush depth textures) ──
         const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
@@ -1197,18 +1196,19 @@ public:
             }
 
             // Solid geometry depth
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
             if (settings.renderSolid) {
                 sceneRenderer->solidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
             }
 
             // Vegetation depth (impostors render depth+color in Instance 2)
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
             if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
                 sceneRenderer->vegetationRenderer->drawDepth(this, commandBuffer, viewProj, camera.getPosition());
             }
+
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 9);
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
 
             vkCmdEndRendering(commandBuffer);
         }
@@ -1266,16 +1266,18 @@ public:
             }
 
             // Sky first (background, no depth write)
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
             if (sceneRenderer->skyRenderer) {
                 SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
                 sceneRenderer->skyRenderer->render(this, commandBuffer, getMainDescriptorSet(),
                     sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
             }
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 9);
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
 
             // Solid geometry color (LESS_OR_EQUAL, no depth write)
             if (settings.renderSolid) {
@@ -1284,10 +1286,10 @@ public:
             }
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 11);
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 12);
 
             // Vegetation color + impostor color+depth (single-pass depth write)
             if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
@@ -1295,7 +1297,7 @@ public:
             }
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 11);
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 13);
 
             // Debug renders on top
             const bool showOctreeDebug = octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes();
@@ -1670,25 +1672,27 @@ public:
                 if (profilingEnabled) {
                     ImGui::Separator();
                     ImGui::Text("--- GPU Timing (ms) ---");
-                    float vegReal = profileVegetationReal - profileVegetationImpostor;
-                    if (vegReal < 0.0f) vegReal = 0.0f;
-                    float gpuTotal = profileShadow + profileMainCull + profileSky +
-                                     profileSolidDraw + profileVegetationReal +
-                                     profileWater + profileImGui + profileSolid360 + profileBackface;
+                    float gpuTotal = profileShadow + profileMainCull + profileBrush +
+                                     profileDepthPrepass + profileSky + profileSolidDraw +
+                                     profileVegetationImpostor + profileWater +
+                                     profilePostProcess + profileImGui;
                     ImGui::Text("Shadow:        %.2f", profileShadow);
-                    ImGui::Text("Main Cull:     %.2f", profileMainCull);
+                    ImGui::Text("GPU Cull:      %.2f", profileMainCull);
+                    ImGui::Text("Brush:         %.2f", profileBrush);
+                    ImGui::Text("Depth Prepass: %.2f", profileDepthPrepass);
                     ImGui::Text("Sky:           %.2f", profileSky);
                     ImGui::Text("Solid Draw:    %.2f", profileSolidDraw);
-                    ImGui::Text("Veg Real:      %.2f", vegReal);
                     ImGui::Text("Veg Impostor:  %.2f", profileVegetationImpostor);
                     ImGui::Text("Water:         %.2f", profileWater);
-                    ImGui::Text("Solid360*:     %.2f", profileSolid360);
-                    ImGui::Text("Backface*:     %.2f", profileBackface);
+                    ImGui::Text("PostProcess:   %.2f", profilePostProcess);
                     ImGui::Text("ImGui:         %.2f", profileImGui);
-                    ImGui::Text("GPU Total:     %.2f", gpuTotal);
-                    ImGui::Text("* = CPU-timed");
+                    ImGui::Text("--- GPU Total:  %.2f ---", gpuTotal);
                     ImGui::Separator();
                     ImGui::Text("--- CPU Timing (ms) ---");
+                    ImGui::Text("Solid360*:     %.2f", profileSolid360);
+                    ImGui::Text("Backface*:     %.2f", profileBackface);
+                    ImGui::Text("* = CPU-timed (async)");
+                    ImGui::Separator();
                     ImGui::Text("FPS:           %.1f", profileFps);
                     ImGui::Text("Update:        %.2f", profileCpuUpdate);
                     ImGui::Text("Record:        %.2f", profileCpuRecord);
@@ -1837,6 +1841,8 @@ public:
                 brushAlpha = brushEntry->opacity;
                 brushMode = static_cast<float>(brushEntry->brushMode);
             }
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 16);
             sceneRenderer->postProcessRenderer->render(
                 this,
                 commandBuffer,
@@ -1854,6 +1860,8 @@ public:
                 glm::vec3(uboStatic.viewPos),
                 frameIdx,
                 skyViewPP);
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 17);
         }
 
         // Brush overlay is composited inside the PostProcess pass using the
@@ -1869,10 +1877,10 @@ public:
         } else {
             VkQueryPool qp = queryPools[getCurrentFrame()];
             if (profilingEnabled && qp != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, qp, 16);
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, qp, 18);
             ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
             if (profilingEnabled && qp != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 17);
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 19);
         }
     }
 
