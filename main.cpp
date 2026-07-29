@@ -145,7 +145,7 @@ public:
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     std::shared_ptr<RadialMenu> radialMenu;
     std::vector<Page> radialMenuPages;
-    bool tabPrev = false;
+    bool homePrev = false;
     bool textureSelectPrev = false;
     bool backPrev = false;
     enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV, LIGHT };
@@ -745,11 +745,11 @@ public:
 
         // ── Radial menu toggle and input ──
         if (radialMenu) {
-            // Tab key toggle (edge-triggered)
-            bool tabNow = glfwGetKey(getWindow(), GLFW_KEY_TAB) == GLFW_PRESS;
-            if (tabNow && !tabPrev)
+            // Home key toggle (edge-triggered)
+            bool homeNow = glfwGetKey(getWindow(), GLFW_KEY_HOME) == GLFW_PRESS;
+            if (homeNow && !homePrev)
                 radialMenu->SetVisible(!radialMenu->IsVisible());
-            tabPrev = tabNow;
+            homePrev = homeNow;
 
             // Wiimote Home button toggle (edge-triggered)
             if (nunchukPublisher.isConnected()) {
