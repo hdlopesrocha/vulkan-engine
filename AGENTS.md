@@ -27,6 +27,7 @@ The codebase is written in modern C++ (C++20 or newer) and prioritizes:
 | `make server` | Build headless `bin/server` (no Vulkan/UI linkage, no widgets) |
 | `make clean` | Remove `bin/` and generated SPIR-V |
 | `make valgrind` | Debug build + valgrind with `valgrind.supp` |
+| `VULKAN_GPU_ASSISTED=1 make run-debug > logs/run.log 2>&1` | Debug build + run with GPU-assisted validation (see Validation section) |
 | `make install` | Install system deps + fetch ImGui + miniaudio into `third_party/` |
 | `make cloc` | Count lines of code (excludes `bin/`, `third_party/`) |
 | `make callgrind` | Profiling with valgrind callgrind + kcachegrind |
@@ -97,6 +98,18 @@ Development builds must always enable:
 - GPU-assisted validation when practical
 - Synchronization validation
 - Best Practices validation
+
+### GPU-Assisted Validation
+
+To enable GPU-assisted validation, set the environment variable `VULKAN_GPU_ASSISTED=1` before running. This activates the `VK_LAYER_KHRONOS_validation` GPU-assisted feature, which replaces shader resource access with instrumented checks that validate descriptor binding, buffer bounds, and push constant usage at draw time.
+
+Run with:
+
+```
+VULKAN_GPU_ASSISTED=1 make run-debug > logs/run.log 2>&1
+```
+
+GPU-assisted validation has a significant performance cost and should only be used during debugging. It catches errors that static validation cannot detect (e.g. out-of-bounds descriptor indexing, invalid descriptor set updates). Always check `logs/run.log` for validation errors after running with this flag.
 
 Code submitted with validation errors is considered incorrect.
 
