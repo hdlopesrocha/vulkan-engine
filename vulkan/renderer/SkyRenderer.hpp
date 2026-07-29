@@ -51,15 +51,20 @@ public:
         return VK_NULL_HANDLE;
     }
 
-    // Accessors for external renderers (cubemap 360 uses sky VBO + pipeline)
+    // Accessors for external renderers (cubemap 360 uses fullscreen sky pipeline)
     VkPipeline getSkyPipeline() const { return skyPipeline; }
     VkPipelineLayout getSkyPipelineLayout() const { return skyPipelineLayout; }
     VkPipeline getSkyGridPipeline() const { return skyGridPipeline; }
     VkPipelineLayout getSkyGridPipelineLayout() const { return skyGridPipelineLayout; }
     const VertexBufferObject& getSkyVBO() const { return skyVBO; }
+    VkPipeline getSkyFullscreenPipeline() const { return skyFullscreenPipeline; }
+    VkPipelineLayout getSkyFullscreenPipelineLayout() const { return skyFullscreenPipelineLayout; }
+    VkPipeline getSkyFullscreenGridPipeline() const { return skyFullscreenGridPipeline; }
+    VkPipelineLayout getSkyFullscreenGridPipelineLayout() const { return skyFullscreenGridPipelineLayout; }
     Buffer getSkyUniformBuffer() const;
 
 private:
+    // Sphere pipelines (kept for Solid360Renderer cubemap capture)
     TrackedHandle<VkPipeline> skyPipeline;
     TrackedHandle<VkPipelineLayout> skyPipelineLayout;
     TrackedHandle<VkPipeline> skyGridPipeline;
@@ -67,7 +72,15 @@ private:
     TrackedHandle<VkShaderModule> skyVertModule;
     TrackedHandle<VkShaderModule> skyFragModule;
     TrackedHandle<VkShaderModule> skyGridFragModule;
-    // Owned sky sphere and VBO
+
+    // Fullscreen pipelines (used for on-screen sky — no vertex input, 3 vertices total)
+    TrackedHandle<VkPipeline> skyFullscreenPipeline;
+    TrackedHandle<VkPipelineLayout> skyFullscreenPipelineLayout;
+    TrackedHandle<VkPipeline> skyFullscreenGridPipeline;
+    TrackedHandle<VkPipelineLayout> skyFullscreenGridPipelineLayout;
+    TrackedHandle<VkShaderModule> skyFullscreenVertModule;
+
+    // Owned sky sphere and VBO (retained for Solid360Renderer)
     std::unique_ptr<SkySphere> skySphere;
     VertexBufferObject skyVBO;
 

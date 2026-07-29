@@ -3,6 +3,7 @@
 #include "../../utils/FileReader.hpp"
 #include "../ShaderStage.hpp"
 #include "../includes/vertex_layouts.hpp"
+#include <glm/gtc/matrix_transform.hpp>
 #include <stdexcept>
 #include <iostream>
 
@@ -352,6 +353,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
 
         UniformObject faceUBO = ubo;
         faceUBO.viewProjection = faceVP;
+        faceUBO.invViewProjection = glm::inverse(faceVP);
         faceUBO.materialFlags.x = 1.0f;
 
         // Wait for previous face's draws to finish reading the UBO before overwriting it
@@ -500,21 +502,14 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
 
             // Sky first (background, no depth)
             if (skyRenderer) {
-                VkPipeline skyPipe = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipeline() : skyRenderer->getSkyPipeline();
-                VkPipelineLayout skyLayout = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipelineLayout() : skyRenderer->getSkyPipelineLayout();
+                VkPipeline skyPipe = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyFullscreenGridPipeline() : skyRenderer->getSkyFullscreenPipeline();
+                VkPipelineLayout skyLayout = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyFullscreenGridPipelineLayout() : skyRenderer->getSkyFullscreenPipelineLayout();
                 if (skyPipe != VK_NULL_HANDLE && skyLayout != VK_NULL_HANDLE) {
                     if (cmdState) cmdState->bindGraphicsPipeline(cmd, skyPipe);
                     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipe);
                     if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, skyLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
                     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                    const auto& skyVBO = skyRenderer->getSkyVBO();
-                    if (skyVBO.vertexBuffer.buffer != VK_NULL_HANDLE && skyVBO.indexCount > 0) {
-                        VkBuffer vbs[] = {skyVBO.vertexBuffer.buffer};
-                        VkDeviceSize offsets[] = {0};
-                        vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-                        vkCmdBindIndexBuffer(cmd, skyVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-                        vkCmdDrawIndexed(cmd, skyVBO.indexCount, 1, 0, 0, 0);
-                    }
+                    vkCmdDraw(cmd, 3, 1, 0, 0);
                 }
             }
 

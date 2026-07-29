@@ -16,17 +16,78 @@ SkyRenderer::SkyRenderer() {}
 SkyRenderer::~SkyRenderer() { cleanup(); }
 
 void SkyRenderer::init(VulkanApp* app) {
-    // create sky gradient pipeline (vertex + fragment)
-    skyVertModule = app->getOrCreateShaderModule("shaders/sky.vert.spv");
-    skyFragModule = app->getOrCreateShaderModule("shaders/sky.frag.spv");
-    
-    ShaderStage skyVert = ShaderStage(skyVertModule, VK_SHADER_STAGE_VERTEX_BIT);
-    ShaderStage skyFrag = ShaderStage(skyFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
-
     // Use the application's main descriptor set layout (set 0 contains the shared UBO)
     std::vector<VkDescriptorSetLayout> setLayouts;
     setLayouts.push_back(app->getDescriptorSetLayout());
-    // No push-constants required for sky pipeline (sky uses UBO/viewPos to position the sphere).
+
+    // --- Fullscreen sky pipelines (no vertex input, 3-vertex triangle) ---
+    // These are used for on-screen rendering. The vertex shader reconstructs
+    // world-space position from clip space via invViewProjection, so no sphere
+    // geometry is needed — reducing vertex processing from 3 328 vertices to 3.
+    skyFullscreenVertModule = app->getOrCreateShaderModule("shaders/sky_fullscreen.vert.spv");
+    skyFragModule = app->getOrCreateShaderModule("shaders/sky.frag.spv");
+    skyGridFragModule = app->getOrCreateShaderModule("shaders/sky_grid.frag.spv");
+
+    ShaderStage fsVertStage(skyFullscreenVertModule, VK_SHADER_STAGE_VERTEX_BIT);
+    ShaderStage fsFragStage(skyFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
+    ShaderStage fsGridFragStage(skyGridFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    VkFormat colorFormat = app->getSwapchainImageFormat();
+    VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
+    VkDevice device = app->getDevice();
+
+    // Fullscreen gradient pipeline
+    {
+        VkPipelineLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = setLayouts.data();
+        VkPipelineLayout fsLayout = VK_NULL_HANDLE;
+        if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &fsLayout) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create sky fullscreen pipeline layout!");
+        app->resources.addPipelineLayout(fsLayout, "SkyRenderer: fullscreenGradientPipelineLayout");
+        skyFullscreenPipelineLayout = fsLayout;
+
+        RendererUtils::FullscreenPipelineOpts opts{};
+        opts.cullMode = VK_CULL_MODE_NONE;
+        opts.depthTestEnable = true;
+        opts.depthWriteEnable = false;
+        opts.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        skyFullscreenPipeline = RendererUtils::buildFullscreenPipeline(
+            device, app, colorFormat, depthFormat, fsLayout,
+            { fsVertStage.info, fsFragStage.info }, opts, "SkyRenderer: fullscreen gradient");
+        std::cerr << "[SKY FULLSCREEN PIPELINE] Created pipeline=" << (void*)(VkPipeline)skyFullscreenPipeline << std::endl;
+    }
+
+    // Fullscreen grid pipeline
+    {
+        VkPipelineLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = setLayouts.data();
+        VkPipelineLayout fsGridLayout = VK_NULL_HANDLE;
+        if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &fsGridLayout) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create sky fullscreen grid pipeline layout!");
+        app->resources.addPipelineLayout(fsGridLayout, "SkyRenderer: fullscreenGridPipelineLayout");
+        skyFullscreenGridPipelineLayout = fsGridLayout;
+
+        RendererUtils::FullscreenPipelineOpts opts{};
+        opts.cullMode = VK_CULL_MODE_NONE;
+        opts.depthTestEnable = true;
+        opts.depthWriteEnable = false;
+        opts.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        skyFullscreenGridPipeline = RendererUtils::buildFullscreenPipeline(
+            device, app, colorFormat, depthFormat, fsGridLayout,
+            { fsVertStage.info, fsGridFragStage.info }, opts, "SkyRenderer: fullscreen grid");
+        std::cerr << "[SKY FULLSCREEN GRID PIPELINE] Created pipeline=" << (void*)(VkPipeline)skyFullscreenGridPipeline << std::endl;
+    }
+
+    // --- Sphere pipelines (retained for Solid360Renderer cubemap capture) ---
+    skyVertModule = app->getOrCreateShaderModule("shaders/sky.vert.spv");
+
+    ShaderStage skyVert = ShaderStage(skyVertModule, VK_SHADER_STAGE_VERTEX_BIT);
+    ShaderStage skyFrag = ShaderStage(skyFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
+
     GraphicsPipelineConfig cfg{};
     cfg.cullMode = VK_CULL_MODE_FRONT_BIT;
     cfg.depthWriteEnable = false;
@@ -50,8 +111,7 @@ void SkyRenderer::init(VulkanApp* app) {
         std::cerr << "[SKY PIPELINE] Created pipeline=" << (void*)skyPipeline << " layout=" << (void*)skyPipelineLayout << std::endl;
     }
 
-    // create sky grid pipeline (vertex + grid fragment)
-    skyGridFragModule = app->getOrCreateShaderModule("shaders/sky_grid.frag.spv");
+    // Sphere grid pipeline
     ShaderStage skyGridFrag = ShaderStage(skyGridFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
 
     GraphicsPipelineConfig gridCfg{};
@@ -78,28 +138,22 @@ void SkyRenderer::init(VulkanApp* app) {
     }
 }
 void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkySettings::Mode skyMode) {
-    // Select pipeline based on sky mode
-        VkPipeline activePipeline = (skyMode == SkySettings::Mode::Grid) ? skyGridPipeline : skyPipeline;
-        VkPipelineLayout activeLayout = (skyMode == SkySettings::Mode::Grid) ? skyGridPipelineLayout : skyPipelineLayout;
-        if (activePipeline == VK_NULL_HANDLE || activeLayout == VK_NULL_HANDLE) {
-            std::cerr << "[SKY RENDER ERROR] Attempted to bind VK_NULL_HANDLE pipeline or layout!" << std::endl;
-            return;
-        }
-        //std::cerr << "[SKY RENDER] Binding pipeline=" << (void*)activePipeline << " layout=" << (void*)activeLayout << std::endl;
+    // Select fullscreen pipeline based on sky mode (no vertex input, 3-vertex triangle)
+    VkPipeline activePipeline = (skyMode == SkySettings::Mode::Grid) ? (VkPipeline)skyFullscreenGridPipeline : (VkPipeline)skyFullscreenPipeline;
+    VkPipelineLayout activeLayout = (skyMode == SkySettings::Mode::Grid) ? (VkPipelineLayout)skyFullscreenGridPipelineLayout : (VkPipelineLayout)skyFullscreenPipelineLayout;
+    if (activePipeline == VK_NULL_HANDLE || activeLayout == VK_NULL_HANDLE) {
+        std::cerr << "[SKY RENDER ERROR] Attempted to bind VK_NULL_HANDLE pipeline or layout!" << std::endl;
+        return;
+    }
 
-    // update sky uniform centered at camera
-    // Use the live UBO passed in so we preserve fields like debugParams
-    UniformObject skyUbo = ubo;
-    skyUbo.viewProjection = viewProjection;
-    skyUbo.passParams = glm::vec4(0.0f);
-    app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
+    // No UBO modification needed — the fullscreen vertex shader reconstructs
+    // world position from clip space via invViewProjection, and the fragment
+    // shader reads sky params from the dedicated SkyUBO (binding 6).
 
-    //printf("[SkyRenderer] vkCmdBindPipeline: activePipeline=%p\n", (void*)activePipeline);
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, activePipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
     if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, activeLayout, 0, 1, &descriptorSet, 0, nullptr);
     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeLayout, 0, 1, &descriptorSet, 0, nullptr);
-    // No push-constants used for sky; model is encoded into UBO/viewPos.
 
     // Explicitly set viewport/scissor because this pipeline relies on dynamic state
     VkExtent2D extent = app->getSwapchainExtent();
@@ -117,17 +171,10 @@ void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet d
     scissor.extent = extent;
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    // Use internal VBO if available
-    if (skyVBO.vertexBuffer.buffer != VK_NULL_HANDLE && skyVBO.indexCount > 0) {
-        const VkBuffer vertexBuffers[] = { skyVBO.vertexBuffer.buffer };
-        const VkDeviceSize offsets[] = { 0 };
-        vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
-        vkCmdBindIndexBuffer(cmd, skyVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, skyVBO.indexCount, 1, 0, 0, 0);
-    } else {
-        std::cerr << "[SkyRenderer::render] Sky VBO not available! vertexBuffer=" << (void*)skyVBO.vertexBuffer.buffer
-                  << " indexCount=" << skyVBO.indexCount << std::endl;
-    }
+    // Fullscreen triangle: 3 vertices, no vertex buffer, no index buffer.
+    // The vertex shader generates positions from gl_VertexIndex and reconstructs
+    // world-space position using invViewProjection — no sphere geometry needed.
+    vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 
 void SkyRenderer::cleanup() {

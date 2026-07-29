@@ -74,6 +74,7 @@
 #include "events/SetBrushPaintModeEvent.hpp"
 #include "events/SetBrushDragModeEvent.hpp"
 #include "events/SetBrushHSVEvent.hpp"
+#include "events/SetBrushSdfTypeEvent.hpp"
 #include "events/SetLightEvent.hpp"
 #include "events/SetPageEvent.hpp"
 #include "events/RadialMenuHandler.hpp"
@@ -1269,11 +1270,6 @@ public:
                 SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
                 sceneRenderer->skyRenderer->render(this, commandBuffer, getMainDescriptorSet(),
                     sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
-                // Restore the main UBO that sky rendering overwrote
-                void* data;
-                data = sceneRenderer->mainUniformBuffers[frameIdx].map(0);
-                memcpy(data, &uboStatic, sizeof(UniformObject));
-                sceneRenderer->mainUniformBuffers[frameIdx].unmap(); // VMA persistent mapping
             }
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
@@ -1987,6 +1983,14 @@ public:
             if (be && be->materialIndex != texEvent->index) {
                 be->materialIndex = texEvent->index;
                 brushRebuildPending = true;
+            }
+            return;
+        }
+        if (auto sdfEvent = std::dynamic_pointer_cast<SetBrushSdfTypeEvent>(event)) {
+            BrushEntry* be = brushManager.getSelectedEntry();
+            if (be && be->sdfType != sdfEvent->sdfType) {
+                be->sdfType = sdfEvent->sdfType;
+                eventManager.queue(std::make_shared<RebuildBrushEvent>());
             }
             return;
         }

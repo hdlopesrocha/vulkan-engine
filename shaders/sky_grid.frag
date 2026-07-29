@@ -59,23 +59,13 @@ void main() {
     // Convert view direction to normal colors (map from [-1,1] to [0,1])
     vec3 normalColor = viewDir * 0.5 + 0.5;
     
-    // X axis - use full normal color along X direction
-    if (nearXAxis > 0.01) {
-        axisColor = mix(axisColor, normalColor, nearXAxis);
-        axisMask = max(axisMask, nearXAxis);
-    }
-    
-    // Y axis - use full normal color along Y direction
-    if (nearYAxis > 0.01) {
-        axisColor = mix(axisColor, normalColor, nearYAxis);
-        axisMask = max(axisMask, nearYAxis);
-    }
-    
-    // Z axis - use full normal color along Z direction
-    if (nearZAxis > 0.01) {
-        axisColor = mix(axisColor, normalColor, nearZAxis);
-        axisMask = max(axisMask, nearZAxis);
-    }
+    // Blend axis colors branchlessly (mix with factor ~0 is a no-op, avoids warp divergence)
+    axisColor = mix(axisColor, normalColor, nearXAxis);
+    axisMask = max(axisMask, nearXAxis);
+    axisColor = mix(axisColor, normalColor, nearYAxis);
+    axisMask = max(axisMask, nearYAxis);
+    axisColor = mix(axisColor, normalColor, nearZAxis);
+    axisMask = max(axisMask, nearZAxis);
     
     // Base background color (dark gray)
     vec3 backgroundColor = vec3(0.05, 0.05, 0.08);
