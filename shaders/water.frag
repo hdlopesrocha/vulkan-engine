@@ -286,12 +286,14 @@ void main() {
     vec3 specularColor = ubo.lightColor.xyz * specular * specularIntensity;
     
     // Sun glitter: high-frequency noise-based sparkles
-    float glitterNoise = waterFbmNoise(fragPos.xyz, noiseScale * 3.0, animTime, 3.0,
-                                       max(int(noiseOctaves) - 2, 1), noisePersistence, noiseLacunarity, vec3(0.0));
-    float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xyz, noiseScale * 0.5, animTime, 0.5,
-                                                       max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
-    float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * pow(specAngle, 32.0);
-    specularColor += ubo.lightColor.xyz * glitter * glitterIntensity;
+    if (glitterIntensity > 0.0) {
+        float glitterNoise = waterFbmNoise(fragPos.xyz, noiseScale * 3.0, animTime, 3.0,
+                                           max(int(noiseOctaves) - 2, 1), noisePersistence, noiseLacunarity, vec3(0.0));
+        float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xyz, noiseScale * 0.5, animTime, 0.5,
+                                                           max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
+        float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * pow(specAngle, 32.0);
+        specularColor += ubo.lightColor.xyz * glitter * glitterIntensity;
+    }
     
     // === REFLECTION ===
     vec3 reflectDir = reflect(viewDir, normal);
