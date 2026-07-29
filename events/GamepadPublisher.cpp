@@ -34,51 +34,56 @@ void GamepadPublisher::pollLeftStick()
     if (!glfwJoystickIsGamepad(joystickId)) return;
     GLFWgamepadstate state;
     if (!glfwGetGamepadState(joystickId, &state)) return;
+
     float lx = state.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
     float ly = state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
-    if (std::abs(lx) < deadzone) lx = 0.0f;
-    if (std::abs(ly) < deadzone) ly = 0.0f;
+    float mag = std::sqrt(lx * lx + ly * ly);
+    if (mag < deadzone) {
+        lx = 0.0f;
+        ly = 0.0f;
+    } else {
+        float clampedMag = std::min(mag, 1.0f);
+        float scaled = (clampedMag - deadzone) / (1.0f - deadzone);
+        float nx = lx / mag;
+        float ny = ly / mag;
+        lx = nx * scaled;
+        ly = ny * scaled;
+    }
     cachedLx = lx;
     cachedLy = ly;
+
+    // Cache buttons from the same state read
+    cachedA = state.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS;
+    cachedB = state.buttons[GLFW_GAMEPAD_BUTTON_B] == GLFW_PRESS;
+    cachedStart = state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS;
+    cachedBack = state.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS;
 }
 
 bool GamepadPublisher::aButtonPressed()
 {
-    GLFWgamepadstate state;
-    if (!glfwGetGamepadState(joystickId, &state)) return false;
-    bool now = state.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS;
-    bool pressed = now && !aPrev;
-    aPrev = now;
+    bool pressed = cachedA && !aPrev;
+    aPrev = cachedA;
     return pressed;
 }
 
 bool GamepadPublisher::bButtonPressed()
 {
-    GLFWgamepadstate state;
-    if (!glfwGetGamepadState(joystickId, &state)) return false;
-    bool now = state.buttons[GLFW_GAMEPAD_BUTTON_B] == GLFW_PRESS;
-    bool pressed = now && !bPrev;
-    bPrev = now;
+    bool pressed = cachedB && !bPrev;
+    bPrev = cachedB;
     return pressed;
 }
 
 bool GamepadPublisher::menuButtonPressed()
 {
-    GLFWgamepadstate state;
-    if (!glfwGetGamepadState(joystickId, &state)) return false;
-    bool now = state.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS;
-    bool pressed = now && !menuPrev;
-    menuPrev = now;
+    bool pressed = cachedBack && !menuPrev;
+    menuPrev = cachedBack;
     return pressed;
 }
 
 bool GamepadPublisher::startButtonPressed()
 {
-    GLFWgamepadstate state;
-    if (!glfwGetGamepadState(joystickId, &state)) return false;
-    bool now = state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS;
-    bool pressed = now && !startPrev;
-    startPrev = now;
+    bool pressed = cachedStart && !startPrev;
+    startPrev = cachedStart;
     return pressed;
 }
 
@@ -101,18 +106,35 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     ControllerContext& gctx = cm->gamepadContext;
     const ControllerParameters& cp = *cm->getParameters();
 
-    // BACK (View / two squares) -> toggle fullscreen
-    bool backNow = (state.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS);
-    if (backNow && !backPrev) em->publish(std::make_shared<ToggleFullscreenEvent>());
-    backPrev = backNow;
+    // Cache buttons from this single state read
+    cachedBack = state.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS;
+    cachedA = state.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS;
+    cachedB = state.buttons[GLFW_GAMEPAD_BUTTON_B] == GLFW_PRESS;
+    cachedStart = state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS;
 
-    // Cache left stick for radial menu access (with deadzone applied)
-    float lx = state.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
-    float ly = state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
-    if (std::abs(lx) < deadzone) lx = 0.0f;
-    if (std::abs(ly) < deadzone) ly = 0.0f;
-    cachedLx = lx;
-    cachedLy = ly;
+    // BACK (View / two squares) -> toggle fullscreen
+    if (cachedBack && !backPrev) em->publish(std::make_shared<ToggleFullscreenEvent>());
+    backPrev = cachedBack;
+
+    // Cache left stick for radial menu access (circular deadzone + rescale)
+    float lxRaw = std::clamp(state.axes[GLFW_GAMEPAD_AXIS_LEFT_X], -1.0f, 1.0f);
+    float lyRaw = std::clamp(state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y], -1.0f, 1.0f);
+    float lmag = std::sqrt(lxRaw * lxRaw + lyRaw * lyRaw);
+    if (lmag < deadzone) {
+        cachedLx = 0.0f;
+        cachedLy = 0.0f;
+    } else {
+        float clampedMag = std::min(lmag, 1.0f);
+        float scaled = (clampedMag - deadzone) / (1.0f - deadzone);
+        float nx = lxRaw / lmag;
+        float ny = lyRaw / lmag;
+        cachedLx = nx * scaled;
+        cachedLy = ny * scaled;
+    }
+
+    // Local left stick for camera/brush movement (circular deadzone already applied)
+    float lx = cachedLx;
+    float ly = cachedLy;
 
     float rx = state.axes[GLFW_GAMEPAD_AXIS_RIGHT_X];
     float ry = state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y];

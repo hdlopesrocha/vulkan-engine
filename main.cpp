@@ -805,7 +805,7 @@ public:
                         scale = 170.0f;
                     else if (activeType == RadialMenu::RingType::HSV_SLIDER)
                         scale = 250.0f;
-                    vec = ImVec2(gamepadPublisher.getLeftStickX() * scale, -gamepadPublisher.getLeftStickY() * scale);
+                    vec = ImVec2(gamepadPublisher.getLeftStickX() * scale, gamepadPublisher.getLeftStickY() * scale);
                 } else {
                     double mx, my;
                     glfwGetCursorPos(getWindow(), &mx, &my);

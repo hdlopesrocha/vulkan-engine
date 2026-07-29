@@ -40,4 +40,10 @@ private:
     bool menuPrev = false;
     float cachedLx = 0.0f;
     float cachedLy = 0.0f;
+
+    // Cached button states (read once per frame)
+    bool cachedA = false;
+    bool cachedB = false;
+    bool cachedStart = false;
+    bool cachedBack = false;
 };
