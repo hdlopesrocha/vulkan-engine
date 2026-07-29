@@ -347,11 +347,9 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         waterRenderer->ensureCubemapResources(app, app->getSwapchainImageFormat());
     }
 
-    // Bind water cubemap pipeline and descriptor sets once before the face loop.
-    // Dynamic state (pipeline, descriptor sets) persists across begin/end rendering.
+    // Acquire water indirect buffers once (shared across all faces).
     if (renderWater && waterRenderer && waterRenderer->getCubemapWaterPipeline() != VK_NULL_HANDLE) {
         waterRenderer->getIndirectRenderer().acquireBuffers(cmd);
-        waterRenderer->bindCubemapWaterPipeline(cmd, mainDescriptorSet, app->getMaterialDescriptorSet(), frameIndex);
     }
 
     for (uint32_t face = 0; face < 6; ++face) {
@@ -544,10 +542,12 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         }
 
         // Render water into the cubemap face (with reflection/refraction disabled via skipEnvMap flag in UBO).
+        // Rebind water pipeline + descriptors here because the solid pass above overwrote them.
         // Depth stays in ATTACHMENT_OPTIMAL; renderWaterIntoCubemap uses the dummy depth for shader sampling
         // so no layout transition is needed. Only when water rendering is enabled (settings.waterEnabled);
         // otherwise the cubemap reflects solids only and the preview will not show stale water.
         if (renderWater && waterRenderer && waterRenderer->getCubemapWaterPipeline() != VK_NULL_HANDLE) {
+            waterRenderer->bindCubemapWaterPipeline(cmd, mainDescriptorSet, app->getMaterialDescriptorSet(), frameIndex);
             waterRenderer->renderWaterIntoCubemap(cmd,
                 cube360FaceViews[face], cube360DepthViews[face],
                 CUBE360_FACE_SIZE,
