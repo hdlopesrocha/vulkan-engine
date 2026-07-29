@@ -3,6 +3,7 @@
 #include "ControllerManager.hpp"
 #include "ControllerContext.hpp"
 #include "../widgets/RadialMenu.hpp"
+#include "../widgets/RadialMenuIcons.hpp"
 #include "NunchukPublisher.hpp"
 #include "GamepadPublisher.hpp"
 #include "../utils/Brush3dManager.hpp"
@@ -47,28 +48,31 @@ void RadialMenuHandler::setupPages() {
     pages_.clear();
     {
         Page cam;
-        cam.label = "Camera";
-        cam.subPages.push_back({"Translate"});
-        cam.subPages.push_back({"UI"});
+        cam.label = ICON_FA_CAMERA;
+        cam.textLabel = "Camera";
+        cam.subPages.push_back({ICON_FA_ARROWS_ALT, "Translate"});
+        cam.subPages.push_back({ICON_FA_STAR, "UI"});
         pages_.push_back(cam);
     }
     {
         Page brush;
-        brush.label = "Brush";
-        brush.subPages.push_back({"Control"});
-        brush.subPages.push_back({"Mode"});
-        brush.subPages.push_back({"Drag Mode"});
-        brush.subPages.push_back({"Shape"});
-        brush.subPages.push_back({"Texture"});
-        brush.subPages.push_back({"Attributes"});
-        brush.subPages.push_back({"Color"});
+        brush.label = ICON_FA_PAINTBRUSH;
+        brush.textLabel = "Brush";
+        brush.subPages.push_back({ICON_FA_COG, "Control"});
+        brush.subPages.push_back({ICON_FA_SLIDERS_H, "Mode"});
+        brush.subPages.push_back({ICON_FA_ARROWS_V, "Drag Mode"});
+        brush.subPages.push_back({ICON_FA_SHAPES, "Shape"});
+        brush.subPages.push_back({ICON_FA_TH, "Texture"});
+        brush.subPages.push_back({ICON_FA_EYE, "Attributes"});
+        brush.subPages.push_back({ICON_FA_PALETTE, "Color"});
         pages_.push_back(brush);
     }
     {
         Page lgt;
-        lgt.label = "Light";
-        lgt.subPages.push_back({"Azimuth"});
-        lgt.subPages.push_back({"Elevation"});
+        lgt.label = ICON_FA_LIGHTBULB;
+        lgt.textLabel = "Light";
+        lgt.subPages.push_back({ICON_FA_GLOBE, "Azimuth"});
+        lgt.subPages.push_back({ICON_FA_MOUNTAIN, "Elevation"});
         pages_.push_back(lgt);
     }
     menu_->SetPages(pages_);
@@ -310,63 +314,80 @@ bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
             {
                 const auto& subPages = pages_[stackPage].subPages;
                 if (hs < static_cast<int>(subPages.size())) {
-                    const std::string& pageLabel = pages_[stackPage].label;
-                    const std::string& subLabel = subPages[hs].label;
                     menu_->SetSelectedIndex(hs);
 
-                    if (subLabel == "Texture") {
-                        menu_->ResetTexturePage();
-                        menu_->PushTextureRing({});
-                    } else if (subLabel == "Control") {
+                    // Camera page (index 0): subpage 0=Translate, 1=UI
+                    if (stackPage == 0 && hs == 0) {
+                        PageCategory cat = PageCategory::CAMERA;
+                        PageControl pc = PageControl::TRANSLATE;
+                        BrushControlMode bm = BrushControlMode::TRANSLATE;
+                        queueSetPageEvent(cat, pc, bm);
+                        menu_->SetVisible(false);
+                    } else if (stackPage == 0 && hs == 1) {
+                        PageCategory cat = PageCategory::CAMERA;
+                        PageControl pc = PageControl::UI;
+                        BrushControlMode bm = BrushControlMode::TRANSLATE;
+                        queueSetPageEvent(cat, pc, bm);
+                        menu_->SetVisible(false);
+                    }
+                    // Brush page (index 1): subpage 0=Control, 1=Mode, 2=DragMode,
+                    // 3=Shape, 4=Texture, 5=Attributes, 6=Color
+                    else if (stackPage == 1 && hs == 0) {
                         labelRingKind = LabelRingKind::CONTROL;
-                        menu_->PushLabelRing({"Translate", "Aim", "Scale"});
+                        menu_->PushLabelRing({ICON_FA_MOVE, ICON_FA_CROSSHAIRS, ICON_FA_EXPAND_ARROWS},
+                                             {"Translate", "Aim", "Scale"});
                         int ci = 0;
                         if (brush_->controlMode == BrushControlMode::AIM) ci = 1;
                         else if (brush_->controlMode == BrushControlMode::SCALE) ci = 2;
                         menu_->SetCurrentItem(ci);
-                    } else if (subLabel == "Mode") {
+                    } else if (stackPage == 1 && hs == 1) {
                         labelRingKind = LabelRingKind::PAINT;
-                        menu_->PushLabelRing({"Add", "Remove", "Paint"});
+                        menu_->PushLabelRing({ICON_FA_PLUS, ICON_FA_MINUS, ICON_FA_PAINT_BRUSH},
+                                             {"Add", "Remove", "Paint"});
                         int ci = 0;
                         if (brush_->paintMode == BrushPaintMode::REMOVE) ci = 1;
                         else if (brush_->paintMode == BrushPaintMode::PAINT) ci = 2;
                         menu_->SetCurrentItem(ci);
-                    } else if (subLabel == "Drag Mode") {
+                    } else if (stackPage == 1 && hs == 2) {
                         labelRingKind = LabelRingKind::DRAG;
-                        menu_->PushLabelRing({"Drag", "Click"});
+                        menu_->PushLabelRing({ICON_FA_HAND_POINTER, ICON_FA_STOP},
+                                             {"Drag", "Click"});
                         int ci = (brush_->dragMode == BrushDragMode::CLICK) ? 1 : 0;
                         menu_->SetCurrentItem(ci);
-                    } else if (subLabel == "Shape") {
+                    } else if (stackPage == 1 && hs == 3) {
                         labelRingKind = LabelRingKind::SHAPE;
                         menu_->PushLabelRing({"Sphere", "Box", "Capsule", "Octahedron", "Pyramid",
+                                              "Torus", "Cone", "Cylinder", "Tapered Cylinder", "Tapered Capsule"},
+                                             {"Sphere", "Box", "Capsule", "Octahedron", "Pyramid",
                                               "Torus", "Cone", "Cylinder", "Tapered Cylinder", "Tapered Capsule"});
                         BrushEntry* be = brush_->getSelectedEntry();
                         menu_->SetCurrentItem(be ? be->sdfType : -1);
-                    } else if (subLabel == "Color") {
+                    } else if (stackPage == 1 && hs == 4) {
+                        menu_->ResetTexturePage();
+                        menu_->PushTextureRing({});
+                    } else if (stackPage == 1 && hs == 5) {
+                        PageCategory cat = PageCategory::BRUSH;
+                        PageControl pc = PageControl::ATTRIBUTE;
+                        BrushControlMode bm = BrushControlMode::ATTRIBUTE;
+                        queueSetPageEvent(cat, pc, bm);
+                        menu_->SetVisible(false);
+                    } else if (stackPage == 1 && hs == 6) {
                         labelRingKind = LabelRingKind::HSV;
-                        menu_->PushLabelRing({"Hue", "Saturation", "Value"});
+                        menu_->PushLabelRing({ICON_FA_TINT, ICON_FA_ADJUST, ICON_FA_SUN},
+                                             {"Hue", "Saturation", "Value"});
                         menu_->SetCurrentItem(-1);
-                    } else if (subLabel == "Azimuth") {
+                    }
+                    // Light page (index 2): subpage 0=Azimuth, 1=Elevation
+                    else if (stackPage == 2 && hs == 0) {
                         float azi, ele;
                         light_->getSpherical(azi, ele);
                         menu_->PushHSVSliderRing("Azimuth", azi + 180.0f, 0.0f, 360.0f);
                         textureSelectPrev = true;
-                    } else if (subLabel == "Elevation") {
+                    } else if (stackPage == 2 && hs == 1) {
                         float azi, ele;
                         light_->getSpherical(azi, ele);
                         menu_->PushHSVSliderRing("Elevation", ele + 90.0f, 0.0f, 180.0f);
                         textureSelectPrev = true;
-                    } else {
-                        PageCategory cat = (pageLabel == "Camera")
-                            ? PageCategory::CAMERA : PageCategory::BRUSH;
-                        PageControl pc = PageControl::TRANSLATE;
-                        BrushControlMode bm = BrushControlMode::TRANSLATE;
-                        if (subLabel == "UI")           { pc = PageControl::UI; }
-                        else if (subLabel == "Texture")    { pc = PageControl::TEXTURE;    bm = BrushControlMode::TEXTURE; }
-                        else if (subLabel == "Attributes") { pc = PageControl::ATTRIBUTE;  bm = BrushControlMode::ATTRIBUTE; }
-                        else if (subLabel == "Color")      { pc = PageControl::COLOR;      bm = BrushControlMode::COLOR; }
-                        queueSetPageEvent(cat, pc, bm);
-                        menu_->SetVisible(false);
                     }
                 }
             }

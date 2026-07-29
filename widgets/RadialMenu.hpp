@@ -5,12 +5,14 @@
 
 struct SubPage
 {
-    std::string label;
+    std::string label;      // icon symbol (displayed in sector)
+    std::string textLabel;  // text (displayed in center circle)
 };
 
 struct Page
 {
-    std::string label;
+    std::string label;      // icon symbol (displayed in sector)
+    std::string textLabel;  // text (displayed in center circle)
     std::vector<SubPage> subPages;
 };
 
@@ -37,7 +39,7 @@ public:
     void PushSubpageRing(int pageIndex);
     // Push an extra ring on top of the subpage ring
     void PushTextureRing(const std::vector<ImTextureID>& textures);
-    void PushLabelRing(const std::vector<std::string>& items);
+    void PushLabelRing(const std::vector<std::string>& items, const std::vector<std::string>& textItems = {});
     void PushHSVSliderRing(const std::string& name, float value, float minVal, float maxVal);
     // Set which item is selected in the current top ring (for ghost highlighting)
     void SetSelectedIndex(int index);
@@ -66,12 +68,17 @@ public:
 
     // Label ring queries (active ring must be LABEL)
     int GetHoveredLabel() const;
+    std::string GetHoveredLabelItem() const;
+    std::string GetHoveredLabelTextItem() const;
     void SetCurrentItem(int index);
 
     // HSV slider queries (active ring must be HSV_SLIDER)
     void SetHSVSliderValue(float value);
     float GetHSVSliderValue() const;
     std::string GetHSVSliderName() const;
+
+    // Center circle labels (line by line)
+    void SetCenterLabels(const std::vector<std::string>& labels);
 
     // Layout setters
     void SetDeadZoneRadius(float radius);
@@ -127,6 +134,7 @@ private:
 
         // LABEL
         std::vector<std::string> items;
+        std::vector<std::string> textItems;
         int hoveredLabel = -1;
         int currentItem = -1;     // index of the currently active option
 
@@ -142,6 +150,8 @@ private:
     // Textures to set on next texture ring push
     std::vector<ImTextureID> pendingTextures;
 
+    std::vector<std::string> centerLabels;
+
     ImU32 sliderFillColor = IM_COL32(220, 180, 50, 220);
     ImU32 sliderTrackColor = IM_COL32(60, 60, 70, 180);
 
@@ -153,6 +163,7 @@ private:
     void DetectSubpageHover(int pageIndex);
     void GenerateArc(float startAngle, float endAngle, float innerR, float outerR,
                      ImVector<ImVec2>& points) const;
+    std::vector<std::string> BuildCenterLabels() const;
 
     void DrawSector(ImDrawList* drawList, float startAngle, float endAngle,
                     float innerR, float outerR, ImU32 fillColor, ImU32 outlineCol);

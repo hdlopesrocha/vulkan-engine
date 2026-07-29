@@ -1,4 +1,5 @@
 #include "RadialMenu.hpp"
+#include "RadialMenuIcons.hpp"
 #include <cmath>
 
 static constexpr float TWO_PI = 6.28318530718f;
@@ -60,11 +61,12 @@ void RadialMenu::PushTextureRing(const std::vector<ImTextureID>& textures)
     stack.push_back(e);
 }
 
-void RadialMenu::PushLabelRing(const std::vector<std::string>& items)
+void RadialMenu::PushLabelRing(const std::vector<std::string>& items, const std::vector<std::string>& textItems)
 {
     RingEntry e;
     e.type = RingType::LABEL;
     e.items = items;
+    e.textItems = textItems;
     e.selectedIndex = -1;
     stack.push_back(e);
 }
@@ -167,6 +169,24 @@ int RadialMenu::GetHoveredLabel() const
     return stack.back().hoveredLabel;
 }
 
+std::string RadialMenu::GetHoveredLabelItem() const
+{
+    if (stack.empty() || stack.back().type != RingType::LABEL) return {};
+    const RingEntry& e = stack.back();
+    if (e.hoveredLabel >= 0 && e.hoveredLabel < static_cast<int>(e.items.size()))
+        return e.items[e.hoveredLabel];
+    return {};
+}
+
+std::string RadialMenu::GetHoveredLabelTextItem() const
+{
+    if (stack.empty() || stack.back().type != RingType::LABEL) return {};
+    const RingEntry& e = stack.back();
+    if (e.hoveredLabel >= 0 && e.hoveredLabel < static_cast<int>(e.textItems.size()))
+        return e.textItems[e.hoveredLabel];
+    return {};
+}
+
 void RadialMenu::SetCurrentItem(int index)
 {
     if (!stack.empty() && stack.back().type == RingType::LABEL)
@@ -191,6 +211,81 @@ std::string RadialMenu::GetHSVSliderName() const
 {
     if (stack.empty() || stack.back().type != RingType::HSV_SLIDER) return {};
     return stack.back().sliderName;
+}
+
+// ---- Center circle labels ----
+
+void RadialMenu::SetCenterLabels(const std::vector<std::string>& labels)
+{
+    centerLabels = labels;
+}
+
+// ---- Center labels from full stack ----
+
+std::vector<std::string> RadialMenu::BuildCenterLabels() const
+{
+    std::vector<std::string> out;
+
+    // First line: page text
+    // If stack has a SUBPAGE ring, use its page; otherwise use hoveredPage
+    int pageIdx = GetStackPageIndex();
+    if (pageIdx >= 0 && pageIdx < static_cast<int>(pages.size())) {
+        out.push_back(pages[pageIdx].textLabel);
+    } else if (hoveredPage >= 0 && hoveredPage < static_cast<int>(pages.size())) {
+        out.push_back(pages[hoveredPage].textLabel);
+    }
+
+    for (size_t i = 0; i < stack.size(); ++i)
+    {
+        const RingEntry& e = stack[i];
+
+        switch (e.type)
+        {
+        case RingType::SUBPAGE:
+        {
+            int hs = (i == stack.size() - 1) ? hoveredSubPage : e.selectedIndex;
+            if (e.pageIndex >= 0 && e.pageIndex < static_cast<int>(pages.size())) {
+                const auto& subs = pages[e.pageIndex].subPages;
+                if (hs >= 0 && hs < static_cast<int>(subs.size()))
+                    out.push_back(subs[hs].textLabel);
+            }
+            break;
+        }
+        case RingType::TEXTURE:
+        {
+            int ht = (i == stack.size() - 1) ? e.hoveredTexture : e.selectedIndex;
+            if (ht >= 0)
+                out.push_back(std::to_string(ht));
+            else if (i == stack.size() - 1 && e.hoveredNavPrev)
+                out.push_back(ICON_FA_ANGLE_LEFT);
+            else if (i == stack.size() - 1 && e.hoveredNavNext)
+                out.push_back(ICON_FA_ANGLE_RIGHT);
+            break;
+        }
+        case RingType::LABEL:
+        {
+            int li = (i == stack.size() - 1) ? e.hoveredLabel : e.selectedIndex;
+            if (li < 0) li = e.currentItem;
+            if (li >= 0 && li < static_cast<int>(e.textItems.size()))
+                out.push_back(e.textItems[li]);
+            break;
+        }
+        case RingType::HSV_SLIDER:
+        {
+            char buf[64];
+            if (e.sliderName == "Hue" || e.sliderName == "Azimuth" || e.sliderName == "Elevation")
+                snprintf(buf, sizeof(buf), "%.0f", e.sliderValue);
+            else
+                snprintf(buf, sizeof(buf), "%.1f%%",  e.sliderValue);
+            out.push_back(buf);
+            break;
+        }
+        case RingType::NONE:
+            break;
+        }
+    }
+
+    return out;
 }
 
 // ---- Helpers ----
@@ -231,10 +326,7 @@ void RadialMenu::Update()
     currentRadius = std::sqrt(inputVector.x * inputVector.x + inputVector.y * inputVector.y);
     currentAngle = std::fmod(std::atan2(inputVector.y, inputVector.x) + PI * 0.5f + TWO_PI, TWO_PI);
 
-    if (currentRadius < deadZoneRadius)
-        return;
-
-    // Handle input on the active (topmost) ring
+    // Detect hover for the active ring (works even inside dead zone)
     if (!stack.empty())
     {
         RingEntry& active = stack.back();
@@ -243,14 +335,17 @@ void RadialMenu::Update()
         {
         case RingType::HSV_SLIDER:
         {
-            float range = active.sliderMax - active.sliderMin;
-            float rawValue = active.sliderMin + (currentAngle / TWO_PI) * range;
+            if (currentRadius >= deadZoneRadius) {
+                float range = active.sliderMax - active.sliderMin;
+                float rawValue = active.sliderMin + (currentAngle / TWO_PI) * range;
 
-            float halfRange = range * 0.5f;
-            if (std::abs(rawValue - active.sliderValue) > halfRange)
-                rawValue = (rawValue > active.sliderValue) ? active.sliderMin : active.sliderMax;
+                float halfRange = range * 0.5f;
+                if (std::abs(rawValue - active.sliderValue) > halfRange)
+                    rawValue = (rawValue > active.sliderValue) ? active.sliderMin : active.sliderMax;
 
-            active.sliderValue = rawValue;
+                active.sliderValue = rawValue;
+            }
+            centerLabels = BuildCenterLabels();
             return;
         }
 
@@ -273,18 +368,21 @@ void RadialMenu::Update()
                         active.hoveredTexture = absIdx;
                 }
             }
+            centerLabels = BuildCenterLabels();
             return;
         }
 
         case RingType::LABEL:
         {
             active.hoveredLabel = GetSectorIndex(currentAngle, static_cast<int>(active.items.size()));
+            centerLabels = BuildCenterLabels();
             return;
         }
 
         case RingType::SUBPAGE:
         {
             DetectSubpageHover(active.pageIndex);
+            centerLabels = BuildCenterLabels();
             return;
         }
 
@@ -313,10 +411,9 @@ void RadialMenu::Update()
     if (!hasSubpage)
     {
         hoveredPage = GetSectorIndex(currentAngle, static_cast<int>(pages.size()));
-
-        if (currentRadius < innerRadius)
-            return;
     }
+
+    centerLabels = BuildCenterLabels();
 }
 
 // ---- Draw ----
@@ -481,6 +578,25 @@ void RadialMenu::Draw()
     // Center circle
     drawList->AddCircleFilled(center, deadZoneRadius, IM_COL32(20, 20, 30, 200), 64);
     drawList->AddCircle(center, deadZoneRadius, outlineColor, 64, 1.0f);
+
+    // Draw center labels line by line
+    if (!centerLabels.empty())
+    {
+        float lineH = textSize * 1.3f;
+        float totalH = lineH * static_cast<float>(centerLabels.size());
+        float startY = center.y - totalH * 0.5f + lineH * 0.5f;
+
+        for (size_t i = 0; i < centerLabels.size(); ++i)
+        {
+            ImVec2 ts = ImGui::CalcTextSize(centerLabels[i].c_str());
+            float y = startY + static_cast<float>(i) * lineH;
+            if (y + ts.y * 0.5f > center.y + deadZoneRadius - 4.0f)
+                break;
+            drawList->AddText(
+                ImVec2(center.x - ts.x * 0.5f, y - ts.y * 0.5f),
+                IM_COL32(255, 255, 255, 255), centerLabels[i].c_str());
+        }
+    }
 }
 
 // ---- Drawing primitives ----
@@ -540,7 +656,7 @@ void RadialMenu::DrawLabel(ImDrawList* drawList, const std::string& label,
 void RadialMenu::DrawArrow(ImDrawList* drawList, float angleStart, float angleEnd,
                             float innerR, float outerR, bool right, ImU32 color)
 {
-    DrawLabel(drawList, right ? ">" : "<", angleStart, angleEnd, innerR, outerR, color);
+    DrawLabel(drawList, right ? ICON_FA_ANGLE_RIGHT : ICON_FA_ANGLE_LEFT, angleStart, angleEnd, innerR, outerR, color);
 }
 
 void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float endAngle,
@@ -627,17 +743,6 @@ void RadialMenu::DrawSliderRing(ImDrawList* drawList, float innerR, float outerR
     {
         DrawSector(drawList, startAngle, fillAngle, innerR, outerR, fillCol, outlineColor);
     }
-
-    char buf[64];
-    if (label == "Hue" || label == "Azimuth" || label == "Elevation")
-        snprintf(buf, sizeof(buf), "%s: %.0f", label.c_str(), value);
-    else
-        snprintf(buf, sizeof(buf), "%s: %.1f%%", label.c_str(), value);
-
-    ImVec2 textSize_ = ImGui::CalcTextSize(buf);
-    drawList->AddText(
-        ImVec2(center.x - textSize_.x * 0.5f, center.y - textSize_.y * 0.5f),
-        textCol, buf);
 
     for (int i = 0; i <= 4; ++i)
     {
