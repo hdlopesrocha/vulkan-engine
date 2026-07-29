@@ -40,7 +40,12 @@ public:
         // Drain anything left, then free the stub.
         T v;
         while (tryPop(v)) {}
-        delete stub_;
+        // After tryPop, head_ may have advanced past stub_ (stub_ was already
+        // freed by tryPop). Only delete stub_ if it is still the current head
+        // (i.e. the queue was never consumed).
+        if (head_.load(std::memory_order_relaxed) == stub_) {
+            delete stub_;
+        }
     }
 
     // Producer side. Thread-safe, lock-free.
