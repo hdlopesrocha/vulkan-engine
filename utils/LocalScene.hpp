@@ -26,6 +26,10 @@ public:
     LocalScene();
     ~LocalScene();
 
+    // Explicitly stop all thread pools (LocalScene + both Octrees).
+    // Must be called before any objects captured by enqueued tasks are destroyed.
+    void stopPools();
+
     void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback, ThreadPool* poolOverride = nullptr) override;
     bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override;
     void action(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) override;

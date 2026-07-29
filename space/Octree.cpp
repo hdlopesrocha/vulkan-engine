@@ -1156,6 +1156,7 @@ Octree::~Octree() {
     while (inFlightShapeOps.load() > 0) {
         std::this_thread::yield();
     }
+    threadPool.stop();
     delete allocator;
 }
 

@@ -17,7 +17,7 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
     std::future<return_type> res = task->get_future();
     {
         std::unique_lock<std::mutex> lock(queue_mutex);
-        if(stop) throw std::runtime_error("enqueue on stopped ThreadPool");
+        if(stopping) throw std::runtime_error("enqueue on stopped ThreadPool");
         // The wrapper lambda captures only a shared_ptr (16 B) — fits in SmallFunction inline buffer
         tasks.emplace([task]{ (*task)(); });
     }
@@ -35,7 +35,7 @@ void ThreadPool::enqueueDetached(F&& f, Args&&... args)
     );
     {
         std::unique_lock<std::mutex> lock(queue_mutex);
-        if(stop) throw std::runtime_error("enqueueDetached on stopped ThreadPool");
+        if(stopping) throw std::runtime_error("enqueueDetached on stopped ThreadPool");
         tasks.emplace(std::move(sf));
     }
     condition.notify_one();

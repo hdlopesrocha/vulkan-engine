@@ -7,6 +7,11 @@ World::World()
 
 World::~World() = default;
 
+void World::stopPools() {
+    if (scene_) scene_->stopPools();
+    if (brushScene_) brushScene_->stopPools();
+}
+
 Chunk* World::getOrCreateChunk(ChunkId id, uint32_t layer) {
     std::lock_guard<std::mutex> lock(chunkMutex_);
     auto it = chunkMap_.find(id);

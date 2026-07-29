@@ -43,6 +43,11 @@ public:
     World(const World&) = delete;
     World& operator=(const World&) = delete;
 
+    // Explicitly stop all scene thread pools.  Must be called before any
+    // objects captured by enqueued pool tasks are destroyed (e.g. before
+    // the SceneRenderer that registered change-handler callbacks).
+    void stopPools();
+
     // ── Chunk management ────────────────────────────────────────────────────
 
     // Get or create a chunk with the given ID.

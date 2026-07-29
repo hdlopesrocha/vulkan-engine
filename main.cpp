@@ -222,10 +222,21 @@ public:
     uint32_t cube360TexVersion = 0;
 
     ~MyApp() {
+        // Stop the async pool first — its tasks capture `this` and may
+        // reference world/sceneRenderer, which are about to be destroyed.
+        asyncThreadPool.stop();
         if (sceneProcessThread.joinable()) sceneProcessThread.join();
-        delete world;
-
+        // Stop the Octree/LocalScene pools FIRST.  Their workers invoke
+        // changeHandler callbacks that enqueue work to SceneRenderer's gen
+        // pools (capturing SceneRenderer `this`).  We must drain these
+        // workers while SceneRenderer is still alive.
+        if (world) world->stopPools();
+        // Now stop the gen pools.  All Octree workers have finished, so no
+        // new tasks will be enqueued.  Drain remaining tasks (which safely
+        // reference the still-alive SceneRenderer).
+        sceneRenderer->stopGenPools();
         delete sceneRenderer;
+        delete world;
     }
 
     // setupTextures (defined out-of-line to avoid inline/member-definition issues)

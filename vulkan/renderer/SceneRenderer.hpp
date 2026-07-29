@@ -124,6 +124,10 @@ public:
 
     // Cleanup and resource destruction (accepts app for Vulkan operations)
     void cleanup(VulkanApp* app);
+
+    // Drain generation pools.  Must be called after all Octree pools are
+    // stopped (their workers may still be enqueuing tasks to these pools).
+    void stopGenPools();
    
     // Pending change queues (thread-safe)
     struct PendingNode {

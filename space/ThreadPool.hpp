@@ -9,7 +9,6 @@
 #include <functional>
 #include <stdexcept>
 #include <type_traits>
-#include <iostream>
 #include "SmallFunction.hpp"
 
 class ThreadPool {
@@ -26,6 +25,11 @@ public:
     template<class F, class... Args>
     void enqueueDetached(F&& f, Args&&... args);
 
+    // Explicitly stop workers and drain the queue.  Safe to call multiple times
+    // and from any thread.  Must be called before the objects referenced by
+    // enqueued tasks are destroyed to avoid use-after-free during shutdown.
+    void stop();
+
     size_t threadCount() const;
 
 private:
@@ -38,7 +42,7 @@ private:
     // Synchronization
     std::mutex queue_mutex;
     std::condition_variable condition;
-    bool stop;
+    bool stopping;
 };
 
 // Constructor: launch worker threads

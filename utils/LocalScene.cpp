@@ -30,6 +30,12 @@ LocalScene::LocalScene()
 
 LocalScene::~LocalScene() = default;
 
+void LocalScene::stopPools() {
+    threadPool.stop();
+    opaqueOctree.threadPool.stop();
+    transparentOctree.threadPool.stop();
+}
+
 Octree& LocalScene::getOpaqueOctree() { return opaqueOctree; }
 const Octree& LocalScene::getOpaqueOctree() const { return opaqueOctree; }
 

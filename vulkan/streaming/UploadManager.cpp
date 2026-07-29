@@ -327,6 +327,14 @@ void UploadManager::destroy() {
             s.signalSem = VK_NULL_HANDLE;
         }
     }
+    // Drain any remaining queued jobs so the MPSCQueue destructors find empty
+    // queues. Without this, ~MPSCQueue() would try to destroy UploadJobs whose
+    // BufferUpload data references chunk buffers we are about to free, causing
+    // heap corruption during shutdown.
+    for (auto& q : queues_) {
+        UploadJob job;
+        while (q.tryPop(job)) {}
+    }
     staging_.destroy();
     chunkPool_.destroy();
     if (m_timeline) { vkDestroySemaphore(device_, m_timeline, nullptr); m_timeline = VK_NULL_HANDLE; }

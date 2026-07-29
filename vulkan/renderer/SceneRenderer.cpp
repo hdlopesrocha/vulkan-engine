@@ -159,6 +159,12 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     }
 }
 
+void SceneRenderer::stopGenPools() {
+    brushGenPool.stop();
+    solidGenPool.stop();
+    waterGenPool.stop();
+}
+
 void SceneRenderer::createBrushRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
     if (!app) return;
     VkDevice device = app->getDevice();
