@@ -100,8 +100,8 @@ public:
     // Cached sweep start position so applyBrushToScene uses the same pair as the preview
     glm::vec3 cachedSweepStart = glm::vec3(0.0f);
     static constexpr uint32_t QUERY_COUNT = 20; // 10 intervals × 2 timestamps each
-    std::array<VkQueryPool, 3> queryPools = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
-    bool queryPoolReady[2] = {false, false};
+    std::array<VkQueryPool, MAX_FRAMES_IN_FLIGHT> queryPools = {};
+    bool queryPoolReady[MAX_FRAMES_IN_FLIGHT] = {};
     float timestampPeriod = 0.0f;
     bool profilingEnabled = true;
     float profileShadow = 0.0f;
