@@ -149,6 +149,11 @@ private:
     static constexpr int kNavSectors = 2;
     static constexpr int kTotalTexSectors = kTexturesPerPage + kNavSectors;
 
+    int GetSectorIndex(float angle, int count) const;
+    void DetectSubpageHover(int pageIndex);
+    void GenerateArc(float startAngle, float endAngle, float innerR, float outerR,
+                     ImVector<ImVec2>& points) const;
+
     void DrawSector(ImDrawList* drawList, float startAngle, float endAngle,
                     float innerR, float outerR, ImU32 fillColor, ImU32 outlineCol);
     void DrawLabel(ImDrawList* drawList, const std::string& label,

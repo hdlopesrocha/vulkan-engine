@@ -193,6 +193,27 @@ std::string RadialMenu::GetHSVSliderName() const
     return stack.back().sliderName;
 }
 
+// ---- Helpers ----
+
+int RadialMenu::GetSectorIndex(float angle, int count) const
+{
+    float sectorAngle = TWO_PI / static_cast<float>(count);
+    int idx = static_cast<int>(std::fmod(angle + sectorAngle * 0.5f, TWO_PI) / sectorAngle);
+    if (idx >= count)
+        idx = count - 1;
+    return idx;
+}
+
+void RadialMenu::DetectSubpageHover(int pageIndex)
+{
+    if (pageIndex < 0 || pageIndex >= static_cast<int>(pages.size()))
+        return;
+    const Page& page = pages[pageIndex];
+    if (page.subPages.empty())
+        return;
+    hoveredSubPage = GetSectorIndex(currentAngle, static_cast<int>(page.subPages.size()));
+}
+
 // ---- Update ----
 
 void RadialMenu::Update()
@@ -213,7 +234,7 @@ void RadialMenu::Update()
     if (currentRadius < deadZoneRadius)
         return;
 
-    // Find the active (topmost) ring's band and handle input
+    // Handle input on the active (topmost) ring
     if (!stack.empty())
     {
         RingEntry& active = stack.back();
@@ -222,10 +243,8 @@ void RadialMenu::Update()
         {
         case RingType::HSV_SLIDER:
         {
-            float sliderAngle = currentAngle;
-
             float range = active.sliderMax - active.sliderMin;
-            float rawValue = active.sliderMin + (sliderAngle / TWO_PI) * range;
+            float rawValue = active.sliderMin + (currentAngle / TWO_PI) * range;
 
             float halfRange = range * 0.5f;
             if (std::abs(rawValue - active.sliderValue) > halfRange)
@@ -242,18 +261,14 @@ void RadialMenu::Update()
             active.hoveredNavNext = false;
             if (currentRadius > deadZoneRadius)
             {
-                float sectorAngle = TWO_PI / static_cast<float>(kTotalTexSectors);
-                int idx = static_cast<int>(std::fmod(currentAngle + sectorAngle * 0.5f, TWO_PI) / sectorAngle);
-                if (idx >= kTotalTexSectors)
-                    idx = kTotalTexSectors - 1;
+                int idx = GetSectorIndex(currentAngle, kTotalTexSectors);
 
                 active.hoveredNavPrev = (idx == kTexturesPerPage);
                 active.hoveredNavNext = (idx == kTexturesPerPage + 1);
 
                 if (!active.hoveredNavPrev && !active.hoveredNavNext)
                 {
-                    int pageOffset = active.texturePage * kTexturesPerPage;
-                    int absIdx = pageOffset + idx;
+                    int absIdx = active.texturePage * kTexturesPerPage + idx;
                     if (absIdx < static_cast<int>(active.textures.size()))
                         active.hoveredTexture = absIdx;
                 }
@@ -263,30 +278,13 @@ void RadialMenu::Update()
 
         case RingType::LABEL:
         {
-            active.hoveredLabel = -1;
-            int count = static_cast<int>(active.items.size());
-            float itemAngle = TWO_PI / static_cast<float>(count);
-            int idx = static_cast<int>(std::fmod(currentAngle + itemAngle * 0.5f, TWO_PI) / itemAngle);
-            if (idx >= count)
-                idx = count - 1;
-            active.hoveredLabel = idx;
+            active.hoveredLabel = GetSectorIndex(currentAngle, static_cast<int>(active.items.size()));
             return;
         }
 
         case RingType::SUBPAGE:
         {
-            if (active.pageIndex >= 0 && active.pageIndex < static_cast<int>(pages.size()))
-            {
-                const Page& page = pages[active.pageIndex];
-                if (!page.subPages.empty())
-                {
-                    float subAngle = TWO_PI / static_cast<float>(page.subPages.size());
-                    int subIdx = static_cast<int>(std::fmod(currentAngle + subAngle * 0.5f, TWO_PI) / subAngle);
-                    if (subIdx >= static_cast<int>(page.subPages.size()))
-                        subIdx = static_cast<int>(page.subPages.size()) - 1;
-                    hoveredSubPage = subIdx;
-                }
-            }
+            DetectSubpageHover(active.pageIndex);
             return;
         }
 
@@ -295,28 +293,17 @@ void RadialMenu::Update()
         }
     }
 
-    // If a SUBPAGE ring is in the stack (but not the top), detect subpage hover in its band
+    // Ghost subpage hover: detect hover for a SUBPAGE ring lower in the stack
     for (int si = 0; si < static_cast<int>(stack.size()); ++si)
     {
         if (stack[si].type == RingType::SUBPAGE)
         {
-            if (stack[si].pageIndex >= 0 && stack[si].pageIndex < static_cast<int>(pages.size()))
-            {
-                const Page& page = pages[stack[si].pageIndex];
-                if (!page.subPages.empty())
-                {
-                    float subAngle = TWO_PI / static_cast<float>(page.subPages.size());
-                    int subIdx = static_cast<int>(std::fmod(currentAngle + subAngle * 0.5f, TWO_PI) / subAngle);
-                    if (subIdx >= static_cast<int>(page.subPages.size()))
-                        subIdx = static_cast<int>(page.subPages.size()) - 1;
-                    hoveredSubPage = subIdx;
-                }
-            }
+            DetectSubpageHover(stack[si].pageIndex);
             break;
         }
     }
 
-    // Detect page hover only when no SUBPAGE ring is in the stack
+    // Page hover: only when no SUBPAGE ring is in the stack
     bool hasSubpage = false;
     for (int i = 0; i < static_cast<int>(stack.size()); ++i)
     {
@@ -325,12 +312,7 @@ void RadialMenu::Update()
 
     if (!hasSubpage && currentRadius <= outerRadius)
     {
-        int pageCount = static_cast<int>(pages.size());
-        float pageAngle = TWO_PI / static_cast<float>(pageCount);
-        int pageIdx = static_cast<int>(std::fmod(currentAngle + pageAngle * 0.5f, TWO_PI) / pageAngle);
-        if (pageIdx >= pageCount)
-            pageIdx = pageCount - 1;
-        hoveredPage = pageIdx;
+        hoveredPage = GetSectorIndex(currentAngle, static_cast<int>(pages.size()));
 
         if (currentRadius < innerRadius)
             return;
@@ -503,11 +485,11 @@ void RadialMenu::Draw()
 
 // ---- Drawing primitives ----
 
-void RadialMenu::DrawSector(ImDrawList* drawList, float startAngle, float endAngle,
-                             float innerR, float outerR, ImU32 fillColor, ImU32 outlineCol)
+void RadialMenu::GenerateArc(float startAngle, float endAngle, float innerR, float outerR,
+                             ImVector<ImVec2>& points) const
 {
     const int segments = 32;
-    ImVector<ImVec2> points;
+    points.clear();
 
     for (int i = 0; i <= segments; ++i)
     {
@@ -526,13 +508,17 @@ void RadialMenu::DrawSector(ImDrawList* drawList, float startAngle, float endAng
         float sinA = std::sin(angle);
         points.push_back(ImVec2(center.x + cosA * innerR, center.y + sinA * innerR));
     }
+}
 
+void RadialMenu::DrawSector(ImDrawList* drawList, float startAngle, float endAngle,
+                             float innerR, float outerR, ImU32 fillColor, ImU32 outlineCol)
+{
+    ImVector<ImVec2> points;
+    GenerateArc(startAngle, endAngle, innerR, outerR, points);
     drawList->AddConcavePolyFilled(points.Data, points.Size, fillColor);
 
     for (int i = 0; i < points.Size; ++i)
-    {
         drawList->AddLine(points[i], points[(i + 1) % points.Size], outlineCol, 1.0f);
-    }
 }
 
 void RadialMenu::DrawLabel(ImDrawList* drawList, const std::string& label,
@@ -554,17 +540,7 @@ void RadialMenu::DrawLabel(ImDrawList* drawList, const std::string& label,
 void RadialMenu::DrawArrow(ImDrawList* drawList, float angleStart, float angleEnd,
                             float innerR, float outerR, bool right, ImU32 color)
 {
-    float midAngle = (angleStart + angleEnd) * 0.5f;
-    float midRadius = (innerR + outerR) * 0.5f;
-
-    const char* str = right ? ">" : "<";
-    ImVec2 textSize_ = ImGui::CalcTextSize(str);
-    ImVec2 textPos = ImVec2(
-        center.x + std::cos(midAngle) * midRadius - textSize_.x * 0.5f,
-        center.y + std::sin(midAngle) * midRadius - textSize_.y * 0.5f
-    );
-
-    drawList->AddText(textPos, color, str);
+    DrawLabel(drawList, right ? ">" : "<", angleStart, angleEnd, innerR, outerR, color);
 }
 
 void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float endAngle,
@@ -600,6 +576,7 @@ void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float
                                IM_COL32_WHITE);
     }
 
+    // Outline arcs
     const int outlineSegments = 32;
     for (int i = 0; i <= outlineSegments; ++i)
     {
@@ -618,36 +595,15 @@ void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float
             drawList->AddLine(ImVec2(center.x + cpa * outerR, center.y + spa * outerR), outer, outlineCol, 1.0f);
         }
         if (i == 0 || i == outlineSegments)
-        {
             drawList->AddLine(inner, outer, outlineCol, 1.0f);
-        }
     }
 }
 
 void RadialMenu::DrawInnerBorder(ImDrawList* drawList, float startAngle, float endAngle,
                                  float innerR, ImU32 color, float width)
 {
-    const int segments = 32;
     ImVector<ImVec2> points;
-
-    for (int i = 0; i <= segments; ++i)
-    {
-        float t = static_cast<float>(i) / static_cast<float>(segments);
-        float angle = startAngle + t * (endAngle - startAngle);
-        float cosA = std::cos(angle);
-        float sinA = std::sin(angle);
-        points.push_back(ImVec2(center.x + cosA * (innerR + width), center.y + sinA * (innerR + width)));
-    }
-
-    for (int i = segments; i >= 0; --i)
-    {
-        float t = static_cast<float>(i) / static_cast<float>(segments);
-        float angle = startAngle + t * (endAngle - startAngle);
-        float cosA = std::cos(angle);
-        float sinA = std::sin(angle);
-        points.push_back(ImVec2(center.x + cosA * innerR, center.y + sinA * innerR));
-    }
-
+    GenerateArc(startAngle, endAngle, innerR, innerR + width, points);
     drawList->AddConcavePolyFilled(points.Data, points.Size, color);
 }
 
