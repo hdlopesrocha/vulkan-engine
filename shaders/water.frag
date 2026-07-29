@@ -90,6 +90,15 @@ void main() {
     vec2 screenUV = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
     float sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
 
+    // Early depth-based discard: if solid geometry is in front of the water
+    // surface, this fragment is fully occluded and contributes nothing. Testing
+    // here (instead of after the expensive noise/refraction/caustic work below)
+    // skips all of that computation for hidden water pixels at zero visual cost.
+    // Uses the same raw-depth comparison as the original test to stay exact.
+    if (sceneDepthRaw + 1e-6 < gl_FragCoord.z) {
+        discard;
+    }
+
     // === WATER VOLUME THICKNESS ===
     // Compute volume thickness from back-face depth (rendered with reversed winding)
     // before the normal computation, so we can modulate bump amplitude.
@@ -123,15 +132,6 @@ void main() {
     // Also reject backFaceDepthRaw == 1.0 (depth-clear value = no geometry rendered).
     bool hasValidBackFace = (backFaceDepthRaw < 0.9999) && (backFaceThickness > kMinVolumeThickness);
     float waterThickness  = hasValidBackFace ? min(backFaceThickness, sceneThickness) : sceneThickness;
-
-    // Early depth-based discard: if solid geometry is in front of the water
-    // surface, this fragment is fully occluded and contributes nothing. Testing
-    // here (instead of after the expensive noise/refraction/caustic work below)
-    // skips all of that computation for hidden water pixels at zero visual cost.
-    // Uses the same raw-depth comparison as the original test to stay exact.
-    if (sceneDepthRaw + 1e-6 < gl_FragCoord.z) {
-        discard;
-    }
 
     // Depth-based modulation factors (exponential ramp)
         float volumeBlurFactor = (volumeBlurRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBlurRate)) : 1.0;

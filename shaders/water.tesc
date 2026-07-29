@@ -92,16 +92,20 @@ void main() {
             float db = length(ubo.viewPos.xyz - vb);
             float distTess = clamp(farDist / max(min(da, db), 1.0), minLevel, maxLevel);
 
-            // Noise at edge midpoint — deterministic, identical for both
-            // adjacent patches sharing this edge
-            vec3 edgeMid = (va + vb) * 0.5;
-            float noiseVal = waterWaveDisplacement(
-                edgeMid, timeVal,
-                wp.params2.y, int(max(wp.params2.z, 1.0)), wp.params2.w, lacunarity,
-                1.0, 1.0
-            );
-            float noiseMod = 1.0 + noiseInf * (noiseVal - 0.5);
-            outer[e] = clamp(distTess * noiseMod, minLevel, maxLevel);
+            if (noiseInf > 0.0) {
+                // Noise at edge midpoint — deterministic, identical for both
+                // adjacent patches sharing this edge
+                vec3 edgeMid = (va + vb) * 0.5;
+                float noiseVal = waterWaveDisplacement(
+                    edgeMid, timeVal,
+                    wp.params2.y, int(max(wp.params2.z, 1.0)), wp.params2.w, lacunarity,
+                    1.0, 1.0
+                );
+                float noiseMod = 1.0 + noiseInf * (noiseVal - 0.5);
+                outer[e] = clamp(distTess * noiseMod, minLevel, maxLevel);
+            } else {
+                outer[e] = distTess;
+            }
         }
 
         gl_TessLevelOuter[0] = outer[1];  // edge(v1,v2), opposite v0
