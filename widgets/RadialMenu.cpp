@@ -217,40 +217,25 @@ void RadialMenu::Update()
     if (currentRadius < deadZoneRadius)
         return;
 
-    float bandWidth = outerRadius - innerRadius;
-
     // Find the active (topmost) ring's band and handle input
     if (!stack.empty())
     {
         RingEntry& active = stack.back();
-        int topIdx = static_cast<int>(stack.size()) - 1;
-
-        // Compute the top ring's band
-        float topInnerR = innerRadius + ringSpacing;
-        float topOuterR = innerRadius + ringSpacing + bandWidth;
-        for (int i = 0; i < topIdx; ++i)
-        {
-            topInnerR = topOuterR + ringSpacing;
-            topOuterR = topInnerR + bandWidth;
-        }
 
         switch (active.type)
         {
         case RingType::HSV_SLIDER:
         {
-            if (currentRadius > topInnerR)
-            {
-                float sliderAngle = currentAngle;
+            float sliderAngle = currentAngle;
 
-                float range = active.sliderMax - active.sliderMin;
-                float rawValue = active.sliderMin + (sliderAngle / TWO_PI) * range;
+            float range = active.sliderMax - active.sliderMin;
+            float rawValue = active.sliderMin + (sliderAngle / TWO_PI) * range;
 
-                float halfRange = range * 0.5f;
-                if (std::abs(rawValue - active.sliderValue) > halfRange)
-                    rawValue = (rawValue > active.sliderValue) ? active.sliderMin : active.sliderMax;
+            float halfRange = range * 0.5f;
+            if (std::abs(rawValue - active.sliderValue) > halfRange)
+                rawValue = (rawValue > active.sliderValue) ? active.sliderMin : active.sliderMax;
 
-                active.sliderValue = rawValue;
-            }
+            active.sliderValue = rawValue;
             return;
         }
 
@@ -259,10 +244,10 @@ void RadialMenu::Update()
             active.hoveredTexture = -1;
             active.hoveredNavPrev = false;
             active.hoveredNavNext = false;
-            if (currentRadius > topInnerR && currentRadius <= topOuterR)
+            if (currentRadius > deadZoneRadius)
             {
                 float sectorAngle = TWO_PI / static_cast<float>(kTotalTexSectors);
-                int idx = static_cast<int>(currentAngle / sectorAngle);
+                int idx = static_cast<int>(std::fmod(currentAngle + sectorAngle * 0.5f, TWO_PI) / sectorAngle);
                 if (idx >= kTotalTexSectors)
                     idx = kTotalTexSectors - 1;
 
@@ -283,34 +268,27 @@ void RadialMenu::Update()
         case RingType::LABEL:
         {
             active.hoveredLabel = -1;
-            if (currentRadius > topInnerR && currentRadius <= topOuterR)
-            {
-                int count = static_cast<int>(active.items.size());
-                float itemAngle = TWO_PI / static_cast<float>(count);
-                int idx = static_cast<int>(currentAngle / itemAngle);
-                if (idx >= count)
-                    idx = count - 1;
-                active.hoveredLabel = idx;
-            }
+            int count = static_cast<int>(active.items.size());
+            float itemAngle = TWO_PI / static_cast<float>(count);
+            int idx = static_cast<int>(std::fmod(currentAngle + itemAngle * 0.5f, TWO_PI) / itemAngle);
+            if (idx >= count)
+                idx = count - 1;
+            active.hoveredLabel = idx;
             return;
         }
 
         case RingType::SUBPAGE:
         {
-            // Subpage is the active ring — detect subpage hover in its band
             if (active.pageIndex >= 0 && active.pageIndex < static_cast<int>(pages.size()))
             {
                 const Page& page = pages[active.pageIndex];
                 if (!page.subPages.empty())
                 {
                     float subAngle = TWO_PI / static_cast<float>(page.subPages.size());
-                    if (currentRadius > topInnerR && currentRadius <= topOuterR)
-                    {
-                        int subIdx = static_cast<int>(currentAngle / subAngle);
-                        if (subIdx >= static_cast<int>(page.subPages.size()))
-                            subIdx = static_cast<int>(page.subPages.size()) - 1;
-                        hoveredSubPage = subIdx;
-                    }
+                    int subIdx = static_cast<int>(std::fmod(currentAngle + subAngle * 0.5f, TWO_PI) / subAngle);
+                    if (subIdx >= static_cast<int>(page.subPages.size()))
+                        subIdx = static_cast<int>(page.subPages.size()) - 1;
+                    hoveredSubPage = subIdx;
                 }
             }
             return;
@@ -326,28 +304,16 @@ void RadialMenu::Update()
     {
         if (stack[si].type == RingType::SUBPAGE)
         {
-            // Compute this layer's band
-            float layerInnerR = innerRadius + ringSpacing;
-            float layerOuterR = innerRadius + ringSpacing + bandWidth;
-            for (int i = 0; i < si; ++i)
-            {
-                layerInnerR = layerOuterR + ringSpacing;
-                layerOuterR = layerInnerR + bandWidth;
-            }
-
             if (stack[si].pageIndex >= 0 && stack[si].pageIndex < static_cast<int>(pages.size()))
             {
                 const Page& page = pages[stack[si].pageIndex];
                 if (!page.subPages.empty())
                 {
                     float subAngle = TWO_PI / static_cast<float>(page.subPages.size());
-                    if (currentRadius > layerInnerR && currentRadius <= layerOuterR)
-                    {
-                        int subIdx = static_cast<int>(currentAngle / subAngle);
-                        if (subIdx >= static_cast<int>(page.subPages.size()))
-                            subIdx = static_cast<int>(page.subPages.size()) - 1;
-                        hoveredSubPage = subIdx;
-                    }
+                    int subIdx = static_cast<int>(std::fmod(currentAngle + subAngle * 0.5f, TWO_PI) / subAngle);
+                    if (subIdx >= static_cast<int>(page.subPages.size()))
+                        subIdx = static_cast<int>(page.subPages.size()) - 1;
+                    hoveredSubPage = subIdx;
                 }
             }
             break;
@@ -365,7 +331,7 @@ void RadialMenu::Update()
     {
         int pageCount = static_cast<int>(pages.size());
         float pageAngle = TWO_PI / static_cast<float>(pageCount);
-        int pageIdx = static_cast<int>(currentAngle / pageAngle);
+        int pageIdx = static_cast<int>(std::fmod(currentAngle + pageAngle * 0.5f, TWO_PI) / pageAngle);
         if (pageIdx >= pageCount)
             pageIdx = pageCount - 1;
         hoveredPage = pageIdx;
@@ -392,17 +358,16 @@ void RadialMenu::Draw()
 
     for (int i = 0; i < pageCount; ++i)
     {
-        float startAngle = angleOffset + static_cast<float>(i) * pageAngle;
+        float startAngle = angleOffset - pageAngle * 0.5f + static_cast<float>(i) * pageAngle;
         float endAngle = startAngle + pageAngle;
 
-        ImU32 fillColor = backgroundColor;
-        if (i == selectedPageIndex)
-            fillColor = subpageSelectedColor;
-        else if (i == hoveredPage)
-            fillColor = pageHoverColor;
-
-        DrawSector(drawList, startAngle, endAngle, deadZoneRadius, innerRadius, fillColor, outlineColor);
+        DrawSector(drawList, startAngle, endAngle, deadZoneRadius, innerRadius, backgroundColor, outlineColor);
         DrawLabel(drawList, pages[i].label, startAngle, endAngle, deadZoneRadius, innerRadius, IM_COL32(255, 255, 255, 255));
+
+        if (i == selectedPageIndex)
+            DrawInnerBorder(drawList, startAngle, endAngle, deadZoneRadius, subpageSelectedColor, 10.0f);
+        else if (i == hoveredPage)
+            DrawInnerBorder(drawList, startAngle, endAngle, deadZoneRadius, pageHoverColor, 10.0f);
     }
 
     // 2. Draw all rings from the stack (bottom to top), each at its own band
@@ -434,17 +399,16 @@ void RadialMenu::Draw()
 
             for (int j = 0; j < subCount; ++j)
             {
-                float startAngle = angleOffset + static_cast<float>(j) * subAngle;
+                float startAngle = angleOffset - subAngle * 0.5f + static_cast<float>(j) * subAngle;
                 float endAngle = startAngle + subAngle;
 
-                ImU32 fillColor = backgroundColor;
-                if (hasActiveRing && j == entry.selectedIndex)
-                    fillColor = subpageSelectedColor;
-                else if (isTop && j == hoveredSubPage)
-                    fillColor = subpageHoverColor;
-
-                DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, fillColor, outlineColor);
+                DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
                 DrawLabel(drawList, page.subPages[j].label, startAngle, endAngle, layerInnerR, layerOuterR, IM_COL32(255, 255, 255, 255));
+
+                if (hasActiveRing && j == entry.selectedIndex)
+                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, subpageSelectedColor, 10.0f);
+                else if (isTop && j == hoveredSubPage)
+                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, subpageHoverColor, 10.0f);
             }
             break;
         }
@@ -457,22 +421,24 @@ void RadialMenu::Draw()
 
             for (int s = 0; s < kTotalTexSectors; ++s)
             {
-                float startAngle = angleOffset + static_cast<float>(s) * sectorAngle;
+                float startAngle = angleOffset - sectorAngle * 0.5f + static_cast<float>(s) * sectorAngle;
                 float endAngle = startAngle + sectorAngle;
 
                 if (s == kTexturesPerPage)
                 {
                     bool hovered = isTop && entry.hoveredNavPrev;
-                    ImU32 fillColor = hovered ? navSectorHoverColor : backgroundColor;
-                    DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, fillColor, outlineColor);
+                    DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
                     DrawArrow(drawList, startAngle, endAngle, layerInnerR, layerOuterR, false, IM_COL32(255, 255, 255, 255));
+                    if (hovered)
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, navSectorHoverColor, 10.0f);
                 }
                 else if (s == kTexturesPerPage + 1)
                 {
                     bool hovered = isTop && entry.hoveredNavNext;
-                    ImU32 fillColor = hovered ? navSectorHoverColor : backgroundColor;
-                    DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, fillColor, outlineColor);
+                    DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
                     DrawArrow(drawList, startAngle, endAngle, layerInnerR, layerOuterR, true, IM_COL32(255, 255, 255, 255));
+                    if (hovered)
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, navSectorHoverColor, 10.0f);
                 }
                 else
                 {
@@ -482,9 +448,14 @@ void RadialMenu::Draw()
                     bool selected = (texIdx == entry.selectedIndex);
                     if (texIdx < totalTex)
                         DrawTextureSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR,
-                                          entry.textures[texIdx], hovered, selected, outlineColor);
+                                          entry.textures[texIdx], outlineColor);
                     else
                         DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
+
+                    if (hovered)
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, textureSectorHoverColor, 10.0f);
+                    else if (selected)
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, subpageSelectedColor, 10.0f);
                 }
             }
             break;
@@ -498,19 +469,18 @@ void RadialMenu::Draw()
 
             for (int i = 0; i < count; ++i)
             {
-                float startAngle = angleOffset + static_cast<float>(i) * itemAngle;
+                float startAngle = angleOffset - itemAngle * 0.5f + static_cast<float>(i) * itemAngle;
                 float endAngle = startAngle + itemAngle;
 
-                ImU32 fillColor = backgroundColor;
-                if (isTop && i == entry.hoveredLabel)
-                    fillColor = labelSectorHoverColor;
-                else if (!isTop && i == entry.selectedIndex)
-                    fillColor = subpageSelectedColor;
-                else if (i == entry.currentItem)
-                    fillColor = labelCurrentItemColor;
-
-                DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, fillColor, outlineColor);
+                DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
                 DrawLabel(drawList, entry.items[i], startAngle, endAngle, layerInnerR, layerOuterR, IM_COL32(255, 255, 255, 255));
+
+                if (isTop && i == entry.hoveredLabel)
+                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, labelSectorHoverColor, 10.0f);
+                else if (!isTop && i == entry.selectedIndex)
+                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, subpageSelectedColor, 10.0f);
+                else if (i == entry.currentItem)
+                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, labelCurrentItemColor, 10.0f);
             }
             break;
         }
@@ -603,19 +573,13 @@ void RadialMenu::DrawArrow(ImDrawList* drawList, float angleStart, float angleEn
 
 void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float endAngle,
                                     float innerR, float outerR, ImTextureID tex,
-                                    bool hovered, bool selected, ImU32 outlineCol)
+                                    ImU32 outlineCol)
 {
     if (!tex)
     {
         DrawSector(drawList, startAngle, endAngle, innerR, outerR, backgroundColor, outlineCol);
         return;
     }
-
-    ImU32 tint = IM_COL32_WHITE;
-    if (hovered)
-        tint = textureSectorHoverColor;
-    else if (selected)
-        tint = subpageSelectedColor;
 
     const int segments = 16;
     float span = endAngle - startAngle;
@@ -637,7 +601,7 @@ void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float
 
         drawList->AddImageQuad(tex, p0, p1, p2, p3,
                                ImVec2(u0, 0), ImVec2(u1, 0), ImVec2(u1, 1), ImVec2(u0, 1),
-                               tint);
+                               IM_COL32_WHITE);
     }
 
     const int outlineSegments = 32;
@@ -662,12 +626,33 @@ void RadialMenu::DrawTextureSector(ImDrawList* drawList, float startAngle, float
             drawList->AddLine(inner, outer, outlineCol, 1.0f);
         }
     }
+}
 
-    if (hovered || selected)
+void RadialMenu::DrawInnerBorder(ImDrawList* drawList, float startAngle, float endAngle,
+                                 float innerR, ImU32 color, float width)
+{
+    const int segments = 32;
+    ImVector<ImVec2> points;
+
+    for (int i = 0; i <= segments; ++i)
     {
-        drawList->AddCircle(center, innerR, outlineCol, 64, 2.0f);
-        drawList->AddCircle(center, outerR, outlineCol, 64, 2.0f);
+        float t = static_cast<float>(i) / static_cast<float>(segments);
+        float angle = startAngle + t * (endAngle - startAngle);
+        float cosA = std::cos(angle);
+        float sinA = std::sin(angle);
+        points.push_back(ImVec2(center.x + cosA * (innerR + width), center.y + sinA * (innerR + width)));
     }
+
+    for (int i = segments; i >= 0; --i)
+    {
+        float t = static_cast<float>(i) / static_cast<float>(segments);
+        float angle = startAngle + t * (endAngle - startAngle);
+        float cosA = std::cos(angle);
+        float sinA = std::sin(angle);
+        points.push_back(ImVec2(center.x + cosA * innerR, center.y + sinA * innerR));
+    }
+
+    drawList->AddConcavePolyFilled(points.Data, points.Size, color);
 }
 
 void RadialMenu::DrawSliderRing(ImDrawList* drawList, float innerR, float outerR,

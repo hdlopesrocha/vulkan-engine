@@ -155,7 +155,7 @@ private:
     ImU32 sliderFillColor = IM_COL32(220, 180, 50, 220);
     ImU32 sliderTrackColor = IM_COL32(60, 60, 70, 180);
 
-    static constexpr int kTexturesPerPage = 6;
+    static constexpr int kTexturesPerPage = 14;
     static constexpr int kNavSectors = 2;
     static constexpr int kTotalTexSectors = kTexturesPerPage + kNavSectors;
 
@@ -168,7 +168,9 @@ private:
                    float innerR, float outerR, bool right, ImU32 color);
     void DrawTextureSector(ImDrawList* drawList, float startAngle, float endAngle,
                            float innerR, float outerR, ImTextureID tex,
-                           bool hovered, bool selected, ImU32 outlineCol);
+                           ImU32 outlineCol);
+    void DrawInnerBorder(ImDrawList* drawList, float startAngle, float endAngle,
+                         float innerR, ImU32 color, float width);
     void DrawSliderRing(ImDrawList* drawList, float innerR, float outerR,
                         float value, float minVal, float maxVal,
                         const std::string& label, ImU32 trackCol, ImU32 fillCol,

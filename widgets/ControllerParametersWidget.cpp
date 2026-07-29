@@ -37,6 +37,7 @@ static void drawControllerSection(ControllerContext& ctx, const char* name,
     switch (ctx.activeCategory()) {
         case PageCategory::CAMERA: label = "CAM"; col = ImVec4(0.2f,0.5f,0.9f,1.0f); break;
         case PageCategory::BRUSH:  label = "BRU"; col = ImVec4(0.2f,0.9f,0.3f,1.0f); break;
+        case PageCategory::LIGHT:  label = "LIT"; col = ImVec4(0.9f,0.9f,0.2f,1.0f); break;
     }
     drawContextPage(ctx, col, label);
     ImGui::Text("  %s > %s", ctx.activePageName().c_str(), ctx.activeSubpageName().c_str());
