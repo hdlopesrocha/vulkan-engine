@@ -620,23 +620,6 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         std::cout << "[WaterRenderer] Created water geometry pipeline (dynamic rendering, 1 color attachment)" << std::endl;
     }
 
-    // Create depth pre-pass pipeline (same shaders, no color writes)
-    {
-        auto dpColorBlend = colorBlendAttachments;
-        dpColorBlend[0].colorWriteMask = 0;
-        VkPipelineColorBlendStateCreateInfo dpBlending = colorBlending;
-        dpBlending.pAttachments = dpColorBlend.data();
-        pipelineInfo.pColorBlendState = &dpBlending;
-        if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &waterDepthPrePassPipeline) != VK_SUCCESS) {
-            std::cerr << "[WaterRenderer] Warning: Failed to create water depth pre-pass pipeline" << std::endl;
-            waterDepthPrePassPipeline = VK_NULL_HANDLE;
-        } else {
-            app->resources.addPipeline(waterDepthPrePassPipeline, "WaterRenderer: waterDepthPrePassPipeline");
-            std::cout << "[WaterRenderer] Created water depth pre-pass pipeline" << std::endl;
-        }
-    }
-    pipelineInfo.pColorBlendState = &colorBlending; // restore
-
     // Clear local shader module references; destruction handled by VulkanResourceManager
     vertModule = VK_NULL_HANDLE;
     fragModule = VK_NULL_HANDLE;
@@ -963,13 +946,6 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
             waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
         else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
-    }
-
-    // Depth pre-pass: only write depth, no color output
-    if (waterDepthPrePassPipeline != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsPipeline(cmd, waterDepthPrePassPipeline);
-        else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterDepthPrePassPipeline);
-        waterIndirectRenderer.drawPrepared(cmd);
     }
 
     // Main geometry pass

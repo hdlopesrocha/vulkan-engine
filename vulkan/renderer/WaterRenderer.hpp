@@ -210,7 +210,6 @@ private:
 
     // Pipelines
     TrackedHandle<VkPipeline> waterGeometryPipeline;
-    TrackedHandle<VkPipeline> waterDepthPrePassPipeline;
     TrackedHandle<VkPipeline> cubemapWaterPipeline;
     
     // Water geometry pipeline layout (includes depth texture binding)
