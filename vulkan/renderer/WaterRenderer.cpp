@@ -1137,16 +1137,39 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
     }
 }
 
+void WaterRenderer::bindCubemapWaterPipeline(VkCommandBuffer cmd,
+                                             VkDescriptorSet descriptorSet0,
+                                             VkDescriptorSet materialDs,
+                                             uint32_t frameIndex) {
+    if (!appPtr || cubemapWaterPipeline == VK_NULL_HANDLE) return;
+    if (frameIndex >= FRAMES || cubemapWaterDepthDS[frameIndex] == VK_NULL_HANDLE) return;
+
+    VkDescriptorSet cubeDs = cubemapWaterDepthDS[frameIndex];
+
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, cubemapWaterPipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cubemapWaterPipeline);
+    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
+        waterGeometryPipelineLayout, 0, 1, &descriptorSet0, 0, nullptr);
+    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        waterGeometryPipelineLayout, 0, 1, &descriptorSet0, 0, nullptr);
+    if (materialDs != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
+            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
+    }
+    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
+        waterGeometryPipelineLayout, 2, 1, &cubeDs, 0, nullptr);
+    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        waterGeometryPipelineLayout, 2, 1, &cubeDs, 0, nullptr);
+}
+
 void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
                                             VkImageView colorView, VkImageView depthView,
-                                            VkDescriptorSet descriptorSet0,
-                                            VkDescriptorSet materialDs,
                                             uint32_t faceSize,
                                             VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer,
                                             uint32_t frameIndex) {
     if (!appPtr || cubemapWaterPipeline == VK_NULL_HANDLE) return;
-    if (frameIndex >= FRAMES || cubemapWaterDepthDS[frameIndex] == VK_NULL_HANDLE) return;
-    VkDescriptorSet cubeDs = cubemapWaterDepthDS[frameIndex];
 
     // Begin dynamic rendering (caller handles layout transitions)
     VkRenderingAttachmentInfo colorAtt{};
@@ -1168,8 +1191,6 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments = &colorAtt;
     ri.pDepthAttachment = &depthAtt;
-    // Acquire vertex/index buffers outside dynamic rendering (barriers illegal inside)
-    waterIndirectRenderer.acquireBuffers(cmd);
 
     vkCmdBeginRendering(cmd, &ri);
 
@@ -1178,30 +1199,6 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
     VkRect2D sc{ {}, {faceSize, faceSize} };
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
-    // The cubemap set (cubeDs) is allocated and its immutable dummy bindings are
-    // written ONCE in ensureCubemapResources — it is never updated here, since
-    // renderWaterIntoCubemap runs once per face and updating an already-bound set
-    // would trip VUID-03047.
-
-    // Bind pipeline and descriptor sets
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, cubemapWaterPipeline);
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cubemapWaterPipeline);
-    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
-        waterGeometryPipelineLayout, 0, 1, &descriptorSet0, 0, nullptr);
-    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        waterGeometryPipelineLayout, 0, 1, &descriptorSet0, 0, nullptr);
-    if (materialDs != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
-            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
-        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
-    }
-    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
-        waterGeometryPipelineLayout, 2, 1, &cubeDs, 0, nullptr);
-    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        waterGeometryPipelineLayout, 2, 1, &cubeDs, 0, nullptr);
-
-    // Draw water patches using per-face cull results (dedicated buffers, no race with main pass).
     waterIndirectRenderer.drawPreparedWithBuffers(cmd, waterCompactBuffer, waterVisibleCountBuffer);
 
     vkCmdEndRendering(cmd);

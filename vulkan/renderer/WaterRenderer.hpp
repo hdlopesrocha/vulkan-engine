@@ -95,10 +95,13 @@ public:
     // back after. descriptorSet0 must contain at least bindings 0, 5, 7, 10.
     // `frameIndex` selects the per-frame cubemap descriptor set so it is never
     // updated while a previous frame's command buffer is still pending (no UAB needed).
+    void bindCubemapWaterPipeline(VkCommandBuffer cmd,
+                                  VkDescriptorSet descriptorSet0,
+                                  VkDescriptorSet materialDs,
+                                  uint32_t frameIndex);
+
     void renderWaterIntoCubemap(VkCommandBuffer cmd,
                                 VkImageView colorView, VkImageView depthView,
-                                VkDescriptorSet descriptorSet0,
-                                VkDescriptorSet materialDs,
                                 uint32_t faceSize,
                                 VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer,
                                 uint32_t frameIndex);

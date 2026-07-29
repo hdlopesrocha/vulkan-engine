@@ -347,6 +347,13 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         waterRenderer->ensureCubemapResources(app, app->getSwapchainImageFormat());
     }
 
+    // Bind water cubemap pipeline and descriptor sets once before the face loop.
+    // Dynamic state (pipeline, descriptor sets) persists across begin/end rendering.
+    if (renderWater && waterRenderer && waterRenderer->getCubemapWaterPipeline() != VK_NULL_HANDLE) {
+        waterRenderer->getIndirectRenderer().acquireBuffers(cmd);
+        waterRenderer->bindCubemapWaterPipeline(cmd, mainDescriptorSet, app->getMaterialDescriptorSet(), frameIndex);
+    }
+
     for (uint32_t face = 0; face < 6; ++face) {
         glm::mat4 faceView = glm::lookAt(camPos, camPos + faces[face].target, faces[face].up);
         glm::mat4 faceVP = faceProj * faceView;
@@ -543,7 +550,6 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         if (renderWater && waterRenderer && waterRenderer->getCubemapWaterPipeline() != VK_NULL_HANDLE) {
             waterRenderer->renderWaterIntoCubemap(cmd,
                 cube360FaceViews[face], cube360DepthViews[face],
-                mainDescriptorSet, app->getMaterialDescriptorSet(),
                 CUBE360_FACE_SIZE,
                 waterCompactIndirectBuffer, waterVisibleCountBuffer,
                 frameIndex);
