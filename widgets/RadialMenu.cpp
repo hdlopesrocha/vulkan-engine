@@ -27,14 +27,10 @@ void RadialMenu::SetOuterRadius(float r) { outerRadius = r; }
 void RadialMenu::SetRingSpacing(float s) { ringSpacing = s; }
 void RadialMenu::SetTextSize(float s) { textSize = s; }
 
-void RadialMenu::SetPageHoverColor(ImU32 c) { pageHoverColor = c; }
-void RadialMenu::SetSubpageHoverColor(ImU32 c) { subpageHoverColor = c; }
-void RadialMenu::SetSubpageSelectedColor(ImU32 c) { subpageSelectedColor = c; }
+void RadialMenu::SetHoverColor(ImU32 c) { hoverColor = c; }
+void RadialMenu::SetSelectedColor(ImU32 c) { selectedColor = c; }
 void RadialMenu::SetBackgroundColor(ImU32 c) { backgroundColor = c; }
 void RadialMenu::SetOutlineColor(ImU32 c) { outlineColor = c; }
-void RadialMenu::SetTextureSectorHoverColor(ImU32 c) { textureSectorHoverColor = c; }
-void RadialMenu::SetNavSectorHoverColor(ImU32 c) { navSectorHoverColor = c; }
-void RadialMenu::SetLabelSectorHoverColor(ImU32 c) { labelSectorHoverColor = c; }
 void RadialMenu::SetSliderFillColor(ImU32 c) { sliderFillColor = c; }
 void RadialMenu::SetSliderTrackColor(ImU32 c) { sliderTrackColor = c; }
 
@@ -365,9 +361,9 @@ void RadialMenu::Draw()
         DrawLabel(drawList, pages[i].label, startAngle, endAngle, deadZoneRadius, innerRadius, IM_COL32(255, 255, 255, 255));
 
         if (i == selectedPageIndex)
-            DrawInnerBorder(drawList, startAngle, endAngle, deadZoneRadius, subpageSelectedColor, 10.0f);
+            DrawInnerBorder(drawList, startAngle, endAngle, deadZoneRadius, selectedColor, 10.0f);
         else if (i == hoveredPage)
-            DrawInnerBorder(drawList, startAngle, endAngle, deadZoneRadius, pageHoverColor, 10.0f);
+            DrawInnerBorder(drawList, startAngle, endAngle, deadZoneRadius, hoverColor, 10.0f);
     }
 
     // 2. Draw all rings from the stack (bottom to top), each at its own band
@@ -406,9 +402,9 @@ void RadialMenu::Draw()
                 DrawLabel(drawList, page.subPages[j].label, startAngle, endAngle, layerInnerR, layerOuterR, IM_COL32(255, 255, 255, 255));
 
                 if (hasActiveRing && j == entry.selectedIndex)
-                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, subpageSelectedColor, 10.0f);
+                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, selectedColor, 10.0f);
                 else if (isTop && j == hoveredSubPage)
-                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, subpageHoverColor, 10.0f);
+                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 10.0f);
             }
             break;
         }
@@ -430,7 +426,7 @@ void RadialMenu::Draw()
                     DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
                     DrawArrow(drawList, startAngle, endAngle, layerInnerR, layerOuterR, false, IM_COL32(255, 255, 255, 255));
                     if (hovered)
-                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, navSectorHoverColor, 10.0f);
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 10.0f);
                 }
                 else if (s == kTexturesPerPage + 1)
                 {
@@ -438,7 +434,7 @@ void RadialMenu::Draw()
                     DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
                     DrawArrow(drawList, startAngle, endAngle, layerInnerR, layerOuterR, true, IM_COL32(255, 255, 255, 255));
                     if (hovered)
-                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, navSectorHoverColor, 10.0f);
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 10.0f);
                 }
                 else
                 {
@@ -453,9 +449,9 @@ void RadialMenu::Draw()
                         DrawSector(drawList, startAngle, endAngle, layerInnerR, layerOuterR, backgroundColor, outlineColor);
 
                     if (hovered)
-                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, textureSectorHoverColor, 10.0f);
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 10.0f);
                     else if (selected)
-                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, subpageSelectedColor, 10.0f);
+                        DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, selectedColor, 10.0f);
                 }
             }
             break;
@@ -476,11 +472,11 @@ void RadialMenu::Draw()
                 DrawLabel(drawList, entry.items[i], startAngle, endAngle, layerInnerR, layerOuterR, IM_COL32(255, 255, 255, 255));
 
                 if (isTop && i == entry.hoveredLabel)
-                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, labelSectorHoverColor, 10.0f);
+                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, hoverColor, 10.0f);
                 else if (!isTop && i == entry.selectedIndex)
-                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, subpageSelectedColor, 10.0f);
+                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, selectedColor, 10.0f);
                 else if (i == entry.currentItem)
-                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, labelCurrentItemColor, 10.0f);
+                    DrawInnerBorder(drawList, startAngle, endAngle, layerInnerR, selectedColor, 10.0f);
             }
             break;
         }

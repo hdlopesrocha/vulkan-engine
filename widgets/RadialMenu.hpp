@@ -81,14 +81,10 @@ public:
     void SetTextSize(float size);
 
     // Color setters
-    void SetPageHoverColor(ImU32 color);
-    void SetSubpageHoverColor(ImU32 color);
-    void SetSubpageSelectedColor(ImU32 color);
+    void SetHoverColor(ImU32 color);
+    void SetSelectedColor(ImU32 color);
     void SetBackgroundColor(ImU32 color);
     void SetOutlineColor(ImU32 color);
-    void SetTextureSectorHoverColor(ImU32 color);
-    void SetNavSectorHoverColor(ImU32 color);
-    void SetLabelSectorHoverColor(ImU32 color);
     void SetSliderFillColor(ImU32 color);
     void SetSliderTrackColor(ImU32 color);
 
@@ -106,9 +102,8 @@ private:
     float ringSpacing = 4.0f;
     float textSize = 14.0f;
 
-    ImU32 pageHoverColor = IM_COL32(100, 150, 255, 200);
-    ImU32 subpageHoverColor = IM_COL32(150, 200, 255, 220);
-    ImU32 subpageSelectedColor = IM_COL32(80, 200, 120, 220);
+    ImU32 hoverColor = IM_COL32(100, 200, 100, 220);
+    ImU32 selectedColor = IM_COL32(80, 120, 200, 200);
     ImU32 backgroundColor = IM_COL32(30, 30, 40, 180);
     ImU32 outlineColor = IM_COL32(200, 200, 210, 255);
 
@@ -147,11 +142,6 @@ private:
     // Textures to set on next texture ring push
     std::vector<ImTextureID> pendingTextures;
 
-    // Ring colors
-    ImU32 textureSectorHoverColor = IM_COL32(100, 200, 100, 220);
-    ImU32 navSectorHoverColor = IM_COL32(180, 180, 60, 220);
-    ImU32 labelSectorHoverColor = IM_COL32(100, 200, 100, 220);
-    ImU32 labelCurrentItemColor = IM_COL32(80, 120, 200, 200);
     ImU32 sliderFillColor = IM_COL32(220, 180, 50, 220);
     ImU32 sliderTrackColor = IM_COL32(60, 60, 70, 180);
 
