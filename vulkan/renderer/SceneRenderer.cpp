@@ -337,7 +337,7 @@ SceneRenderer::~SceneRenderer() {
     // VulkanApp instance.
 }
 
-void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, uint32_t frameIdx, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool vegetationEnabled) {
+void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, uint32_t frameIdx, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool vegetationEnabled, bool shadowTessellationEnabled) {
     static bool firstCall = true;
     if (firstCall) {
         firstCall = false;
@@ -366,6 +366,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         UniformObject shadowUBO = uboStatic;
         shadowUBO.viewProjection = lsMatrix;
         shadowUBO.passParams.x = 0.0f;
+        shadowUBO.passParams.y = shadowTessellationEnabled ? 1.0f : 0.0f;
 
         // Wait for previous cascade draws to finish reading the UBO
         // before overwriting it via vkCmdCopyBuffer.
