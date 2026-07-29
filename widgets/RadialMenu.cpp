@@ -310,7 +310,7 @@ void RadialMenu::Update()
         if (stack[i].type == RingType::SUBPAGE) { hasSubpage = true; break; }
     }
 
-    if (!hasSubpage && currentRadius <= outerRadius)
+    if (!hasSubpage)
     {
         hoveredPage = GetSectorIndex(currentAngle, static_cast<int>(pages.size()));
 
