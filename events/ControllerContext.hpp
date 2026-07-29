@@ -6,9 +6,7 @@
 #include <cstdint>
 #include "Event.hpp"
 #include "IEventHandler.hpp"
-
-// Identifies which physical controller a context / navigation event belongs to.
-enum class ControllerId { KEYBOARD, MOUSE, GAMEPAD, WIIMOTE };
+#include "PageNavigationEvent.hpp"
 
 // Top-level category of control. The active category decides whether an input
 // acts on the camera or on the selected SDF brush.
@@ -58,22 +56,6 @@ struct ControllerPage {
         if (i < 0 || i >= static_cast<int>(children.size())) return nullptr;
         return children[i].get();
     }
-};
-
-// Event used to switch pages. Publishing it lets ANY controller (e.g. the
-// keyboard) switch the pages of ANY other controller (e.g. the mouse). Target
-// contexts react in their IEventHandler::onEvent.
-class PageNavigationEvent : public Event {
-public:
-    enum class Action { NEXT_PAGE, PREV_PAGE, NEXT_SUBPAGE, PREV_SUBPAGE };
-
-    PageNavigationEvent(ControllerId target_, Action action_)
-        : target(target_), action(action_) {}
-
-    std::string name() const override { return "PageNavigationEvent"; }
-
-    ControllerId target;
-    Action action;
 };
 
 // Holds the page tree for a single controller and tracks the active path
