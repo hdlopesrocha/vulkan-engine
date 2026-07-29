@@ -1006,19 +1006,17 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 
 	// Helper to build an image memory barrier for a specific array layer range
 	auto mkBarrierLayer = [&](VkImage img, uint32_t baseArrayLayer, uint32_t layerCount, uint32_t mipLevels) {
-		VkImageMemoryBarrier b{};
-		b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		VkImageMemoryBarrier2 b{};
+		b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
 		b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 		b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		b.subresourceRange.baseMipLevel = 0;
 		b.subresourceRange.levelCount = mipLevels;
 		b.subresourceRange.baseArrayLayer = baseArrayLayer;
 		b.subresourceRange.layerCount = layerCount;
-		b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-		b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 		b.image = img;
 		return b;
 	};
@@ -1026,46 +1024,46 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 	// Before allocating descriptors, transition the target layer(s) to GENERAL
 	// so the compute shader can write into them. Use tracked layouts as oldLayout
 	// to avoid validation mismatches.
-	std::vector<VkImageMemoryBarrier> preBarriers;
+	std::vector<VkImageMemoryBarrier2> preBarriers;
 	if (genA) {
-		VkImageMemoryBarrier b = mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels);
+		VkImageMemoryBarrier2 b = mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels);
 		// use tracked layout as oldLayout
 		b.oldLayout = textureArrayManager->getLayerLayout(0, targetLayer);
 		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		b.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
 		preBarriers.push_back(b);
 	}
 	if (genN) {
-		VkImageMemoryBarrier b = mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels);
+		VkImageMemoryBarrier2 b = mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels);
 		b.oldLayout = textureArrayManager->getLayerLayout(1, targetLayer);
 		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		b.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
 		preBarriers.push_back(b);
 	}
 	if (genB) {
-		VkImageMemoryBarrier b = mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels);
+		VkImageMemoryBarrier2 b = mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels);
 		b.oldLayout = textureArrayManager->getLayerLayout(2, targetLayer);
 		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		b.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
 		preBarriers.push_back(b);
 	}
 	if (genR) {
-		VkImageMemoryBarrier b = mkBarrierLayer(textureArrayManager->roughnessArray.image, targetLayer, 1, textureArrayManager->roughnessArray.mipLevels);
+		VkImageMemoryBarrier2 b = mkBarrierLayer(textureArrayManager->roughnessArray.image, targetLayer, 1, textureArrayManager->roughnessArray.mipLevels);
 		b.oldLayout = textureArrayManager->getLayerLayout(3, targetLayer);
 		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		b.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
 		preBarriers.push_back(b);
 	}
 	if (genAO) {
-		VkImageMemoryBarrier b = mkBarrierLayer(textureArrayManager->aoArray.image, targetLayer, 1, textureArrayManager->aoArray.mipLevels);
+		VkImageMemoryBarrier2 b = mkBarrierLayer(textureArrayManager->aoArray.image, targetLayer, 1, textureArrayManager->aoArray.mipLevels);
 		b.oldLayout = textureArrayManager->getLayerLayout(4, targetLayer);
 		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		b.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
 		preBarriers.push_back(b);
 	}
 
@@ -1078,22 +1076,22 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 		auto addNonTargetBarriers = [&](VkImage img, uint32_t mipLevels, int layerIdx) {
 			// Range before target layer [0, targetLayer)
 			if (targetLayer > 0) {
-				VkImageMemoryBarrier b = mkBarrierLayer(img, 0, targetLayer, mipLevels);
+				VkImageMemoryBarrier2 b = mkBarrierLayer(img, 0, targetLayer, mipLevels);
 				// Use authoritative per-layer tracked layout when available
 				b.oldLayout = textureArrayManager->getLayerLayout(layerIdx, 0);
 				b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				b.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+				b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 				preBarriers.push_back(b);
 			}
 			// Range after target layer [targetLayer+1, totalLayers)
 			if (targetLayer + 1 < totalLayers) {
-				VkImageMemoryBarrier b = mkBarrierLayer(img, targetLayer + 1, totalLayers - targetLayer - 1, mipLevels);
+				VkImageMemoryBarrier2 b = mkBarrierLayer(img, targetLayer + 1, totalLayers - targetLayer - 1, mipLevels);
 				// Use tracked layout for the first layer in the range as a best-effort
 				b.oldLayout = textureArrayManager->getLayerLayout(layerIdx, targetLayer + 1);
 				b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				b.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+				b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 				preBarriers.push_back(b);
 			}
 		};
@@ -1138,27 +1136,25 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 	vkCmdDispatch(cmd, groupCountX, groupCountY, 1);
 
 	// Predeclare barriers vector to cover non-array-layer code path
-	std::vector<VkImageMemoryBarrier> barriers;
+	std::vector<VkImageMemoryBarrier2> barriers;
 
 		if (useArrayLayer && textureArrayManager) {
 			// After compute, prepare the generated base mip level for mipmap generation.
 			// Transition mip level 0 of the written layer(s) from GENERAL -> TRANSFER_DST_OPTIMAL
 			// so `recordGenerateMipmaps` can perform blits and transitions correctly.
-			std::vector<VkImageMemoryBarrier> mipPrepBarriers;
+			std::vector<VkImageMemoryBarrier2> mipPrepBarriers;
 			auto mkBaseLevelPrep = [&](VkImage img, uint32_t baseArrayLayer, uint32_t mipLevels) {
-				VkImageMemoryBarrier b{};
-				b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+				VkImageMemoryBarrier2 b{};
+				b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
 				b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 				b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-				b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 				b.subresourceRange.baseMipLevel = 0;
 				b.subresourceRange.levelCount = mipLevels;
 				b.subresourceRange.baseArrayLayer = baseArrayLayer;
 				b.subresourceRange.layerCount = 1;
-				b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-				b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+				b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
 				b.image = img;
 				return b;
 			};
@@ -1206,14 +1202,14 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 					// everything in SHADER_READ_ONLY_OPTIMAL, so no extra barrier is
 					// required.
 					{
-					std::vector<VkImageMemoryBarrier> postBarriers;
+					std::vector<VkImageMemoryBarrier2> postBarriers;
 					auto mkPost = [&](VkImage img) {
 						// only called when mipLevels==1 below
-						VkImageMemoryBarrier b = mkBarrierLayer(img, targetLayer, 1, 1);
+						VkImageMemoryBarrier2 b = mkBarrierLayer(img, targetLayer, 1, 1);
 						b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 						b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-						b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-						b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+						b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+						b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 						return b;
 					};
 				if (genA && textureArrayManager->albedoArray.mipLevels <= 1)
@@ -1240,22 +1236,22 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 	// (or the post-barrier above for mipLevels==1).
 	{
 		uint32_t totalLayers = textureArrayManager->layerAmount;
-		std::vector<VkImageMemoryBarrier> restoreBarriers;
+		std::vector<VkImageMemoryBarrier2> restoreBarriers;
 		auto addRestoreBarriers = [&](VkImage img, uint32_t mipLevels) {
 			if (targetLayer > 0) {
-				VkImageMemoryBarrier b = mkBarrierLayer(img, 0, targetLayer, mipLevels);
+				VkImageMemoryBarrier2 b = mkBarrierLayer(img, 0, targetLayer, mipLevels);
 				b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 				b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				b.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+				b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 				restoreBarriers.push_back(b);
 			}
 			if (targetLayer + 1 < totalLayers) {
-				VkImageMemoryBarrier b = mkBarrierLayer(img, targetLayer + 1, totalLayers - targetLayer - 1, mipLevels);
+				VkImageMemoryBarrier2 b = mkBarrierLayer(img, targetLayer + 1, totalLayers - targetLayer - 1, mipLevels);
 				b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 				b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				b.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+				b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 				restoreBarriers.push_back(b);
 			}
 		};

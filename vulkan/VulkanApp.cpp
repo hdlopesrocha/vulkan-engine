@@ -4857,9 +4857,14 @@ void VulkanApp::drawFrame() {
         }
     }
 
-    // Acquire next image using per-image semaphore
-    VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphores[semaphoreIndex], VK_NULL_HANDLE, &imageIndex);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+    // Acquire next image using per-image semaphore.  Use a finite timeout so
+    // the application does not hang when the window is minimised (the
+    // presentation engine may never signal in that case).
+    constexpr uint64_t kAcquireTimeoutNs = 1'000'000'000ULL; // 1 s
+    VkResult r = vkAcquireNextImageKHR(device, swapchain, kAcquireTimeoutNs, imageAvailableSemaphores[semaphoreIndex], VK_NULL_HANDLE, &imageIndex);
+    if (r == VK_TIMEOUT) {
+        return;
+    } else if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreateSwapchain();
         return;
     } else if (r == VK_ERROR_DEVICE_LOST) {

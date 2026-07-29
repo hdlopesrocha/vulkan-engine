@@ -160,12 +160,7 @@ class VulkanApp {
     // Enables finer CPU↔GPU overlap — intermediate signal points can be added
     // (e.g., after shadow pass) to reduce stalls on queue bubbles.
     VkSemaphore frameTimeline = VK_NULL_HANDLE;
-    std::atomic<uint64_t> frameTimelineValue{0};    // Per-frame binary semaphores for cross-queue buffer dependency tracking.
-    // Every async transfer signals this frame's semaphore; the graphics frame
-    // waits on it. The validator requires binary semaphores for cross-queue
-    // buffer hazard tracking.
-    VkSemaphore transferCompleteSem[3] = {};
-    bool transferSemUsed[3] = {};
+    std::atomic<uint64_t> frameTimelineValue{0};
 
 public:
     uint32_t getCurrentFrame() const { return currentFrame; }
