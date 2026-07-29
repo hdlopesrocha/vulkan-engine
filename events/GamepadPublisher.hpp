@@ -46,4 +46,7 @@ private:
     bool cachedB = false;
     bool cachedStart = false;
     bool cachedBack = false;
+
+    // Translation acceleration (matches keyboard/nunchuk exponential ramp)
+    float translateTimer = 0.0f;
 };

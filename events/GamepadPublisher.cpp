@@ -161,21 +161,32 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     bool rollL = state.buttons[GLFW_GAMEPAD_BUTTON_LEFT_BUMPER] == GLFW_PRESS;
     bool rollR = state.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER] == GLFW_PRESS;
 
+    // Translation acceleration: exponential ramp matching keyboard/nunchuk.
+    // Ramp runs while left stick is deflected or triggers are pressed.
+    bool anyTranslate = (lx != 0.0f || ly != 0.0f || net != 0.0f);
+    if (anyTranslate) {
+        translateTimer += deltaTime;
+    } else {
+        translateTimer = 0.0f;
+    }
+    float translateAccel = (std::exp(translateTimer) - 1.0f) / (std::exp(1.0f) - 1.0f);
+
     // ---- Map raw stick/trigger input into an action based on active page ----
     ControllerAction action;
     const PageCategory cat = gctx.activeCategory();
     const PageControl ctrl = gctx.activeControl();
 
     if (cat == PageCategory::CAMERA) {
-        if (lx != 0.0f) action.translate += right * (lx * velocity);
-        if (ly != 0.0f) action.translate += up * (-ly * velocity);
-        if (net != 0.0f) action.translate += forward * (net * velocity);
+        float vel = velocity * translateAccel;
+        if (lx != 0.0f) action.translate += right * (lx * vel);
+        if (ly != 0.0f) action.translate += up * (-ly * vel);
+        if (net != 0.0f) action.translate += forward * (net * vel);
         action.rotateDeg.x += rotSign * (-rx * angDeg);
         action.rotateDeg.y += rotSign * (-ry * angDeg);
         if (rollL) action.rotateDeg.z += rotSign * (-angDeg);
         if (rollR) action.rotateDeg.z += rotSign * ( angDeg);
     } else {
-        float mSpeed = cp.cameraMoveSpeed * deltaTime;
+        float mSpeed = cp.cameraMoveSpeed * deltaTime * translateAccel;
         float aSpeed = cp.cameraAngularSpeedDeg * deltaTime;
         if (lx != 0.0f) action.translate += right * (lx * mSpeed);
         if (ly != 0.0f) action.translate += up * (-ly * mSpeed);
