@@ -29,6 +29,19 @@ bool GamepadPublisher::isConnected() const
 float GamepadPublisher::getLeftStickX() const { return cachedLx; }
 float GamepadPublisher::getLeftStickY() const { return cachedLy; }
 
+void GamepadPublisher::pollLeftStick()
+{
+    if (!glfwJoystickIsGamepad(joystickId)) return;
+    GLFWgamepadstate state;
+    if (!glfwGetGamepadState(joystickId, &state)) return;
+    float lx = state.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
+    float ly = state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
+    if (std::abs(lx) < deadzone) lx = 0.0f;
+    if (std::abs(ly) < deadzone) ly = 0.0f;
+    cachedLx = lx;
+    cachedLy = ly;
+}
+
 bool GamepadPublisher::aButtonPressed()
 {
     GLFWgamepadstate state;

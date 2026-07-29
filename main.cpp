@@ -736,6 +736,8 @@ public:
         } else {
             // Still poll nunchuk state so Home/A button edge detection works
             nunchukPublisher.update();
+            // Poll gamepad left stick for radial menu input
+            gamepadPublisher.pollLeftStick();
         }
 
         // Mouse: suppress when radial menu is visible or ImGui captures mouse

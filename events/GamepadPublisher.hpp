@@ -18,6 +18,7 @@ public:
     void setAngularSpeed(float deg) { angularSpeedDeg = deg; }
 
     bool isConnected() const;
+    void pollLeftStick();
     float getLeftStickX() const;
     float getLeftStickY() const;
     bool aButtonPressed();
