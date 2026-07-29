@@ -1813,11 +1813,9 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
     uint effectiveVersion = sourceVersion != 0 ? sourceVersion : nd.node->version;
         if (it != cur.end()) {
         if (it->second.version >= effectiveVersion) {
-            //printf("[SceneRenderer::updateMeshForNode] Node %llu already up-to-date (version %u >= %u)\n", (unsigned long long)nid, it->second.version, effectiveVersion);
             return; // already up-to-date
         }
         if (it->second.meshId != UINT32_MAX) {
-            //printf("[SceneRenderer::updateMeshForNode] Removing old mesh for node %llu (meshId=%u)\n", (unsigned long long)nid, it->second.meshId);
             renderer.removeMesh(it->second.meshId);
             // Do NOT call eraseMeshFromGPU here — it maps & zeroes the GPU
             // indirect buffer while the previous in-flight frame may still be

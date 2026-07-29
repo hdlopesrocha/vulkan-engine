@@ -782,7 +782,6 @@ bool VulkanApp::ensureVegetationComputePipeline() {
 
 void VulkanApp::createImageViews() {
     swapchainImageViews.resize(swapchainImages.size());
-    // std::cerr << "[DEBUG] createImageViews: swapchainImageViews.size()=" << swapchainImageViews.size() << std::endl;
     for (size_t i = 0; i < swapchainImages.size(); i++) {
         VkImageViewCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1293,7 +1292,6 @@ void VulkanApp::createSwapchain() {
     vkGetSwapchainImagesKHR(device, swapchain, &actualImageCount, nullptr);
     swapchainImages.resize(actualImageCount);
     vkGetSwapchainImagesKHR(device, swapchain, &actualImageCount, swapchainImages.data());
-    // std::cerr << "[DEBUG] createSwapchain: swapchainImages.size()=" << swapchainImages.size() << std::endl;
     swapchainImageFormat = surfaceFormat.format;
     swapchainExtent = extent;
 }
@@ -2101,13 +2099,6 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
         VkImage image = (VkImage)(uintptr_t)(key >> 32);
         auto entry = resources.find((uintptr_t)image);
         std::string desc = entry ? entry->desc : std::string("(unknown)");
-#if 0
-        std::cerr << "[VulkanApp] preApply submitId=" << submitId << " image=" << (void*)image
-                  << " desc=" << desc
-                  << " layer=" << layer
-                  << " prev=" << layoutName(prev)
-                  << " new=" << layoutName(p.second) << std::endl;
-#endif
         imageLayerLayouts[p.first] = p.second;
     }
 }
@@ -2575,7 +2566,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             if (it != imageLayerLayouts.end()) {
                 VkImageLayout tracked = it->second;
                 if (tracked != oldLayout) {
-                    // std::cerr << "[VulkanApp] transitionImageLayoutLayer: image=" << (void*)image << " callerOld=" << (int)oldLayout << " trackedOld=" << (int)tracked << " -> using tracked" << std::endl;
                     effectiveOld = tracked;
                 }
             } else {
@@ -2643,8 +2633,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         depInfo.imageMemoryBarrierCount = 1;
         depInfo.pImageMemoryBarriers = &barrier;
         vkCmdPipelineBarrier2(commandBuffer, &depInfo);
-        // Debug: log the executed barrier and its selected masks/stages
-        // std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: cmd=" << (void*)commandBuffer << " image=" << (void*)image << " old=" << (int)barrier.oldLayout << " new=" << (int)newLayout << " srcAccess=0x" << std::hex << (unsigned)barrier.srcAccessMask << " dstAccess=0x" << (unsigned)barrier.dstAccessMask << " srcStage=0x" << (unsigned)sourceStage << " dstStage=0x" << (unsigned)destinationStage << " aspect=0x" << (unsigned)barrier.subresourceRange.aspectMask << " baseLayer=" << (unsigned)barrier.subresourceRange.baseArrayLayer << " layerCount=" << (unsigned)barrier.subresourceRange.layerCount << std::endl;
         // Update authoritative tracked layout for the affected layers
         {
             std::lock_guard<std::mutex> lk(imageLayoutMutex);
@@ -2931,7 +2919,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         // If the authoritative (tracked) layout already equals the requested
         // final layout, there's nothing to emit.
         if (effectiveOld == newLayout) {
-            // std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: cmd=" << (void*)commandBuffer << " image=" << (void*)image << " effectiveOld==new (" << (int)effectiveOld << "), skipping" << std::endl;
             return;
         }
 
@@ -3482,19 +3469,6 @@ void VulkanApp::recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffe
     up.layerCount = layerCount;
     up.isBarrier = false;
     commandBufferPendingLayouts[commandBuffer].push_back(up);
-    {
-        auto entry = resources.find((uintptr_t)image);
-        std::string desc = entry ? entry->desc : std::string("(unknown)");
-#if 0
-        std::cerr << "[VulkanApp] recordTrackedLayoutForCommandBuffer: cmd=" << (void*)commandBuffer
-                  << " image=" << (void*)image
-                  << " desc=" << desc
-                  << " new=" << layoutName(newLayout)
-                  << " baseLayer=" << baseArrayLayer
-                  << " layerCount=" << layerCount
-                  << " isBarrier=0" << std::endl;
-#endif
-    }
 }
 
 // Deferred-destruction helpers
@@ -4267,25 +4241,13 @@ void VulkanApp::updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &des
         const VkWriteDescriptorSet &w = descriptors[i];
         if (w.pImageInfo) {
             if (w.pImageInfo[0].imageView == VK_NULL_HANDLE || w.pImageInfo[0].sampler == VK_NULL_HANDLE) {
-#if 0
-                std::cerr << "[VulkanApp::updateDescriptorSet] Skipping write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " due to null imageView/sampler" << std::endl;
-#endif
                 continue;
             }
-#if 0
-            std::cerr << "[VulkanApp::updateDescriptorSet] write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " type=" << w.descriptorType << " imageView=" << (void*)w.pImageInfo[0].imageView << " sampler=" << (void*)w.pImageInfo[0].sampler << std::endl;
-#endif
             filtered.push_back(w);
         } else if (w.pBufferInfo) {
             if (w.pBufferInfo[0].buffer == VK_NULL_HANDLE) {
-#if 0
-                std::cerr << "[VulkanApp::updateDescriptorSet] Skipping write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " due to null buffer" << std::endl;
-#endif
                 continue;
             }
-#if 0
-            std::cerr << "[VulkanApp::updateDescriptorSet] write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " type=" << w.descriptorType << " buffer=" << (void*)w.pBufferInfo[0].buffer << " offset=" << w.pBufferInfo[0].offset << " range=" << w.pBufferInfo[0].range << std::endl;
-#endif
             filtered.push_back(w);
         } else {
             // No image or buffer info; include as-is
@@ -4316,17 +4278,11 @@ void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> 
         const VkWriteDescriptorSet &w = descriptorWrites[i];
         if (w.pImageInfo) {
             if (w.pImageInfo[0].imageView == VK_NULL_HANDLE || w.pImageInfo[0].sampler == VK_NULL_HANDLE) {
-#if 0
-                std::cerr << "[VulkanApp::updateDescriptorSet] Skipping init write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " due to null imageView/sampler" << std::endl;
-#endif
                 continue;
             }
             filtered.push_back(w);
         } else if (w.pBufferInfo) {
             if (w.pBufferInfo[0].buffer == VK_NULL_HANDLE) {
-#if 0
-                std::cerr << "[VulkanApp::updateDescriptorSet] Skipping init write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " due to null buffer" << std::endl;
-#endif
                 continue;
             }
             filtered.push_back(w);
@@ -5242,18 +5198,6 @@ void VulkanApp::drawFrame() {
         }
 
         // Log submit details (verbose — disabled for production)
-#if 0
-        std::cerr << "[VulkanApp] frame submitId=" << submitId
-                  << " cmd=" << (void*)commandBuffer
-                  << " imageIndex=" << imageIndex
-                  << " image=" << (void*)swapchainImages[imageIndex]
-                  << " waitCount=" << waitSemaphoreInfos.size();
-        for (size_t _i = 0; _i < waitSemaphoreInfos.size(); ++_i) {
-            std::cerr << " wait[" << _i << "]=" << (void*)waitSemaphoreInfos[_i].semaphore
-                      << "/" << waitSemaphoreInfos[_i].stageMask;
-        }
-        std::cerr << std::endl;
-#endif
 
         // Promote pending layout updates for this submission so validation
         // sees populated layouts for affected subresources.
@@ -5521,7 +5465,6 @@ void VulkanApp::recreateSwapchain() {
 
 
     bool imguiInitOk = ImGui_ImplVulkan_Init(&init_info);
-    // printf("[ImGui] ImGui_ImplVulkan_Init (recreate) returned %s\\n", imguiInitOk ? "true" : "false");
     // Fonts are uploaded automatically by the backend on first NewFrame()
     if (!imguiInitOk) {
         printf("[ImGui] ERROR: ImGui_ImplVulkan_Init (recreate) failed!\n");

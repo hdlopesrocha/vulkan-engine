@@ -113,9 +113,7 @@ HeightMapTif::HeightMapTif(const std::string &filename, BoundingBox box_, int si
         float floatValue = static_cast<float>(data1[i]) * verticalScale+verticalShift;
         this->data[y][x] = floatValue;
         ++sz;
-        if (i < 8) {  // Debugging first few values
-           // std::cout << "\th[" << y << "," << x << "] = " << floatValue << std::endl;
-        }
+
         
     }        
 

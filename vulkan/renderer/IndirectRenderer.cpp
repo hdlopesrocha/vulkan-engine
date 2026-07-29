@@ -203,7 +203,6 @@ uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
         return UINT32_MAX;
     }
     std::lock_guard<std::recursive_mutex> guard(mutex);
-    //std::cout << "[IndirectRenderer::addMesh] Adding/replacing mesh ID " << customId << " with " << mesh.vertices.size() << " vertices and " << mesh.indices.size() << " indices.\n";
 
     MeshInfo m{};
     m.id = customId;
@@ -359,16 +358,13 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
     for (uint32_t meshId : meshIds) {
         auto it = meshes.find(meshId);
         if (it == meshes.end()) {
-            //printf("[IndirectRenderer::uploadMeshes] meshId %u not found\n", meshId);
             continue;
         }
         MeshInfo& info = it->second;
         if (!info.active) {
-            //printf("[IndirectRenderer::uploadMeshes] meshId %u is inactive\n", meshId);
             continue;
         }
         if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) {
-            //printf("[IndirectRenderer::uploadMeshes] buffers not created, need rebuild()\n");
             return false;
         }
 
@@ -735,15 +731,8 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
     size_t activeMeshCount = 0;
     for (const auto& kv : meshes) if (kv.second.active) ++activeMeshCount;
-#if 0
-    printf("[IndirectRenderer::rebuild] Called. dirty=%d, meshes.size()=%zu, activeMeshCount=%zu, mergedVertices=%zu, mergedIndices=%zu\n",
-        dirty, meshes.size(), activeMeshCount, mergedVertices.size(), mergedIndices.size());
-#endif
-    
+
     if (!dirty) return;
-#if 0
-    printf("[IndirectRenderer::rebuild] dirty=true, rebuilding buffers...\n");
-#endif
 
     // Defer destruction until ALL pending GPU work completes, not just
     // the current frame's fence.  Using VK_NULL_HANDLE (wait-for-all-pending)
@@ -833,14 +822,6 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // If there are no meshes, free existing buffers.
     static bool printedBufferInfo = false;
     if (!printedBufferInfo) {
-#if 0
-        printf("[IndirectRenderer::rebuild] mergedVertices.size()=%zu mergedIndices.size()=%zu\n", 
-            mergedVertices.size(), mergedIndices.size());
-        if (!mergedVertices.empty()) {
-            printf("[IndirectRenderer::rebuild] Sample vertex[0]: pos=(%.2f,%.2f,%.2f)\n",
-                mergedVertices[0].position.x, mergedVertices[0].position.y, mergedVertices[0].position.z);
-        }
-#endif
         printedBufferInfo = true;
     }
     // Capture the geometry that was current BEFORE this rebuild so it can be
@@ -1043,7 +1024,6 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Written by compute shader every frame, read by indirect draw — DEVICE_LOCAL
     // for optimal GPU performance on discrete GPUs.
     VkDeviceSize compactSize = indirectBufferSize;
-    //printf("[IndirectRenderer::rebuild] meshes=%zu activeCmds=%zu capacity=%zu\n", meshes.size(), cmds.size(), meshCapacity);
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         if (compactIndirectBuffers[f].buffer != VK_NULL_HANDLE || compactIndirectBuffers[f].memory != VK_NULL_HANDLE) {
             scheduleDestroyBuffer(compactIndirectBuffers[f]);
@@ -1265,13 +1245,6 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 
     static bool printedOnce = false;
     if (!printedOnce) {
-#if 0
-        uint32_t numCmds = 0;
-        for (const auto& kv : meshes) if (kv.second.active) ++numCmds;
-        std::cout << "[IndirectRenderer::prepareCull] RUNNING: numCmds=" << numCmds
-                  << ", computePipeline=" << (void*)computePipeline
-                  << ", computeDescriptorSet=" << (void*)computeDescriptorSet << std::endl;
-#endif
         printedOnce = true;
     }
     
@@ -1577,37 +1550,6 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
             reported = true;
         }
         return;
-    }
-
-    static int frameCount = 0;
-    if (frameCount < 10) {
-        std::lock_guard<std::recursive_mutex> lock(mutex);
-        size_t activeMeshCount = 0;
-        int totalIndexCount = 0;
-        for (const auto& kv : meshes) if (kv.second.active) { ++activeMeshCount; totalIndexCount += kv.second.indexCount; }
-        printf("[IR::drawPrepared] active=%zu totalIdx=%d slotted=%d\n",
-               activeMeshCount, totalIndexCount, (int)slottedMode);
-        int meshPrint = 0;
-        for (const auto& kv : meshes) {
-            if (!kv.second.active) continue;
-            // debugging info; keep call commented out to avoid build warnings
-            // printf("  Mesh id=%u: baseVertex=%u, firstIndex=%u, indexCount=%u, boundsMin=(%.2f,%.2f,%.2f), boundsMax=(%.2f,%.2f,%.2f)\n",
-            //     kv.second.id, kv.second.baseVertex, kv.second.firstIndex, kv.second.indexCount,
-            //     kv.second.boundsMin.x, kv.second.boundsMin.y, kv.second.boundsMin.z,
-            //     kv.second.boundsMax.x, kv.second.boundsMax.y, kv.second.boundsMax.z);
-            if (++meshPrint >= 5) break;
-        }
-        // Print first few indirect commands
-        for (size_t i = 0; i < std::min(size_t(3), indirectCommands.size()); ++i) {
-            //printf("  IndirectCmd[%zu]: indexCount=%u, instanceCount=%u, firstIndex=%u, vertexOffset=%d, firstInstance=%u\n",
-            //    i, indirectCommands[i].indexCount, indirectCommands[i].instanceCount, indirectCommands[i].firstIndex, indirectCommands[i].vertexOffset, indirectCommands[i].firstInstance);
-        }
-        // Check if using indirect count
-        if (cmdDrawIndexedIndirectCount) {
-           //printf("[IndirectRenderer::drawPrepared] Using GPU-driven count from visibleCountBuffer=%p\n",
-           //       (void*)visibleCountBuffers[currentCullFrame].buffer);
-        }
-        frameCount++;
     }
 
     // Bind merged geometry

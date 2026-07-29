@@ -19,9 +19,6 @@ void VulkanResourceManager::addDeviceMemory(VkDeviceMemory mem, const char* desc
     }
     std::lock_guard<std::mutex> lk(mtx);
     deviceMemories[(uintptr_t)mem] = {mem, desc ? std::string(desc) : std::string()};
-#if 0
-    std::cerr << "[VulkanResourceManager] addDeviceMemory mem=" << (void*)mem << " desc=" << (desc ? desc : "(null)") << " total=" << deviceMemories.size() << std::endl;
-#endif
 }
 
 void VulkanResourceManager::addImage(VkImage img, const char* desc) {
@@ -32,18 +29,12 @@ void VulkanResourceManager::addImage(VkImage img, const char* desc) {
     }
     std::lock_guard<std::mutex> lk(mtx);
     images[(uintptr_t)img] = {img, desc ? std::string(desc) : std::string()};
-#if 0
-    std::cerr << "[VulkanResourceManager] addImage img=" << (void*)img << " desc=" << (desc ? desc : "(null)") << " total=" << images.size() << std::endl;
-#endif
 }
 
 void VulkanResourceManager::setImageArrayLayers(VkImage img, uint32_t arrayLayers) {
     if (img == VK_NULL_HANDLE) return;
     std::lock_guard<std::mutex> lk(mtx);
     imageArrayLayers[(uintptr_t)img] = arrayLayers;
-#if 0
-    std::cerr << "[VulkanResourceManager] setImageArrayLayers img=" << (void*)img << " layers=" << arrayLayers << std::endl;
-#endif
 }
 
 std::optional<uint32_t> VulkanResourceManager::getImageArrayLayers(VkImage img) const {
@@ -62,9 +53,6 @@ void VulkanResourceManager::addImageView(VkImageView iv, const char* desc) {
     }
     std::lock_guard<std::mutex> lk(mtx);
     imageViews[(uintptr_t)iv] = {iv, desc ? std::string(desc) : std::string()};
-#if 0
-    std::cerr << "[VulkanResourceManager] addImageView iv=" << (void*)iv << " desc=" << (desc ? desc : "(null)") << " total=" << imageViews.size() << std::endl;
-#endif
 }
 
 void VulkanResourceManager::addSampler(VkSampler s, const char* desc) {
@@ -95,7 +83,6 @@ void VulkanResourceManager::addBuffer(VkBuffer b, const char* desc) {
     }
     std::lock_guard<std::mutex> lk(mtx);
     buffers[(uintptr_t)b] = {b, desc ? std::string(desc) : std::string()};
-    /*std::cerr << "[VulkanResourceManager] addBuffer this=" << (void*)this << " buf=" << (void*)b << " desc=" << (desc ? desc : "(null)") << " buffers=" << buffers.size() << std::endl;*/
 }
 
 void VulkanResourceManager::addPipeline(VkPipeline p, const char* desc) {
@@ -135,21 +122,12 @@ void VulkanResourceManager::addDescriptorPool(VkDescriptorPool dp, const char* d
         if (d.find("ImGui:") != std::string::npos) return;
     }
     std::lock_guard<std::mutex> lk(mtx);
-    // debug: log internal map state before insertion
     size_t bc = descriptorPools.bucket_count();
-    // std::cerr << "[VulkanResourceManager] addDescriptorPool this=" << (void*)this << " dp=" << (void*)dp << " desc=" << (desc ? desc : "(null)") << " bucket_count=" << bc << std::endl;
     if (bc == 0) {
-        // ensure there's at least one bucket before using operator[];
-        // `reserve` is safer than `rehash` for empty maps as it won't try to
-        // free a sentinel pointer value that some implementations use.
         descriptorPools.reserve(1);
         bc = descriptorPools.bucket_count();
-        // std::cerr << "[VulkanResourceManager] reserved descriptorPools bucket_count=" << bc << std::endl;
     }
     descriptorPools[(uintptr_t)dp] = {dp, desc ? std::string(desc) : std::string()};
-#if 0
-    std::cerr << "[VulkanResourceManager] addDescriptorPool dp=" << (void*)dp << " desc=" << (desc ? desc : "(null)") << " total=" << descriptorPools.size() << std::endl;
-#endif
 }
 
 void VulkanResourceManager::addDescriptorSet(VkDescriptorSet ds, const char* desc) {
@@ -160,7 +138,6 @@ void VulkanResourceManager::addDescriptorSet(VkDescriptorSet ds, const char* des
     }
     std::lock_guard<std::mutex> lk(mtx);
     descriptorSets[(uintptr_t)ds] = {ds, desc ? std::string(desc) : std::string()};
-    // std::cerr << "[VulkanResourceManager] addDescriptorSet this=" << (void*)this << " ds=" << (void*)ds << " desc=" << (desc ? desc : "(null)") << " descriptorSets=" << descriptorSets.size() << std::endl;
 }
 
 void VulkanResourceManager::addDescriptorSetLayout(VkDescriptorSetLayout dsl, const char* desc) {

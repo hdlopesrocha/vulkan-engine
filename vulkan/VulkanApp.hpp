@@ -436,11 +436,9 @@ public:
 
         // App-owned graphics pipeline accessor
         void setAppGraphicsPipeline(VkPipeline p) { 
-            //printf("[VulkanApp] setAppGraphicsPipeline: pipeline=%p\n", (void*)p);
             appGraphicsPipeline = p; 
         }
         VkPipeline getAppGraphicsPipeline() const { 
-            //printf("[VulkanApp] getAppGraphicsPipeline: pipeline=%p\n", (void*)appGraphicsPipeline);
             return appGraphicsPipeline; 
         }
         const std::vector<VkPipeline>& getRegisteredPipelines() const { return registeredPipelines; }

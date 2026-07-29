@@ -5,7 +5,6 @@
 #include "../math/TexturePainter.hpp"
 #include "../sdf/SignedDistanceFunction.hpp"
 #include "../sdf/SignedDistanceOperation.hpp"
-#include "../math/TexturePainter.hpp"
 #include "Simplifier.hpp"
 #include "OctreeChangeHandler.hpp"
 

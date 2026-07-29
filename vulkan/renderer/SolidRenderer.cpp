@@ -349,36 +349,21 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
 }
 
 void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet) {
-    static int frameCount = 0;
-    if (frameCount++ == 0) {
-        printf("[DEBUG] SolidRenderer::render called for the first time\n");
-    }
-    
     if (!appArg) {
         std::cerr << "[SolidRenderer::draw] appArg is nullptr, skipping." << std::endl;
         return;
     }
-    
-    static bool printedOnce = false;
     
     VkPipelineLayout usedLayout = graphicsPipelineLayout;
     if (graphicsPipeline == VK_NULL_HANDLE) {
         std::cerr << "[SolidRenderer::draw] graphicsPipeline is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
-    if (!printedOnce) {
-        printf("[SolidRenderer::draw] binding pipeline=%p, layout=%p\n", (void*)graphicsPipeline, (void*)usedLayout);
-    }
     if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, graphicsPipeline);
     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
     // Bind descriptor set 0: main UBO/samplers (perTextureDescriptorSet)
     // and set 1: brush depth textures (brushDepthSet) for PAINT mode.
-    if (!printedOnce) {
-        printf("[SolidRenderer::draw] perTextureDescriptorSet=%p\n", (void*)perTextureDescriptorSet);
-        printedOnce = true;
-    }
-    
     if (perTextureDescriptorSet != VK_NULL_HANDLE) {
         VkDescriptorSet bindSets[2] = { perTextureDescriptorSet, VK_NULL_HANDLE };
         uint32_t bindCount = 1;
@@ -393,9 +378,7 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     }
     
     // Draw all meshes using GPU-culled indirect commands
-    //printf("[SolidRenderer::draw] About to call drawPrepared\n");
     indirectRenderer.drawPrepared(commandBuffer);
-    //printf("[SolidRenderer::draw] drawPrepared returned\n");
 }
 
 void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet) {

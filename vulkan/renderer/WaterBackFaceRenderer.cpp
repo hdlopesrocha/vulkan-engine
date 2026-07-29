@@ -345,7 +345,6 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, backFacePipeline);
 
     if (mainDs != VK_NULL_HANDLE) {
-        //printf("[BIND] WaterBackFaceRenderer::renderBackFacePass: layout=%p firstSet=0 count=1 sets=%p\n", (void*)pipelineLayout, (void*)mainDs);
         if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 1, &mainDs, 0, nullptr);
         else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &mainDs, 0, nullptr);
     }

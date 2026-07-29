@@ -22,10 +22,7 @@ public:
     VkSampler getShadowMapSampler() const { return shadowMapSampler; }
     VkDescriptorSet getImGuiDescriptorSet(uint32_t cascade = 0) const { return cascades[cascade].imguiDescSet; }
     uint32_t getShadowMapSize(uint32_t cascade = 0) const { return shadowMapSizes[cascade]; }
-    uint32_t getMaxShadowMapSize() const { return shadowMapSizes[0]; }
     VkDescriptorSetLayout getShadowDescriptorSetLayout(VulkanApp* app) const;
-    VkRenderPass getShadowRenderPass() const { return VK_NULL_HANDLE; }
-    VkFramebuffer getShadowFramebuffer(uint32_t cascade = 0) const { return VK_NULL_HANDLE; }
     VkPipeline getShadowPipeline() const { return shadowPipeline; }
     VkPipelineLayout getShadowPipelineLayout() const { return shadowPipelineLayout; }
     VkImageView getDummyDepthView() const { return dummyColorView; }
@@ -82,16 +79,9 @@ private:
     VkDeviceMemory blurTempMemory = VK_NULL_HANDLE;
     VkImageView blurTempView = VK_NULL_HANDLE;
 
-    glm::mat4 currentLightSpaceMatrix;
-    bool requestWireframeReadbackFlag = false;
-    bool performingWireframeReadback = false;
-
     void createShadowMaps(VulkanApp* app);
     void createShadowPipeline(VulkanApp* app);
     void createBlurResources(VulkanApp* app);
-    void requestWireframeReadback();
-    void render(VulkanApp* app, VkCommandBuffer commandBuffer,
-                      const VertexBufferObject& vbo, VkDescriptorSet descriptorSet);
     std::array<VkImageLayout, SHADOW_CASCADE_COUNT> cascadeDepthLayouts = {};
     CommandBufferState* cmdState = nullptr;
 };

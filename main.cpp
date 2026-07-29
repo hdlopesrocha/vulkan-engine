@@ -2534,9 +2534,6 @@ void MyApp::rebuildBrushScene() {
             mutableEntry->previousTranslate = mutableEntry->translate;
         }
     }
-
-    // std::cerr << "[MyApp::rebuildBrushScene] Done — brush opaque chunks: " << sceneRenderer->brushSolidChunks.size()
-    //           << ", brush transparent chunks: " << sceneRenderer->brushTransparentChunks.size() << std::endl;
 }
 
 void MyApp::applyBrushToScene() {

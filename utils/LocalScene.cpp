@@ -54,19 +54,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
     ThreadPool& pool = poolOverride ? *poolOverride : threadPool;
     Processor processor(&tessCount, pool, &context, &handlers);
     tree->iterateFlat(processor, OctreeNodeData(data.level, data.node, data.cube, &context));
-#if 0
-    std::cout << "[requestModel3D] Node " << data.node 
-              << ", Triangles=" << tesselator.geometry.indices.size() / 3
-             << "]" << std::endl;
-#endif
-    // Log geometry stats for every chunk
-    //printf("[requestModel3D] Node %p, Layer %d, Cube Min=(%.2f,%.2f,%.2f), Max=(%.2f,%.2f,%.2f), Verts=%zu, Indices=%zu\n",
-    //    data.node, (int)layer,
-    //    data.cube.getMin().x, data.cube.getMin().y, data.cube.getMin().z,
-    //    data.cube.getMax().x, data.cube.getMax().y, data.cube.getMax().z,
-    //    tesselator.geometry.vertices.size(), tesselator.geometry.indices.size());
     if (tesselator.geometry.indices.empty()) {
-        //printf("[requestModel3D] EMPTY geometry for node %p, Layer %d\n", data.node, (int)layer);
     }
     if(!tesselator.geometry.indices.empty()) {
         callback(tesselator.geometry);
@@ -84,11 +72,6 @@ void LocalScene::loadScene(SceneLoaderCallback& callback, const OctreeChangeHand
     auto endTime = std::chrono::steady_clock::now();
     double elapsed = std::chrono::duration<double>(endTime - startTime).count();
     std::cout << "LocalScene::loadScene Ok! " << std::to_string(elapsed) << "s"  << std::endl;
-    // Export opaque (solid) octree to JSON after loading the scene
-    //opaqueOctree.exportToJson("solid.json");
-    //opaqueOctree.exportToBson("solid.bson");
-    //transparentOctree.exportToJson("liquid.json");
-    //transparentOctree.exportToBson("liquid.bson");
 }
 void LocalScene::action(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) {
     std::cout << "LocalScene::action() " << std::endl;
@@ -97,11 +80,6 @@ void LocalScene::action(SceneLoaderCallback& callback, const OctreeChangeHandler
     auto endTime = std::chrono::steady_clock::now();
     double elapsed = std::chrono::duration<double>(endTime - startTime).count();
     std::cout << "LocalScene::action Ok! " << std::to_string(elapsed) << "s"  << std::endl;
-    // Export opaque (solid) octree to JSON after loading the scene
-    //opaqueOctree.exportToJson("solid.json");
-    //opaqueOctree.exportToBson("solid.bson");
-    //transparentOctree.exportToJson("liquid.json");
-    //transparentOctree.exportToBson("liquid.bson");
 }
 
 void LocalScene::save(const std::string& filePath, const Settings* settings) {

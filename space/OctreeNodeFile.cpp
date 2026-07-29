@@ -101,8 +101,7 @@ void OctreeNodeFile::save(std::string baseFolder){
 	saveRecursive(node, &nodes);
 
 	size_t size = nodes.size();
-	//std::cout << "Saving " << std::to_string(size) << " nodes" << std::endl;
-	//std::cout << std::to_string(sizeof(OctreeNodeSerialized)) << " bytes/node" << std::endl;
+
     std::ostringstream decompressed;
 	decompressed.write(reinterpret_cast<const char*>(&size), sizeof(size_t) );
 	decompressed.write(reinterpret_cast<const char*>(nodes.data()), nodes.size() * sizeof(OctreeNodeSerialized) );

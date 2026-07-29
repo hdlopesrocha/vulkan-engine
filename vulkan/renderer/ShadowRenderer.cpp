@@ -267,7 +267,6 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
 }
 
 void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex, const glm::mat4& lightSpaceMatrix) {
-    currentLightSpaceMatrix = lightSpaceMatrix;
     uint32_t size = shadowMapSizes[cascadeIndex];
     auto& cas = cascades[cascadeIndex];
 
@@ -520,23 +519,6 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
 }
 
-void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer,
-                                 const VertexBufferObject& vbo, VkDescriptorSet descriptorSet) {
-    VkPipelineLayout layout = app->getPipelineLayout();
-    if (shadowPipelineLayout != VK_NULL_HANDLE) layout = shadowPipelineLayout;
-    if (descriptorSet != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, layout, 0, 1, &descriptorSet, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet, 0, nullptr);
-    }
-
-    VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
-    VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-    vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-    vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
-}
-
 VkImageLayout ShadowRenderer::getDepthLayout(uint32_t cascade) const {
     if (cascade >= cascadeDepthLayouts.size()) return VK_IMAGE_LAYOUT_UNDEFINED;
     return cascadeDepthLayouts[cascade];
@@ -566,8 +548,4 @@ void ShadowRenderer::recreateImGuiDescriptors() {
                 shadowMapSampler, cascades[i].colorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
     }
-}
-
-void ShadowRenderer::requestWireframeReadback() {
-    requestWireframeReadbackFlag = true;
 }

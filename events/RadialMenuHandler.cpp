@@ -184,24 +184,6 @@ void RadialMenuHandler::detectSelectBack() {
     }
     textureSelectPrev = selectNow && !textureSelectPrev;
     backPrev = backNow && !backPrev;
-    // Note: textureSelectPrev and backPrev are now updated to the current frame values.
-    // We need the EDGE (was false, now true), which is what selectNow && !oldPrev gives.
-    // But we've already overwritten textureSelectPrev. Let's fix the edge detection:
-    // Actually, looking at the original code, the edge detection uses:
-    //   bool selectEdge = selectNow && !textureSelectPrev;
-    //   textureSelectPrev = selectNow;
-    // So textureSelectPrev tracks the PREVIOUS frame's state.
-    // We need to restructure this. Let me re-read the original...
-
-    // The original code does:
-    //   bool selectEdge = selectNow && !textureSelectPrev;
-    //   bool backEdge = backNow && !backPrev;
-    //   textureSelectPrev = selectNow;
-    //   backPrev = backNow;
-    // So textureSelectPrev/backPrev track previous frame state for edge detection.
-    // We should NOT update them inside detectSelectBack; instead, we should
-    // return the edge values and let the caller update the tracking state.
-    // But for simplicity, let's just use the pattern correctly here.
 }
 
 bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
