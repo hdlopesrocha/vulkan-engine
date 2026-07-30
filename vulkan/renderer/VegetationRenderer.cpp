@@ -590,6 +590,7 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
     //   row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3])  — 4th row
     // Using glm::row() gives the same result (accesses across columns).
     glm::vec4 cascadePlanes[3][6];
+    glm::vec4 cascadePlanesNonExtruded[3][6];
     for (uint32_t c = 0; c < 3; c++) {
         const glm::mat4& m = cascadeMatrices[c];
         // Extract rows manually: m[col][row] in column-major GLM.
@@ -607,8 +608,11 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
             float len = glm::length(glm::vec3(cascadePlanes[c][p]));
             cascadePlanes[c][p] /= (len > 1e-8f) ? len : 1e-8f;
         }
+        // Save non-extruded copy for aabbFullyInside tests (cascade
+        // assignment should use the actual unmodified frustum).
+        std::memcpy(cascadePlanesNonExtruded[c], cascadePlanes[c], sizeof(glm::vec4) * 6);
         // Extrude near plane toward light so geometry outside the cascade
-        // can still cast a shadow into it.
+        // can still cast a shadow into it (used for aabbVisible only).
         cascadePlanes[c][4].w += maxShadowDist;
     }
 
@@ -680,22 +684,33 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
 
         // Same cascade-assignment logic as cascade_cull.comp.
         if (aabbVisible(cascadePlanes[1], minp, maxp)) {
-            if (aabbFullyInside(cascadePlanes[1], minp, maxp)) {
+            if (aabbFullyInside(cascadePlanesNonExtruded[1], minp, maxp)) {
                 if (aabbVisible(cascadePlanes[0], minp, maxp)) {
-                    if (aabbFullyInside(cascadePlanes[0], minp, maxp))
-                        writeToCascade(0, drawCmd); // C0 only
-                    else {
+                    if (aabbFullyInside(cascadePlanesNonExtruded[0], minp, maxp)) {
+                        writeToCascade(0, drawCmd); // C0 + C1 (C0-only risks blending
+                        writeToCascade(1, drawCmd); //   gap at shadow map edge)
+                    } else {
                         writeToCascade(0, drawCmd); // C0 + C1
                         writeToCascade(1, drawCmd);
                     }
-                } else
-                    writeToCascade(1, drawCmd); // C1 only
+                } else {
+                    // C1 only, unless C2 needs it for blending at C1/C2 boundary.
+                    // Use non-extruded C2 planes since the fragment shader uses
+                    // the actual (non-extruded) C2 projection for blending.
+                    if (aabbVisible(cascadePlanesNonExtruded[2], minp, maxp)) {
+                        writeToCascade(1, drawCmd);
+                        writeToCascade(2, drawCmd);
+                    } else {
+                        writeToCascade(1, drawCmd); // C1 only
+                    }
+                }
             } else {
                 // C1 border → need C1 + C2 (unless C0 covers it)
                 if (aabbVisible(cascadePlanes[0], minp, maxp)) {
-                    if (aabbFullyInside(cascadePlanes[0], minp, maxp))
-                        writeToCascade(0, drawCmd); // C0 only
-                    else {
+                    if (aabbFullyInside(cascadePlanesNonExtruded[0], minp, maxp)) {
+                        writeToCascade(0, drawCmd); // C0 + C1 (C0-only risks blending
+                        writeToCascade(1, drawCmd); //   gap at shadow map edge)
+                    } else {
                         writeToCascade(0, drawCmd); // C0 + C1 + C2
                         writeToCascade(1, drawCmd);
                         writeToCascade(2, drawCmd);

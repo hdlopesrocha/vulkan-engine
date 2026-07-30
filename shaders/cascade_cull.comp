@@ -52,6 +52,7 @@ layout(push_constant) uniform PC {
 } pc;
 
 shared vec4 gPlanes[3][6];
+shared vec4 gPlanesNonExtruded[3][6];
 
 vec4 normalizePlane(vec4 pl) {
     float len = length(pl.xyz);
@@ -122,6 +123,9 @@ void main() {
         uint p = gl_LocalInvocationIndex % 6u;
         vec4 planes[6];
         extractPlanes(cascades.viewProj[c], planes);
+        // Save non-extruded planes for aabbFullyInside test (cascade
+        // assignment should use the actual frustum, not the extruded one).
+        gPlanesNonExtruded[c][p] = planes[p];
         // Extrude near plane toward light source by maxShadowDist so
         // geometry outside the cascade can still cast a shadow into it.
         if (p == 4u) planes[p].w += pc.maxShadowDist;
@@ -157,22 +161,32 @@ void main() {
         !aabbVisible(gPlanes[2], minp, maxp)) return;
 
     if (aabbVisible(gPlanes[1], minp, maxp)) {
-        if (aabbFullyInside(gPlanes[1], minp, maxp)) {
+        if (aabbFullyInside(gPlanesNonExtruded[1], minp, maxp)) {
             if (aabbVisible(gPlanes[0], minp, maxp)) {
-                if (aabbFullyInside(gPlanes[0], minp, maxp)) {
-                    writeToCascade(0u, cmd); // C0 only
+                if (aabbFullyInside(gPlanesNonExtruded[0], minp, maxp)) {
+                    writeToCascade(0u, cmd); // C0 + C1 (C0-only risks blending gap
+                    writeToCascade(1u, cmd); //   at shadow map edge)
                 } else {
                     writeToCascade(0u, cmd); // C0 + C1
                     writeToCascade(1u, cmd);
                 }
             } else {
-                writeToCascade(1u, cmd); // C1 only
+                // C1 only, unless C2 needs it for blending at C1/C2 boundary.
+                // Use non-extruded C2 planes since the fragment shader uses
+                // the actual (non-extruded) C2 projection for blending.
+                if (aabbVisible(gPlanesNonExtruded[2], minp, maxp)) {
+                    writeToCascade(1u, cmd);
+                    writeToCascade(2u, cmd);
+                } else {
+                    writeToCascade(1u, cmd); // C1 only
+                }
             }
         } else {
             // C1 border → need C1 + C2 (unless C0 covers it)
             if (aabbVisible(gPlanes[0], minp, maxp)) {
-                if (aabbFullyInside(gPlanes[0], minp, maxp)) {
-                    writeToCascade(0u, cmd); // C0 only (exclude from C1, C2)
+                if (aabbFullyInside(gPlanesNonExtruded[0], minp, maxp)) {
+                    writeToCascade(0u, cmd); // C0 + C1 (C0-only risks blending gap
+                    writeToCascade(1u, cmd); //   at shadow map edge)
                 } else {
                     writeToCascade(0u, cmd); // C0 + C1 + C2 (C1 border → C2 needed)
                     writeToCascade(1u, cmd);
