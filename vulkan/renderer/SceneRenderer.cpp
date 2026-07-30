@@ -337,7 +337,7 @@ SceneRenderer::~SceneRenderer() {
     // VulkanApp instance.
 }
 
-void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, uint32_t frameIdx, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool vegetationEnabled, bool shadowTessellationEnabled) {
+void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, uint32_t frameIdx, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool renderSolid, bool vegetationEnabled, bool shadowTessellationEnabled) {
     static bool firstCall = true;
     if (firstCall) {
         firstCall = false;
@@ -440,14 +440,17 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
             frameCmdState.bindGraphicsDescriptorSets(commandBuffer, layout, 0, 1, &ds, 0, nullptr);
         }
 
-        // Bind solid shadow pipeline first and draw solid geometry.
-        VkPipeline solidShadowPipeline = shadowMapper->getShadowPipeline();
-        if (solidShadowPipeline != VK_NULL_HANDLE) {
-            frameCmdState.bindGraphicsPipeline(commandBuffer, solidShadowPipeline);
+        // Draw solid geometry into shadow map (can be toggled off to isolate
+        // vegetation shadows for debugging).
+        if (renderSolid) {
+            VkPipeline solidShadowPipeline = shadowMapper->getShadowPipeline();
+            if (solidShadowPipeline != VK_NULL_HANDLE) {
+                frameCmdState.bindGraphicsPipeline(commandBuffer, solidShadowPipeline);
+            }
+            auto& shadowIR = solidRenderer->getIndirectRenderer();
+            shadowIR.bindBuffers(commandBuffer);
+            shadowIR.drawCascadeOnly(commandBuffer, c);
         }
-        auto& shadowIR = solidRenderer->getIndirectRenderer();
-        shadowIR.bindBuffers(commandBuffer);
-        shadowIR.drawCascadeOnly(commandBuffer, c);
 
         // Vegetation shadow pass: drawn after solid so its 2-buffer vertex
         // bindings don't leak into the solid draw. Uses cascade-aware culling
