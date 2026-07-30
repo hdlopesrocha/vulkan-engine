@@ -621,7 +621,7 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
                           float extrudeDist = 0.0f) -> bool {
         for (int i = 0; i < 6; i++) {
             glm::vec3 n = glm::vec3(planes[i]);
-            float d = planes[i].w + ((i == 4 || i == 5) ? extrudeDist : 0.0f);
+            float d = planes[i].w + extrudeDist;
             glm::vec3 p;
             p.x = (n.x >= 0.0f) ? maxp.x : minp.x;
             p.y = (n.y >= 0.0f) ? maxp.y : minp.y;

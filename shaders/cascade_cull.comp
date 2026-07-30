@@ -78,7 +78,7 @@ bool aabbVisibleExtruded(uint cascade, vec3 minp, vec3 maxp) {
     for (int i = 0; i < 6; ++i) {
         vec3 n = gPlanes[cascade][i].xyz;
         float d = gPlanes[cascade][i].w;
-        if (i == 4 || i == 5) d += pc.maxShadowDist;
+        d += pc.maxShadowDist;
         vec3 p;
         p.x = (n.x >= 0.0) ? maxp.x : minp.x;
         p.y = (n.y >= 0.0) ? maxp.y : minp.y;
