@@ -363,6 +363,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
     // Acquire vegetation instance/indirect buffers before dynamic rendering
     if (vegetationEnabled && vegetationRenderer) {
         vegetationRenderer->recordReadBarriers(commandBuffer);
+        vegetationRenderer->prepareCullCascades(commandBuffer, cascadeMatrices);
     }
 
     for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
@@ -449,10 +450,11 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         shadowIR.drawCascadeOnly(commandBuffer, c);
 
         // Vegetation shadow pass: drawn after solid so its 2-buffer vertex
-        // bindings don't leak into the solid draw.
+        // bindings don't leak into the solid draw. Uses cascade-aware culling
+        // (prepareCullCascades dispatched above).
         if (vegetationEnabled && vegetationRenderer) {
             const glm::vec3 cameraPos = glm::vec3(uboStatic.viewPos);
-            vegetationRenderer->drawShadow(app, commandBuffer, ds, uboStatic.viewProjection, cameraPos);
+            vegetationRenderer->drawShadowCascade(app, commandBuffer, ds, cameraPos, c);
         }
 
         shadowMapper->endShadowPass(app, commandBuffer, c);
