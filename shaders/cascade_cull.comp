@@ -87,6 +87,20 @@ bool aabbVisibleExtruded(uint cascade, vec3 minp, vec3 maxp) {
     return true;
 }
 
+bool aabbVisible(vec4 planes[6], vec3 minp, vec3 maxp) {
+    for (int i = 0; i < 6; ++i) {
+        vec3 n = planes[i].xyz;
+        float d = planes[i].w;
+        vec3 p;
+        p.x = (n.x >= 0.0) ? maxp.x : minp.x;
+        p.y = (n.y >= 0.0) ? maxp.y : minp.y;
+        p.z = (n.z >= 0.0) ? maxp.z : minp.z;
+        float dist = dot(n, p) + d;
+        if (dist < 0.0) return false;
+    }
+    return true;
+}
+
 bool aabbFullyInside(vec4 planes[6], vec3 minp, vec3 maxp) {
     for (int i = 0; i < 6; ++i) {
         vec3 n = planes[i].xyz;
@@ -162,7 +176,7 @@ void main() {
                     writeToCascade(1u, cmd);
                 }
             } else {
-                if (aabbVisibleExtruded(2, minp, maxp)) {
+                if (aabbVisible(gPlanes[2], minp, maxp)) {
                     writeToCascade(1u, cmd);
                     writeToCascade(2u, cmd);
                 } else {
