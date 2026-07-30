@@ -19,6 +19,7 @@ public:
     void blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
     // Getters for resources (per-cascade)
     VkImageView getShadowMapView(uint32_t cascade = 0) const { return cascades[cascade].colorView; }
+    VkImageView getShadowDepthView(uint32_t cascade = 0) const { return cascades[cascade].depthView; }
     VkSampler getShadowMapSampler() const { return shadowMapSampler; }
     VkDescriptorSet getImGuiDescriptorSet(uint32_t cascade = 0) const { return cascades[cascade].imguiDescSet; }
     uint32_t getShadowMapSize(uint32_t cascade = 0) const { return shadowMapSizes[cascade]; }

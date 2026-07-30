@@ -1099,7 +1099,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         if (shadowMapper && linearizePipeline != VK_NULL_HANDLE) {
             uint32_t shadowSize = shadowMapper->getShadowMapSize();
             for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
-                VkImageView src = shadowMapper->getShadowMapView(c);
+                VkImageView src = shadowMapper->getShadowDepthView(c);
                 if (src != VK_NULL_HANDLE && linearShadowDepthView[c] != VK_NULL_HANDLE) {
                     float nearP = 0.0f, farP = 1.0f;
                     runLinearizePass(app, shadowMapper->getDepthImage(c), src, widgetSampler, widgetSampler, linearShadowDepthView[c],

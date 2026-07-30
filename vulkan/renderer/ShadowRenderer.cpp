@@ -124,7 +124,7 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
         setLayouts.push_back(app->getDescriptorSetLayout());
 
     GraphicsPipelineConfig cfg{};
-    cfg.cullMode = VK_CULL_MODE_NONE;
+    cfg.cullMode = VK_CULL_MODE_FRONT_BIT;
     cfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     cfg.colorFormats = { EVSM_FORMAT };
     cfg.depthBiasEnable = true;

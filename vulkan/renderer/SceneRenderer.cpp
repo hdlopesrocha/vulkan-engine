@@ -1480,7 +1480,7 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
         }
     }
 
-    std::cerr << "[BRUSH] step=pollPendingTransfers" << std::endl;
+    //std::cerr << "[BRUSH] step=pollPendingTransfers" << std::endl;
     if (!waterRenderer) {
         std::cerr << "[BRUSH] FATAL: waterRenderer is null!" << std::endl;
         return;
@@ -1541,7 +1541,7 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
             ++idx;
             continue;
         }
-        std::cerr << "[BRUSH] added mesh slotIdx=" << slotIdx << " for nid=" << (unsigned long long)pd.nid << std::endl;
+        //std::cerr << "[BRUSH] added mesh slotIdx=" << slotIdx << " for nid=" << (unsigned long long)pd.nid << std::endl;
 
         // Look up the old slot for this NodeID
         uint32_t oldSlot = UINT32_MAX;
