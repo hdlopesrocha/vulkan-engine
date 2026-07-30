@@ -89,33 +89,26 @@ bool aabbVisibleExtruded(uint cascade, vec3 minp, vec3 maxp) {
     return true;
 }
 
-bool aabbVisible(vec4 planes[6], vec3 minp, vec3 maxp) {
-    for (int i = 0; i < 6; ++i) {
-        vec3 n = planes[i].xyz;
-        float d = planes[i].w;
-        vec3 p;
-        p.x = (n.x >= 0.0) ? maxp.x : minp.x;
-        p.y = (n.y >= 0.0) ? maxp.y : minp.y;
-        p.z = (n.z >= 0.0) ? maxp.z : minp.z;
-        float dist = dot(n, p) + d;
-        if (dist < 0.0) return false;
+bool aabbProjectedSafe(mat4 mvp, vec3 minp, vec3 maxp, float margin) {
+    vec2 uvMin = vec2(1e10);
+    vec2 uvMax = vec2(-1e10);
+    for (int iz = 0; iz < 2; iz++) {
+        for (int iy = 0; iy < 2; iy++) {
+            for (int ix = 0; ix < 2; ix++) {
+                vec3 p = vec3(
+                    (ix == 0) ? minp.x : maxp.x,
+                    (iy == 0) ? minp.y : maxp.y,
+                    (iz == 0) ? minp.z : maxp.z
+                );
+                vec4 ls = mvp * vec4(p, 1.0);
+                vec2 uv = ls.xy / ls.w * 0.5 + 0.5;
+                uvMin = min(uvMin, uv);
+                uvMax = max(uvMax, uv);
+            }
+        }
     }
-    return true;
-}
-
-bool aabbFullyInsideWithMargin(vec4 planes[6], vec3 minp, vec3 maxp, float margin) {
-    for (int i = 0; i < 6; ++i) {
-        vec3 n = planes[i].xyz;
-        float d = planes[i].w;
-        vec3 p;
-        p.x = (n.x >= 0.0) ? minp.x : maxp.x;
-        p.y = (n.y >= 0.0) ? minp.y : maxp.y;
-        p.z = (n.z >= 0.0) ? minp.z : maxp.z;
-        float dist = dot(n, p) + d;
-        float threshold = (i < 4) ? margin : 0.0;
-        if (dist < threshold) return false;
-    }
-    return true;
+    return uvMin.x >= margin && uvMax.x <= 1.0 - margin &&
+           uvMin.y >= margin && uvMax.y <= 1.0 - margin;
 }
 
 void writeToCascade(uint cascade, DrawCmd cmd) {
@@ -169,9 +162,9 @@ void main() {
         !aabbVisibleExtruded(2, minp, maxp)) return;
 
     if (aabbVisibleExtruded(1, minp, maxp)) {
-        if (aabbFullyInsideWithMargin(gPlanes[1], minp, maxp, BLEND_MARGIN)) {
+        if (aabbProjectedSafe(cascades.viewProj[1], minp, maxp, BLEND_MARGIN)) {
             if (aabbVisibleExtruded(0, minp, maxp)) {
-                if (aabbFullyInsideWithMargin(gPlanes[0], minp, maxp, BLEND_MARGIN)) {
+                if (aabbProjectedSafe(cascades.viewProj[0], minp, maxp, BLEND_MARGIN)) {
                     writeToCascade(0u, cmd);
                 } else {
                     writeToCascade(0u, cmd);
@@ -182,7 +175,7 @@ void main() {
             }
         } else {
             if (aabbVisibleExtruded(0, minp, maxp)) {
-                if (aabbFullyInsideWithMargin(gPlanes[0], minp, maxp, BLEND_MARGIN)) {
+                if (aabbProjectedSafe(cascades.viewProj[0], minp, maxp, BLEND_MARGIN)) {
                     writeToCascade(0u, cmd);
                     writeToCascade(1u, cmd);
                 } else {

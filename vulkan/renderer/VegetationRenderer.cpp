@@ -631,22 +631,28 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
         return true;
     };
     static constexpr float BLEND_MARGIN = 0.04f;
-    auto aabbFullyInsideWithMargin = [](const glm::vec4 planes[6],
-                                        const glm::vec3& minp,
-                                        const glm::vec3& maxp,
-                                        float margin) -> bool {
-        for (int i = 0; i < 6; i++) {
-            glm::vec3 n = glm::vec3(planes[i]);
-            float d = planes[i].w;
-            glm::vec3 p;
-            p.x = (n.x >= 0.0f) ? minp.x : maxp.x;
-            p.y = (n.y >= 0.0f) ? minp.y : maxp.y;
-            p.z = (n.z >= 0.0f) ? minp.z : maxp.z;
-            float dist = glm::dot(n, p) + d;
-            float threshold = (i < 4) ? margin : 0.0f;
-            if (dist < threshold) return false;
+    auto aabbProjectedSafe = [](const glm::mat4& mvp,
+                                const glm::vec3& minp,
+                                const glm::vec3& maxp,
+                                float margin) -> bool {
+        glm::vec2 uvMin(1e10f), uvMax(-1e10f);
+        for (int iz = 0; iz < 2; iz++) {
+            for (int iy = 0; iy < 2; iy++) {
+                for (int ix = 0; ix < 2; ix++) {
+                    glm::vec3 p(
+                        (ix == 0) ? minp.x : maxp.x,
+                        (iy == 0) ? minp.y : maxp.y,
+                        (iz == 0) ? minp.z : maxp.z
+                    );
+                    glm::vec4 ls = mvp * glm::vec4(p, 1.0f);
+                    glm::vec2 uv = glm::vec2(ls.x / ls.w, ls.y / ls.w) * 0.5f + 0.5f;
+                    uvMin = glm::min(uvMin, uv);
+                    uvMax = glm::max(uvMax, uv);
+                }
+            }
         }
-        return true;
+        return uvMin.x >= margin && uvMax.x <= 1.0f - margin &&
+               uvMin.y >= margin && uvMax.y <= 1.0f - margin;
     };
 
     // Lambda to append a draw command to a cascade's list
@@ -682,9 +688,9 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
 
         // Same cascade-assignment logic as cascade_cull.comp.
         if (aabbVisible(cascadePlanes[1], minp, maxp, maxShadowDist)) {
-            if (aabbFullyInsideWithMargin(cascadePlanes[1], minp, maxp, BLEND_MARGIN)) {
+            if (aabbProjectedSafe(cascadeMatrices[1], minp, maxp, BLEND_MARGIN)) {
                 if (aabbVisible(cascadePlanes[0], minp, maxp, maxShadowDist)) {
-                    if (aabbFullyInsideWithMargin(cascadePlanes[0], minp, maxp, BLEND_MARGIN)) {
+                    if (aabbProjectedSafe(cascadeMatrices[0], minp, maxp, BLEND_MARGIN)) {
                         writeToCascade(0, drawCmd);
                     } else {
                         writeToCascade(0, drawCmd);
@@ -695,7 +701,7 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
                 }
             } else {
                 if (aabbVisible(cascadePlanes[0], minp, maxp, maxShadowDist)) {
-                    if (aabbFullyInsideWithMargin(cascadePlanes[0], minp, maxp, BLEND_MARGIN)) {
+                    if (aabbProjectedSafe(cascadeMatrices[0], minp, maxp, BLEND_MARGIN)) {
                         writeToCascade(0, drawCmd);
                         writeToCascade(1, drawCmd);
                     } else {
