@@ -2398,7 +2398,7 @@ void IndirectRenderer::initCascadeCull(VulkanApp* app) {
     VkPushConstantRange pc{};
     pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pc.offset = 0;
-    pc.size = sizeof(uint32_t); // numChunks
+    pc.size = sizeof(uint32_t) + sizeof(float); // numChunks + maxShadowDist
 
     VkPipelineLayoutCreateInfo plinfo{};
     plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -2536,7 +2536,8 @@ void IndirectRenderer::refreshCascadeDescriptorsIfNeeded() {
 }
 
 void IndirectRenderer::prepareCullCascades(VkCommandBuffer cmd,
-                                            const glm::mat4 cascadeMatrices[3]) {
+                                            const glm::mat4 cascadeMatrices[3],
+                                            float maxShadowDist) {
     if (!cascadeCullInited || cascadeCullPipeline == VK_NULL_HANDLE) return;
 
     // Refresh descriptors if indirectBuffer or boundsBuffer were recreated
@@ -2648,7 +2649,10 @@ void IndirectRenderer::prepareCullCascades(VkCommandBuffer cmd,
     if (cmdState) cmdState->bindComputeDescriptorSets(cmd, cascadeCullPipelineLayout, 0, 1, &descSet, 0, nullptr);
     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cascadeCullPipelineLayout, 0, 1, &descSet, 0, nullptr);
 
-    vkCmdPushConstants(cmd, cascadeCullPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &numCmds);
+    struct PushData { uint32_t numChunks; float maxShadowDist; } pushData;
+    pushData.numChunks = numCmds;
+    pushData.maxShadowDist = maxShadowDist;
+    vkCmdPushConstants(cmd, cascadeCullPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushData), &pushData);
 
     uint32_t groups = (numCmds + 63) / 64;
     if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);

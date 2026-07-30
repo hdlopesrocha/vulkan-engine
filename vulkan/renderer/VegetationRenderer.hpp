@@ -154,7 +154,8 @@ public:
     // frustums simultaneously. Chunks are assigned to cascades based on
     // containment (fully inside → inner cascade only; border → both).
     void prepareCullCascades(VkCommandBuffer cmd,
-                             const glm::mat4 cascadeMatrices[3]);
+                             const glm::mat4 cascadeMatrices[3],
+                             float maxShadowDist);
     // Draw a specific cascade's vegetation compacted output.
     void drawShadowCascade(VulkanApp* app, VkCommandBuffer& commandBuffer,
                            VkDescriptorSet shadowDescriptorSet,

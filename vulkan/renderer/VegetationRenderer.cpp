@@ -537,7 +537,8 @@ void VegetationRenderer::destroyCascadeCull() {
 }
 
 void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
-                                              const glm::mat4 cascadeMatrices[3]) {
+                                              const glm::mat4 cascadeMatrices[3],
+                                              float maxShadowDist) {
     (void)cmd;
     if (!appPtr) return;
     if (!vegCascadeCullInited) initCascadeCull(appPtr);
@@ -606,6 +607,9 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
             float len = glm::length(glm::vec3(cascadePlanes[c][p]));
             cascadePlanes[c][p] /= (len > 1e-8f) ? len : 1e-8f;
         }
+        // Extrude near plane toward light so geometry outside the cascade
+        // can still cast a shadow into it.
+        cascadePlanes[c][4].w += maxShadowDist;
     }
 
     // Per-cascade draw command arrays (stack-allocated for small counts,
@@ -667,35 +671,45 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
         drawCmd.firstInstance = instanceOff;
         instanceOff += static_cast<uint32_t>(buf.count);
 
-        // Cull from outer (C2) inward — same logic as the compute shader
-        if (!aabbVisible(cascadePlanes[2], minp, maxp)) continue;
+        // Check visibility in at least one cascade before proceeding.
+        // (The extruded near planes ensure shadow casters outside the
+        // cascade frustum are still included.)
+        if (!aabbVisible(cascadePlanes[0], minp, maxp) &&
+            !aabbVisible(cascadePlanes[1], minp, maxp) &&
+            !aabbVisible(cascadePlanes[2], minp, maxp)) continue;
 
+        // Same cascade-assignment logic as cascade_cull.comp.
         if (aabbVisible(cascadePlanes[1], minp, maxp)) {
             if (aabbFullyInside(cascadePlanes[1], minp, maxp)) {
                 if (aabbVisible(cascadePlanes[0], minp, maxp)) {
                     if (aabbFullyInside(cascadePlanes[0], minp, maxp))
-                        writeToCascade(0, drawCmd);
+                        writeToCascade(0, drawCmd); // C0 only
                     else {
-                        writeToCascade(0, drawCmd);
+                        writeToCascade(0, drawCmd); // C0 + C1
                         writeToCascade(1, drawCmd);
                     }
                 } else
-                    writeToCascade(1, drawCmd);
+                    writeToCascade(1, drawCmd); // C1 only
             } else {
+                // C1 border → need C1 + C2 (unless C0 covers it)
                 if (aabbVisible(cascadePlanes[0], minp, maxp)) {
                     if (aabbFullyInside(cascadePlanes[0], minp, maxp))
-                        writeToCascade(0, drawCmd);
+                        writeToCascade(0, drawCmd); // C0 only
                     else {
-                        writeToCascade(0, drawCmd);
+                        writeToCascade(0, drawCmd); // C0 + C1 + C2
                         writeToCascade(1, drawCmd);
+                        writeToCascade(2, drawCmd);
                     }
                 } else {
-                    writeToCascade(1, drawCmd);
+                    writeToCascade(1, drawCmd); // C1 + C2
                     writeToCascade(2, drawCmd);
                 }
             }
-        } else
-            writeToCascade(2, drawCmd);
+        } else if (aabbVisible(cascadePlanes[0], minp, maxp)) {
+            writeToCascade(0, drawCmd); // C0 only
+        } else {
+            writeToCascade(2, drawCmd); // C2 only
+        }
 
         if (cCmds[0].size() + cCmds[1].size() + cCmds[2].size() >= vegNumChunks) break;
     }

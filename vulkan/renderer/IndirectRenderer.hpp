@@ -185,7 +185,8 @@ public:
     // Chunks fully inside an inner cascade are excluded from outer cascades;
     // border-intersecting chunks are rendered in both consecutive cascades.
     void prepareCullCascades(VkCommandBuffer cmd,
-                             const glm::mat4 cascadeMatrices[3]);
+                             const glm::mat4 cascadeMatrices[3],
+                             float maxShadowDist);
     // Draw a specific cascade's compacted output (call inside render pass).
     void drawCascadeOnly(VkCommandBuffer cmd, uint32_t cascadeIndex);
 
