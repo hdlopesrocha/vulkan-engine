@@ -145,9 +145,12 @@ void main() {
     DrawCmd cmd = inCmds.cmds[idx];
     cmd.firstInstance = idx;
 
-    // Cull from outer (C2) inward: only render in cascades that are needed.
-    // Chunks fully inside cascade N-1 are excluded from cascade N.
-    if (!aabbVisible(gPlanes[2], minp, maxp)) return;
+    // Check visibility in at least one cascade before proceeding.
+    // (C2's frustum only covers the far slice — chunks nearer than
+    // splits[2] may be outside C2 but still visible in C0 or C1.)
+    if (!aabbVisible(gPlanes[0], minp, maxp) &&
+        !aabbVisible(gPlanes[1], minp, maxp) &&
+        !aabbVisible(gPlanes[2], minp, maxp)) return;
 
     if (aabbVisible(gPlanes[1], minp, maxp)) {
         if (aabbFullyInside(gPlanes[1], minp, maxp)) {
@@ -167,14 +170,17 @@ void main() {
                 if (aabbFullyInside(gPlanes[0], minp, maxp)) {
                     writeToCascade(0u, cmd); // C0 only (exclude from C1, C2)
                 } else {
-                    writeToCascade(0u, cmd); // C0 + C1 (exclude from C2)
+                    writeToCascade(0u, cmd); // C0 + C1 + C2 (C1 border → C2 needed)
                     writeToCascade(1u, cmd);
+                    writeToCascade(2u, cmd);
                 }
             } else {
                 writeToCascade(1u, cmd); // C1 + C2 (C0 not visible)
                 writeToCascade(2u, cmd);
             }
         }
+    } else if (aabbVisible(gPlanes[0], minp, maxp)) {
+        writeToCascade(0u, cmd); // C0 only (visible in C0 but not C1 or C2)
     } else {
         writeToCascade(2u, cmd); // C2 only
     }

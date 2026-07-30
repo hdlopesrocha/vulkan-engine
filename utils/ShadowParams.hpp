@@ -15,6 +15,7 @@ struct ShadowParams {
     // Defaults here are overwritten at init from ShadowRenderer.
     uint32_t shadowMapSizes[SHADOW_CASCADE_COUNT] = {2048, 1024, 512};
     glm::mat4 lightSpaceMatrix[SHADOW_CASCADE_COUNT];
+    float splits[SHADOW_CASCADE_COUNT + 1];
 
     void update(const glm::vec3& camPos, Light& light,
                 const glm::mat4& cameraViewProj,
@@ -42,7 +43,6 @@ struct ShadowParams {
         }
 
         // ---- 2. Practical cascade splits ----
-        float splits[SHADOW_CASCADE_COUNT + 1];
         splits[0] = nearPlane;
         for (int i = 1; i <= SHADOW_CASCADE_COUNT; ++i) {
             float ci = (float)i / (float)SHADOW_CASCADE_COUNT;

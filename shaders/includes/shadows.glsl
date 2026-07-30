@@ -1,4 +1,8 @@
-// EVSM shadow sampling replaces the old 5x5 PCF and hard-shadow functions.
+// EVSM shadow sampling with gap-free cascade selection.
+// Cascade index is determined by light-space projection (matching GPU
+// cascade culling).  Cascade 2 (outermost) is sampled directly without
+// bounds check so fragments near any cascade boundary always get a
+// valid shadow value instead of falling through to return 0.0.
 #include "evsm.glsl"
 
 bool insideShadowMap(vec3 p, float margin) {
@@ -14,7 +18,6 @@ vec3 projectToShadowMap(mat4 lightSpaceMat, vec3 worldPos) {
     return p;
 }
 
-// Compute blend factor [0,1] for cascade transition: 1 = well inside, 0 = at/outside edge
 float cascadeBlendFactor(vec2 uv, float margin) {
     vec2 edgeDist = min(uv, 1.0 - uv);
     float minEdge = min(edgeDist.x, edgeDist.y);
@@ -54,13 +57,12 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias) {
         return mix(s2, s1, smoothstep(0.0, 1.0, blend1));
     }
 
-    // Cascade 2
+    // Cascade 2 — outermost cascade: sample directly without bounds
+    // check.  This guarantees every fragment receives a valid shadow
+    // value even near cascade boundaries where light-space projections
+    // may fall just outside all cascade AABBs.
     vec3 proj2 = projectToShadowMap(ubo.lightSpaceMatrix2, worldPos);
-    if (insideShadowMap(proj2, 0.0)) {
-        return ShadowEVSM(shadowMap2, proj2, bias);
-    }
-
-    return 0.0;
+    return ShadowEVSM(shadowMap2, proj2, bias);
 }
 
 float ShadowCalculationHard(vec4 fragPosLightSpace, vec3 worldPos, float bias) {

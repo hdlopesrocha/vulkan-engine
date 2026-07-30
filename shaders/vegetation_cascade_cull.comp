@@ -134,7 +134,9 @@ void main() {
 
     ChunkMeta chunk = metaBuf.chunks[idx];
 
-    if (!aabbVisible(gPlanes[2], chunk.aabbMin, chunk.aabbMax)) return;
+    if (!aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax) &&
+        !aabbVisible(gPlanes[1], chunk.aabbMin, chunk.aabbMax) &&
+        !aabbVisible(gPlanes[2], chunk.aabbMin, chunk.aabbMax)) return;
 
     DrawCmd cmd;
     cmd.indexCount = 36;
@@ -162,12 +164,15 @@ void main() {
                 } else {
                     writeToCascade(0u, cmd, idx);
                     writeToCascade(1u, cmd, idx);
+                    writeToCascade(2u, cmd, idx);
                 }
             } else {
                 writeToCascade(1u, cmd, idx);
                 writeToCascade(2u, cmd, idx);
             }
         }
+    } else if (aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) {
+        writeToCascade(0u, cmd, idx);
     } else {
         writeToCascade(2u, cmd, idx);
     }
