@@ -43,12 +43,15 @@ layout(std430, binding = 7) buffer Count2 {
 } cnt2;
 
 layout(std430, binding = 8) readonly buffer CascadeMatrices {
-    mat4 viewProj[3]; // [0] = C0 (inner), [1] = C1, [2] = C2 (outer)
+    mat4 viewProj[3];
 } cascades;
 
 layout(push_constant) uniform PC {
     uint numChunks;
+    float maxShadowDist;
 } pc;
+
+const float BLEND_MARGIN = 0.04;
 
 shared vec4 gPlanes[3][6];
 
@@ -71,10 +74,11 @@ void extractPlanes(mat4 mvp, out vec4 planes[6]) {
     planes[5] = normalizePlane(row3 - row2);
 }
 
-bool aabbVisible(vec4 planes[6], vec3 minp, vec3 maxp) {
+bool aabbVisibleExtruded(uint cascade, vec3 minp, vec3 maxp) {
     for (int i = 0; i < 6; ++i) {
-        vec3 n = planes[i].xyz;
-        float d = planes[i].w;
+        vec3 n = gPlanes[cascade][i].xyz;
+        float d = gPlanes[cascade][i].w;
+        if (i == 4) d += pc.maxShadowDist;
         vec3 p;
         p.x = (n.x >= 0.0) ? maxp.x : minp.x;
         p.y = (n.y >= 0.0) ? maxp.y : minp.y;
@@ -85,18 +89,26 @@ bool aabbVisible(vec4 planes[6], vec3 minp, vec3 maxp) {
     return true;
 }
 
-bool aabbFullyInside(vec4 planes[6], vec3 minp, vec3 maxp) {
-    for (int i = 0; i < 6; ++i) {
-        vec3 n = planes[i].xyz;
-        float d = planes[i].w;
-        vec3 p;
-        p.x = (n.x >= 0.0) ? minp.x : maxp.x;
-        p.y = (n.y >= 0.0) ? minp.y : maxp.y;
-        p.z = (n.z >= 0.0) ? minp.z : maxp.z;
-        float dist = dot(n, p) + d;
-        if (dist < 0.0) return false;
+bool aabbProjectedSafe(mat4 mvp, vec3 minp, vec3 maxp, float margin) {
+    vec2 uvMin = vec2(1e10);
+    vec2 uvMax = vec2(-1e10);
+    for (int iz = 0; iz < 2; iz++) {
+        for (int iy = 0; iy < 2; iy++) {
+            for (int ix = 0; ix < 2; ix++) {
+                vec3 p = vec3(
+                    (ix == 0) ? minp.x : maxp.x,
+                    (iy == 0) ? minp.y : maxp.y,
+                    (iz == 0) ? minp.z : maxp.z
+                );
+                vec4 ls = mvp * vec4(p, 1.0);
+                vec2 uv = ls.xy / ls.w * 0.5 + 0.5;
+                uvMin = min(uvMin, uv);
+                uvMax = max(uvMax, uv);
+            }
+        }
     }
-    return true;
+    return uvMin.x >= margin && uvMax.x <= 1.0 - margin &&
+           uvMin.y >= margin && uvMax.y <= 1.0 - margin;
 }
 
 void writeToCascade(uint cascade, DrawCmd cmd) {
@@ -145,43 +157,40 @@ void main() {
     DrawCmd cmd = inCmds.cmds[idx];
     cmd.firstInstance = idx;
 
-    // Check visibility in at least one cascade before proceeding.
-    // (C2's frustum only covers the far slice — chunks nearer than
-    // splits[2] may be outside C2 but still visible in C0 or C1.)
-    if (!aabbVisible(gPlanes[0], minp, maxp) &&
-        !aabbVisible(gPlanes[1], minp, maxp) &&
-        !aabbVisible(gPlanes[2], minp, maxp)) return;
+    if (!aabbVisibleExtruded(0, minp, maxp) &&
+        !aabbVisibleExtruded(1, minp, maxp) &&
+        !aabbVisibleExtruded(2, minp, maxp)) return;
 
-    if (aabbVisible(gPlanes[1], minp, maxp)) {
-        if (aabbFullyInside(gPlanes[1], minp, maxp)) {
-            if (aabbVisible(gPlanes[0], minp, maxp)) {
-                if (aabbFullyInside(gPlanes[0], minp, maxp)) {
-                    writeToCascade(0u, cmd); // C0 only
+    if (aabbVisibleExtruded(1, minp, maxp)) {
+        if (aabbProjectedSafe(cascades.viewProj[1], minp, maxp, BLEND_MARGIN)) {
+            if (aabbVisibleExtruded(0, minp, maxp)) {
+                if (aabbProjectedSafe(cascades.viewProj[0], minp, maxp, BLEND_MARGIN)) {
+                    writeToCascade(0u, cmd);
                 } else {
-                    writeToCascade(0u, cmd); // C0 + C1
+                    writeToCascade(0u, cmd);
                     writeToCascade(1u, cmd);
                 }
             } else {
-                writeToCascade(1u, cmd); // C1 only
+                writeToCascade(1u, cmd);
             }
         } else {
-            // C1 border → need C1 + C2 (unless C0 covers it)
-            if (aabbVisible(gPlanes[0], minp, maxp)) {
-                if (aabbFullyInside(gPlanes[0], minp, maxp)) {
-                    writeToCascade(0u, cmd); // C0 only (exclude from C1, C2)
+            if (aabbVisibleExtruded(0, minp, maxp)) {
+                if (aabbProjectedSafe(cascades.viewProj[0], minp, maxp, BLEND_MARGIN)) {
+                    writeToCascade(0u, cmd);
+                    writeToCascade(1u, cmd);
                 } else {
-                    writeToCascade(0u, cmd); // C0 + C1 + C2 (C1 border → C2 needed)
+                    writeToCascade(0u, cmd);
                     writeToCascade(1u, cmd);
                     writeToCascade(2u, cmd);
                 }
             } else {
-                writeToCascade(1u, cmd); // C1 + C2 (C0 not visible)
+                writeToCascade(1u, cmd);
                 writeToCascade(2u, cmd);
             }
         }
-    } else if (aabbVisible(gPlanes[0], minp, maxp)) {
-        writeToCascade(0u, cmd); // C0 only (visible in C0 but not C1 or C2)
+    } else if (aabbVisibleExtruded(0, minp, maxp)) {
+        writeToCascade(0u, cmd);
     } else {
-        writeToCascade(2u, cmd); // C2 only
+        writeToCascade(2u, cmd);
     }
 }
