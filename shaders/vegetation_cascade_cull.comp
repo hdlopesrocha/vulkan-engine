@@ -134,9 +134,11 @@ void main() {
 
     ChunkMeta chunk = metaBuf.chunks[idx];
 
-    if (!aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax) &&
-        !aabbVisible(gPlanes[1], chunk.aabbMin, chunk.aabbMax) &&
-        !aabbVisible(gPlanes[2], chunk.aabbMin, chunk.aabbMax)) return;
+    bool inC0 = aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax);
+    bool inC1 = aabbVisible(gPlanes[1], chunk.aabbMin, chunk.aabbMax);
+    bool inC2 = aabbVisible(gPlanes[2], chunk.aabbMin, chunk.aabbMax);
+
+    if (!inC0 && !inC1 && !inC2) return;
 
     DrawCmd cmd;
     cmd.indexCount = 36;
@@ -145,34 +147,12 @@ void main() {
     cmd.vertexOffset = 0;
     cmd.firstInstance = chunk.instanceOffset;
 
-    if (aabbVisible(gPlanes[1], chunk.aabbMin, chunk.aabbMax)) {
-        if (aabbFullyInside(gPlanes[1], chunk.aabbMin, chunk.aabbMax)) {
-            if (aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) {
-                if (aabbFullyInside(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) {
-                    writeToCascade(0u, cmd, idx);
-                } else {
-                    writeToCascade(0u, cmd, idx);
-                    writeToCascade(1u, cmd, idx);
-                }
-            } else {
-                writeToCascade(1u, cmd, idx);
-            }
-        } else {
-            if (aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) {
-                if (aabbFullyInside(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) {
-                    writeToCascade(0u, cmd, idx);
-                } else {
-                    writeToCascade(0u, cmd, idx);
-                    writeToCascade(1u, cmd, idx);
-                    writeToCascade(2u, cmd, idx);
-                }
-            } else {
-                writeToCascade(1u, cmd, idx);
-                writeToCascade(2u, cmd, idx);
-            }
-        }
-    } else if (aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) {
+    if (inC0) {
         writeToCascade(0u, cmd, idx);
+        if (inC1) writeToCascade(1u, cmd, idx);
+    } else if (inC1) {
+        writeToCascade(1u, cmd, idx);
+        if (inC2) writeToCascade(2u, cmd, idx);
     } else {
         writeToCascade(2u, cmd, idx);
     }

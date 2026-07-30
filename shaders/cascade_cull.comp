@@ -145,43 +145,22 @@ void main() {
     DrawCmd cmd = inCmds.cmds[idx];
     cmd.firstInstance = idx;
 
-    // Check visibility in at least one cascade before proceeding.
-    // (C2's frustum only covers the far slice — chunks nearer than
-    // splits[2] may be outside C2 but still visible in C0 or C1.)
-    if (!aabbVisible(gPlanes[0], minp, maxp) &&
-        !aabbVisible(gPlanes[1], minp, maxp) &&
-        !aabbVisible(gPlanes[2], minp, maxp)) return;
+    // Write each visible chunk to its cascade AND the next outer
+    // cascade so the fragment shader always has valid data when
+    // blending/falling through at cascade boundaries.
+    bool inC0 = aabbVisible(gPlanes[0], minp, maxp);
+    bool inC1 = aabbVisible(gPlanes[1], minp, maxp);
+    bool inC2 = aabbVisible(gPlanes[2], minp, maxp);
 
-    if (aabbVisible(gPlanes[1], minp, maxp)) {
-        if (aabbFullyInside(gPlanes[1], minp, maxp)) {
-            if (aabbVisible(gPlanes[0], minp, maxp)) {
-                if (aabbFullyInside(gPlanes[0], minp, maxp)) {
-                    writeToCascade(0u, cmd); // C0 only
-                } else {
-                    writeToCascade(0u, cmd); // C0 + C1
-                    writeToCascade(1u, cmd);
-                }
-            } else {
-                writeToCascade(1u, cmd); // C1 only
-            }
-        } else {
-            // C1 border → need C1 + C2 (unless C0 covers it)
-            if (aabbVisible(gPlanes[0], minp, maxp)) {
-                if (aabbFullyInside(gPlanes[0], minp, maxp)) {
-                    writeToCascade(0u, cmd); // C0 only (exclude from C1, C2)
-                } else {
-                    writeToCascade(0u, cmd); // C0 + C1 + C2 (C1 border → C2 needed)
-                    writeToCascade(1u, cmd);
-                    writeToCascade(2u, cmd);
-                }
-            } else {
-                writeToCascade(1u, cmd); // C1 + C2 (C0 not visible)
-                writeToCascade(2u, cmd);
-            }
-        }
-    } else if (aabbVisible(gPlanes[0], minp, maxp)) {
-        writeToCascade(0u, cmd); // C0 only (visible in C0 but not C1 or C2)
+    if (!inC0 && !inC1 && !inC2) return;
+
+    if (inC0) {
+        writeToCascade(0u, cmd);
+        if (inC1) writeToCascade(1u, cmd);
+    } else if (inC1) {
+        writeToCascade(1u, cmd);
+        if (inC2) writeToCascade(2u, cmd);
     } else {
-        writeToCascade(2u, cmd); // C2 only
+        writeToCascade(2u, cmd);
     }
 }
