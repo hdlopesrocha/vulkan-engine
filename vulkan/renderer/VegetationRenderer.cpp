@@ -630,8 +630,11 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
         }
         return true;
     };
-    auto aabbFullyInside = [](const glm::vec4 planes[6],
-                              const glm::vec3& minp, const glm::vec3& maxp) -> bool {
+    static constexpr float BLEND_MARGIN = 0.04f;
+    auto aabbFullyInsideWithMargin = [](const glm::vec4 planes[6],
+                                        const glm::vec3& minp,
+                                        const glm::vec3& maxp,
+                                        float margin) -> bool {
         for (int i = 0; i < 6; i++) {
             glm::vec3 n = glm::vec3(planes[i]);
             float d = planes[i].w;
@@ -639,7 +642,9 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
             p.x = (n.x >= 0.0f) ? minp.x : maxp.x;
             p.y = (n.y >= 0.0f) ? minp.y : maxp.y;
             p.z = (n.z >= 0.0f) ? minp.z : maxp.z;
-            if (glm::dot(n, p) + d < 0.0f) return false;
+            float dist = glm::dot(n, p) + d;
+            float threshold = (i < 4) ? margin : 0.0f;
+            if (dist < threshold) return false;
         }
         return true;
     };
@@ -677,26 +682,20 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
 
         // Same cascade-assignment logic as cascade_cull.comp.
         if (aabbVisible(cascadePlanes[1], minp, maxp, maxShadowDist)) {
-            if (aabbFullyInside(cascadePlanes[1], minp, maxp)) {
+            if (aabbFullyInsideWithMargin(cascadePlanes[1], minp, maxp, BLEND_MARGIN)) {
                 if (aabbVisible(cascadePlanes[0], minp, maxp, maxShadowDist)) {
-                    if (aabbFullyInside(cascadePlanes[0], minp, maxp)) {
+                    if (aabbFullyInsideWithMargin(cascadePlanes[0], minp, maxp, BLEND_MARGIN)) {
                         writeToCascade(0, drawCmd);
-                        writeToCascade(1, drawCmd);
                     } else {
                         writeToCascade(0, drawCmd);
                         writeToCascade(1, drawCmd);
                     }
                 } else {
-                    if (aabbVisible(cascadePlanes[2], minp, maxp)) {
-                        writeToCascade(1, drawCmd);
-                        writeToCascade(2, drawCmd);
-                    } else {
-                        writeToCascade(1, drawCmd);
-                    }
+                    writeToCascade(1, drawCmd);
                 }
             } else {
                 if (aabbVisible(cascadePlanes[0], minp, maxp, maxShadowDist)) {
-                    if (aabbFullyInside(cascadePlanes[0], minp, maxp)) {
+                    if (aabbFullyInsideWithMargin(cascadePlanes[0], minp, maxp, BLEND_MARGIN)) {
                         writeToCascade(0, drawCmd);
                         writeToCascade(1, drawCmd);
                     } else {

@@ -51,6 +51,8 @@ layout(push_constant) uniform PC {
     float maxShadowDist;
 } pc;
 
+const float BLEND_MARGIN = 0.04;
+
 shared vec4 gPlanes[3][6];
 
 vec4 normalizePlane(vec4 pl) {
@@ -101,7 +103,7 @@ bool aabbVisible(vec4 planes[6], vec3 minp, vec3 maxp) {
     return true;
 }
 
-bool aabbFullyInside(vec4 planes[6], vec3 minp, vec3 maxp) {
+bool aabbFullyInsideWithMargin(vec4 planes[6], vec3 minp, vec3 maxp, float margin) {
     for (int i = 0; i < 6; ++i) {
         vec3 n = planes[i].xyz;
         float d = planes[i].w;
@@ -110,7 +112,8 @@ bool aabbFullyInside(vec4 planes[6], vec3 minp, vec3 maxp) {
         p.y = (n.y >= 0.0) ? minp.y : maxp.y;
         p.z = (n.z >= 0.0) ? minp.z : maxp.z;
         float dist = dot(n, p) + d;
-        if (dist < 0.0) return false;
+        float threshold = (i < 4) ? margin : 0.0;
+        if (dist < threshold) return false;
     }
     return true;
 }
@@ -166,26 +169,20 @@ void main() {
         !aabbVisibleExtruded(2, minp, maxp)) return;
 
     if (aabbVisibleExtruded(1, minp, maxp)) {
-        if (aabbFullyInside(gPlanes[1], minp, maxp)) {
+        if (aabbFullyInsideWithMargin(gPlanes[1], minp, maxp, BLEND_MARGIN)) {
             if (aabbVisibleExtruded(0, minp, maxp)) {
-                if (aabbFullyInside(gPlanes[0], minp, maxp)) {
+                if (aabbFullyInsideWithMargin(gPlanes[0], minp, maxp, BLEND_MARGIN)) {
                     writeToCascade(0u, cmd);
-                    writeToCascade(1u, cmd);
                 } else {
                     writeToCascade(0u, cmd);
                     writeToCascade(1u, cmd);
                 }
             } else {
-                if (aabbVisible(gPlanes[2], minp, maxp)) {
-                    writeToCascade(1u, cmd);
-                    writeToCascade(2u, cmd);
-                } else {
-                    writeToCascade(1u, cmd);
-                }
+                writeToCascade(1u, cmd);
             }
         } else {
             if (aabbVisibleExtruded(0, minp, maxp)) {
-                if (aabbFullyInside(gPlanes[0], minp, maxp)) {
+                if (aabbFullyInsideWithMargin(gPlanes[0], minp, maxp, BLEND_MARGIN)) {
                     writeToCascade(0u, cmd);
                     writeToCascade(1u, cmd);
                 } else {
