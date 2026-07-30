@@ -355,6 +355,15 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         uboStatic.lightSpaceMatrix2
     };
 
+    // Single cascade-aware GPU culling pass: culls all chunks against all 3
+    // cascade frustums simultaneously. Chunks are assigned to cascades based
+    // on containment (fully inside → inner cascade only; border → both).
+    solidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices);
+
+    // Acquire vegetation instance/indirect buffers before dynamic rendering
+    if (vegetationEnabled && vegetationRenderer) {
+        vegetationRenderer->recordReadBarriers(commandBuffer);
+    }
 
     for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
         glm::mat4 lsMatrix = cascadeMatrices[c];
@@ -371,16 +380,21 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         // Wait for previous cascade draws to finish reading the UBO
         // before overwriting it via vkCmdCopyBuffer.
         {
-            VkMemoryBarrier2 preBarrier{};
-            preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+            VkBufferMemoryBarrier2 preBarrier{};
+            preBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
             preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
             preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
             preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
             preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            preBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            preBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            preBarrier.buffer = mainUniformBuffer.buffer;
+            preBarrier.offset = 0;
+            preBarrier.size = VK_WHOLE_SIZE;
             VkDependencyInfo depInfo{};
             depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            depInfo.memoryBarrierCount = 1;
-            depInfo.pMemoryBarriers = &preBarrier;
+            depInfo.bufferMemoryBarrierCount = 1;
+            depInfo.pBufferMemoryBarriers = &preBarrier;
             vkCmdPipelineBarrier2(commandBuffer, &depInfo);
         }
 
@@ -393,30 +407,25 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
             vkCmdCopyBuffer(commandBuffer, uboStagingBuffers[frameIdx].buffer, mainUniformBuffer.buffer, 1, &copy);
         }
         {
-            VkMemoryBarrier2 memBarrier{};
-            memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+            VkBufferMemoryBarrier2 memBarrier{};
+            memBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
             memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
             memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
             memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
             memBarrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+            memBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            memBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            memBarrier.buffer = mainUniformBuffer.buffer;
+            memBarrier.offset = 0;
+            memBarrier.size = VK_WHOLE_SIZE;
             VkDependencyInfo depInfo{};
             depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            depInfo.memoryBarrierCount = 1;
-            depInfo.pMemoryBarriers = &memBarrier;
+            depInfo.bufferMemoryBarrierCount = 1;
+            depInfo.pBufferMemoryBarriers = &memBarrier;
             vkCmdPipelineBarrier2(commandBuffer, &depInfo);
         }
 
-        // Per-cascade GPU frustum culling: run the compute-based cull pass
-        // with the cascade's light-space matrix BEFORE beginShadowPass
-        // (vkCmdPipelineBarrier not allowed inside dynamic rendering).
-        solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, lsMatrix);
-
-        // Acquire vegetation instance/indirect buffers before
-        // vkCmdBeginRendering (barriers illegal inside dynamic rendering).
-        if (vegetationEnabled && vegetationRenderer) {
-            vegetationRenderer->recordReadBarriers(commandBuffer);
-        }
-
+        // Cascade-specific draw (no per-cascade cull — already handled above)
         shadowMapper->beginShadowPass(app, commandBuffer, c, lsMatrix);
 
         // Bind shadow descriptor set (uses dummy depth at bindings 4,8,9)
@@ -431,18 +440,13 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         }
 
         // Bind solid shadow pipeline first and draw solid geometry.
-        // Must draw solid BEFORE vegetation: VegetationRenderer::drawShadow
-        // binds 2 vertex buffers (bindings 0 and 1) and a different pipeline.
-        // On RADV, stale binding 1 leaks across pipeline switches and corrupts
-        // subsequent solid draws that only use binding 0.
         VkPipeline solidShadowPipeline = shadowMapper->getShadowPipeline();
         if (solidShadowPipeline != VK_NULL_HANDLE) {
             frameCmdState.bindGraphicsPipeline(commandBuffer, solidShadowPipeline);
         }
-        // Draw only meshes visible in this cascade (compacted by prepareCull above)
         auto& shadowIR = solidRenderer->getIndirectRenderer();
         shadowIR.bindBuffers(commandBuffer);
-        shadowIR.drawIndirectOnly(commandBuffer, shadowMapper->getShadowPipelineLayout(), 0);
+        shadowIR.drawCascadeOnly(commandBuffer, c);
 
         // Vegetation shadow pass: drawn after solid so its 2-buffer vertex
         // bindings don't leak into the solid draw.
@@ -470,16 +474,21 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
     // Restore the main UBO so subsequent passes see the original data.
     // Wait for all shadow cascade draws to finish reading the UBO first.
     {
-        VkMemoryBarrier2 preBarrier{};
-        preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        VkBufferMemoryBarrier2 preBarrier{};
+        preBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
         preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
         preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
         preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
         preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        preBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preBarrier.buffer = mainUniformBuffer.buffer;
+        preBarrier.offset = 0;
+        preBarrier.size = VK_WHOLE_SIZE;
         VkDependencyInfo depInfo{};
         depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.memoryBarrierCount = 1;
-        depInfo.pMemoryBarriers = &preBarrier;
+        depInfo.bufferMemoryBarrierCount = 1;
+        depInfo.pBufferMemoryBarriers = &preBarrier;
         vkCmdPipelineBarrier2(commandBuffer, &depInfo);
     }
 
@@ -491,16 +500,21 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         vkCmdCopyBuffer(commandBuffer, uboStagingBuffers[frameIdx].buffer, mainUniformBuffer.buffer, 1, &copy);
     }
     {
-        VkMemoryBarrier2 memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        VkBufferMemoryBarrier2 memBarrier{};
+        memBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
         memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
         memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
         memBarrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+        memBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        memBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        memBarrier.buffer = mainUniformBuffer.buffer;
+        memBarrier.offset = 0;
+        memBarrier.size = VK_WHOLE_SIZE;
         VkDependencyInfo depInfo{};
         depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.memoryBarrierCount = 1;
-        depInfo.pMemoryBarriers = &memBarrier;
+        depInfo.bufferMemoryBarrierCount = 1;
+        depInfo.pBufferMemoryBarriers = &memBarrier;
         vkCmdPipelineBarrier2(commandBuffer, &depInfo);
     }
 }

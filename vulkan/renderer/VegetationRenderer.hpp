@@ -150,6 +150,17 @@ public:
     // Auto-cycles through triple-buffered culling slots internally.
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj);
 
+    // Cascade-aware culling: single dispatch that culls against all 3 cascade
+    // frustums simultaneously. Chunks are assigned to cascades based on
+    // containment (fully inside → inner cascade only; border → both).
+    void prepareCullCascades(VkCommandBuffer cmd,
+                             const glm::mat4 cascadeMatrices[3]);
+    // Draw a specific cascade's vegetation compacted output.
+    void drawShadowCascade(VulkanApp* app, VkCommandBuffer& commandBuffer,
+                           VkDescriptorSet shadowDescriptorSet,
+                           const glm::vec3& cameraPos,
+                           uint32_t cascadeIndex);
+
     // Update the wind params UBO with current settings.
     // Must be called before any draw that uses wind.  Updates per-frame values
     // (camera position, falloff) so windParams on the GPU stays in sync.
@@ -275,6 +286,24 @@ private:
     TrackedHandle<VkDescriptorSetLayout> vegCullDescSetLayout;
     TrackedHandle<VkDescriptorPool> vegCullDescPool;
     std::array<TrackedHandle<VkDescriptorSet>, VEG_CULL_FRAMES> vegCullDescSets;
+
+    // ── Cascade-aware culling for vegetation shadows ──
+    struct VegCascadeCullFrame {
+        std::array<Buffer, 3> compactBuffers;
+        std::array<Buffer, 3> countBuffers;
+        TrackedHandle<VkDescriptorSet> descSet;
+    };
+    std::array<VegCascadeCullFrame, VEG_CULL_FRAMES> vegCascadeCullFrames;
+    Buffer vegCascadeMatrixBuffer;
+    TrackedHandle<VkPipeline> vegCascadeCullPipeline;
+    TrackedHandle<VkPipelineLayout> vegCascadeCullPipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> vegCascadeCullDescSetLayout;
+    TrackedHandle<VkDescriptorPool> vegCascadeCullDescPool;
+    bool vegCascadeCullInited = false;
+    uint32_t vegCascadeCompactCapacity = 0;
+    void initCascadeCull(VulkanApp* app);
+    void updateCascadeDescriptors(VulkanApp* app, uint32_t frame);
+    void destroyCascadeCull();
 
     uint32_t vegNumChunks = 0;             // number of chunks in the consolidated metadata
     uint32_t vegCullFrameIndex = 0;        // auto-cycling frame index for triple buffering

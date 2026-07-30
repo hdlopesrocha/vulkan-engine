@@ -382,6 +382,401 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
     // so the GPU sees the latest data when it processes the indirect draw.
 }
 
+// ── Cascade-aware culling for vegetation shadows ──────────────────────────────
+
+void VegetationRenderer::initCascadeCull(VulkanApp* app) {
+    if (vegCascadeCullInited) return;
+    vegCascadeCullInited = true;
+    auto device = app->getDevice();
+    VkShaderModule compModule = app->getOrCreateShaderModule("shaders/vegetation_cascade_cull.comp.spv");
+
+    // Create cascade matrix storage buffer
+    vegCascadeMatrixBuffer = app->createBuffer(sizeof(glm::mat4) * 3,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    // Descriptor set layout: 8 bindings
+    // 0: ChunkMeta[] (input)
+    // 1: OutCmds0
+    // 2: Count0
+    // 3: OutCmds1
+    // 4: Count1
+    // 5: OutCmds2
+    // 6: Count2
+    // 7: CascadeMatrices
+    VkDescriptorSetLayoutBinding vegBindings[8]{};
+    for (uint32_t i = 0; i < 8; i++) {
+        vegBindings[i].binding = i;
+        vegBindings[i].descriptorCount = 1;
+        vegBindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        vegBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    }
+
+    VkDescriptorBindingFlags vegFlags[8];
+    for (uint32_t i = 0; i < 8; i++) vegFlags[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+
+    DescriptorAllocator descAlloc{device, app};
+    vegCascadeCullDescSetLayout = descAlloc.createLayout(
+        vegBindings, 8,
+        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        vegFlags, "VegetationCascadeCull: descSetLayout");
+
+    VkPushConstantRange pc{};
+    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pc.offset = 0;
+    pc.size = sizeof(uint32_t);
+
+    VkPipelineLayoutCreateInfo plinfo{};
+    plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plinfo.setLayoutCount = 1;
+    plinfo.pSetLayouts = &vegCascadeCullDescSetLayout;
+    plinfo.pushConstantRangeCount = 1;
+    plinfo.pPushConstantRanges = &pc;
+    if (vkCreatePipelineLayout(device, &plinfo, nullptr, &vegCascadeCullPipelineLayout) != VK_SUCCESS)
+        throw std::runtime_error("failed to create vegetation cascade cull pipeline layout!");
+    app->resources.addPipelineLayout(vegCascadeCullPipelineLayout, "VegetationCascadeCull: pipelineLayout");
+
+    VkPipelineShaderStageCreateInfo stage{};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = compModule;
+    stage.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = stage;
+    pipelineInfo.layout = vegCascadeCullPipelineLayout;
+    if (vkCreateComputePipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &vegCascadeCullPipeline) != VK_SUCCESS)
+        throw std::runtime_error("failed to create vegetation cascade cull compute pipeline!");
+    app->resources.addPipeline(vegCascadeCullPipeline, "VegetationCascadeCull: computePipeline");
+
+    VkDescriptorPoolSize poolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64};
+    vegCascadeCullDescPool = descAlloc.createPool(
+        &poolSize, 1, VEG_CULL_FRAMES,
+        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+        "VegetationCascadeCull: descPool");
+
+    VkDescriptorSet vegRawSets[VEG_CULL_FRAMES];
+    descAlloc.allocateSets(vegCascadeCullDescPool, vegCascadeCullDescSetLayout,
+                           VEG_CULL_FRAMES, vegRawSets,
+                           "VegetationCascadeCull: descSet");
+    for (uint32_t f = 0; f < VEG_CULL_FRAMES; f++) {
+        vegCascadeCullFrames[f].descSet = vegRawSets[f];
+    }
+
+    // Per-frame cascade buffers (sized conservatively)
+    VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * 1024;
+    vegCascadeCompactCapacity = 1024;
+    VkDeviceSize countSize = sizeof(uint32_t);
+    for (uint32_t f = 0; f < VEG_CULL_FRAMES; f++) {
+        for (uint32_t c = 0; c < 3; c++) {
+            vegCascadeCullFrames[f].compactBuffers[c] = app->createBuffer(compactSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            void* data = vegCascadeCullFrames[f].compactBuffers[c].map(0);
+            if (data) {
+                std::memset(data, 0, (size_t)compactSize);
+                vegCascadeCullFrames[f].compactBuffers[c].unmap();
+            }
+            vegCascadeCullFrames[f].countBuffers[c] = app->createBuffer(countSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            uint32_t* mapped = static_cast<uint32_t*>(vegCascadeCullFrames[f].countBuffers[c].map(0));
+            if (mapped) *mapped = 0;
+        }
+    }
+    // Descriptors are updated lazily in prepareCullCascades once buffers exist
+}
+
+void VegetationRenderer::updateCascadeDescriptors(VulkanApp* app, uint32_t frame) {
+    VkDescriptorSet ds = vegCascadeCullFrames[frame].descSet;
+    if (ds == VK_NULL_HANDLE) return;
+    if (chunkMetaBuffer.buffer == VK_NULL_HANDLE || vegCascadeMatrixBuffer.buffer == VK_NULL_HANDLE) return;
+
+    auto device = app->getDevice();
+    VkDescriptorBufferInfo metaInfo{};
+    metaInfo.buffer = chunkMetaBuffer.buffer;
+    metaInfo.offset = 0;
+    metaInfo.range = VK_WHOLE_SIZE;
+
+    VkDescriptorBufferInfo matInfo{};
+    matInfo.buffer = vegCascadeMatrixBuffer.buffer;
+    matInfo.offset = 0;
+    matInfo.range = VK_WHOLE_SIZE;
+
+    DescriptorWriter writer(device);
+    writer.writeBuffer(ds, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                       metaInfo.buffer, metaInfo.offset, metaInfo.range);
+    for (uint32_t c = 0; c < 3; c++) {
+        uint32_t outB = 1 + c * 2;
+        uint32_t cntB = 2 + c * 2;
+        writer.writeBuffer(ds, outB, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           vegCascadeCullFrames[frame].compactBuffers[c].buffer, 0, VK_WHOLE_SIZE);
+        writer.writeBuffer(ds, cntB, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           vegCascadeCullFrames[frame].countBuffers[c].buffer, 0, VK_WHOLE_SIZE);
+    }
+    writer.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                       matInfo.buffer, matInfo.offset, matInfo.range);
+    writer.flush();
+}
+
+void VegetationRenderer::destroyCascadeCull() {
+    if (!vegCascadeCullInited) return;
+    vegCascadeCullInited = false;
+    for (auto& frame : vegCascadeCullFrames) {
+        for (uint32_t c = 0; c < 3; c++) {
+            frame.compactBuffers[c] = {};
+            frame.countBuffers[c] = {};
+        }
+    }
+    vegCascadeMatrixBuffer = {};
+    vegCascadeCullPipeline = VK_NULL_HANDLE;
+    vegCascadeCullPipelineLayout = VK_NULL_HANDLE;
+    vegCascadeCullDescSetLayout = VK_NULL_HANDLE;
+    vegCascadeCullDescPool = VK_NULL_HANDLE;
+}
+
+void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
+                                              const glm::mat4 cascadeMatrices[3]) {
+    if (!appPtr) return;
+    if (!vegCascadeCullInited) initCascadeCull(appPtr);
+    if (vegCascadeCullPipeline == VK_NULL_HANDLE) return;
+    if (vegNumChunks == 0) return;
+
+    vegCullCurrentSlot = vegCullFrameIndex % VEG_CULL_FRAMES;
+    vegCullFrameIndex++;
+    uint32_t f = vegCullCurrentSlot;
+
+    if (vegConsolidationDirty && !chunkBuffers.empty()) {
+        consolidateChunks(appPtr);
+        if (vegConsolidationDirty) return;
+    }
+
+    // Update cascade descriptors for this frame (lazy, once buffers exist)
+    updateCascadeDescriptors(appPtr, f);
+
+    // Resize cascade compact buffers if vegNumChunks exceeds current capacity.
+    // The atomicAdd in the shader can produce counts beyond the buffer, causing
+    // vkCmdDrawIndexedIndirectCount to read past the buffer end (GPU hang on RADV).
+    if (vegNumChunks > vegCascadeCompactCapacity) {
+        uint32_t newCap = vegNumChunks;
+        VkDeviceSize newCompactSize = sizeof(VkDrawIndexedIndirectCommand) * newCap;
+        VulkanApp* app = appPtr;
+        for (uint32_t ff = 0; ff < VEG_CULL_FRAMES; ff++) {
+            for (uint32_t cc = 0; cc < 3; cc++) {
+                Buffer oldBuf = vegCascadeCullFrames[ff].compactBuffers[cc];
+                vegCascadeCullFrames[ff].compactBuffers[cc] = app->createBuffer(newCompactSize,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                void* data = vegCascadeCullFrames[ff].compactBuffers[cc].map(0);
+                if (data) {
+                    std::memset(data, 0, (size_t)newCompactSize);
+                    vegCascadeCullFrames[ff].compactBuffers[cc].unmap();
+                }
+                if (oldBuf.buffer != VK_NULL_HANDLE) {
+                    app->deferDestroyUntilAllPending([app, oldBuf]() {
+                        if (oldBuf.buffer != VK_NULL_HANDLE)
+                            app->resources.removeBufferVma(oldBuf.buffer, oldBuf.allocation);
+                    });
+                }
+            }
+        }
+        vegCascadeCompactCapacity = newCap;
+        updateCascadeDescriptors(app, f);
+    }
+
+    // Upload cascade matrices
+    {
+        void* matData = vegCascadeMatrixBuffer.map(0);
+        if (matData) {
+            std::memcpy(matData, cascadeMatrices, sizeof(glm::mat4) * 3);
+            vegCascadeMatrixBuffer.unmap();
+        }
+    }
+
+    // Barrier: drain prior compute/transfer before zeroing cascade outputs
+    {
+        VkBufferMemoryBarrier2 preFill[6]{};
+        uint32_t preCount = 0;
+        for (uint32_t c = 0; c < 3; c++) {
+            preFill[preCount].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            preFill[preCount].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            preFill[preCount].srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            preFill[preCount].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            preFill[preCount].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            preFill[preCount].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            preFill[preCount].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            preFill[preCount].buffer = vegCascadeCullFrames[f].compactBuffers[c].buffer;
+            preFill[preCount].offset = 0;
+            preFill[preCount].size = VK_WHOLE_SIZE;
+            preCount++;
+
+            preFill[preCount] = preFill[preCount - 1];
+            preFill[preCount].buffer = vegCascadeCullFrames[f].countBuffers[c].buffer;
+            preCount++;
+        }
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = preCount;
+        depInfo.pBufferMemoryBarriers = preFill;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
+
+    // Zero all cascade output buffers
+    for (uint32_t c = 0; c < 3; c++) {
+        vkCmdFillBuffer(cmd, vegCascadeCullFrames[f].compactBuffers[c].buffer, 0, VK_WHOLE_SIZE, 0);
+        vkCmdFillBuffer(cmd, vegCascadeCullFrames[f].countBuffers[c].buffer, 0, sizeof(uint32_t), 0);
+    }
+
+    // Barrier: fill → compute (compact + count buffers)
+    {
+        VkBufferMemoryBarrier2 barriers[6]{};
+        for (uint32_t c = 0; c < 3; c++) {
+            barriers[c].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barriers[c].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            barriers[c].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            barriers[c].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            barriers[c].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            barriers[c].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[c].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[c].buffer = vegCascadeCullFrames[f].compactBuffers[c].buffer;
+            barriers[c].offset = 0;
+            barriers[c].size = VK_WHOLE_SIZE;
+
+            barriers[3 + c] = barriers[c];
+            barriers[3 + c].buffer = vegCascadeCullFrames[f].countBuffers[c].buffer;
+            barriers[3 + c].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+        }
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 6;
+        depInfo.pBufferMemoryBarriers = barriers;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
+
+    // Bind and dispatch
+    VkDescriptorSet descSet = vegCascadeCullFrames[f].descSet;
+    if (cmdState) cmdState->bindComputePipeline(cmd, vegCascadeCullPipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCascadeCullPipeline);
+    if (cmdState) cmdState->bindComputeDescriptorSets(cmd, vegCascadeCullPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCascadeCullPipelineLayout, 0, 1, &descSet, 0, nullptr);
+
+    vkCmdPushConstants(cmd, vegCascadeCullPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &vegNumChunks);
+
+    uint32_t groups = (vegNumChunks + 63) / 64;
+    if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);
+
+    // Barrier: compute/transfer → indirect draw (compact + count buffers)
+    {
+        VkBufferMemoryBarrier2 barriers[6]{};
+        for (uint32_t c = 0; c < 3; c++) {
+            barriers[c].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barriers[c].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                    | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            barriers[c].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT
+                                     | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            barriers[c].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+            barriers[c].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+            barriers[c].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[c].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[c].buffer = vegCascadeCullFrames[f].compactBuffers[c].buffer;
+            barriers[c].offset = 0;
+            barriers[c].size = VK_WHOLE_SIZE;
+
+            barriers[3 + c] = barriers[c];
+            barriers[3 + c].buffer = vegCascadeCullFrames[f].countBuffers[c].buffer;
+            barriers[3 + c].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        }
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 6;
+        depInfo.pBufferMemoryBarriers = barriers;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
+}
+
+void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& commandBuffer,
+                                            VkDescriptorSet shadowDescriptorSet,
+                                            const glm::vec3& cameraPos,
+                                            uint32_t cascadeIndex) {
+    if (cascadeIndex >= 3) return;
+    if (!app || vegetationShadowPipeline == VK_NULL_HANDLE) return;
+    if (chunkBuffers.empty()) return;
+    if (!ensureVegDescriptorSet(app)) return;
+    if (shadowDescriptorSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
+
+    uint32_t f = vegCullCurrentSlot;
+    if (vegCascadeCullFrames[f].compactBuffers[cascadeIndex].buffer == VK_NULL_HANDLE) return;
+
+    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationShadowPipeline);
+    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
+
+    updateWindParamsUBO(cameraPos);
+    VkDescriptorSet sets[3] = { shadowDescriptorSet, vegDescriptorSet, windParamsDescSet };
+    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
+    else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
+
+    WindPushConstants pc{};
+    pc.billboardScale = billboardScale;
+    pc.windEnabled = -1.0f;
+    pc.windTime = windTimeSeconds;
+    pc.impostorDistance = impostorDistance;
+
+    vkCmdPushConstants(commandBuffer, shadowPipelineLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(WindPushConstants), &pc);
+
+    vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
+        VkDeviceSize offsets[2] = { 0, 0 };
+        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
+        if (cmdDrawIndexedIndirectCount) {
+            uint32_t vegMaxDraws = std::min(vegNumChunks, vegCascadeCompactCapacity);
+            cmdDrawIndexedIndirectCount(commandBuffer,
+                vegCascadeCullFrames[f].compactBuffers[cascadeIndex].buffer, 0,
+                vegCascadeCullFrames[f].countBuffers[cascadeIndex].buffer, 0,
+                vegMaxDraws, sizeof(VkDrawIndexedIndirectCommand));
+        }
+    }
+
+    // Impostor shadow pass (per-chunk, no cascade filtering — keep all chunks visible)
+    VkPipeline impostorShadowPipe = (impostorShadowPipeline != VK_NULL_HANDLE)
+                                  ? impostorShadowPipeline : impostorDepthPipeline;
+    VkPipelineLayout impostorShadowLayout = (impostorShadowPipelineLayout != VK_NULL_HANDLE)
+                                          ? impostorShadowPipelineLayout : impostorDepthPipelineLayout;
+    if (impostorShadowPipe != VK_NULL_HANDLE &&
+        impostorDepthDescSet != VK_NULL_HANDLE &&
+        impostorDistance > 0.0f && impostorVBO.vertexBuffer.buffer != VK_NULL_HANDLE &&
+        !chunkBuffers.empty()) {
+        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorShadowPipe);
+        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowPipe);
+
+        VkDescriptorSet depthSets[3] = { shadowDescriptorSet, impostorDepthDescSet, windParamsDescSet };
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
+
+        vkCmdPushConstants(commandBuffer, impostorShadowLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(WindPushConstants), &pc);
+
+        vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        VkBuffer impVbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
+        VkDeviceSize impOffsets[2] = { 0, 0 };
+        if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+            impVbs[1] = concatenatedInstanceBuffer.buffer;
+            vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
+            uint32_t instOff = 0;
+            for (auto& [chunkId, buf] : chunkBuffers) {
+                (void)chunkId;
+                if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+                vkCmdDrawIndexed(commandBuffer, 6, static_cast<uint32_t>(buf.count), 0, 0, instOff);
+                instOff += buf.count;
+            }
+        }
+    }
+}
+
 void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app) {
     // Unregister old listener
     if (vegetationTextureArrayManager && vegTextureListenerId != -1) {

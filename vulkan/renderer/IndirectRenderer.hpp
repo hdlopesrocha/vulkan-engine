@@ -179,6 +179,16 @@ public:
     void drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws = 0);
     void drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pipelineLayout, uint32_t maxDraws = 0);
 
+    // ── Cascade-aware culling (single pass, 3 cascades) ──
+    // Single compute dispatch that culls all chunks against 3 cascade frustums
+    // simultaneously. Performs cascade-aware culling: C2 (outer) → C1 → C0 (inner).
+    // Chunks fully inside an inner cascade are excluded from outer cascades;
+    // border-intersecting chunks are rendered in both consecutive cascades.
+    void prepareCullCascades(VkCommandBuffer cmd,
+                             const glm::mat4 cascadeMatrices[3]);
+    // Draw a specific cascade's compacted output (call inside render pass).
+    void drawCascadeOnly(VkCommandBuffer cmd, uint32_t cascadeIndex);
+
     // Accessors
     const Buffer& getVertexBuffer() const { return vertexBuffer; }
     const Buffer& getIndexBuffer() const { return indexBuffer; }
@@ -306,6 +316,28 @@ private:
     TrackedHandle<VkDescriptorSetLayout> computeDescriptorSetLayout;
     TrackedHandle<VkDescriptorPool> computeDescriptorPool;
     std::array<TrackedHandle<VkDescriptorSet>, MAX_CULL_FRAMES> computeDescriptorSets;
+
+    // ── Cascade-aware culling (per-frame resources) ──
+    struct CascadeCullFrame {
+        std::array<Buffer, 3> compactBuffers; // compact output per cascade
+        std::array<Buffer, 3> countBuffers;   // visible count per cascade
+        std::array<uint32_t*, 3> countMapped = {nullptr, nullptr, nullptr};
+        TrackedHandle<VkDescriptorSet> descSet;
+    };
+    std::array<CascadeCullFrame, MAX_CULL_FRAMES> cascadeCullFrames;
+    Buffer cascadeMatrixBuffer; // storage buffer with 3 mat4 cascade matrices
+    TrackedHandle<VkPipeline> cascadeCullPipeline;
+    TrackedHandle<VkPipelineLayout> cascadeCullPipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> cascadeCullDescSetLayout;
+    TrackedHandle<VkDescriptorPool> cascadeCullDescPool;
+    bool cascadeCullInited = false;
+    VkBuffer cascadeDescIndirectBuffer = VK_NULL_HANDLE; // tracks which indirectBuffer the descriptors reference
+    VkBuffer cascadeDescBoundsBuffer = VK_NULL_HANDLE;   // tracks which boundsBuffer the descriptors reference
+    VulkanApp* cascadeDescApp = nullptr; // stored for descriptor refresh
+    void initCascadeCull(VulkanApp* app);
+    void destroyCascadeCull();
+    void updateCascadeDescriptor(VulkanApp* app, uint32_t frame);
+    void refreshCascadeDescriptorsIfNeeded();
 
     // Optional device function for indirect-count draw (KHR or core 1.2)
     PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
