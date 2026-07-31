@@ -165,6 +165,12 @@ public:
     // (camera position, falloff) so windParams on the GPU stays in sync.
     void updateWindParamsUBO(const glm::vec3& cameraPos);
 
+    // Shared set=2 wind params resources. Other consumers of the vegetation
+    // shader family (e.g. ImpostorCapture) bind the same layout + descriptor
+    // set instead of duplicating them.
+    VkDescriptorSetLayout getWindParamsDescSetLayout() const { return windParamsDescSetLayout; }
+    VkDescriptorSet getWindParamsDescSet() const { return windParamsDescSet; }
+
 private:
     
     TrackedHandle<VkPipeline> vegetationPipeline;

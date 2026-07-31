@@ -1,6 +1,7 @@
 #include "ImpostorCapture.hpp"
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
+#include "VegetationRenderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../../math/Vertex.hpp"
 #include "../../utils/FileReader.hpp"
@@ -11,7 +12,6 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cstdio>
-#include "../ubo/VegetationUBO.hpp"
 #include "../includes/locations.hpp"
 #include "../includes/vertex_layouts.hpp"
 
@@ -31,8 +31,15 @@ void ImpostorCapture::generateFibonacciDirs() {
 
 // ─────────────────────────────────────────── Public API ─────────────────────
 
-void ImpostorCapture::init(VulkanApp* app) {
+void ImpostorCapture::init(VulkanApp* app, VegetationRenderer* vegRenderer) {
     if (!app || initDone) return;
+    if (!vegRenderer ||
+        vegRenderer->getWindParamsDescSetLayout() == VK_NULL_HANDLE ||
+        vegRenderer->getWindParamsDescSet() == VK_NULL_HANDLE) {
+        fprintf(stderr, "[ImpostorCapture] init: vegetation renderer wind params not ready, capture disabled\n");
+        return;
+    }
+    sharedVegRenderer = vegRenderer;
 
     generateFibonacciDirs();
 
@@ -47,29 +54,6 @@ void ImpostorCapture::init(VulkanApp* app) {
     createCaptureImages(app);
     createDepth(app);
     createDescSetLayouts(app);
-    // Allocate wind params UBO (set=2, binding=0) with safe defaults
-    {
-        VkDevice device = app->getDevice();
-        VkDescriptorSetLayoutBinding binding{};
-        binding.binding         = 0;
-        binding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        binding.descriptorCount = 1;
-        binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        DescriptorAllocator descAlloc{device, app};
-        windParamsDescSetLayout = descAlloc.createLayout(
-            &binding, 1,
-            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-            nullptr,
-            "ImpostorCapture: windParamsDescSetLayout");
-
-        windParamsBuffer = app->createBuffer(sizeof(WindParamsUBO),
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        windParamsMapped = windParamsBuffer.map(0);
-        // Default wind params: wind disabled, no density culling
-        WindParamsUBO wp{};
-        std::memcpy(windParamsMapped, &wp, sizeof(wp));
-    }
     createPipeline(app);
     createUBO(app);
     createCaptureBuffers(app);
@@ -115,16 +99,6 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
     }
 
     uboMapped = nullptr;
-
-    if (windParamsDescSetLayout != VK_NULL_HANDLE) {
-        app->resources.removeDescriptorSetLayout(windParamsDescSetLayout);
-        vkDestroyDescriptorSetLayout(device, windParamsDescSetLayout, nullptr);
-    }
-    windParamsMapped  = nullptr;
-    if (windParamsBuffer.buffer != VK_NULL_HANDLE) {
-        app->destroyBuffer(windParamsBuffer);
-        windParamsBuffer = {};
-    }
 
     captureInstMapped = nullptr;
 
@@ -256,13 +230,6 @@ void ImpostorCapture::capture(VulkanApp* app,
     // Upload updated inv VP data to the GPU buffer (persistently mapped).
     std::memcpy(captureInvVPMapped, captureInvVP.data(), TOTAL_LAYERS * sizeof(glm::mat4));
 
-    // Wind params UBO: center camera at origin, no wind, no density culling.
-    {
-        WindParamsUBO wp{};
-        wp.cameraPosAndFalloff = glm::vec4(center, 0.0f);
-        std::memcpy(windParamsMapped, &wp, sizeof(wp));
-    }
-
     // Push constant: no wind, density culling disabled, impostorDistance=0.
     CapturePC pc{};
     pc.billboardScale     = billboardScale;
@@ -342,7 +309,7 @@ void ImpostorCapture::capture(VulkanApp* app,
             else vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, capturePipeline);
 
             const uint32_t dynOffset = static_cast<uint32_t>(viewIdx * uboStride);
-            VkDescriptorSet sets[3] = { uboDescSet, texDescSet, windParamsDescSet };
+            VkDescriptorSet sets[3] = { uboDescSet, texDescSet, sharedVegRenderer->getWindParamsDescSet() };
             if (cmdState) cmdState->bindGraphicsDescriptorSets(cb,
                                     capturePipelineLayout, 0, 3, sets, 1, &dynOffset);
             else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -695,7 +662,7 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pcRange.size       = sizeof(CapturePC);
 
-    VkDescriptorSetLayout layouts[3] = { uboDescSetLayout, texDescSetLayout, windParamsDescSetLayout };
+    VkDescriptorSetLayout layouts[3] = { uboDescSetLayout, texDescSetLayout, sharedVegRenderer->getWindParamsDescSetLayout() };
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layoutInfo.setLayoutCount         = 3;
@@ -838,20 +805,13 @@ void ImpostorCapture::allocateDescSets(VulkanApp* app) {
     uboDescSet = sets[0];
     texDescSet = sets[1];
 
-    // Allocate wind params descriptor set from the app's general pool.
-    windParamsDescSet = app->createDescriptorSet(windParamsDescSetLayout);
-    DescriptorWriter(app->getDevice())
-        .writeBuffer(windParamsDescSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                     windParamsBuffer.buffer, 0, VK_WHOLE_SIZE)
-        .flush();
-    app->registerDescriptorSet(windParamsDescSet);
-
     // Write UBO descriptor (DYNAMIC: range = one slot, offset supplied per-draw).
     DescriptorWriter(app->getDevice())
         .writeBuffer(uboDescSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
                      uboBuffer, 0, sizeof(CaptureUBO))
         .flush();
     // Texture descriptor is written in updateTexDescSet() at capture time.
+    // Set=2 wind params descriptor is shared with the VegetationRenderer.
 }
 
 void ImpostorCapture::updateTexDescSet(VkDevice device,

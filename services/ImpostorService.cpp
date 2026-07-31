@@ -6,7 +6,11 @@ ImpostorService::ImpostorService() {}
 
 void ImpostorService::init(VulkanApp* app) {
     vulkanApp = app;
-    capture.init(app);
+    // The vegetation renderer (set via setVegetationRenderer before init)
+    // supplies the shared set=2 wind params descriptor set/layout used by
+    // the capture pipeline, instead of ImpostorCapture allocating a
+    // duplicate wind params UBO + descriptor set.
+    capture.init(app, vegRenderer);
 }
 
 void ImpostorService::cleanup() {

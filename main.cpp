@@ -2139,6 +2139,9 @@ void MyApp::setupVegetationTextures() {
     // Provide VulkanApp to the creator so it can initialize GPU-backed preview textures
     billboardCreator->setVulkanApp(this);
     impostorService = std::make_shared<ImpostorService>();
+    // Must be set before init(): the capture pipeline shares the renderer's
+    // set=2 wind params descriptor set/layout instead of duplicating them.
+    impostorService->setVegetationRenderer(sceneRenderer->vegetationRenderer.get());
     impostorService->init(this);
     impostorWidget = std::make_shared<ImpostorWidget>(impostorService);
     impostorWidget->setVegetationRenderer(sceneRenderer->vegetationRenderer.get());
