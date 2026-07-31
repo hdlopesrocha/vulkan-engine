@@ -40,8 +40,6 @@ public:
                 ControllerManager* cm, Brush3dManager* brushManager,
                 bool imguiWantsMouse);
 
-    void setRotateSensitivity(float v) { rotateSens = v; }
-
 private:
     GLFWwindow* window = nullptr;
     double lastX = 0.0, lastY = 0.0;

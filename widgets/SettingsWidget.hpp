@@ -19,7 +19,6 @@ public:
     float getMoveSpeed() const { return settings.moveSpeed; }
     float getAngularSpeedDeg() const { return settings.angularSpeedDeg; }
     bool getWireframeEnabled() const { return settings.wireframeMode; }
-    bool getWaterWireframeEnabled() const { return settings.waterWireframeMode; }
         int getDebugMode() const { return settings.debugMode; }
     bool getNormalMappingEnabled() const { return settings.normalMappingEnabled; }
     bool getWaterEnabled() const { return settings.waterEnabled; }
@@ -27,9 +26,6 @@ public:
     float getTriplanarThreshold() const { return settings.triplanarThreshold; }
     float getTriplanarExponent() const { return settings.triplanarExponent; }
 
-    // Callback setter for debug actions
-    void setDumpShadowDepthCallback(std::function<void()> cb) { onDumpShadowDepth = cb; }
-    
 private:
     Settings& settings;
     ShadowParams* shadowParams;
@@ -42,8 +38,6 @@ public:
     bool getShadowTessellationEnabled() const { return settings.shadowTessellationEnabled; }
     bool getAdaptiveTessellation() const { return settings.adaptiveTessellation; }
     float getTessellationFactor() const { return settings.tessellationFactor; }
-    float getTessMaxDistance() const { return settings.tessMaxDistance; }
-    float getTessMinDistance() const { return settings.tessMinDistance; }
     
     // V-Sync getter
     bool getVSyncEnabled() const { return settings.vsyncEnabled; }

@@ -61,7 +61,6 @@ public:
 
     // Per-layer capture inverse VP matrices for depth reprojection in the shadow pass.
     const glm::mat4* getCaptureInvVP()      const { return captureInvVP.data(); }
-    uint32_t         getCaptureInvVPCount()  const { return TOTAL_LAYERS; }
     VkBuffer         getCaptureInvVPBuffer() const { return captureInvVPBuffer; }
 
     // Sampler suitable for scene use (created at init).

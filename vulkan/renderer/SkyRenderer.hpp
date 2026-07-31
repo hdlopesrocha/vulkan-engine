@@ -52,11 +52,6 @@ public:
     }
 
     // Accessors for external renderers (cubemap 360 uses fullscreen sky pipeline)
-    VkPipeline getSkyPipeline() const { return skyPipeline; }
-    VkPipelineLayout getSkyPipelineLayout() const { return skyPipelineLayout; }
-    VkPipeline getSkyGridPipeline() const { return skyGridPipeline; }
-    VkPipelineLayout getSkyGridPipelineLayout() const { return skyGridPipelineLayout; }
-    const VertexBufferObject& getSkyVBO() const { return skyVBO; }
     VkPipeline getSkyFullscreenPipeline() const { return skyFullscreenPipeline; }
     VkPipelineLayout getSkyFullscreenPipelineLayout() const { return skyFullscreenPipelineLayout; }
     VkPipeline getSkyFullscreenGridPipeline() const { return skyFullscreenGridPipeline; }

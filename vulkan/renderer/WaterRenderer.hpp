@@ -51,8 +51,6 @@ public:
 
     // Get water color/depth image view for post-process sampling
     VkImageView getWaterDepthView(uint32_t frameIndex) const { return waterDepthImageViews[frameIndex]; }
-    // View that swizzles alpha into RGB so linear depth can be displayed easily
-    VkImageView getWaterDepthAlphaView(uint32_t frameIndex) const { return waterDepthAlphaImageViews[frameIndex]; }
     // Depth image view used as the depth/stencil attachment for the water geometry pass
     VkImageView getWaterGeomDepthView(uint32_t frameIndex) const { return waterGeomDepthImageViews[frameIndex]; }
     // Expose the raw water geometry depth image (for layout transitions and sampling)
@@ -61,14 +59,6 @@ public:
     VkImageLayout getWaterGeomDepthLayout(uint32_t frameIndex) const;
     void setWaterGeomDepthLayout(uint32_t frameIndex, VkImageLayout layout);
     VkImageLayout getSceneDepthLayout(uint32_t frameIndex) const;
-    
-    // Get scene offscreen target views (for rendering scene before water)
-    VkImage getSceneColorImage(uint32_t frameIndex) const { return sceneColorImages[frameIndex]; }
-    VkImageView getSceneColorView(uint32_t frameIndex) const { return sceneColorImageViews[frameIndex]; }
-    VkImage getSceneDepthImage(uint32_t frameIndex) const { return sceneDepthImages[frameIndex]; }
-    VkImageView getSceneDepthView(uint32_t frameIndex) const { return sceneDepthImageViews[frameIndex]; }
-
-
 
     void updateGPUParamsForLayer(uint32_t layer, const WaterParams& params);
 
@@ -106,10 +96,6 @@ public:
                                 VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer,
                                 uint32_t frameIndex);
 
-    VkDescriptorSet getCubemapWaterDepthDescriptorSet(uint32_t frameIndex) const {
-        return (frameIndex < FRAMES) ? cubemapWaterDepthDS[frameIndex] : VK_NULL_HANDLE;
-    }
-
     // Prepare render state (UBO upload, descriptor update, pre-barrier).
     // Call this before beginWaterGeometryPass when manually recording commands.
     void prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
@@ -118,20 +104,13 @@ public:
 
     // Get water depth descriptor set (for binding scene depth texture)
     VkDescriptorSet getWaterDepthDescriptorSet(uint32_t frameIndex) const { return (frameIndex < FRAMES) ? waterDepthDescriptorSets[frameIndex] : VK_NULL_HANDLE; }
-    
-    // Get water params buffer
-    Buffer& getWaterParamsBuffer() { return waterParamsBuffer; }
-    
+
     // Ensure cubemap water rendering resources exist (pipeline, dummy textures, descriptor set).
     // Called lazily from renderWaterIntoCubemap.
     void ensureCubemapResources(VulkanApp* app, VkFormat colorFormat);
 
     // Get sampler for ImGui texture display
     VkSampler getLinearSampler() const { return linearSampler; }
-    
-    // Get image views for debug display
-    VkImageView getSceneColorImageView(uint32_t frameIndex) const { return sceneColorImageViews[frameIndex]; }
-    VkImageView getSceneDepthImageView(uint32_t frameIndex) const { return sceneDepthImageViews[frameIndex]; }
     
     // Update the scene textures binding (color + depth + sky) for refraction and edge foam.
     // Writes into `ds` (the caller chooses the per-command-buffer set so the set is
@@ -164,17 +143,6 @@ public:
     // Solid 360° cubemap reflection and back-face rendering are owned by SceneRenderer.
     // SceneRenderer must call `updateSceneTexturesBinding` to provide any required
     // views (back-face depth, cubemap/equirect) to WaterRenderer.
-
-    // Register model version for water meshes (stored here)
-    void registerModelVersion(NodeID id, const Model3DVersion& ver) { waterNodeModelVersions[id] = ver; }
-
-    // Remove all registered water meshes from the indirect renderer and clear the map
-    void removeAllRegisteredMeshes() {
-        for (auto &entry : waterNodeModelVersions) {
-            if (entry.second.meshId != UINT32_MAX) waterIndirectRenderer.removeMesh(entry.second.meshId);
-        }
-        waterNodeModelVersions.clear();
-    }
 
 private:
 
@@ -262,8 +230,6 @@ private:
     // Cached frame index set by beginWaterGeometryPass, used by endWaterGeometryPass
     uint32_t activeWaterFrameIndex = 0;
 
-    // Map of node -> model version for water geometry managed here
-    std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions;
     CommandBufferState* cmdState = nullptr;
 public:
     void setCmdState(CommandBufferState* state) { cmdState = state; }

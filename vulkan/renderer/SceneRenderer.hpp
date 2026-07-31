@@ -202,9 +202,7 @@ public:
     std::vector<DebugSDFRenderer::CubeSDF> getDebugSDFCubes();
 
     // Register/inspect opaque model versions (moved from SolidRenderer)
-    void registerModelVersion(NodeID id, const Model3DVersion& ver) { solidChunks[id] = ver; }
     size_t getRegisteredModelCount() const { return solidChunks.size(); }
-    const std::unordered_map<NodeID, Model3DVersion>& getNodeModelVersions() const { return solidChunks; }
 
     // Remove all registered opaque meshes via IndirectRenderer and clear the map
     void removeAllRegisteredMeshes() {
@@ -316,11 +314,6 @@ public:
     // solid/water pendingMeshQueue) so brush generation + upload are scheduled
     // independently of solid/water and are no longer gated behind them.
     void processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPos);
-
-    bool hasPendingMeshes() const {
-        std::lock_guard<std::mutex> lock(pendingMeshMutex);
-        return !pendingMeshQueue.empty();
-    }
 
     // Async streaming orchestrator (parallel per-category pools, lock-free
     // queues, drop-in staging upload manager). Currently scaffolded: its

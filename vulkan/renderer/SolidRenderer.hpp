@@ -41,9 +41,6 @@ public:
     VkImage getDepthImage(uint32_t frameIndex) const { return solidDepthImages[frameIndex % SOLID_FRAMES]; }
 
 public:
-    // Public accessor for nodeModelVersions (read-only)
-    const std::unordered_map<NodeID, Model3DVersion>& getNodeModelVersions() const { return solidChunks; }
-public:
 
     // Per-frame depth image layout accessors (for external widgets to record barriers)
     VkImageLayout getDepthLayout(uint32_t frameIndex) const {

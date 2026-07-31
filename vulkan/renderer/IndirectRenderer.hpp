@@ -188,17 +188,9 @@ public:
     void drawCascadeOnly(VkCommandBuffer cmd, uint32_t cascadeIndex);
 
     // Accessors
-    const Buffer& getVertexBuffer() const { return vertexBuffer; }
-    const Buffer& getIndexBuffer() const { return indexBuffer; }
     const Buffer& getIndirectBuffer() const { return indirectBuffer; }
-    const Buffer& getCompactIndirectBuffer() const { return compactIndirectBuffers[currentCullFrame]; }
     const Buffer& getBoundsBuffer() const { return boundsBuffer; }
-    VkPipeline getComputePipeline() const { return computePipeline; }
     VkDescriptorSetLayout getComputeDescriptorSetLayout() const { return computeDescriptorSetLayout; }
-    VkDescriptorPool getComputeDescriptorPool() const { return computeDescriptorPool; }
-
-    // Returns true when the slotted API is active (fixed-size slot pool).
-    bool isSlottedMode() const { return slottedMode; }
 
     // Get the pre-allocated capacity (indirect command count / max slots)
     // In slotted mode this is the fixed slot pool size; in legacy mode it grows

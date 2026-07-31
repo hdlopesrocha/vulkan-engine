@@ -104,20 +104,8 @@ public:
 
     // ── Query ───────────────────────────────────────────────────────────────
 
-    size_t pendingSwapCount() const { return swapQueue_.size(); }
     size_t dirtyQueueSize() const;
     size_t activeChunkCount() const;
-
-    // Visit all current proxies (for rendering).
-    template<typename F>
-    void visitCurrentProxies(F&& visitor) const {
-        std::lock_guard<std::mutex> lock(mapMutex_);
-        for (const auto& [id, entry] : stateMap_) {
-            if (entry.currentProxy && entry.currentProxy->isValid()) {
-                std::forward<F>(visitor)(*entry.currentProxy);
-            }
-        }
-    }
 
 private:
     // Set chunk state with optional version update.

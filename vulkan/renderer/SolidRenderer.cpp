@@ -222,12 +222,6 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     );
     graphicsPipeline = pipeline;
     graphicsPipelineLayout = layout;
-    // Register the main graphics pipeline with the app so ShadowRenderer can use it
-    if (app) {
-        printf("[SolidRenderer] setAppGraphicsPipeline: pipeline=%p\n", (void*)graphicsPipeline);
-        app->setAppGraphicsPipeline(graphicsPipeline);
-    }
-
 
     GraphicsPipelineConfig depthCfg{};
     depthCfg.colorWrite = false;

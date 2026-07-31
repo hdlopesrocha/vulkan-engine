@@ -43,10 +43,8 @@ public:
     VkSampler getSolid360Sampler() const { return solid360Sampler; }
     VkImageView getDummyCubeView() const { return cube360DummyCubeView; }
     VkImageView getCube360FaceView(uint32_t face) const { return (face < 6) ? cube360FaceViews[face] : VK_NULL_HANDLE; }
-    VkImageView getCube360CubeView() const { return cube360CubeView; }
     VkImageView getCube360DepthView(uint32_t face) const { return (face < 6) ? cube360DepthViews[face] : VK_NULL_HANDLE; }
     VkImage getCube360DepthImage() const { return cube360DepthImage; }
-    VkImage getCube360ColorImage() const { return cube360ColorImage; }
 
     // Per-face depth layout accessors (used by widgets to record correct barriers)
     VkImageLayout getCube360DepthLayout(uint32_t face) const {

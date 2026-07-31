@@ -141,9 +141,6 @@ private:
     public:
         // Public accessor for command pool (needed for buffer transfers)
         VkCommandPool getCommandPool() const { return commandPool; }
-        VkCommandPool getTransientCommandPool() const { return transientCommandPool; }
-    // Application main graphics pipeline (owner: app / main.cpp)
-    VkPipeline appGraphicsPipeline = VK_NULL_HANDLE;
     // texture and descriptor
 
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
@@ -390,19 +387,11 @@ public:
         void registerDescriptorSet(VkDescriptorSet ds) { if (ds != VK_NULL_HANDLE) registeredDescriptorSets.push_back(ds); }
         const std::vector<VkDescriptorSet>& getRegisteredDescriptorSets() const { return registeredDescriptorSets; }
         VkDescriptorSetLayout getMaterialDescriptorSetLayout() const { return materialDescriptorSetLayout; }
-        void setMaterialDescriptorSet(VkDescriptorSet ds) { materialDescriptorSet = ds; }
         VkDescriptorSet getMaterialDescriptorSet() const { return materialDescriptorSet; }
         VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
         VkDescriptorSet getStaticDescriptorSet() const { return staticDescriptorSet; }
         VkDescriptorSetLayout getBrushDepthDescriptorSetLayout() const { return brushDepthDescriptorSetLayout; }
 
-        // App-owned graphics pipeline accessor
-        void setAppGraphicsPipeline(VkPipeline p) { 
-            appGraphicsPipeline = p; 
-        }
-        VkPipeline getAppGraphicsPipeline() const { 
-            return appGraphicsPipeline; 
-        }
         const std::vector<VkPipeline>& getRegisteredPipelines() const { return registeredPipelines; }
 
         Buffer createVertexBuffer(const std::vector<Vertex> &vertices);
@@ -508,13 +497,10 @@ public:
         VkSwapchainKHR getSwapchain() const { return swapchain; }
         VkFormat getSwapchainImageFormat() const { return swapchainImageFormat; }
         VkExtent2D getSwapchainExtent() const { return swapchainExtent; }
-        const std::vector<VkImage>& getSwapchainImages() const { return swapchainImages; }
-        const std::vector<VkImageView>& getSwapchainImageViews() const { return swapchainImageViews; }
         VkDescriptorPool getDescriptorPool() const { return descriptorPool; }
         VkDescriptorPool getImGuiDescriptorPool() const { return imguiDescriptorPool; }
 
         VkImage getDepthImage() const { return depthImage; }
-        VkImageView getDepthImageView() const { return depthImageView; }
 
         int getWidth();
         int getHeight();
