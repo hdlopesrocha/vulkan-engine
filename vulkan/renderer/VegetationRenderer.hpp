@@ -259,18 +259,8 @@ private:
     TrackedHandle<VkDescriptorSet> windParamsDescSet;
     void*                 windParamsMapped       = nullptr;
 
-    // ── GPU frustum culling (indirection via concatenated instance buffer) ──────
-    struct ChunkMeta {
-        glm::vec3 aabbMin;
-        float pad0;
-        glm::vec3 aabbMax;
-        float pad1;
-        uint32_t instanceOffset;
-        uint32_t instanceCount;
-    };
-
+    // ── CPU frustum culling (indirection via concatenated instance buffer) ────
     Buffer concatenatedInstanceBuffer;  // all instances concatenated (vec4 per element)
-    Buffer chunkMetaBuffer;             // ChunkMeta[] on GPU
     // Triple-buffered culling resources to prevent CPU/GPU race conditions
     // (same pattern as IndirectRenderer::MAX_CULL_FRAMES).
     static constexpr uint32_t VEG_CULL_FRAMES = 3;
@@ -279,30 +269,15 @@ private:
     mutable std::array<uint32_t*, VEG_CULL_FRAMES> visibleCountMapped = {nullptr, nullptr, nullptr};
     mutable std::array<VkDrawIndexedIndirectCommand*, VEG_CULL_FRAMES> compactedCmdMapped = {nullptr, nullptr, nullptr};
 
-    // Culling compute pipeline
-    TrackedHandle<VkPipeline> vegCullPipeline;
-    TrackedHandle<VkPipelineLayout> vegCullPipelineLayout;
-    TrackedHandle<VkDescriptorSetLayout> vegCullDescSetLayout;
-    TrackedHandle<VkDescriptorPool> vegCullDescPool;
-    std::array<TrackedHandle<VkDescriptorSet>, VEG_CULL_FRAMES> vegCullDescSets;
-
     // ── Cascade-aware culling for vegetation shadows ──
     struct VegCascadeCullFrame {
         std::array<Buffer, 3> compactBuffers;
         std::array<Buffer, 3> countBuffers;
-        TrackedHandle<VkDescriptorSet> descSet;
     };
     std::array<VegCascadeCullFrame, VEG_CULL_FRAMES> vegCascadeCullFrames;
-    Buffer vegCascadeMatrixBuffer;
-    TrackedHandle<VkPipeline> vegCascadeCullPipeline;
-    TrackedHandle<VkPipelineLayout> vegCascadeCullPipelineLayout;
-    TrackedHandle<VkDescriptorSetLayout> vegCascadeCullDescSetLayout;
-    TrackedHandle<VkDescriptorPool> vegCascadeCullDescPool;
     bool vegCascadeCullInited = false;
     uint32_t vegCascadeCompactCapacity = 0;
     void initCascadeCull(VulkanApp* app);
-    void updateCascadeDescriptors(VulkanApp* app, uint32_t frame);
-    void destroyCascadeCull();
 
     uint32_t vegNumChunks = 0;             // number of chunks in the consolidated metadata
     uint32_t vegCullFrameIndex = 0;        // auto-cycling frame index for triple buffering
@@ -311,8 +286,6 @@ private:
 
     // Pipelined consolidation: deferred callback handles fence lifecycle
     TrackedHandle<VkFence> consolidationFence;
-    std::vector<ChunkMeta> pendingMeta;
-    VkDeviceSize pendingMetaSize = 0;
     bool consolidationPending = false;
 
     // Batched async chunk upload: one fence, deferred publish
@@ -325,7 +298,6 @@ private:
     };
     std::vector<PendingBatchCopy> pendingBatch;
 
-    void initCulling(VulkanApp* app);
     void destroyCulling();
     void issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
     void issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);

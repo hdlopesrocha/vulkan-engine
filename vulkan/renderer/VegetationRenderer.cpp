@@ -65,10 +65,6 @@ void VegetationRenderer::destroyCulling() {
         appPtr->destroyBuffer(concatenatedInstanceBuffer);
         concatenatedInstanceBuffer = {};
     }
-    if (chunkMetaBuffer.buffer != VK_NULL_HANDLE) {
-        appPtr->destroyBuffer(chunkMetaBuffer);
-        chunkMetaBuffer = {};
-    }
     for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
         if (compactedCmdBuffers[f].buffer != VK_NULL_HANDLE) {
             compactedCmdMapped[f] = nullptr;
@@ -81,84 +77,12 @@ void VegetationRenderer::destroyCulling() {
             visibleCountBuffers[f] = {};
         }
     }
-    if (vegCullDescPool != VK_NULL_HANDLE) {
-        appPtr->resources.removeDescriptorPool(vegCullDescPool);
-        vkDestroyDescriptorPool(device, vegCullDescPool, nullptr);
-    }
     if (consolidationFence != VK_NULL_HANDLE) {
         VulkanApp::waitFence(device, consolidationFence);
     }
-    pendingMeta.clear();
-    pendingMetaSize = 0;
     consolidationPending = false;
     vegNumChunks = 0;
     vegConsolidationDirty = true;
-}
-
-void VegetationRenderer::initCulling(VulkanApp* app) {
-    if (vegCullPipeline != VK_NULL_HANDLE) return;
-    auto device = app->getDevice();
-
-    VkShaderModule compModule = app->getOrCreateShaderModule("shaders/vegetation_cull.comp.spv");
-
-    VkDescriptorSetLayoutBinding bindings[3] = {};
-    bindings[0].binding = 0;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[1].binding = 1;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[2].binding = 2;
-    bindings[2].descriptorCount = 1;
-    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-
-    DescriptorAllocator descAlloc{device, app};
-    vegCullDescSetLayout = descAlloc.createLayout(
-        bindings, 3,
-        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-        nullptr,
-        "VegetationCull: descSetLayout");
-
-    VkPushConstantRange pc{};
-    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pc.offset = 0;
-    pc.size = sizeof(glm::mat4) + sizeof(uint32_t);
-
-    VkPipelineLayoutCreateInfo plinfo{};
-    plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plinfo.setLayoutCount = 1;
-    plinfo.pSetLayouts = &vegCullDescSetLayout;
-    plinfo.pushConstantRangeCount = 1;
-    plinfo.pPushConstantRanges = &pc;
-    if (vkCreatePipelineLayout(device, &plinfo, nullptr, &vegCullPipelineLayout) != VK_SUCCESS)
-        throw std::runtime_error("failed to create vegetation cull pipeline layout!");
-    app->resources.addPipelineLayout(vegCullPipelineLayout, "VegetationCull: pipelineLayout");
-
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = compModule;
-    stage.pName = "main";
-
-    VkComputePipelineCreateInfo pipelineInfo{};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineInfo.stage = stage;
-    pipelineInfo.layout = vegCullPipelineLayout;
-    if (vkCreateComputePipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &vegCullPipeline) != VK_SUCCESS)
-        throw std::runtime_error("failed to create vegetation cull compute pipeline!");
-    app->resources.addPipeline(vegCullPipeline, "VegetationCull: computePipeline");
-
-    VkDescriptorPoolSize vegPoolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VEG_CULL_FRAMES * 3};
-    vegCullDescPool = descAlloc.createPool(
-        &vegPoolSize, 1, VEG_CULL_FRAMES,
-        VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
-        "VegetationCull: descPool");
-
-    descAlloc.allocateSets(vegCullDescPool, vegCullDescSetLayout,
-                           VEG_CULL_FRAMES, reinterpret_cast<VkDescriptorSet*>(vegCullDescSets.data()));
 }
 
 void VegetationRenderer::consolidateChunks(VulkanApp* app) {
@@ -174,7 +98,6 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     }
 
     // ── Phase 2: Start a new consolidation ──
-    initCulling(app);
 
     size_t totalInstances = 0;
     for (const auto& kv : chunkInstanceCounts)
@@ -196,29 +119,6 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             concatenatedInstanceBuffer = {};
             concatenatedInstanceBuffer = app->createBuffer(concatSize,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            if (old.buffer != VK_NULL_HANDLE) {
-                app->deferDestroyUntilAllPending([app, old]() {
-                    if (old.buffer != VK_NULL_HANDLE)
-                        app->resources.removeBufferVma(old.buffer, old.allocation);
-                });
-            }
-        }
-    }
-
-    VkDeviceSize metaSize = numChunks * sizeof(ChunkMeta);
-    {
-        bool needsCreate = chunkMetaBuffer.buffer == VK_NULL_HANDLE;
-        if (!needsCreate) {
-            VkMemoryRequirements reqs;
-            vkGetBufferMemoryRequirements(device, chunkMetaBuffer.buffer, &reqs);
-            if (reqs.size < metaSize) needsCreate = true;
-        }
-        if (needsCreate) {
-            Buffer old = chunkMetaBuffer;
-            chunkMetaBuffer = {};
-            chunkMetaBuffer = app->createBuffer(metaSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
             if (old.buffer != VK_NULL_HANDLE) {
                 app->deferDestroyUntilAllPending([app, old]() {
@@ -261,47 +161,17 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
         }
     }
 
-    // Build per-chunk metadata on CPU (no GPU copy — concatenated buffer unused)
-    std::vector<ChunkMeta> metaArray(numChunks);
-    uint32_t instanceOffset = 0;
+    // Count chunks with valid geometry (GPU metadata buffer removed — the CPU
+    // culling paths write draw commands directly).
     uint32_t chunkIdx = 0;
-
     for (const auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
         if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-        ChunkMeta& meta = metaArray[chunkIdx];
-        meta.instanceOffset = instanceOffset;
-        meta.instanceCount = static_cast<uint32_t>(buf.count);
-        meta.aabbMin = buf.aabbMin;
-        meta.aabbMax = buf.aabbMax;
-        meta.pad0 = 0.0f;
-        meta.pad1 = 0.0f;
-        instanceOffset += static_cast<uint32_t>(buf.count);
         chunkIdx++;
     }
     vegNumChunks = chunkIdx;
 
     if (vegNumChunks == 0) return;
-
-    // Upload metadata via staging buffer (device-local, shader-safe)
-    if (chunkMetaBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-        VkDeviceSize upSize = vegNumChunks * sizeof(ChunkMeta);
-        Buffer staging = app->createBuffer(upSize,
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        void* data;
-        data = staging.map(0);
-        memcpy(data, metaArray.data(), upSize);
-        staging.unmap(); // VMA persistent mapping
-
-        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-            VkBufferCopy region{};
-            region.size = upSize;
-            vkCmdCopyBuffer(cmd, staging.buffer, chunkMetaBuffer.buffer, 1, &region);
-        });
-
-        app->destroyBuffer(staging);
-    }
 
     // Copy per-chunk instance data into the concatenated buffer (GPU→GPU)
     if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
@@ -320,19 +190,6 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
         });
     }
 
-    // Update descriptor sets
-    for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
-        VkDescriptorSet cullDs = vegCullDescSets[f];
-        DescriptorWriter(device)
-            .writeBuffer(cullDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                         chunkMetaBuffer.buffer, 0, VK_WHOLE_SIZE)
-            .writeBuffer(cullDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                         compactedCmdBuffers[f].buffer, 0, VK_WHOLE_SIZE)
-            .writeBuffer(cullDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                         visibleCountBuffers[f].buffer, 0, VK_WHOLE_SIZE)
-            .flush();
-    }
-
     vegConsolidationDirty = false;
 }
 
@@ -345,7 +202,7 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
         consolidateChunks(appPtr);
         if (vegConsolidationDirty) return; // fence still in flight, skip cull
     }
-    if (vegCullPipeline == VK_NULL_HANDLE || vegNumChunks == 0) return;
+    if (vegNumChunks == 0) return;
     if (compactedCmdBuffers[f].buffer == VK_NULL_HANDLE || visibleCountBuffers[f].buffer == VK_NULL_HANDLE) return;
 
     // Upload every chunk as a visible draw command via memcpy to persistently
@@ -387,84 +244,10 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
 void VegetationRenderer::initCascadeCull(VulkanApp* app) {
     if (vegCascadeCullInited) return;
     vegCascadeCullInited = true;
-    auto device = app->getDevice();
-    VkShaderModule compModule = app->getOrCreateShaderModule("shaders/vegetation_cascade_cull.comp.spv");
 
-    // Create cascade matrix storage buffer
-    vegCascadeMatrixBuffer = app->createBuffer(sizeof(glm::mat4) * 3,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    // Descriptor set layout: 8 bindings
-    // 0: ChunkMeta[] (input)
-    // 1: OutCmds0
-    // 2: Count0
-    // 3: OutCmds1
-    // 4: Count1
-    // 5: OutCmds2
-    // 6: Count2
-    // 7: CascadeMatrices
-    VkDescriptorSetLayoutBinding vegBindings[8]{};
-    for (uint32_t i = 0; i < 8; i++) {
-        vegBindings[i].binding = i;
-        vegBindings[i].descriptorCount = 1;
-        vegBindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        vegBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    }
-
-    VkDescriptorBindingFlags vegFlags[8];
-    for (uint32_t i = 0; i < 8; i++) vegFlags[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-
-    DescriptorAllocator descAlloc{device, app};
-    vegCascadeCullDescSetLayout = descAlloc.createLayout(
-        vegBindings, 8,
-        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-        vegFlags, "VegetationCascadeCull: descSetLayout");
-
-    VkPushConstantRange pc{};
-    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pc.offset = 0;
-    pc.size = sizeof(uint32_t);
-
-    VkPipelineLayoutCreateInfo plinfo{};
-    plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plinfo.setLayoutCount = 1;
-    plinfo.pSetLayouts = &vegCascadeCullDescSetLayout;
-    plinfo.pushConstantRangeCount = 1;
-    plinfo.pPushConstantRanges = &pc;
-    if (vkCreatePipelineLayout(device, &plinfo, nullptr, &vegCascadeCullPipelineLayout) != VK_SUCCESS)
-        throw std::runtime_error("failed to create vegetation cascade cull pipeline layout!");
-    app->resources.addPipelineLayout(vegCascadeCullPipelineLayout, "VegetationCascadeCull: pipelineLayout");
-
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = compModule;
-    stage.pName = "main";
-
-    VkComputePipelineCreateInfo pipelineInfo{};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineInfo.stage = stage;
-    pipelineInfo.layout = vegCascadeCullPipelineLayout;
-    if (vkCreateComputePipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &vegCascadeCullPipeline) != VK_SUCCESS)
-        throw std::runtime_error("failed to create vegetation cascade cull compute pipeline!");
-    app->resources.addPipeline(vegCascadeCullPipeline, "VegetationCascadeCull: computePipeline");
-
-    VkDescriptorPoolSize poolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64};
-    vegCascadeCullDescPool = descAlloc.createPool(
-        &poolSize, 1, VEG_CULL_FRAMES,
-        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
-        "VegetationCascadeCull: descPool");
-
-    VkDescriptorSet vegRawSets[VEG_CULL_FRAMES];
-    descAlloc.allocateSets(vegCascadeCullDescPool, vegCascadeCullDescSetLayout,
-                           VEG_CULL_FRAMES, vegRawSets,
-                           "VegetationCascadeCull: descSet");
-    for (uint32_t f = 0; f < VEG_CULL_FRAMES; f++) {
-        vegCascadeCullFrames[f].descSet = vegRawSets[f];
-    }
-
-    // Per-frame cascade buffers (sized conservatively)
+    // Per-frame cascade buffers (sized conservatively). The GPU cascade-cull
+    // compute pipeline and its descriptor sets were removed: culling is done on
+    // the CPU in prepareCullCascades, which fills these buffers via memcpy.
     VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * 1024;
     vegCascadeCompactCapacity = 1024;
     VkDeviceSize countSize = sizeof(uint32_t);
@@ -485,55 +268,6 @@ void VegetationRenderer::initCascadeCull(VulkanApp* app) {
             if (mapped) *mapped = 0;
         }
     }
-    // Descriptors are updated lazily in prepareCullCascades once buffers exist
-}
-
-void VegetationRenderer::updateCascadeDescriptors(VulkanApp* app, uint32_t frame) {
-    VkDescriptorSet ds = vegCascadeCullFrames[frame].descSet;
-    if (ds == VK_NULL_HANDLE) return;
-    if (chunkMetaBuffer.buffer == VK_NULL_HANDLE || vegCascadeMatrixBuffer.buffer == VK_NULL_HANDLE) return;
-
-    auto device = app->getDevice();
-    VkDescriptorBufferInfo metaInfo{};
-    metaInfo.buffer = chunkMetaBuffer.buffer;
-    metaInfo.offset = 0;
-    metaInfo.range = VK_WHOLE_SIZE;
-
-    VkDescriptorBufferInfo matInfo{};
-    matInfo.buffer = vegCascadeMatrixBuffer.buffer;
-    matInfo.offset = 0;
-    matInfo.range = VK_WHOLE_SIZE;
-
-    DescriptorWriter writer(device);
-    writer.writeBuffer(ds, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                       metaInfo.buffer, metaInfo.offset, metaInfo.range);
-    for (uint32_t c = 0; c < 3; c++) {
-        uint32_t outB = 1 + c * 2;
-        uint32_t cntB = 2 + c * 2;
-        writer.writeBuffer(ds, outB, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                           vegCascadeCullFrames[frame].compactBuffers[c].buffer, 0, VK_WHOLE_SIZE);
-        writer.writeBuffer(ds, cntB, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                           vegCascadeCullFrames[frame].countBuffers[c].buffer, 0, VK_WHOLE_SIZE);
-    }
-    writer.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                       matInfo.buffer, matInfo.offset, matInfo.range);
-    writer.flush();
-}
-
-void VegetationRenderer::destroyCascadeCull() {
-    if (!vegCascadeCullInited) return;
-    vegCascadeCullInited = false;
-    for (auto& frame : vegCascadeCullFrames) {
-        for (uint32_t c = 0; c < 3; c++) {
-            frame.compactBuffers[c] = {};
-            frame.countBuffers[c] = {};
-        }
-    }
-    vegCascadeMatrixBuffer = {};
-    vegCascadeCullPipeline = VK_NULL_HANDLE;
-    vegCascadeCullPipelineLayout = VK_NULL_HANDLE;
-    vegCascadeCullDescSetLayout = VK_NULL_HANDLE;
-    vegCascadeCullDescPool = VK_NULL_HANDLE;
 }
 
 void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
@@ -584,7 +318,7 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
     // via memcpy (same pattern as prepareCull).
 
     // Extract 6 frustum planes from each of the 3 cascade matrices.
-    // Must match the GLSL extractPlanes() in vegetation_cascade_cull.comp:
+    // Plane convention (standard Gribb-Hartmann frustum extraction):
     //   row0 = vec4(mvp[0][0], mvp[1][0], mvp[2][0], mvp[3][0])  — 1st row
     //   row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3])  — 4th row
     // Using glm::row() gives the same result (accesses across columns).
