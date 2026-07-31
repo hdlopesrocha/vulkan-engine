@@ -62,20 +62,11 @@ public:
     void init();
     void cleanup();
     void init(VulkanApp* app);
-    // Generate per-chunk vegetation instances from mesh geometry using the
-    // compute shader. This is the only supported instancing path now.
-    // vertexBuffer/indexBuffer are device-local buffers created by the caller.
-    // We accept `Buffer` objects so the renderer can defer destruction until GPU work completes.
-    void generateChunkInstances(NodeID chunkId,
-                                Buffer vertexBuffer, uint32_t vertexCount,
-                                Buffer indexBuffer, uint32_t indexCount,
-                                const glm::vec3& chunkCenter,
-                                uint32_t instancesPerTriangle, VulkanApp* app,
-                                uint32_t seed = 1337);
     // CPU-side instance generation — avoids GPUVM faults on RADV iGPUs where
     // the Texture Cache/Pipe cannot read from device-local or host-visible
     // storage buffers.  Enqueues the chunk and processes up to maxPerFrame
-    // chunks each frame via processPendingChunks().
+    // chunks each frame via processPendingChunks().  With no grass triangles
+    // the chunk's previous instance data is cleared instead.
     void generateChunkInstancesCPU(NodeID chunkId,
                                    const std::vector<glm::vec3>& positions,
                                    const std::vector<uint32_t>& grassIndices,

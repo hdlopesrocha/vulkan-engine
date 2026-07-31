@@ -1569,87 +1569,9 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
     }
 }
 
-void VegetationRenderer::generateChunkInstances(NodeID chunkId,
-                                               Buffer vertexBuffer, uint32_t vertexCount,
-                                               Buffer indexBuffer, uint32_t indexCount,
-                                               const glm::vec3& chunkCenter,
-                                               uint32_t instancesPerTriangle, VulkanApp* app,
-                                               uint32_t seed) {
-    if (!app) return;
-
-    if (indexCount < 3 || instancesPerTriangle == 0) {
-        // No instances to generate; clear any previous chunk data.
-        destroyInstanceBuffer(chunkId, app);
-        return;
-    }
-
-    uint32_t triCount = indexCount / 3;
-    uint32_t instanceCount = triCount * instancesPerTriangle;
-
-    // Create device-local storage/vertex buffer for instances (vec4 per-instance) via VMA
-    VkDeviceSize instanceBufferSize = static_cast<VkDeviceSize>(instanceCount) * sizeof(float) * 4; // vec4
-    Buffer instanceBuf = app->createBuffer(instanceBufferSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    VkBuffer instanceBuffer = instanceBuf.buffer;
-    Buffer indirect = app->createBuffer(sizeof(VkDrawIndexedIndirectCommand),
-        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkDrawIndexedIndirectCommand drawCmd{};
-    drawCmd.indexCount = 36;
-    drawCmd.instanceCount = instanceCount;
-    drawCmd.firstIndex = 0;
-    drawCmd.vertexOffset = 0;
-    drawCmd.firstInstance = 0;
-    std::memcpy(indirect.mappedData, &drawCmd, sizeof(VkDrawIndexedIndirectCommand));
-
-    // Dispatch compute to fill instanceBuffer asynchronously on vegetation queue
-    VkFence fence = VK_NULL_HANDLE;
-    uint32_t expected = app->generateVegetationInstancesComputeAsync(vertexBuffer.buffer, vertexCount, indexBuffer.buffer, indexCount, instancesPerTriangle, instanceBuffer, static_cast<uint32_t>(instanceBufferSize), &fence, seed, billboardCount);
-    if (expected == 0 || fence == VK_NULL_HANDLE) {
-        // Clean up partially created buffers if compute not dispatched
-        app->destroyBuffer(instanceBuf);
-        app->destroyBuffer(indirect);
-        return;
-    }
-
-    std::cout << "[VegetationRenderer::generateChunkInstances] async dispatched, expected = " << expected << " fence=" << (void*)fence << std::endl;
-
-    // Publish the new chunk and release inputs from a deferred callback that
-    // runs once the compute dispatch's fence signals — mirroring the CPU path
-    // (generateChunkInstancesCPU) instead of blocking the caller per chunk.
-    // deferDestroyUntilFence fires on the render thread during fence polling, so
-    // map mutation and buffer destruction happen without in-flight references,
-    // and the old chunk buffers are freed here (also fence-gated) rather than up
-    // front. Removes the per-chunk full GPU stall with no live-path change.
-    Buffer vtx = vertexBuffer;
-    Buffer idx = indexBuffer;
-    app->deferDestroyUntilFence(fence, [this, app, chunkId, expected, chunkCenter,
-                                        instanceBuf, indirect, vtx, idx]() mutable {
-        // Destroy the previous chunk's buffers (fence-gated: GPU is done).
-        destroyInstanceBuffer(chunkId, app);
-
-        InstanceBuffer ibuf;
-        ibuf.buffer = instanceBuf.buffer;
-        ibuf.memory = instanceBuf.memory;
-        ibuf.allocation = instanceBuf.allocation;
-        ibuf.indirectBuffer = indirect.buffer;
-        ibuf.indirectMemory = indirect.memory;
-        ibuf.indirectAllocation = indirect.allocation;
-        ibuf.center = chunkCenter;
-        ibuf.count = expected;
-        chunkBuffers[chunkId] = ibuf;
-        chunkInstanceCounts[chunkId] = expected;
-        vegConsolidationDirty = true;
-
-        // Release input buffers (vertex/index) — GPU no longer reads them.
-        app->destroyBuffer(vtx);
-        app->destroyBuffer(idx);
-    });
-}
 
 // ── CPU-side instance generation ─────────────────────────────────────────────
-// Replicates vegetation_instance_gen.comp logic on the CPU.  Avoids GPUVM
+// Mirrors the previous GPU compute path (now removed) on the CPU.  Avoids GPUVM
 // faults on RADV iGPUs where TCP cannot read storage buffers from any
 // memory type (device-local, host-visible, or concurrent-shared).
 

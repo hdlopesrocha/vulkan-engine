@@ -1964,7 +1964,9 @@ void SceneRenderer::generateVegetationForNode(VulkanApp* app, NodeID nid, const 
                 std::cerr << "[SceneRenderer] VULKAN_DISABLE_VEGETATION set; skipping vegetation clear for node " << (unsigned long long)nid << std::endl;
                 return;
             }
-            vegetationRenderer->generateChunkInstances(nid, Buffer{}, 0, Buffer{}, 0, chunkCenter, instancesPerTriangle, app, seed);
+            // CPU path handles the empty case (clears any previous chunk data).
+            vegetationRenderer->generateChunkInstancesCPU(nid, positions, grassIndices,
+                chunkCenter, instancesPerTriangle, app, seed);
             return;
         }
 
