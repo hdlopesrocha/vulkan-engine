@@ -51,8 +51,6 @@ layout(push_constant) uniform PC {
     float maxShadowDist;
 } pc;
 
-const float BLEND_MARGIN = 0.04;
-
 shared vec4 gPlanes[3][6];
 
 vec4 normalizePlane(vec4 pl) {
@@ -87,47 +85,6 @@ bool aabbVisibleExtruded(uint cascade, vec3 minp, vec3 maxp) {
         if (dist < 0.0) return false;
     }
     return true;
-}
-
-bool aabbProjectedSafe(mat4 mvp, vec3 minp, vec3 maxp, float margin) {
-    vec2 uvMin = vec2(1e10);
-    vec2 uvMax = vec2(-1e10);
-    for (int iz = 0; iz < 2; iz++) {
-        for (int iy = 0; iy < 2; iy++) {
-            for (int ix = 0; ix < 2; ix++) {
-                vec3 p = vec3(
-                    (ix == 0) ? minp.x : maxp.x,
-                    (iy == 0) ? minp.y : maxp.y,
-                    (iz == 0) ? minp.z : maxp.z
-                );
-                vec4 ls = mvp * vec4(p, 1.0);
-                vec2 uv = ls.xy / ls.w * 0.5 + 0.5;
-                uvMin = min(uvMin, uv);
-                uvMax = max(uvMax, uv);
-            }
-        }
-    }
-    return uvMin.x >= margin && uvMax.x <= 1.0 - margin &&
-           uvMin.y >= margin && uvMax.y <= 1.0 - margin;
-}
-
-void aabbZRange(mat4 mvp, vec3 minp, vec3 maxp, out float zMin, out float zMax) {
-    zMin = 1e10; zMax = -1e10;
-    for (int iz = 0; iz < 2; iz++) {
-        for (int iy = 0; iy < 2; iy++) {
-            for (int ix = 0; ix < 2; ix++) {
-                vec3 p = vec3(
-                    (ix == 0) ? minp.x : maxp.x,
-                    (iy == 0) ? minp.y : maxp.y,
-                    (iz == 0) ? minp.z : maxp.z
-                );
-                vec4 ls = mvp * vec4(p, 1.0);
-                float z = ls.z / ls.w;
-                zMin = min(zMin, z);
-                zMax = max(zMax, z);
-            }
-        }
-    }
 }
 
 void writeToCascade(uint cascade, DrawCmd cmd) {
@@ -176,36 +133,10 @@ void main() {
     DrawCmd cmd = inCmds.cmds[idx];
     cmd.firstInstance = idx;
 
-    if (!aabbVisibleExtruded(0, minp, maxp) &&
-        !aabbVisibleExtruded(1, minp, maxp) &&
-        !aabbVisibleExtruded(2, minp, maxp)) return;
-
-    float zMin0, zMax0, zMin1, zMax1;
-    aabbZRange(cascades.viewProj[0], minp, maxp, zMin0, zMax0);
-    aabbZRange(cascades.viewProj[1], minp, maxp, zMin1, zMax1);
-    bool spans0 = zMin0 < 1.0 && zMax0 > 1.0;
-    bool spans1 = zMin1 < 1.0 && zMax1 > 1.0;
-    bool inC0 = aabbVisibleExtruded(0, minp, maxp);
-    bool inC1 = aabbVisibleExtruded(1, minp, maxp);
-    bool inC2 = aabbVisibleExtruded(2, minp, maxp);
-    bool safe0 = aabbProjectedSafe(cascades.viewProj[0], minp, maxp, BLEND_MARGIN);
-    bool safe1 = aabbProjectedSafe(cascades.viewProj[1], minp, maxp, BLEND_MARGIN);
-
-    if (inC0 && zMin0 <= 1.0) {
-        writeToCascade(0u, cmd);
-        if (spans0) {
-            // Depth boundary: must write to C1 too
-            writeToCascade(1u, cmd);
-            if (!safe1 || spans1) writeToCascade(2u, cmd);
-        } else if (!safe0 && inC1) {
-            // UV edge of C0: blend with C1
-            writeToCascade(1u, cmd);
-            if (!safe1 || spans1) writeToCascade(2u, cmd);
-        }
-    } else if (inC1 && zMin1 <= 1.0) {
-        writeToCascade(1u, cmd);
-        if (!safe1 || spans1) writeToCascade(2u, cmd);
-    } else if (inC2) {
-        writeToCascade(2u, cmd);
-    }
+    // Independent per-cascade culling: a chunk is drawn to a cascade iff it
+    // is visible (with extruded planes, so casters outside the frustum are
+    // included) in that cascade's frustum.  No exclusion between cascades.
+    if (aabbVisibleExtruded(0, minp, maxp)) writeToCascade(0u, cmd);
+    if (aabbVisibleExtruded(1, minp, maxp)) writeToCascade(1u, cmd);
+    if (aabbVisibleExtruded(2, minp, maxp)) writeToCascade(2u, cmd);
 }

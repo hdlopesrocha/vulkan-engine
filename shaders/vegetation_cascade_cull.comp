@@ -90,20 +90,6 @@ bool aabbVisible(vec4 planes[6], vec3 minp, vec3 maxp) {
     return true;
 }
 
-bool aabbFullyInside(vec4 planes[6], vec3 minp, vec3 maxp) {
-    for (int i = 0; i < 6; ++i) {
-        vec3 n = planes[i].xyz;
-        float d = planes[i].w;
-        vec3 p;
-        p.x = (n.x >= 0.0) ? minp.x : maxp.x;
-        p.y = (n.y >= 0.0) ? minp.y : maxp.y;
-        p.z = (n.z >= 0.0) ? minp.z : maxp.z;
-        float dist = dot(n, p) + d;
-        if (dist < 0.0) return false;
-    }
-    return true;
-}
-
 void writeToCascade(uint cascade, DrawCmd cmd, uint idx) {
     uint dst = 0u;
     if (cascade == 0u) {
@@ -134,13 +120,6 @@ void main() {
 
     ChunkMeta chunk = metaBuf.chunks[idx];
 
-    // Check visibility in at least one cascade before proceeding.
-    // (C2's frustum only covers the far slice — chunks nearer than
-    // splits[2] may be outside C2 but still visible in C0 or C1.)
-    if (!aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax) &&
-        !aabbVisible(gPlanes[1], chunk.aabbMin, chunk.aabbMax) &&
-        !aabbVisible(gPlanes[2], chunk.aabbMin, chunk.aabbMax)) return;
-
     DrawCmd cmd;
     cmd.indexCount = 36;
     cmd.instanceCount = chunk.instanceCount;
@@ -148,36 +127,9 @@ void main() {
     cmd.vertexOffset = 0;
     cmd.firstInstance = chunk.instanceOffset;
 
-    if (aabbVisible(gPlanes[1], chunk.aabbMin, chunk.aabbMax)) {
-        if (aabbFullyInside(gPlanes[1], chunk.aabbMin, chunk.aabbMax)) {
-            if (aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) {
-                if (aabbFullyInside(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) {
-                    writeToCascade(0u, cmd, idx); // C0 only
-                } else {
-                    writeToCascade(0u, cmd, idx); // C0 + C1
-                    writeToCascade(1u, cmd, idx);
-                }
-            } else {
-                writeToCascade(1u, cmd, idx); // C1 only
-            }
-        } else {
-            // C1 border → need C1 + C2 (unless C0 covers it)
-            if (aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) {
-                if (aabbFullyInside(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) {
-                    writeToCascade(0u, cmd, idx); // C0 only (exclude from C1, C2)
-                } else {
-                    writeToCascade(0u, cmd, idx); // C0 + C1 + C2 (C1 border → C2 needed)
-                    writeToCascade(1u, cmd, idx);
-                    writeToCascade(2u, cmd, idx);
-                }
-            } else {
-                writeToCascade(1u, cmd, idx); // C1 + C2 (C0 not visible)
-                writeToCascade(2u, cmd, idx);
-            }
-        }
-    } else if (aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) {
-        writeToCascade(0u, cmd, idx); // C0 only (visible in C0 but not C1 or C2)
-    } else {
-        writeToCascade(2u, cmd, idx); // C2 only
-    }
+    // Independent per-cascade culling: a chunk is drawn to a cascade iff it
+    // is visible in that cascade's frustum.  No exclusion between cascades.
+    if (aabbVisible(gPlanes[0], chunk.aabbMin, chunk.aabbMax)) writeToCascade(0u, cmd, idx);
+    if (aabbVisible(gPlanes[1], chunk.aabbMin, chunk.aabbMax)) writeToCascade(1u, cmd, idx);
+    if (aabbVisible(gPlanes[2], chunk.aabbMin, chunk.aabbMax)) writeToCascade(2u, cmd, idx);
 }

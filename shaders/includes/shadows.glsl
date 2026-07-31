@@ -24,16 +24,27 @@ float cascadeBlendFactor(vec2 uv, float margin) {
     return clamp(minEdge / margin, 0.0, 1.0);
 }
 
+float cascadeBlendZ(float z, float margin) {
+    float distFromFar = 1.0 - z;
+    return clamp(distFromFar / margin, 0.0, 1.0);
+}
+
 float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias) {
     const float BLEND_MARGIN = 0.04;
 
     vec3 proj0 = fragPosLightSpace.xyz / fragPosLightSpace.w;
     proj0.xy = proj0.xy * 0.5 + 0.5;
 
-    // Cascade 0 — try with extended bounds for blending
+    // Cascade 0 — try with extended bounds for blending.
+    // Blend based on BOTH XY proximity to the shadow-map edge AND Z
+    // proximity to the far plane (cascade depth boundary).  This
+    // smooths the transition between cascades and eliminates visible
+    // seams at the depth split.
     if (insideShadowMap(proj0, -BLEND_MARGIN)) {
         float s0 = ShadowEVSM(shadowMap, proj0, bias);
-        float blend0 = cascadeBlendFactor(proj0.xy, BLEND_MARGIN);
+        float blendXY = cascadeBlendFactor(proj0.xy, BLEND_MARGIN);
+        float blendZ  = cascadeBlendZ(proj0.z, BLEND_MARGIN);
+        float blend0  = min(blendXY, blendZ);
         if (blend0 >= 1.0) return s0;
 
         // Blend with cascade 1
@@ -47,7 +58,9 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias) {
     vec3 proj1 = projectToShadowMap(ubo.lightSpaceMatrix1, worldPos);
     if (insideShadowMap(proj1, -BLEND_MARGIN)) {
         float s1 = ShadowEVSM(shadowMap1, proj1, bias);
-        float blend1 = cascadeBlendFactor(proj1.xy, BLEND_MARGIN);
+        float blendXY = cascadeBlendFactor(proj1.xy, BLEND_MARGIN);
+        float blendZ  = cascadeBlendZ(proj1.z, BLEND_MARGIN);
+        float blend1  = min(blendXY, blendZ);
         if (blend1 >= 1.0) return s1;
 
         // Blend with cascade 2

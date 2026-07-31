@@ -615,7 +615,8 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
     for (uint32_t c = 0; c < 3; c++)
         cCmds[c].reserve(cap);
 
-    // Helper: test AABB against 6 planes (extrudes near AND far by extrudeDist)
+    // Helper: test AABB against 6 planes (extrudes all planes by extrudeDist
+    // so shadow casters outside the cascade frustum are still included)
     auto aabbVisible = [](const glm::vec4 planes[6],
                           const glm::vec3& minp, const glm::vec3& maxp,
                           float extrudeDist = 0.0f) -> bool {
@@ -630,51 +631,6 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
         }
         return true;
     };
-    static constexpr float BLEND_MARGIN = 0.04f;
-    auto aabbProjectedSafe = [](const glm::mat4& mvp,
-                                const glm::vec3& minp,
-                                const glm::vec3& maxp,
-                                float margin) -> bool {
-        glm::vec2 uvMin(1e10f), uvMax(-1e10f);
-        for (int iz = 0; iz < 2; iz++) {
-            for (int iy = 0; iy < 2; iy++) {
-                for (int ix = 0; ix < 2; ix++) {
-                    glm::vec3 p(
-                        (ix == 0) ? minp.x : maxp.x,
-                        (iy == 0) ? minp.y : maxp.y,
-                        (iz == 0) ? minp.z : maxp.z
-                    );
-                    glm::vec4 ls = mvp * glm::vec4(p, 1.0f);
-                    glm::vec2 uv = glm::vec2(ls.x / ls.w, ls.y / ls.w) * 0.5f + 0.5f;
-                    uvMin = glm::min(uvMin, uv);
-                    uvMax = glm::max(uvMax, uv);
-                }
-            }
-        }
-        return uvMin.x >= margin && uvMax.x <= 1.0f - margin &&
-               uvMin.y >= margin && uvMax.y <= 1.0f - margin;
-    };
-    auto aabbZRange = [](const glm::mat4& mvp,
-                          const glm::vec3& minp,
-                          const glm::vec3& maxp,
-                          float& zMin, float& zMax) {
-        zMin = 1e10f; zMax = -1e10f;
-        for (int iz = 0; iz < 2; iz++) {
-            for (int iy = 0; iy < 2; iy++) {
-                for (int ix = 0; ix < 2; ix++) {
-                    glm::vec3 p(
-                        (ix == 0) ? minp.x : maxp.x,
-                        (iy == 0) ? minp.y : maxp.y,
-                        (iz == 0) ? minp.z : maxp.z
-                    );
-                    glm::vec4 ls = mvp * glm::vec4(p, 1.0f);
-                    float z = ls.z / ls.w;
-                    zMin = glm::min(zMin, z);
-                    zMax = glm::max(zMax, z);
-                }
-            }
-        }
-    };
 
     // Lambda to append a draw command to a cascade's list
     auto writeToCascade = [&](uint32_t cascade, const VkDrawIndexedIndirectCommand& dCmd) {
@@ -682,8 +638,10 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
             cCmds[cascade].push_back(dCmd);
     };
 
-    // Iterate chunks in order, building per-cascade command lists using the
-    // same cascade-assignment logic as vegetation_cascade_cull.comp.
+    // Iterate chunks in order, culling each chunk independently per cascade:
+    // a chunk is drawn to a cascade iff it is visible (with extrusion) in
+    // that cascade's frustum.  No exclusion between cascades — every cascade
+    // receives everything that could possibly be sampled from it.
     uint32_t instanceOff = 0;
     for (const auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
@@ -700,46 +658,9 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
         drawCmd.firstInstance = instanceOff;
         instanceOff += static_cast<uint32_t>(buf.count);
 
-        // Check visibility in at least one cascade before proceeding.
-        // (The extruded near planes ensure shadow casters outside the
-        // cascade frustum are still included.)
-        if (!aabbVisible(cascadePlanes[0], minp, maxp, maxShadowDist) &&
-            !aabbVisible(cascadePlanes[1], minp, maxp, maxShadowDist) &&
-            !aabbVisible(cascadePlanes[2], minp, maxp, maxShadowDist)) continue;
-
-        // Cascade assignment: a chunk writes to a cascade only when some
-        // fragment from it could sample that cascade (its clip-space Z
-        // overlaps [0, 1] in that cascade's light space). Both near and
-        // far planes are extruded so shadow casters at cascade boundaries
-        // are not erroneously culled.
-        float zMin0, zMax0, zMin1, zMax1;
-        aabbZRange(cascadeMatrices[0], minp, maxp, zMin0, zMax0);
-        aabbZRange(cascadeMatrices[1], minp, maxp, zMin1, zMax1);
-        bool spans0 = zMin0 < 1.0f && zMax0 > 1.0f;
-        bool spans1 = zMin1 < 1.0f && zMax1 > 1.0f;
-        bool inC0 = aabbVisible(cascadePlanes[0], minp, maxp, maxShadowDist);
-        bool inC1 = aabbVisible(cascadePlanes[1], minp, maxp, maxShadowDist);
-        bool inC2 = aabbVisible(cascadePlanes[2], minp, maxp, maxShadowDist);
-        bool safe0 = aabbProjectedSafe(cascadeMatrices[0], minp, maxp, BLEND_MARGIN);
-        bool safe1 = aabbProjectedSafe(cascadeMatrices[1], minp, maxp, BLEND_MARGIN);
-
-        if (inC0 && zMin0 <= 1.0f) {
-            writeToCascade(0, drawCmd);
-            if (spans0) {
-                // Depth boundary: must write to C1 too
-                writeToCascade(1, drawCmd);
-                if (!safe1 || spans1) writeToCascade(2, drawCmd);
-            } else if (!safe0 && inC1) {
-                // UV edge of C0: blend with C1
-                writeToCascade(1, drawCmd);
-                if (!safe1 || spans1) writeToCascade(2, drawCmd);
-            }
-        } else if (inC1 && zMin1 <= 1.0f) {
-            writeToCascade(1, drawCmd);
-            if (!safe1 || spans1) writeToCascade(2, drawCmd);
-        } else if (inC2) {
-            writeToCascade(2, drawCmd);
-        }
+        if (aabbVisible(cascadePlanes[0], minp, maxp, maxShadowDist)) writeToCascade(0, drawCmd);
+        if (aabbVisible(cascadePlanes[1], minp, maxp, maxShadowDist)) writeToCascade(1, drawCmd);
+        if (aabbVisible(cascadePlanes[2], minp, maxp, maxShadowDist)) writeToCascade(2, drawCmd);
 
         if (cCmds[0].size() + cCmds[1].size() + cCmds[2].size() >= vegNumChunks) break;
     }
