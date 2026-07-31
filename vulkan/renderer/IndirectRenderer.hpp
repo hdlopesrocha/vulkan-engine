@@ -181,12 +181,9 @@ public:
 
     // ── Cascade-aware culling (single pass, 3 cascades) ──
     // Single compute dispatch that culls all chunks against 3 cascade frustums
-    // simultaneously. Performs cascade-aware culling: C2 (outer) → C1 → C0 (inner).
-    // Chunks fully inside an inner cascade are excluded from outer cascades;
-    // border-intersecting chunks are rendered in both consecutive cascades.
+    // simultaneously. Each chunk is culled independently per cascade.
     void prepareCullCascades(VkCommandBuffer cmd,
-                             const glm::mat4 cascadeMatrices[3],
-                             float maxShadowDist);
+                             const glm::mat4 cascadeMatrices[3]);
     // Draw a specific cascade's compacted output (call inside render pass).
     void drawCascadeOnly(VkCommandBuffer cmd, uint32_t cascadeIndex);
 

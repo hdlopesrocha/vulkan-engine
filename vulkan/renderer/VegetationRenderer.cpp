@@ -537,8 +537,7 @@ void VegetationRenderer::destroyCascadeCull() {
 }
 
 void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
-                                              const glm::mat4 cascadeMatrices[3],
-                                              float maxShadowDist) {
+                                              const glm::mat4 cascadeMatrices[3]) {
     (void)cmd;
     if (!appPtr) return;
     if (!vegCascadeCullInited) initCascadeCull(appPtr);
@@ -615,14 +614,12 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
     for (uint32_t c = 0; c < 3; c++)
         cCmds[c].reserve(cap);
 
-    // Helper: test AABB against 6 planes (extrudes all planes by extrudeDist
-    // so shadow casters outside the cascade frustum are still included)
+    // Helper: test AABB against 6 planes
     auto aabbVisible = [](const glm::vec4 planes[6],
-                          const glm::vec3& minp, const glm::vec3& maxp,
-                          float extrudeDist = 0.0f) -> bool {
+                          const glm::vec3& minp, const glm::vec3& maxp) -> bool {
         for (int i = 0; i < 6; i++) {
             glm::vec3 n = glm::vec3(planes[i]);
-            float d = planes[i].w + extrudeDist;
+            float d = planes[i].w;
             glm::vec3 p;
             p.x = (n.x >= 0.0f) ? maxp.x : minp.x;
             p.y = (n.y >= 0.0f) ? maxp.y : minp.y;
@@ -639,9 +636,9 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
     };
 
     // Iterate chunks in order, culling each chunk independently per cascade:
-    // a chunk is drawn to a cascade iff it is visible (with extrusion) in
-    // that cascade's frustum.  No exclusion between cascades — every cascade
-    // receives everything that could possibly be sampled from it.
+    // a chunk is drawn to a cascade iff it is visible in that cascade's
+    // frustum.  No exclusion between cascades — every cascade receives
+    // everything that could possibly be sampled from it.
     uint32_t instanceOff = 0;
     for (const auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
@@ -658,9 +655,9 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
         drawCmd.firstInstance = instanceOff;
         instanceOff += static_cast<uint32_t>(buf.count);
 
-        if (aabbVisible(cascadePlanes[0], minp, maxp, maxShadowDist)) writeToCascade(0, drawCmd);
-        if (aabbVisible(cascadePlanes[1], minp, maxp, maxShadowDist)) writeToCascade(1, drawCmd);
-        if (aabbVisible(cascadePlanes[2], minp, maxp, maxShadowDist)) writeToCascade(2, drawCmd);
+        if (aabbVisible(cascadePlanes[0], minp, maxp)) writeToCascade(0, drawCmd);
+        if (aabbVisible(cascadePlanes[1], minp, maxp)) writeToCascade(1, drawCmd);
+        if (aabbVisible(cascadePlanes[2], minp, maxp)) writeToCascade(2, drawCmd);
 
         if (cCmds[0].size() + cCmds[1].size() + cCmds[2].size() >= vegNumChunks) break;
     }

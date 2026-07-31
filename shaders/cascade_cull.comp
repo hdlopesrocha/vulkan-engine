@@ -48,7 +48,6 @@ layout(std430, binding = 8) readonly buffer CascadeMatrices {
 
 layout(push_constant) uniform PC {
     uint numChunks;
-    float maxShadowDist;
 } pc;
 
 shared vec4 gPlanes[3][6];
@@ -72,11 +71,10 @@ void extractPlanes(mat4 mvp, out vec4 planes[6]) {
     planes[5] = normalizePlane(row3 - row2);
 }
 
-bool aabbVisibleExtruded(uint cascade, vec3 minp, vec3 maxp) {
+bool aabbVisible(uint cascade, vec3 minp, vec3 maxp) {
     for (int i = 0; i < 6; ++i) {
         vec3 n = gPlanes[cascade][i].xyz;
         float d = gPlanes[cascade][i].w;
-        d += pc.maxShadowDist;
         vec3 p;
         p.x = (n.x >= 0.0) ? maxp.x : minp.x;
         p.y = (n.y >= 0.0) ? maxp.y : minp.y;
@@ -134,9 +132,8 @@ void main() {
     cmd.firstInstance = idx;
 
     // Independent per-cascade culling: a chunk is drawn to a cascade iff it
-    // is visible (with extruded planes, so casters outside the frustum are
-    // included) in that cascade's frustum.  No exclusion between cascades.
-    if (aabbVisibleExtruded(0, minp, maxp)) writeToCascade(0u, cmd);
-    if (aabbVisibleExtruded(1, minp, maxp)) writeToCascade(1u, cmd);
-    if (aabbVisibleExtruded(2, minp, maxp)) writeToCascade(2u, cmd);
+    // is visible in that cascade's frustum.  No exclusion between cascades.
+    if (aabbVisible(0, minp, maxp)) writeToCascade(0u, cmd);
+    if (aabbVisible(1, minp, maxp)) writeToCascade(1u, cmd);
+    if (aabbVisible(2, minp, maxp)) writeToCascade(2u, cmd);
 }

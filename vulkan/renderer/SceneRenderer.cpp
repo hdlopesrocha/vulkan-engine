@@ -357,18 +357,15 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
 
     // Single cascade-aware GPU culling pass: culls all chunks against all 3
     // cascade frustums simultaneously.  Each cascade independently receives
-    // every chunk visible in its (extruded) frustum — no exclusion between
-    // cascades — so the fragment shader's per-cascade sampling always finds
-    // the geometry it needs.
-    // The planes are extruded toward the light so geometry outside the
-    // cascade can still cast a shadow into it.
-    float maxShadowDist = uboStatic.passParams.w;
-    solidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, maxShadowDist);
+    // every chunk visible in its frustum — no exclusion between cascades —
+    // so the fragment shader's per-cascade sampling always finds the geometry
+    // it needs.
+    solidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices);
 
     // Acquire vegetation instance/indirect buffers before dynamic rendering
     if (vegetationEnabled && vegetationRenderer) {
         vegetationRenderer->recordReadBarriers(commandBuffer);
-        vegetationRenderer->prepareCullCascades(commandBuffer, cascadeMatrices, maxShadowDist);
+        vegetationRenderer->prepareCullCascades(commandBuffer, cascadeMatrices);
     }
 
     for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {

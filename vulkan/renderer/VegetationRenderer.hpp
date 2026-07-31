@@ -151,11 +151,9 @@ public:
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj);
 
     // Cascade-aware culling: single dispatch that culls against all 3 cascade
-    // frustums simultaneously. Chunks are assigned to cascades based on
-    // containment (fully inside → inner cascade only; border → both).
+    // frustums simultaneously. Each chunk is culled independently per cascade.
     void prepareCullCascades(VkCommandBuffer cmd,
-                             const glm::mat4 cascadeMatrices[3],
-                             float maxShadowDist);
+                             const glm::mat4 cascadeMatrices[3]);
     // Draw a specific cascade's vegetation compacted output.
     void drawShadowCascade(VulkanApp* app, VkCommandBuffer& commandBuffer,
                            VkDescriptorSet shadowDescriptorSet,
