@@ -203,6 +203,26 @@ public:
     struct PoolSetPair { VkDescriptorPool pool; VkDescriptorSet set; };
     PoolSetPair cachedBackfaceCompute[ASYNC_RING_SIZE]{};
     uint32_t ringBackfaceCompute = 0;
+
+    // Per-slot resources for the async back-face task, reused in a ring of
+    // ASYNC_RING_SIZE slots so the per-frame task allocates nothing.
+    // Slot-safety: slot N%ASYNC_RING_SIZE is reused by task N+ASYNC_RING_SIZE.
+    // drawFrame waits on the frame fence of frame N before recording frame
+    // N+ASYNC_RING_SIZE (ASYNC_RING_SIZE == VulkanApp::MAX_FRAMES_IN_FLIGHT),
+    // and frame N's main submission waits on semBackFace (task N), so task N's
+    // GPU work -- the only consumer of this slot -- has completed before the
+    // slot is touched again. CPU-side tasks also cannot overlap: the main
+    // thread blocks on future.get() before enqueueing the next task and the
+    // pool has a single worker.
+    struct BackfaceSlot {
+        Buffer compact{};                          // cull output: VkDrawIndexedIndirectCommand[]
+        Buffer visible{};                          // cull output: draw count (uint32_t)
+        uint32_t compactCapacity = 0;              // elements `compact` can hold
+        VkDescriptorPool pool = VK_NULL_HANDLE;    // per-slot pool (maxSets=1)
+        VkDescriptorSet waterDs = VK_NULL_HANDLE;  // water-depth set, rewritten per task
+    };
+    BackfaceSlot cachedBackfaceRing[ASYNC_RING_SIZE]{};
+    uint32_t ringBackface = 0;
     ThreadPool asyncThreadPool{1}; // single worker for per-frame back-face pass
 
     // Persistent cubemap resources (used inline on main CB, no async race)
@@ -1401,22 +1421,37 @@ public:
                     app->freeCommandBuffer(cmd);
                     return;
                 }
-                // Allocate per-task compact/visible buffers and descriptor set so cull+draw
-                // recorded on this command buffer don't race with other submissions.
+                // Reuse a ring of pre-allocated per-task resources (cull output buffers)
+                // instead of creating host-visible buffers every frame. Slot safety:
+                // see the cachedBackfaceRing comment above -- the previous submission
+                // using this slot (task N) has completed before task N+ASYNC_RING_SIZE
+                // runs, so reusing (and on growth, replacing) the buffers cannot race
+                // with the GPU.
                 IndirectRenderer &ind = this->sceneRenderer->waterRenderer->getIndirectRenderer();
                 uint32_t numCmds = std::max({
                     static_cast<uint32_t>(ind.getMeshCount()),
                     static_cast<uint32_t>(ind.getMeshCapacity()),
                     1u
                 });
-                VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * numCmds;
-                
-                Buffer taskCompact = app->createBuffer(compactSize,
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                Buffer taskVisible = app->createBuffer(sizeof(uint32_t),
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                BackfaceSlot& slot = cachedBackfaceRing[ringBackface++ % ASYNC_RING_SIZE];
+
+                // Lazily create the slot's buffers once. The compact buffer is only
+                // recreated when the cull capacity grows; the old buffer's last
+                // submission (this slot's previous task) has completed (see above),
+                // so destroying it in place is safe and needs no deferred destroy.
+                if (slot.compact.buffer == VK_NULL_HANDLE || slot.compactCapacity < numCmds) {
+                    if (slot.compact.buffer != VK_NULL_HANDLE)
+                        app->destroyBuffer(slot.compact); // slot's previous task completed
+                    slot.compact = app->createBuffer(sizeof(VkDrawIndexedIndirectCommand) * numCmds,
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                    slot.compactCapacity = numCmds;
+                }
+                if (slot.visible.buffer == VK_NULL_HANDLE) {
+                    slot.visible = app->createBuffer(sizeof(uint32_t),
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                }
 
                 VkDevice dev = app->getDevice();
                 auto lazyComputeSlot = [&](PoolSetPair* ring, uint32_t& idx, VkDescriptorSetLayout layout, const char* label) -> PoolSetPair& {
@@ -1440,8 +1475,8 @@ public:
                 VkDescriptorSet computeDs = VK_NULL_HANDLE;
                 {
                     VkDescriptorSetLayout bfLayout = ind.getComputeDescriptorSetLayout();
-                    auto& slot = lazyComputeSlot(cachedBackfaceCompute, ringBackfaceCompute, bfLayout, "Lazy cachedBackfaceCompute");
-                    computeDs = slot.set;
+                    auto& dsSlot = lazyComputeSlot(cachedBackfaceCompute, ringBackfaceCompute, bfLayout, "Lazy cachedBackfaceCompute");
+                    computeDs = dsSlot.set;
                 }
 
                 // Update descriptor set with buffers: inCmds, outCmds, bounds, visibleCount
@@ -1450,43 +1485,61 @@ public:
                         .writeBuffer(computeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                      ind.getIndirectBuffer().buffer, 0, VK_WHOLE_SIZE)
                         .writeBuffer(computeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     taskCompact.buffer, 0, VK_WHOLE_SIZE)
+                                     slot.compact.buffer, 0, VK_WHOLE_SIZE)
                         .writeBuffer(computeDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                      ind.getBoundsBuffer().buffer, 0, VK_WHOLE_SIZE)
                         .writeBuffer(computeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     taskVisible.buffer, 0, VK_WHOLE_SIZE)
+                                     slot.visible.buffer, 0, VK_WHOLE_SIZE)
                         .flush();
                 }
 
                 // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
                 if (computeDs != VK_NULL_HANDLE) {
-                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
+                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, slot.compact.buffer, slot.visible.buffer);
                 }
 
-                // Allocate a dedicated descriptor set for THIS task so the async back-face
-                // pass never shares the per-frame set with the main command buffer (which
-                // would require UPDATE_AFTER_BIND and trip GPU-assisted validation's
-                // descriptor-count check). The set is updated here, on this command buffer,
-                // and freed once the task's fence signals.
+                // Water-depth descriptor set for THIS task: pre-allocated per ring slot
+                // and rewritten each frame before submission. Reuse is safe because the
+                // slot's previous submission, which bound this set on the GPU, has
+                // completed before we rewrite it (see the cachedBackfaceRing comment).
+                // A dedicated set per slot keeps the async back-face pass from sharing
+                // the per-frame set with the main command buffer (which would require
+                // UPDATE_AFTER_BIND and trip GPU-assisted validation's descriptor-count
+                // check).
                 VkDescriptorSet asyncWaterDs = VK_NULL_HANDLE;
-                VkDescriptorPool asyncPool = this->sceneRenderer->waterRenderer->getAsyncWaterDepthPool();
                 {
                     VkImageView bfBack = (this->sceneRenderer->backFaceRenderer) ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
                     VkImageView bfCube = (this->sceneRenderer->solid360Renderer) ? this->sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-                    if (asyncPool != VK_NULL_HANDLE && bfBack != VK_NULL_HANDLE && bfCube != VK_NULL_HANDLE) {
-                        VkDescriptorSetAllocateInfo ai{};
-                        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                        ai.descriptorPool = asyncPool;
-                        ai.descriptorSetCount = 1;
-                        VkDescriptorSetLayout wdsLayout = this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSetLayout();
-                        ai.pSetLayouts = &wdsLayout;
-                        if (vkAllocateDescriptorSets(dev, &ai, &asyncWaterDs) == VK_SUCCESS) {
+                    VkDescriptorSetLayout wdsLayout = this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSetLayout();
+                    if (wdsLayout != VK_NULL_HANDLE && bfBack != VK_NULL_HANDLE && bfCube != VK_NULL_HANDLE) {
+                        if (slot.pool == VK_NULL_HANDLE) {
+                            // Per-slot pool (maxSets=1) so the set is allocated once and
+                            // rewritten every task; flags mirror the renderer's async
+                            // pool (the water-depth layout has no UPDATE_AFTER_BIND
+                            // bindings, so none is required here).
+                            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 };
+                            VkDescriptorPoolCreateInfo pci{};
+                            pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                            pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
+                            pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+                            if (vkCreateDescriptorPool(dev, &pci, nullptr, &slot.pool) == VK_SUCCESS) {
+                                app->resources.addDescriptorPool(slot.pool, "cachedBackfaceWaterDepth pool");
+                                VkDescriptorSetAllocateInfo ai{};
+                                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                                ai.descriptorPool = slot.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &wdsLayout;
+                                if (vkAllocateDescriptorSets(dev, &ai, &slot.waterDs) != VK_SUCCESS) {
+                                    slot.waterDs = VK_NULL_HANDLE; // retried on a later task
+                                } else {
+                                    app->resources.addDescriptorSet(slot.waterDs, "cachedBackfaceWaterDepth DS");
+                                }
+                            }
+                        }
+                        if (slot.waterDs != VK_NULL_HANDLE) {
                             VkImageView bfColor = this->sceneRenderer->solidRenderer->getColorView(frameIdx);
                             VkImageView bfDepth = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
                             VkImageView bfSky   = (this->sceneRenderer->skyRenderer) ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-                            this->sceneRenderer->waterRenderer->updateSceneTexturesBinding(this, asyncWaterDs, bfColor, bfDepth, frameIdx, bfSky, bfBack, bfCube);
-                        } else {
-                            asyncWaterDs = VK_NULL_HANDLE;
+                            this->sceneRenderer->waterRenderer->updateSceneTexturesBinding(this, slot.waterDs, bfColor, bfDepth, frameIdx, bfSky, bfBack, bfCube);
+                            asyncWaterDs = slot.waterDs;
                         }
                     }
                 }
@@ -1501,34 +1554,30 @@ public:
                     }
                 }
 
-                // Render back-face pass using the per-task compact/visible buffers so draws consume the cull results
+                // Render back-face pass using this slot's (ring-reused) compact/visible
+                // buffers so draws consume the cull results
                 auto tBackface = std::chrono::high_resolution_clock::now();
                 this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,
                                             ind,
                                             this->sceneRenderer->waterRenderer->getWaterGeometryPipelineLayout(),
                                             app->getMainDescriptorSet(),
                                             asyncWaterDs,
-                                            (computeDs != VK_NULL_HANDLE) ? taskCompact.buffer : VK_NULL_HANDLE,
-                                            (computeDs != VK_NULL_HANDLE) ? taskVisible.buffer : VK_NULL_HANDLE);
+                                            (computeDs != VK_NULL_HANDLE) ? slot.compact.buffer : VK_NULL_HANDLE,
+                                            (computeDs != VK_NULL_HANDLE) ? slot.visible.buffer : VK_NULL_HANDLE);
 
                 this->profileBackface = std::chrono::duration<float, std::milli>(
                     std::chrono::high_resolution_clock::now() - tBackface).count();
-                // Submit and schedule cleanup of temporary resources after fence signals.
-                // Use submitCommandBufferAsyncToQueue on the graphics queue so the
-                // completion semaphore (semBackFace) is registered in
-                // m_extraWaitSemaphores and drawFrame waits on it before the main
-                // command buffer reads the back-face depth (e.g. in the water
+                // Submit. The ring slot's buffers/set are NOT defer-destroyed: they are
+                // reused ASYNC_RING_SIZE tasks later, by which time this submission has
+                // completed (guaranteed by the frame-fence chain described on
+                // cachedBackfaceRing). Use submitCommandBufferAsyncToQueue on the
+                // graphics queue so the completion semaphore (semBackFace) is
+                // registered in m_extraWaitSemaphores and drawFrame waits on it before
+                // the main command buffer reads the back-face depth (e.g. in the water
                 // tessellation evaluation shader). A plain submitCommandBufferAsync
                 // would signal the semaphore but never register it, leaving the
                 // cross-command-buffer write->read dependency unsynchronized.
-                VkFence f = app->submitCommandBufferAsyncToQueue(cmd, app->getGraphicsQueue(), &semBackFace);
-                app->deferDestroyUntilFence(f, [app, taskCompact, taskVisible, asyncPool, asyncWaterDs]() mutable {
-                    app->destroyBuffer(taskCompact);
-                    app->destroyBuffer(taskVisible);
-                    if (asyncWaterDs != VK_NULL_HANDLE && asyncPool != VK_NULL_HANDLE) {
-                        vkFreeDescriptorSets(app->getDevice(), asyncPool, 1, &asyncWaterDs);
-                    }
-                });
+                app->submitCommandBufferAsyncToQueue(cmd, app->getGraphicsQueue(), &semBackFace);
             });
         }
 
@@ -1916,6 +1965,7 @@ public:
         // Pre-allocated ring pools are tracked by VulkanResourceManager, so
         // resources.cleanup() will destroy them. Just zero our arrays.
         for (auto& slot : cachedBackfaceCompute) slot = {};
+        for (auto& slot : cachedBackfaceRing) slot = {};
 
         // NOTE: Vulkan-owned objects for global managers are now cleaned up by
         // `VulkanResourceManager::cleanup(device)`. Avoid calling manager-level
