@@ -128,9 +128,8 @@ void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
     app->transitionImageLayout(gridTextureImage, VK_FORMAT_R8G8B8A8_SRGB,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     
-    // Defer actual destruction to VulkanResourceManager; clear local handles
-    stagingBuffer.buffer = VK_NULL_HANDLE;
-    stagingBuffer.memory = VK_NULL_HANDLE;
+    // Copies completed synchronously; destroy staging buffer now
+    app->destroyBuffer(stagingBuffer);
     
     // Create image view
     VkImageViewCreateInfo viewInfo{};
