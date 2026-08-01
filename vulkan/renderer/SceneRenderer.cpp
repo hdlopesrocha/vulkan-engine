@@ -352,8 +352,9 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, u
     // cascade frustums simultaneously.  Each cascade independently receives
     // every chunk visible in its frustum — no exclusion between cascades —
     // so the fragment shader's per-cascade sampling always finds the geometry
-    // it needs.
-    solidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices);
+    // it needs. camPos/lodBias mirror the main pass so shadow draws use the
+    // same per-chunk LoD selection.
+    solidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_);
 
     // Acquire vegetation instance/indirect buffers before dynamic rendering
     if (vegetationEnabled && vegetationRenderer) {
@@ -468,8 +469,8 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, u
     // Restore GPU culling for the main camera frustum (was overwritten by
     // per-cascade prepareCull calls above) so drawPrepared in the main pass
     // uses the correct visible set.
-    solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection);
-    brushSolidIndirectRenderer.prepareCull(commandBuffer, uboStatic.viewProjection);
+    solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_);
+    brushSolidIndirectRenderer.prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_);
 
     // Restore the main UBO so subsequent passes see the original data.
     // Wait for all shadow cascade draws to finish reading the UBO first.
@@ -1210,6 +1211,9 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 // queued since the last frame, and perform the actual Vulkan GPU uploads.
 // Must be called from the main (render) thread each frame.
 void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
+    // Cache the camera position for the shadow pass (which culls with the
+    // same camPos/lodBias so shadow draws match the main pass LoD selection).
+    lastCameraPos_ = cameraPos;
     // Drain the entire pending queue each frame. GPU transfers are async (via
     // UploadManager) and coalesced into one command buffer per layer, so there
     // is no per-frame upload cap: chunks appear as soon as their CPU
@@ -1252,8 +1256,17 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &solidIR : &waterIR;
             if (!ir) continue;
 
+            // Phase 2: each chunk publishes its level-0 mesh (full detail).
+            // cellSize = the chunk's edge length, used by the GPU band test;
+            // maxLevel = 0 means the band test can only select level 0, so
+            // the single published entry is always the rendered one.
+            float chunkCellSize = pd.nodeData.cube.getLength().x;
+
             // Add or update the mesh in its stable slot.
-            uint32_t slotIdx = ir->addMeshSlotted(pd.geom, static_cast<uint32_t>(pd.nid));
+            uint32_t slotIdx = ir->addMeshSlotted(pd.geom, static_cast<uint32_t>(pd.nid),
+                                                  0 /*level*/, UINT32_MAX /*forcedSlot*/,
+                                                  0 /*levelVertexOffset*/, 0 /*levelIndexOffset*/,
+                                                  chunkCellSize, 0 /*maxLevel*/);
             if (slotIdx == UINT32_MAX) {
                 continue;
             }
@@ -1284,7 +1297,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // Upload the slot's vertex/index data. The meta write and old-slot
             // free are deferred to the completion callback so in-flight frames
             // never see a partially-updated shared buffer.
-            ir->uploadSlot(app, slotIdx, 0.0f,
+            ir->uploadSlot(app, slotIdx, 0 /*level*/, 0.0f,
                 [ir, cid, oldSlot, this]() {
                     if (oldSlot != UINT32_MAX)
                         ir->removeMeshSlotted(oldSlot);
@@ -1458,7 +1471,11 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     uint32_t idx = 0;
     for (auto& pd : batch) {
         IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &brushIR : &waterIR;
-        uint32_t slotIdx = ir->addMeshSlotted(pd.geom, static_cast<uint32_t>(pd.nid));
+        float chunkCellSize = pd.nodeData.cube.getLength().x;
+        uint32_t slotIdx = ir->addMeshSlotted(pd.geom, static_cast<uint32_t>(pd.nid),
+                                              0 /*level*/, UINT32_MAX /*forcedSlot*/,
+                                              0 /*levelVertexOffset*/, 0 /*levelIndexOffset*/,
+                                              chunkCellSize, 0 /*maxLevel*/);
         if (slotIdx == UINT32_MAX) {
             ++idx;
             continue;
@@ -1479,7 +1496,7 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
             oldSlot = UINT32_MAX;
 
         // Defer old-slot cleanup until new vertex data is on the GPU
-        ir->uploadSlot(app, slotIdx, 0.0f, [ir, oldSlot]() {
+        ir->uploadSlot(app, slotIdx, 0 /*level*/, 0.0f, [ir, oldSlot]() {
             if (oldSlot != UINT32_MAX)
                 ir->removeMeshSlotted(oldSlot);
         });

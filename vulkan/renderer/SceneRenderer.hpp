@@ -327,6 +327,11 @@ private:
     // The World owns ChunkManager and all chunk state.
     World* world_ = nullptr;
 
+    // Camera position from the last processPendingMeshes call; used by the
+    // shadow pass to cull with the same camPos/lodBias as the main pass so
+    // shadow draws use the identical per-chunk LoD selection.
+    glm::vec3 lastCameraPos_ = glm::vec3(0.0f);
+
     // Callbacks stored here so handler references remain valid
     NodeDataCallback solidNodeEventCallback;
     NodeDataCallback solidNodeEraseCallback;

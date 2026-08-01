@@ -4,12 +4,39 @@
 #include "../VulkanApp.hpp"
 #include "../streaming/UploadManager.hpp"
 #include "../../utils/FileReader.hpp"
+#include "../includes/locations.hpp"
 #include "RenderProxy.hpp"
 #include "SlotAllocator.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstring>
 #include <iostream>
+
+namespace {
+// Push constant blocks are std430: vec3 members align to 16 bytes, so the
+// C++ mirrors carry explicit padding to match the shader layout exactly.
+struct CullPushConstants {
+    glm::mat4 viewProj;   // offset 0
+    uint32_t targetLayer; // offset 64
+    uint32_t numCmds;     // offset 68
+    float pad0[2];        // offset 72
+    glm::vec3 camPos;     // offset 80
+    float lodBias;        // offset 92
+}; // 96 bytes
+
+struct CascadeCullPushConstants {
+    uint32_t numChunks;   // offset 0
+    float pad0[3];        // offset 4
+    glm::vec3 camPos;     // offset 16
+    float lodBias;        // offset 28
+}; // 32 bytes
+
+// LoD meta triple stored at bounds entry drawIndex*3+2: {cellSize, level,
+// maxLevel, unused}. cellSize <= 0 marks an entry with no LoD data.
+glm::vec4 lodMetaFor(float cellSize, int level, int maxLevel) {
+    return glm::vec4(cellSize, static_cast<float>(level), static_cast<float>(maxLevel), 0.0f);
+}
+} // namespace
 
 // Unlocked — caller must hold `mutex`. Memoized active-mesh count; recomputed
 // (full scan) only after any meshes mutation. All mutation sites set
@@ -31,7 +58,9 @@ size_t IndirectRenderer::activeMeshCountLocked() const {
 // slot pool capacity; in legacy mode it's the active mesh count.
 uint32_t IndirectRenderer::getCullDispatchCountLocked() const {
     if (slottedMode) {
-        return slotAlloc.capacity();
+        // One draw entry per (chunk, level): the cull shader band-tests each
+        // entry and keeps only the chunk's selected level.
+        return slotAlloc.capacity() * kMaxChunkLevels;
     }
     return static_cast<uint32_t>(activeMeshCountLocked());
 }
@@ -193,6 +222,8 @@ void IndirectRenderer::cleanup() {
     currentGeomSlot = UINT32_MAX;
     indirectBuffer = {};
     for (auto& b : compactIndirectBuffers) b = {};
+    for (auto& b : visibleLodBuffers) b = {};
+    visibleLodsScratch = {};
     boundsBuffer = {};
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         if (visibleCountMapped[f] && storedDevice != VK_NULL_HANDLE) {
@@ -298,8 +329,27 @@ void IndirectRenderer::removeAllMeshes() {
         if (boundsBuffer.buffer != VK_NULL_HANDLE) {
             void* ptr = boundsBuffer.map(0);
             if (ptr) {
-                std::memset(ptr, 0, slotAlloc.capacity() * 2 * sizeof(glm::vec4));
+                std::memset(ptr, 0, slotAlloc.capacity() * kMaxChunkLevels * 3 * sizeof(glm::vec4));
                 boundsBuffer.unmap();
+            }
+        }
+        // Zero the chosen-LoD outputs so no stale (chunk, level) pair survives
+        // a scene clear.
+        VkDeviceSize lodBytes = sizeof(glm::uvec2) * slotAlloc.capacity() * kMaxChunkLevels;
+        for (auto& b : visibleLodBuffers) {
+            if (b.buffer != VK_NULL_HANDLE) {
+                void* ptr = b.map(0);
+                if (ptr) {
+                    std::memset(ptr, 0, (size_t)lodBytes);
+                    b.unmap();
+                }
+            }
+        }
+        if (visibleLodsScratch.buffer != VK_NULL_HANDLE) {
+            void* ptr = visibleLodsScratch.map(0);
+            if (ptr) {
+                std::memset(ptr, 0, (size_t)lodBytes);
+                visibleLodsScratch.unmap();
             }
         }
 
@@ -678,8 +728,11 @@ void IndirectRenderer::doUploadMeshMetaBuffers(VulkanApp* app) {
         if (info) {
             info->indirectOffset = cmdOffset;
             if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-                VkDeviceSize boundsOffset = i * 2 * sizeof(glm::vec4);
-                glm::vec4 bounds[2] = { info->boundsMin, info->boundsMax };
+                // Per draw entry the bounds buffer holds min, max and the LoD
+                // meta triple {cellSize, level, maxLevel, 0}.
+                VkDeviceSize boundsOffset = i * 3 * sizeof(glm::vec4);
+                glm::vec4 bounds[3] = { info->boundsMin, info->boundsMax,
+                                        lodMetaFor(info->cellSize, info->level, info->maxLevel) };
                 data = boundsBuffer.map(boundsOffset);
                 memcpy(data, bounds, sizeof(bounds));
                 boundsBuffer.unmap();
@@ -711,8 +764,9 @@ void IndirectRenderer::publishMeshMeta(uint32_t meshId) {
     info.indirectOffset = cmdOffset;
 
     if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-        VkDeviceSize boundsOffset = i * 2 * sizeof(glm::vec4);
-        glm::vec4 bounds[2] = { info.boundsMin, info.boundsMax };
+        VkDeviceSize boundsOffset = i * 3 * sizeof(glm::vec4);
+        glm::vec4 bounds[3] = { info.boundsMin, info.boundsMax,
+                                lodMetaFor(info.cellSize, info.level, info.maxLevel) };
         data = boundsBuffer.map(boundsOffset);
         memcpy(data, bounds, sizeof(bounds));
         boundsBuffer.unmap();
@@ -1021,16 +1075,17 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
     // Models SSBO removed: shaders use identity model matrices, no modelsBuffer
 
-    // Upload bounds SSBO (two vec4s per active mesh: min, max)
+    // Upload bounds SSBO (three vec4s per active mesh: min, max, lod meta)
     std::vector<glm::vec4> boundsData;
-    boundsData.reserve(meshes.size() * 2);
+    boundsData.reserve(meshes.size() * 3);
     for (const auto& kv : meshes) {
         const MeshInfo& info = kv.second;
         if (!info.active) continue;
         boundsData.push_back(info.boundsMin);
         boundsData.push_back(info.boundsMax);
+        boundsData.push_back(lodMetaFor(info.cellSize, info.level, info.maxLevel));
     }
-    VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 2;
+    VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 3;
     VkDeviceSize boundsDataSize = sizeof(glm::vec4) * boundsData.size();
     bool needNewBoundsBuffer = (boundsBuffer.buffer == VK_NULL_HANDLE) || (meshCapacity > oldMeshCapacity);
     if (needNewBoundsBuffer) {
@@ -1078,6 +1133,37 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         }
     }
 
+    // Per-frame chosen-LoD output buffers (uvec2 per entry) + the scratch
+    // buffer bound by external descriptor-set owners (cubemap/backface).
+    // Same lifecycle as compactIndirectBuffers.
+    VkDeviceSize lodBufSize = sizeof(glm::uvec2) * meshCapacity * kMaxChunkLevels;
+    for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+        if (visibleLodBuffers[f].buffer != VK_NULL_HANDLE || visibleLodBuffers[f].memory != VK_NULL_HANDLE) {
+            scheduleDestroyBuffer(visibleLodBuffers[f]);
+            visibleLodBuffers[f] = {};
+        }
+        if (lodBufSize > 0) {
+            visibleLodBuffers[f] = app->createBuffer(lodBufSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            void* data = visibleLodBuffers[f].map(0);
+            if (data) {
+                std::memset(data, 0, (size_t)lodBufSize);
+                visibleLodBuffers[f].unmap();
+            }
+        }
+    }
+    if (visibleLodsScratch.buffer == VK_NULL_HANDLE && lodBufSize > 0) {
+        visibleLodsScratch = app->createBuffer(lodBufSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        void* data = visibleLodsScratch.map(0);
+        if (data) {
+            std::memset(data, 0, (size_t)lodBufSize);
+            visibleLodsScratch.unmap();
+        }
+    }
+
     // Create or zero the per-frame visible count buffers.
     VkDeviceSize countSize = sizeof(uint32_t);
     uint32_t initialCount = static_cast<uint32_t>(indirectCommands.size());
@@ -1105,7 +1191,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
     // Create compute pipeline + descriptor sets for GPU culling if not present
     if (computePipeline == VK_NULL_HANDLE) {
-        VkDescriptorSetLayoutBinding bindings[4] = {};
+        VkDescriptorSetLayoutBinding bindings[5] = {};
         bindings[0].binding = 0;
         bindings[0].descriptorCount = 1;
         bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1122,8 +1208,13 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         bindings[3].descriptorCount = 1;
         bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[4].binding = 4;
+        bindings[4].descriptorCount = 1;
+        bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
-        VkDescriptorBindingFlags bindingFlags[4] = {
+        VkDescriptorBindingFlags bindingFlags[5] = {
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -1132,7 +1223,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
         DescriptorAllocator descAlloc{app->getDevice(), app};
         computeDescriptorSetLayout = descAlloc.createLayout(
-            bindings, 4,
+            bindings, 5,
             VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
             bindingFlags,
             "IndirectRenderer: computeDescriptorSetLayout");
@@ -1140,7 +1231,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.offset = 0;
-        pc.size = sizeof(glm::mat4) + sizeof(uint32_t) * 2;  // 72 bytes: mat4(64) + targetLayer(4) + numCmds(4)
+        pc.size = sizeof(CullPushConstants); // 96 bytes: mat4 + 2*uint + pad + vec3 + float
 
         VkPipelineLayoutCreateInfo plinfo{};
         plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1214,6 +1305,10 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             countBuf.buffer = visibleCountBuffers[f].buffer;
             countBuf.offset = 0;
             countBuf.range = VK_WHOLE_SIZE;
+            VkDescriptorBufferInfo lodBuf{};
+            lodBuf.buffer = visibleLodBuffers[f].buffer;
+            lodBuf.offset = 0;
+            lodBuf.range = VK_WHOLE_SIZE;
 
             VkDescriptorSet computeDs = computeDescriptorSets[f];
             DescriptorWriter(app->getDevice())
@@ -1225,6 +1320,8 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
                              boundsBufInfo.buffer, boundsBufInfo.offset, boundsBufInfo.range)
                 .writeBuffer(computeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                              countBuf.buffer, countBuf.offset, countBuf.range)
+                .writeBuffer(computeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             lodBuf.buffer, lodBuf.offset, lodBuf.range)
                 .flush();
         }
     }
@@ -1256,11 +1353,13 @@ void IndirectRenderer::setCullFrame(uint32_t frame) {
     currentCullFrame = frame % MAX_CULL_FRAMES;
 }
 
-void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws) {
+void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
+                                   glm::vec3 camPos, float lodBias) {
     // NOTE: No mutex lock here - this is only called from the main render thread
     // and all buffer modifications happen in rebuild() which does lock.
     Buffer& compactBuf = compactIndirectBuffers[currentCullFrame];
     Buffer& visibleCount = visibleCountBuffers[currentCullFrame];
+    Buffer& visibleLods = visibleLodBuffers[currentCullFrame];
     VkDescriptorSet descSet = computeDescriptorSets[currentCullFrame];
 
     if (computePipeline == VK_NULL_HANDLE || compactBuf.buffer == VK_NULL_HANDLE) {
@@ -1285,7 +1384,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // first cascade's fill (TRANSFER_WRITE→TRANSFER_WRITE hazard) and with the
     // first cascade's compute-shader atomicAdd (SHADER_WRITE→TRANSFER_WRITE).
     {
-        VkBufferMemoryBarrier2 readBarriers[2] = {};
+        VkBufferMemoryBarrier2 readBarriers[3] = {};
         readBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
         readBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
                                   | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
@@ -1304,10 +1403,12 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 
         readBarriers[1] = readBarriers[0];
         readBarriers[1].buffer = compactBuf.buffer;
+        readBarriers[2] = readBarriers[0];
+        readBarriers[2].buffer = visibleLods.buffer;
 
         VkDependencyInfo depInfo{};
         depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 2;
+        depInfo.bufferMemoryBarrierCount = 3;
         depInfo.pBufferMemoryBarriers = readBarriers;
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
@@ -1330,11 +1431,15 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // (GPU hang observed on RADV / Radeon 680M).
     vkCmdFillBuffer(cmd, compactBuf.buffer, 0, VK_WHOLE_SIZE, 0);
 
+    // Zero the per-frame chosen-LoD output so entries beyond the current
+    // dispatch range can never be misread as a stale (chunk, level) pair.
+    vkCmdFillBuffer(cmd, visibleLods.buffer, 0, VK_WHOLE_SIZE, 0);
+
     // Barrier B: ensure the transfer write (zeroCount) and any prior
     // indirect-draw reads of compactBuf are complete before the compute
     // shader writes to both buffers.
     {
-        VkBufferMemoryBarrier2 preBarriers[2] = {};
+        VkBufferMemoryBarrier2 preBarriers[3] = {};
         preBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
         preBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
         preBarriers[0].srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -1351,9 +1456,13 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         preBarriers[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         preBarriers[1].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
 
+        preBarriers[2] = preBarriers[0];
+        preBarriers[2].buffer = visibleLods.buffer;
+        preBarriers[2].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+
         VkDependencyInfo depInfo{};
         depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 2;
+        depInfo.bufferMemoryBarrierCount = 3;
         depInfo.pBufferMemoryBarriers = preBarriers;
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
@@ -1383,8 +1492,13 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         return;
     }
 
-    uint8_t pc[72]; memcpy(pc, &viewProj, 64); uint32_t layer = 0; memcpy(pc+64, &layer, 4); memcpy(pc+68, &numCmds, 4);
-    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 72, pc);
+    CullPushConstants pc{};
+    pc.viewProj     = viewProj;
+    pc.targetLayer  = 0;
+    pc.numCmds      = numCmds;
+    pc.camPos       = camPos;
+    pc.lodBias      = lodBias;
+    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc);
 
     uint32_t groupSize = 64;
     uint32_t groups = (numCmds + groupSize - 1) / groupSize;
@@ -1413,9 +1527,13 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     barriers[1].buffer = visibleCount.buffer;
     barriers[1].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
 
+    barriers[2] = barriers[0];
+    barriers[2].buffer = visibleLods.buffer;
+    barriers[2].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+
     VkDependencyInfo depInfo{};
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    depInfo.bufferMemoryBarrierCount = 2;
+    depInfo.bufferMemoryBarrierCount = 3;
     depInfo.pBufferMemoryBarriers = barriers;
     vkCmdPipelineBarrier2(cmd, &depInfo);
 }
@@ -1423,7 +1541,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 
 
 void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
-                                                VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer, uint32_t maxDraws) {
+                                                VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
+                                                glm::vec3 camPos, float lodBias) {
     if (computePipeline == VK_NULL_HANDLE) {
         // No meshes loaded yet (e.g. during parallel background loading). Nothing to cull.
         return;
@@ -1516,8 +1635,13 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     // Fast return if nothing to cull — avoids touching the pipeline at all
     if (numCmds == 0) return;
 
-    uint8_t pc2[72]; memcpy(pc2, &viewProj, 64); uint32_t layer2 = 0; memcpy(pc2+64, &layer2, 4); memcpy(pc2+68, &numCmds, 4);
-    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 72, pc2);
+    CullPushConstants pc2{};
+    pc2.viewProj     = viewProj;
+    pc2.targetLayer  = 0;
+    pc2.numCmds      = numCmds;
+    pc2.camPos       = camPos;
+    pc2.lodBias      = lodBias;
+    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc2);
 
     uint32_t groupSize = 64;
     uint32_t groups = (numCmds + groupSize - 1) / groupSize;
@@ -1740,15 +1864,19 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     mergedVertices.resize(maxChunks * vertsPerChunk);
     mergedIndices.resize(maxChunks * idxsPerChunk);
 
-    // Pre-size indirect commands (one per slot, initially zeroed).
+    // Pre-size indirect commands (one per chunk slot * level, initially zeroed).
     // Zeroed commands have indexCount=0, so GPU culling skips them.
-    indirectCommands.resize(maxChunks);
-    std::memset(indirectCommands.data(), 0, maxChunks * sizeof(VkDrawIndexedIndirectCommand));
+    indirectCommands.resize(maxChunks * kMaxChunkLevels);
+    std::memset(indirectCommands.data(), 0, indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand));
 
-    // Track capacity so ensureCapacity GPU buffer sizing works
+    // Track capacity so ensureCapacity GPU buffer sizing works. Vertex/index
+    // storage is NOT multiplied by kMaxChunkLevels: a chunk's levels share the
+    // slot's single vertex/index budget (phase 3 places each level's data at
+    // its own sub-offset). Only the indirect command list is per-level, so the
+    // cull shader can band-test each (chunk, level) draw entry independently.
     vertexCapacity = maxChunks * vertsPerChunk;
     indexCapacity  = maxChunks * idxsPerChunk;
-    meshCapacity   = maxChunks;
+    meshCapacity   = maxChunks * kMaxChunkLevels;
 
     // ── Create GPU buffers sized to capacity ─────────────────────────────────
     // These are created ONCE and never rebuilt. Individual slots are updated
@@ -1783,7 +1911,8 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     }
 
     // Bounds buffer (host-visible, persistently mapped). Same zeroing rationale.
-    VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 2;
+    // Three vec4s per entry: min, max, lod meta {cellSize, level, maxLevel, 0}.
+    VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 3;
     boundsBuffer = app->createBuffer(boundsBufferSize,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -1806,6 +1935,30 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         if (data) {
             std::memset(data, 0, (size_t)compactSize);
             compactIndirectBuffers[f].unmap();
+        }
+    }
+
+    // Per-frame chosen-LoD output buffers (uvec2 per (chunk, level) entry) and
+    // the scratch buffer bound by external descriptor-set owners.
+    VkDeviceSize lodBufSize = sizeof(glm::uvec2) * meshCapacity * kMaxChunkLevels;
+    for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+        visibleLodBuffers[f] = app->createBuffer(lodBufSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        void* data = visibleLodBuffers[f].map(0);
+        if (data) {
+            std::memset(data, 0, (size_t)lodBufSize);
+            visibleLodBuffers[f].unmap();
+        }
+    }
+    if (visibleLodsScratch.buffer == VK_NULL_HANDLE) {
+        visibleLodsScratch = app->createBuffer(lodBufSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        void* data = visibleLodsScratch.map(0);
+        if (data) {
+            std::memset(data, 0, (size_t)lodBufSize);
+            visibleLodsScratch.unmap();
         }
     }
 
@@ -1841,8 +1994,13 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         bindings[3].descriptorCount = 1;
         bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[4].binding = 4;
+        bindings[4].descriptorCount = 1;
+        bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
-        VkDescriptorBindingFlags bindingFlags[4] = {
+        VkDescriptorBindingFlags bindingFlags[5] = {
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -1851,7 +2009,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
 
         DescriptorAllocator descAlloc{app->getDevice(), app};
         computeDescriptorSetLayout = descAlloc.createLayout(
-            bindings, 4,
+            bindings, 5,
             VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
             bindingFlags,
             "IndirectRenderer: computeDescriptorSetLayout");
@@ -1859,7 +2017,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.offset = 0;
-        pc.size = sizeof(glm::mat4) + sizeof(uint32_t) * 2;  // 72 bytes
+        pc.size = sizeof(CullPushConstants); // 96 bytes
 
         VkPipelineLayoutCreateInfo plinfo{};
         plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1921,6 +2079,10 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         countBuf.buffer = visibleCountBuffers[f].buffer;
         countBuf.offset = 0;
         countBuf.range = VK_WHOLE_SIZE;
+        VkDescriptorBufferInfo lodBuf{};
+        lodBuf.buffer = visibleLodBuffers[f].buffer;
+        lodBuf.offset = 0;
+        lodBuf.range = VK_WHOLE_SIZE;
 
         VkDescriptorSet computeDs = computeDescriptorSets[f];
         DescriptorWriter(app->getDevice())
@@ -1932,6 +2094,8 @@ void IndirectRenderer::initSlots(VulkanApp* app,
                          boundsBufInfo.buffer, boundsBufInfo.offset, boundsBufInfo.range)
             .writeBuffer(computeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                          countBuf.buffer, countBuf.offset, countBuf.range)
+            .writeBuffer(computeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         lodBuf.buffer, lodBuf.offset, lodBuf.range)
             .flush();
     }
 
@@ -1958,10 +2122,11 @@ void IndirectRenderer::initSlots(VulkanApp* app,
               << std::endl << std::flush;
 }
 
-void IndirectRenderer::copyGeometryToSlot(const Geometry& mesh, uint32_t slotIndex)
+void IndirectRenderer::copyGeometryToSlot(const Geometry& mesh, uint32_t slotIndex,
+                                          uint32_t levelVertexOffset, uint32_t levelIndexOffset)
 {
-    uint32_t vertOffset = slotIndex * slotVertexCapacity;
-    uint32_t idxOffset  = slotIndex * slotIndexCapacity;
+    uint32_t vertOffset = slotIndex * slotVertexCapacity + levelVertexOffset;
+    uint32_t idxOffset  = slotIndex * slotIndexCapacity + levelIndexOffset;
 
     // Copy vertex data into the pre-reserved slot position
     if (!mesh.vertices.empty() && vertOffset + mesh.vertices.size() <= mergedVertices.size()) {
@@ -1982,7 +2147,8 @@ void IndirectRenderer::writeSlotMeta(uint32_t slotIndex, const MeshInfo& info)
 {
     if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
 
-    // Write indirect command at the slot's position
+    // The indirect command lives at slotIndex (the draw entry index, which in
+    // slotted mode equals slot*maxLevels + level).
     VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(slotIndex) * sizeof(VkDrawIndexedIndirectCommand);
     void* cmdData = indirectBuffer.map(cmdOffset);
     if (cmdData) {
@@ -1996,53 +2162,89 @@ void IndirectRenderer::writeSlotMeta(uint32_t slotIndex, const MeshInfo& info)
         indirectBuffer.unmap();
     }
 
-    // Write bounds at the slot's position
+    // Write bounds + LoD meta (three vec4s: min, max, {cellSize, level, maxLevel, 0})
     if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-        VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(slotIndex) * 2 * sizeof(glm::vec4);
+        VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(slotIndex) * 3 * sizeof(glm::vec4);
         void* bndData = boundsBuffer.map(boundsOffset);
         if (bndData) {
-            glm::vec4 bounds[2] = { info.boundsMin, info.boundsMax };
+            glm::vec4 bounds[3] = { info.boundsMin, info.boundsMax,
+                                    lodMetaFor(info.cellSize, info.level, info.maxLevel) };
             std::memcpy(bndData, bounds, sizeof(bounds));
             boundsBuffer.unmap();
         }
     }
 }
 
-uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId)
+uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId, int level,
+                                          uint32_t forcedSlot, uint32_t levelVertexOffset,
+                                          uint32_t levelIndexOffset, float cellSize, int maxLevel)
 {
     if (!slottedMode) return UINT32_MAX;
 
     std::lock_guard<std::recursive_mutex> guard(mutex);
 
+    uint32_t neededVerts = static_cast<uint32_t>(mesh.vertices.size());
+    uint32_t neededIdxs  = static_cast<uint32_t>(mesh.indices.size());
+
     // Check if this chunk already has a slot (update case)
     auto existing = meshes.find(chunkId);
     if (existing != meshes.end() && existing->second.active) {
-        updateMeshSlotted(existing->second.slotIndex, mesh);
+        updateMeshSlotted(existing->second.slotIndex, mesh, level,
+                          levelVertexOffset, levelIndexOffset, cellSize, maxLevel);
         return existing->second.slotIndex;
     }
 
-    // Allocate a new slot
-    uint32_t neededVerts = static_cast<uint32_t>(mesh.vertices.size());
-    uint32_t neededIdxs  = static_cast<uint32_t>(mesh.indices.size());
-    uint32_t slotIdx = slotAlloc.allocate(neededVerts, neededIdxs);
+    // Allocate a new slot, or reuse the caller-provided one (forced path:
+    // the chunk already allocated a slot via a previous level and is now
+    // publishing the level-0 geometry).
+    uint32_t slotIdx = forcedSlot;
     if (slotIdx == UINT32_MAX) {
-        std::cerr << "[IndirectRenderer] addMeshSlotted: no free slot for chunk " << chunkId << std::endl;
+        slotIdx = slotAlloc.allocate(neededVerts, neededIdxs);
+        if (slotIdx == UINT32_MAX) {
+            std::cerr << "[IndirectRenderer] addMeshSlotted: no free slot for chunk " << chunkId << std::endl;
+            return UINT32_MAX;
+        }
+    }
+    if (slotIdx >= slotAlloc.capacity()) {
+        std::cerr << "[IndirectRenderer] addMeshSlotted: slot " << slotIdx
+                  << " out of range (capacity=" << slotAlloc.capacity() << ")" << std::endl;
+        return UINT32_MAX;
+    }
+    if (level < 0 || static_cast<uint32_t>(level) >= kMaxChunkLevels) {
+        std::cerr << "[IndirectRenderer] addMeshSlotted: level " << level << " out of range" << std::endl;
         return UINT32_MAX;
     }
 
-    // Set up MeshInfo with the slot's fixed buffer position
-    uint32_t vertOffset = slotIdx * slotVertexCapacity;
-    uint32_t idxOffset  = slotIdx * slotIndexCapacity;
+    // Validate that this level's data fits inside the per-slot budget
+    if (levelVertexOffset + neededVerts > slotVertexCapacity ||
+        levelIndexOffset + neededIdxs  > slotIndexCapacity) {
+        std::cerr << "[IndirectRenderer] addMeshSlotted: level " << level
+                  << " data exceeds per-slot budget for chunk " << chunkId << std::endl;
+        return UINT32_MAX;
+    }
+
+    // Set up MeshInfo with the slot's fixed buffer position. The draw entry
+    // index is slot*maxLevels + level so the cull shader can band-test each
+    // level independently; only the chunk's selected level survives to the
+    // compacted draw list.
+    uint32_t vertOffset = slotIdx * slotVertexCapacity + levelVertexOffset;
+    uint32_t idxOffset  = slotIdx * slotIndexCapacity + levelIndexOffset;
+    uint32_t lv         = static_cast<uint32_t>(level);
 
     MeshInfo m{};
-    m.id          = chunkId;
-    m.baseVertex  = vertOffset;
-    m.vertexCount = neededVerts;
-    m.firstIndex  = idxOffset;
-    m.indexCount  = neededIdxs;
-    m.drawIndex   = slotIdx;  // drawIndex == slotIndex in slotted mode
-    m.slotIndex   = slotIdx;
-    m.active      = true;
+    m.id                 = chunkId;
+    m.baseVertex         = vertOffset;
+    m.vertexCount        = neededVerts;
+    m.firstIndex         = idxOffset;
+    m.indexCount         = neededIdxs;
+    m.drawIndex          = slotIdx * kMaxChunkLevels + lv;  // draw entry == slot*levels + level
+    m.slotIndex          = slotIdx;
+    m.level              = lv;
+    m.levelVertexOffset  = levelVertexOffset;
+    m.levelIndexOffset   = levelIndexOffset;
+    m.cellSize           = cellSize;
+    m.maxLevel           = maxLevel;
+    m.active             = true;
 
     // Compute bounds
     if (mesh.vertices.empty()) {
@@ -2058,27 +2260,27 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
         m.boundsMax = glm::vec4(maxp, 0.0f);
     }
 
-    // Write the indirect command at the fixed slot position
-    indirectCommands[slotIdx].indexCount    = m.indexCount;
-    indirectCommands[slotIdx].instanceCount = 1;
-    indirectCommands[slotIdx].firstIndex    = m.firstIndex;
-    indirectCommands[slotIdx].vertexOffset  = static_cast<int32_t>(m.baseVertex);
-    indirectCommands[slotIdx].firstInstance = m.drawIndex;
+    // Write the indirect command at the fixed draw entry position
+    indirectCommands[m.drawIndex].indexCount    = m.indexCount;
+    indirectCommands[m.drawIndex].instanceCount = 1;
+    indirectCommands[m.drawIndex].firstIndex    = m.firstIndex;
+    indirectCommands[m.drawIndex].vertexOffset  = static_cast<int32_t>(m.baseVertex);
+    indirectCommands[m.drawIndex].firstInstance = m.drawIndex;
 
     // Copy geometry data into the pre-reserved slot
-    copyGeometryToSlot(mesh, slotIdx);
+    copyGeometryToSlot(mesh, slotIdx, levelVertexOffset, levelIndexOffset);
 
     // Store in mesh map
     meshes[chunkId] = m;
     activeMeshCountDirty_ = true; // new or resurrected entry
 
-    // Zero GPU indirect and bounds for this slot immediately, so the GPU
-    // cull shader never sees stale/garbage data during the window between
+    // Zero GPU indirect and bounds for this slot's entry immediately, so the
+    // GPU cull shader never sees stale/garbage data during the window between
     // this allocation and the deferred writeSlotMeta (upload completion).
     // For fresh slots this is technically redundant with initSlots zeroing,
     // but recycled slots may retain stale bounds from a prior occupant.
     if (indirectBuffer.buffer != VK_NULL_HANDLE) {
-        VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(slotIdx) * sizeof(VkDrawIndexedIndirectCommand);
+        VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(m.drawIndex) * sizeof(VkDrawIndexedIndirectCommand);
         void* data = indirectBuffer.map(cmdOffset);
         if (data) {
             std::memset(data, 0, sizeof(VkDrawIndexedIndirectCommand));
@@ -2086,10 +2288,10 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
         }
     }
     if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-        VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(slotIdx) * 2 * sizeof(glm::vec4);
+        VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(m.drawIndex) * 3 * sizeof(glm::vec4);
         void* data = boundsBuffer.map(boundsOffset);
         if (data) {
-            std::memset(data, 0, 2 * sizeof(glm::vec4));
+            std::memset(data, 0, 3 * sizeof(glm::vec4));
             boundsBuffer.unmap();
         }
     }
@@ -2097,7 +2299,9 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
     return slotIdx;
 }
 
-void IndirectRenderer::updateMeshSlotted(uint32_t slotIndex, const Geometry& mesh)
+void IndirectRenderer::updateMeshSlotted(uint32_t slotIndex, const Geometry& mesh, int level,
+                                         uint32_t levelVertexOffset, uint32_t levelIndexOffset,
+                                         float cellSize, int maxLevel)
 {
     if (!slottedMode) return;
 
@@ -2115,13 +2319,26 @@ void IndirectRenderer::updateMeshSlotted(uint32_t slotIndex, const Geometry& mes
 
     uint32_t neededVerts = static_cast<uint32_t>(mesh.vertices.size());
     uint32_t neededIdxs  = static_cast<uint32_t>(mesh.indices.size());
+    uint32_t lv          = static_cast<uint32_t>(level);
+
+    if (lv >= kMaxChunkLevels) return;
+    if (levelVertexOffset + neededVerts > slotVertexCapacity ||
+        levelIndexOffset + neededIdxs  > slotIndexCapacity) return;
 
     // Update the slot's vertex/index counts
     slotAlloc.updateCounts(slotIndex, neededVerts, neededIdxs);
 
     // Update MeshInfo
-    info->vertexCount = neededVerts;
-    info->indexCount  = neededIdxs;
+    info->vertexCount       = neededVerts;
+    info->indexCount        = neededIdxs;
+    info->baseVertex        = slotIndex * slotVertexCapacity + levelVertexOffset;
+    info->firstIndex        = slotIndex * slotIndexCapacity + levelIndexOffset;
+    info->drawIndex         = slotIndex * kMaxChunkLevels + lv;
+    info->level             = lv;
+    info->levelVertexOffset = levelVertexOffset;
+    info->levelIndexOffset  = levelIndexOffset;
+    info->cellSize          = cellSize;
+    info->maxLevel          = maxLevel;
 
     // Recompute bounds
     if (mesh.vertices.empty()) {
@@ -2137,15 +2354,15 @@ void IndirectRenderer::updateMeshSlotted(uint32_t slotIndex, const Geometry& mes
         info->boundsMax = glm::vec4(maxp, 0.0f);
     }
 
-    // Update indirect command at the fixed slot position
-    indirectCommands[slotIndex].indexCount    = info->indexCount;
-    indirectCommands[slotIndex].instanceCount = 1;
-    indirectCommands[slotIndex].firstIndex    = info->firstIndex;
-    indirectCommands[slotIndex].vertexOffset  = static_cast<int32_t>(info->baseVertex);
-    indirectCommands[slotIndex].firstInstance = info->drawIndex;
+    // Update indirect command at the fixed draw entry position
+    indirectCommands[info->drawIndex].indexCount    = info->indexCount;
+    indirectCommands[info->drawIndex].instanceCount = 1;
+    indirectCommands[info->drawIndex].firstIndex    = info->firstIndex;
+    indirectCommands[info->drawIndex].vertexOffset  = static_cast<int32_t>(info->baseVertex);
+    indirectCommands[info->drawIndex].firstInstance = info->drawIndex;
 
     // Copy geometry data into the pre-reserved slot
-    copyGeometryToSlot(mesh, slotIndex);
+    copyGeometryToSlot(mesh, slotIndex, levelVertexOffset, levelIndexOffset);
     activeMeshCountDirty_ = true; // conservative: entry contents changed
 }
 
@@ -2169,31 +2386,33 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
     // Free the slot in the allocator
     slotAlloc.free(slotIndex);
 
-    // Zero the indirect command at this slot (GPU culling sees indexCount=0)
-    if (slotIndex < indirectCommands.size()) {
-        indirectCommands[slotIndex] = VkDrawIndexedIndirectCommand{};
-    }
-
-    // Zero the GPU indirect and bounds entries for this slot
-    if (indirectBuffer.buffer != VK_NULL_HANDLE) {
-        VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(slotIndex) * sizeof(VkDrawIndexedIndirectCommand);
-        void* data = indirectBuffer.map(cmdOffset);
-        if (data) {
-            std::memset(data, 0, sizeof(VkDrawIndexedIndirectCommand));
-            indirectBuffer.unmap();
+    // Zero every per-level draw entry of this slot: the chunk is gone, so no
+    // level may survive culling. GPU culling sees indexCount=0 and drops them.
+    for (uint32_t lv = 0; lv < kMaxChunkLevels; lv++) {
+        uint32_t entry = slotIndex * kMaxChunkLevels + lv;
+        if (entry < indirectCommands.size()) {
+            indirectCommands[entry] = VkDrawIndexedIndirectCommand{};
         }
-    }
-    if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-        VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(slotIndex) * 2 * sizeof(glm::vec4);
-        void* data = boundsBuffer.map(boundsOffset);
-        if (data) {
-            std::memset(data, 0, 2 * sizeof(glm::vec4));
-            boundsBuffer.unmap();
+        if (indirectBuffer.buffer != VK_NULL_HANDLE) {
+            VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(entry) * sizeof(VkDrawIndexedIndirectCommand);
+            void* data = indirectBuffer.map(cmdOffset);
+            if (data) {
+                std::memset(data, 0, sizeof(VkDrawIndexedIndirectCommand));
+                indirectBuffer.unmap();
+            }
+        }
+        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(entry) * 3 * sizeof(glm::vec4);
+            void* data = boundsBuffer.map(boundsOffset);
+            if (data) {
+                std::memset(data, 0, 3 * sizeof(glm::vec4));
+                boundsBuffer.unmap();
+            }
         }
     }
 }
 
-bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float priority,
+bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, int level, float priority,
                                    std::function<void()> onComplete)
 {
     if (!slottedMode) return false;
@@ -2210,9 +2429,18 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     }
     if (!info || !info->active) return false;
 
+    // Phase 2 uploads the chunk's level-0 geometry; the level parameter is
+    // validated against the stored one so a mismatched caller can't publish
+    // level data under the wrong draw entry.
+    if (level != static_cast<int>(info->level)) {
+        std::cerr << "[IndirectRenderer] uploadSlot: level " << level
+                  << " != stored level " << info->level << " for slot " << slotIndex << std::endl;
+        return false;
+    }
+
     // If no vertex/index data, write meta immediately and return (empty mesh)
     if (info->vertexCount == 0 || info->indexCount == 0) {
-        writeSlotMeta(slotIndex, *info);
+        writeSlotMeta(info->drawIndex, *info);
         if (onComplete) onComplete();
         return true;
     }
@@ -2221,13 +2449,14 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     // stable until the slot is freed, but we capture the actual draw parameters
     // by value so the write is correct even if the callback fires after the
     // slot's MeshInfo is modified by a later updateMeshSlotted call.
-    uint32_t capSlotIndex      = slotIndex;
+    uint32_t capSlotIndex      = info->drawIndex;
     uint32_t capIndexCount     = info->indexCount;
     uint32_t capFirstIndex     = info->firstIndex;
     int32_t  capVertexOffset   = static_cast<int32_t>(info->baseVertex);
     uint32_t capDrawIndex      = info->drawIndex;
     glm::vec4 capBoundsMin     = info->boundsMin;
     glm::vec4 capBoundsMax     = info->boundsMax;
+    glm::vec4 capLodMeta       = lodMetaFor(info->cellSize, static_cast<int>(info->level), info->maxLevel);
 
     // Calculate vertex/index byte ranges for this slot
     VkDeviceSize vertexBytes = static_cast<VkDeviceSize>(info->vertexCount) * sizeof(Vertex);
@@ -2269,7 +2498,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     // yet executed for those frames) — causing a 1-frame hole.  The deferred
     // write runs after the upload completes, once all prior frames have retired.
     auto deferredWriteMeta = [this, capSlotIndex, capIndexCount, capFirstIndex,
-                              capVertexOffset, capDrawIndex, capBoundsMin, capBoundsMax]()
+                              capVertexOffset, capDrawIndex, capBoundsMin, capBoundsMax, capLodMeta]()
     {
         std::lock_guard<std::recursive_mutex> lock(mutex);
         if (capSlotIndex >= indirectCommands.size()) return;
@@ -2289,10 +2518,10 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
         }
 
         if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capSlotIndex) * 2 * sizeof(glm::vec4);
+            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capSlotIndex) * 3 * sizeof(glm::vec4);
             void* bndData = boundsBuffer.map(boundsOffset);
             if (bndData) {
-                glm::vec4 bounds[2] = { capBoundsMin, capBoundsMax };
+                glm::vec4 bounds[3] = { capBoundsMin, capBoundsMax, capLodMeta };
                 std::memcpy(bndData, bounds, sizeof(bounds));
                 boundsBuffer.unmap();
             }
@@ -2350,7 +2579,7 @@ uint32_t IndirectRenderer::installProxy(VulkanApp* app, std::unique_ptr<RenderPr
         m.indexCount  = proxy->drawCmd.indexCount;
         m.boundsMin   = proxy->boundsMin;
         m.boundsMax   = proxy->boundsMax;
-        m.drawIndex   = slotIdx;
+        m.drawIndex   = slotIdx * kMaxChunkLevels; // proxies are level-0 entries
         m.slotIndex   = slotIdx;
         m.active      = true;
 
@@ -2359,16 +2588,17 @@ uint32_t IndirectRenderer::installProxy(VulkanApp* app, std::unique_ptr<RenderPr
             m.indexCount  = 0;
         }
 
-        // Store in the indirect commands array at the slot position
-        if (slotIdx < indirectCommands.size()) {
-            indirectCommands[slotIdx] = proxy->drawCmd;
+        // Store in the indirect commands array at the slot's level-0 entry
+        if (m.drawIndex < indirectCommands.size()) {
+            indirectCommands[m.drawIndex] = proxy->drawCmd;
+            indirectCommands[m.drawIndex].firstInstance = m.drawIndex;
         }
 
         meshes[proxy->chunkId] = m;
         activeMeshCountDirty_ = true;
 
         // Write meta (indirect + bounds) to the host-visible GPU buffers
-        writeSlotMeta(slotIdx, m);
+        writeSlotMeta(m.drawIndex, m);
     }
 
     // Upload vertex/index data from the proxy's buffers (or from CPU data)
@@ -2423,7 +2653,7 @@ void IndirectRenderer::initCascadeCull(VulkanApp* app) {
     VkPushConstantRange pc{};
     pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pc.offset = 0;
-    pc.size = sizeof(uint32_t); // numChunks
+    pc.size = sizeof(CascadeCullPushConstants); // 32 bytes: uint + pad + vec3 + float
 
     VkPipelineLayoutCreateInfo plinfo{};
     plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -2561,7 +2791,8 @@ void IndirectRenderer::refreshCascadeDescriptorsIfNeeded() {
 }
 
 void IndirectRenderer::prepareCullCascades(VkCommandBuffer cmd,
-                                            const glm::mat4 cascadeMatrices[3]) {
+                                            const glm::mat4 cascadeMatrices[3],
+                                            glm::vec3 camPos, float lodBias) {
     if (!cascadeCullInited || cascadeCullPipeline == VK_NULL_HANDLE) return;
 
     // Refresh descriptors if indirectBuffer or boundsBuffer were recreated
@@ -2673,8 +2904,11 @@ void IndirectRenderer::prepareCullCascades(VkCommandBuffer cmd,
     if (cmdState) cmdState->bindComputeDescriptorSets(cmd, cascadeCullPipelineLayout, 0, 1, &descSet, 0, nullptr);
     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cascadeCullPipelineLayout, 0, 1, &descSet, 0, nullptr);
 
-    uint32_t pushData = numCmds;
-    vkCmdPushConstants(cmd, cascadeCullPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushData), &pushData);
+    CascadeCullPushConstants pushData{};
+    pushData.numChunks = numCmds;
+    pushData.camPos    = camPos;
+    pushData.lodBias   = lodBias;
+    vkCmdPushConstants(cmd, cascadeCullPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CascadeCullPushConstants), &pushData);
 
     uint32_t groups = (numCmds + 63) / 64;
     if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);

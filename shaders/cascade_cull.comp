@@ -19,6 +19,8 @@ layout(std430, binding = 1) writeonly buffer OutCmds0 {
 } outCmds0;
 
 layout(std430, binding = 2) readonly buffer Bounds {
+    // vec4 triples per draw entry: min, max, lod meta {cellSize, level, maxLevel, unused}.
+    // cellSize <= 0 marks an entry with no LoD data (always kept, legacy behavior).
     vec4 data[];
 } boundsBuf;
 
@@ -48,6 +50,8 @@ layout(std430, binding = 8) readonly buffer CascadeMatrices {
 
 layout(push_constant) uniform PC {
     uint numChunks;
+    vec3 camPos;   // camera position driving the LoD band selection
+    float lodBias; // band scale, mirrors the main pass
 } pc;
 
 shared vec4 gPlanes[3][6];
@@ -113,10 +117,13 @@ void main() {
 
     if (idx >= pc.numChunks || idx >= inCmds.cmds.length()) return;
 
-    uint bIndex = idx * 2u;
+    // Empty entries (no mesh data) never draw and never count.
+    if (inCmds.cmds[idx].indexCount == 0u) return;
+
+    uint bIndex = idx * 3u;
     vec3 minp = vec3(0.0);
     vec3 maxp = vec3(0.0);
-    if ((bIndex + 1u) < boundsBuf.data.length()) {
+    if ((bIndex + 2u) < boundsBuf.data.length()) {
         minp = boundsBuf.data[bIndex].xyz;
         maxp = boundsBuf.data[bIndex + 1u].xyz;
     } else {
@@ -126,6 +133,23 @@ void main() {
         writeToCascade(1u, cmd);
         writeToCascade(2u, cmd);
         return;
+    }
+
+    // ── LoD band guard ─────────────────────────────────────────────────────
+    // Mirror the main pass selection: only the draw entry of the chunk's
+    // selected level may be written to any cascade. Entries without LoD meta
+    // (cellSize <= 0) are legacy meshes: always kept.
+    vec4 lodMeta = boundsBuf.data[bIndex + 2u];
+    float cellSize = lodMeta.x;
+    uint entryLevel = uint(lodMeta.y + 0.5);
+    uint maxLevel   = uint(lodMeta.z + 0.5);
+
+    if (cellSize > 0.0) {
+        vec3 center = (minp + maxp) * 0.5;
+        float dist = distance(pc.camPos, center);
+        float band = dist / (cellSize * pc.lodBias);
+        uint selectedLevel = uint(min(floor(band), float(maxLevel)));
+        if (entryLevel != selectedLevel) return;
     }
 
     DrawCmd cmd = inCmds.cmds[idx];

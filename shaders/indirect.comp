@@ -19,17 +19,27 @@ layout(std430, binding = 1) writeonly buffer OutCmds {
 } outCmds;
 
 layout(std430, binding = 2) readonly buffer Bounds {
-    vec4 data[]; // min, max pairs
+    // vec4 triples per draw entry: min, max, lod meta {cellSize, level, maxLevel, unused}.
+    // cellSize <= 0 marks an entry with no LoD data (always kept, legacy behavior).
+    vec4 data[];
 } boundsBuf;
 
 layout(std430, binding = 3) buffer VisibleCount {
     uint count;
 };
 
+// Chosen-LoD output, one uvec2 per draw entry: {drawIndex, selectedLevel}.
+// selectedLevel == 0xFFFFFFFF marks an entry with no LoD data.
+layout(std430, binding = 4) writeonly buffer VisibleLods {
+    uvec2 data[];
+} visibleLods;
+
 layout(push_constant) uniform PC {
     mat4 viewProj;
     uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now - all meshes in renderer are same layer)
     uint numCmds;     // actual number of draw commands (guards against uninitialized buffer tail)
+    vec3 camPos;      // camera position driving the LoD band selection
+    float lodBias;    // band scale: larger = coarser levels kick in farther away
 } pc;
 
 // Shared, per-workgroup cache of the six frustum planes. The viewProj matrix is
@@ -101,14 +111,17 @@ void main() {
     // constant (exact count) and the SSBO length (buffer capacity).
     if (idx >= pc.numCmds || idx >= inCmds.cmds.length()) return;
 
+    // Empty entries (no mesh data) never draw and never count.
+    if (inCmds.cmds[idx].indexCount == 0u) return;
+
     // Note: All meshes in this renderer are from the same layer (targetLayer in push constants)
     // so no per-mesh layer filtering needed - separate IndirectRenderers handle opaque vs transparent
 
-    // bounds stored as min,max pairs in `boundsBuf.data`
-    uint bIndex = idx * 2u;
+    // bounds stored as min, max, lodMeta triples in `boundsBuf.data`
+    uint bIndex = idx * 3u;
     vec3 minp = vec3(0.0);
     vec3 maxp = vec3(0.0);
-    if ((bIndex + 1u) < boundsBuf.data.length()) {
+    if ((bIndex + 2u) < boundsBuf.data.length()) {
         minp = boundsBuf.data[bIndex].xyz;
         maxp = boundsBuf.data[bIndex + 1u].xyz;
     } else {
@@ -120,6 +133,34 @@ void main() {
 
     // Models are identity now; frustum planes already extracted into gPlanes.
     if (!aabbVisible(gPlanes, minp, maxp)) return;
+
+    // ── LoD band selection ────────────────────────────────────────────────
+    // Each chunk publishes one draw entry per level (drawIndex = slot*8 + level,
+    // level 0 = finest). Only the entry whose level matches the chunk's selected
+    // level survives to the compacted draw list. Entries without LoD meta
+    // (cellSize <= 0) are legacy meshes: always kept.
+    vec4 lodMeta = boundsBuf.data[bIndex + 2u];
+    float cellSize = lodMeta.x;
+    int entryLevel = int(lodMeta.y + 0.5);
+    int maxLevel   = int(lodMeta.z + 0.5);
+
+    uint selectedLevel = 0xFFFFFFFFu;
+    if (cellSize > 0.0) {
+        // Distance band: level = floor(dist / (cellSize * lodBias)), clamped to
+        // the chunk's coarsest available level. With maxLevel == 0 (phase 2:
+        // chunks publish only their full-detail mesh) the selection is always 0.
+        vec3 center = (minp + maxp) * 0.5;
+        float dist = distance(pc.camPos, center);
+        float band = dist / (cellSize * pc.lodBias);
+        selectedLevel = uint(min(floor(band), float(maxLevel)));
+        if (uint(entryLevel) != selectedLevel) return;
+    }
+
+    // Publish the chosen level for this draw entry so CPU/external consumers
+    // (cubemap capture, backface pass, LoD stats) can look up the selection.
+    if (idx < visibleLods.data.length()) {
+        visibleLods.data[idx] = uvec2(inCmds.cmds[idx].firstInstance, selectedLevel);
+    }
 
     uint dst = atomicAdd(count, 1);
     // Keep the original firstInstance (idx) for identification (models are identity)

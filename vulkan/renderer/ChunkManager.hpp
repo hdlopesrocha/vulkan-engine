@@ -284,3 +284,14 @@ inline size_t ChunkManager::activeChunkCount() const {
     std::lock_guard<std::mutex> lock(mapMutex_);
     return stateMap_.size();
 }
+
+// ── Composite chunk ids ─────────────────────────────────────────────────────
+// Each (chunk, LoD level) pair gets its own ChunkManager entry: the base
+// chunk id (NodeID) occupies the high bits, the 0..kMaxChunkLevels-1 level
+// occupies the low nibble. Helpers to pack/unpack.
+
+inline ChunkManager::ChunkId chunkIdForLevel(ChunkManager::ChunkId base, int level) {
+    return (base << 4) | static_cast<ChunkManager::ChunkId>(level & 0xF);
+}
+inline int chunkLevelOf(ChunkManager::ChunkId cid) { return static_cast<int>(cid & 0xF); }
+inline ChunkManager::ChunkId chunkBaseOf(ChunkManager::ChunkId cid) { return cid >> 4; }

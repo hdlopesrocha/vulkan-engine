@@ -67,6 +67,14 @@ public:
         uint32_t drawIndex = UINT32_MAX; // position in indirectCommands list
         uint32_t slotIndex = UINT32_MAX; // stable slot (if using slotted mode)
         bool active = false;
+        // LoD level info: `level` indexes the per-level draw entry inside the
+        // slot (drawIndex = slotIndex * kMaxChunkLevels + level). The vertex/
+        // index data of this level lives at the slot base + levelOffset.
+        int level = 0;
+        uint32_t levelVertexOffset = 0;
+        uint32_t levelIndexOffset = 0;
+        float cellSize = 0.0f;
+        int maxLevel = 0;
         // NOTE: per-mesh buffers removed — meshes are packed into the merged buffers
     };
 
@@ -100,9 +108,20 @@ public:
 
     // Add or update a mesh in a stable slot. The slot is allocated on first
     // use and freed on removal. Returns the stable slot index, or UINT32_MAX
-    // on failure (pool exhausted).
-    uint32_t addMeshSlotted(const Geometry& mesh, uint32_t chunkId);
-    void updateMeshSlotted(uint32_t slotIndex, const Geometry& mesh);
+    // on failure (pool exhausted or per-level budget exceeded). Each call
+    // targets one LoD `level` of a chunk: the indirect command and bounds
+    // triple are published at the level's per-slot draw entry. When
+    // `forcedSlot` is not UINT32_MAX the slot is assumed already allocated
+    // (previous level of the same chunk) and only validated against the
+    // level offsets. `levelVertexOffset`/`levelIndexOffset` are the offsets
+    // of this level's data within the chunk's slot range.
+    uint32_t addMeshSlotted(const Geometry& mesh, uint32_t chunkId, int level = 0,
+                            uint32_t forcedSlot = UINT32_MAX,
+                            uint32_t levelVertexOffset = 0, uint32_t levelIndexOffset = 0,
+                            float cellSize = 0.0f, int maxLevel = 0);
+    void updateMeshSlotted(uint32_t slotIndex, const Geometry& mesh, int level = 0,
+                           uint32_t levelVertexOffset = 0, uint32_t levelIndexOffset = 0,
+                           float cellSize = 0.0f, int maxLevel = 0);
     void removeMeshSlotted(uint32_t slotIndex);
 
     // Upload a single slot's vertex/index data to the GPU, and write its
@@ -112,8 +131,10 @@ public:
     // When using the UploadManager path, `onComplete` is invoked after the
     // transfer fence signals (async). For the legacy staging path, it's
     // called when the pending transfer fence signals.
+    // `level` selects which of the slot's per-level entries to upload
+    // (must match the level passed to addMeshSlotted for this chunk).
     // Returns true on success.
-    bool uploadSlot(VulkanApp* app, uint32_t slotIndex, float priority = 0.0f,
+    bool uploadSlot(VulkanApp* app, uint32_t slotIndex, int level = 0, float priority = 0.0f,
                     std::function<void()> onComplete = nullptr);
 
     // Convenience: create a proxy, upload it, and return the slot index.
@@ -168,10 +189,13 @@ public:
     void acquireBuffers(VkCommandBuffer cmd);
 
     // Run GPU culling/compaction (must be called outside any render pass).
-    void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws = 0);
+    // `camPos`/`lodBias` drive the per-chunk LoD band selection.
+    void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
+                     glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f);
     // Run GPU culling into caller-provided output buffers using a provided compute descriptor set.
     void prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
-                                   VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer, uint32_t maxDraws = 0);
+                                   VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
+                                   glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f);
     // Issue indirect draw using the compacted indirect buffer (call inside render pass).
     void drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws = 0);
     void drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer compactBuffer, VkBuffer visibleCountBuffer, uint32_t maxDraws = 0);
@@ -182,8 +206,11 @@ public:
     // ── Cascade-aware culling (single pass, 3 cascades) ──
     // Single compute dispatch that culls all chunks against 3 cascade frustums
     // simultaneously. Each chunk is culled independently per cascade.
+    // `camPos`/`lodBias` mirror the main pass so shadow draws use the same
+    // per-chunk LoD selection.
     void prepareCullCascades(VkCommandBuffer cmd,
-                             const glm::mat4 cascadeMatrices[3]);
+                             const glm::mat4 cascadeMatrices[3],
+                             glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f);
     // Draw a specific cascade's compacted output (call inside render pass).
     void drawCascadeOnly(VkCommandBuffer cmd, uint32_t cascadeIndex);
 
@@ -196,6 +223,10 @@ public:
     // In slotted mode this is the fixed slot pool size; in legacy mode it grows
     // with addMesh(). Used for sizing external compact buffers (e.g. cubemap).
     size_t getMeshCapacity() const { return meshCapacity; }
+
+    // Persistent scratch buffer bound to binding 4 of the cull compute layout
+    // by external descriptor-set owners (cubemap faces, async backface pass).
+    VkBuffer getVisibleLodsScratchBuffer() const { return visibleLodsScratch.buffer; }
 
     // Get count of active meshes (memoized: recomputed under the same mutex
     // only after a meshes mutation, so per-frame stats/sizing calls do not
@@ -255,8 +286,11 @@ private:
 
     // ── Slotted-mode internals ──
     // Copy vertex/index data from a Geometry into the pre-reserved slot
-    // position in mergedVertices/mergedIndices. Requires slottedMode.
-    void copyGeometryToSlot(const Geometry& mesh, uint32_t slotIndex);
+    // position in mergedVertices/mergedIndices. Requires slotted mode.
+    // `levelVertexOffset`/`levelIndexOffset` place the data at the level's
+    // sub-range inside the slot.
+    void copyGeometryToSlot(const Geometry& mesh, uint32_t slotIndex,
+                            uint32_t levelVertexOffset, uint32_t levelIndexOffset);
     // Write a single mesh's indirect command + bounds into the host-visible
     // GPU buffers at the given slot position. Does NOT touch the vertex/index
     // data (which must have been uploaded separately).
@@ -302,8 +336,16 @@ private:
 
     // A temporary compact indirect buffer used to upload only visible commands — per-frame to avoid cross-frame races
     std::array<Buffer, MAX_CULL_FRAMES> compactIndirectBuffers;
+    // Per-frame chosen-LoD output from the cull compute shader (uvec2 per kept
+    // entry: drawIndex, chosen level). Written by binding 4 of the cull
+    // pipeline; zeroed together with the compact buffer each prepareCull.
+    std::array<Buffer, MAX_CULL_FRAMES> visibleLodBuffers;
+    // Dedicated visibleLods buffer for the caller-provided-descriptor paths
+    // (cubemap faces, async backface): those sets bind this scratch buffer so
+    // their dispatches never race the per-frame zero fills.
+    Buffer visibleLodsScratch;
     // GPU-side culling resources
-    Buffer boundsBuffer; // vec4 per-mesh: xyz=center, w=radius
+    Buffer boundsBuffer; // vec4 per draw entry: min, max, meta{cellSize, level, maxLevel, 0}
     // Per-frame visible count buffers
     std::array<Buffer, MAX_CULL_FRAMES> visibleCountBuffers;
     // Persistent host mapping for zeroing visible counts (avoids vkCmdFillBuffer + barrier on RADV)

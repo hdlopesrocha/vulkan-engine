@@ -234,8 +234,8 @@ public:
     VkDescriptorSet cube360GfxDs = VK_NULL_HANDLE;
     VkDescriptorSet cube360ComputeDs = VK_NULL_HANDLE;
     VkDescriptorSet cube360WaterComputeDs = VK_NULL_HANDLE;
-    std::array<VkBuffer, 4> cube360ComputeBuffers = {};
-    std::array<VkBuffer, 4> cube360WaterComputeBuffers = {};
+    std::array<VkBuffer, 5> cube360ComputeBuffers = {};
+    std::array<VkBuffer, 5> cube360WaterComputeBuffers = {};
     uint32_t cube360TexVersion = 0;
 
     ~MyApp() {}
@@ -935,9 +935,9 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
         sceneRenderer->solidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-        sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
+        sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition());
         sceneRenderer->brushSolidIndirectRenderer.acquireBuffers(commandBuffer);
-        sceneRenderer->brushSolidIndirectRenderer.prepareCull(commandBuffer, viewProj);
+        sceneRenderer->brushSolidIndirectRenderer.prepareCull(commandBuffer, viewProj, camera.getPosition());
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
             sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
         }
@@ -1458,7 +1458,7 @@ public:
                     auto& s = ring[idx++ % ASYNC_RING_SIZE];
                     if (s.pool != VK_NULL_HANDLE) return s;
                     if (layout == VK_NULL_HANDLE) return s;
-                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 };
+                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 };
                     VkDescriptorPoolCreateInfo pci{};
                     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
                     pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -1479,7 +1479,8 @@ public:
                     computeDs = dsSlot.set;
                 }
 
-                // Update descriptor set with buffers: inCmds, outCmds, bounds, visibleCount
+                // Update descriptor set with buffers: inCmds, outCmds, bounds,
+                // visibleCount, visibleLods (binding 4 = persistent scratch).
                 if (computeDs != VK_NULL_HANDLE) {
                     DescriptorWriter(dev)
                         .writeBuffer(computeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1490,12 +1491,15 @@ public:
                                      ind.getBoundsBuffer().buffer, 0, VK_WHOLE_SIZE)
                         .writeBuffer(computeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                      slot.visible.buffer, 0, VK_WHOLE_SIZE)
+                        .writeBuffer(computeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                     ind.getVisibleLodsScratchBuffer(), 0, VK_WHOLE_SIZE)
                         .flush();
                 }
 
                 // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
                 if (computeDs != VK_NULL_HANDLE) {
-                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, slot.compact.buffer, slot.visible.buffer);
+                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, slot.compact.buffer, slot.visible.buffer,
+                                                  camera.getPosition());
                 }
 
                 // Water-depth descriptor set for THIS task: pre-allocated per ring slot
@@ -1600,7 +1604,7 @@ public:
         if (waterEnabled) {
             // GPU frustum cull water meshes (must run outside a render pass)
             sceneRenderer->waterRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-            sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
+            sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition());
             // Use 360° solid+sky reflection instead of the sky-only equirect view
             VkImageView skyView = (sceneRenderer && sceneRenderer->skyRenderer) ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -2963,7 +2967,7 @@ void MyApp::ensureCubemapResources() {
     {
         VkDescriptorSetLayout dsLayout = solidInd.getComputeDescriptorSetLayout();
         if (dsLayout != VK_NULL_HANDLE && cube360ComputeDs == VK_NULL_HANDLE) {
-            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 };
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 };
             VkDescriptorPoolCreateInfo pci{};
             pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
             pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -2979,11 +2983,12 @@ void MyApp::ensureCubemapResources() {
             }
         }
         if (cube360ComputeDs != VK_NULL_HANDLE) {
-            std::array<VkBuffer, 4> bufs = {
+            std::array<VkBuffer, 5> bufs = {
                 solidInd.getIndirectBuffer().buffer,
                 cube360Compact.buffer,
                 solidInd.getBoundsBuffer().buffer,
                 cube360Visible.buffer,
+                solidInd.getVisibleLodsScratchBuffer(),
             };
             if (bufs != cube360ComputeBuffers) {
                 cube360ComputeBuffers = bufs;
@@ -2996,6 +3001,8 @@ void MyApp::ensureCubemapResources() {
                                  bufs[2], 0, VK_WHOLE_SIZE)
                     .writeBuffer(cube360ComputeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                  bufs[3], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360ComputeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[4], 0, VK_WHOLE_SIZE)
                     .flush();
             }
         }
@@ -3005,7 +3012,7 @@ void MyApp::ensureCubemapResources() {
     {
         VkDescriptorSetLayout wDsLayout = waterInd.getComputeDescriptorSetLayout();
         if (wDsLayout != VK_NULL_HANDLE && cube360WaterComputeDs == VK_NULL_HANDLE) {
-            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 };
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 };
             VkDescriptorPoolCreateInfo pci{};
             pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
             pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -3021,11 +3028,12 @@ void MyApp::ensureCubemapResources() {
             }
         }
         if (cube360WaterComputeDs != VK_NULL_HANDLE) {
-            std::array<VkBuffer, 4> bufs = {
+            std::array<VkBuffer, 5> bufs = {
                 waterInd.getIndirectBuffer().buffer,
                 cube360WaterCompact.buffer,
                 waterInd.getBoundsBuffer().buffer,
                 cube360WaterVisible.buffer,
+                waterInd.getVisibleLodsScratchBuffer(),
             };
             if (bufs != cube360WaterComputeBuffers) {
                 cube360WaterComputeBuffers = bufs;
@@ -3038,6 +3046,8 @@ void MyApp::ensureCubemapResources() {
                                  bufs[2], 0, VK_WHOLE_SIZE)
                     .writeBuffer(cube360WaterComputeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                  bufs[3], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360WaterComputeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[4], 0, VK_WHOLE_SIZE)
                     .flush();
             }
         }
