@@ -27,8 +27,6 @@ void TextureMixerWidget::render() {
     if (textures) {
         size_t pending = textures->getPendingGenerationCount();
         if (pending > 0) ImGui::TextColored(ImVec4(1.0f,0.9f,0.1f,1.0f), "Generation pending: %zu", pending);
-        auto newLogs = textures->consumeLogs();
-
     }
 
     uint32_t maxLayers = textures->getArrayLayerCount();

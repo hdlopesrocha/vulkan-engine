@@ -26,10 +26,6 @@ uint32_t TextureMixer::getLayerHeight() const {
 	return textureArrayManager ? textureArrayManager->height : height;
 }
 
-int TextureMixer::getBytesPerPixel() const {
-	return 4; // RGBA8
-}
-
 TextureMixer::TextureMixer() {}
 
 // Global instance pointer (set in init)
@@ -127,7 +123,7 @@ void TextureMixer::flushPendingRequests(VulkanApp* app) {
 
 void TextureMixer::pollPendingGenerations(VulkanApp* app) {
 	// Pull any completed fences and promote their logs (check fences BEFORE letting VulkanApp destroy them)
-	std::vector<std::tuple<VkFence, uint32_t>> completed;
+	completed.clear();
 	{
 		std::lock_guard<std::mutex> lk(pendingFencesMutex);
 		for (auto it = pendingFences.begin(); it != pendingFences.end(); ) {
@@ -191,10 +187,16 @@ void TextureMixer::pollPendingGenerations(VulkanApp* app) {
 
 	// also append a simple summary log line for diagnostics
 	{
-		std::lock_guard<std::mutex> lkll(logsMutex);
-		char buf[128];
-		snprintf(buf, sizeof(buf), "Pending: requests=%zu fences=%zu", pendingRequests.size(), pendingFences.size());
-		logs.emplace_back(buf);
+		size_t reqs = pendingRequests.size();
+		size_t fences = pendingFences.size();
+		if (reqs != lastLoggedRequests || fences != lastLoggedFences) {
+			std::lock_guard<std::mutex> lkll(logsMutex);
+			char buf[128];
+			snprintf(buf, sizeof(buf), "Pending: requests=%zu fences=%zu", reqs, fences);
+			logs.emplace_back(buf);
+			lastLoggedRequests = reqs;
+			lastLoggedFences = fences;
+		}
 	}
 }
 

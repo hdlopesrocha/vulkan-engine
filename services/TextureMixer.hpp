@@ -60,9 +60,6 @@ public:
     // Query array layer dimensions (0 if none)
     uint32_t getLayerWidth() const;
     uint32_t getLayerHeight() const;
-    // Bytes per pixel for array textures (RGBA8 -> 4)
-    int getBytesPerPixel() const;
-
     // Generate Perlin noise for a texture using explicit parameters (used by UI widget)
     // map: -1 = all maps, 0 = albedo, 1 = normal, 2 = bump
     void generatePerlinNoise(VulkanApp* app, MixerParameters &params, int map = -1);
@@ -70,7 +67,6 @@ public:
     // Debug output mode: when enabled the compute shader writes the noise value to
     // the RGB channels (instead of blending).  Useful for verifying the mask.
     void setDebugOutput(bool v) { debugOutput = v; }
-    bool getDebugOutput() const { return debugOutput; }
 
 private:
     bool debugOutput = false;
@@ -111,6 +107,7 @@ private:
     // Pending async fences (fence, layer) for in-flight generation submissions
     std::mutex pendingFencesMutex;
     std::vector<std::tuple<VkFence, uint32_t>> pendingFences;
+    std::vector<std::tuple<VkFence, uint32_t>> completed;
 
     // If editable textures are represented inside a TextureArrayManager, store the layer index
     // NOTE: placed BEFORE logs to avoid aliasing with vector internal pointers
@@ -119,6 +116,8 @@ private:
     // Diagnostics: small textual log buffer for UI and a mutex to protect it
     std::mutex logsMutex;
     std::vector<std::string> logs;
+    size_t lastLoggedRequests = 0;
+    size_t lastLoggedFences = 0;
 
 public:
     void setEditableLayer(uint32_t layer) { editableLayer = layer; }
