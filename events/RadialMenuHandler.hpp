@@ -81,4 +81,6 @@ private:
 
     // Page tree (owned by handler, set on RadialMenu)
     std::vector<Page> pages_;
+
+    std::vector<ImTextureID> textureScratch_;
 };

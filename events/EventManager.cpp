@@ -27,12 +27,11 @@ void EventManager::unsubscribe(HandlerPtr handler) {
 void EventManager::publish(const EventPtr &event) {
     if (!event) return;
     // make a snapshot of handlers to avoid holding the lock while invoking callbacks
-    std::vector<HandlerPtr> snapshot;
     {
         std::lock_guard<std::mutex> lock(handlersMutex);
-        snapshot = handlers;
+        dispatchScratch = handlers;
     }
-    for (auto h : snapshot) {
+    for (auto h : dispatchScratch) {
         try {
             if (h) h->onEvent(event);
         } catch (const std::exception &e) {

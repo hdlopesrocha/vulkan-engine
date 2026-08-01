@@ -222,11 +222,11 @@ bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
 
         // --- Active ring handling ---
         if (activeType == RadialMenu::RingType::TEXTURE) {
-            std::vector<ImTextureID> texIds;
+            textureScratch_.clear();
             for (uint32_t i = 0; i < loadedTextureLayers; ++i) {
-                texIds.push_back(texArray_->getImTexture(i, 0));
+                textureScratch_.push_back(texArray_->getImTexture(i, 0));
             }
-            menu_->SetTextures(texIds);
+            menu_->SetTextures(textureScratch_);
 
             if (selectEdge) {
                 int ht = menu_->GetHoveredTexture();

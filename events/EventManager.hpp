@@ -36,6 +36,10 @@ public:
 private:
     std::mutex handlersMutex;
     std::vector<HandlerPtr> handlers; // guarded by handlersMutex
+    // publish() snapshot scratch; reused across events to avoid a per-event
+    // allocation. Safe only because every publisher runs on the main thread
+    // (publish is effectively single-threaded).
+    std::vector<HandlerPtr> dispatchScratch;
 
     std::mutex queueMutex;
     std::queue<EventPtr> eventQueue; // guarded by queueMutex

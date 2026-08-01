@@ -294,21 +294,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     WiimoteState s = getState();
     if (!s.connected) return;
 
-    // DEBUG: print state every 2s
-    {
-        static auto lastPrint = std::chrono::steady_clock::now();
-        auto now = std::chrono::steady_clock::now();
-        if (now - lastPrint > std::chrono::seconds(2)) {
-            lastPrint = now;
-            fprintf(stderr, "[Wiimote] type=%d jx=%.3f jy=%.3f btns=0x%04x exp=%d "
-                    "C=%d Z=%d gyroY=%.1f gyroP=%.1f gyroR=%.1f\n",
-                    s.expansionType, s.joystickX, s.joystickY, s.buttons,
-                    s.expansionConnected,
-                    s.buttonC, s.buttonZ,
-                    s.gyroYawRate, s.gyroPitchRate, s.gyroRollRate);
-        }
-    }
-
     ControllerContext& wctx = cm->wiimoteContext;
     const ControllerParameters& cp = *cm->getParameters();
     bool hasNunchuk = s.expansionConnected &&
