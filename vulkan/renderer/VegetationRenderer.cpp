@@ -341,12 +341,14 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
         }
     }
 
-    // Per-cascade draw command arrays (stack-allocated for small counts,
-    // heap-allocated for large counts).
+    // Per-cascade draw command arrays: reuse frame-thread scratch (clear +
+    // reserve) instead of allocating three vectors every frame.
     uint32_t cap = vegCascadeCompactCapacity;
-    std::vector<VkDrawIndexedIndirectCommand> cCmds[3];
-    for (uint32_t c = 0; c < 3; c++)
-        cCmds[c].reserve(cap);
+    for (uint32_t c = 0; c < 3; c++) {
+        cascadeCullScratch[c].clear();
+        cascadeCullScratch[c].reserve(cap);
+    }
+    std::array<std::vector<VkDrawIndexedIndirectCommand>, 3>& cCmds = cascadeCullScratch;
 
     // Helper: test AABB against 6 planes
     auto aabbVisible = [](const glm::vec4 planes[6],
@@ -996,8 +998,11 @@ float VegetationRenderer::getAverageDensityFactor(const glm::vec3& cameraPos) co
 void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
     if (commandBuffer == VK_NULL_HANDLE) return;
 
-    std::vector<VkBufferMemoryBarrier2> readBarriers;
-    readBarriers.reserve(chunkBuffers.size() * 2);
+    // Reuse frame-thread scratch vector (clear + reserve) to avoid one heap
+    // allocation per call; called twice per frame from the main thread.
+    readBarrierScratch.clear();
+    readBarrierScratch.reserve(chunkBuffers.size() * 2);
+    std::vector<VkBufferMemoryBarrier2>& readBarriers = readBarrierScratch;
     for (const auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
         if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
@@ -1684,8 +1689,11 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         aabbMin -= glm::vec3(maxBillboardRadius);
         aabbMax += glm::vec3(maxBillboardRadius);
 
-        std::vector<float> validData;
-        validData.reserve(instanceCount * 4);
+        // Reuse frame-thread scratch (clear + reserve) instead of allocating
+        // a fresh vector per processed chunk.
+        instanceGenScratch.clear();
+        instanceGenScratch.reserve(instanceCount * 4);
+        std::vector<float>& validData = instanceGenScratch;
 
         for (uint32_t tri = 0; tri < triCount; ++tri) {
             const uint32_t tb = tri * 3;

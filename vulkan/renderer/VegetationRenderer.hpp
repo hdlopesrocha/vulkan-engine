@@ -281,6 +281,13 @@ private:
     uint32_t vegCullCurrentSlot = 0;       // slot selected for current frame's cull + draws
     bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata
 
+    // Per-frame scratch for CPU cascade culling (prepareCullCascades) and
+    // read-barrier recording (recordReadBarriers). Both run on the main frame
+    // thread only (SceneRenderer::shadowPass / preRenderPass) — plain members
+    // are safe; clear() + reserve() reuse capacity across frames.
+    std::array<std::vector<VkDrawIndexedIndirectCommand>, 3> cascadeCullScratch;
+    std::vector<VkBufferMemoryBarrier2> readBarrierScratch;
+
     // Pipelined consolidation: deferred callback handles fence lifecycle
     TrackedHandle<VkFence> consolidationFence;
     bool consolidationPending = false;
@@ -294,6 +301,9 @@ private:
         glm::vec3 aabbMin, aabbMax, center;
     };
     std::vector<PendingBatchCopy> pendingBatch;
+    // Frame-thread scratch reused by processPendingChunks for per-chunk
+    // instance data (clear + reserve avoids reallocating per chunk).
+    std::vector<float> instanceGenScratch;
 
     void destroyCulling();
     void issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
