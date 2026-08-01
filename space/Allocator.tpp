@@ -22,7 +22,6 @@ void Allocator<T>::allocateBlock() {
 
 template <typename T>
 Allocator<T>::Allocator(size_t blockSize_) : blockSize(blockSize_) {
-    std::cout << "Allocator(" << blockSize << ")" << std::endl;
 }
 
 template <typename T>

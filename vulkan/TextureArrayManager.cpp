@@ -51,11 +51,9 @@ void TextureArrayManager::notifyAllocationListeners() {
 static void cleanupTextureImage(VulkanApp* app, TextureImage &ti) {
 	if (!app) return;
 	VkDevice device = app->getDevice();
-    std::cerr << "[TextureArrayManager] cleanupTextureImage: image=" << (void*)ti.image << " view=" << (void*)ti.view << " memory=" << (void*)ti.memory << std::endl;
 	// Destroy view
 	if (ti.view != VK_NULL_HANDLE) {
 		VkImageView v = ti.view;
-		std::cerr << "[TextureArrayManager] deferring vkDestroyImageView(" << (void*)v << ") until all pending GPU work completes" << std::endl;
 		app->deferDestroyUntilAllPending([device, v, app](){ if (app->resources.removeImageView(v)) vkDestroyImageView(device, v, nullptr); });
 		ti.view = VK_NULL_HANDLE;
 	}
@@ -64,7 +62,6 @@ static void cleanupTextureImage(VulkanApp* app, TextureImage &ti) {
 		VkImage img = ti.image;
 		VmaAllocation alloc = ti.allocation;
 		VkDeviceMemory mem = ti.memory;
-		std::cerr << "[TextureArrayManager] deferring vmaDestroyImage(" << (void*)img << ") until all pending GPU work completes" << std::endl;
 		app->deferDestroyUntilAllPending([device, img, alloc, mem, app](){ app->destroyImageWithVma(img, alloc, mem); });
 		ti.image = VK_NULL_HANDLE;
 		ti.allocation = VK_NULL_HANDLE;
@@ -79,10 +76,8 @@ static void cleanupTextureImage(VulkanApp* app, TextureImage &ti) {
 static void cleanupSampler(VulkanApp* app, VkSampler &s) {
 	if (!app) return;
 	VkDevice device = app->getDevice();
-	std::cerr << "[TextureArrayManager] cleanupSampler: sampler=" << (void*)s << std::endl;
 	if (s != VK_NULL_HANDLE) {
 		VkSampler ss = s;
-		std::cerr << "[TextureArrayManager] deferring vkDestroySampler(" << (void*)ss << ") until all pending GPU work completes" << std::endl;
 		app->deferDestroyUntilAllPending([device, ss, app](){ if (app->resources.removeSampler(ss)) vkDestroySampler(device, ss, nullptr); });
 		s = VK_NULL_HANDLE;
 	}
@@ -90,7 +85,6 @@ static void cleanupSampler(VulkanApp* app, VkSampler &s) {
 
 void TextureArrayManager::destroy(VulkanApp* app) {
 	if (!app) return;
-	std::cerr << "[TextureArrayManager] destroy() called - this=" << (void*)this << " app=" << (void*)app << std::endl;
 	cleanupTextureImage(app, albedoArray);
 	cleanupTextureImage(app, normalArray);
 	cleanupTextureImage(app, bumpArray);
@@ -228,7 +222,6 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 		app->createImageWithVma(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, out.image, out.allocation, out.memory, "TextureArrayManager: createArray");
 		app->resources.setImageArrayLayers(out.image, imageInfo.arrayLayers);
 
-		std::cerr << "[TextureArrayManager] createArray: image=" << (void*)out.image << " mem=" << (void*)out.memory << " layers=" << imageInfo.arrayLayers << " mipLevels=" << imageInfo.mipLevels << std::endl;
 
 		// Create image view for 2D array
 		VkImageViewCreateInfo viewInfo{};
@@ -249,7 +242,6 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 			out.memory = VK_NULL_HANDLE;
 			throw std::runtime_error("failed to create texture array image view");
 		}
-		std::cerr << "[TextureArrayManager] createArray: view=" << (void*)out.view << " image=" << (void*)out.image << std::endl;
 		app->resources.addImageView(out.view, "TextureArrayManager::createArray view");
 
 		out.mipLevels = mipLevels;
@@ -327,12 +319,6 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::load: layerAmount == 0");
 	if (currentLayer >= layerAmount) throw std::runtime_error("TextureArrayManager::load: currentLayer >= layerAmount");
 
-	std::cout << "[TextureArrayManager] Loading textures into layer " << currentLayer << ": "
-			  << (albedoFile ? albedoFile : "(none)") << ", "
-			  << (normalFile ? normalFile : "(none)") << ", "
-			  << (bumpFile ? bumpFile : "(none)") << ", "
-			  << (roughnessFile ? roughnessFile : "(default)") << ", "
-			  << (aoFile ? aoFile : "(default)") << std::endl;
 	struct Img { const char* path; TextureImage* dstImage; VkFormat format; bool srgb; unsigned char defaultVal[4]; } imgs[5] = {
 		{ albedoFile, &albedoArray, VK_FORMAT_R8G8B8A8_UNORM, true, {0,0,0,255} },
 		{ normalFile, &normalArray, VK_FORMAT_R8G8B8A8_UNORM, false, {128,128,255,255} },
@@ -369,8 +355,7 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 			});
 			setLayerLayout(idx, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		}
-		if (staging.buffer != VK_NULL_HANDLE) { staging.buffer = VK_NULL_HANDLE; }
-		if (staging.memory != VK_NULL_HANDLE) { staging.memory = VK_NULL_HANDLE; }
+		a->destroyBuffer(staging);
 	};
 
 	for (int i = 0; i < 5; ++i) {
@@ -446,18 +431,13 @@ VkImageLayout TextureArrayManager::getLayerLayout(int map, uint32_t layer) const
 
 void TextureArrayManager::setLayerLayout(int map, uint32_t layer, VkImageLayout layout) {
 	if (layer >= layerAmount) return;
-	// Log layout changes for diagnostics
-	VkImageLayout prev = VK_IMAGE_LAYOUT_UNDEFINED;
 	switch (map) {
-		case 0: if (albedoLayerLayouts.size() > layer) { prev = albedoLayerLayouts[layer]; albedoLayerLayouts[layer] = layout; } break;
-		case 1: if (normalLayerLayouts.size() > layer) { prev = normalLayerLayouts[layer]; normalLayerLayouts[layer] = layout; } break;
-		case 2: if (bumpLayerLayouts.size() > layer) { prev = bumpLayerLayouts[layer]; bumpLayerLayouts[layer] = layout; } break;
-		case 3: if (roughnessLayerLayouts.size() > layer) { prev = roughnessLayerLayouts[layer]; roughnessLayerLayouts[layer] = layout; } break;
-		case 4: if (aoLayerLayouts.size() > layer) { prev = aoLayerLayouts[layer]; aoLayerLayouts[layer] = layout; } break;
+		case 0: if (albedoLayerLayouts.size() > layer) albedoLayerLayouts[layer] = layout; break;
+		case 1: if (normalLayerLayouts.size() > layer) normalLayerLayouts[layer] = layout; break;
+		case 2: if (bumpLayerLayouts.size() > layer) bumpLayerLayouts[layer] = layout; break;
+		case 3: if (roughnessLayerLayouts.size() > layer) roughnessLayerLayouts[layer] = layout; break;
+		case 4: if (aoLayerLayouts.size() > layer) aoLayerLayouts[layer] = layout; break;
 		default: break;
-	}
-	if (prev != layout) {
-		std::cerr << "[TextureArrayManager] setLayerLayout: map=" << map << " layer=" << layer << " " << prev << " -> " << layout << std::endl;
 	}
 }
 
@@ -528,13 +508,7 @@ uint TextureArrayManager::create(VulkanApp* a) {
 			a->generateMipmaps(dst->image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), dst->mipLevels, 1, currentLayer);
 		}	}
 
-	// cleanup staging (defer actual destruction to VulkanResourceManager)
-	if (staging.buffer != VK_NULL_HANDLE) {
-		staging.buffer = VK_NULL_HANDLE;
-	}
-	if (staging.memory != VK_NULL_HANDLE) {
-		staging.memory = VK_NULL_HANDLE;
-	}
+	a->destroyBuffer(staging);
 
 	setLayerInitialized(currentLayer, true);
 	return currentLayer++;
@@ -592,7 +566,6 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	a->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1);
 
 	// Copy into selected array layer (ensure we log what we're doing)
-	std::cerr << "[TextureArrayManager] Copying into array image " << (void*)dstImage << " layer=" << layer << std::endl;
 	doBarrier(dstImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layer);
 	VkImageCopy copyRegion{};
 	copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -611,7 +584,6 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	// For mipmapped arrays, keep destination in TRANSFER_DST so generateMipmaps
 	// can transition subresources correctly. Single-mip images transition now.
 	if (mipLevels <= 1) {
-		std::cerr << "[TextureArrayManager] Transitioning dst layer " << layer << " back to SHADER_READ_ONLY_OPTIMAL" << std::endl;
 		a->recordTransitionImageLayoutLayer(cmd, dstImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layer, 1);
 	}
 
@@ -692,10 +664,6 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 						// Failed to create view; leave tex as nullptr
 					}
 					else {
-						std::cerr << "[TextureArrayManager] createLayerView: view=" << (void*)(*viewVec)[layer]
-								  << " image=" << (void*)arrImg->image
-								  << " layer=" << (unsigned)layer
-								  << " map=" << map << std::endl;
 						// Register per-layer view so centralized cleanup can track and destroy it if needed
 						if (a) a->resources.addImageView((*viewVec)[layer], "TextureArrayManager: layerView");
 					}
@@ -774,10 +742,6 @@ ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 		if (vkCreateImageView(device, &viewInfo, nullptr, &(*viewVec)[layer]) != VK_SUCCESS) {
 			return 0;
 		}
-				std::cerr << "[TextureArrayManager] createLayerView: view=" << (void*)(*viewVec)[layer]
-						  << " image=" << (void*)src->image
-						  << " layer=" << (unsigned)layer
-						  << " map=" << map << std::endl;
 				// Register per-layer view so centralized cleanup can track and destroy it if needed
 				if (a) a->resources.addImageView((*viewVec)[layer], "TextureArrayManager: layerView");
 	}
@@ -835,10 +799,6 @@ ImTextureID TextureArrayManager::getImTextureAlpha(size_t layer, int map) {
         if (vkCreateImageView(device, &viewInfo, nullptr, &(*viewVec)[layer]) != VK_SUCCESS) {
             return 0;
         }
-        std::cerr << "[TextureArrayManager] createAlphaLayerView: view=" << (void*)(*viewVec)[layer]
-                  << " image=" << (void*)src->image
-                  << " layer=" << (unsigned)layer
-                  << " map=" << map << std::endl;
         if (a) a->resources.addImageView((*viewVec)[layer], "TextureArrayManager: alphaLayerView");
     }
 

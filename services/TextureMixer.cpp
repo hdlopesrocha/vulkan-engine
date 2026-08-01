@@ -13,21 +13,6 @@
 #include <tuple>
 #include <string>
 
-static const char* layoutName(VkImageLayout l) {
-	switch (l) {
-		case VK_IMAGE_LAYOUT_UNDEFINED: return "UNDEFINED";
-		case VK_IMAGE_LAYOUT_GENERAL: return "GENERAL";
-		case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: return "COLOR_ATTACHMENT_OPTIMAL";
-		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: return "DEPTH_STENCIL_ATTACHMENT_OPTIMAL";
-		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL: return "DEPTH_STENCIL_READ_ONLY_OPTIMAL";
-		case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: return "SHADER_READ_ONLY_OPTIMAL";
-		case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: return "TRANSFER_SRC_OPTIMAL";
-		case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: return "TRANSFER_DST_OPTIMAL";
-		case VK_IMAGE_LAYOUT_PREINITIALIZED: return "PREINITIALIZED";
-		case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: return "PRESENT_SRC_KHR";
-		default: return "UNKNOWN";
-	}
-}
 
 uint32_t TextureMixer::getArrayLayerCount() const {
 	return textureArrayManager ? textureArrayManager->layerAmount : 0;
@@ -974,22 +959,6 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 				waitForLayerGeneration(app, targetLayer);
 			}
 
-			// Debug: print tracked layouts and pending state to help diagnose layout mismatches
-			{
-				VkImageLayout la = textureArrayManager->getLayerLayout(0, targetLayer);
-				VkImageLayout ln = textureArrayManager->getLayerLayout(1, targetLayer);
-				VkImageLayout lb = textureArrayManager->getLayerLayout(2, targetLayer);
-				VkImageLayout lr = textureArrayManager->getLayerLayout(3, targetLayer);
-				VkImageLayout lao = textureArrayManager->getLayerLayout(4, targetLayer);
-				std::cerr << "[TextureMixer] Debug: targetLayer=" << targetLayer
-						  << " trackedLayouts A=" << layoutName(la)
-						  << " N=" << layoutName(ln)
-						  << " B=" << layoutName(lb)
-						  << " R=" << layoutName(lr)
-						  << " AO=" << layoutName(lao)
-						  << " hasPendingCmds=" << (app ? (int)app->hasPendingCommandBuffers() : 0)
-						  << std::endl;
-			}
 		}
 	}
 
@@ -1104,11 +1073,6 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 
     		if (!preBarriers.empty()) {
     			for (auto &b : preBarriers) {
-    				std::cerr << "[TextureMixer] Pre-barrier: image=" << (void*)b.image
-    						  << " layer=" << b.subresourceRange.baseArrayLayer
-    						  << " old=" << layoutName(b.oldLayout)
-    						  << " new=" << layoutName(b.newLayout)
-    						  << std::endl;
 					// Record per-layer transition using authoritative app helper.
 					// Pass the tracked old layout (from TextureArrayManager) so the
 					// app resolves the effective old layout correctly even when
@@ -1124,7 +1088,6 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 	}
 
     // record pipeline/descriptor binds and dispatch
-	printf("[TextureMixer] vkCmdBindPipeline: computePipeline=%p\n", (void*)computePipeline);
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &tempDesc, 0, nullptr);
 
@@ -1167,11 +1130,6 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 
 				if (!mipPrepBarriers.empty()) {
 				for (auto &b : mipPrepBarriers) {
-					std::cerr << "[TextureMixer] Mip-prep barrier: image=" << (void*)b.image
-							  << " layer=" << b.subresourceRange.baseArrayLayer
-							  << " old=" << layoutName(b.oldLayout)
-							  << " new=" << layoutName(b.newLayout)
-							  << std::endl;
 					app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, b.oldLayout, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
 				}
 			}

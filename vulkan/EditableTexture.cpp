@@ -9,7 +9,6 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
 	format = fmt;
 	name = nm ? nm : "Editable Texture";
 	bytesPerPixel = (format == VK_FORMAT_R8_UNORM) ? 1 : 4;
-    printf("[EditableTexture::init] name='%s' w=%u h=%u bytes=%u\n", name.c_str(), width, height, bytesPerPixel);
 
     cpuData.assign((size_t)width * (size_t)height * (size_t)bytesPerPixel, 0);
     isDirty = false;
@@ -34,7 +33,6 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
 	if (vkCreateImageView(app->getDevice(), &viewInfo, nullptr, &view) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create image view");
 	}
-    printf("[EditableTexture] createImageView: view=%p image=%p format=%d\n", (void*)view, (void*)image, (int)format);
 	// Register image view
 	app->resources.addImageView(view, "EditableTexture: view");
 
@@ -54,7 +52,6 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
 	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
 	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 	sampler = app->createSampler(samplerInfo, "EditableTexture: sampler");
-    printf("[EditableTexture] createSampler: sampler=%p\n", (void*)sampler);
 	// Register sampler
 	app->resources.addSampler(sampler, "EditableTexture: sampler");
 
@@ -136,9 +133,7 @@ void EditableTexture::updateGPU(VulkanApp* app) {
 	app->copyBufferToImage(staging.buffer, image, width, height);
 	app->transitionImageLayout(image, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-	// Defer actual destruction to VulkanResourceManager; clear local handles
-	if (staging.buffer != VK_NULL_HANDLE) staging.buffer = VK_NULL_HANDLE;
-	if (staging.memory != VK_NULL_HANDLE) staging.memory = VK_NULL_HANDLE;
+	app->destroyBuffer(staging);
 
 	isDirty = false;
 }
@@ -178,7 +173,6 @@ void EditableTexture::createImGuiDescriptor() {
 	if (imguiDescSet == VK_NULL_HANDLE) {
 		printf("[EditableTexture] Failed to create ImGui descriptor for '%s'\n", name.c_str());
 	} else {
-		printf("[EditableTexture] Created ImGui descriptor %p for '%s'\n", (void*)imguiDescSet, name.c_str());
 	}
 }
 

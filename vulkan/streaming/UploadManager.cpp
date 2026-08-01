@@ -167,7 +167,8 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
         vkCmdCopyBuffer(s.cmd, s.buffer, u.dst.buffer, 1, &copy);
         off += sz;
     }
-    vkEndCommandBuffer(s.cmd);
+    if (vkEndCommandBuffer(s.cmd) != VK_SUCCESS)
+        throw std::runtime_error("UploadManager: failed to end upload command buffer");
 
     // Signal the timeline (used for recycling/ordering) AND always a fresh binary
     // semaphore for cross-queue frame synchronization. We always register the
