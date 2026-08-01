@@ -56,11 +56,4 @@ struct UploadJob {
     std::function<void()> onComplete;
 };
 
-// Total bytes a job will need inside a staging buffer (vertex + index).
-inline VkDeviceSize jobStagingFootprint(const UploadJob& job) {
-    VkDeviceSize total = 0;
-    for (const auto& u : job.uploads) total += u.cpuData.size();
-    return total;
-}
-
 } // namespace streaming

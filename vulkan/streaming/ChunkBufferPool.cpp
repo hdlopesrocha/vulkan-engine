@@ -62,15 +62,12 @@ ChunkGPUBuffers* ChunkBufferPool::acquire(uint64_t chunkId) {
     }
     ChunkGPUBuffers* s = free_.back();
     free_.pop_back();
-    s->inUse      = true;
-    s->ownerChunk = chunkId;
     return s;
 }
 
 void ChunkBufferPool::release(ChunkGPUBuffers* slot) {
     if (!slot) return;
     std::lock_guard<std::mutex> lk(mtx_);
-    slot->inUse = false;
     free_.push_back(slot);
 }
 

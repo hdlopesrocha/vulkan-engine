@@ -37,15 +37,12 @@ public:
     }
 
     ~MPSCQueue() {
-        // Drain anything left, then free the stub.
+        // Drain anything left, then free the one remaining node: tryPop()
+        // frees every node except the last one it advanced past, and the stub
+        // is freed by the first pop — so head is the sole survivor.
         T v;
         while (tryPop(v)) {}
-        // After tryPop, head_ may have advanced past stub_ (stub_ was already
-        // freed by tryPop). Only delete stub_ if it is still the current head
-        // (i.e. the queue was never consumed).
-        if (head_.load(std::memory_order_relaxed) == stub_) {
-            delete stub_;
-        }
+        delete head_.load(std::memory_order_relaxed);
     }
 
     // Producer side. Thread-safe, lock-free.

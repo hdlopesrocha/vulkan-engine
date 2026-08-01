@@ -28,7 +28,6 @@ struct StagingSlot {
     VkFence         fence   = VK_NULL_HANDLE;
     VkSemaphore     signalSem = VK_NULL_HANDLE;   // binary, for frame waits
 
-    uint64_t timelineValue  = 0;   // value this slot's submission signaled (timeline path)
     bool     busy           = false;
     bool     waitRegistered = false; // binary signalSem already added as a frame wait
                                      // (a binary semaphore may be waited on only

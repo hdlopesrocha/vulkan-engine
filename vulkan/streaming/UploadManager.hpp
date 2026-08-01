@@ -36,15 +36,15 @@ public:
               uint32_t initialChunkSlots = 64);
 
     // Worker threads call this (lock-free push). `job` must reference
-    // destination buffers acquired from chunkPool() and contain only CPU data.
+    // destination buffers acquired from the chunk pool and contain only CPU data.
     void enqueue(UploadJob&& job);
 
     ChunkBufferPool& chunkPool() { return chunkPool_; }
     const ChunkBufferPool& chunkPool() const { return chunkPool_; }
 
     // Byte capacity of a single staging slot. A job whose total footprint
-    // (jobStagingFootprint) exceeds this cannot be serviced and the caller
-    // must fall back to its own (larger) staging path.
+    // exceeds this cannot be serviced and the caller must fall back to its
+    // own (larger) staging path.
     VkDeviceSize slotSize() const { return slotSize_; }
 
     // --- Called once per frame from the render loop -----------------------
@@ -63,16 +63,6 @@ public:
     // Intended for rare, already-heavy events (e.g. a full IndirectRenderer
     // rebuild that grows and reallocates the merged vertex/index buffers).
     void flush();
-
-    // Latest timeline value the frame should wait on (timeline path). 0 if the
-    // timeline path is unavailable (use binary semaphores instead).
-    uint64_t frameTimelineValue() const { return m_timelineWaitValue; }
-
-    // Timeline semaphore handle (timeline path). The frame submit should add a
-    // wait on this semaphore at frameTimelineValue() so rendering does not start
-    // until the relevant uploads have landed on the GPU.
-    VkSemaphore timeline() const { return m_timeline; }
-    bool        timelineSupported() const { return m_timelineSupported; }
 
     void destroy();
 
@@ -97,7 +87,6 @@ private:
     // Timeline-semaphore completion path (preferred when supported).
     VkSemaphore   m_timeline = VK_NULL_HANDLE;
     uint64_t      m_timelineSignal = 0;
-    uint64_t        m_timelineWaitValue = 0;
     bool          m_timelineSupported = false;
 };
 
@@ -133,12 +122,10 @@ public:
     }
 
     UploadManager&       uploadManager()  { return upload_; }
-    ChunkBufferPool&     chunkPool()      { return upload_.chunkPool(); }
 
     void destroy();
 
 private:
-    VulkanApp* app_ = nullptr;
     UploadManager upload_;
     std::array<std::unique_ptr<class ThreadPool>, (size_t)StreamCategory::Count> pools_;
 };

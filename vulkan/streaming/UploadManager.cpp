@@ -6,7 +6,6 @@
 #include <iostream>
 #include <array>
 #include <cstring>
-#include <vector>
 
 namespace {
 
@@ -33,7 +32,10 @@ static bool consumeBinarySignal(VkDevice dev, VkQueue queue, VkSemaphore sem) {
         std::cerr << "[UploadManager] consumeBinarySignal: drain submit failed; skipping semaphore destroy (degraded shutdown)" << std::endl;
         return false;
     }
-    vkQueueWaitIdle(queue);
+    if (vkQueueWaitIdle(queue) != VK_SUCCESS) {
+        std::cerr << "[UploadManager] consumeBinarySignal: queue idle failed; skipping semaphore destroy (degraded shutdown)" << std::endl;
+        return false;
+    }
     return true;
 }
 
@@ -123,10 +125,12 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
     char* base = static_cast<char*>(s.mapped);
     VkDeviceSize off = 0;
 
-    vkResetCommandBuffer(s.cmd, 0);
+    if (vkResetCommandBuffer(s.cmd, 0) != VK_SUCCESS)
+        throw std::runtime_error("UploadManager: failed to reset upload command buffer");
     VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(s.cmd, &bi);
+    if (vkBeginCommandBuffer(s.cmd, &bi) != VK_SUCCESS)
+        throw std::runtime_error("UploadManager: failed to begin upload command buffer");
 
     // WRITE-AFTER-READ guard: destination buffers (e.g. IndirectRenderer's
     // merged vertex/index buffers) may still be read by a previous frame's
@@ -158,7 +162,8 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
         std::memcpy(base + off, u.cpuData.data(), sz);
         // Flush the written range so the GPU observes the bytes (covers
         // non-coherent host-visible memory).
-        vmaFlushAllocation(vma_, s.alloc, off, sz);
+        if (vmaFlushAllocation(vma_, s.alloc, off, sz) != VK_SUCCESS)
+            throw std::runtime_error("UploadManager: vmaFlushAllocation failed");
 
         VkBufferCopy copy{};
         copy.srcOffset = off;
@@ -180,14 +185,15 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
     uint64_t tlValue = 0;
     if (m_timelineSupported) tlValue = ++m_timelineSignal;
 
-    std::vector<VkSemaphoreSubmitInfo> sig;
+    std::array<VkSemaphoreSubmitInfo, 2> sig{};
+    uint32_t sigCount = 0;
 
     s.signalSem = makeBinarySemaphore();
     VkSemaphoreSubmitInfo bin{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
     bin.semaphore = s.signalSem;
     bin.value     = 0;
     bin.stageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    sig.push_back(bin);
+    sig[sigCount++] = bin;
 
     if (m_timelineSupported) {
         VkSemaphoreSubmitInfo tl{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
@@ -195,7 +201,7 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
         tl.value       = tlValue;
         tl.stageMask   = VK_PIPELINE_STAGE_2_COPY_BIT;
         tl.deviceIndex = 0;
-        sig.push_back(tl);
+        sig[sigCount++] = tl;
     }
 
     VkCommandBufferSubmitInfo cbs{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
@@ -204,7 +210,7 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
     VkSubmitInfo2 si{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
     si.commandBufferInfoCount    = 1;
     si.pCommandBufferInfos       = &cbs;
-    si.signalSemaphoreInfoCount  = (uint32_t)sig.size();
+    si.signalSemaphoreInfoCount  = sigCount;
     si.pSignalSemaphoreInfos     = sig.data();
 
     {
@@ -216,12 +222,8 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
 
     s.busy          = true;
     s.waitRegistered = false;   // fresh binary semaphore: needs one frame-wait registration
-    s.timelineValue = tlValue;
     s.onComplete    = std::move(job.onComplete);
     s.chunkSlot     = job.chunkSlot;
-
-    // The frame must wait until at least this timeline value is reached.
-    if (m_timelineSupported) m_timelineWaitValue = tlValue;
 }
 
 void UploadManager::prepareFrameWaits(VulkanApp* app) {
@@ -323,11 +325,13 @@ void UploadManager::processUploads() {
         }
         if (!any) break;                                   // all queues drained → stop
 
-        // Guard against a malformed job with no data: complete it inline.
+        // Guard against a malformed job with no data: complete it inline and
+        // return the acquired chunk slot to the pool (it never became live data).
         bool hasData = false;
         for (auto& u : best.uploads) if (!u.cpuData.empty()) { hasData = true; break; }
         if (!hasData) {
             if (best.onComplete) best.onComplete();
+            if (best.chunkSlot) chunkPool_.release(static_cast<ChunkGPUBuffers*>(best.chunkSlot));
             continue;
         }
         submitJob(*s, std::move(best));
@@ -416,7 +420,6 @@ void TerrainStreamer::init(VulkanApp* app,
                            uint32_t stagingSlots,
                            uint32_t initialChunkSlots,
                            uint32_t workersPerCategory) {
-    app_ = app;
     upload_.init(app, chunkVertexBytes, chunkIndexBytes, stagingSlots, initialChunkSlots);
     for (auto& p : pools_) {
         // ThreadPool owns a std::mutex → not movable; store via unique_ptr.

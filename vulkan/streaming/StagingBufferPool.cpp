@@ -78,11 +78,12 @@ StagingSlot* StagingBufferPool::acquireFree() {
 }
 
 void StagingBufferPool::reset(StagingSlot& s) {
-    vkResetFences(device_, 1, &s.fence);
-    vkResetCommandBuffer(s.cmd, 0);
+    if (vkResetFences(device_, 1, &s.fence) != VK_SUCCESS)
+        throw std::runtime_error("StagingBufferPool: vkResetFences failed");
+    if (vkResetCommandBuffer(s.cmd, 0) != VK_SUCCESS)
+        throw std::runtime_error("StagingBufferPool: vkResetCommandBuffer failed");
     s.busy         = false;
     s.waitRegistered = false;
-    s.timelineValue = 0;
     s.onComplete   = nullptr;
     s.chunkSlot    = nullptr;
     // signalSem lifecycle is owned by the manager (fresh per submission in the

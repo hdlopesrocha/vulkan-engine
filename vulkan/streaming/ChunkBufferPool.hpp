@@ -28,8 +28,6 @@ struct ChunkGPUBuffers {
     Buffer        indexBuffer{};
     VkDeviceSize  vertexCapacity = 0;   // bytes
     VkDeviceSize  indexCapacity  = 0;   // bytes
-    uint64_t      ownerChunk     = 0;
-    bool          inUse          = false;
 };
 
 class ChunkBufferPool {
