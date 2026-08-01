@@ -2595,10 +2595,6 @@ void MyApp::applyBrushToScene() {
             mutableEntry->previousTranslate = mutableEntry->translate;
         }
     }
-
-    std::cerr << "[applyBrushToScene] Applied brush sdfType=" << entry.sdfType
-              << " layer=" << (entry.targetLayer == 0 ? "opaque" : "transparent")
-              << " mode=" << entry.brushMode << std::endl;
 }
 
 // Advance the brush-animation clock and move the *selected* brush entry along a

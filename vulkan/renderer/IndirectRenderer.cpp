@@ -2700,14 +2700,6 @@ void IndirectRenderer::drawCascadeOnly(VkCommandBuffer cmd, uint32_t cascadeInde
     uint32_t maxCount = static_cast<uint32_t>(meshCapacity);
     if (maxCount == 0) maxCount = 1024;
 
-    static int debugFrameCount = 60;
-    if (debugFrameCount > 0 && cascadeCullFrames[currentCullFrame].countMapped[cascadeIndex]) {
-        uint32_t val = *cascadeCullFrames[currentCullFrame].countMapped[cascadeIndex];
-        printf("[drawCascadeOnly] frame=%u cascade=%u count=%u maxCount=%u (remaining=%d)\n",
-               currentCullFrame, cascadeIndex, val, maxCount, debugFrameCount - 1);
-        if (cascadeIndex == 2) debugFrameCount--;
-    }
-
     // Cascade compact + cascade count (full cascade buffers)
     cmdDrawIndexedIndirectCount(cmd, compactBuf.buffer, 0, countBuf.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
 }
