@@ -4654,7 +4654,13 @@ void VulkanApp::drawFrame() {
         return;
     }
 
-    // Only run scene hooks when the app is fully set up
+    // Only run scene hooks when the app is fully set up. The app hooks
+    // (preRenderPass/draw) may throw (e.g. a device-lost mid-frame); the
+    // consumed extra waits were detached from m_extraWaitSemaphores above but
+    // are never waited on because this frame will not submit — restore them via
+    // abortFrameFence() so teardown stays validation-clean
+    // (VUID-vkDestroySemaphore-semaphore-05149), then rethrow.
+    try {
     if (!isLoading) {
         // Hook for compute/barrier operations before render pass
         preRenderPass(commandBuffer);
@@ -4751,6 +4757,10 @@ void VulkanApp::drawFrame() {
         depInfo.pImageMemoryBarriers = &presentBarrier;
 
         vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+    }
+    } catch (...) {
+        abortFrameFence();
+        throw;
     }
 
     // End recording commands
