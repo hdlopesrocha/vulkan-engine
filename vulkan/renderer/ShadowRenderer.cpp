@@ -21,10 +21,6 @@ ShadowRenderer::ShadowRenderer(uint32_t maxShadowMapSize)
 
 ShadowRenderer::~ShadowRenderer() {}
 
-VkDescriptorSetLayout ShadowRenderer::getShadowDescriptorSetLayout(VulkanApp* app) const {
-    return app->getDescriptorSetLayout();
-}
-
 void ShadowRenderer::init(VulkanApp* app) {
     createShadowMaps(app);
     createShadowPipeline(app);
@@ -92,11 +88,6 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
         cas.imguiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
             shadowMapSampler, cas.colorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
-
-    std::cerr << "[ShadowRenderer] Created " << SHADOW_CASCADE_COUNT
-              << " cascade EVSM maps (" << shadowMapSizes[0] << "x" << shadowMapSizes[0]
-              << "/" << shadowMapSizes[1] << "x" << shadowMapSizes[1]
-              << "/" << shadowMapSizes[2] << "x" << shadowMapSizes[2] << ")" << std::endl;
 }
 
 VkImage ShadowRenderer::getDepthImage(uint32_t cascade) const {
@@ -140,9 +131,6 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
     );
     shadowPipeline = pipeline;
     shadowPipelineLayout = layout;
-    std::cerr << "[ShadowRenderer] EVSM pipeline: " << (void*)shadowPipeline
-              << " layout=" << (void*)shadowPipelineLayout << std::endl;
-
     vertexShader.info.module   = VK_NULL_HANDLE;
     tescShader.info.module     = VK_NULL_HANDLE;
     teseShader.info.module     = VK_NULL_HANDLE;

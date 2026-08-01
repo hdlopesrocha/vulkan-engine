@@ -338,13 +338,6 @@ SceneRenderer::~SceneRenderer() {
 }
 
 void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool renderSolid, bool vegetationEnabled, bool shadowTessellationEnabled) {
-    static bool firstCall = true;
-    if (firstCall) {
-        firstCall = false;
-        std::cerr << "[SceneRenderer::shadowPass] FIRST CALL! shadowsEnabled=" << (int)shadowsEnabled
-                  << " commandBuffer=" << (void*)commandBuffer
-                  << " cascades=" << SHADOW_CASCADE_COUNT << std::endl;
-    }
     if (commandBuffer == VK_NULL_HANDLE) return;
     if (!shadowsEnabled) return;
 
@@ -532,12 +525,6 @@ void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uin
         std::cerr << "[SceneRenderer::mainPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
-    static bool printedOnce = false;
-    if (!printedOnce) {
-        std::cerr << "[SceneRenderer::mainPass] Entered. solidRenderer=" << (void*)solidRenderer.get()
-                  << " skyRenderer=" << (void*)skyRenderer.get() << std::endl;
-        printedOnce = true;
-    }
     if (renderSolid) {
         VkDescriptorSet brushDepthSet = getBrushDepthDescriptorSet(frameIdx);
         solidRenderer->renderDepthPrepass(commandBuffer, app, perTextureDescriptorSet, brushDepthSet);
@@ -674,7 +661,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // Cache env-var flags once at startup instead of per-frame getenv() calls
     envDisableWaterGeom = (std::getenv("VULKAN_DISABLE_WATERGEOM") != nullptr);
-    if (envDisableWaterGeom) std::cerr << "[SceneRenderer] VULKAN_DISABLE_WATERGEOM set; skipping water geometry operations" << std::endl;
 
     // Initialize the async streaming orchestrator. It is now the real transfer
     // engine: solid/water incremental chunk uploads route through it (K
@@ -756,7 +742,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     }
 
     VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(0);
-    printf("[SceneRenderer::init] mainDescriptorSet[0] = 0x%llx\n", (unsigned long long)mainDs);
 
     // Initialize sky renderer with our owned settings now that descriptor sets are ready.
     // Write Sky UBO to the static descriptor set once; all per-frame descriptor sets
@@ -775,8 +760,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             }
         }
     }
-    
-    printf("[SceneRenderer::init] Binding UBO buffers for %zu frames\n", mainUniformBuffers.size());
     
     // Bind texture arrays, shadow maps, materials, sky, water params (bindings 1-13)
     // These static bindings are written once to the static descriptor set and then
@@ -1034,8 +1017,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         wr.writeBuffer(ds, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                        waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO));
         wr.flush();
-
-        std::cerr << "[SceneRenderer::init] shadowDescriptorSet[" << fi << "] = " << (void*)ds << std::endl;
     }
 
     // Register listener so we update the main descriptor set when texture arrays are allocated later
@@ -1106,8 +1087,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     brushSolidIndirectRenderer.initSlots(app, 128,
                                          1u << 18,  // 256 KB vertex data per chunk
                                          1u << 16); // 64 KB index data per chunk
-
-    printf("[SceneRenderer::init] Initialization complete (slotted mode active)\n");
 }
 
 // Update only the static bindings (textures, materials, water params) in the
@@ -1223,8 +1202,6 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 
     // Also rewrite brush depth descriptors for all per-frame main sets
     writeBrushDepthDescriptors(app);
-
-    std::cerr << "[SceneRenderer] updateTextureDescriptorSet: updated static descriptor set and propagated to per-frame sets" << std::endl;
 }
 
 
@@ -1240,17 +1217,20 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
     std::deque<PendingMeshData> batch;
     {
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
-        // Sort by ascending distance so chunks closest to the camera are uploaded first.
-        std::sort(pendingMeshQueue.begin(), pendingMeshQueue.end(),
-            [&cameraPos](const PendingMeshData& a, const PendingMeshData& b) {
-                glm::vec3 da = cameraPos - a.nodeData.cube.getCenter();
-                glm::vec3 db = cameraPos - b.nodeData.cube.getCenter();
-                return glm::dot(da, da) < glm::dot(db, db);
-            });
-        batch.insert(batch.end(),
-                     std::make_move_iterator(pendingMeshQueue.begin()),
-                     std::make_move_iterator(pendingMeshQueue.end()));
-        pendingMeshQueue.clear();
+        size_t qsize = pendingMeshQueue.size();
+        if (qsize > 0) {
+            // Sort by ascending distance so chunks closest to the camera are uploaded first.
+            std::sort(pendingMeshQueue.begin(), pendingMeshQueue.end(),
+                [&cameraPos](const PendingMeshData& a, const PendingMeshData& b) {
+                    glm::vec3 da = cameraPos - a.nodeData.cube.getCenter();
+                    glm::vec3 db = cameraPos - b.nodeData.cube.getCenter();
+                    return glm::dot(da, da) < glm::dot(db, db);
+                });
+            batch.insert(batch.end(),
+                         std::make_move_iterator(pendingMeshQueue.begin()),
+                         std::make_move_iterator(pendingMeshQueue.end()));
+            pendingMeshQueue.clear();
+        }
     }
     // Poll pending transfers so deferred meta-buffer writes (indirect commands
     // and bounds) are published once the async transfer fence signals.
@@ -1428,7 +1408,6 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
         }
     }
 
-    //std::cerr << "[BRUSH] step=pollPendingTransfers" << std::endl;
     if (!waterRenderer) {
         std::cerr << "[BRUSH] FATAL: waterRenderer is null!" << std::endl;
         return;
@@ -1484,8 +1463,6 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
             ++idx;
             continue;
         }
-        //std::cerr << "[BRUSH] added mesh slotIdx=" << slotIdx << " for nid=" << (unsigned long long)pd.nid << std::endl;
-
         // Look up the old slot for this NodeID
         uint32_t oldSlot = UINT32_MAX;
         {
@@ -1883,7 +1860,6 @@ void SceneRenderer::generateVegetationForNode(VulkanApp* app, NodeID nid, const 
         if (grassIndices.size() < 3) {
             // No grass triangles in this chunk; ensure old chunk vegetation is cleared.
             if (std::getenv("VULKAN_DISABLE_VEGETATION")) {
-                std::cerr << "[SceneRenderer] VULKAN_DISABLE_VEGETATION set; skipping vegetation clear for node " << (unsigned long long)nid << std::endl;
                 return;
             }
             // CPU path handles the empty case (clears any previous chunk data).
