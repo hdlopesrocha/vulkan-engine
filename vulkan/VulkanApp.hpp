@@ -564,6 +564,11 @@ public:
         virtual void preRenderPass(VkCommandBuffer &commandBuffer) {} // Called after vkBeginCommandBuffer but before rendering begins
         virtual void draw(VkCommandBuffer &commandBuffer) = 0;
         virtual void clean() = 0;
+        // Called on the device-lost teardown path (cleanup() degraded branch)
+        // instead of clean(): the derived app must join/stop its CPU threads
+        // here WITHOUT touching Vulkan (any destroy would be validation-illegal
+        // while objects are still tracked in use). Default no-op.
+        virtual void stopBackgroundThreads() {}
         // Called after swapchain recreation so derived apps can resize their offscreen resources
         virtual void onSwapchainResized(uint32_t /*width*/, uint32_t /*height*/) {}
         // Called after ImGui is re-initialized (new DSL) during swapchain recreate.

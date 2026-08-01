@@ -411,6 +411,10 @@ void VulkanApp::cleanup() {
         // teardown. This includes skipping clean() (manager teardown) — any
         // non-Vulkan resources it would free are reclaimed by the OS too.
         deviceLost.store(true);
+        // Join/stop the app's CPU threads (e.g. sceneProcessThread) so no
+        // joinable std::thread survives to process exit (that would call
+        // std::terminate). Must NOT touch Vulkan.
+        stopBackgroundThreads();
         glfwTerminate();
         return;
     }

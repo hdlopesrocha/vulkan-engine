@@ -1930,6 +1930,16 @@ public:
         delete world; world = nullptr;
     }
 
+    void stopBackgroundThreads() override {
+        // Device-lost teardown path: join/stop CPU threads only, never touch
+        // Vulkan (any vkDestroy* on objects still tracked in use would trip a
+        // validation error). Mirrors the thread-stopping half of clean().
+        if (sceneProcessThread.joinable()) sceneProcessThread.join();
+        asyncThreadPool.stop();
+        if (world) world->stopPools();
+        if (sceneRenderer) sceneRenderer->stopGenPools();
+    }
+
     void onSwapchainResized(uint32_t width, uint32_t height) override {
         if (sceneRenderer) {
             sceneRenderer->onSwapchainResized(this, width, height);
