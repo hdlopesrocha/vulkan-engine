@@ -1107,7 +1107,6 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
 
 void WaterRenderer::bindCubemapWaterPipeline(VkCommandBuffer cmd,
                                              VkDescriptorSet descriptorSet0,
-                                             VkDescriptorSet materialDs,
                                              uint32_t frameIndex) {
     if (!appPtr || cubemapWaterPipeline == VK_NULL_HANDLE) return;
     if (frameIndex >= FRAMES || cubemapWaterDepthDS[frameIndex] == VK_NULL_HANDLE) return;
@@ -1120,12 +1119,6 @@ void WaterRenderer::bindCubemapWaterPipeline(VkCommandBuffer cmd,
         waterGeometryPipelineLayout, 0, 1, &descriptorSet0, 0, nullptr);
     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
         waterGeometryPipelineLayout, 0, 1, &descriptorSet0, 0, nullptr);
-    if (materialDs != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
-            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
-        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
-    }
     if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
         waterGeometryPipelineLayout, 2, 1, &cubeDs, 0, nullptr);
     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,

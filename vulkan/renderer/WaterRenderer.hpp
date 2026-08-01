@@ -87,7 +87,6 @@ public:
     // updated while a previous frame's command buffer is still pending (no UAB needed).
     void bindCubemapWaterPipeline(VkCommandBuffer cmd,
                                   VkDescriptorSet descriptorSet0,
-                                  VkDescriptorSet materialDs,
                                   uint32_t frameIndex);
 
     void renderWaterIntoCubemap(VkCommandBuffer cmd,

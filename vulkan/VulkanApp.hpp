@@ -151,8 +151,6 @@ private:
     VkDescriptorSetLayout materialDescriptorSetLayout = VK_NULL_HANDLE;
     // Descriptor set layout for brush depth textures (set=1, binding 0/1)
     VkDescriptorSetLayout brushDepthDescriptorSetLayout = VK_NULL_HANDLE;
-    // Global material descriptor set (bound once and updated when materials change)
-    VkDescriptorSet materialDescriptorSet = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     // Registered descriptor sets for runtime inspection (widgets can read these)
     std::vector<VkDescriptorSet> registeredDescriptorSets;
@@ -381,13 +379,11 @@ public:
     // allocations using `descriptorAllocMutex`. Use this to allocate from
     // shared descriptor pools across multiple threads.
     VkResult allocateDescriptorSetsThreadSafe(const VkDescriptorSetAllocateInfo* pAllocInfo, VkDescriptorSet* pDescriptorSets);
-        VkDescriptorSet createMaterialDescriptorSet();
         void updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> descriptors);
         void updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &descriptors);
         void registerDescriptorSet(VkDescriptorSet ds) { if (ds != VK_NULL_HANDLE) registeredDescriptorSets.push_back(ds); }
         const std::vector<VkDescriptorSet>& getRegisteredDescriptorSets() const { return registeredDescriptorSets; }
         VkDescriptorSetLayout getMaterialDescriptorSetLayout() const { return materialDescriptorSetLayout; }
-        VkDescriptorSet getMaterialDescriptorSet() const { return materialDescriptorSet; }
         VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
         VkDescriptorSet getStaticDescriptorSet() const { return staticDescriptorSet; }
         VkDescriptorSetLayout getBrushDepthDescriptorSetLayout() const { return brushDepthDescriptorSetLayout; }

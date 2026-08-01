@@ -547,7 +547,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         // so no layout transition is needed. Only when water rendering is enabled (settings.waterEnabled);
         // otherwise the cubemap reflects solids only and the preview will not show stale water.
         if (renderWater && waterRenderer && waterRenderer->getCubemapWaterPipeline() != VK_NULL_HANDLE) {
-            waterRenderer->bindCubemapWaterPipeline(cmd, mainDescriptorSet, app->getMaterialDescriptorSet(), frameIndex);
+            waterRenderer->bindCubemapWaterPipeline(cmd, mainDescriptorSet, frameIndex);
             waterRenderer->renderWaterIntoCubemap(cmd,
                 cube360FaceViews[face], cube360DepthViews[face],
                 CUBE360_FACE_SIZE,

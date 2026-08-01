@@ -3715,11 +3715,6 @@ VkResult VulkanApp::allocateDescriptorSetsThreadSafe(const VkDescriptorSetAlloca
     return res;
 }
 
-VkDescriptorSet VulkanApp::createMaterialDescriptorSet() {
-    if (materialDescriptorSetLayout == VK_NULL_HANDLE) return VK_NULL_HANDLE;
-    return createDescriptorSet(materialDescriptorSetLayout);
-}
-
 void VulkanApp::updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &descriptors) {
     // Filter out any writes that would pass VK_NULL_HANDLE for buffer or image
     // (some callers may attempt to update before resources are allocated).

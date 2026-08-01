@@ -932,7 +932,7 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
         if (sceneRenderer) {
-            sceneRenderer->shadowPass(this, commandBuffer, getMainDescriptorSet(), frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled);
+            sceneRenderer->shadowPass(this, commandBuffer, frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled);
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 1);
@@ -1513,7 +1513,6 @@ public:
                                             ind,
                                             this->sceneRenderer->waterRenderer->getWaterGeometryPipelineLayout(),
                                             app->getMainDescriptorSet(),
-                                            app->getMaterialDescriptorSet(),
                                             asyncWaterDs,
                                             (computeDs != VK_NULL_HANDLE) ? taskCompact.buffer : VK_NULL_HANDLE,
                                             (computeDs != VK_NULL_HANDLE) ? taskVisible.buffer : VK_NULL_HANDLE);

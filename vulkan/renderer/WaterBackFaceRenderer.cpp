@@ -287,7 +287,7 @@ void WaterBackFaceRenderer::destroyRenderTargets(VulkanApp* app) {
 
 void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                                               IndirectRenderer& indirect, VkPipelineLayout pipelineLayout,
-                                              VkDescriptorSet mainDs, VkDescriptorSet materialDs, VkDescriptorSet sceneDs,
+                                              VkDescriptorSet mainDs, VkDescriptorSet sceneDs,
                                               VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (backFacePipeline == VK_NULL_HANDLE) return;

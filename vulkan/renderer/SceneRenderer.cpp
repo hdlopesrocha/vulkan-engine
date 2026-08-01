@@ -337,7 +337,7 @@ SceneRenderer::~SceneRenderer() {
     // VulkanApp instance.
 }
 
-void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, uint32_t frameIdx, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool renderSolid, bool vegetationEnabled, bool shadowTessellationEnabled) {
+void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool renderSolid, bool vegetationEnabled, bool shadowTessellationEnabled) {
     static bool firstCall = true;
     if (firstCall) {
         firstCall = false;
