@@ -399,6 +399,22 @@ void VulkanApp::cleanup() {
         }
     }
 
+    if (isDeviceLost) {
+        // Device-lost teardown: every object may still be referenced by
+        // cancelled-but-unfinished queue work, and the validation layer keeps
+        // tracking such objects as in use, so ANY vkDestroy* would emit an
+        // in-use VUID (e.g. VUID-vkDestroySemaphore-semaphore-05149,
+        // VUID-vkDestroyFence-fence-01120). Destroying the device while objects
+        // are outstanding would emit VUID-vkDestroyDevice-device-05137 instead.
+        // The only validation-clean option is to destroy NOTHING: the process
+        // is exiting and the OS/driver reclaim all resources at process
+        // teardown. This includes skipping clean() (manager teardown) — any
+        // non-Vulkan resources it would free are reclaimed by the OS too.
+        deviceLost.store(true);
+        glfwTerminate();
+        return;
+    }
+
     // Allow the derived app to release manager-owned Vulkan resources now while
     // the device, descriptor pools and command pool are still valid. This
     // ensures per-manager destructors can call Vulkan destroy functions (or
@@ -438,14 +454,50 @@ void VulkanApp::cleanup() {
         // (m_extraWaitSemaphores). The frame-signal semaphores are now released
         // via deferDestroyUntilFence on the binary frame fence, which fires during
         // processPendingCommandBuffers() above. deviceWaitIdle() earlier guarantees
-        // the GPU is finished with them, so destroying now is safe and prevents
-        // the VUID-vkDestroyDevice-device-05137 leak.
+        // the GPU has FINISHED the signal operations — but that alone does not
+        // make destruction legal: a binary semaphore whose signal was never
+        // consumed by a wait must not be destroyed
+        // (VUID-vkDestroySemaphore-semaphore-05149). A binary semaphore's
+        // signaled state can only be consumed by a QUEUE wait — vkWaitSemaphores()
+        // is illegal for binary semaphores, accepting only timeline semaphores
+        // (VUID-VkSemaphoreWaitInfo-pSemaphores-03256) — so submit ONE empty
+        // drain batch on the graphics queue that waits on every leftover
+        // semaphore, then idle the queue. Because the signal operations have
+        // already completed, the drain completes instantly. Each semaphore may
+        // appear at most once in a single submit's wait list
+        // (VUID-VkSubmitInfo2-pWaitSemaphores-02637), so dedupe first.
         if (!isDeviceLost && device != VK_NULL_HANDLE) {
+            bool drainOk = true;
+            std::vector<VkSemaphoreSubmitInfo> drainWaits;
+            drainWaits.reserve(m_extraWaitSemaphores.size());
             for (auto &e : m_extraWaitSemaphores) {
-                if (e.first != VK_NULL_HANDLE) {
-                    resources.removeSemaphore(e.first);
-                    vkDestroySemaphore(device, e.first, nullptr);
+                if (e.first == VK_NULL_HANDLE) continue;
+                bool seen = false;
+                for (auto &w : drainWaits)
+                    if (w.semaphore == e.first) { seen = true; break; }
+                if (seen) continue;
+                VkSemaphoreSubmitInfo w{};
+                w.sType     = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+                w.semaphore = e.first;
+                w.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                drainWaits.push_back(w);
+            }
+            if (!drainWaits.empty() && graphicsQueue != VK_NULL_HANDLE) {
+                VkSubmitInfo2 si{};
+                si.sType                   = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+                si.waitSemaphoreInfoCount  = (uint32_t)drainWaits.size();
+                si.pWaitSemaphoreInfos     = drainWaits.data();
+                if (vkQueueSubmit2(graphicsQueue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
+                    std::cerr << "[VulkanApp] cleanup: drain submit on leftover extra semaphores failed; skipping destroys (degraded shutdown)" << std::endl;
+                    drainOk = false;
+                } else {
+                    vkQueueWaitIdle(graphicsQueue);
                 }
+            }
+            for (auto &e : m_extraWaitSemaphores) {
+                if (e.first == VK_NULL_HANDLE) continue;
+                resources.removeSemaphore(e.first);
+                if (drainOk) vkDestroySemaphore(device, e.first, nullptr);
             }
         }
         m_extraWaitSemaphores.clear();
@@ -4451,9 +4503,19 @@ void VulkanApp::drawFrame() {
     waitSemaphoreInfos.push_back(initialWait);
 
     // Pull extra semaphores signaled by async generation submissions (if any)
+    std::vector<std::pair<VkSemaphore, VkPipelineStageFlags2>> consumedExtraWaits;
     {
         std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
-        for (auto &e : m_extraWaitSemaphores) {
+        if (!m_extraWaitSemaphores.empty()) {
+            // Detach the pending extra waits from the member list. They are
+            // consumed as wait points by THIS submit below; if this frame then
+            // bails out before submitting (abortFrameFence), they are pushed
+            // back so a later submit (or the shutdown sweep) still consumes
+            // their signal before destruction (VUID-vkDestroySemaphore-semaphore-05149).
+            consumedExtraWaits = std::move(m_extraWaitSemaphores);
+            m_extraWaitSemaphores.clear();
+        }
+        for (auto &e : consumedExtraWaits) {
             VkSemaphoreSubmitInfo extraWait{};
             extraWait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
             extraWait.semaphore = e.first;
@@ -4471,8 +4533,8 @@ void VulkanApp::drawFrame() {
         // see KhronosGroup/Vulkan-ValidationLayers#4968 / #8461) spuriously
         // times out on that query, and the binary fence is the reliable,
         // validation-clean signal on all drivers.
-        if (!m_extraWaitSemaphores.empty()) {
-            for (auto &e : m_extraWaitSemaphores) {
+        if (!consumedExtraWaits.empty()) {
+            for (auto &e : consumedExtraWaits) {
                 VkSemaphore s = e.first;
                 deferDestroyUntilFence(frameFence, [this, s]() {
                     if (s != VK_NULL_HANDLE) {
@@ -4481,9 +4543,35 @@ void VulkanApp::drawFrame() {
                     }
                 });
             }
-            m_extraWaitSemaphores.clear();
         }
     }
+
+    // If recording or submission fails after the extra waits were consumed, this
+    // frame will not submit its fresh fence. Undo the consumption: re-register
+    // the extra semaphores (their signal operations may still be pending on the
+    // GPU — destroying them now would violate VUID-vkDestroySemaphore-semaphore-05149),
+    // drop the deferred destroys gated on the never-submitted fence, destroy the
+    // fence itself, and null the frame slot so the next frame does not wait on a
+    // fence that will never signal (shutdown hang).
+    auto abortFrameFence = [&]() {
+        std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
+        for (auto &e : consumedExtraWaits) {
+            if (e.first != VK_NULL_HANDLE) m_extraWaitSemaphores.push_back(e);
+        }
+        consumedExtraWaits.clear();
+        for (auto it = m_deferredDestroys.begin(); it != m_deferredDestroys.end();) {
+            if (it->first == frameFence) it = m_deferredDestroys.erase(it);
+            else ++it;
+        }
+        if (resources.find((uintptr_t)frameFence).has_value()) {
+            resources.removeFence(frameFence);
+            vkDestroyFence(device, frameFence, nullptr);
+        }
+        // The previous fence for this slot (if any) was already waited on above
+        // and is released by its own deferred callback; clearing the slot only
+        // drops the (never-submitted) fence handle and the stale reference.
+        inFlightFences[currentFrame] = VK_NULL_HANDLE;
+    };
 
     // GPU-side timeline wait: if a previous frame is still using this swapchain
     // image, wait for its frameTimeline value before writing.  This provides a
@@ -4543,9 +4631,11 @@ void VulkanApp::drawFrame() {
         resetCmdResult = vkResetCommandPool(device, frameCommandPools[imageIndex], 0);
     }
     if (resetCmdResult == VK_ERROR_DEVICE_LOST) {
+        abortFrameFence();
         return;
     } else if (resetCmdResult != VK_SUCCESS) {
         std::cerr << "vkResetCommandPool failed: " << resetCmdResult << std::endl;
+        abortFrameFence();
         return;
     }
 
@@ -4556,6 +4646,7 @@ void VulkanApp::drawFrame() {
     VkResult beginCmdResult = vkBeginCommandBuffer(commandBuffer, &beginInfo);
     if (beginCmdResult != VK_SUCCESS) {
         std::cerr << "vkBeginCommandBuffer failed: " << beginCmdResult << std::endl;
+        abortFrameFence();
         return;
     }
 
@@ -4662,6 +4753,7 @@ void VulkanApp::drawFrame() {
     VkResult endCmdResult = vkEndCommandBuffer(commandBuffer);
     if (endCmdResult != VK_SUCCESS) {
         std::cerr << "vkEndCommandBuffer failed: " << endCmdResult << std::endl;
+        abortFrameFence();
         return;
     }
 
@@ -4714,9 +4806,11 @@ void VulkanApp::drawFrame() {
     if (r == VK_ERROR_DEVICE_LOST) {
         std::cerr << "[drawFrame] vkQueueSubmit2 returned VK_ERROR_DEVICE_LOST (submitId=" << submitId << ")" << std::endl;
         deviceLost.store(true);
+        abortFrameFence();
         return;
     } else if (r != VK_SUCCESS) {
         std::cerr << "[drawFrame] vkQueueSubmit2 failed: " << r << " (submitId=" << submitId << ")" << std::endl;
+        abortFrameFence();
         return;
     }
 
@@ -5420,25 +5514,36 @@ GLFWwindow* VulkanApp::getWindow() {
 
 
 void VulkanApp::run() {
-    initWindow();
-    initVulkan();
-
-    // Fonts are now loaded — render one frame showing the loading screen before
-    // the (potentially slow) setup() call so the user sees something immediately.
-    isLoading = true;
-    glfwPollEvents();
-    drawFrame();
-
-    setup();
-    isLoading = false;
-
+    // initWindow/initVulkan/setup() may throw (e.g. no suitable GPU, missing
+    // resources). cleanup() must still run so the partially created device and
+    // instance are torn down instead of leaking. The mainLoop catch blocks are
+    // kept as before; any exception escaping them is caught by the outer try.
     try {
-        mainLoop();
+        initWindow();
+        initVulkan();
+
+        // Fonts are now loaded — render one frame showing the loading screen before
+        // the (potentially slow) setup() call so the user sees something immediately.
+        isLoading = true;
+        glfwPollEvents();
+        drawFrame();
+
+        setup();
+        isLoading = false;
+
+        try {
+            mainLoop();
+        } catch (const std::exception& e) {
+            fprintf(stderr, "[VulkanApp] mainLoop threw: %s, proceeding with cleanup\n", e.what());
+        } catch (...) {
+            std::type_info* ti = abi::__cxa_current_exception_type();
+            fprintf(stderr, "[VulkanApp] mainLoop threw unknown exception (type=%s), proceeding with cleanup\n", ti ? ti->name() : "null");
+        }
     } catch (const std::exception& e) {
-        fprintf(stderr, "[VulkanApp] mainLoop threw: %s, proceeding with cleanup\n", e.what());
+        fprintf(stderr, "[VulkanApp] setup threw: %s, proceeding with cleanup\n", e.what());
     } catch (...) {
         std::type_info* ti = abi::__cxa_current_exception_type();
-        fprintf(stderr, "[VulkanApp] mainLoop threw unknown exception (type=%s), proceeding with cleanup\n", ti ? ti->name() : "null");
+        fprintf(stderr, "[VulkanApp] setup threw unknown exception (type=%s), proceeding with cleanup\n", ti ? ti->name() : "null");
     }
     cleanup();
 }

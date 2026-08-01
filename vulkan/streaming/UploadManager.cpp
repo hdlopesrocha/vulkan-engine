@@ -8,6 +8,37 @@
 #include <cstring>
 #include <vector>
 
+namespace {
+
+// A binary semaphore's signaled state can only be consumed by a QUEUE wait:
+// vkWaitSemaphores() accepts only timeline semaphores
+// (VUID-VkSemaphoreWaitInfo-pSemaphores-03256). Submit an empty drain batch
+// whose wait list contains the semaphore, then idle the queue. All signal
+// operations have already completed (their fences signaled) before this runs,
+// so the drain batch completes instantly. Returns true when the signal was
+// consumed and the semaphore is safe to destroy. On queue-submit failure (e.g.
+// device lost) the semaphore may still be referenced by an in-flight batch:
+// destroying it would violate VUID-vkDestroySemaphore-semaphore-05149, so the
+// caller must NOT destroy it (a leak at teardown is acceptable — the OS
+// reclaims everything when the process exits).
+static bool consumeBinarySignal(VkDevice dev, VkQueue queue, VkSemaphore sem) {
+    if (sem == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) return false;
+    VkSemaphoreSubmitInfo wait{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+    wait.semaphore = sem;
+    wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkSubmitInfo2 si{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+    si.waitSemaphoreInfoCount = 1;
+    si.pWaitSemaphoreInfos = &wait;
+    if (vkQueueSubmit2(queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
+        std::cerr << "[UploadManager] consumeBinarySignal: drain submit failed; skipping semaphore destroy (degraded shutdown)" << std::endl;
+        return false;
+    }
+    vkQueueWaitIdle(queue);
+    return true;
+}
+
+} // namespace
+
 namespace streaming {
 
 // ----------------------------------------------------------------------------
@@ -238,7 +269,24 @@ void UploadManager::processUploads() {
             if (s.signalSem != VK_NULL_HANDLE && !s.waitRegistered) {
                 VkSemaphore ss = s.signalSem;
                 app_->deferDestroyUntilAllPending(
-                    [ss, dev = device_]() { vkDestroySemaphore(dev, ss, nullptr); });
+                    [ss, dev = device_, uploadQueue = queue_]() {
+                        // The upload fence has signaled (isComplete() above), so
+                        // this binary semaphore's signal operation has completed
+                        // on the GPU. A binary semaphore's signaled state can
+                        // only be consumed by a QUEUE wait: vkWaitSemaphores() is
+                        // illegal for binary semaphores — it accepts only timeline
+                        // semaphores (VUID-VkSemaphoreWaitInfo-pSemaphores-03256).
+                        // We therefore submit an empty drain batch on the upload
+                        // queue that waits on the semaphore and idle the queue;
+                        // because the signal already completed, the drain
+                        // completes instantly and destroying the semaphore is
+                        // legal (VUID-vkDestroySemaphore-semaphore-05149). If the
+                        // drain submit fails (device lost), the semaphore may still
+                        // be referenced by a cancelled batch — skip the destroy
+                        // (leak at teardown; the OS reclaims it).
+                        if (consumeBinarySignal(dev, uploadQueue, ss))
+                            vkDestroySemaphore(dev, ss, nullptr);
+                    });
                 s.signalSem = VK_NULL_HANDLE;
             }
             staging_.reset(s);
@@ -323,7 +371,24 @@ void UploadManager::destroy() {
         //  - unregistered → the app never learned about it; destroy it here (the
         //    fences above guarantee the GPU is done with it).
         if (s.signalSem != VK_NULL_HANDLE) {
-            if (!s.waitRegistered) vkDestroySemaphore(device_, s.signalSem, nullptr);
+            if (!s.waitRegistered) {
+                // The fence waits above guarantee the signal operation has
+                // completed, but the signal state was never consumed by a wait
+                // (this slot was never registered with the frame submit). A
+                // binary semaphore's signaled state can only be consumed by a
+                // QUEUE wait: vkWaitSemaphores() is illegal for binary
+                // semaphores — it accepts only timeline semaphores
+                // (VUID-VkSemaphoreWaitInfo-pSemaphores-03256). Drain the
+                // upload queue with an empty batch waiting on the semaphore and
+                // idle it; the drain completes instantly because the signal
+                // already completed, making destruction legal
+                // (VUID-vkDestroySemaphore-semaphore-05149). If the drain
+                // submit fails (device lost), the semaphore may still be
+                // referenced by a cancelled batch — skip the destroy (leak at
+                // teardown; the OS reclaims it).
+                if (consumeBinarySignal(device_, queue_, s.signalSem))
+                    vkDestroySemaphore(device_, s.signalSem, nullptr);
+            }
             s.signalSem = VK_NULL_HANDLE;
         }
     }
