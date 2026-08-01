@@ -197,14 +197,12 @@ public:
     // with addMesh(). Used for sizing external compact buffers (e.g. cubemap).
     size_t getMeshCapacity() const { return meshCapacity; }
 
-    // Get count of active meshes
+    // Get count of active meshes (memoized: recomputed under the same mutex
+    // only after a meshes mutation, so per-frame stats/sizing calls do not
+    // scan the whole map).
     size_t getMeshCount() const {
         std::lock_guard<std::recursive_mutex> lock(mutex);
-        size_t count = 0;
-        for (const auto& m : meshes) {
-            if (m.second.active) ++count;
-        }
-        return count;
+        return activeMeshCountLocked();
     }
     // Total merged vertex/index counts (used for capacity planning)
     size_t getMergedVertexCount() const;
@@ -247,6 +245,13 @@ private:
     // where transfers may complete out of order, so the contiguous
     // append-only watermark (doUploadMeshMetaBuffers) cannot be used.
     void publishMeshMeta(uint32_t meshId);
+    // Unlocked — caller must hold `mutex`. Memoized active-mesh count;
+    // recomputed (full scan) only after any meshes mutation.
+    size_t activeMeshCountLocked() const;
+    // Unlocked — caller must hold `mutex`. Number of draw commands (slots)
+    // to cull: fixed slot pool capacity in slotted mode, active mesh count
+    // in legacy mode.
+    uint32_t getCullDispatchCountLocked() const;
 
     // ── Slotted-mode internals ──
     // Copy vertex/index data from a Geometry into the pre-reserved slot
@@ -268,6 +273,11 @@ private:
     std::vector<std::function<void()>> deferredUploadCallbacks_;
     uint32_t nextId = 1;
     std::unordered_map<uint32_t, MeshInfo> meshes; // chunkId -> MeshInfo
+    // Memoized active-mesh count backing getMeshCount()/dispatch-count reads.
+    // Invalidated by every mutation of `meshes` (all under `mutex`), so the
+    // cached value always equals a fresh full scan.
+    mutable bool activeMeshCountDirty_ = true;
+    mutable size_t activeMeshCount_ = 0;
 
     // CPU-side combined buffers
     std::vector<Vertex> mergedVertices;

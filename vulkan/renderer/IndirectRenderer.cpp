@@ -11,18 +11,29 @@
 #include <cstring>
 #include <iostream>
 
-// Returns the number of draw commands (slots) to cull in the current mode.
-// In slotted mode this is the total slot capacity; in legacy mode it's the
-// active mesh count.
-static uint32_t getCullDispatchCount(const std::unordered_map<uint32_t, IndirectRenderer::MeshInfo>& meshes,
-                                     const SlotAllocator& slotAlloc, bool slottedMode)
-{
+// Unlocked — caller must hold `mutex`. Memoized active-mesh count; recomputed
+// (full scan) only after any meshes mutation. All mutation sites set
+// activeMeshCountDirty_ under the same lock, so the memoized value always
+// equals a fresh scan — no behavior change vs. iterating on every call.
+size_t IndirectRenderer::activeMeshCountLocked() const {
+    if (activeMeshCountDirty_) {
+        activeMeshCount_ = 0;
+        for (const auto& kv : meshes) {
+            if (kv.second.active) ++activeMeshCount_;
+        }
+        activeMeshCountDirty_ = false;
+    }
+    return activeMeshCount_;
+}
+
+// Unlocked — caller must hold `mutex`. Returns the number of draw commands
+// (slots) to cull in the current mode. In slotted mode this is the total
+// slot pool capacity; in legacy mode it's the active mesh count.
+uint32_t IndirectRenderer::getCullDispatchCountLocked() const {
     if (slottedMode) {
         return slotAlloc.capacity();
     }
-    uint32_t count = 0;
-    for (const auto& kv : meshes) if (kv.second.active) ++count;
-    return count;
+    return static_cast<uint32_t>(activeMeshCountLocked());
 }
 
 void IndirectRenderer::publishPendingTransfer(VulkanApp* app) {
@@ -171,6 +182,7 @@ void IndirectRenderer::init() {
 
 void IndirectRenderer::cleanup() {
     meshes.clear();
+    activeMeshCountDirty_ = true;
     vertexBuffer = {};
     indexBuffer = {};
     for (auto& b : vertexSlots) b = {};
@@ -239,6 +251,7 @@ uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
     indirectCommands.push_back(cmd);
 
     meshes[m.id] = m; // insert or replace
+    activeMeshCountDirty_ = true; // active set may have changed
     dirty = true;     // adding a mesh always requires a rebuild
 
     return customId;
@@ -253,12 +266,14 @@ void IndirectRenderer::removeMesh(uint32_t meshId) {
     auto it = meshes.find(meshId);
     if (it == meshes.end()) return;
     it->second.active = false;
+    activeMeshCountDirty_ = true;
     dirty = true;
 }
 
 void IndirectRenderer::removeAllMeshes() {
     std::lock_guard<std::recursive_mutex> guard(mutex);
     meshes.clear();
+    activeMeshCountDirty_ = true;
     metaBuffersWrittenCount = 0;
     dirty = true;
 
@@ -1349,14 +1364,20 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     if (cmdState) cmdState->bindComputeDescriptorSets(cmd, computePipelineLayout, 0, 1, &descSet, 0, nullptr);
     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &descSet, 0, nullptr);
     uint32_t numCmds = 0;
-    uint32_t activeInMeshes = 0;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex);
-        numCmds = getCullDispatchCount(meshes, slotAlloc, slottedMode);
-        for (const auto& kv : meshes) if (kv.second.active) ++activeInMeshes;
+        numCmds = getCullDispatchCountLocked();
     }
     // Fast return if nothing to cull — avoids touching the pipeline at all
     if (numCmds == 0) {
+        // Count active meshes only on this rare path (used by the warn-once
+        // printf below); avoids a full-map scan on every frame in the common
+        // cull path. Same value as a scan: memoized under the same mutex.
+        uint32_t activeInMeshes = 0;
+        {
+            std::lock_guard<std::recursive_mutex> lock(mutex);
+            activeInMeshes = static_cast<uint32_t>(activeMeshCountLocked());
+        }
         static bool warned = false;
         if (!warned) { printf("[IR::prepareCull] EARLY RETURN: active=%u numCmds=%u slotted=%d\n", activeInMeshes, numCmds, (int)slottedMode); warned = true; }
         return;
@@ -1490,7 +1511,7 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     uint32_t numCmds = 0;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex);
-        numCmds = getCullDispatchCount(meshes, slotAlloc, slottedMode);
+        numCmds = getCullDispatchCountLocked();
     }
     // Fast return if nothing to cull — avoids touching the pipeline at all
     if (numCmds == 0) return;
@@ -2049,6 +2070,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
 
     // Store in mesh map
     meshes[chunkId] = m;
+    activeMeshCountDirty_ = true; // new or resurrected entry
 
     // Zero GPU indirect and bounds for this slot immediately, so the GPU
     // cull shader never sees stale/garbage data during the window between
@@ -2124,6 +2146,7 @@ void IndirectRenderer::updateMeshSlotted(uint32_t slotIndex, const Geometry& mes
 
     // Copy geometry data into the pre-reserved slot
     copyGeometryToSlot(mesh, slotIndex);
+    activeMeshCountDirty_ = true; // conservative: entry contents changed
 }
 
 void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
@@ -2136,6 +2159,7 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
     for (auto it = meshes.begin(); it != meshes.end(); ) {
         if (it->second.active && it->second.slotIndex == slotIndex) {
             it->second.active = false;
+            activeMeshCountDirty_ = true;
             break;
         } else {
             ++it;
@@ -2341,6 +2365,7 @@ uint32_t IndirectRenderer::installProxy(VulkanApp* app, std::unique_ptr<RenderPr
         }
 
         meshes[proxy->chunkId] = m;
+        activeMeshCountDirty_ = true;
 
         // Write meta (indirect + bounds) to the host-visible GPU buffers
         writeSlotMeta(slotIdx, m);
@@ -2601,7 +2626,7 @@ void IndirectRenderer::prepareCullCascades(VkCommandBuffer cmd,
     uint32_t numCmds = 0;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex);
-        numCmds = getCullDispatchCount(meshes, slotAlloc, slottedMode);
+        numCmds = getCullDispatchCountLocked();
     }
 
     // Barrier: fill → compute + indirect draw (compact + count buffers).
