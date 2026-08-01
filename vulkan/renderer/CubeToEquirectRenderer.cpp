@@ -134,12 +134,18 @@ void CubeToEquirectRenderer::createDescriptorResources(VulkanApp* app, VkSampler
         cube360EquirectSampleDescriptorSet = app->createDescriptorSet(cube360EquirectDescriptorSetLayout);
     }
 
+    // Cache the last-written (sampler, cubeMapView) pair: the widget preview
+    // calls render() every frame with unchanged resources, so skip the flush.
+    if (sampler == lastSampler && cubeMapView == lastCubeMapView) return;
+
     DescriptorWriter(app->getDevice())
         .writeImage(cube360EquirectSampleDescriptorSet, 0,
                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                     sampler, cubeMapView,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
         .flush();
+    lastSampler = sampler;
+    lastCubeMapView = cubeMapView;
 }
 
 void CubeToEquirectRenderer::ensureResources(VulkanApp* app) {

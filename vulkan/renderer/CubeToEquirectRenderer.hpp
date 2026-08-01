@@ -31,6 +31,9 @@ private:
     TrackedHandle<VkShaderModule> cube360EquirectFragModule;
     TrackedHandle<VkDescriptorSetLayout> cube360EquirectDescriptorSetLayout;
     TrackedHandle<VkDescriptorSet> cube360EquirectSampleDescriptorSet;
+    // Cache of the last-written (sampler, view) pair; skip the descriptor flush when unchanged
+    VkSampler lastSampler = VK_NULL_HANDLE;
+    VkImageView lastCubeMapView = VK_NULL_HANDLE;
 
     static constexpr uint32_t EQ_WIDTH = 1024;
     static constexpr uint32_t EQ_HEIGHT = 512;

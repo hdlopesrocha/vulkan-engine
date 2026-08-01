@@ -40,7 +40,12 @@ void TextureViewer::render() {
     ImGui::Text("Use the tabs below to pick Albedo / Normal / Height thumbnails.");
     ImGui::Separator();
 
-    std::string tabBarId = std::string("tabs_") + std::to_string(currentIndex);
+    static std::string tabBarId;
+    static size_t tabBarIdIndex = static_cast<size_t>(-1);
+    if (tabBarIdIndex != currentIndex) {
+        tabBarIdIndex = currentIndex;
+        tabBarId = std::string("tabs_") + std::to_string(currentIndex);
+    }
     if (ImGui::BeginTabBar(tabBarId.c_str())) {
         const float previewSize = 256.0f; // 25% of previous size
         if (ImGui::BeginTabItem("Albedo")) {

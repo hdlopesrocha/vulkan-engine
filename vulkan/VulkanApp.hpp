@@ -623,6 +623,8 @@ public:
         // Kept in lockstep with m_pendingCommandBuffers under m_submissionMutex.
         std::unordered_set<VkCommandBuffer> m_pendingCommandBuffersSet;
 
+        mutable std::vector<MemoryHeapBudget> m_memoryBudgetScratch;
+
 };
 
 // ImGui integration glue: backend can call these to route submits through the

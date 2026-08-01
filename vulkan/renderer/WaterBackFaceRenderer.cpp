@@ -53,7 +53,11 @@ void WaterBackFaceRenderer::createDummyDepthView(VulkanApp* app) {
     VkCommandBufferBeginInfo bi{};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &bi);
+    if (vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) {
+        std::cerr << "[WaterBackFaceRenderer] Failed to begin command buffer for dummy depth setup" << std::endl;
+        app->freeCommandBuffer(cmd);
+        return;
+    }
 
     // UNDEFINED → TRANSFER_DST
     app->recordTransitionImageLayoutLayer(cmd, dummyDepthImage, VK_FORMAT_D32_SFLOAT,

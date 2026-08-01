@@ -4190,8 +4190,8 @@ bool VulkanApp::isResourceRegistered(uintptr_t handle) const {
 }
 
 std::vector<VulkanApp::MemoryHeapBudget> VulkanApp::getMemoryBudgets() const {
-    std::vector<MemoryHeapBudget> result;
-    if (!physicalDevice) return result;
+    m_memoryBudgetScratch.clear();
+    if (!physicalDevice) return m_memoryBudgetScratch;
 
     // Chain VkPhysicalDeviceMemoryBudgetPropertiesEXT into VkPhysicalDeviceMemoryProperties2
     VkPhysicalDeviceMemoryBudgetPropertiesEXT budgetProps{};
@@ -4209,9 +4209,9 @@ std::vector<VulkanApp::MemoryHeapBudget> VulkanApp::getMemoryBudgets() const {
         hb.size   = memProps2.memoryProperties.memoryHeaps[i].size;
         hb.usage  = budgetProps.heapUsage[i];
         hb.budget = budgetProps.heapBudget[i];
-        result.push_back(hb);
+        m_memoryBudgetScratch.push_back(hb);
     }
-    return result;
+    return m_memoryBudgetScratch;
 }
 
 Buffer VulkanApp::createIndexBuffer(const std::vector<uint> &indices) {

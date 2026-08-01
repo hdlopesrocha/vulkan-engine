@@ -209,7 +209,10 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
     if (waterDepthDescriptorPool != VK_NULL_HANDLE && app) {
         VkResult r = app->queueWaitIdle();
         if (r == VK_SUCCESS) {
-            vkResetDescriptorPool(device, waterDepthDescriptorPool, 0);
+            VkResult resetResult = vkResetDescriptorPool(device, waterDepthDescriptorPool, 0);
+            if (resetResult != VK_SUCCESS) {
+                std::cerr << "[WaterRenderer] Failed to reset water depth descriptor pool (result=" << (int)resetResult << ")" << std::endl;
+            }
         } else {
             std::cerr << "[WaterRenderer] Skipping descriptor pool reset: graphics queue not idle (result=" << (int)r << ")" << std::endl;
         }
