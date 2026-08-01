@@ -942,6 +942,7 @@ void VulkanApp::createCommandPool() {
 
     // initialize async bookkeeping containers (m_submissionMutex guards all)
     m_pendingCommandBuffers.clear();
+    m_pendingCommandBuffersSet.clear();
     m_extraWaitSemaphores.clear();
 }
 
@@ -1201,7 +1202,8 @@ VkResult VulkanApp::deviceWaitIdle() {
 
 void VulkanApp::waitForFrameFences() {
     // Copy current in-flight fences under graphicsSubmitMutex then wait on them.
-    std::vector<VkFence> fences;
+    // thread_local: callable from worker threads (VegetationRenderer) too.
+    static thread_local std::vector<VkFence> fences;
     {
         std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
         fences = inFlightFences;
@@ -1443,7 +1445,15 @@ void VulkanApp::processPendingCommandBuffers() {
     // queue's submit mutex and is blocked waiting for m_submissionMutex would
     // deadlock against the main thread parked in vkQueueWaitIdle. See below for
     // how the collected closures are flushed after each guarded section.
-    std::vector<std::function<void()>> deferredToRun;
+    // Reusable per-call scratch buffers. processPendingCommandBuffers may run
+    // on worker threads (throttleIfTooManyPending -> waitForAllPendingCommandBuffers
+    // is reached from async submits), so these are thread_local; clear() retains
+    // capacity across calls. No deferred-destroy callback re-enters this
+    // function, so reuse is safe.
+    static thread_local std::vector<std::function<void()>> deferredToRun;
+    static thread_local std::vector<std::pair<VkCommandBuffer, VkFence>> toFree;
+    deferredToRun.clear();
+    toFree.clear();
     {
         std::lock_guard<std::recursive_mutex> dd(m_submissionMutex);
         for (auto it = m_deferredDestroys.begin(); it != m_deferredDestroys.end(); ) {
@@ -1502,7 +1512,6 @@ void VulkanApp::processPendingCommandBuffers() {
     // process up to `MAX_PENDING_FREE_PER_FRAME` signaled entries per-frame. If a
     // very large number of signaled entries appears at once, fall back to processing
     // them all to avoid allowing growth to spiral out of control.
-    std::vector<std::pair<VkCommandBuffer, VkFence>> toFree;
     {
         std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
         for (auto it = m_pendingCommandBuffers.begin(); it != m_pendingCommandBuffers.end(); ) {
@@ -1520,6 +1529,7 @@ void VulkanApp::processPendingCommandBuffers() {
             }
             if (signaledOrGone) {
                 toFree.emplace_back(cmd, fence);
+                m_pendingCommandBuffersSet.erase(cmd);
                 it = m_pendingCommandBuffers.erase(it);
             } else {
                 ++it;
@@ -1599,7 +1609,11 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
     // finishes executing. Only this command buffer's own pending entries
     // are considered (other command buffers' entries are only safe to apply
     // when those buffers complete, via processPendingCommandBuffers).
-    std::unordered_map<uint64_t, VkImageLayout> latest;
+    // Thread-local scratch: preApply runs from worker-thread async submits
+    // concurrently with the main-thread drawFrame path, so a shared member
+    // would race; clear() retains capacity across calls.
+    static thread_local std::unordered_map<uint64_t, VkImageLayout> latest;
+    latest.clear();
 
     {
         std::lock_guard<std::mutex> plk(pendingLayoutMutex);
@@ -1627,20 +1641,17 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
     if (latest.empty()) return;
 
 
-    // Apply the collected latest updates into the authoritative map,
-    // but first log each image/layer with its previous tracked layout.
+    // Apply the collected latest updates into the authoritative map.
     std::lock_guard<std::mutex> lk(imageLayoutMutex);
     for (const auto &p : latest) {
-        uint64_t key = p.first;
-        VkImage image = (VkImage)(uintptr_t)(key >> 32);
-        auto entry = resources.find((uintptr_t)image);
-        std::string desc = entry ? entry->desc : std::string("(unknown)");
         imageLayerLayouts[p.first] = p.second;
     }
 }
 
 void VulkanApp::waitForAllPendingCommandBuffers() {
-    std::vector<VkFence> fences;
+    // thread_local: this may run on worker threads (throttleIfTooManyPending).
+    static thread_local std::vector<VkFence> fences;
+    fences.clear();
     {
         std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
         fences.reserve(m_pendingCommandBuffers.size());
@@ -1734,20 +1745,20 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
 
         // Double-use validation: check if this command buffer is already pending
+        // (O(1) membership test against the pending-set mirror; the linear
+        // scan over m_pendingCommandBuffers was a per-submission hot spot).
         {
             std::lock_guard<std::recursive_mutex> cmdlk(m_submissionMutex);
-            for (const auto& cbf : m_pendingCommandBuffers) {
-                if (cbf.first == commandBuffer) {
-                    std::cerr << "[VulkanApp][ERROR] Attempted to submit command buffer " << (void*)commandBuffer << " which is already pending! Aborting submission to prevent device loss." << std::endl;
-                    // Clean up and abort
-                    if (semaphore != VK_NULL_HANDLE) {
-                        resources.removeSemaphore(semaphore);
-                        vkDestroySemaphore(device, semaphore, nullptr);
-                    }
-                    resources.removeFence(fence);
-                    vkDestroyFence(device, fence, nullptr);
-                    throw std::runtime_error("Double-use of command buffer detected");
+            if (m_pendingCommandBuffersSet.count(commandBuffer) != 0) {
+                std::cerr << "[VulkanApp][ERROR] Attempted to submit command buffer " << (void*)commandBuffer << " which is already pending! Aborting submission to prevent device loss." << std::endl;
+                // Clean up and abort
+                if (semaphore != VK_NULL_HANDLE) {
+                    resources.removeSemaphore(semaphore);
+                    vkDestroySemaphore(device, semaphore, nullptr);
                 }
+                resources.removeFence(fence);
+                vkDestroyFence(device, fence, nullptr);
+                throw std::runtime_error("Double-use of command buffer detected");
             }
         }
 
@@ -1771,6 +1782,7 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
                 m_commandBufferPoolMap[commandBuffer] = transientCommandPool;
             }
             m_pendingCommandBuffers.emplace_back(commandBuffer, fence);
+            m_pendingCommandBuffersSet.insert(commandBuffer);
         }
 
         // Promote pending layout updates before submit so validation sees
@@ -1804,6 +1816,7 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
                 for (auto it = m_pendingCommandBuffers.begin(); it != m_pendingCommandBuffers.end(); ++it) {
                     if (it->first == commandBuffer) { m_pendingCommandBuffers.erase(it); break; }
                 }
+                m_pendingCommandBuffersSet.erase(commandBuffer);
             }
             if (semaphore != VK_NULL_HANDLE) {
                 resources.removeSemaphore(semaphore);
@@ -1908,19 +1921,19 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         std::lock_guard<std::mutex> lock(submitMtx);
 
         // Double-use validation: check if this command buffer is already pending
+        // (O(1) membership test against the pending-set mirror; the linear
+        // scan over m_pendingCommandBuffers was a per-submission hot spot).
         {
             std::lock_guard<std::recursive_mutex> cmdlk(m_submissionMutex);
-            for (const auto& cbf : m_pendingCommandBuffers) {
-                if (cbf.first == commandBuffer) {
-                    std::cerr << "[VulkanApp][ERROR] Attempted to submit command buffer " << (void*)commandBuffer << " which is already pending! Aborting submission to prevent device loss." << std::endl;
-                    if (semaphore != VK_NULL_HANDLE) {
-                        resources.removeSemaphore(semaphore);
-                        vkDestroySemaphore(device, semaphore, nullptr);
-                    }
-                    resources.removeFence(fence);
-                    vkDestroyFence(device, fence, nullptr);
-                    throw std::runtime_error("Double-use of command buffer detected");
+            if (m_pendingCommandBuffersSet.count(commandBuffer) != 0) {
+                std::cerr << "[VulkanApp][ERROR] Attempted to submit command buffer " << (void*)commandBuffer << " which is already pending! Aborting submission to prevent device loss." << std::endl;
+                if (semaphore != VK_NULL_HANDLE) {
+                    resources.removeSemaphore(semaphore);
+                    vkDestroySemaphore(device, semaphore, nullptr);
                 }
+                resources.removeFence(fence);
+                vkDestroyFence(device, fence, nullptr);
+                throw std::runtime_error("Double-use of command buffer detected");
             }
         }
 
@@ -1940,6 +1953,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
                 m_commandBufferPoolMap[commandBuffer] = transientCommandPool;
             }
             m_pendingCommandBuffers.emplace_back(commandBuffer, fence);
+            m_pendingCommandBuffersSet.insert(commandBuffer);
         }
 
         // Promote pending layout updates for this submission
@@ -1977,6 +1991,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
                     for (auto it = m_pendingCommandBuffers.begin(); it != m_pendingCommandBuffers.end(); ++it) {
                         if (it->first == commandBuffer) { m_pendingCommandBuffers.erase(it); break; }
                     }
+                    m_pendingCommandBuffersSet.erase(commandBuffer);
                 }
                 resources.removeFence(fence);
                 vkDestroyFence(device, fence, nullptr);
@@ -2062,6 +2077,7 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
                         m_commandBufferPoolMap[commandBuffer] = commandPool;
                     }
                     m_pendingCommandBuffers.emplace_back(commandBuffer, fence);
+                    m_pendingCommandBuffersSet.insert(commandBuffer);
                 }
                 return;
             }
@@ -3164,6 +3180,7 @@ void VulkanApp::createSyncObjects() {
 
     // async submission bookkeeping
     m_pendingCommandBuffers.clear();
+    m_pendingCommandBuffersSet.clear();
     m_extraWaitSemaphores.clear();
 }
 
@@ -4482,8 +4499,12 @@ void VulkanApp::drawFrame() {
     }
     imguiLastTime = now;
 
-    // Wait on the semaphore used for this acquire (indexed by semaphoreIndex)
-    std::vector<VkSemaphoreSubmitInfo> waitSemaphoreInfos;
+    // Wait on the semaphore used for this acquire (indexed by semaphoreIndex).
+    // Reused across frames (drawFrame runs on the main thread only); clear()
+    // retains capacity so the per-frame push_backs below stop allocating after
+    // the first frame (or when the wait list grows).
+    static std::vector<VkSemaphoreSubmitInfo> waitSemaphoreInfos;
+    waitSemaphoreInfos.clear();
 
     VkSemaphoreSubmitInfo initialWait{};
     initialWait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -4499,8 +4520,10 @@ void VulkanApp::drawFrame() {
     initialWait.deviceIndex = 0;
     waitSemaphoreInfos.push_back(initialWait);
 
-    // Pull extra semaphores signaled by async generation submissions (if any)
-    std::vector<std::pair<VkSemaphore, VkPipelineStageFlags2>> consumedExtraWaits;
+    // Pull extra semaphores signaled by async generation submissions (if any).
+    // Reused across frames (same main-thread-only rationale as above).
+    static std::vector<std::pair<VkSemaphore, VkPipelineStageFlags2>> consumedExtraWaits;
+    consumedExtraWaits.clear();
     {
         std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
         if (!m_extraWaitSemaphores.empty()) {

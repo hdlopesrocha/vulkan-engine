@@ -17,6 +17,7 @@
 #include <mutex>
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <atomic>
 
 #include "vulkan.hpp"
@@ -616,6 +617,11 @@ public:
         std::unordered_map<VkCommandBuffer, std::string> m_cmdBacktraces;
         std::vector<std::pair<VkSemaphore, VkPipelineStageFlags2>> m_extraWaitSemaphores;
         std::list<std::pair<VkFence, std::function<void()>>> m_deferredDestroys;
+
+        // O(1) membership mirror of m_pendingCommandBuffers (command-buffer
+        // handles) for the double-submission check in the async submit paths.
+        // Kept in lockstep with m_pendingCommandBuffers under m_submissionMutex.
+        std::unordered_set<VkCommandBuffer> m_pendingCommandBuffersSet;
 
 };
 
