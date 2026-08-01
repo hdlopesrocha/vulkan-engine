@@ -495,7 +495,10 @@ void VulkanApp::cleanup() {
                     std::cerr << "[VulkanApp] cleanup: drain submit on leftover extra semaphores failed; skipping destroys (degraded shutdown)" << std::endl;
                     drainOk = false;
                 } else {
-                    vkQueueWaitIdle(graphicsQueue);
+                    VkResult drainIdleRes = vkQueueWaitIdle(graphicsQueue);
+                    if (drainIdleRes != VK_SUCCESS) {
+                        std::cerr << "[VulkanApp] cleanup: vkQueueWaitIdle (drain) failed: " << drainIdleRes << std::endl;
+                    }
                 }
             }
             for (auto &e : m_extraWaitSemaphores) {
@@ -579,7 +582,10 @@ void VulkanApp::cleanup() {
         }
         if (device != VK_NULL_HANDLE) {
         // Ensure the device is idle and no further commands are executing
-        deviceWaitIdle();
+        VkResult finalIdleRes = deviceWaitIdle();
+        if (finalIdleRes != VK_SUCCESS) {
+            std::cerr << "[VulkanApp] cleanup: final vkDeviceWaitIdle failed: " << finalIdleRes << std::endl;
+        }
         // Final sweep of pending callbacks
         processPendingCommandBuffers();
         vkDestroyDevice(device, nullptr);
@@ -831,9 +837,17 @@ void VulkanApp::createSwapchain() {
     }
 
     uint32_t actualImageCount = 0;
-    vkGetSwapchainImagesKHR(device, swapchain, &actualImageCount, nullptr);
+    VkResult imgCountRes = vkGetSwapchainImagesKHR(device, swapchain, &actualImageCount, nullptr);
+    if (imgCountRes != VK_SUCCESS) {
+        std::cerr << "vkGetSwapchainImagesKHR (count) failed: " << imgCountRes << std::endl;
+        throw std::runtime_error("failed to get swapchain image count!");
+    }
     swapchainImages.resize(actualImageCount);
-    vkGetSwapchainImagesKHR(device, swapchain, &actualImageCount, swapchainImages.data());
+    VkResult imgQueryRes = vkGetSwapchainImagesKHR(device, swapchain, &actualImageCount, swapchainImages.data());
+    if (imgQueryRes != VK_SUCCESS) {
+        std::cerr << "vkGetSwapchainImagesKHR (images) failed: " << imgQueryRes << std::endl;
+        throw std::runtime_error("failed to get swapchain images!");
+    }
     swapchainImageFormat = surfaceFormat.format;
     swapchainExtent = extent;
 }
@@ -1149,18 +1163,6 @@ void VulkanApp::runSingleTimeCommandsOnTransfer(const std::function<void(VkComma
     runSingleTimeCommands(fn);
 }
 
-void VulkanApp::submitAndWait(const VkSubmitInfo2* submits, uint32_t submitCount, VkFence fence) {
-    {
-        std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
-        vkQueueSubmit2(graphicsQueue, submitCount, submits, fence);
-    }
-    if (fence == VK_NULL_HANDLE) {
-        vkQueueWaitIdle(graphicsQueue);
-    } else {
-        waitFence(device, fence);
-    }
-}
-
 VkResult VulkanApp::waitFence(VkDevice device, VkFence fence, uint64_t timeoutNs) {
     if (fence == VK_NULL_HANDLE) return VK_SUCCESS;
     // Poll the fence status instead of vkWaitForFences. The validation layer's
@@ -1226,11 +1228,6 @@ void VulkanApp::createImageWithVma(const VkImageCreateInfo& imageInfo, VkMemoryP
         throw std::runtime_error(std::string("failed to create image with VMA: ") + (debugName ? debugName : "unnamed"));
 
     imageMemory = allocInfo.deviceMemory;
-
-    printf("[VulkanApp::createImageWithVma] created image=%p usage=0x%08x size=%ux%ux%u format=%d mipLevels=%u arrayLayers=%u name=%s\n",
-        (void*)image, (unsigned int)imageInfo.usage, imageInfo.extent.width, imageInfo.extent.height, imageInfo.extent.depth,
-        (int)imageInfo.format, imageInfo.mipLevels, imageInfo.arrayLayers,
-        debugName ? debugName : "unnamed");
 
     resources.addImageVma(image, allocation, debugName ? debugName : "VulkanApp: image");
 
@@ -1488,9 +1485,6 @@ void VulkanApp::processPendingCommandBuffers() {
                 }
             }
             if (canRun) {
-                if (f == VK_NULL_HANDLE && m_deferredDestroys.size() % 100 == 0) {
-                    std::cerr << "[PROCESS PENDING] Running deferDestroyUntilAllPending callback (queue=" << m_deferredDestroys.size() << ")" << std::endl;
-                }
                 deferredToRun.push_back(std::move(fn));
                 it = m_deferredDestroys.erase(it);
             } else ++it;
@@ -1689,7 +1683,10 @@ bool VulkanApp::isFencePending(VkFence fence) {
 // Submit a pre-recorded command buffer asynchronously and return a fence that will be signaled on completion.
 VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore) {
     throttleIfTooManyPending();
-    vkEndCommandBuffer(commandBuffer);
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        std::cerr << "[VulkanApp] submitCommandBufferAsync: vkEndCommandBuffer failed" << std::endl;
+        throw std::runtime_error("failed to end command buffer before async submit");
+    }
 
     VkFenceCreateInfo fenceInfo{};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -1843,7 +1840,10 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
     // Throttle excessive outstanding submissions which can cause driver hangs
     // on some implementations when resources are exhausted.
     throttleIfTooManyPending();
-    vkEndCommandBuffer(commandBuffer);
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        std::cerr << "[VulkanApp] submitCommandBufferAsyncToQueue: vkEndCommandBuffer failed" << std::endl;
+        throw std::runtime_error("failed to end command buffer before async submit");
+    }
 
     VkFenceCreateInfo fenceInfo{};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -3025,8 +3025,6 @@ void VulkanApp::deferDestroyUntilAllPending(std::function<void()> destroyFn) {
     // centralized processor to make the destruction decision.
     std::lock_guard<std::recursive_mutex> dd(m_submissionMutex);
     m_deferredDestroys.emplace_back(VK_NULL_HANDLE, destroyFn);
-    if (m_deferredDestroys.size() % 100 == 0)
-        std::cerr << "[VulkanApp] deferDestroyUntilAllPending: queue size=" << m_deferredDestroys.size() << std::endl;
 }
 
 void VulkanApp::deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn) {
@@ -3243,8 +3241,6 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     textureImage.allocation = allocation;
     textureImage.memory = allocInfo.deviceMemory;
     resources.addImageVma(textureImage.image, allocation, "VulkanApp: textureArrayImage");
-    printf("[VulkanApp] createImage(array): image=%p layers=%u mipLevels=%u format=%d\n", (void*)textureImage.image, (unsigned)imageInfo.arrayLayers, textureImage.mipLevels, (int)chosenFormat);
-
     // copy buffer to image per-layer using the app helpers so tracked
     // layouts and pending updates are recorded and applied correctly.
     runSingleTimeCommands([&](VkCommandBuffer commandBuffer){
@@ -3307,7 +3303,6 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     if (vkCreateImageView(device, &viewInfo, nullptr, &textureImage.view) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture image view (array)!");
     }
-    printf("[VulkanApp] createImageView(array): view=%p image=%p\n", (void*)textureImage.view, (void*)textureImage.image);
     // Register image view for final-sweep safety
     resources.addImageView(textureImage.view, "VulkanApp::createTextureImageArray view");
 
@@ -3330,7 +3325,6 @@ void VulkanApp::createTextureImageView(TextureImage &textureImage) {
     if (vkCreateImageView(device, &viewInfo, nullptr, &textureImage.view) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture image view!");
     }
-    printf("[VulkanApp] createImageView: view=%p image=%p\n", (void*)textureImage.view, (void*)textureImage.image);
     // Register image view
     resources.addImageView(textureImage.view, "VulkanApp: textureImage.view");
 }
@@ -3407,7 +3401,6 @@ VkSampler VulkanApp::createTextureSampler(uint32_t mipLevels) {
     if (vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture sampler!");
     }
-    printf("[VulkanApp] createSampler: sampler=%p mipLevels=%u\n", (void*)textureSampler, (unsigned)mipLevels);
     // Register sampler in resource registry for final-sweep safety
     resources.addSampler(textureSampler, "VulkanApp: textureSampler");
     return textureSampler;
@@ -4997,14 +4990,12 @@ void VulkanApp::recreateSwapchain() {
     preImGuiShutdown();
     ImGui_ImplVulkan_Shutdown();
     if (imguiDescriptorPool != VK_NULL_HANDLE) {
-        std::cerr << "[VulkanApp::recreateSwapchain] Destroying old imguiDescriptorPool=" << (void*)imguiDescriptorPool << std::endl;
         resources.removeDescriptorPool(imguiDescriptorPool);
         vkDestroyDescriptorPool(device, imguiDescriptorPool, nullptr);
         imguiDescriptorPool = VK_NULL_HANDLE;
     }
 
     // Create a fresh imgui descriptor pool
-    std::cerr << "[VulkanApp::recreateSwapchain] Creating new imgui descriptor pool ..." << std::endl;
     {
         VkDescriptorPoolSize pool_sizes[] = {
             { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
@@ -5267,13 +5258,21 @@ QueueFamilyIndices VulkanApp::findQueueFamilies(VkPhysicalDevice physDevice) {
 
 void VulkanApp::pickPhysicalDevice() {
     uint32_t deviceCount = 0;
-    vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+    VkResult enumCountRes = vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+    if (enumCountRes != VK_SUCCESS) {
+        std::cerr << "vkEnumeratePhysicalDevices (count) failed: " << enumCountRes << std::endl;
+        throw std::runtime_error("failed to enumerate physical devices!");
+    }
     if (deviceCount == 0) {
         throw std::runtime_error("failed to find GPUs with Vulkan support!");
     }
 
     std::vector<VkPhysicalDevice> devices(deviceCount);
-    vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+    VkResult enumDevRes = vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+    if (enumDevRes != VK_SUCCESS) {
+        std::cerr << "vkEnumeratePhysicalDevices (devices) failed: " << enumDevRes << std::endl;
+        throw std::runtime_error("failed to enumerate physical devices!");
+    }
 
     for (const auto& dev : devices) {
         if (isDeviceSuitable(dev)) {
