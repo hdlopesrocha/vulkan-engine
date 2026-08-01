@@ -41,6 +41,6 @@ public:
     ~Scene() = default;
     virtual void action(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) = 0;
     virtual void loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) = 0;
-    virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback, ThreadPool* poolOverride = nullptr) = 0;
+    virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback, ThreadPool* poolOverride = nullptr, int lod = -1, float* outCellSize = nullptr) = 0;
     virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
 };

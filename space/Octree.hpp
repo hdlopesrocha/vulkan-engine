@@ -61,7 +61,10 @@ public:
             const BoundingCube &fromCube,
             int fromLevel,
             OctreeNodeTriangleHandler &func,
-            ThreadContext * context) const;
+            ThreadContext * context,
+            int targetLod = -1) const;
+
+    void propagateLod();
 
     bool isChunkNode(float nodeLength) const;
     bool isThreadNode(float nodeLength, float minSize, int threadSize) const;

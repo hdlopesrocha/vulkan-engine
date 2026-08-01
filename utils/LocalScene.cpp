@@ -40,7 +40,7 @@ Octree& LocalScene::getOpaqueOctree() { return opaqueOctree; }
 const Octree& LocalScene::getOpaqueOctree() const { return opaqueOctree; }
 
 
-void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback, ThreadPool* poolOverride) {
+void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback, ThreadPool* poolOverride, int lod, float* outCellSize) {
     long tessCount = 0;
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
     long trianglesCount = 0;
@@ -52,8 +52,11 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
     // dedicated pool so it never competes with solid/water streaming
     // generation); otherwise fall back to the scene's shared pool.
     ThreadPool& pool = poolOverride ? *poolOverride : threadPool;
-    Processor processor(&tessCount, pool, &context, &handlers);
+    Processor processor(&tessCount, pool, &context, &handlers, lod, outCellSize);
     tree->iterateFlat(processor, OctreeNodeData(data.level, data.node, data.cube, &context));
+    if(outCellSize) {
+        *outCellSize = processor.getFirstCellSize();
+    }
     if (tesselator.geometry.indices.empty()) {
     }
     if(!tesselator.geometry.indices.empty()) {
@@ -143,6 +146,8 @@ void LocalScene::load(const std::string& filePath, Settings* settings) {
 
     opaqueLoader.readFromStream(raw);
     transparentLoader.readFromStream(raw);
+    opaqueOctree.propagateLod();
+    transparentOctree.propagateLod();
 
     if (header.hasSettings != 0u) {
         Settings loadedSettings = {};

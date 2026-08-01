@@ -5,7 +5,7 @@
 #include "ForwardingHandler.hpp"
 
 
-Processor::Processor(long * count_, ThreadPool &threadPool_, ThreadContext * context_, std::vector<OctreeNodeTriangleHandler*> * handlers): threadPool(threadPool_), context(context_), count(count_), fh(count_, handlers) {
+Processor::Processor(long * count_, ThreadPool &threadPool_, ThreadContext * context_, std::vector<OctreeNodeTriangleHandler*> * handlers, int targetLod_, float * cellSizeOut_): threadPool(threadPool_), context(context_), count(count_), fh(count_, handlers), targetLod(targetLod_), firstCellSize(0.0f), cellSizeOut(cellSizeOut_) {
 
 }
 
@@ -18,8 +18,12 @@ bool Processor::iterate(const Octree &tree, OctreeNodeData &params) {
     if(params.node->getType() != SpaceType::Surface) {
         return false;
     }
-    if(params.node->getSimplification() == 1u) {
-        tree.iterateTriangles(params.node, params.cube, params.level, fh, context);
+    if(params.node->getSimplification() == 1u &&
+       (targetLod < 0 || params.node->getLod() <= targetLod)) {
+        if(cellSizeOut && firstCellSize == 0.0f) {
+            firstCellSize = params.cube.getLengthX();
+        }
+        tree.iterateTriangles(params.node, params.cube, params.level, fh, context, targetLod);
         return false;
     }
     return !params.node->isLeaf();

@@ -23,6 +23,7 @@ OctreeNode::OctreeNode(Vertex vertex_) {
 OctreeNode * OctreeNode::init(Vertex vert) {
 	memcpy(this->sdf, INFINITY_ARRAY, sizeof(float)*8);
 	this->bits = 0x0;
+	this->lod = -1;
 	this->setSimplification(0u);
 	this->setChunk(false);
 	this->setType(SpaceType::Surface);

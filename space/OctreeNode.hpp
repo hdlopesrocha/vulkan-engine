@@ -3,6 +3,7 @@
 #include "../math/Vertex.hpp"
 #include "../math/BoundingCube.hpp"
 #include "../math/SpaceType.hpp"
+#include <cstdint>
 
 class OctreeAllocator;
 class OctreeChangeHandler;
@@ -14,6 +15,7 @@ public:
     Vertex vertex;
     uint blockId;
     uint8_t bits;
+    int8_t lod = -1;
     float sdf[8];
     uint version;
 
@@ -32,6 +34,9 @@ public:
 
     uint8_t getSimplification() const;
     void setSimplification(uint8_t value);
+
+    int8_t getLod() const { return lod; }
+    void setLod(int8_t value) { lod = value; }
 
     bool isChunk() const ;
     void setChunk(bool value);

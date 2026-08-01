@@ -204,7 +204,8 @@ void Octree::iterateTriangles(
             const BoundingCube &fromCube,
             int fromLevel,
             OctreeNodeTriangleHandler &func,
-            ThreadContext * context) const {
+            ThreadContext * context,
+            int targetLod) const {
     (void)fromLevel;
 
     struct EdgeCell {
@@ -270,7 +271,7 @@ void Octree::iterateTriangles(
     };
 
     auto findCellAt = [this, context, &hint, &fromCube, &cachedChainNode, &cachedChainNodes,
-            &cachedChainIndices, &cachedChainLen, &cachedChainOk, &cellCache](const glm::vec3 &pos) {
+            &cachedChainIndices, &cachedChainLen, &cachedChainOk, &cellCache, targetLod](const glm::vec3 &pos) {
         auto cacheHit = cellCache.find(pos);
         if(cacheHit != cellCache.end()) {
             return cacheHit->second;
@@ -344,7 +345,8 @@ void Octree::iterateTriangles(
         OctreeNode *node = startNode;
         BoundingCube cube = startCube;
 
-        while(node != NULL && node->getSimplification() == 0u && !node->isLeaf()) {
+        while(node != NULL && !node->isLeaf() &&
+              ((targetLod < 0) ? (node->getSimplification() == 0u) : (node->getLod() > targetLod))) {
             ChildBlock *block = node->getBlock(*allocator);
             if(block == NULL) {
                 node = NULL;
@@ -765,9 +767,55 @@ void Octree::apply(
     ThreadContext localChunkContext = ThreadContext(*this);
     NodeOperationResult r = NodeOperationResult();
     shape(r, frame, args, &localChunkContext);
+    propagateLod();
 #ifdef DEBUG
     std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << ", prunedEmpty=" << prunedEmptyNodes << ", prunedSolid=" << prunedSolidNodes << std::endl;
 #endif
+}
+
+void Octree::propagateLod() {
+    if(root == nullptr || allocator == nullptr) return;
+
+    // Post-order traversal (children before parents) so a node's lod is
+    // derived from lods already computed for its children. Iterative instead
+    // of recursive: the tree depth is unbounded in practice.
+    struct Frame { OctreeNode *node; int childIndex; };
+    std::vector<Frame> stack;
+    std::vector<OctreeNode *> postOrder;
+    stack.push_back({root, 0});
+    while(!stack.empty()) {
+        Frame &f = stack.back();
+        if(f.node == NULL || f.node->isLeaf() || f.childIndex >= 8) {
+            postOrder.push_back(f.node);
+            stack.pop_back();
+            continue;
+        }
+        OctreeNode *children[8] = {};
+        f.node->getChildren(*allocator, children);
+        OctreeNode *child = children[f.childIndex++];
+        if(child != NULL) {
+            stack.push_back({child, 0});
+        }
+    }
+
+    for(OctreeNode *node : postOrder) {
+        if(node == NULL || node->isLeaf()) {
+            continue;
+        }
+        OctreeNode *children[8] = {};
+        node->getChildren(*allocator, children);
+        int8_t minLod = INT8_MAX;
+        bool hasChild = false;
+        for(int i = 0; i < 8; ++i) {
+            if(children[i] != NULL) {
+                hasChild = true;
+                if(children[i]->getLod() < minLod) {
+                    minLod = children[i]->getLod();
+                }
+            }
+        }
+        node->setLod(hasChild ? static_cast<int8_t>(minLod + 1) : static_cast<int8_t>(-1));
+    }
 }
 
 
