@@ -190,7 +190,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 
     // Back-face depth targets are owned/created by SceneRenderer
 
-    // NOTE: the per-frame scene-texture descriptor set (activeWaterDepthDS) is
+    // NOTE: the per-frame scene-texture descriptor set (waterDepthDescriptorSets) is
     // allocated once per frame slot in prepareSceneTexturesForFrame() and
     // reused every frame — only the image-view bindings are refreshed via
     // vkUpdateDescriptorSets. The set is never updated while a pending command

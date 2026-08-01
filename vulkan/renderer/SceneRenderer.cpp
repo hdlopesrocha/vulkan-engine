@@ -558,7 +558,7 @@ void SceneRenderer::drawSolidWireframeOverlay(VulkanApp* app, VkCommandBuffer &c
     solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
 }
 
-void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool waterWireframeEnabled, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
+void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, bool waterWireframeEnabled, float waterTime, VkImageView skyView) {
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;
@@ -674,9 +674,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // Cache env-var flags once at startup instead of per-frame getenv() calls
     envDisableWaterGeom = (std::getenv("VULKAN_DISABLE_WATERGEOM") != nullptr);
-    envDisableBackface  = (std::getenv("VULKAN_DISABLE_BACKFACE") != nullptr);
     if (envDisableWaterGeom) std::cerr << "[SceneRenderer] VULKAN_DISABLE_WATERGEOM set; skipping water geometry operations" << std::endl;
-    if (envDisableBackface)  std::cerr << "[SceneRenderer] VULKAN_DISABLE_BACKFACE set; skipping back-face pass" << std::endl;
 
     // Initialize the async streaming orchestrator. It is now the real transfer
     // engine: solid/water incremental chunk uploads route through it (K

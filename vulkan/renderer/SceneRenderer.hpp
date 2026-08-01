@@ -174,7 +174,6 @@ public:
 
     // Cached env-var flags (read once in init(), never per frame)
     bool envDisableWaterGeom = false;
-    bool envDisableBackface  = false;
 
     // Enable the slot-based stable indirect renderer path.
     // When true, chunks use the slot-based API instead of the legacy
@@ -224,7 +223,7 @@ public:
                   const UniformObject &uboStatic, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent);
     // Draw wireframe overlay for solid geometry on top of existing solid render
     void drawSolidWireframeOverlay(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled);
-    void waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool waterWireframeEnabled, float waterTime, bool skipBackFace = false, VkImageView skyView = VK_NULL_HANDLE, VkImageView cubeReflectionView = VK_NULL_HANDLE);
+    void waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, bool waterWireframeEnabled, float waterTime, VkImageView skyView);
     void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams);
     // Re-update main descriptor set when texture arrays are (re)allocated
     void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);

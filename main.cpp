@@ -121,10 +121,6 @@ public:
     float profileFps = 0.0f;
     UniformObject uboStatic = {};
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    // Track async task fences so we can defer buffer modifications
-    // until GPU work from previous-frame async tasks completes.
-    std::vector<VkFence> pendingAsyncFences;
-    std::mutex asyncFenceMutex;
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<SkyWidget> skyWidget;
     std::shared_ptr<WaterWidget> waterWidget;
@@ -1389,13 +1385,11 @@ public:
 
         // Launch asynchronous recording+submit for independent offscreen passes
         // using a persistent thread pool to avoid per-frame std::thread creation overhead.
-        bool launchedBackFace = false;
         VkSemaphore semBackFace = VK_NULL_HANDLE;
         std::future<void> asyncBackFaceFuture;
 
         // Back-face depth for water
         if (waterEnabled && sceneRenderer && sceneRenderer->backFaceRenderer) {
-            launchedBackFace = true;
             asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semBackFace]() {
                 VulkanApp* app = this;
                 VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
@@ -1528,7 +1522,6 @@ public:
                 // would signal the semaphore but never register it, leaving the
                 // cross-command-buffer write->read dependency unsynchronized.
                 VkFence f = app->submitCommandBufferAsyncToQueue(cmd, app->getGraphicsQueue(), &semBackFace);
-                { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
                 app->deferDestroyUntilFence(f, [app, taskCompact, taskVisible, asyncPool, asyncWaterDs]() mutable {
                     app->destroyBuffer(taskCompact);
                     app->destroyBuffer(taskVisible);
@@ -1541,8 +1534,18 @@ public:
 
         // Wait for the async back-face task to complete before water pass so no two
         // threads call vkCmdBindDescriptorSets with the same descriptor set concurrently
-        // and to ensure semBackFace is signaled before waterPass uses it.
-        if (asyncBackFaceFuture.valid()) asyncBackFaceFuture.wait();
+        // and to ensure semBackFace is signaled before waterPass uses it. get() rethrows
+        // task exceptions (wait() would swallow them, silently leaving semBackFace
+        // unsignaled and dropping the back-face pass for the frame).
+        if (asyncBackFaceFuture.valid()) {
+            try {
+                asyncBackFaceFuture.get();
+            } catch (const std::exception &e) {
+                std::cerr << "[Async] back-face task failed, skipping back-face pass this frame: " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "[Async] back-face task failed with unknown error, skipping back-face pass this frame" << std::endl;
+            }
+        }
 
         // Run water geometry pass offscreen and bind scene textures for post-process
         if (waterEnabled) {
@@ -1550,14 +1553,11 @@ public:
             sceneRenderer->waterRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
             sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
             // Use 360° solid+sky reflection instead of the sky-only equirect view
-            VkImageView cubeReflectionView = VK_NULL_HANDLE;
-            if (sceneRenderer && sceneRenderer->solid360Renderer) cubeReflectionView = sceneRenderer->solid360Renderer->getSolid360View();
             VkImageView skyView = (sceneRenderer && sceneRenderer->skyRenderer) ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-            // If we launched an async back-face submission, tell waterPass to skip issuing it again.
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
-            sceneRenderer->waterPass(this, commandBuffer, frameIdx, getMainDescriptorSet(), settings.waterWireframeMode,
-                mainTime, launchedBackFace, skyView, cubeReflectionView);
+            sceneRenderer->waterPass(this, commandBuffer, frameIdx, settings.waterWireframeMode,
+                mainTime, skyView);
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
 
@@ -2893,6 +2893,12 @@ void MyApp::ensureCubemapResources() {
             addImg(4, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             addImg(8, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             addImg(9, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+        if (sceneRenderer->solid360Renderer) {
+            VkImageView dummyCubeView = sceneRenderer->solid360Renderer->getDummyCubeView();
+            VkSampler cubeSampler = sceneRenderer->solid360Renderer->getSolid360Sampler();
+            if (dummyCubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE)
+                addImg(11, cubeSampler, dummyCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
         texWriter.flush();
     }
