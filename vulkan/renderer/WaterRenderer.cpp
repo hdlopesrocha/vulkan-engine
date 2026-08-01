@@ -16,8 +16,9 @@
 // Sub-renderer accessors removed: SceneRenderer now owns back-face and 360 renderers.
 
 // Global image layout tracking for WaterRenderer render targets
-static VkImageLayout sceneColorImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
-static VkImageLayout sceneDepthImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
+// (only the water color + water geometry depth layouts are consumed today:
+// sceneColor/sceneDepth tracking had no readers left after getSceneDepthLayout
+// was removed, so they were dropped).
 static VkImageLayout waterDepthImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
 static VkImageLayout waterGeomDepthImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
 
@@ -99,10 +100,6 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     
     // Reset layout tracking (use file-scope static variables)
     for (uint32_t i = 0; i < FRAMES; ++i) {
-        sceneColorImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
-        sceneDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
-    }
-    for (uint32_t i = 0; i < FRAMES; ++i) {
         waterDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         waterGeomDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
@@ -113,26 +110,22 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
                     sceneColorImages[frameIdx], sceneColorAllocations[frameIdx], sceneColorMemories[frameIdx], sceneColorImageViews[frameIdx]);
-        sceneColorImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
 
         // Transition directly to final layout (SHADER_READ_ONLY for post-process sampling)
         if (sceneColorImages[frameIdx] != VK_NULL_HANDLE && app) {
             app->transitionImageLayoutLayer(sceneColorImages[frameIdx], app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
             app->setImageLayoutTracked(sceneColorImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-            sceneColorImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
 
         createImage(VK_FORMAT_D32_SFLOAT,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT,
                     sceneDepthImages[frameIdx], sceneDepthAllocations[frameIdx], sceneDepthMemories[frameIdx], sceneDepthImageViews[frameIdx]);
-        sceneDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
         std::cerr << "[WaterRenderer] sceneDepthImages[" << frameIdx << "] = " << (void*)sceneDepthImages[frameIdx] << std::endl;
         // Transition directly to final layout (SHADER_READ_ONLY for post-process sampling)
         if (sceneDepthImages[frameIdx] != VK_NULL_HANDLE && app) {
             app->transitionImageLayoutLayerForce(sceneDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
             app->setImageLayoutTracked(sceneDepthImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-            sceneDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
     }
 
@@ -149,27 +142,6 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
             app->setImageLayoutTracked(waterDepthImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
             waterDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
-
-        // Create an alternate image view that swizzles the alpha (linear depth)
-        // into RGB channels so ImGui can display depth as a grayscale image.
-        VkImageViewCreateInfo vw{};
-        vw.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vw.image = waterDepthImages[frameIdx];
-        vw.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vw.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-        vw.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        vw.subresourceRange.baseMipLevel = 0;
-        vw.subresourceRange.levelCount = 1;
-        vw.subresourceRange.baseArrayLayer = 0;
-        vw.subresourceRange.layerCount = 1;
-        vw.components.r = VK_COMPONENT_SWIZZLE_A;
-        vw.components.g = VK_COMPONENT_SWIZZLE_A;
-        vw.components.b = VK_COMPONENT_SWIZZLE_A;
-        vw.components.a = VK_COMPONENT_SWIZZLE_A;
-        if (vkCreateImageView(app->getDevice(), &vw, nullptr, &waterDepthAlphaImageViews[frameIdx]) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create waterDepthAlphaImageView");
-        }
-        app->resources.addImageView(waterDepthAlphaImageViews[frameIdx], "WaterRenderer: waterDepthAlphaImageView");
 
         createImage(VK_FORMAT_D32_SFLOAT,
                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -219,7 +191,6 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
         waterDepthAllocations[i] = VK_NULL_HANDLE;
         waterDepthMemories[i] = VK_NULL_HANDLE;
         waterDepthImageViews[i] = VK_NULL_HANDLE;
-        waterDepthAlphaImageViews[i] = VK_NULL_HANDLE;
         waterGeomDepthImages[i] = VK_NULL_HANDLE;
         waterGeomDepthAllocations[i] = VK_NULL_HANDLE;
         waterGeomDepthMemories[i] = VK_NULL_HANDLE;
@@ -247,6 +218,12 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
     // reset above frees them; just drop the dangling handles.
     for (uint32_t i = 0; i < FRAMES; ++i) waterDepthDescriptorSets[i] = VK_NULL_HANDLE;
     for (uint32_t i = 0; i < FRAMES; ++i) cubemapWaterDepthDS[i] = VK_NULL_HANDLE;
+    // The pool reset invalidated every set allocated from it; drop all cached
+    // descriptor-write signatures so the next update always rewrites (a set
+    // handle reused by the allocator must never be skipped against a stale
+    // entry). The async per-task sets use their own pools and are re-created
+    // lazily, so clearing here only costs one extra write for them.
+    sceneTextureWriteCache.clear();
 }
 
 void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex) {
@@ -306,11 +283,6 @@ VkImageLayout WaterRenderer::getWaterGeomDepthLayout(uint32_t frameIndex) const 
 
 void WaterRenderer::setWaterGeomDepthLayout(uint32_t frameIndex, VkImageLayout layout) {
     if (frameIndex < 3) waterGeomDepthImageLayouts[frameIndex] = layout;
-}
-
-VkImageLayout WaterRenderer::getSceneDepthLayout(uint32_t frameIndex) const {
-    if (frameIndex < 3) return sceneDepthImageLayouts[frameIndex];
-    return VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<WaterParams>& waterParams) {
@@ -388,15 +360,6 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         &wrPoolSize, 1, 10,
         0,
         "WaterRenderer: waterDepthDescriptorPool");
-
-    // Separate pool for per-task async back-face descriptor sets. The async task
-    // allocates one set, updates it, draws, and frees it after its fence — so it
-    // never shares the per-frame set with the main command buffer.
-    VkDescriptorPoolSize asyncPoolSize = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 80};
-    asyncWaterDepthPool = descAlloc.createPool(
-        &asyncPoolSize, 1, 16,
-        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        "WaterRenderer: asyncWaterDepthPool");
 
     // Descriptor sets are allocated and updated per-frame in
     // prepareSceneTexturesForFrame() after scene images are created
@@ -742,6 +705,26 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
     // Scene position (binding 5) — g-buffer world position. If not available, fall back to scene color view.
     // Removed image info for Scene position/world-position texture (g-buffer)
 
+    // Descriptor write cache: skip the vkUpdateDescriptorSets calls when this
+    // set already holds identical bindings. The signature is keyed by the
+    // descriptor set handle, so the per-frame sets (prepareSceneTexturesForFrame)
+    // and the async per-task sets (main.cpp) never interfere; if the async path
+    // feeds different views into the same set, the signature changes and the
+    // writes still happen. A fresh set has no cache entry, so its first update
+    // always writes. Note: in the async path main.cpp re-patches binding 3
+    // (patchBinding3) right after this call with the same dummy view every task,
+    // so skipping here cannot leave that binding stale either way.
+    SceneTextureBindingSignature sig;
+    for (uint32_t i = 0; i < 5; ++i) {
+        sig.samplers[i] = imageInfos[i].sampler;
+        sig.views[i] = imageInfos[i].imageView;
+        sig.layouts[i] = imageInfos[i].imageLayout;
+    }
+    auto cacheIt = sceneTextureWriteCache.find(ds);
+    if (cacheIt != sceneTextureWriteCache.end() && cacheIt->second == sig) {
+        return; // bindings unchanged since the last write to this set
+    }
+
     DescriptorWriter writer(app->getDevice());
     for (uint32_t i = 0; i < 5; ++i) {
         writer.writeImage(ds, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -749,6 +732,7 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
                           imageInfos[i].imageLayout);
     }
     writer.flush();
+    sceneTextureWriteCache[ds] = sig;
 }
 
 VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint32_t frameIndex,

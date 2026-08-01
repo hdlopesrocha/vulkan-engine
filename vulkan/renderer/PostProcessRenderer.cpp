@@ -196,47 +196,76 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
         skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
-    VkDescriptorSet currentDs = descriptorSets[frameIdx % FRAMES_IN_FLIGHT];
+    const uint32_t slot = frameIdx % FRAMES_IN_FLIGHT;
+    VkDescriptorSet currentDs = descriptorSets[slot];
 
-    DescriptorWriter writer(device);
-    for (int i = 0; i < 5; ++i) {
-        if (imageInfos[i].imageView == VK_NULL_HANDLE || imageInfos[i].sampler == VK_NULL_HANDLE) {
-            continue;
+    // Per-frame descriptor write cache: the offscreen target views/samplers
+    // bound here are stable per frame slot, so the descriptor writes can be
+    // skipped whenever the full set of inputs (image view/sampler/layout per
+    // binding + UBO) is identical to what the slot already holds. We only skip
+    // when ALL inputs match — any difference (including a binding that goes
+    // NULL) still rewrites, so a skipped write can never leave a stale
+    // descriptor behind. `valid` starts false, so the first frame always
+    // writes.
+    FrameDescriptorSignature sig;
+    for (int i = 0; i < 9; ++i) {
+        if (i == 5) continue; // binding 5 is the UBO, stored separately below
+        sig.samplers[i] = imageInfos[i].sampler;
+        sig.views[i] = imageInfos[i].imageView;
+        sig.layouts[i] = imageInfos[i].imageLayout;
+    }
+    sig.samplers[6] = skyImageInfo.sampler;
+    sig.views[6] = skyImageInfo.imageView;
+    sig.layouts[6] = skyImageInfo.imageLayout;
+    sig.uboBuffer = bufferInfo.buffer;
+    sig.uboOffset = bufferInfo.offset;
+    sig.uboRange = bufferInfo.range;
+
+    FrameDescriptorSignature& cached = descriptorWriteCache[slot];
+    if (!cached.valid || !cached.matches(sig)) {
+        cached = sig;
+        cached.valid = true;
+
+        DescriptorWriter writer(device);
+        for (int i = 0; i < 5; ++i) {
+            if (imageInfos[i].imageView == VK_NULL_HANDLE || imageInfos[i].sampler == VK_NULL_HANDLE) {
+                continue;
+            }
+            writer.writeImage(currentDs, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[i].sampler, imageInfos[i].imageView,
+                              imageInfos[i].imageLayout);
         }
-        writer.writeImage(currentDs, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                          imageInfos[i].sampler, imageInfos[i].imageView,
-                          imageInfos[i].imageLayout);
-    }
 
-    if (bufferInfo.buffer != VK_NULL_HANDLE) {
-        writer.writeBuffer(currentDs, 5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                           bufferInfo.buffer, bufferInfo.offset, bufferInfo.range);
-    } else {
-        std::cerr << "[PostProcessRenderer] Skipping UBO binding: buffer is VK_NULL_HANDLE" << std::endl;
-    }
+        if (bufferInfo.buffer != VK_NULL_HANDLE) {
+            writer.writeBuffer(currentDs, 5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                               bufferInfo.buffer, bufferInfo.offset, bufferInfo.range);
+        } else {
+            std::cerr << "[PostProcessRenderer] Skipping UBO binding: buffer is VK_NULL_HANDLE" << std::endl;
+        }
 
-    // Sky color texture (binding 6)
-    if (skyImageInfo.imageView != VK_NULL_HANDLE && skyImageInfo.sampler != VK_NULL_HANDLE) {
-        writer.writeImage(currentDs, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                          skyImageInfo.sampler, skyImageInfo.imageView,
-                          skyImageInfo.imageLayout);
-    }
+        // Sky color texture (binding 6)
+        if (skyImageInfo.imageView != VK_NULL_HANDLE && skyImageInfo.sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              skyImageInfo.sampler, skyImageInfo.imageView,
+                              skyImageInfo.imageLayout);
+        }
 
-    // Water geometry depth (binding 7) — used for brush-vs-water occlusion
-    if (imageInfos[7].imageView != VK_NULL_HANDLE && imageInfos[7].sampler != VK_NULL_HANDLE) {
-        writer.writeImage(currentDs, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                          imageInfos[7].sampler, imageInfos[7].imageView,
-                          imageInfos[7].imageLayout);
-    }
+        // Water geometry depth (binding 7) — used for brush-vs-water occlusion
+        if (imageInfos[7].imageView != VK_NULL_HANDLE && imageInfos[7].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[7].sampler, imageInfos[7].imageView,
+                              imageInfos[7].imageLayout);
+        }
 
-    // Brush back-face depth (binding 8) — used for PAINT mode volume test
-    if (imageInfos[8].imageView != VK_NULL_HANDLE && imageInfos[8].sampler != VK_NULL_HANDLE) {
-        writer.writeImage(currentDs, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                          imageInfos[8].sampler, imageInfos[8].imageView,
-                          imageInfos[8].imageLayout);
-    }
+        // Brush back-face depth (binding 8) — used for PAINT mode volume test
+        if (imageInfos[8].imageView != VK_NULL_HANDLE && imageInfos[8].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[8].sampler, imageInfos[8].imageView,
+                              imageInfos[8].imageLayout);
+        }
 
-    writer.flush();
+        writer.flush();
+    }
 
     // Set viewport and scissor (safe to call inside already-open dynamic rendering scope)
     VkViewport viewport{};

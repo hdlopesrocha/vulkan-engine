@@ -53,6 +53,26 @@ private:
     static constexpr uint32_t FRAMES_IN_FLIGHT = VulkanApp::MAX_FRAMES_IN_FLIGHT;
     std::array<TrackedHandle<VkDescriptorSet>, FRAMES_IN_FLIGHT> descriptorSets;
 
+    // Per-frame-slot cache of the last descriptor contents written by render().
+    // The offscreen target views bound here are stable per frame slot, so the
+    // per-frame vkUpdateDescriptorSets calls can be skipped while every input
+    // (sampler/view/layout per binding + UBO) is unchanged. `valid` starts
+    // false, guaranteeing the first frame always writes.
+    struct FrameDescriptorSignature {
+        std::array<VkSampler, 9> samplers{};
+        std::array<VkImageView, 9> views{};
+        std::array<VkImageLayout, 9> layouts{};
+        VkBuffer uboBuffer = VK_NULL_HANDLE;
+        VkDeviceSize uboOffset = 0;
+        VkDeviceSize uboRange = 0;
+        bool valid = false; // true once this slot has been written at least once
+        bool matches(const FrameDescriptorSignature& o) const {
+            return samplers == o.samplers && views == o.views && layouts == o.layouts &&
+                   uboBuffer == o.uboBuffer && uboOffset == o.uboOffset && uboRange == o.uboRange;
+        }
+    };
+    std::array<FrameDescriptorSignature, FRAMES_IN_FLIGHT> descriptorWriteCache;
+
     Buffer uniformBuffer;
     TrackedHandle<VkSampler> linearSampler;
 

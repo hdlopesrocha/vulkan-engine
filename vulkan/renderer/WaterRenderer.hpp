@@ -58,8 +58,6 @@ public:
     // Accessors for renderer-tracked layouts (used by widgets to record correct barriers)
     VkImageLayout getWaterGeomDepthLayout(uint32_t frameIndex) const;
     void setWaterGeomDepthLayout(uint32_t frameIndex, VkImageLayout layout);
-    VkImageLayout getSceneDepthLayout(uint32_t frameIndex) const;
-
     void updateGPUParamsForLayer(uint32_t layer, const WaterParams& params);
 
     // Initialize the per-frame water geometry depth image from the scene
@@ -130,10 +128,6 @@ public:
                                                  VkImageView backFaceDepthView = VK_NULL_HANDLE,
                                                  VkImageView cube360View = VK_NULL_HANDLE);
 
-    // Dedicated pool + accessors for per-task descriptor sets used by the async
-    // back-face task, so it never shares the per-frame set with the main CB.
-    VkDescriptorPool getAsyncWaterDepthPool() const { return asyncWaterDepthPool; }
-
     // Clear per-frame render targets (color/depth) into default values.
     // Call this each frame when water rendering is disabled to avoid sampling
     // stale content from previous frames.
@@ -168,7 +162,6 @@ private:
     std::array<VmaAllocation, FRAMES> waterDepthAllocations = {};
     std::array<VkDeviceMemory, FRAMES> waterDepthMemories = {};
     std::array<VkImageView, FRAMES> waterDepthImageViews = {};
-    std::array<VkImageView, FRAMES> waterDepthAlphaImageViews = {};
     std::array<VkImage, FRAMES> waterGeomDepthImages = {};
     std::array<VmaAllocation, FRAMES> waterGeomDepthAllocations = {};
     std::array<VkDeviceMemory, FRAMES> waterGeomDepthMemories = {};
@@ -191,9 +184,25 @@ private:
     // completed. This avoids both VUID-03047 (update/destroy while pending) and
     // the GPU-assisted false "length 0" seen with UPDATE_AFTER_BIND.
     std::array<VkDescriptorSet, FRAMES> waterDepthDescriptorSets{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
-    // Dedicated pool for per-task async back-face descriptor sets (never shared
-    // with the main command buffer, so it can be updated without UPDATE_AFTER_BIND).
-    TrackedHandle<VkDescriptorPool> asyncWaterDepthPool;
+
+    // Cache of the last descriptor contents written per descriptor set by
+    // updateSceneTexturesBinding(). The offscreen target views bound here are
+    // stable per frame slot, so the per-frame vkUpdateDescriptorSets calls can
+    // be skipped while the set already holds identical bindings. Keyed by the
+    // descriptor set handle so the per-frame sets (prepareSceneTexturesForFrame)
+    // and the async per-task sets (allocated in main.cpp) stay independent: if
+    // the async path feeds different views into a set, the signature changes
+    // and the writes still happen. Cleared when the pool is reset so a reused
+    // handle is never skipped against a stale entry.
+    struct SceneTextureBindingSignature {
+        std::array<VkSampler, 5> samplers{};
+        std::array<VkImageView, 5> views{};
+        std::array<VkImageLayout, 5> layouts{};
+        bool operator==(const SceneTextureBindingSignature& o) const {
+            return samplers == o.samplers && views == o.views && layouts == o.layouts;
+        }
+    };
+    std::unordered_map<VkDescriptorSet, SceneTextureBindingSignature> sceneTextureWriteCache;
 
     // Cubemap water pass resources (per-frame to avoid updating a set that a
     // previous frame's command buffer still has pending)
