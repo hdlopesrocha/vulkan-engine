@@ -119,7 +119,6 @@ public:
     float profileCpuUpdate = 0.0f;
     float profileCpuRecord = 0.0f;
     float profileFps = 0.0f;
-    VkDescriptorSet shadowPassDescriptorSet = VK_NULL_HANDLE;
     UniformObject uboStatic = {};
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     // Track async task fences so we can defer buffer modifications
@@ -219,6 +218,8 @@ public:
     VkDescriptorSet cube360GfxDs = VK_NULL_HANDLE;
     VkDescriptorSet cube360ComputeDs = VK_NULL_HANDLE;
     VkDescriptorSet cube360WaterComputeDs = VK_NULL_HANDLE;
+    std::array<VkBuffer, 4> cube360ComputeBuffers = {};
+    std::array<VkBuffer, 4> cube360WaterComputeBuffers = {};
     uint32_t cube360TexVersion = 0;
 
     ~MyApp() {}
@@ -1125,18 +1126,6 @@ public:
         const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
         if (renderCubemap) {
             ensureCubemapResources();
-
-            // Force dummy cubemap into cube360GfxDs binding #11 every frame
-            if (cube360GfxDs != VK_NULL_HANDLE && sceneRenderer->solid360Renderer) {
-                VkImageView dummyView = sceneRenderer->solid360Renderer->getDummyCubeView();
-                VkSampler cubeSamp = sceneRenderer->solid360Renderer->getSolid360Sampler();
-                if (dummyView != VK_NULL_HANDLE && cubeSamp != VK_NULL_HANDLE) {
-                    DescriptorWriter(getDevice())
-                        .writeImage(cube360GfxDs, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                    cubeSamp, dummyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-                        .flush();
-                }
-            }
 
             UniformObject ubo360 = uboStatic;
             ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
@@ -2909,7 +2898,7 @@ void MyApp::ensureCubemapResources() {
         texWriter.flush();
     }
 
-    // 5. Solid compute descriptor set — allocate lazily, always refresh buffer bindings
+    // 5. Solid compute descriptor set — allocate lazily, refresh buffer bindings only when buffers change
     {
         VkDescriptorSetLayout dsLayout = solidInd.getComputeDescriptorSetLayout();
         if (dsLayout != VK_NULL_HANDLE && cube360ComputeDs == VK_NULL_HANDLE) {
@@ -2929,20 +2918,29 @@ void MyApp::ensureCubemapResources() {
             }
         }
         if (cube360ComputeDs != VK_NULL_HANDLE) {
-            DescriptorWriter(dev)
-                .writeBuffer(cube360ComputeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             solidInd.getIndirectBuffer().buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(cube360ComputeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             cube360Compact.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(cube360ComputeDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             solidInd.getBoundsBuffer().buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(cube360ComputeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             cube360Visible.buffer, 0, VK_WHOLE_SIZE)
-                .flush();
+            std::array<VkBuffer, 4> bufs = {
+                solidInd.getIndirectBuffer().buffer,
+                cube360Compact.buffer,
+                solidInd.getBoundsBuffer().buffer,
+                cube360Visible.buffer,
+            };
+            if (bufs != cube360ComputeBuffers) {
+                cube360ComputeBuffers = bufs;
+                DescriptorWriter(dev)
+                    .writeBuffer(cube360ComputeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[0], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360ComputeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[1], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360ComputeDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[2], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360ComputeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[3], 0, VK_WHOLE_SIZE)
+                    .flush();
+            }
         }
     }
 
-    // 6. Water compute descriptor set
+    // 6. Water compute descriptor set — allocate lazily, refresh buffer bindings only when buffers change
     {
         VkDescriptorSetLayout wDsLayout = waterInd.getComputeDescriptorSetLayout();
         if (wDsLayout != VK_NULL_HANDLE && cube360WaterComputeDs == VK_NULL_HANDLE) {
@@ -2962,16 +2960,25 @@ void MyApp::ensureCubemapResources() {
             }
         }
         if (cube360WaterComputeDs != VK_NULL_HANDLE) {
-            DescriptorWriter(dev)
-                .writeBuffer(cube360WaterComputeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             waterInd.getIndirectBuffer().buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(cube360WaterComputeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             cube360WaterCompact.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(cube360WaterComputeDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             waterInd.getBoundsBuffer().buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(cube360WaterComputeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             cube360WaterVisible.buffer, 0, VK_WHOLE_SIZE)
-                .flush();
+            std::array<VkBuffer, 4> bufs = {
+                waterInd.getIndirectBuffer().buffer,
+                cube360WaterCompact.buffer,
+                waterInd.getBoundsBuffer().buffer,
+                cube360WaterVisible.buffer,
+            };
+            if (bufs != cube360WaterComputeBuffers) {
+                cube360WaterComputeBuffers = bufs;
+                DescriptorWriter(dev)
+                    .writeBuffer(cube360WaterComputeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[0], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360WaterComputeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[1], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360WaterComputeDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[2], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360WaterComputeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[3], 0, VK_WHOLE_SIZE)
+                    .flush();
+            }
         }
     }
 }

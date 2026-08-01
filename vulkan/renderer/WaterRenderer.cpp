@@ -190,12 +190,12 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 
     // Back-face depth targets are owned/created by SceneRenderer
 
-    // NOTE: the per-frame scene-texture descriptor set (activeWaterDepthDS) is no
-    // longer pre-allocated here. It is allocated fresh each frame in
-    // prepareSceneTexturesForFrame() and the previous one is freed after its
-    // command buffer completes (see destroyRenderTargets / per-slot fence wait),
-    // so the set is never updated while a pending command buffer references it
-    // and never needs UPDATE_AFTER_BIND (which trips GPU-assisted validation).
+    // NOTE: the per-frame scene-texture descriptor set (activeWaterDepthDS) is
+    // allocated once per frame slot in prepareSceneTexturesForFrame() and
+    // reused every frame — only the image-view bindings are refreshed via
+    // vkUpdateDescriptorSets. The set is never updated while a pending command
+    // buffer references it and never needs UPDATE_AFTER_BIND (which trips
+    // GPU-assisted validation).
 
     std::cout << "[WaterRenderer] Created render targets (2 sets) " << width << "x" << height << std::endl;
 }
@@ -863,13 +863,6 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
             waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
         else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
-    }
-    VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
-    if (materialDs != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
-            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
-        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
     }
     VkDescriptorSet sceneDs = getWaterDepthDescriptorSet(frameIndex);
     if (sceneDs != VK_NULL_HANDLE) {
