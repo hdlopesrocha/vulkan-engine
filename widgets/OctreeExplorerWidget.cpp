@@ -178,6 +178,7 @@ void OctreeExplorerWidget::renderTree(const Octree& tree) {
     if (root->isLeaf()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[leaf]"); ImGui::SameLine(); }
     if (root->getSimplification() == 1u) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simplified]"); ImGui::SameLine(); }
     ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[lod=%d]", (int)root->getLod()); ImGui::SameLine();
+    ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunklod=%d]", (int)root->getChunkLod()); ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "v%u", root->version);
     
     if (open) {
@@ -227,6 +228,7 @@ void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube
             if (child->isLeaf()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[leaf]"); ImGui::SameLine(); }
             if (child->getSimplification() == 1u) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simplified]"); ImGui::SameLine(); }
             ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[lod=%d]", (int)child->getLod()); ImGui::SameLine();
+            ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunklod=%d]", (int)child->getChunkLod()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "v%u", child->version);
         } else {
             // Apply expand/collapse to children (single-frame, persistent, or collapse)
@@ -246,6 +248,7 @@ void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube
             if (child->isLeaf()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[leaf]"); ImGui::SameLine(); }
             if (child->getSimplification() == 1u) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simplified]"); ImGui::SameLine(); }
             ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[lod=%d]", (int)child->getLod()); ImGui::SameLine();
+            ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunklod=%d]", (int)child->getChunkLod()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "v%u", child->version);
             
             if (isExpanded) {

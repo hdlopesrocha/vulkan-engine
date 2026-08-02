@@ -16,6 +16,7 @@ public:
     uint blockId;
     uint8_t bits;
     int8_t lod = -1;
+    int8_t chunkLod = -1;
     float sdf[8];
     uint version;
 
@@ -37,6 +38,9 @@ public:
 
     int8_t getLod() const { return lod; }
     void setLod(int8_t value) { lod = value; }
+
+    int8_t getChunkLod() const { return chunkLod; }
+    void setChunkLod(int8_t value) { chunkLod = value; }
 
     bool isChunk() const ;
     void setChunk(bool value);

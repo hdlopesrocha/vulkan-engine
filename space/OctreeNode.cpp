@@ -24,12 +24,18 @@ OctreeNode * OctreeNode::init(Vertex vert) {
 	memcpy(this->sdf, INFINITY_ARRAY, sizeof(float)*8);
 	this->bits = 0x0;
 	this->lod = -1;
+	// chunkLod must be reset too: the allocator hands out raw (malloc'd) or
+	// recycled memory without running the constructor, so the member
+	// initializer `int8_t chunkLod = -1` never executes — without this the
+	// field holds garbage/stale values and the bottom-up propagation reads
+	// phantom chunkLods (thousands of spurious mesh nodes).
+	this->chunkLod = -1;
 	this->setSimplification(0u);
 	this->setChunk(false);
 	this->setType(SpaceType::Surface);
 	this->vertex = vert;
 	this->blockId = UINT_MAX;
-	this->version = 0u;	
+	this->version = 0u;
 	return this;
 }
 
