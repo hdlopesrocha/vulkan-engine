@@ -37,8 +37,6 @@ struct ShapeArgs {
     // events would be lost. All copies share this heap vector; the mutex
     // guards push_back from concurrent workers.
     std::shared_ptr<std::mutex> deferredEventsMutex = std::make_shared<std::mutex>();
-    std::shared_ptr<std::vector<DeferredChunkEvent>> deferredChunkEvents =
-        std::make_shared<std::vector<DeferredChunkEvent>>();
     ShapeArgs(
         const SignedDistanceOperation &operation,
         const SignedDistanceFunction &function,

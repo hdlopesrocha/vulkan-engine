@@ -59,7 +59,8 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const LadderC
     // cubes), and propagates every parent link (root -> chunk -> leaves) —
     // the parents are required for the root-consistent cube rebuilds inside
     // iterateTriangles.
-    processor.onGeometry = [&data,&callback](int level, const OctreeNode* node, const BoundingCube &cube, Geometry&& g, int lod) {
+    processor.onGeometry = [&data,&callback](int level, const OctreeNode* node, const BoundingCube &cube, Geometry& g, int lod) {
+        //std::cout << "[LocalScene] requestModel3D() level=" << level << " lod=" << lod << " cube=" << cube.getLengthX() << " tris=" << g.indices.size() / 3 << " verts=" << g.vertices.size() << std::endl;
          callback(g, lod);
     };
     tree->iterateFlat(processor, OctreeNodeData(0, tree->root, static_cast<const BoundingCube&>(*tree), &context));

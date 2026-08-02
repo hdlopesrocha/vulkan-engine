@@ -507,10 +507,10 @@ void Octree::iterateTriangles(
         }
     };
 
-    auto makeEdgeSpan = [&](int edgeIndex) {
+    auto makeEdgeSpan = [&](int edgeIndex, const BoundingCube &cellCube) {
         glm::ivec2 edgeCorners = SDF_EDGES[edgeIndex];
-        glm::vec3 p0 = fromCube.getCorner(edgeCorners.x);
-        glm::vec3 p1 = fromCube.getCorner(edgeCorners.y);
+        glm::vec3 p0 = cellCube.getCorner(edgeCorners.x);
+        glm::vec3 p1 = cellCube.getCorner(edgeCorners.y);
         glm::vec3 d = glm::abs(p1 - p0);
 
         EdgeSpan edge;
@@ -526,7 +526,7 @@ void Octree::iterateTriangles(
         edge.fixedV = p0[edge.v];
         edge.start = glm::min(p0[edge.axis], p1[edge.axis]);
         edge.end = glm::max(p0[edge.axis], p1[edge.axis]);
-        edge.eps = glm::max(getLengthX(), fromCube.getLengthX()) * 1e-6f;
+        edge.eps = glm::max(getLengthX(), cellCube.getLengthX()) * 1e-6f;
         return edge;
     };
 
@@ -658,47 +658,87 @@ void Octree::iterateTriangles(
 
     // Accept any ladder cell as the `from` anchor: a frontier simplified leaf
     // (simplification 1, lod 0) or an internal ancestor (simplification 0 but
-    // lod >= 0 — its own stored corner samples drive the coarse Surface-Nets
-    // extraction). Reject only non-ladder leaves (lod -1).
+    // lod >= 0). Reject only non-ladder leaves (lod -1).
     if(from == NULL || from->getType() != SpaceType::Surface ||
        (from->getSimplification() == 0u && from->getLod() < 0)) {
         return;
     }
 
-    for(int edgeIndex = 0; edgeIndex < 12; ++edgeIndex) {
-        glm::ivec2 edgeCorners = SDF_EDGES[edgeIndex];
-        bool sign0 = from->sdf[edgeCorners.x] < 0.0f;
-        bool sign1 = from->sdf[edgeCorners.y] < 0.0f;
-#ifdef DEBUG
-        if(edgeIndex == 0) {
-            std::cout << "[tri] from cube=" << fromCube.getLengthX() << " lod=" << (int)from->getLod()
-                      << " sim=" << from->getSimplification() << " sdf[0..7]=";
-            for(int c = 0; c < 8; ++c) std::cout << from->sdf[c] << ",";
-            std::cout << " surfaceEdges=0" << std::endl;
-        }
-#endif
-        if(sign0 == sign1) {
-            continue;
-        }
+    // Scan ONE Surface-Nets cell: walk the 12 edges of cellCube with the
+    // cell's OWN stored corner samples and emit the segments whose owner
+    // (finest of the four quadrant cells at the walk's resolution) lies
+    // inside the outer from-cube. Cells one level finer/coarser stay out of
+    // the segment via the isSurface(targetLod) quadrant test.
+    auto scanCell = [&](OctreeNode *cellNode, const BoundingCube &cellCube) {
+        for(int edgeIndex = 0; edgeIndex < 12; ++edgeIndex) {
+            glm::ivec2 edgeCorners = SDF_EDGES[edgeIndex];
+            bool sign0 = cellNode->sdf[edgeCorners.x] < 0.0f;
+            bool sign1 = cellNode->sdf[edgeCorners.y] < 0.0f;
 
-        EdgeSpan edge = makeEdgeSpan(edgeIndex);
-        if(edge.end - edge.start <= edge.eps * 2.0f) {
-            continue;
-        }
+            if(sign0 == sign1) {
+                continue;
+            }
 
-        std::vector<float> breaks;
-        breaks.reserve(64);
-        breaks.push_back(edge.start);
-        breaks.push_back(edge.end);
-        collectBreaks(edge, edge.start, edge.end, breaks, 0);
-        sortUnique(breaks, edge.eps);
+            EdgeSpan edge = makeEdgeSpan(edgeIndex, cellCube);
+            if(edge.end - edge.start <= edge.eps * 2.0f) {
+                continue;
+            }
 
-        for(size_t i = 1; i < breaks.size(); ++i) {
-            if(breaks[i] - breaks[i - 1] > edge.eps * 2.0f) {
-                emitSegment(edge, breaks[i - 1], breaks[i]);
+            std::vector<float> breaks;
+            breaks.reserve(64);
+            breaks.push_back(edge.start);
+            breaks.push_back(edge.end);
+            collectBreaks(edge, edge.start, edge.end, breaks, 0);
+            sortUnique(breaks, edge.eps);
+
+            for(size_t i = 1; i < breaks.size(); ++i) {
+                if(breaks[i] - breaks[i - 1] > edge.eps * 2.0f) {
+                    emitSegment(edge, breaks[i - 1], breaks[i]);
+                }
             }
         }
+    };
+
+    if(targetLod < 0) {
+        // Legacy mode: `from` IS the frontier cell.
+        scanCell(from, fromCube);
+        return;
     }
+
+    // Ladder mode: the level-k mesh is the AGGREGATE of the cells at lod k
+    // inside the anchor (each cell's own stored corner samples, which are
+    // correct). A single Surface-Nets cell over the whole anchor would miss
+    // interior surface detail — the anchor's own corners have no zero
+    // crossing when the surface is inside it — so every level emits its own
+    // cell resolution (cell size frontierCell*2^k), which is what the
+    // distance bands consume.
+    std::function<void(OctreeNode*, const BoundingCube&)> walkLadder;
+    walkLadder = [&](OctreeNode *node, const BoundingCube &cube) {
+        if(node == NULL) return;
+        const int8_t lod = node->getLod();
+        if(node->isLeaf() && lod < targetLod) {
+            // Finer than this level: not part of the level-k aggregate.
+            return;
+        }
+        if(lod == targetLod || node->isLeaf()) {
+            scanCell(node, cube);
+            return;
+        }
+        if(lod < targetLod) {
+            return;
+        }
+        ChildBlock *block = node->getBlock(*allocator);
+        if(block == NULL) {
+            return;
+        }
+        for(uint i = 0; i < 8; ++i) {
+            OctreeNode *child = block->get(i, *allocator);
+            if(child != NULL) {
+                walkLadder(child, cube.getChild(i));
+            }
+        }
+    };
+    walkLadder(from, fromCube);
 }
 
 
@@ -798,38 +838,11 @@ void Octree::apply(
     NodeOperationResult r = NodeOperationResult();
     shape(r, frame, args, &localChunkContext);
 
-    for(const ShapeArgs::DeferredChunkEvent &ev : *args.deferredChunkEvents) {
-        // Handlers are dispatched per node with level = node.chunkLod: a
-        // chunk (chunkLod 0) tessellates until lod 0 (the frontier), its
-        // parent (chunkLod 1) until lod 1, and so on toward the root. The
-        // root itself always carries a mesh so far distance bands have a
-        // fallback; nodes beyond the chunk's own ladder (chunkLod >
-        // heightRootToChunk(0)) are redundant (the root covers those bands).
-        ev.added ? args.changeHandler.onNodeAdded(ev.data) : args.changeHandler.onNodeDeleted(ev.data);
-    }
+
 #ifdef DEBUG
-    // Histogram of dispatched mesh events by chunkLod level: reveals gaps in
-    // the 0..N chunkLod chain (a missing level = a chunk hole at that band).
-    // Also tracks the min/max cube length per level to spot misassigned nodes.
     {
-        int hist[32] = {};
-        float minLen[32], maxLen[32];
-        for(int i=0;i<32;++i){minLen[i]=1e30f;maxLen[i]=0.0f;}
-        int maxCl = -1;
-        for(const ShapeArgs::DeferredChunkEvent &ev : *args.deferredChunkEvents) {
-            int cl = ev.data.node ? ev.data.node->getChunkLod() : -1;
-            float L = ev.data.cube.getLengthX();
-            if(cl >= 0 && cl < 32) {
-                ++hist[cl];
-                if(cl > maxCl) maxCl = cl;
-                if(L < minLen[cl]) minLen[cl] = L;
-                if(L > maxLen[cl]) maxLen[cl] = L;
-            }
-        }
         std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << ", prunedEmpty=" << prunedEmptyNodes << ", prunedSolid=" << prunedSolidNodes
-                  << ", events=" << args.deferredChunkEvents->size() << ", chunkLodHist=[";
-        for(int i = 0; i <= maxCl; ++i) std::cout << (i?",":"") << i << ":" << hist[i] << "(" << minLen[i] << "-" << maxLen[i] << ")";
-        std::cout << "] chunkSize=" << chunkSize << std::endl;
+                  << ", << chunkSize=" << chunkSize << std::endl;
     }
 #endif
 }
@@ -1142,8 +1155,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                             childNode->setSimplification(child.isSimplified);
                             childNode->setChunk(child.isChunk);
                             childNode->setBrush(child.brushIndex != DISCARD_BRUSH_INDEX ? child.brushIndex : frame.brushIndex);
-                            childNode->setChunkLod(child.isChunk ? 0 : -1);
-                            childNode->setLod(child.isSimplified ? 0 : -1);
+                            childNode->setChunkLod(-1);
+                            childNode->setLod(-1);
                             childNode->vertex.hsv = child.hsv;
                         }
                                                 
@@ -1164,36 +1177,16 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             r.node->setChunk(r.isChunk);
             r.node->setBrush(r.brushIndex);
             r.node->vertex.hsv = r.hsv;
-            if(r.isSimplified) {
-                r.node->setLod(0);
-            }
-            if(r.isChunk) {
-                r.node->setChunkLod(0);
-            }
       
-      
-            // LoD propagation on shape return order: the recursion unwinds
-            // leafs → root, so by the time a parent reaches this block all of
-            // its children already wrote their final lods. This replaces the
-            // separate propagateLod() tree pass — a node's lod is derived
-            // right here, bottom-up, as the stack collapses.
-            //   - leaf (or just compressed to Solid/Empty below): LoD 0 marks
-            //     the simplification frontier (the last simplification possible
-            //     was achieved); unsimplified nodes are -1.
-            //   - parent: min(child lod)+1, so the value grows toward the
-            //     root: a chunk (an internal node at the first chunk level)
-            //     carries its ladder height. A targetLod=k walk stops at cells
-            //     with lod <= k: level 0 tessellates the frontier, level
-            //     chunkLod tessellates the chunk itself.
             if(r.resultType != SpaceType::Surface) {
                 // Compression: a fully Solid/Empty subtree collapses to a leaf
                 // (children are released) before the lod rule runs, so the
-                // collapsed node follows the leaf rule, not min(child)+1.
+                // collapsed node follows the leaf rule, not max(child)+1.
                 r.node->clear(*allocator, NULL);
             }
             // chunkLod: 0 when the node is a chunk (first chunk level), else
-            // climb min(children.chunkLod)+1 while any child carries a
-            // chunkLod (min != -1); leaves and cells below chunks stay -1.
+            // climb max(children.chunkLod)+1 while any child carries a
+            // chunkLod (max != -1); leaves and cells below chunks stay -1.
             // Handlers are dispatched per node with level = chunkLod: a chunk
             // (chunkLod 0) tessellates until lod 0 (the frontier), its parent
             // (chunkLod 1) until lod 1, and so on up toward the root.
@@ -1210,27 +1203,20 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 // cells then texture as the majority brush instead of
                 // inheriting an arbitrary single child's brush.
                 int brushCounts[64] = {};
-                for(int i = 0; i < 8; ++i) {
-                    if(childNodes[i] != NULL) {
-                        maxLod = glm::max(maxLod, childNodes[i]->getLod());
-                        maxChunkLod = glm::max(maxChunkLod, childNodes[i]->getChunkLod());
+                for(OctreeNode * childNode : childNodes) {
+                    if(childNode != NULL) {
+                        
+                        maxLod = glm::max(maxLod, childNode->getLod());
+                        maxChunkLod = glm::max(maxChunkLod, childNode->getChunkLod());
 
-                        const int brush = childNodes[i]->getBrush();
+                        const int brush = childNode->getBrush();
                         if(brush != DISCARD_BRUSH_INDEX && brush >= 0 && brush < 64) {
                             ++brushCounts[brush];
                         }
                     }
                 }
-                // lod/chunkLod use MAX(children)+1. A targetLod=k walk recurses
-                // while lod > k and stops at lod <= k, so a parent must exceed
-                // ALL its children — with min() a node with a collapsed (lod 0)
-                // child would be marked lod 1 and the walk would stop at the
-                // node itself, tessellating one giant cell whose coarse SDF
-                // misses the fine surface (empty mesh). max() keeps the ladder
-                // strictly increasing so the walk recurses to the finer cells.
-                // max() also ignores -1 children (collapsed air/earth) for both.
-                r.node->setLod(maxLod + 1);
-                r.node->setChunkLod(maxChunkLod + 1);
+                r.node->setLod(maxLod < 0 ? -1 : maxLod + 1);
+                r.node->setChunkLod(maxChunkLod < 0 ? -1 : maxChunkLod + 1);
 
                 int bestBrush = DISCARD_BRUSH_INDEX;
                 int bestCount = 0;
@@ -1241,8 +1227,15 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                     }
                 }
                 if(bestBrush != DISCARD_BRUSH_INDEX) {
+                    r.brushIndex = bestBrush;
                     r.node->setBrush(bestBrush);
                 }
+            }
+            if(r.isSimplified) {
+                r.node->setLod(0);
+            }
+            if(r.isChunk) {
+                r.node->setChunkLod(0);
             }
             // Dispatch a mesh event ONLY for chunks (chunkLod 0). Coarse
             // ancestor meshes (chunkLod > 0) are DISABLED: tessellating an
@@ -1255,18 +1248,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             // there are no holes. chunkLod is still computed (widget/bands).
             if(r.node->getChunkLod() >= 0) {
                 ++r.node->version;
-                // Deferred: see Octree::apply — the recursion has fully
-                // unwound (leafs → root) when events are dispatched, so
-                // node->lod/chunkLod are fresh when handlers run. Shared
-                // storage across the per-thread ShapeArgs copies, so
-                // events emitted by pool threads are not lost.
-                {
-                    std::lock_guard<std::mutex> lock(*args.deferredEventsMutex);
-                    args.deferredChunkEvents->push_back({
-                        r.resultType == SpaceType::Surface,
-                        OctreeNodeData(frame.level, r.node, frame.cube, nullptr)
-                    });
-                }
+                OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube, nullptr);
+                r.resultType == SpaceType::Surface ? args.changeHandler.onNodeAdded(data) : args.changeHandler.onNodeDeleted(data);
             }
         }
     } else {

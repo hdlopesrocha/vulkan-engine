@@ -135,21 +135,32 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
     if (vkBeginCommandBuffer(s.cmd, &bi) != VK_SUCCESS)
         throw std::runtime_error("UploadManager: failed to begin upload command buffer");
 
-    // WRITE-AFTER-READ guard: destination buffers (e.g. IndirectRenderer's
+    // WRITE-AFTER-READ/WRITE guard: destination buffers (e.g. IndirectRenderer's
     // merged vertex/index buffers) may still be read by a previous frame's
-    // draw (vertex/index/indirect input) submitted earlier on THIS queue. The
-    // upload queue is the graphics-family geometry queue (same queue as draws
-    // on this device), so an execution+memory barrier here correctly orders
-    // those prior reads before the transfer writes. Harmless for fresh chunk
-    // buffers that had no prior read.
+    // draw (vertex/index/indirect input) submitted earlier on THIS queue, or
+    // written by a previous transfer into the same region (in-place slot
+    // updates). The upload queue is the graphics-family geometry queue (same
+    // queue as draws on this device), so an execution+memory barrier here
+    // correctly orders those prior reads/writes before the transfer writes.
+    // Harmless for fresh chunk buffers that had no prior access.
+    //
+    // srcStageMask must be ALL_COMMANDS (not just VERTEX_ATTRIBUTE_INPUT):
+    // sync validation attributes a draw's vertex-attribute reads to the whole
+    // pipeline span of the draw (TESS_EVAL, GEOMETRY, FRAGMENT, COLOR_ATTACHMENT
+    // OUTPUT, ... — observed for the tessellated solid pipeline), so a barrier
+    // scoped only to VERTEX_ATTRIBUTE_INPUT|INDEX_INPUT|DRAW_INDIRECT leaves
+    // the transfer write unsynchronized against those reads
+    // (SYNC-HAZARD-WRITE-AFTER-READ, aborting GPU-assisted runs). The access
+    // masks still restrict the ordering to actual read accesses; ALL_COMMANDS
+    // only widens the stage span.
     {
         VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-        mb.srcStageMask  = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT |
-                           VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
-                           VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        mb.srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         mb.srcAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
                            VK_ACCESS_2_INDEX_READ_BIT |
-                           VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+                           VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT |
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT |
+                           VK_ACCESS_2_TRANSFER_READ_BIT;
         mb.dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT;
         mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
 

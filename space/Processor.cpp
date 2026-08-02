@@ -5,7 +5,7 @@
 #include "Tesselator.hpp"
 
 
-Processor::Processor(long * count_, ThreadPool &threadPool_, ThreadContext * context_, const BoundingCube &targetCube_, float * cellSizeOut_): threadPool(threadPool_), context(context_), count(count_), targetCube(targetCube_), firstCellSize(0.0f), cellSizeOut(cellSizeOut_) {
+Processor::Processor(long * count_, ThreadPool &threadPool_, ThreadContext * context_, const BoundingCube &targetCube_, float * cellSizeOut_): threadPool(threadPool_), context(context_), count(count_), targetCube(targetCube_) {
 
 }
 
@@ -22,6 +22,10 @@ bool Processor::iterate(const Octree &tree, OctreeNodeData &params) {
     // contains the chunk (the chunk and its ancestors) contribute to this
     // request's ladder — sibling chunks' subtrees are skipped entirely. The
     // ancestor tessellations still cover their whole regions internally.
+    // Without this prune every chunk event re-tessellates the WHOLE tree and
+    // the walk emits every chunk's level-0 mesh — which the caller publishes
+    // under the EVENT chunk's NodeID, so slots end up holding another chunk's
+    // finest geometry ("wrong chunkLod geometry").
     if(!params.cube.contains(targetCube.getCenter())) {
         return false;
     }
@@ -33,28 +37,18 @@ bool Processor::iterate(const Octree &tree, OctreeNodeData &params) {
     // root-descended cube (handed to the handler) is the tessellation bounds —
     // no reconstructed cubes, no drift.
     const int nodeChunkLod = params.node->getChunkLod();
-    if(nodeChunkLod >= 0) {
-        // Capture the frontier (level-0) cell size for the caller; coarse
-        // ancestor cells do not count (they are log-distance banded).
-        if(cellSizeOut && firstCellSize == 0.0f && params.node->getLod() == 0) {
-            firstCellSize = params.cube.getLengthX();
-        }
+    if(nodeChunkLod > -1) {
         long trianglesCount = 0;
         Tesselator nodeTesselator(&trianglesCount);
         tree.iterateTriangles(params.node, params.cube, params.level, nodeTesselator, context, nodeChunkLod);
-#ifdef DEBUG
-        std::cout << "[proc] chunkLod=" << nodeChunkLod << " lod=" << (int)params.node->getLod()
-                  << " cube=" << params.cube.getLengthX() << " tris=" << trianglesCount
-                  << " verts=" << nodeTesselator.geometry.vertices.size() << std::endl;
-#endif
-        if(onGeometry && !nodeTesselator.geometry.indices.empty()) {
-            onGeometry(nodeChunkLod, params.node, params.cube, std::move(nodeTesselator.geometry), nodeChunkLod);
+        if(!nodeTesselator.geometry.indices.empty()) {
+            onGeometry(params.level, params.node, params.cube, nodeTesselator.geometry, nodeChunkLod);
         }
     }
     // Keep descending along the root path: the children hold the finer ladder
     // levels. Cells below chunks (chunkLod -1) never tessellate and end the
     // walk — their parent links are already propagated for neighbor lookups.
-    return nodeChunkLod != -1;
+    return nodeChunkLod > -1;
 }
 
 void Processor::getOrder(const Octree &tree, OctreeNodeData &params, uint8_t * order){

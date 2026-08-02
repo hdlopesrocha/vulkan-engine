@@ -11,6 +11,11 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <chrono>
+
+// Last time a "no free slot" line was logged (throttled to 1/sec so a full
+// pool doesn't spam one line per rejected mesh).
+static std::chrono::steady_clock::time_point g_lastNoSlotLog = std::chrono::steady_clock::time_point::min();
 
 namespace {
 // Push constant blocks are std430: vec3 members align to 16 bytes, so the
@@ -622,9 +627,14 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
         // Barrier: prior vertex/index reads must complete before the transfers
         // write to those buffers. A single barrier per destination buffer (the
         // whole buffer) covers every disjoint copy in this batch.
+        // srcStageMask must be ALL_COMMANDS: sync validation attributes a
+        // draw's vertex-attribute reads to the whole pipeline span (TESS_EVAL,
+        // GEOMETRY, FRAGMENT, COLOR_ATTACHMENT_OUTPUT, ... — observed for the
+        // tessellated solid pipeline), so VERTEX_INPUT alone leaves the copy
+        // unsynchronized against those reads (SYNC-HAZARD-WRITE-AFTER-READ).
         VkBufferMemoryBarrier2 vb{};
         vb.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        vb.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+        vb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         vb.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
         vb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         vb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1476,6 +1486,23 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     {
         std::lock_guard<std::recursive_mutex> lock(mutex);
         numCmds = getCullDispatchCountLocked();
+#ifdef DEBUG
+        // DIAG: watch mesh-map growth (user-reported draw-cmd accumulation).
+        // meshes.size() = total entries ever inserted (never erased),
+        // activeCount = entries the cull pass actually processes.
+        static std::chrono::steady_clock::time_point lastDiag{};
+        auto nowD = std::chrono::steady_clock::now();
+        if (nowD - lastDiag >= std::chrono::seconds(1)) {
+            lastDiag = nowD;
+            std::cout << "[IndirectRenderer::diag] this=" << this
+                      << " meshes.size=" << meshes.size()
+                      << " active=" << activeMeshCountLocked()
+                      << " numCmds=" << numCmds
+                      << " slotActive=" << slotAlloc.activeCount()
+                      << " slotCap=" << slotAlloc.capacity()
+                      << std::endl;
+        }
+#endif
     }
     // Fast return if nothing to cull — avoids touching the pipeline at all
     if (numCmds == 0) {
@@ -1488,7 +1515,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
             activeInMeshes = static_cast<uint32_t>(activeMeshCountLocked());
         }
         static bool warned = false;
-        if (!warned) { printf("[IR::prepareCull] EARLY RETURN: active=%u numCmds=%u slotted=%d\n", activeInMeshes, numCmds, (int)slottedMode); warned = true; }
+        if (!warned) { printf("[IndirectRenderer::prepareCull] EARLY RETURN: active=%u numCmds=%u slotted=%d\n", activeInMeshes, numCmds, (int)slottedMode); warned = true; }
         return;
     }
 
@@ -2246,9 +2273,13 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
     if (slotIdx == UINT32_MAX) {
         slotIdx = slotAlloc.allocate(neededVerts, neededIdxs);
         if (slotIdx == UINT32_MAX) {
-            std::cerr << "[IndirectRenderer] addMeshSlotted: no free slot for chunk " << chunkId
-                      << " (active=" << slotAlloc.activeCount()
-                      << " capacity=" << slotAlloc.capacity() << ")" << std::endl;
+            auto now = std::chrono::steady_clock::now();
+            if (now - g_lastNoSlotLog >= std::chrono::seconds(1)) {
+                g_lastNoSlotLog = now;
+                std::cerr << "[IndirectRenderer] addMeshSlotted: no free slot for chunk " << chunkId
+                          << " (active=" << slotAlloc.activeCount()
+                          << " capacity=" << slotAlloc.capacity() << ")" << std::endl;
+            }
             return UINT32_MAX;
         }
 #ifdef DEBUG

@@ -78,7 +78,7 @@ const uint32_t kDebugSDFFaces[6][4] = {
 // True runtime growth would require reallocating the buffers, which the design
 // deliberately avoids.
 constexpr uint32_t kMaxSolidChunkSlots = 1024;   // main solid (opaque) pool
-constexpr uint32_t kMaxWaterChunkSlots = 192;    // main water (transparent) pool
+constexpr uint32_t kMaxWaterChunkSlots = 192;   // main water (transparent) pool
 constexpr uint32_t kMaxBrushChunkSlots = 64;     // brush preview pool
 
 bool isDrawableSDF(float v) {
@@ -1475,6 +1475,21 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
         };
         ageOut(pendingDeleteSolidSlots, solidIR);
         ageOut(pendingDeleteWaterSlots, waterIR);
+#ifdef DEBUG
+        // DIAG: pending-delete backlog growth per second (user-reported
+        // draw-cmd accumulation). Entries are consumed by matching publishes
+        // or aged out after MAX_FRAMES_IN_FLIGHT; steady growth here means
+        // the erase path outpaces publishes (unmatched deletions).
+        static std::chrono::steady_clock::time_point lastDiag{};
+        auto nowD = std::chrono::steady_clock::now();
+        if (nowD - lastDiag >= std::chrono::seconds(1)) {
+            lastDiag = nowD;
+            std::cout << "[SceneRenderer::diag] chunksInBatch=" << chunks.size()
+                      << " pendingDelSolid=" << pendingDeleteSolidSlots.size()
+                      << " pendingDelWater=" << pendingDeleteWaterSlots.size()
+                      << " curFrame=" << curFrame << std::endl;
+        }
+#endif
     } else if (!slottedModeEnabled && !batch.empty()) {
         // ── Legacy mode: append-based with full rebuild ──
         // Compute per-layer totals for the incoming batch so we can pre-size
@@ -1858,9 +1873,6 @@ void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
 
 void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, GeometryHandler onGeometry, float minSize, ThreadPool* poolOverride) {
 
-    // Make a local copy of the node data so the callback may safely outlive this stack frame
-    OctreeNodeData nodeCopy = nodeData;
-
     // Only CHUNKS (chunkLod 0) generate meshes. Coarse ancestor meshes
     // (chunkLod > 0) are disabled — tessellating an ancestor as one big
     // Surface-Nets cell samples the SDF at the coarse corners and misses
@@ -1881,13 +1893,13 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     const float cubeLength = nodeData.cube.getLength().x;
     const uint8_t maxLevel = static_cast<uint8_t>(scene.maxChunkLod(layer, minSize));
 
-    scene.requestModel3D(layer, nodeCopy, [&layer,&nid,&nodeCopy,&onGeometry,cubeLength,maxLevel](const Geometry& geo, int lod) {
+    scene.requestModel3D(layer, nodeData, [&layer,&nid,&nodeData,&onGeometry,cubeLength,maxLevel](const Geometry& geo, int lod) {
         LoDMesh lm;
         lm.geom = geo;
         lm.level = static_cast<uint8_t>(lod);
         lm.cellSize = cubeLength;
         lm.maxLevel = maxLevel;
-        onGeometry(layer, nid, nodeCopy, lm);
+        onGeometry(layer, nid, nodeData, lm);
     }, poolOverride);
 
 

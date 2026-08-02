@@ -1751,6 +1751,14 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
             std::lock_guard<std::recursive_mutex> cmdlk(m_submissionMutex);
             if (m_pendingCommandBuffersSet.count(commandBuffer) != 0) {
                 std::cerr << "[VulkanApp][ERROR] Attempted to submit command buffer " << (void*)commandBuffer << " which is already pending! Aborting submission to prevent device loss." << std::endl;
+                {
+                    auto sit = m_cmdSubmitMap.find(commandBuffer);
+                    if (sit != m_cmdSubmitMap.end())
+                        std::cerr << "[VulkanApp] previous submit id=" << sit->second << std::endl;
+                    auto it = m_cmdBacktraces.find(commandBuffer);
+                    if (it != m_cmdBacktraces.end())
+                        std::cerr << "[VulkanApp] allocation backtrace:\n" << it->second;
+                }
                 // Clean up and abort
                 if (semaphore != VK_NULL_HANDLE) {
                     resources.removeSemaphore(semaphore);
@@ -1927,6 +1935,14 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             std::lock_guard<std::recursive_mutex> cmdlk(m_submissionMutex);
             if (m_pendingCommandBuffersSet.count(commandBuffer) != 0) {
                 std::cerr << "[VulkanApp][ERROR] Attempted to submit command buffer " << (void*)commandBuffer << " which is already pending! Aborting submission to prevent device loss." << std::endl;
+                {
+                    auto sit = m_cmdSubmitMap.find(commandBuffer);
+                    if (sit != m_cmdSubmitMap.end())
+                        std::cerr << "[VulkanApp] previous submit id=" << sit->second << std::endl;
+                    auto it = m_cmdBacktraces.find(commandBuffer);
+                    if (it != m_cmdBacktraces.end())
+                        std::cerr << "[VulkanApp] allocation backtrace:\n" << it->second;
+                }
                 if (semaphore != VK_NULL_HANDLE) {
                     resources.removeSemaphore(semaphore);
                     vkDestroySemaphore(device, semaphore, nullptr);
@@ -2239,6 +2255,21 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             // per rotation inside processPendingCommandBuffers() and serialized the
             // queue.  Fence reset does not require a queue idle.
             vkResetFences(device, 1, &slotFence);
+
+            // The fence wait above proves the previous submission using this
+            // ring slot has COMPLETED on the GPU, so any pending-entry for this
+            // command buffer is obsolete. Remove it eagerly: the pending set is
+            // drained by processPendingCommandBuffers() on the main thread per
+            // frame, but during setup/loading there are no frames yet — without
+            // this removal the ring slot's command buffer gets re-submitted while
+            // its stale entry is still in the set, tripping the double-use guard.
+            {
+                std::lock_guard<std::recursive_mutex> cmdlk(m_submissionMutex);
+                for (auto it = m_pendingCommandBuffers.begin(); it != m_pendingCommandBuffers.end(); ++it) {
+                    if (it->first == cmd) { m_pendingCommandBuffers.erase(it); break; }
+                }
+                m_pendingCommandBuffersSet.erase(cmd);
+            }
         }
 
         VkResult resetRes = vkResetCommandBuffer(cmd, 0);
@@ -4106,7 +4137,11 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
-    bufferInfo.usage = usage;
+    // Every buffer is zero-initialized (see below): host-visible on the CPU,
+    // device-local via vkCmdFillBuffer, which requires TRANSFER_DST.
+    bufferInfo.usage = (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+                           ? usage
+                           : (usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo allocCI{};
@@ -4126,6 +4161,20 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     buffer.allocation = allocation;
     buffer.mappedData = allocInfo.pMappedData;
     buffer.memory = allocInfo.deviceMemory;
+
+    // No garbage may ever be renderable: zero the full range now.
+    // Host-visible: memset the persistent mapping. Device-local: synchronous
+    // GPU fill (the single-time submit waits), so the buffer is guaranteed
+    // zeroed before this function returns and before any later async upload.
+    if (size > 0) {
+        if (buffer.mappedData) {
+            memset(buffer.mappedData, 0, static_cast<size_t>(size));
+        } else {
+            runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd) {
+                vkCmdFillBuffer(cmd, buffer.buffer, 0, size, 0);
+            });
+        }
+    }
 
     resources.addBufferVma(buffer.buffer, allocation, "VulkanApp: buffer.buffer");
     return buffer;

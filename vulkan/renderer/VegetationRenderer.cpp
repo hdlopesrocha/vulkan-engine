@@ -176,6 +176,24 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     // Copy per-chunk instance data into the concatenated buffer (GPU→GPU)
     if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
         app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            // WRITE-AFTER-READ/WRITE guard: the concatenated instance buffer is
+            // read as vertex attributes by the previous frame's vegetation
+            // draws, and its per-chunk sources were written by earlier transfer
+            // submits. ALL_COMMANDS srcStage covers the full draw-pipeline span
+            // sync validation attributes vertex-attribute reads to
+            // (SYNC-HAZARD-WRITE-AFTER-READ reported on GPU-assisted runs).
+            VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+            mb.srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            mb.srcAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
+                               VK_ACCESS_2_TRANSFER_READ_BIT |
+                               VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            mb.dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT;
+            mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            dep.memoryBarrierCount = 1;
+            dep.pMemoryBarriers    = &mb;
+            vkCmdPipelineBarrier2(cmd, &dep);
+
             uint32_t off = 0;
             for (const auto& [cid, buf] : chunkBuffers) {
                 (void)cid;
