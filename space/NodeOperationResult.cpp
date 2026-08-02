@@ -21,7 +21,7 @@ NodeOperationResult::NodeOperationResult(OctreeNode * node_, SpaceType shapeType
     hsv(0.0f, 0.5f, 0.5f)
 {
     if (resultSDF_) 
-        std::memcpy(this->resultSDF, resultSDF_, sizeof(this->resultSDF)); else for(int i=0;i<8;++i) this->resultSDF[i]=INFINITY;
+        std::memcpy(this->resultSDF, resultSDF_, sizeof(this->resultSDF)); else for(int i=0;i<8;++i) this->resultSDF[i]=SDF_FAR;
     if (shapeSDF_) 
-        std::memcpy(this->shapeSDF, shapeSDF_, sizeof(this->shapeSDF)); else for(int i=0;i<8;++i) this->shapeSDF[i]=INFINITY;
+        std::memcpy(this->shapeSDF, shapeSDF_, sizeof(this->shapeSDF)); else for(int i=0;i<8;++i) this->shapeSDF[i]=SDF_FAR;
 }

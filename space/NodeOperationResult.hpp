@@ -4,6 +4,7 @@
 #include "../math/BrushMode.hpp"
 #include "../math/ContainmentType.hpp"
 #include "../math/Math.hpp"
+#include "../sdf/SDF.hpp"
 #include <glm/glm.hpp>
 class OctreeNode;
 
@@ -11,9 +12,9 @@ struct NodeOperationResult {
     OctreeNode * node;
     SpaceType shapeType;
     SpaceType resultType;
-    float resultSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
-    float shapeSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
-    float shapeSdfCenter = INFINITY;
+    float resultSDF[8] = {SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR};
+    float shapeSDF[8] = {SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR};
+    float shapeSdfCenter = SDF_FAR;
     uint8_t isSimplified;
     bool isLeaf;
     bool isChunk;

@@ -15,8 +15,13 @@ public:
     Vertex vertex;
     uint blockId;
     uint8_t bits;
-    int8_t lod = -1;
-    int8_t chunkLod = -1;
+    // Stored LoD levels are +1 shifted: getLod() returns the ladder level
+    // incremented by one, so uint8_t squeezes levels 0..254 without a -1
+    // sentinel — 0 declares "no LoD assigned" (unset/disable). Every
+    // propagator (min(child)+1), walker comparison and store uses this
+    // representation consistently.
+    uint8_t lod = 0;
+    uint8_t chunkLod = 0;
     float sdf[8];
     uint version;
 
@@ -36,11 +41,11 @@ public:
     uint8_t getSimplification() const;
     void setSimplification(uint8_t value);
 
-    int8_t getLod() const { return lod; }
-    void setLod(int8_t value) { lod = value; }
+    uint8_t getLod() const { return lod; }
+    void setLod(uint8_t value) { lod = value; }
 
-    int8_t getChunkLod() const { return chunkLod; }
-    void setChunkLod(int8_t value) { chunkLod = value; }
+    uint8_t getChunkLod() const { return chunkLod; }
+    void setChunkLod(uint8_t value) { chunkLod = value; }
 
     bool isChunk() const ;
     void setChunk(bool value);

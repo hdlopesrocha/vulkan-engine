@@ -30,25 +30,30 @@ bool Processor::iterate(const Octree &tree, OctreeNodeData &params) {
         return false;
     }
     // ONE Tesselator per node, from the WORLD ROOT down: every node on the
-    // chunk's root path has chunkLod >= 0 and tessellates at targetLod = its
-    // own chunkLod — the chunk (chunkLod 0) emits the frontier level-0 mesh,
-    // each ancestor (chunkLod k) emits the lod-k cell mesh. One walk therefore
-    // returns the whole ladder (all lods, no decimation), and the node's own
-    // root-descended cube (handed to the handler) is the tessellation bounds —
-    // no reconstructed cubes, no drift.
-    const int nodeChunkLod = params.node->getChunkLod();
-    if(nodeChunkLod > -1) {
+    // chunk's root path has a chunkLod and tessellates at targetLod = its own
+    // chunkLod — the chunk (stored chunkLod 1) emits the frontier level-0
+    // mesh, each ancestor (stored chunkLod k) emits the lod-k cell mesh. One
+    // walk therefore returns the whole ladder (all lods, no decimation), and
+    // the node's own root-descended cube (handed to the handler) is the
+    // tessellation bounds — no reconstructed cubes, no drift.
+    // lod/chunkLod are stored +1 shifted (0 = unset), so the chunk's stored
+    // chunkLod is 1 and its ancestors are 1,2,3... The walker compares stored
+    // values against this same stored target, keeping the whole ladder walk
+    // self-consistent. Only the level handed to onGeometry (the renderer's
+    // 0-based LADDER LEVEL: 0 = frontier mesh) is decoded back by (-1).
+    const uint8_t chunkLodStored = params.node->getChunkLod();
+    if(chunkLodStored > 0) {
         long trianglesCount = 0;
         Tesselator nodeTesselator(&trianglesCount);
-        tree.iterateTriangles(params.node, params.cube, params.level, nodeTesselator, context, nodeChunkLod);
+        tree.iterateTriangles(params.node, params.cube, params.level, nodeTesselator, context, chunkLodStored);
         if(!nodeTesselator.geometry.indices.empty()) {
-            onGeometry(params.level, params.node, params.cube, nodeTesselator.geometry, nodeChunkLod);
+            onGeometry(params.level, params.node, params.cube, nodeTesselator.geometry, chunkLodStored);
         }
     }
     // Keep descending along the root path: the children hold the finer ladder
-    // levels. Cells below chunks (chunkLod -1) never tessellate and end the
+    // levels. Cells without a chunkLod (stored 0) never tessellate and end the
     // walk — their parent links are already propagated for neighbor lookups.
-    return nodeChunkLod > -1;
+    return chunkLodStored > 0;
 }
 
 void Processor::getOrder(const Octree &tree, OctreeNodeData &params, uint8_t * order){

@@ -1873,8 +1873,9 @@ void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
 
 void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, GeometryHandler onGeometry, float minSize, ThreadPool* poolOverride) {
 
-    // Only CHUNKS (chunkLod 0) generate meshes. Coarse ancestor meshes
-    // (chunkLod > 0) are disabled — tessellating an ancestor as one big
+    // Only CHUNKS (stored chunkLod == 1 in the +1-shifted uint8_t space)
+    // generate meshes. Coarse ancestor meshes (stored chunkLod > 1) are
+    // disabled — tessellating an ancestor as one big
     // Surface-Nets cell samples the SDF at the coarse corners and misses
     // interior surface, so those meshes come out empty. Instead each chunk
     // publishes its own LoD LADDER: level 0 is the full-detail frontier mesh,
@@ -1887,16 +1888,16 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     // dist in [k, k+1) * chunkBase * lodBias. Every level uses the chunk base
     // cellSize (not its own density) so the bands TILE distance without gaps,
     // and the coarser density degrades with distance.
-    const int chunkLod = nodeData.node ? nodeData.node->getChunkLod() : -1;
-    if (chunkLod != 0) return;
+    const uint8_t chunkLod = nodeData.node ? nodeData.node->getChunkLod() : 0;
+    if (chunkLod != 1) return;
 
     const float cubeLength = nodeData.cube.getLength().x;
-    const uint8_t maxLevel = static_cast<uint8_t>(scene.maxChunkLod(layer, minSize));
+    const uint8_t maxLevel = scene.maxChunkLod(layer, minSize);
 
-    scene.requestModel3D(layer, nodeData, [&layer,&nid,&nodeData,&onGeometry,cubeLength,maxLevel](const Geometry& geo, int lod) {
+    scene.requestModel3D(layer, nodeData, [&layer,&nid,&nodeData,&onGeometry,cubeLength,maxLevel](const Geometry& geo, uint8_t lod) {
         LoDMesh lm;
         lm.geom = geo;
-        lm.level = static_cast<uint8_t>(lod);
+        lm.level = lod;
         lm.cellSize = cubeLength;
         lm.maxLevel = maxLevel;
         onGeometry(layer, nid, nodeData, lm);

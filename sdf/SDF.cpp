@@ -25,6 +25,18 @@ glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
         float d0 = sdf[edge[0]];
         float d1 = sdf[edge[1]];
 
+        // Sentinels: SDF_FAR marks corners with no SDF data (untouched /
+        // pruned / outside the domain). A crossing against a sentinel corner
+        // yields t ≈ 1.0, parking the contour vertex at the corner, and its
+        // plane normal is wild — both corrupt the QEF/massPoint. Only
+        // interpolate across corners that carry a real, finite sample.
+        if (!std::isfinite(d0) || !std::isfinite(d1)) {
+            continue;
+        }
+        if (std::fabs(d0) > SDF_FAR * 0.5f || std::fabs(d1) > SDF_FAR * 0.5f) {
+            continue;
+        }
+
         bool sign0 = d0 < 0.0f;
         bool sign1 = d1 < 0.0f;
 
@@ -36,7 +48,7 @@ glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
             glm::vec3 p = glm::mix(p0, p1, t);
             glm::vec3 nm = glm::mix(normals[edge[0]], normals[edge[1]], t);
             float nl = glm::length(nm);
-            if (nl < 1e-6f) {
+            if (!std::isfinite(nl) || nl < 1e-6f) {
                 continue;
             }
             glm::vec3 n = nm / nl;
@@ -66,6 +78,9 @@ glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
 
     if (glm::any(glm::isnan(result)) || glm::any(glm::isinf(result))) {
         return massPoint;
+    }
+    if (glm::any(glm::isnan(massPoint)) || glm::any(glm::isinf(massPoint))) {
+        return cube.getCenter();
     }
 
     glm::vec3 min = cube.getMin();
@@ -166,7 +181,7 @@ glm::vec3 SDF::getNormalFromPosition(float sdf[8], const BoundingCube& cube, con
 
     glm::vec3 normal = glm::vec3(dx, dy, dz) / cube.getLength();
     float nl = glm::length(normal);
-    if (nl < 1e-6f) {
+    if (!std::isfinite(nl) || nl < 1e-6f) {
         return glm::vec3(0.0f, 1.0f, 0.0f);
     }
     return normal / nl;
@@ -592,8 +607,8 @@ void SDF::getChildSDF(const float sdf[8], uint i , float result[8]) {
     BoundingCube canonicalCube = BoundingCube(glm::vec3(0.0f), 1.0f);
     BoundingCube cube = canonicalCube.getChild(i);
     for (uint j = 0; j < 8; ++j) {
-        if(sdf[j] == INFINITY) {
-            for (uint k = 0; k < 8; ++k) result[k] = INFINITY;
+        if(sdf[j] == SDF_FAR) {
+            for (uint k = 0; k < 8; ++k) result[k] = SDF_FAR;
             return;
         }
     }
@@ -611,7 +626,7 @@ SpaceType SDF::eval(const float sdf[8]) {
     bool hasPositive = false;
     bool hasNegative = false;
     for (int i = 0; i < 8; ++i) {  
-        if(sdf[i] == INFINITY) {
+        if(sdf[i] == SDF_FAR) {
             continue;  // skip untouched corners
         } else if (sdf[i] >= 0.0f) {
             hasPositive = true;

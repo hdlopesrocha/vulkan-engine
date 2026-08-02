@@ -3,11 +3,12 @@
 #include "OctreeAllocator.hpp"
 #include "OctreeNodeData.hpp"
 #include "OctreeChangeHandler.hpp"
+#include "../sdf/SDF.hpp"
 #include <cmath>
 #include <cstring>
 
 
-const float INFINITY_ARRAY [8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
+const float FAR_ARRAY [8] = {SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR};
 
 
 OctreeNode::OctreeNode() {
@@ -21,15 +22,16 @@ OctreeNode::OctreeNode(Vertex vertex_) {
 }
 
 OctreeNode * OctreeNode::init(Vertex vert) {
-	memcpy(this->sdf, INFINITY_ARRAY, sizeof(float)*8);
+	memcpy(this->sdf, FAR_ARRAY, sizeof(float)*8);
 	this->bits = 0x0;
-	this->lod = -1;
-	// chunkLod must be reset too: the allocator hands out raw (malloc'd) or
+	// lod / chunkLod must be reset too: the allocator hands out raw (malloc'd) or
 	// recycled memory without running the constructor, so the member
-	// initializer `int8_t chunkLod = -1` never executes — without this the
+	// initializer `uint8_t chunkLod = 0` never executes — without this the
 	// field holds garbage/stale values and the bottom-up propagation reads
-	// phantom chunkLods (thousands of spurious mesh nodes).
-	this->chunkLod = -1;
+	// phantom chunkLods (thousands of spurious mesh nodes). 0 = unset in the
+	// +1-shifted uint8_t representation.
+	this->lod = 0;
+	this->chunkLod = 0;
 	this->setSimplification(0u);
 	this->setChunk(false);
 	this->setType(SpaceType::Surface);

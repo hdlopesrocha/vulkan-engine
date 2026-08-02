@@ -100,21 +100,22 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 
 	// LoD propagation on return order (leafs → root): loadRecursive unwinds
 	// bottom-up, so every child's lod is final when this node's is computed —
-	// the same rule as the compression phase of Octree::shape(). Leaf: LoD 0
-	// at the simplification frontier (the last simplification possible was
-	// achieved), -1 otherwise. Parent: min(child lod)+1, with the most common
-	// brushIndex among children (excluding DISCARD_BRUSH_INDEX) climbing up.
-	// chunkLod: 0 when the node is a chunk (first chunk level), else climb
-	// min(children.chunkLod)+1 while any child carries a chunkLod (min != -1);
-	// leaves and cells below chunks stay -1.
+	// the same rule as the compression phase of Octree::shape(). Leaf: stored
+	// LoD 1 at the simplification frontier (the last simplification possible
+	// was achieved), 0 otherwise. Parent: min(child lod stored)+1, with the
+	// most common brushIndex among children (excluding DISCARD_BRUSH_INDEX)
+	// climbing up. chunkLod: stored 1 when the node is a chunk (first chunk
+	// level), else climb max(children.chunkLod stored)+1 while any child
+	// carries a chunkLod (max != 0); leaves and cells below chunks stay 0.
+	// All stored values are uint8_t (+1 from the ladder level, 0 = unset).
 	if(isLeaf) {
-		node->setLod(node->getSimplification() ? 0 : -1);
-		node->setChunkLod(node->isChunk() ? 0 : -1);
+		node->setLod(node->getSimplification() ? 1 : 0);
+		node->setChunkLod(node->isChunk() ? 1 : 0);
 	} else {
 		OctreeNode * childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 		node->getChildren(*tree->allocator, childNodes);
-		int8_t maxLod = -1;
-		int8_t maxChunkLod = -1;
+		uint8_t maxLod = 0;
+		uint8_t maxChunkLod = 0;
 		int brushCounts[64] = {};
 		for(int j = 0; j < 8; ++j) {
 			if(childNodes[j] != NULL) {
@@ -130,11 +131,11 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 				}
 			}
 		}
-		node->setLod(maxLod >= 0 ? static_cast<int8_t>(maxLod + 1) : static_cast<int8_t>(-1));
+		node->setLod(maxLod > 0 ? static_cast<uint8_t>(maxLod + 1) : 0);
 		if(node->isChunk()) {
-			node->setChunkLod(0);
+			node->setChunkLod(1);
 		} else {
-			node->setChunkLod(maxChunkLod >= 0 ? static_cast<int8_t>(maxChunkLod + 1) : static_cast<int8_t>(-1));
+			node->setChunkLod(maxChunkLod > 0 ? static_cast<uint8_t>(maxChunkLod + 1) : 0);
 		}
 		int bestBrush = DISCARD_BRUSH_INDEX;
 		int bestCount = 0;

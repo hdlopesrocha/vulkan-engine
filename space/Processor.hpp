@@ -22,7 +22,7 @@ public:
     // ladder level (the node's chunkLod), the node itself and the node's own
     // root-descended bounding cube (used for the tessellation bounds — no
     // reconstructed cubes), plus the node's geometry.
-    std::function<void(int level, const OctreeNode* node, const BoundingCube &cube, Geometry &geometry, int lod)> onGeometry;
+    std::function<void(int level, const OctreeNode* node, const BoundingCube &cube, Geometry &geometry, uint8_t lod)> onGeometry;
     bool iterate(const Octree &tree, OctreeNodeData &params) override;
     void getOrder(const Octree &tree, OctreeNodeData &params, uint8_t order[8]) override;
     void virtualize(Octree * tree, const BoundingCube &cube, float * sdf, uint level, uint levels);

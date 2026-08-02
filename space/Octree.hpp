@@ -62,7 +62,9 @@ public:
             int fromLevel,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context,
-            int targetLod = -1) const;
+            // targetLod uses the +1-shifted STORED ladder level:
+            // 0 = no LoD (legacy full-walk mode), 1 = frontier, k = ancestor.
+            int targetLod = 0) const;
 
     // HeightRootToChunk(N): how many LoD levels a chunk can hold above its
     // tessellation frontier before reaching the chunk-size boundary, i.e.
