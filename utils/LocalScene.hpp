@@ -30,7 +30,7 @@ public:
     // Must be called before any objects captured by enqueued tasks are destroyed.
     void stopPools();
 
-    void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback, ThreadPool* poolOverride = nullptr, int lod = -1, float* outCellSize = nullptr) override;
+    void requestModel3D(Layer layer, OctreeNodeData &data, const LadderCallback& callback, ThreadPool* poolOverride = nullptr) override;
     bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override;
     int maxChunkLod(Layer layer, float minSize) const override;
     void action(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) override;

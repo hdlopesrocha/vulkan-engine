@@ -9,3 +9,4 @@ void ForwardingHandler::handle(Vertex &v0, Vertex &v1, Vertex &v2) {
         if (h) h->handle(v0, v1, v2);
     }
 }
+

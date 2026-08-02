@@ -213,8 +213,15 @@ void Octree::iterateTriangles(
         BoundingCube cube;
         int level = 0;
 
-        bool isSurface() const {
-            return node != NULL && node->getType() == SpaceType::Surface && node->getSimplification() == 1u;
+        // A cell is "surface at the walk's resolution": either a frontier
+        // simplified cell (targetLod < 0 — legacy full-walk mode) or a ladder
+        // cell exactly at targetLod. With targetLod >= 0 the descent already
+        // stops at cells with lod == targetLod, so requiring lod equality here
+        // keeps coarse ladder levels (internal, non-simplified nodes) emitting
+        // their own cells while neighbors one level finer/coarser stay out.
+        bool isSurface(int targetLod) const {
+            return node != NULL && node->getType() == SpaceType::Surface &&
+                (targetLod < 0 ? node->getSimplification() == 1u : node->getLod() == targetLod);
         }
     };
 
@@ -549,7 +556,7 @@ void Octree::iterateTriangles(
         EdgeCell cells[4];
         for(int q = 0; q < 4; ++q) {
             cells[q] = findCellAt(edgeSamplePoint(edge, mid, q));
-            if(!cells[q].isSurface()) {
+            if(!cells[q].isSurface(targetLod)) {
                 return;
             }
         }
@@ -561,7 +568,16 @@ void Octree::iterateTriangles(
             }
         }
 
-        if(owner.node != from) {
+        // Attribute the segment to the walk root `from`: it is emitted iff
+        // its owner cell lies inside from's cube. For per-leaf walks (legacy
+        // targetLod < 0 mode) this is exactly the old `owner == from` test —
+        // adjacent cells' centers are never inside from's cube — so behavior
+        // is unchanged. For per-node ladder walks (from = a chunk or ladder
+        // ancestor, targetLod >= 0) the owner is a finer lod cell inside
+        // from's cube, so the WHOLE node tessellates in ONE call instead of
+        // one call per frontier leaf, and boundary segments are emitted by
+        // exactly the node that contains their owner.
+        if(owner.node != from && !fromCube.contains(owner.cube.getCenter())) {
             return;
         }
 
@@ -640,7 +656,12 @@ void Octree::iterateTriangles(
         }
     };
 
-    if(from == NULL || from->getType() != SpaceType::Surface || from->getSimplification() == 0u) {
+    // Accept any ladder cell as the `from` anchor: a frontier simplified leaf
+    // (simplification 1, lod 0) or an internal ancestor (simplification 0 but
+    // lod >= 0 — its own stored corner samples drive the coarse Surface-Nets
+    // extraction). Reject only non-ladder leaves (lod -1).
+    if(from == NULL || from->getType() != SpaceType::Surface ||
+       (from->getSimplification() == 0u && from->getLod() < 0)) {
         return;
     }
 
@@ -648,6 +669,14 @@ void Octree::iterateTriangles(
         glm::ivec2 edgeCorners = SDF_EDGES[edgeIndex];
         bool sign0 = from->sdf[edgeCorners.x] < 0.0f;
         bool sign1 = from->sdf[edgeCorners.y] < 0.0f;
+#ifdef DEBUG
+        if(edgeIndex == 0) {
+            std::cout << "[tri] from cube=" << fromCube.getLengthX() << " lod=" << (int)from->getLod()
+                      << " sim=" << from->getSimplification() << " sdf[0..7]=";
+            for(int c = 0; c < 8; ++c) std::cout << from->sdf[c] << ",";
+            std::cout << " surfaceEdges=0" << std::endl;
+        }
+#endif
         if(sign0 == sign1) {
             continue;
         }
@@ -1113,6 +1142,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                             childNode->setSimplification(child.isSimplified);
                             childNode->setChunk(child.isChunk);
                             childNode->setBrush(child.brushIndex != DISCARD_BRUSH_INDEX ? child.brushIndex : frame.brushIndex);
+                            childNode->setChunkLod(child.isChunk ? 0 : -1);
+                            childNode->setLod(child.isSimplified ? 0 : -1);
                             childNode->vertex.hsv = child.hsv;
                         }
                                                 
@@ -1133,6 +1164,14 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             r.node->setChunk(r.isChunk);
             r.node->setBrush(r.brushIndex);
             r.node->vertex.hsv = r.hsv;
+            if(r.isSimplified) {
+                r.node->setLod(0);
+            }
+            if(r.isChunk) {
+                r.node->setChunkLod(0);
+            }
+      
+      
             // LoD propagation on shape return order: the recursion unwinds
             // leafs → root, so by the time a parent reaches this block all of
             // its children already wrote their final lods. This replaces the
@@ -1158,10 +1197,9 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             // Handlers are dispatched per node with level = chunkLod: a chunk
             // (chunkLod 0) tessellates until lod 0 (the frontier), its parent
             // (chunkLod 1) until lod 1, and so on up toward the root.
-            if(r.node->isLeaf()) {
-                r.node->setLod(r.isSimplified ? 0 : -1);
-                r.node->setChunkLod(r.node->isChunk() ? 0 : -1);
-            } else {
+      
+
+            if(!r.node->isLeaf()) {
                 OctreeNode *childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
                 r.node->getChildren(*allocator, childNodes);
                 int8_t maxLod = -1;
@@ -1174,10 +1212,9 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 int brushCounts[64] = {};
                 for(int i = 0; i < 8; ++i) {
                     if(childNodes[i] != NULL) {
-                        if(childNodes[i]->getLod() > maxLod) {
-                            maxLod = childNodes[i]->getLod();
-                        }
+                        maxLod = glm::max(maxLod, childNodes[i]->getLod());
                         maxChunkLod = glm::max(maxChunkLod, childNodes[i]->getChunkLod());
+
                         const int brush = childNodes[i]->getBrush();
                         if(brush != DISCARD_BRUSH_INDEX && brush >= 0 && brush < 64) {
                             ++brushCounts[brush];
@@ -1192,14 +1229,9 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 // misses the fine surface (empty mesh). max() keeps the ladder
                 // strictly increasing so the walk recurses to the finer cells.
                 // max() also ignores -1 children (collapsed air/earth) for both.
-                r.node->setLod(maxLod >= 0 ? static_cast<int8_t>(maxLod + 1) : static_cast<int8_t>(-1));
-                if(r.node->isChunk()) {
-                    r.node->setChunkLod(0);
-                } else {
-                    r.node->setChunkLod(maxChunkLod >= 0
-                        ? static_cast<int8_t>(maxChunkLod + 1)
-                        : static_cast<int8_t>(-1));
-                }
+                r.node->setLod(maxLod + 1);
+                r.node->setChunkLod(maxChunkLod + 1);
+
                 int bestBrush = DISCARD_BRUSH_INDEX;
                 int bestCount = 0;
                 for(int b = 0; b < 64; ++b) {

@@ -23,7 +23,9 @@ class ThreadPool;
 
 // Visible nodes are reported via a callback lambda taking a NodeID and its version
 using VisibleNodeCallback = std::function<void(std::vector<OctreeNodeData>&)>;
-using GeometryCallback = std::function<void(const Geometry&)>;
+// One tessellation walk returns the chunk's whole LoD ladder: lods[i] is the
+// level-i mesh (0 = full-detail frontier, up to the chunk root's coarse cell).
+using LadderCallback = std::function<void(const Geometry& geo, int lod)>;
 
 class SceneLoaderCallback {
 public:
@@ -41,7 +43,7 @@ public:
     ~Scene() = default;
     virtual void action(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) = 0;
     virtual void loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) = 0;
-    virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback, ThreadPool* poolOverride = nullptr, int lod = -1, float* outCellSize = nullptr) = 0;
+    virtual void requestModel3D(Layer layer, OctreeNodeData &data, const LadderCallback& callback, ThreadPool* poolOverride = nullptr) = 0;
     virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
 
     // Maximum LoD level a chunk can publish for the given layer (>= 0). The

@@ -41,28 +41,28 @@ Octree& LocalScene::getOpaqueOctree() { return opaqueOctree; }
 const Octree& LocalScene::getOpaqueOctree() const { return opaqueOctree; }
 
 
-void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback, ThreadPool* poolOverride, int lod, float* outCellSize) {
+void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const LadderCallback& callback, ThreadPool* poolOverride) {
     long tessCount = 0;
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
-    long trianglesCount = 0;
     ThreadContext context = ThreadContext(data.cube);
-    Tesselator tesselator(&trianglesCount);
-    std::vector<OctreeNodeTriangleHandler*> handlers;
-    handlers.emplace_back(&tesselator);
     // Use the caller-supplied pool when present (e.g. brush editing runs on a
     // dedicated pool so it never competes with solid/water streaming
     // generation); otherwise fall back to the scene's shared pool.
     ThreadPool& pool = poolOverride ? *poolOverride : threadPool;
-    Processor processor(&tessCount, pool, &context, &handlers, lod, outCellSize);
-    tree->iterateFlat(processor, OctreeNodeData(data.level, data.node, data.cube, &context));
-    if(outCellSize) {
-        *outCellSize = processor.getFirstCellSize();
-    }
-    if (tesselator.geometry.indices.empty()) {
-    }
-    if(!tesselator.geometry.indices.empty()) {
-        callback(tesselator.geometry);
-    }
+    Processor processor(&tessCount, pool, &context, data.cube);
+    // ONE Tesselator per node, from the WORLD ROOT down: the flat walk visits
+    // the whole tree, but the Processor prunes everything off this chunk's
+    // root path, so only the chunk and its ancestors tessellate — the chunk
+    // at targetLod 0 (its frontier mesh) and each ancestor at targetLod = its
+    // own chunkLod (its lod-k cell mesh). The walk hands the node info and the
+    // node's own root-descended bounding cube to the handler (no reconstructed
+    // cubes), and propagates every parent link (root -> chunk -> leaves) —
+    // the parents are required for the root-consistent cube rebuilds inside
+    // iterateTriangles.
+    processor.onGeometry = [&data,&callback](int level, const OctreeNode* node, const BoundingCube &cube, Geometry&& g, int lod) {
+         callback(g, lod);
+    };
+    tree->iterateFlat(processor, OctreeNodeData(0, tree->root, static_cast<const BoundingCube&>(*tree), &context));
 }
 
 bool LocalScene::isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) {

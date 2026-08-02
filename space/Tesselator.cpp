@@ -32,7 +32,6 @@ glm::vec2 triplanarMapping(glm::vec3 position, int plane) {
     }
 }
 
-
 void Tesselator::handle(Vertex &v0, Vertex &v1, Vertex &v2) {
     if(v0.brushIndex>DISCARD_BRUSH_INDEX && 
         v1.brushIndex>DISCARD_BRUSH_INDEX && 

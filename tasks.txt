@@ -1,0 +1,76 @@
+# Descriptor set audit — findings (2026-08-01)
+
+Verified against descriptor-set creations, bind sites, and actual shader set
+usage (including shared headers in shaders/includes/).
+
+## Finding A — Water passes bind a dead + redundant material set (set=1)
+
+Water shader stages use ONLY sets 0 and 2:
+  water.vert = set 0, water.tese = set 0+2, water.frag = set 0+2,
+  water_backface.frag = set 0+2, water_wireframe.frag = none
+
+getMaterialDescriptorSet() always returns VK_NULL_HANDLE (the member has not
+been written since the SceneRenderer refactor; its setter was removed in
+commit 09e9dbf). The set=1 bind blocks are therefore unreachable AND useless
+even if reachable. Dead/redundant bind sites:
+  - vulkan/renderer/WaterRenderer.cpp:867-873   (water geometry pass)
+  - vulkan/renderer/SceneRenderer.cpp:649-655   (water pass)
+  - vulkan/renderer/SceneRenderer.cpp:676-684   (water wireframe pass)
+  - vulkan/renderer/WaterBackFaceRenderer.cpp:350-355 (back-face pass)
+
+Layout slots are harmless and can stay:
+  - vulkan/renderer/WaterRenderer.cpp:411  waterSetLayouts[1] = material layout
+  - vulkan/renderer/SceneRenderer.cpp:1136 water wireframe setLayouts[1]
+
+Suggested fix: delete the four dead bind blocks. Optionally later remove the
+material layout slot + renumber water shaders set 2 -> 1 (more invasive).
+
+## Finding B — ImpostorCapture binds set=2 (wind params) that no shader reads
+
+capture.vert uses set 0; capture.frag uses sets 0+1. Set 2 is never referenced
+since commit e2732a4 removed the set=2 block from capture.frag.
+  - vulkan/renderer/ImpostorCapture.cpp:312-316 binds 3 sets incl. wind set
+  - vulkan/renderer/ImpostorCapture.cpp:665   wind layout at layout index 2
+  - vulkan/renderer/ImpostorCapture.cpp:37-42 init readiness check on
+    sharedVegRenderer wind params; sharedVegRenderer is used ONLY for this
+    vestigial set (member at ImpostorCapture.hpp:127)
+
+Cascade removal:
+  1. capturePipelineLayout: layouts[3] -> layouts[2] (drop wind layout)
+  2. bind: sets[3] -> sets[2], count 3 -> 2
+  3. ImpostorCapture::init no longer needs the VegetationRenderer* param
+     (drop readiness check + sharedVegRenderer member)
+  4. ImpostorService::init no longer passes vegRenderer to capture.init
+     (keep ImpostorService::vegRenderer: rewire() still needs it)
+  5. VegetationRenderer::getWindParamsDescSetLayout/getWindParamsDescSet
+     become dead -> remove (added by e2732a4)
+
+## Finding C (minor) — Solid depth pre-pass binds brush-depth set unused by depth-only stages
+
+vulkan/renderer/SolidRenderer.cpp:387-393 renderDepthPrepass binds
+{perTextureDescriptorSet, brushDepthSet} but depth-only stages never read
+set 1 (main.vert = set 0, depth_only.frag = set 0). Bind only set 0
+(bindCount = 1) for this pass.
+
+## Finding D (minor) — shadowPass() unused mainDescriptorSet parameter
+
+vulkan/renderer/SceneRenderer.cpp:340 shadowPass signature includes
+VkDescriptorSet mainDescriptorSet but the body never uses it (binds
+shadowDescriptorSets[idx] instead). Call site: main.cpp:934.
+
+## Verified live (no action)
+
+  - mainDescriptorSets / staticDescriptorSet (per-frame copies source)
+  - shadowDescriptorSets: bound in shadowPass at SceneRenderer.cpp:455-459;
+    dummy depth views at bindings 4/8/9 are intentional (shadow_evsm.frag
+    only reads the UBO)
+  - cube360ComputeDs/cube360WaterComputeDs: bound via
+    IndirectRenderer::prepareCullWithDescriptor from Solid360Renderer.cpp:418
+  - per-frame water depth sets (prepareSceneTexturesForFrame) + async per-task
+    sets (main.cpp) — intentionally non-shared
+  - TextureMixer compute sets, ShadowRenderer blur sets, DebugSDF/DebugCube
+    sets, PostProcessRenderer set 0, SkyRenderer set 0
+  - RenderTargetsWidget linearizeDescriptorSet: single persistent set reused
+    with synchronous submits (correct reuse, not redundant)
+  - VegetationRenderer vegDescriptorSet + windParamsDescSet: bound in all its
+    passes and used by vegetation shaders (sets 0/1/2)
