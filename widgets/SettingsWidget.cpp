@@ -131,6 +131,19 @@ void SettingsWidget::render() {
             ImGui::SameLine(); ImGui::TextDisabled("? (>1 = steeper)");
         }
 
+        ImGui::Separator();
+        ImGui::Text("Level of Detail");
+        ImGui::Separator();
+        if (ImGui::SliderFloat("LoD Distance Bias", &settings.lodBias, 0.0f, 64.0f, "%.1f")) {
+            // live: the per-frame GPU band test reads settings.lodBias directly
+        }
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Scales the distance at which each coarser LoD level takes over "
+            "(transition at distance = level * chunkSize * bias). Larger = full "
+            "detail farther away (more triangles); smaller = coarser meshes "
+            "closer (fewer triangles). 0 = always coarsest, 64+ = full detail "
+            "everywhere.");
+
         if (ImGui::Button("Reset to Defaults")) {
             resetToDefaults();
         }

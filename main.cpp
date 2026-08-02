@@ -964,9 +964,9 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
         sceneRenderer->solidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-        sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition());
+        sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         sceneRenderer->brushSolidIndirectRenderer.acquireBuffers(commandBuffer);
-        sceneRenderer->brushSolidIndirectRenderer.prepareCull(commandBuffer, viewProj, camera.getPosition());
+        sceneRenderer->brushSolidIndirectRenderer.prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
             sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
         }
@@ -975,7 +975,7 @@ public:
         // shared visibleLods buffer. prepareCull acquires the water buffers
         // internally and must run outside a render pass.
         if (settings.waterEnabled && sceneRenderer->waterRenderer) {
-            sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition());
+            sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
@@ -984,7 +984,7 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
         if (sceneRenderer) {
-            sceneRenderer->shadowPass(this, commandBuffer, frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled);
+            sceneRenderer->shadowPass(this, commandBuffer, frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled, settings.lodBias);
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 1);

@@ -36,6 +36,14 @@ public:
     float triplanarThreshold = 0.12f;
     float triplanarExponent = 1.0f;
 
+    // LoD rendering: per-chunk LoD ladder selection. Each chunk publishes
+    // decimated levels (0 = full detail, N = coarsest). The GPU band test keeps
+    // entry level k for dist in [k, k+1) * chunkBase * lodBias, so larger
+    // values push coarser levels farther away (more detail, more triangles)
+    // and smaller values switch to coarse meshes sooner (fewer triangles).
+    // 0 = always coarsest, 64+ = effectively full detail everywhere.
+    float lodBias = 8.0f;
+
     // Tessellation
     bool tessellationEnabled = false;
     bool shadowTessellationEnabled = false;

@@ -65,15 +65,22 @@ const uint32_t kDebugSDFFaces[6][4] = {
 // 1 MB vertex + 256 KB index = 1.25 MB, so:
 //   solid 2048 -> 2.56 GB, water 256 -> 320 MB, brush 128 -> 40 MB  (~2.9 GB)
 //
+// Measured post-trim peaks (full scene + brush rebuild, DEBUG logs):
+//   solid ~416 slots, water ~160 slots, brush ~10 slots. The pools below hold
+//   ~2.5x the observed peak while keeping the pre-allocated reservation under
+//   1.6 GB — exceeding ~4 GB device-local caused radv to cancel the CS (device
+//   lost) during the bulk chunk-upload burst on the 680M iGPU.
+//   solid 1024 -> 1.28 GB, water 192 -> 240 MB, brush 64 -> 20 MB  (~1.54 GB)
+//
 // NOTE: slotted mode pre-allocates these buffers to capacity and never grows
 // them at runtime (that is the point of the design — no global rebuilds). If a
 // pool fills, "no free slot" is logged (with active/capacity) — bump the
 // relevant constant. DEBUG builds log "slot peak N / capacity" as usage climbs.
 // True runtime growth would require reallocating the buffers, which the design
 // deliberately avoids.
-constexpr uint32_t kMaxSolidChunkSlots = 2048;   // main solid (opaque) pool
-constexpr uint32_t kMaxWaterChunkSlots = 256;    // main water (transparent) pool
-constexpr uint32_t kMaxBrushChunkSlots = 128;    // brush preview pool
+constexpr uint32_t kMaxSolidChunkSlots = 1024;   // main solid (opaque) pool
+constexpr uint32_t kMaxWaterChunkSlots = 192;    // main water (transparent) pool
+constexpr uint32_t kMaxBrushChunkSlots = 64;     // brush preview pool
 
 bool isDrawableSDF(float v) {
     return std::isfinite(v) && std::abs(v) <= kDebugSDFClip;
@@ -401,12 +408,12 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, u
     // it needs. The cascade cull reads the per-chunk LoD selection the main
     // pass stamped into the shared visibleLods buffer (single source of truth),
     // so shadow draws use the exact same LoD as the main pass.
-    solidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_);
+    solidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_, lodBias);
     // Water shadows share the same LoD sync: the water cascade cull reads the
     // water main pass's visibleLods (the water prepareCull ran before this
     // shadow pass, so the selection is fresh for the current frame).
     if (waterRenderer) {
-        waterRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_);
+        waterRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_, lodBias);
     }
 
     // Acquire vegetation instance/indirect buffers before dynamic rendering
@@ -534,8 +541,8 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, u
     // Restore GPU culling for the main camera frustum (was overwritten by
     // per-cascade prepareCull calls above) so drawPrepared in the main pass
     // uses the correct visible set.
-    solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_);
-    brushSolidIndirectRenderer.prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_);
+    solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_, lodBias);
+    brushSolidIndirectRenderer.prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_, lodBias);
 
     // Restore the main UBO so subsequent passes see the original data.
     // Wait for all shadow cascade draws to finish reading the UBO first.
