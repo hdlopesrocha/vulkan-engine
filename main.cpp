@@ -119,6 +119,9 @@ public:
     float profileCpuUpdate = 0.0f;
     float profileCpuRecord = 0.0f;
     float profileFps = 0.0f;
+#ifdef DEBUG
+    uint32_t vramWatchdogCounter_ = 0;
+#endif
     UniformObject uboStatic = {};
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     std::shared_ptr<SettingsWidget> settingsWidget;
@@ -752,6 +755,30 @@ public:
         // Brush meshes drain from their OWN queue (decoupled from solid/water).
         if (sceneRenderer && !isLoading)
             sceneRenderer->processPendingBrushMeshes(this, camera.getPosition());
+
+#ifdef DEBUG
+        // VRAM headroom watchdog: on 4 GB iGPUs (e.g. Radeon 680M) exceeding
+        // device-local memory makes radv/amdgpu cancel the CS -> device lost
+        // (observed at the end of the bulk chunk-upload burst). Log the
+        // device-local heap usage every ~5 s so regressions are visible in
+        // run.log instead of surfacing only as a mysterious device lost.
+        if (++vramWatchdogCounter_ >= 300) {
+            vramWatchdogCounter_ = 0;
+            VkPhysicalDeviceMemoryProperties memProps{};
+            vkGetPhysicalDeviceMemoryProperties(getPhysicalDevice(), &memProps);
+            VmaBudget budgets[VK_MAX_MEMORY_HEAPS] = {};
+            vmaGetHeapBudgets(getVmaAllocator(), budgets);
+            uint64_t usedMB = 0, totalMB = 0;
+            for (uint32_t h = 0; h < memProps.memoryHeapCount; ++h) {
+                if (memProps.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+                    usedMB += budgets[h].usage;
+                    totalMB += budgets[h].budget ? budgets[h].budget : memProps.memoryHeaps[h].size;
+                }
+            }
+            std::cout << "[VRAM] device-local " << (usedMB >> 20) << " / "
+                      << (totalMB >> 20) << " MB" << std::endl;
+        }
+#endif
 
         // Drive the async streaming subsystem each frame. prepareFrameWaits()
         // registers upload completion semaphores with this frame's submit, and
