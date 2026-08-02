@@ -943,6 +943,13 @@ public:
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
             sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
         }
+        // GPU frustum cull water meshes BEFORE the shadow pass so the water
+        // shadow cascade reads the fresh (current-frame) LoD selection from the
+        // shared visibleLods buffer. prepareCull acquires the water buffers
+        // internally and must run outside a render pass.
+        if (settings.waterEnabled && sceneRenderer->waterRenderer) {
+            sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition());
+        }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
 
@@ -1604,9 +1611,11 @@ public:
 
         // Run water geometry pass offscreen and bind scene textures for post-process
         if (waterEnabled) {
-            // GPU frustum cull water meshes (must run outside a render pass)
+            // Water frustum cull already ran before the shadow pass; re-assert
+            // buffer visibility for the water geometry draw (no re-cull needed —
+            // the shadow cascade cull uses separate buffers and did not disturb
+            // the main water compact buffer).
             sceneRenderer->waterRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-            sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition());
             // Use 360° solid+sky reflection instead of the sky-only equirect view
             VkImageView skyView = (sceneRenderer && sceneRenderer->skyRenderer) ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)

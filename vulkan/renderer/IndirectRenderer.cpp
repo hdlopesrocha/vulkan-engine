@@ -1561,25 +1561,45 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     // Insert a TRANSFER→TRANSFER barrier before the fill so consecutive face
     // culls (same buffer, e.g. the 6 cubemap faces) don't race (WRITE_AFTER_WRITE).
     {
-        VkBufferMemoryBarrier2 preFill{};
-        preFill.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        preFill.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        preFill.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        preFill.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        preFill.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        preFill.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        preFill.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        preFill.buffer = outVisibleCountBuffer;
-        preFill.offset = 0;
-        preFill.size = VK_WHOLE_SIZE;
+        VkBufferMemoryBarrier2 preFill[2] = {};
+        preFill[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        // Drain prior compute dispatches too: the caller-owned count buffer is
+        // shared across faces/frames, and a previous face's vkCmdDispatch
+        // atomicAdd writes must complete before this fill overwrites them
+        // (WRITE_AFTER_WRITE). Only TRANSFER_WRITE here would leave
+        // dispatch→fill→dispatch unordered (sync-validation hazard).
+        preFill[0].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT
+                            | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        preFill[0].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT
+                            | VK_ACCESS_2_SHADER_WRITE_BIT;
+        preFill[0].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        preFill[0].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        preFill[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preFill[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preFill[0].buffer = outVisibleCountBuffer;
+        preFill[0].offset = 0;
+        preFill[0].size = VK_WHOLE_SIZE;
+
+        // The caller's descriptor set may bind this instance's shared
+        // visibleLodsScratch as the chosen-LoD output (e.g. the solid-360
+        // cubemap DS). That buffer is written by every face's dispatch, so a
+        // prior dispatch's writes must complete before our fill overwrites
+        // them — same WRITE_AFTER_WRITE reasoning as the count buffer.
+        preFill[1] = preFill[0];
+        preFill[1].buffer = visibleLodsScratch.buffer;
+        preFill[1].size = VK_WHOLE_SIZE;
 
         VkDependencyInfo depInfo{};
         depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 1;
-        depInfo.pBufferMemoryBarriers = &preFill;
+        depInfo.bufferMemoryBarrierCount = 2;
+        depInfo.pBufferMemoryBarriers = preFill;
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
     vkCmdFillBuffer(cmd, outVisibleCountBuffer, 0, sizeof(uint32_t), 0);
+    // Zero the shared chosen-LoD scratch as well: untouched entries from a
+    // previous frame must never be misread as a stale (chunk, level) pair.
+    if (visibleLodsScratch.buffer != VK_NULL_HANDLE)
+        vkCmdFillBuffer(cmd, visibleLodsScratch.buffer, 0, VK_WHOLE_SIZE, 0);
     {
         VkMemoryBarrier2 fillBarrier{};
         fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -1599,25 +1619,31 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     // prior vkCmdFillBuffer (e.g. main pass) or written by a previous face's
     // compute dispatch. Ensure that write is visible before this dispatch
     // writes to it again (TRANSFER_WRITE/SHADER_WRITE → COMPUTE hazard).
+    // The shared visibleLodsScratch (written by this dispatch via the caller's
+    // descriptor set) needs the same fill→compute ordering.
     {
-        VkBufferMemoryBarrier2 compactBarrier{};
-        compactBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        compactBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT
+        VkBufferMemoryBarrier2 compactBarriers[2] = {};
+        compactBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        compactBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT
                                     | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        compactBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT
+        compactBarriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT
                                     | VK_ACCESS_2_SHADER_WRITE_BIT;
-        compactBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        compactBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
-        compactBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        compactBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        compactBarrier.buffer = outCompactBuffer;
-        compactBarrier.offset = 0;
-        compactBarrier.size = VK_WHOLE_SIZE;
+        compactBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        compactBarriers[0].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+        compactBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        compactBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        compactBarriers[0].buffer = outCompactBuffer;
+        compactBarriers[0].offset = 0;
+        compactBarriers[0].size = VK_WHOLE_SIZE;
+
+        compactBarriers[1] = compactBarriers[0];
+        compactBarriers[1].buffer = visibleLodsScratch.buffer;
+        compactBarriers[1].size = VK_WHOLE_SIZE;
 
         VkDependencyInfo depInfo{};
         depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 1;
-        depInfo.pBufferMemoryBarriers = &compactBarrier;
+        depInfo.bufferMemoryBarrierCount = 2;
+        depInfo.pBufferMemoryBarriers = compactBarriers;
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
 
@@ -1940,10 +1966,11 @@ void IndirectRenderer::initSlots(VulkanApp* app,
 
     // Per-frame chosen-LoD output buffers (uvec2 per (chunk, level) entry) and
     // the scratch buffer bound by external descriptor-set owners.
+    // TRANSFER_DST: prepareCull zeroes them with vkCmdFillBuffer each frame.
     VkDeviceSize lodBufSize = sizeof(glm::uvec2) * meshCapacity * kMaxChunkLevels;
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         visibleLodBuffers[f] = app->createBuffer(lodBufSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void* data = visibleLodBuffers[f].map(0);
         if (data) {
@@ -1953,7 +1980,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     }
     if (visibleLodsScratch.buffer == VK_NULL_HANDLE) {
         visibleLodsScratch = app->createBuffer(lodBufSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void* data = visibleLodsScratch.map(0);
         if (data) {
@@ -1977,7 +2004,10 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     // ── Create compute pipeline + descriptor sets for GPU culling ────────────
     // (Same as in rebuild() — factored out to share)
     {
-        VkDescriptorSetLayoutBinding bindings[4] = {};
+        // Five bindings (0..4): input commands, count, bounds, output commands,
+        // chosen-LoD output. Was sized 4 with an out-of-bounds write to
+        // bindings[4] (stack smash) — must match the 5-entry createLayout.
+        VkDescriptorSetLayoutBinding bindings[5] = {};
         bindings[0].binding = 0;
         bindings[0].descriptorCount = 1;
         bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -2637,7 +2667,7 @@ void IndirectRenderer::initCascadeCull(VulkanApp* app) {
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    // Descriptor set layout: 9 bindings
+    // Descriptor set layout: 10 bindings
     // 0: inCmds (input draw commands)
     // 1: outCmds0 (cascade 0)
     // 2: bounds
@@ -2647,9 +2677,10 @@ void IndirectRenderer::initCascadeCull(VulkanApp* app) {
     // 6: outCmds2 (cascade 2)
     // 7: count2
     // 8: cascadeMatrices
-    std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
-    VkDescriptorBindingFlags bindingFlags[9];
-    for (uint32_t i = 0; i < 9; i++) {
+    // 9: visibleLods (chosen-LoD per draw entry, written by the main cull pass)
+    std::array<VkDescriptorSetLayoutBinding, 10> bindings{};
+    VkDescriptorBindingFlags bindingFlags[10];
+    for (uint32_t i = 0; i < 10; i++) {
         bindings[i].binding = i;
         bindings[i].descriptorCount = 1;
         bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -2659,7 +2690,7 @@ void IndirectRenderer::initCascadeCull(VulkanApp* app) {
 
     DescriptorAllocator descAlloc{device, app};
     cascadeCullDescSetLayout = descAlloc.createLayout(
-        bindings.data(), 9,
+        bindings.data(), 10,
         VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
         bindingFlags,
         "IndirectRenderer: cascadeCullDescSetLayout");
@@ -2789,6 +2820,13 @@ void IndirectRenderer::updateCascadeDescriptor(VulkanApp* app, uint32_t frame) {
 
     writer.writeBuffer(ds, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                        matBuf.buffer, matBuf.offset, matBuf.range);
+    // Binding 9: the per-frame chosen-LoD buffer written by the main cull pass.
+    // Same frame index as this cascade descriptor set, so the cascade reads the
+    // selection computed for the current frame in flight. visibleLodBuffers are
+    // recreated only alongside indirectBuffer/boundsBuffer (initSlots/rebuild),
+    // so the existing indirect/bounds refresh proxy covers them.
+    writer.writeBuffer(ds, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                       visibleLodBuffers[frame].buffer, 0, VK_WHOLE_SIZE);
     writer.flush();
 
     cascadeDescIndirectBuffer = indirectBuffer.buffer;

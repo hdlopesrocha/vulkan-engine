@@ -397,9 +397,16 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, u
     // cascade frustums simultaneously.  Each cascade independently receives
     // every chunk visible in its frustum — no exclusion between cascades —
     // so the fragment shader's per-cascade sampling always finds the geometry
-    // it needs. camPos/lodBias mirror the main pass so shadow draws use the
-    // same per-chunk LoD selection.
+    // it needs. The cascade cull reads the per-chunk LoD selection the main
+    // pass stamped into the shared visibleLods buffer (single source of truth),
+    // so shadow draws use the exact same LoD as the main pass.
     solidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_);
+    // Water shadows share the same LoD sync: the water cascade cull reads the
+    // water main pass's visibleLods (the water prepareCull ran before this
+    // shadow pass, so the selection is fresh for the current frame).
+    if (waterRenderer) {
+        waterRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_);
+    }
 
     // Acquire vegetation instance/indirect buffers before dynamic rendering
     if (vegetationEnabled && vegetationRenderer) {
@@ -481,16 +488,28 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, u
             frameCmdState.bindGraphicsDescriptorSets(commandBuffer, layout, 0, 1, &ds, 0, nullptr);
         }
 
+        // Bind the EVSM shadow pipeline (shared by the solid and water depth
+        // draws; both use the same Vertex format and indexed-indirect draws).
+        VkPipeline solidShadowPipeline = shadowMapper->getShadowPipeline();
+        if (solidShadowPipeline != VK_NULL_HANDLE) {
+            frameCmdState.bindGraphicsPipeline(commandBuffer, solidShadowPipeline);
+        }
+
         // Draw solid geometry into shadow map (can be toggled off to isolate
         // vegetation shadows for debugging).
         if (renderSolid) {
-            VkPipeline solidShadowPipeline = shadowMapper->getShadowPipeline();
-            if (solidShadowPipeline != VK_NULL_HANDLE) {
-                frameCmdState.bindGraphicsPipeline(commandBuffer, solidShadowPipeline);
-            }
             auto& shadowIR = solidRenderer->getIndirectRenderer();
             shadowIR.bindBuffers(commandBuffer);
             shadowIR.drawCascadeOnly(commandBuffer, c);
+        }
+
+        // Draw water geometry into the shadow map so water casts shadows at the
+        // same LoD as the main pass (the water cascade cull read the shared
+        // visibleLods selection). Reuses the same EVSM shadow pipeline.
+        if (waterRenderer) {
+            auto& waterShadowIR = waterRenderer->getIndirectRenderer();
+            waterShadowIR.bindBuffers(commandBuffer);
+            waterShadowIR.drawCascadeOnly(commandBuffer, c);
         }
 
         // Vegetation shadow pass: drawn after solid so its 2-buffer vertex

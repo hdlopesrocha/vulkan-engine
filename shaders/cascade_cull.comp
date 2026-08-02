@@ -48,10 +48,19 @@ layout(std430, binding = 8) readonly buffer CascadeMatrices {
     mat4 viewProj[3];
 } cascades;
 
+// Chosen-LoD per draw entry, written by the main cull pass (indirect.comp):
+// one uvec2 per entry {drawIndex, selectedLevel}, selectedLevel == 0xFFFFFFFF
+// marks an entry with no LoD data (legacy: always kept). This is the single
+// source of truth for the LoD selection so shadows render the exact same level
+// as the main pass.
+layout(std430, binding = 9) readonly buffer VisibleLods {
+    uvec2 data[];
+} visibleLods;
+
 layout(push_constant) uniform PC {
     uint numChunks;
-    vec3 camPos;   // camera position driving the LoD band selection
-    float lodBias; // band scale, mirrors the main pass
+    vec3 camPos;   // (unused: the LoD selection is read from visibleLods)
+    float lodBias; // (unused: the LoD selection is read from visibleLods)
 } pc;
 
 shared vec4 gPlanes[3][6];
@@ -136,20 +145,27 @@ void main() {
     }
 
     // ── LoD band guard ─────────────────────────────────────────────────────
-    // Mirror the main pass selection: only the draw entry of the chunk's
-    // selected level may be written to any cascade. Entries without LoD meta
-    // (cellSize <= 0) are legacy meshes: always kept.
+    // Use the exact level the main pass selected (read from visibleLods), so
+    // each chunk renders into the shadow cascades at the SAME LoD as the main
+    // pass. This replaces re-deriving the band locally, which used a stale
+    // (previous-frame) camera position and could diverge from the main pass.
+    // Entries without LoD meta (cellSize <= 0) are legacy meshes: always kept.
+    //
+    // Keep rule (identical to indirect.comp): levels tile distance with
+    // band = dist / (cellSize_k * lodBias):
+    //   level k: band in [2^k, 2^(k+1))  (min(floor(band), maxLevel) == k)
+    //   level maxLevel (the root): everything beyond (floor(band) >= maxLevel)
+    // Single-level scenes (maxLevel == 0) have no coarse fallback: always keep.
     vec4 lodMeta = boundsBuf.data[bIndex + 2u];
     float cellSize = lodMeta.x;
     uint entryLevel = uint(lodMeta.y + 0.5);
     uint maxLevel   = uint(lodMeta.z + 0.5);
 
     if (cellSize > 0.0) {
-        vec3 center = (minp + maxp) * 0.5;
-        float dist = distance(pc.camPos, center);
-        float band = dist / (cellSize * pc.lodBias);
-        uint selectedLevel = uint(min(floor(band), float(maxLevel)));
-        if (entryLevel != selectedLevel) return;
+        uint selectedLevel = (idx < visibleLods.data.length())
+                           ? visibleLods.data[idx].y : 0xFFFFFFFFu;
+        bool keep = (selectedLevel == 0xFFFFFFFFu) || (maxLevel == 0u) || (selectedLevel == entryLevel);
+        if (!keep) return;
     }
 
     DrawCmd cmd = inCmds.cmds[idx];

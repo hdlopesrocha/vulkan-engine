@@ -119,13 +119,57 @@ void main() {
 
     // bounds stored as min, max, lodMeta triples in `boundsBuf.data`
     uint bIndex = idx * 3u;
+    bool hasBounds = (bIndex + 2u) < boundsBuf.data.length();
     vec3 minp = vec3(0.0);
     vec3 maxp = vec3(0.0);
-    if ((bIndex + 2u) < boundsBuf.data.length()) {
+    vec4 lodMeta = vec4(0.0);
+    if (hasBounds) {
         minp = boundsBuf.data[bIndex].xyz;
         maxp = boundsBuf.data[bIndex + 1u].xyz;
-    } else {
-        // If bounds missing, conservatively mark visible
+        lodMeta = boundsBuf.data[bIndex + 2u];
+    }
+
+    // ── LoD band selection (frustum-independent) ───────────────────────────
+    // Handlers are dispatched per node with level = node.chunkLod: chunks
+    // (level 0) draw the finest frontier mesh, each ancestor one step
+    // coarser, and the root covers every far band. Each node publishes ONE
+    // draw entry at its own level; only the entry whose level matches the
+    // distance band survives to the compacted draw list. Entries without
+    // LoD meta (cellSize <= 0) are legacy meshes: always kept.
+    //
+    // Contiguous band rule: level k's cellSize is exactly 2^k times the
+    // finest cellSize, so with band = dist / (cellSize_k * lodBias) the
+    // levels tile distance without gaps or overlap:
+    //   level k: band in [2^k, 2^(k+1))  (min(floor(band), maxLevel) == k)
+    //   level maxLevel (the root): everything beyond (floor(band) >= maxLevel)
+    // Single-level scenes (maxLevel == 0) have no coarse fallback: always keep.
+    //
+    // The selection is computed for EVERY non-empty entry — even ones outside
+    // the camera frustum — and stamped into visibleLods, so the shadow cascade
+    // cull reads the exact same level instead of re-deriving the band with a
+    // stale camera position. (The band depends only on distance to the camera,
+    // not on the frustum.)
+    float cellSize = lodMeta.x;
+    int entryLevel = int(lodMeta.y + 0.5);
+    int maxLevel   = int(lodMeta.z + 0.5);
+
+    uint selectedLevel = 0xFFFFFFFFu;
+    if (cellSize > 0.0) {
+        vec3 center = (minp + maxp) * 0.5;
+        float dist = distance(pc.camPos, center);
+        float band = dist / (cellSize * pc.lodBias);
+        selectedLevel = uint(min(floor(band), float(maxLevel)));
+    }
+
+    // Publish the chosen level for this draw entry so external consumers
+    // (shadow cascade cull, cubemap capture, backface pass, LoD stats) read
+    // the exact same selection. Written for every non-empty entry.
+    if (idx < visibleLods.data.length()) {
+        visibleLods.data[idx] = uvec2(inCmds.cmds[idx].firstInstance, selectedLevel);
+    }
+
+    // If bounds missing, conservatively mark visible (legacy path).
+    if (!hasBounds) {
         uint dst = atomicAdd(count, 1);
         if (dst < outCmds.cmds.length()) outCmds.cmds[dst] = inCmds.cmds[idx];
         return;
@@ -134,32 +178,11 @@ void main() {
     // Models are identity now; frustum planes already extracted into gPlanes.
     if (!aabbVisible(gPlanes, minp, maxp)) return;
 
-    // ── LoD band selection ────────────────────────────────────────────────
-    // Each chunk publishes one draw entry per level (drawIndex = slot*8 + level,
-    // level 0 = finest). Only the entry whose level matches the chunk's selected
-    // level survives to the compacted draw list. Entries without LoD meta
-    // (cellSize <= 0) are legacy meshes: always kept.
-    vec4 lodMeta = boundsBuf.data[bIndex + 2u];
-    float cellSize = lodMeta.x;
-    int entryLevel = int(lodMeta.y + 0.5);
-    int maxLevel   = int(lodMeta.z + 0.5);
-
-    uint selectedLevel = 0xFFFFFFFFu;
+    // Only the entry whose level matches the distance band survives to the
+    // compacted draw list.
     if (cellSize > 0.0) {
-        // Distance band: level = floor(dist / (cellSize * lodBias)), clamped to
-        // the chunk's coarsest available level. With maxLevel == 0 (phase 2:
-        // chunks publish only their full-detail mesh) the selection is always 0.
-        vec3 center = (minp + maxp) * 0.5;
-        float dist = distance(pc.camPos, center);
-        float band = dist / (cellSize * pc.lodBias);
-        selectedLevel = uint(min(floor(band), float(maxLevel)));
-        if (uint(entryLevel) != selectedLevel) return;
-    }
-
-    // Publish the chosen level for this draw entry so CPU/external consumers
-    // (cubemap capture, backface pass, LoD stats) can look up the selection.
-    if (idx < visibleLods.data.length()) {
-        visibleLods.data[idx] = uvec2(inCmds.cmds[idx].firstInstance, selectedLevel);
+        bool keep = (maxLevel == 0) || (int(selectedLevel) == entryLevel);
+        if (!keep) return;
     }
 
     uint dst = atomicAdd(count, 1);
