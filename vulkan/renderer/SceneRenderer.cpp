@@ -7,6 +7,7 @@
 #include "../../utils/SolidSpaceChangeHandler.hpp"
 #include "../../utils/LiquidSpaceChangeHandler.hpp"
 #include "../../utils/LocalScene.hpp"
+#include "../../space/MeshSimplifier.hpp"
 #include "../includes/locations.hpp"
 #include "../../math/ContainmentType.hpp"
 #include <algorithm>
@@ -1326,8 +1327,8 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // that would exceed the budget is skipped and its draw entry stays
             // zeroed (culled). maxLevel for the band meta is the scene-wide
             // clamp, not the ladder size (each node publishes exactly one
-            // level).
-            const uint32_t maxLevel = pd.lods.empty() ? 0 : static_cast<uint32_t>(pd.lods[0].maxLevel);
+            // level per ladder step).
+            const uint32_t ladderMaxLevel = pd.lods.empty() ? 0 : static_cast<uint32_t>(pd.lods[0].maxLevel);
 
             // If this chunk had a pending-delete entry (erase callback saved
             // the old slot for this NodeID), defer cleanup until the new upload
@@ -1364,6 +1365,11 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             if (pd.lods.empty() || lastPublishedLevel == UINT32_MAX || lastPublishedLevel < pd.lods[0].level) {
                 continue; // nothing fits the slot budget
             }
+            // Clamp the band meta to what was actually published: if the ladder
+            // was cut short by the slot budget, the coarsest published level
+            // must cover every remaining band (else the band test would drop
+            // the chunk past the cut level -> holes).
+            const uint32_t maxLevel = std::min(ladderMaxLevel, lastPublishedLevel);
 
             // Publish + upload pass, interleaved per level: addMeshSlotted sets
             // the MeshInfo's level to the level just published, so uploadSlot's
@@ -1595,7 +1601,7 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
         // scene-wide clamp, not the ladder size (one level per node).
         // lastPublishedLevel uses a sentinel so a level-0 mesh that does NOT
         // fit is correctly detected (init 0 would break the guard for level 0).
-        const uint32_t maxLevel = pd.lods.empty() ? 0 : static_cast<uint32_t>(pd.lods[0].maxLevel);
+        const uint32_t ladderMaxLevel = pd.lods.empty() ? 0 : static_cast<uint32_t>(pd.lods[0].maxLevel);
         uint32_t levelVertexOffset = 0, levelIndexOffset = 0;
         uint32_t lastPublishedLevel = UINT32_MAX;
         for (const auto& lod : pd.lods) {
@@ -1611,6 +1617,10 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
             ++idx;
             continue;
         }
+        // Clamp the band meta to what was actually published (see
+        // processPendingMeshes): the coarsest published level covers the
+        // remaining bands, so the test never drops the chunk.
+        const uint32_t maxLevel = std::min(ladderMaxLevel, lastPublishedLevel);
 
         // Publish + upload pass, interleaved per level (see processPendingMeshes
         // for the same pattern): addMeshSlotted sets the MeshInfo's level to
@@ -1754,25 +1764,50 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     // Only CHUNKS (chunkLod 0) generate meshes. Coarse ancestor meshes
     // (chunkLod > 0) are disabled — tessellating an ancestor as one big
     // Surface-Nets cell samples the SDF at the coarse corners and misses
-    // interior surface, so those meshes come out empty. Instead chunks render
-    // at every distance band: band meta maxLevel = 0 makes the GPU band test
-    // keep every chunk (keep = maxLevel==0), so the non-empty finer chunk
-    // meshes cover all distances and there are no holes. The tessellation
-    // target is the frontier (lod 0), and cellSize is the chunk's own length
-    // (kept only for metadata; it does not gate the keep when maxLevel==0).
+    // interior surface, so those meshes come out empty. Instead each chunk
+    // publishes its own LoD LADDER: level 0 is the full-detail frontier mesh,
+    // levels 1..N are vertex-cluster decimations (cell size frontierCell*2^lvl)
+    // so far chunks draw a fraction of the triangles. Border vertices are kept
+    // exact, so seams stay watertight between any adjacent levels.
+    //
+    // The GPU band test keeps ONE entry per chunk: entryLevel k covers
+    // dist in [k, k+1) * chunkBase * lodBias. Every level uses the chunk base
+    // cellSize (not its own density) so the bands TILE distance without gaps,
+    // and the decimated density degrades with distance.
     const int chunkLod = nodeData.node ? nodeData.node->getChunkLod() : -1;
     if (chunkLod != 0) return;
-    const int level = 0;
+
     const float cubeLength = nodeData.cube.getLength().x;
-    const float levelCellSize = cubeLength;
 
     std::vector<LoDMesh> lods;
-    lods.reserve(1);
+    float frontierCell = 0.0f;
     Geometry geom;
     scene.requestModel3D(layer, nodeCopy, [&geom](const Geometry& g) {
         geom = g;
-    }, poolOverride, level, nullptr);
-    lods.push_back({ std::move(geom), static_cast<uint8_t>(level), levelCellSize, static_cast<uint8_t>(0) });
+    }, poolOverride, 0, &frontierCell);
+    if (geom.vertices.empty() || geom.indices.empty()) return; // no surface: nothing to publish
+    if (frontierCell <= 0.0f) frontierCell = minSize; // fallback: configured frontier
+
+    const int maxLevels = std::min((int)kMaxChunkLevels - 1,
+                                   (int)std::floor(std::log2(cubeLength / std::max(frontierCell, 1e-3f))));
+    lods.reserve(maxLevels + 1);
+    lods.push_back({ std::move(geom), 0, cubeLength, static_cast<uint8_t>(maxLevels) });
+    for (int lvl = 1; lvl <= maxLevels; ++lvl) {
+        Geometry dec;
+        if (!decimateVertexCluster(lods[0].geom, frontierCell * (1u << lvl), frontierCell,
+                                   nodeCopy.cube, dec)) {
+            break; // mesh already coarser than this grid: ladder ends
+        }
+        lods.push_back({ std::move(dec), static_cast<uint8_t>(lvl), cubeLength, static_cast<uint8_t>(maxLevels) });
+    }
+#ifdef DEBUG
+    std::cout << "[processNodeLayer] chunkLod ladder levels=" << lods.size()
+              << " frontier=" << frontierCell;
+    for (const auto& lod : lods) {
+        std::cout << " L" << (int)lod.level << "=" << lod.geom.vertices.size();
+    }
+    std::cout << std::endl;
+#endif
     onGeometry(layer, nid, nodeCopy, lods);
 }
 
