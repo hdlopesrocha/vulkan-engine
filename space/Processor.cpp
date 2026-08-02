@@ -18,6 +18,11 @@ bool Processor::iterate(const Octree &tree, OctreeNodeData &params) {
     if(params.node->getType() != SpaceType::Surface) {
         return false;
     }
+    // Stop at simplified cells whose LoD <= targetLod. The lod values are
+    // fresh here: Octree::apply propagates lod BEFORE dispatching the deferred
+    // chunk events, and LocalScene::load propagates before notifying chunks.
+    // (Level k walks stop at cells of size <= minSize*2^(k+1), so level k
+    // meshes tile the chunk by cell size.)
     if(params.node->getSimplification() == 1u &&
        (targetLod < 0 || params.node->getLod() <= targetLod)) {
         if(cellSizeOut && firstCellSize == 0.0f) {
@@ -34,4 +39,3 @@ void Processor::getOrder(const Octree &tree, OctreeNodeData &params, uint8_t * o
         order[i] = i;
     }
 }
-

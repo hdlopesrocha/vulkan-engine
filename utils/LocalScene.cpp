@@ -8,6 +8,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstring>
+#include <algorithm>
 #include <filesystem>
 
 namespace {
@@ -66,6 +67,18 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
 
 bool LocalScene::isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) {
     return data.node->version >= version;
+}
+
+int LocalScene::maxChunkLod(Layer layer, float minSize) const {
+    // The number of LoD levels a chunk can hold above its tessellation
+    // frontier before reaching the chunk-size boundary, clamped to the
+    // ladder the tree actually provides: the root carries the highest
+    // chunkLod, and its mesh is the far-distance fallback, so levels beyond
+    // it are never drawn.
+    const Octree& tree = layer == LAYER_OPAQUE ? opaqueOctree : transparentOctree;
+    int rootChunkLod = -1;
+    if (tree.root) rootChunkLod = tree.root->getChunkLod();
+    return std::max(0, std::min(tree.heightRootToChunk(0, minSize), rootChunkLod));
 }
 
 void LocalScene::loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) {
@@ -146,8 +159,6 @@ void LocalScene::load(const std::string& filePath, Settings* settings) {
 
     opaqueLoader.readFromStream(raw);
     transparentLoader.readFromStream(raw);
-    opaqueOctree.propagateLod();
-    transparentOctree.propagateLod();
 
     if (header.hasSettings != 0u) {
         Settings loadedSettings = {};

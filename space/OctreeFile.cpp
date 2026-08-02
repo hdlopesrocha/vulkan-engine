@@ -5,6 +5,7 @@
 #include "ChildBlock.hpp"
 #include "OctreeNodeFile.hpp"
 #include "../sdf/SDF.hpp"
+#include "../math/BrushMode.hpp"
 #include "../math/Math.hpp"
 
 
@@ -95,6 +96,57 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 		//node->info.push_back(info);
 		file->load(baseFolder, cube);
 		delete file;
+	}
+
+	// LoD propagation on return order (leafs → root): loadRecursive unwinds
+	// bottom-up, so every child's lod is final when this node's is computed —
+	// the same rule as the compression phase of Octree::shape(). Leaf: LoD 0
+	// at the simplification frontier (the last simplification possible was
+	// achieved), -1 otherwise. Parent: min(child lod)+1, with the most common
+	// brushIndex among children (excluding DISCARD_BRUSH_INDEX) climbing up.
+	// chunkLod: 0 when the node is a chunk (first chunk level), else climb
+	// min(children.chunkLod)+1 while any child carries a chunkLod (min != -1);
+	// leaves and cells below chunks stay -1.
+	if(isLeaf) {
+		node->setLod(node->getSimplification() ? 0 : -1);
+		node->setChunkLod(node->isChunk() ? 0 : -1);
+	} else {
+		OctreeNode * childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+		node->getChildren(*tree->allocator, childNodes);
+		int8_t maxLod = -1;
+		int8_t maxChunkLod = -1;
+		int brushCounts[64] = {};
+		for(int j = 0; j < 8; ++j) {
+			if(childNodes[j] != NULL) {
+				if(childNodes[j]->getLod() > maxLod) {
+					maxLod = childNodes[j]->getLod();
+				}
+				if(childNodes[j]->getChunkLod() > maxChunkLod) {
+					maxChunkLod = childNodes[j]->getChunkLod();
+				}
+				const int brush = childNodes[j]->getBrush();
+				if(brush != DISCARD_BRUSH_INDEX && brush >= 0 && brush < 64) {
+					++brushCounts[brush];
+				}
+			}
+		}
+		node->setLod(maxLod >= 0 ? static_cast<int8_t>(maxLod + 1) : static_cast<int8_t>(-1));
+		if(node->isChunk()) {
+			node->setChunkLod(0);
+		} else {
+			node->setChunkLod(maxChunkLod >= 0 ? static_cast<int8_t>(maxChunkLod + 1) : static_cast<int8_t>(-1));
+		}
+		int bestBrush = DISCARD_BRUSH_INDEX;
+		int bestCount = 0;
+		for(int b = 0; b < 64; ++b) {
+			if(brushCounts[b] > bestCount) {
+				bestCount = brushCounts[b];
+				bestBrush = b;
+			}
+		}
+		if(bestBrush != DISCARD_BRUSH_INDEX) {
+			node->setBrush(bestBrush);
+		}
 	}
 	return node;
 }

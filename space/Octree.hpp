@@ -64,7 +64,14 @@ public:
             ThreadContext * context,
             int targetLod = -1) const;
 
-    void propagateLod();
+    // HeightRootToChunk(N): how many LoD levels a chunk can hold above its
+    // tessellation frontier before reaching the chunk-size boundary, i.e.
+    // floor(log2(chunkSize / minSize)) - N. >= 0 means a chunk at LoD N is
+    // valid: its ladder (levels 0..N) fits inside its own size band, and the
+    // renderer clamps the chunk's maxLevel to this so coarse levels never
+    // exceed the chunk. Negative means the frontier sits deeper than the
+    // chunk can represent.
+    int heightRootToChunk(int lod, float minSize) const;
 
     bool isChunkNode(float nodeLength) const;
     bool isThreadNode(float nodeLength, float minSize, int threadSize) const;

@@ -43,4 +43,9 @@ public:
     virtual void loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) = 0;
     virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback, ThreadPool* poolOverride = nullptr, int lod = -1, float* outCellSize = nullptr) = 0;
     virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
+
+    // Maximum LoD level a chunk can publish for the given layer (>= 0). The
+    // chunk's ladder maxLevel is clamped to this so HeightRootToChunk(N) >= 0
+    // always holds — coarse levels never exceed the chunk's own size band.
+    virtual int maxChunkLod(Layer layer, float minSize) const = 0;
 };

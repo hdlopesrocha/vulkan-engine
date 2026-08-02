@@ -760,6 +760,7 @@ void Octree::apply(
     threadsCreated = 0;
     prunedEmptyNodes = 0;
     prunedSolidNodes = 0;
+
     *shapeCounter = 0;
     ShapeArgs args = ShapeArgs(operation, function, painter, model, simplifier, changeHandler, minSize);	
     expand(args);
@@ -767,55 +768,59 @@ void Octree::apply(
     ThreadContext localChunkContext = ThreadContext(*this);
     NodeOperationResult r = NodeOperationResult();
     shape(r, frame, args, &localChunkContext);
-    propagateLod();
+    // Chunk change events were deferred during the traversal; dispatch them
+    // now that the recursion has unwound (leafs → root) so handlers (and the
+    // tessellation walks they dispatch) observe fresh per-node lod/chunkLod
+    // values. Dispatch level by level, first chunkLod 0 (the chunks) then
+    // chunkLod 1 (their parents), ...: ascending chunkLod. Combined with the
+    // renderer's distance-sorted drain (closest chunks get the lowest slots,
+    // and the GPU cull preserves input order), the resulting draw command
+    // order renders near geometry first so far geometry's depth tests fail
+    // early against the depth buffer.
+    std::stable_sort(args.deferredChunkEvents->begin(), args.deferredChunkEvents->end(),
+        [](const ShapeArgs::DeferredChunkEvent &a, const ShapeArgs::DeferredChunkEvent &b) {
+            const int lodA = a.data.node ? a.data.node->getChunkLod() : -1;
+            const int lodB = b.data.node ? b.data.node->getChunkLod() : -1;
+            return lodA < lodB;
+        });
+    for(const ShapeArgs::DeferredChunkEvent &ev : *args.deferredChunkEvents) {
+        // Handlers are dispatched per node with level = node.chunkLod: a
+        // chunk (chunkLod 0) tessellates until lod 0 (the frontier), its
+        // parent (chunkLod 1) until lod 1, and so on toward the root. The
+        // root itself always carries a mesh so far distance bands have a
+        // fallback; nodes beyond the chunk's own ladder (chunkLod >
+        // heightRootToChunk(0)) are redundant (the root covers those bands).
+        ev.added ? args.changeHandler.onNodeAdded(ev.data) : args.changeHandler.onNodeDeleted(ev.data);
+    }
 #ifdef DEBUG
-    std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << ", prunedEmpty=" << prunedEmptyNodes << ", prunedSolid=" << prunedSolidNodes << std::endl;
+    // Histogram of dispatched mesh events by chunkLod level: reveals gaps in
+    // the 0..N chunkLod chain (a missing level = a chunk hole at that band).
+    // Also tracks the min/max cube length per level to spot misassigned nodes.
+    {
+        int hist[32] = {};
+        float minLen[32], maxLen[32];
+        for(int i=0;i<32;++i){minLen[i]=1e30f;maxLen[i]=0.0f;}
+        int maxCl = -1;
+        for(const ShapeArgs::DeferredChunkEvent &ev : *args.deferredChunkEvents) {
+            int cl = ev.data.node ? ev.data.node->getChunkLod() : -1;
+            float L = ev.data.cube.getLengthX();
+            if(cl >= 0 && cl < 32) { ++hist[cl]; if(cl > maxCl) maxCl = cl;
+                if(L<minLen[cl])minLen[cl]=L; if(L>maxLen[cl])maxLen[cl]=L; }
+        }
+        std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << ", prunedEmpty=" << prunedEmptyNodes << ", prunedSolid=" << prunedSolidNodes
+                  << ", events=" << args.deferredChunkEvents->size() << ", chunkLodHist=[";
+        for(int i = 0; i <= maxCl; ++i) std::cout << (i?",":"") << i << ":" << hist[i] << "(" << minLen[i] << "-" << maxLen[i] << ")";
+        std::cout << "] chunkSize=" << chunkSize << std::endl;
+    }
 #endif
 }
 
-void Octree::propagateLod() {
-    if(root == nullptr || allocator == nullptr) return;
-
-    // Post-order traversal (children before parents) so a node's lod is
-    // derived from lods already computed for its children. Iterative instead
-    // of recursive: the tree depth is unbounded in practice.
-    struct Frame { OctreeNode *node; int childIndex; };
-    std::vector<Frame> stack;
-    std::vector<OctreeNode *> postOrder;
-    stack.push_back({root, 0});
-    while(!stack.empty()) {
-        Frame &f = stack.back();
-        if(f.node == NULL || f.node->isLeaf() || f.childIndex >= 8) {
-            postOrder.push_back(f.node);
-            stack.pop_back();
-            continue;
-        }
-        OctreeNode *children[8] = {};
-        f.node->getChildren(*allocator, children);
-        OctreeNode *child = children[f.childIndex++];
-        if(child != NULL) {
-            stack.push_back({child, 0});
-        }
-    }
-
-    for(OctreeNode *node : postOrder) {
-        if(node == NULL || node->isLeaf()) {
-            continue;
-        }
-        OctreeNode *children[8] = {};
-        node->getChildren(*allocator, children);
-        int8_t minLod = INT8_MAX;
-        bool hasChild = false;
-        for(int i = 0; i < 8; ++i) {
-            if(children[i] != NULL) {
-                hasChild = true;
-                if(children[i]->getLod() < minLod) {
-                    minLod = children[i]->getLod();
-                }
-            }
-        }
-        node->setLod(hasChild ? static_cast<int8_t>(minLod + 1) : static_cast<int8_t>(-1));
-    }
+int Octree::heightRootToChunk(int lod, float minSize) const {
+    // Number of subdivision levels a chunk-size node can hold above minSize.
+    // Guarded against degenerate configurations (chunkSize < minSize).
+    const float ratio = std::max(1.0f, chunkSize / std::max(minSize, 1.0f));
+    const int maxLevels = static_cast<int>(std::floor(std::log2(ratio)));
+    return maxLevels - lod;
 }
 
 
@@ -1138,14 +1143,112 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             r.node->setChunk(r.isChunk);
             r.node->setBrush(r.brushIndex);
             r.node->vertex.hsv = r.hsv;
-            if (r.isChunk) {
-                ++r.node->version;
-                OctreeNodeData nodeData(frame.level, r.node, frame.cube, nullptr);
-                r.resultType == SpaceType::Surface ? args.changeHandler.onNodeAdded(nodeData) : 
-                                                args.changeHandler.onNodeDeleted(nodeData);
-            }
+            // LoD propagation on shape return order: the recursion unwinds
+            // leafs → root, so by the time a parent reaches this block all of
+            // its children already wrote their final lods. This replaces the
+            // separate propagateLod() tree pass — a node's lod is derived
+            // right here, bottom-up, as the stack collapses.
+            //   - leaf (or just compressed to Solid/Empty below): LoD 0 marks
+            //     the simplification frontier (the last simplification possible
+            //     was achieved); unsimplified nodes are -1.
+            //   - parent: min(child lod)+1, so the value grows toward the
+            //     root: a chunk (an internal node at the first chunk level)
+            //     carries its ladder height. A targetLod=k walk stops at cells
+            //     with lod <= k: level 0 tessellates the frontier, level
+            //     chunkLod tessellates the chunk itself.
             if(r.resultType != SpaceType::Surface) {
+                // Compression: a fully Solid/Empty subtree collapses to a leaf
+                // (children are released) before the lod rule runs, so the
+                // collapsed node follows the leaf rule, not min(child)+1.
                 r.node->clear(*allocator, NULL);
+            }
+            // chunkLod: 0 when the node is a chunk (first chunk level), else
+            // climb min(children.chunkLod)+1 while any child carries a
+            // chunkLod (min != -1); leaves and cells below chunks stay -1.
+            // Handlers are dispatched per node with level = chunkLod: a chunk
+            // (chunkLod 0) tessellates until lod 0 (the frontier), its parent
+            // (chunkLod 1) until lod 1, and so on up toward the root.
+            if(r.node->isLeaf()) {
+                r.node->setLod(r.isSimplified ? 0 : -1);
+                r.node->setChunkLod(r.node->isChunk() ? 0 : -1);
+            } else {
+                OctreeNode *children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+                r.node->getChildren(*allocator, children);
+                int8_t maxLod = -1;
+                int8_t maxChunkLod = -1;
+                bool hasChild = false;
+                // Propagate the most common brushIndex among children
+                // (excluding DISCARD_BRUSH_INDEX) so every node from all LoD
+                // levels carries the dominant material of its subtree; coarse
+                // cells then texture as the majority brush instead of
+                // inheriting an arbitrary single child's brush.
+                int brushCounts[64] = {};
+                for(int i = 0; i < 8; ++i) {
+                    if(children[i] != NULL) {
+                        hasChild = true;
+                        if(children[i]->getLod() > maxLod) {
+                            maxLod = children[i]->getLod();
+                        }
+                        if(children[i]->getChunkLod() > maxChunkLod) {
+                            maxChunkLod = children[i]->getChunkLod();
+                        }
+                        const int brush = children[i]->getBrush();
+                        if(brush != DISCARD_BRUSH_INDEX && brush >= 0 && brush < 64) {
+                            ++brushCounts[brush];
+                        }
+                    }
+                }
+                // lod/chunkLod use MAX(children)+1. A targetLod=k walk recurses
+                // while lod > k and stops at lod <= k, so a parent must exceed
+                // ALL its children — with min() a node with a collapsed (lod 0)
+                // child would be marked lod 1 and the walk would stop at the
+                // node itself, tessellating one giant cell whose coarse SDF
+                // misses the fine surface (empty mesh). max() keeps the ladder
+                // strictly increasing so the walk recurses to the finer cells.
+                // max() also ignores -1 children (collapsed air/earth) for both.
+                r.node->setLod(maxLod >= 0 ? static_cast<int8_t>(maxLod + 1) : static_cast<int8_t>(-1));
+                if(r.node->isChunk()) {
+                    r.node->setChunkLod(0);
+                } else {
+                    r.node->setChunkLod(maxChunkLod >= 0
+                        ? static_cast<int8_t>(maxChunkLod + 1)
+                        : static_cast<int8_t>(-1));
+                }
+                int bestBrush = DISCARD_BRUSH_INDEX;
+                int bestCount = 0;
+                for(int b = 0; b < 64; ++b) {
+                    if(brushCounts[b] > bestCount) {
+                        bestCount = brushCounts[b];
+                        bestBrush = b;
+                    }
+                }
+                if(bestBrush != DISCARD_BRUSH_INDEX) {
+                    r.node->setBrush(bestBrush);
+                }
+            }
+            // Dispatch a mesh event ONLY for chunks (chunkLod 0). Coarse
+            // ancestor meshes (chunkLod > 0) are DISABLED: tessellating an
+            // ancestor as one big Surface-Nets cell samples the SDF at the
+            // coarse cell's corners, which misses interior surface detail, so
+            // those meshes come out empty (0 triangles) — the cell is marked
+            // Surface by type but its stored sdf has no zero crossing. Instead
+            // the renderer reuses the non-empty finer chunk meshes for every
+            // distance band (band meta maxLevel = 0 → chunks always kept), so
+            // there are no holes. chunkLod is still computed (widget/bands).
+            if(r.node->getChunkLod() == 0) {
+                ++r.node->version;
+                // Deferred: see Octree::apply — the recursion has fully
+                // unwound (leafs → root) when events are dispatched, so
+                // node->lod/chunkLod are fresh when handlers run. Shared
+                // storage across the per-thread ShapeArgs copies, so
+                // events emitted by pool threads are not lost.
+                {
+                    std::lock_guard<std::mutex> lock(*args.deferredEventsMutex);
+                    args.deferredChunkEvents->push_back({
+                        r.resultType == SpaceType::Surface,
+                        OctreeNodeData(frame.level, r.node, frame.cube, nullptr)
+                    });
+                }
             }
         }
     } else {
