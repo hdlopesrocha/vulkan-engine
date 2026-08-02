@@ -59,6 +59,9 @@ void UploadManager::init(VulkanApp* app,
     // Upload queue: prefer the distinct graphics-family queue (overlaps render),
     // otherwise fall back to the main graphics queue. NEVER the dedicated
     // transfer-family queue (RADV/RENOIR GPUVM faults, per engine policy).
+    // NOTE: the app no longer requests a distinct geometry queue (it stalls on
+    // RADV/Rembrandt under burst load), so this falls back to the main
+    // graphics queue on this hardware by design.
     queue_ = app->geometryTransferQueue();
     if (queue_ == VK_NULL_HANDLE) queue_ = app->graphicsQueue;
 

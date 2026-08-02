@@ -5328,9 +5328,16 @@ void VulkanApp::createLogicalDevice() {
 
     // Request one or more queues from each unique queue family. If the
     // graphics family supports multiple queues, request extra queues for
-    // vegetation and geometry work. Ensure we supply a priorities array
-    // with the correct length for each VkDeviceQueueCreateInfo (one float
-    // per requested queue) to avoid undefined behavior.
+    // vegetation work. NOTE: we deliberately request only TWO queues from the
+    // graphics family (graphics + vegetation). A third (geometry) queue was
+    // previously requested for upload overlap, but on RADV/Rembrandt (680M) a
+    // distinct 2nd graphics-family queue STALLS under burst load: uploads on
+    // it never signal their binary semaphores, the frame submit waits forever,
+    // and the kernel reports `ring gfx_0.0.0 timeout` -> GPU reset -> device
+    // lost (reproduced 6/6 runs; routing uploads to the main graphics queue
+    // made the full burst pass cleanly). geometryTransferQueue() therefore
+    // aliases the main graphics queue and all upload/copy paths serialize
+    // through graphicsSubmitMutex.
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     // container to hold per-create-info priority arrays (must outlive createInfo usage)
     std::vector<std::vector<float>> queuePrioritiesStorage;
@@ -5341,9 +5348,9 @@ void VulkanApp::createLogicalDevice() {
         VkDeviceQueueCreateInfo queueCreateInfo{};
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queueCreateInfo.queueFamilyIndex = queueFamily;
-        // determine desired queue count: try to allocate 3 from graphics family
+        // determine desired queue count: try to allocate 2 from graphics family
         uint32_t want = 1;
-        if (queueFamily == indices.graphicsFamily.value()) want = 3; // graphics + vegetation + geometry
+        if (queueFamily == indices.graphicsFamily.value()) want = 2; // graphics + vegetation (no separate geometry queue: see comment above)
         uint32_t available = 1;
         if (queueFamily < familyProps.size()) available = familyProps[queueFamily].queueCount;
         uint32_t take = std::min(available, want);
