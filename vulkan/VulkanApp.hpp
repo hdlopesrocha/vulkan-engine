@@ -363,7 +363,7 @@ public:
 
 
     public:
-        Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
+        Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, bool zeroInit = true);
         void destroyBuffer(Buffer& buf);
         TextureImage createTextureImage(const char * filename);
     TextureImage createTextureImageArray(const std::vector<std::string>& filenames, bool srgb = false);

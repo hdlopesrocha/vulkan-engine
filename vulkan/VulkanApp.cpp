@@ -63,7 +63,7 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
         BufGuard stagingGuard{this, stagingBuffer};
         memcpy(stagingBuffer.mappedData, data, (size_t)size);
 
-        Buffer gpuBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        Buffer gpuBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
         BufGuard gpuGuard{this, gpuBuffer};
 
         VkFence fence = runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
@@ -94,7 +94,7 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
 
     memcpy(stagingAlloc.mappedPtr, data, (size_t)size);
 
-    Buffer gpuBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    Buffer gpuBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
     BufGuard gpuGuard{this, gpuBuffer};
 
     VkBuffer stagingBuf = stagingRing.buffer();
@@ -4132,7 +4132,7 @@ uint32_t VulkanApp::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags pr
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) {
+Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, bool zeroInit) {
     Buffer buffer;
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -4166,7 +4166,10 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     // Host-visible: memset the persistent mapping. Device-local: synchronous
     // GPU fill (the single-time submit waits), so the buffer is guaranteed
     // zeroed before this function returns and before any later async upload.
-    if (size > 0) {
+    // zeroInit=false skips this for callers that fully overwrite the buffer
+    // before first use (e.g. createDeviceLocalBufferAsync) — avoids the extra
+    // GPU submit per buffer on streaming paths.
+    if (zeroInit && size > 0) {
         if (buffer.mappedData) {
             memset(buffer.mappedData, 0, static_cast<size_t>(size));
         } else {

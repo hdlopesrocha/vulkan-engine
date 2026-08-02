@@ -1775,14 +1775,15 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         // Device-local instance buffer: GPU reads via vertex input.
         // On RADV iGPUs, vertex reads go through TCP (Texture Cache/Pipe),
         // and host-visible pages lack TCP-read permission → GPUVM fault.
+        // zeroInit=false: fully overwritten by the staging copy before use.
         Buffer instBuf = app->createBuffer(bufSize,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
 
         // Indirect buffer: device-local, avoids same TCP-read issue.
         Buffer indirect = app->createBuffer(sizeof(VkDrawIndexedIndirectCommand),
             VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
 
         // Staging for indirect draw command.
         Buffer stagingIndirect = app->createBuffer(sizeof(VkDrawIndexedIndirectCommand),
