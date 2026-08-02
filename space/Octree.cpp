@@ -1195,7 +1195,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             if(!r.node->isLeaf()) {
                 OctreeNode *childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
                 r.node->getChildren(*allocator, childNodes);
-                int8_t maxLod = -1;
+                int8_t minLod = -1;
                 int8_t maxChunkLod = -1;
                 // Propagate the most common brushIndex among children
                 // (excluding DISCARD_BRUSH_INDEX) so every node from all LoD
@@ -1205,8 +1205,11 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 int brushCounts[64] = {};
                 for(OctreeNode * childNode : childNodes) {
                     if(childNode != NULL) {
-                        
-                        maxLod = glm::max(maxLod, childNode->getLod());
+                        int8_t childLod = childNode->getLod();
+
+                        if(childLod > -1) {
+                            minLod = minLod == -1 ? childLod : glm::min(minLod, childLod);
+                        }
                         maxChunkLod = glm::max(maxChunkLod, childNode->getChunkLod());
 
                         const int brush = childNode->getBrush();
@@ -1215,7 +1218,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                         }
                     }
                 }
-                r.node->setLod(maxLod < 0 ? -1 : maxLod + 1);
+                r.node->setLod(minLod < 0 ? -1 : minLod + 1);
                 r.node->setChunkLod(maxChunkLod < 0 ? -1 : maxChunkLod + 1);
 
                 int bestBrush = DISCARD_BRUSH_INDEX;

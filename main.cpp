@@ -538,7 +538,6 @@ public:
 
         // Scene starts empty — use File > Generate Map to populate it.
         if (octreeExplorerWidget)
-            octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
 
         // Init the VegetationRenderer before setupVegetationTextures so that
         // wind params UBO + descriptor set layout exist before captureAll calls
@@ -2740,8 +2739,7 @@ void MyApp::action() {
         std::thread waterThread([this]() { sceneUniqueLiquidHandler->handleEvents(); });
         solidThread.join();
         waterThread.join();
-        if (octreeExplorerWidget)
-            octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
+
         std::cout << "[MyApp::action] Scene chunk tessellation complete\n";
     });
 }
@@ -2767,9 +2765,6 @@ void MyApp::resetSceneState() {
 
     sceneUniqueSolidHandler->clear();
     sceneUniqueLiquidHandler->clear();
-
-    if (octreeExplorerWidget)
-        octreeExplorerWidget->octreeReady.store(false, std::memory_order_release);
 }
 
 void MyApp::generateMap() {
@@ -2788,8 +2783,6 @@ void MyApp::generateMap() {
         std::thread waterThread([this]() { sceneUniqueLiquidHandler->handleEvents(); });
         solidThread.join();
         waterThread.join();
-        if (octreeExplorerWidget)
-            octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
         std::cout << "[MyApp::generateMap] Scene chunk tessellation complete\n";
     });
 }
@@ -2807,8 +2800,6 @@ void MyApp::loadSceneFromFile(const std::string& path) {
         std::thread waterThread([this]() { sceneUniqueLiquidHandler->handleEvents(); });
         solidThread.join();
         waterThread.join();
-        if (octreeExplorerWidget)
-            octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
         std::cout << "[MyApp::loadSceneFromFile] Scene tessellation complete\n";
     });
 }
