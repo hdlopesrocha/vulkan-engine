@@ -2194,6 +2194,21 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
         return existing->second.slotIndex;
     }
 
+    if (level < 0 || static_cast<uint32_t>(level) >= kMaxChunkLevels) {
+        std::cerr << "[IndirectRenderer] addMeshSlotted: level " << level << " out of range" << std::endl;
+        return UINT32_MAX;
+    }
+
+    // Validate that this level's data fits inside the per-slot budget BEFORE
+    // allocating. Doing this after slotAlloc.allocate would trip its capacity
+    // assert (debug) or silently publish out-of-bounds counts (release).
+    if (levelVertexOffset + neededVerts > slotVertexCapacity ||
+        levelIndexOffset + neededIdxs  > slotIndexCapacity) {
+        std::cerr << "[IndirectRenderer] addMeshSlotted: level " << level
+                  << " data exceeds per-slot budget for chunk " << chunkId << std::endl;
+        return UINT32_MAX;
+    }
+
     // Allocate a new slot, or reuse the caller-provided one (forced path:
     // the chunk already allocated a slot via a previous level and is now
     // publishing the level-0 geometry).
@@ -2201,25 +2216,24 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
     if (slotIdx == UINT32_MAX) {
         slotIdx = slotAlloc.allocate(neededVerts, neededIdxs);
         if (slotIdx == UINT32_MAX) {
-            std::cerr << "[IndirectRenderer] addMeshSlotted: no free slot for chunk " << chunkId << std::endl;
+            std::cerr << "[IndirectRenderer] addMeshSlotted: no free slot for chunk " << chunkId
+                      << " (active=" << slotAlloc.activeCount()
+                      << " capacity=" << slotAlloc.capacity() << ")" << std::endl;
             return UINT32_MAX;
         }
+#ifdef DEBUG
+        // Log new slot-usage high-water marks (capacity tuning aid). Throttled
+        // to 32-slot steps so a climbing pool doesn't spam one line per slot.
+        if (slotAlloc.peakActiveCount() >= lastPeakLogged_ + 32) {
+            lastPeakLogged_ = slotAlloc.peakActiveCount();
+            std::cout << "[IndirectRenderer] slot peak " << lastPeakLogged_
+                      << " / " << slotAlloc.capacity() << " (this=" << this << ")" << std::endl;
+        }
+#endif
     }
     if (slotIdx >= slotAlloc.capacity()) {
         std::cerr << "[IndirectRenderer] addMeshSlotted: slot " << slotIdx
                   << " out of range (capacity=" << slotAlloc.capacity() << ")" << std::endl;
-        return UINT32_MAX;
-    }
-    if (level < 0 || static_cast<uint32_t>(level) >= kMaxChunkLevels) {
-        std::cerr << "[IndirectRenderer] addMeshSlotted: level " << level << " out of range" << std::endl;
-        return UINT32_MAX;
-    }
-
-    // Validate that this level's data fits inside the per-slot budget
-    if (levelVertexOffset + neededVerts > slotVertexCapacity ||
-        levelIndexOffset + neededIdxs  > slotIndexCapacity) {
-        std::cerr << "[IndirectRenderer] addMeshSlotted: level " << level
-                  << " data exceeds per-slot budget for chunk " << chunkId << std::endl;
         return UINT32_MAX;
     }
 

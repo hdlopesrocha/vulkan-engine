@@ -83,8 +83,15 @@ public:
         s.vertexCount = neededVertices;
         s.indexCount  = neededIndices;
 
+        // Track peak concurrent usage for capacity tuning (O(1) incremental).
+        ++activeCount_;
+        if (activeCount_ > peakActive_) peakActive_ = activeCount_;
+
         return slotIdx;
     }
+
+    // Peak number of simultaneously-active slots seen (capacity tuning aid).
+    uint32_t peakActiveCount() const { return peakActive_; }
 
     // Free a previously allocated slot. The slot index becomes available
     // for reuse. The slot's vertex/index data in the buffer is NOT
@@ -99,6 +106,7 @@ public:
         s.active      = false;
         s.vertexCount = 0;
         s.indexCount  = 0;
+        --activeCount_;
         freeSlots_.push_back(slotIdx);
     }
 
@@ -127,11 +135,7 @@ public:
     // Number of active (allocated) slots.
     uint32_t activeCount() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        uint32_t count = 0;
-        for (const auto& s : slots_) {
-            if (s.active) ++count;
-        }
-        return count;
+        return activeCount_;
     }
 
     // Total capacity (allocated + free) in slots.
@@ -167,5 +171,7 @@ private:
     std::vector<Slot> slots_;
     std::vector<uint32_t> freeSlots_;
     uint32_t vertexCapacityPerSlot_ = 0;
-    uint32_t indexCapacityPerSlot_  = 0;
+    uint32_t indexCapacityPerSlot_ = 0;
+    uint32_t activeCount_ = 0;
+    uint32_t peakActive_ = 0;
 };

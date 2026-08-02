@@ -526,8 +526,10 @@ public:
         brushManager.getEntries()[2].translate = glm::vec3(-512.0f, 0.0f, 0.0f);
         brushManager.getEntries()[2].scale = glm::vec3(256.0f);
         brushManager.getEntries()[2].hsv = glm::vec3(240.0f, 0.7f, 1.0f);
-        sceneSolidHandler  = std::make_unique<SolidSpaceChangeHandler>(sceneRenderer->makeSolidSpaceChangeHandler(&world->scene(), this));
-        sceneLiquidHandler = std::make_unique<LiquidSpaceChangeHandler>(sceneRenderer->makeLiquidSpaceChangeHandler(&world->scene(), this));
+        // minSize = tessellation frontier (MainSceneLoader default 30); the
+        // renderer clamps each chunk's LoD ladder with heightRootToChunk.
+        sceneSolidHandler  = std::make_unique<SolidSpaceChangeHandler>(sceneRenderer->makeSolidSpaceChangeHandler(&world->scene(), this, 30.0f));
+        sceneLiquidHandler = std::make_unique<LiquidSpaceChangeHandler>(sceneRenderer->makeLiquidSpaceChangeHandler(&world->scene(), this, 30.0f));
         sceneUniqueSolidHandler  = std::make_unique<UniqueOctreeChangeHandler>(*sceneSolidHandler);
         sceneUniqueLiquidHandler = std::make_unique<UniqueOctreeChangeHandler>(*sceneLiquidHandler);
 
@@ -2540,8 +2542,8 @@ void MyApp::rebuildBrushScene() {
     }
 
     // 3. Create brush change handlers (use separate brush chunk maps)
-    SolidSpaceChangeHandler brushSolidHandler = sceneRenderer->makeBrushSolidSpaceChangeHandler(world->brushScene(), this);
-    LiquidSpaceChangeHandler brushLiquidHandler = sceneRenderer->makeBrushLiquidSpaceChangeHandler(world->brushScene(), this);
+    SolidSpaceChangeHandler brushSolidHandler = sceneRenderer->makeBrushSolidSpaceChangeHandler(world->brushScene(), this, selectedEntry->minSize);
+    LiquidSpaceChangeHandler brushLiquidHandler = sceneRenderer->makeBrushLiquidSpaceChangeHandler(world->brushScene(), this, selectedEntry->minSize);
     UniqueOctreeChangeHandler uniqueBrushSolidHandler = UniqueOctreeChangeHandler(brushSolidHandler);
     UniqueOctreeChangeHandler uniqueBrushLiquidHandler = UniqueOctreeChangeHandler(brushLiquidHandler);
 

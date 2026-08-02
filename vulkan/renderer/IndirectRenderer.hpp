@@ -175,7 +175,13 @@ public:
     }
 
 public:
-  
+
+    // CPU-side budget check used by the multi-level publisher: a chunk's LoD
+    // ladder shares the slot's single vertex/index budget, so per-level
+    // sub-offsets accumulate (level k sits at running offset, not slot start).
+    uint32_t getSlotVertexCapacity() const { return slotVertexCapacity; }
+    uint32_t getSlotIndexCapacity()  const { return slotIndexCapacity; }
+
     // Poll for completion of an in-flight async transfer and publish
     // the results (update meta-buffers, etc.).  Call once per frame
     // before acquireBuffers so deferred publications are visible to
@@ -330,6 +336,9 @@ private:
 
     // Slot allocator for the stable slot pool
     SlotAllocator slotAlloc;
+
+    // Last slot-usage high-water mark logged (DEBUG capacity tuning aid).
+    uint32_t lastPeakLogged_ = 0;
 
     // Set which per-frame cull buffers to use. Must be called once per frame
     // before prepareCull / drawPrepared. frame idx should be in [0, MAX_CULL_FRAMES).

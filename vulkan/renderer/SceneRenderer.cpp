@@ -7,6 +7,7 @@
 #include "../../utils/SolidSpaceChangeHandler.hpp"
 #include "../../utils/LiquidSpaceChangeHandler.hpp"
 #include "../../utils/LocalScene.hpp"
+#include "../includes/locations.hpp"
 #include "../../math/ContainmentType.hpp"
 #include <algorithm>
 #include <array>
@@ -28,6 +29,50 @@ const uint32_t kDebugSDFFaces[6][4] = {
     {0, 2, 6, 4},
     {1, 5, 7, 3}
 };
+
+// Stable-slot pool capacities (pre-allocated GPU buffers, never reallocated).
+//
+// Every mesh-bearing octree node occupies one slot: each chunk (chunkLod 0)
+// PLUS each of its ancestors up to the root (chunkLod 1..N). For a balanced
+// octree the ancestor overhead over the chunk count is ~1/7 (~14%), but the
+// pool must also absorb transient double-slotting: a rebuilt chunk holds its
+// old slot until the new upload completes (deferred free), and editing a chunk
+// re-dirties it together with all of its ancestors.
+//
+// The full loaded scene currently meshes ~940 nodes. The pool is sized with
+// generous headroom for future changes (deeper LoD trees, denser/brushed
+// regions, larger scenes). GPU cost ≈ kMaxSceneChunkSlots × (1 MB vertex +
+// 256 KB index) ≈ kMaxSceneChunkSlots × 1.25 MB for the main solid+water pools.
+//
+// Stable-slot pool capacities (pre-allocated GPU buffers, never reallocated).
+//
+// Every mesh-bearing octree node occupies one slot: each chunk (chunkLod 0)
+// PLUS each of its ancestors up to the root (chunkLod 1..N). For a balanced
+// octree the ancestor overhead over the chunk count is ~1/7 (~14%), but the
+// pool must also absorb transient double-slotting: a rebuilt chunk holds its
+// old slot until the new upload completes (deferred free), and editing a chunk
+// re-dirties it together with all of its ancestors.
+//
+// Sizing is memory-bounded (target GPU: 4 GB integrated). Measured steady
+// demand on the reference scene (full octree, works=658688):
+//   solid  ~940 nodes (saturates a 1024 pool -> "no free slot"),
+//   water  ~132 nodes (sparse),
+//   brush  ~10  nodes.
+// The budget is therefore REDISTRIBUTED: solid (the dense, dominant layer)
+// gets generous headroom for future LoD depth / denser scenes, while water and
+// brush are sized to a few times their observed peak. Per-slot cost is
+// 1 MB vertex + 256 KB index = 1.25 MB, so:
+//   solid 2048 -> 2.56 GB, water 256 -> 320 MB, brush 128 -> 40 MB  (~2.9 GB)
+//
+// NOTE: slotted mode pre-allocates these buffers to capacity and never grows
+// them at runtime (that is the point of the design — no global rebuilds). If a
+// pool fills, "no free slot" is logged (with active/capacity) — bump the
+// relevant constant. DEBUG builds log "slot peak N / capacity" as usage climbs.
+// True runtime growth would require reallocating the buffers, which the design
+// deliberately avoids.
+constexpr uint32_t kMaxSolidChunkSlots = 2048;   // main solid (opaque) pool
+constexpr uint32_t kMaxWaterChunkSlots = 256;    // main water (transparent) pool
+constexpr uint32_t kMaxBrushChunkSlots = 128;    // brush preview pool
 
 bool isDrawableSDF(float v) {
     return std::isfinite(v) && std::abs(v) <= kDebugSDFClip;
@@ -1078,14 +1123,14 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Each chunk gets a fixed slot updated independently via the ChunkManager
     // state machine. GPU buffers are pre-sized to capacity and never reallocated.
     // Must be called after all sub-renderers are initialized, before scene loading.
-    initSlottedMode(app, 1024,
+    initSlottedMode(app, kMaxSolidChunkSlots, kMaxWaterChunkSlots,
                     1u << 20,  // 1 MB vertex data per chunk
                     1u << 18); // 256 KB index data per chunk
 
     // Initialize brush solid IndirectRenderer with its own slot pool (smaller —
     // brush preview rarely exceeds a few dozen meshes). Brush water still shares
     // the main water IR's slot pool (already initialized in initSlottedMode).
-    brushSolidIndirectRenderer.initSlots(app, 128,
+    brushSolidIndirectRenderer.initSlots(app, kMaxBrushChunkSlots,
                                          1u << 18,  // 256 KB vertex data per chunk
                                          1u << 16); // 64 KB index data per chunk
 }
@@ -1256,31 +1301,20 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &solidIR : &waterIR;
             if (!ir) continue;
 
-            // Phase 2: each chunk publishes its level-0 mesh (full detail).
-            // cellSize = the chunk's edge length, used by the GPU band test;
-            // maxLevel = 0 means the band test can only select level 0, so
-            // the single published entry is always the rendered one.
-            float chunkCellSize = pd.nodeData.cube.getLength().x;
-
-            // Add or update the mesh in its stable slot.
-            uint32_t slotIdx = ir->addMeshSlotted(pd.geom, static_cast<uint32_t>(pd.nid),
-                                                  0 /*level*/, UINT32_MAX /*forcedSlot*/,
-                                                  0 /*levelVertexOffset*/, 0 /*levelIndexOffset*/,
-                                                  chunkCellSize, 0 /*maxLevel*/);
-            if (slotIdx == UINT32_MAX) {
-                continue;
-            }
-
-            // Store the slot index in the ChunkManager entry so the erase
-            // path can free it via removeMeshSlotted (the RenderProxy
-            // is created with slotIndex=UINT32_MAX and never updated).
-            if (world_) world_->chunkManager().setSlotIndex(cid, slotIdx);
+            // Phase 3: publish the chunk's LoD mesh (ONE per node: the node's
+            // own chunkLod level). All levels share the slot's single
+            // vertex/index budget, so per-level sub-offsets accumulate; a mesh
+            // that would exceed the budget is skipped and its draw entry stays
+            // zeroed (culled). maxLevel for the band meta is the scene-wide
+            // clamp, not the ladder size (each node publishes exactly one
+            // level).
+            const uint32_t maxLevel = pd.lods.empty() ? 0 : static_cast<uint32_t>(pd.lods[0].maxLevel);
 
             // If this chunk had a pending-delete entry (erase callback saved
             // the old slot for this NodeID), defer cleanup until the new upload
             // completes. For solid/water the NodeID is stable (node reused), so
-            // addMeshSlotted found the existing entry and updated it in-place
-            // (oldSlot == slotIdx) — no free needed.
+            // addMeshSlotted may find the existing entry and update it in-place
+            // (oldSlot == slotIdx) — no free needed then.
             uint32_t oldSlot = UINT32_MAX;
             {
                 auto& deleteMap = (pd.layer == LAYER_OPAQUE)
@@ -1291,24 +1325,71 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                     deleteMap.erase(it);
                 }
             }
-            if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
-                oldSlot = UINT32_MAX;
 
-            // Upload the slot's vertex/index data. The meta write and old-slot
-            // free are deferred to the completion callback so in-flight frames
-            // never see a partially-updated shared buffer.
-            ir->uploadSlot(app, slotIdx, 0 /*level*/, 0.0f,
-                [ir, cid, oldSlot, this]() {
-                    if (oldSlot != UINT32_MAX)
-                        ir->removeMeshSlotted(oldSlot);
-                    if (this->world_) this->world_->chunkManager().finishUpload(cid);
-                });
+            // Fit pass: levels accumulate sub-offsets inside the slot's single
+            // vertex/index budget (finest first). The publish pass stops at the
+            // last level that fits. lastPublishedLevel uses a sentinel so a
+            // level-0 mesh that does NOT fit is correctly detected (init 0
+            // would make `lastPublishedLevel < lods[0].level` false for level 0).
+            uint32_t levelVertexOffset = 0, levelIndexOffset = 0;
+            uint32_t lastPublishedLevel = UINT32_MAX;
+            for (const auto& lod : pd.lods) {
+                const uint32_t lv = lod.level;
+                bool fits = (static_cast<uint64_t>(levelVertexOffset) + lod.geom.vertices.size() <= ir->getSlotVertexCapacity()) &&
+                            (static_cast<uint64_t>(levelIndexOffset) + lod.geom.indices.size()  <= ir->getSlotIndexCapacity());
+                if (!fits) break; // budget exhausted: skip remaining coarse levels
+                lastPublishedLevel = lv;
+                levelVertexOffset += static_cast<uint32_t>(lod.geom.vertices.size());
+                levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
+            }
+            if (pd.lods.empty() || lastPublishedLevel == UINT32_MAX || lastPublishedLevel < pd.lods[0].level) {
+                continue; // nothing fits the slot budget
+            }
 
-            // Generate vegetation instances for grass chunks.
+            // Publish + upload pass, interleaved per level: addMeshSlotted sets
+            // the MeshInfo's level to the level just published, so uploadSlot's
+            // validation (level == info->level) matches while the info still
+            // describes that level; its deferred meta write captures the
+            // level's draw parameters by value. All uploads are enqueued in
+            // ascending order in this frame's command buffer, so the last
+            // level's completion implies every level is resident: only then do
+            // we free the old slot and let the ChunkManager swap the proxy in.
+            uint32_t slotIdx = UINT32_MAX;
+            levelVertexOffset = 0; levelIndexOffset = 0;
+            for (const auto& lod : pd.lods) {
+                if (lod.level > lastPublishedLevel) break;
+                slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(pd.nid), (int)lod.level,
+                                             slotIdx, levelVertexOffset, levelIndexOffset,
+                                             lod.cellSize, (int)maxLevel);
+                if (slotIdx == UINT32_MAX) break;
+                if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
+                    oldSlot = UINT32_MAX;
+                const bool isLast = (lod.level == lastPublishedLevel);
+                ir->uploadSlot(app, slotIdx, (int)lod.level, 0.0f,
+                    isLast ? [ir, cid, oldSlot, this]() {
+                        if (oldSlot != UINT32_MAX)
+                            ir->removeMeshSlotted(oldSlot);
+                        if (this->world_) this->world_->chunkManager().finishUpload(cid);
+                    } : std::function<void()>());
+                levelVertexOffset += static_cast<uint32_t>(lod.geom.vertices.size());
+                levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
+            }
+            if (slotIdx == UINT32_MAX) {
+                continue;
+            }
+
+            // Store the slot index in the ChunkManager entry so the erase
+            // path can free it via removeMeshSlotted (the RenderProxy
+            // is created with slotIndex=UINT32_MAX and never updated).
+            if (world_) world_->chunkManager().setSlotIndex(cid, slotIdx);
+
+            // Generate vegetation instances for grass chunks using the level-0
+            // (finest) geometry only. Coarse levels (ancestor nodes with
+            // chunkLod > 0) never drive vegetation.
             // (Legacy path does this inside updateMeshForNode; slotted mode
             // must do it here since it never calls updateMeshForNode.)
-            if (pd.layer == LAYER_OPAQUE && vegetationRenderer) {
-                generateVegetationForNode(app, pd.nid, pd.geom);
+            if (pd.layer == LAYER_OPAQUE && vegetationRenderer && !pd.lods.empty() && pd.lods[0].level == 0) {
+                generateVegetationForNode(app, pd.nid, pd.lods[0].geom);
             }
         }
 
@@ -1336,13 +1417,15 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
         size_t solidNewV = 0, solidNewI = 0, solidNewM = 0;
         size_t waterNewV = 0, waterNewI = 0, waterNewM = 0;
         for (const auto &pd : batch) {
+            const size_t vCount = pd.lods.empty() ? 0 : pd.lods[0].geom.vertices.size();
+            const size_t iCount = pd.lods.empty() ? 0 : pd.lods[0].geom.indices.size();
             if (pd.layer == LAYER_OPAQUE) {
-                solidNewV += pd.geom.vertices.size();
-                solidNewI += pd.geom.indices.size();
+                solidNewV += vCount;
+                solidNewI += iCount;
                 solidNewM += 1;
             } else {
-                waterNewV += pd.geom.vertices.size();
-                waterNewI += pd.geom.indices.size();
+                waterNewV += vCount;
+                waterNewI += iCount;
                 waterNewM += 1;
             }
         }
@@ -1368,9 +1451,13 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
         bool solidOrWaterHadRemovals = false;
         std::vector<uint32_t> solidUploads;
         std::vector<uint32_t> waterUploads;
+        Geometry emptyGeom;
         for (auto& pd : batch) {
+            // Legacy (non-slotted) mode publishes only the level-0 mesh: the
+            // append-based rebuild path has no per-level draw entries.
+            const Geometry& g0 = pd.lods.empty() ? emptyGeom : pd.lods[0].geom;
             bool attemptUpload = (pd.layer == LAYER_OPAQUE) ? solidCanIncremental : waterCanIncremental;
-            updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, pd.geom, attemptUpload, pd.version,
+            updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, g0, attemptUpload, pd.version,
                               &solidOrWaterHadRemovals,
                               pd.layer == LAYER_OPAQUE ? &solidUploads : &waterUploads);
         }
@@ -1471,16 +1558,9 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     uint32_t idx = 0;
     for (auto& pd : batch) {
         IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &brushIR : &waterIR;
-        float chunkCellSize = pd.nodeData.cube.getLength().x;
-        uint32_t slotIdx = ir->addMeshSlotted(pd.geom, static_cast<uint32_t>(pd.nid),
-                                              0 /*level*/, UINT32_MAX /*forcedSlot*/,
-                                              0 /*levelVertexOffset*/, 0 /*levelIndexOffset*/,
-                                              chunkCellSize, 0 /*maxLevel*/);
-        if (slotIdx == UINT32_MAX) {
-            ++idx;
-            continue;
-        }
-        // Look up the old slot for this NodeID
+
+        // Look up the old slot for this NodeID before publishing: cleanup is
+        // deferred until the new data is resident on the GPU (upload pass).
         uint32_t oldSlot = UINT32_MAX;
         {
             auto& oldMap = (pd.layer == LAYER_OPAQUE) ? oldSolidSlots : oldTransparentSlots;
@@ -1491,15 +1571,57 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
             }
         }
 
-        // If addMeshSlotted reused the same slot (update in-place), no free needed.
-        if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
-            oldSlot = UINT32_MAX;
+        // Fit pass: the node's single LoD mesh shares the slot's budget via
+        // accumulating sub-offsets. maxLevel for the band meta is the
+        // scene-wide clamp, not the ladder size (one level per node).
+        // lastPublishedLevel uses a sentinel so a level-0 mesh that does NOT
+        // fit is correctly detected (init 0 would break the guard for level 0).
+        const uint32_t maxLevel = pd.lods.empty() ? 0 : static_cast<uint32_t>(pd.lods[0].maxLevel);
+        uint32_t levelVertexOffset = 0, levelIndexOffset = 0;
+        uint32_t lastPublishedLevel = UINT32_MAX;
+        for (const auto& lod : pd.lods) {
+            const uint32_t lv = lod.level;
+            bool fits = (static_cast<uint64_t>(levelVertexOffset) + lod.geom.vertices.size() <= ir->getSlotVertexCapacity()) &&
+                        (static_cast<uint64_t>(levelIndexOffset) + lod.geom.indices.size()  <= ir->getSlotIndexCapacity());
+            if (!fits) break;
+            lastPublishedLevel = lv;
+            levelVertexOffset += static_cast<uint32_t>(lod.geom.vertices.size());
+            levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
+        }
+        if (pd.lods.empty() || lastPublishedLevel == UINT32_MAX || lastPublishedLevel < pd.lods[0].level) {
+            ++idx;
+            continue;
+        }
 
-        // Defer old-slot cleanup until new vertex data is on the GPU
-        ir->uploadSlot(app, slotIdx, 0 /*level*/, 0.0f, [ir, oldSlot]() {
-            if (oldSlot != UINT32_MAX)
-                ir->removeMeshSlotted(oldSlot);
-        });
+        // Publish + upload pass, interleaved per level (see processPendingMeshes
+        // for the same pattern): addMeshSlotted sets the MeshInfo's level to
+        // the level just published, so uploadSlot's validation passes while the
+        // info still describes that level. Old-slot cleanup is deferred to the
+        // last level's upload completion, when every level is resident.
+        uint32_t slotIdx = UINT32_MAX;
+        levelVertexOffset = 0; levelIndexOffset = 0;
+        for (const auto& lod : pd.lods) {
+            if (lod.level > lastPublishedLevel) break;
+            slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(pd.nid), (int)lod.level,
+                                         slotIdx, levelVertexOffset, levelIndexOffset,
+                                         lod.cellSize, (int)maxLevel);
+            if (slotIdx == UINT32_MAX) break;
+            // If addMeshSlotted reused the same slot (update in-place), no free needed.
+            if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
+                oldSlot = UINT32_MAX;
+            const bool isLast = (lod.level == lastPublishedLevel);
+            ir->uploadSlot(app, slotIdx, (int)lod.level, 0.0f,
+                isLast ? [ir, oldSlot]() {
+                    if (oldSlot != UINT32_MAX)
+                        ir->removeMeshSlotted(oldSlot);
+                } : std::function<void()>());
+            levelVertexOffset += static_cast<uint32_t>(lod.geom.vertices.size());
+            levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
+        }
+        if (slotIdx == UINT32_MAX) {
+            ++idx;
+            continue;
+        }
 
         auto& chunkMap = (pd.layer == LAYER_OPAQUE) ? brushSolidChunks : brushTransparentChunks;
         Model3DVersion mv{slotIdx, pd.version};
@@ -1522,19 +1644,28 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
 
 // ── Slotted mode chunk processing ──────────────────────────────────────────
 
-void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxChunks,
-                                     uint32_t vertexBytesPerChunk,
-                                     uint32_t indexBytesPerChunk)
+void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
+                                    uint32_t maxWaterChunks,
+                                    uint32_t vertexBytesPerChunk,
+                                    uint32_t indexBytesPerChunk)
 {
     // Initialize the stable slot pool on both solid and water indirect renderers.
     // This pre-allocates GPU buffers and switches them to slotted mode, where
     // each chunk gets a fixed slot that is updated independently — NO global
-    // rebuilds.
+    // rebuilds. Solid and water pools are sized independently (solid is the
+    // dense layer; water is sparse), so the GPU budget goes where it is needed.
     IndirectRenderer& solidIR = solidRenderer->getIndirectRenderer();
     IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
 
-    solidIR.initSlots(app, maxChunks, vertexBytesPerChunk, indexBytesPerChunk);
-    waterIR.initSlots(app, maxChunks, vertexBytesPerChunk, indexBytesPerChunk);
+    solidIR.initSlots(app, maxSolidChunks, vertexBytesPerChunk, indexBytesPerChunk);
+    waterIR.initSlots(app, maxWaterChunks, vertexBytesPerChunk, indexBytesPerChunk);
+
+    std::cout << "[SceneRenderer] slotted pools: solid=" << maxSolidChunks
+              << " water=" << maxWaterChunks
+              << " (per-slot " << (vertexBytesPerChunk >> 10) << " KB vertex + "
+              << (indexBytesPerChunk >> 10) << " KB index, ~"
+              << ((uint64_t)(maxSolidChunks + maxWaterChunks) * (vertexBytesPerChunk + indexBytesPerChunk) >> 20)
+              << " MB device-local)" << std::endl;
 
     slottedModeEnabled = true;
 }
@@ -1553,7 +1684,9 @@ bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
     // finishUpload → ReadyToSwap → processChunkSwapQueue atomically swaps.
     {
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
-        pendingMeshQueue.push_back({layer, nid, nd, geom, version});
+        std::vector<LoDMesh> lods;
+        lods.push_back({geom, 0, nd.cube.getLength().x});
+        pendingMeshQueue.push_back({layer, nid, nd, std::move(lods), version});
     }
 
     return true;
@@ -1594,15 +1727,34 @@ void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
     }
 }
 
-void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry, ThreadPool* poolOverride) {
+void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const std::vector<LoDMesh>&)>& onGeometry, float minSize, ThreadPool* poolOverride) {
 
     // Make a local copy of the node data so the callback may safely outlive this stack frame
     OctreeNodeData nodeCopy = nodeData;
-    // Capture nodeCopy by value so async callbacks receive a safe copy
-    scene.requestModel3D(layer, nodeCopy, [this, layer, nid, nodeCopy, &onGeometry](const Geometry &geom) {
-        onGeometry(layer, nid, nodeCopy, geom);
-    }, poolOverride);
-    
+
+    // Only CHUNKS (chunkLod 0) generate meshes. Coarse ancestor meshes
+    // (chunkLod > 0) are disabled — tessellating an ancestor as one big
+    // Surface-Nets cell samples the SDF at the coarse corners and misses
+    // interior surface, so those meshes come out empty. Instead chunks render
+    // at every distance band: band meta maxLevel = 0 makes the GPU band test
+    // keep every chunk (keep = maxLevel==0), so the non-empty finer chunk
+    // meshes cover all distances and there are no holes. The tessellation
+    // target is the frontier (lod 0), and cellSize is the chunk's own length
+    // (kept only for metadata; it does not gate the keep when maxLevel==0).
+    const int chunkLod = nodeData.node ? nodeData.node->getChunkLod() : -1;
+    if (chunkLod != 0) return;
+    const int level = 0;
+    const float cubeLength = nodeData.cube.getLength().x;
+    const float levelCellSize = cubeLength;
+
+    std::vector<LoDMesh> lods;
+    lods.reserve(1);
+    Geometry geom;
+    scene.requestModel3D(layer, nodeCopy, [&geom](const Geometry& g) {
+        geom = g;
+    }, poolOverride, level, nullptr);
+    lods.push_back({ std::move(geom), static_cast<uint8_t>(level), levelCellSize, static_cast<uint8_t>(0) });
+    onGeometry(layer, nid, nodeCopy, lods);
 }
 
 // Return Solid/Liquid change handlers that reference the callbacks stored on this object
@@ -1615,8 +1767,8 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
 //   5. Main thread swap → processSwapQueue (state = Clean)
 //
 // This ensures the render thread can observe chunk progress without locking.
-SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
-    solidNodeEventCallback = [this, scene](const OctreeNodeData& nd) {
+SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene, VulkanApp* app, float minSize) {
+    solidNodeEventCallback = [this, scene, minSize](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
         if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
@@ -1633,23 +1785,27 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
 
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
-            [this, cid](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
-                // Phase 3: Tessellation complete on a worker thread.
-                // Create the immutable RenderProxy and transition BuildingCPU → UploadingGPU.
+            [this, cid](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const std::vector<LoDMesh>& lods) {
+                // Phase 3: tessellation complete on a worker thread.
+                // The immutable RenderProxy carries the level-0 (finest)
+                // geometry; the coarse levels live in the shared slot regions.
+                const Geometry& geom0 = lods.empty() ? Geometry() : lods[0].geom;
                 auto proxy = std::make_shared<RenderProxy>(
-                    static_cast<uint32_t>(nid_), nd_.node->version, UINT32_MAX, geom);
+                    static_cast<uint32_t>(nid_), nd_.node->version, UINT32_MAX, geom0);
                 if (this->slottedModeEnabled && this->world_) {
                     this->world_->chunkManager().finishBuild(cid, std::move(proxy));
                 }
 
                 // Phase 4: Queue for main-thread GPU upload.
-                // processPendingMeshes calls addMeshSlotted + uploadSlot, and
-                // the upload completion callback will call finishUpload → ReadyToSwap.
+                // processPendingMeshes publishes the levels (addMeshSlotted +
+                // uploadSlot per level, ascending) and the upload completion
+                // callback will call finishUpload → ReadyToSwap.
                 {
                     std::lock_guard<std::mutex> lock(this->pendingMeshMutex);
-                    this->pendingMeshQueue.push_back({layer, nid_, nd_, geom, nd_.node->version});
+                    this->pendingMeshQueue.push_back({layer, nid_, nd_, lods, nd_.node->version});
                 }
             },
+            minSize,
             &solidGenPool
         );
     
@@ -1684,9 +1840,9 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
     return SolidSpaceChangeHandler(solidNodeEventCallback, solidNodeEraseCallback);
 }
 
-LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
+LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app, float minSize) {
 
-    liquidNodeEventCallback = [this, scene](const OctreeNodeData& nd) {
+    liquidNodeEventCallback = [this, scene, minSize](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
         if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
@@ -1701,10 +1857,12 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
 
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
-            [this, cid](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
-                // Phase 3: Tessellation complete — create proxy, transition to UploadingGPU
+            [this, cid](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const std::vector<LoDMesh>& lods) {
+                // Phase 3: Tessellation complete — create proxy (level 0
+                // geometry), transition to UploadingGPU
+                const Geometry& geom0 = lods.empty() ? Geometry() : lods[0].geom;
                 auto proxy = std::make_shared<RenderProxy>(
-                    static_cast<uint32_t>(nid_), nd_.node->version, UINT32_MAX, geom);
+                    static_cast<uint32_t>(nid_), nd_.node->version, UINT32_MAX, geom0);
                 if (this->slottedModeEnabled && this->world_) {
                     this->world_->chunkManager().finishBuild(cid, std::move(proxy));
                 }
@@ -1712,9 +1870,10 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
                 // Phase 4: Queue for main-thread GPU upload
                 {
                     std::lock_guard<std::mutex> lock(this->pendingMeshMutex);
-                    this->pendingMeshQueue.push_back({layer, nid_, nd_, geom, nd_.node->version});
+                    this->pendingMeshQueue.push_back({layer, nid_, nd_, lods, nd_.node->version});
                 }
             },
+            minSize,
             &waterGenPool
         );
     
@@ -1965,17 +2124,18 @@ void SceneRenderer::addDebugCubeForGeometry(Layer layer, NodeID nid, const Octre
 
 // --- Brush scene change handlers ---
 
-SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
-    brushSolidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
+SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* scene, VulkanApp* app, float minSize) {
+    brushSolidNodeEventCallback = [this, scene, app, minSize](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
-            [this, app](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
+            [this, app](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const std::vector<LoDMesh>& lods) {
                 // Route brush-solid results to the SEPARATE brush queue so they
                 // are drained independently of the solid/water stream.
                 std::lock_guard<std::mutex> lock(brushPendingMutex);
-                brushPendingQueue.push_back({layer, nid_, nd_, geom, nd_.node->version});
+                brushPendingQueue.push_back({layer, nid_, nd_, lods, nd_.node->version});
             },
+            minSize,
             &brushGenPool
         );
     };
@@ -1995,16 +2155,17 @@ SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* s
     return SolidSpaceChangeHandler(brushSolidNodeEventCallback, brushSolidNodeEraseCallback);
 }
 
-LiquidSpaceChangeHandler SceneRenderer::makeBrushLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
-    brushLiquidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
+LiquidSpaceChangeHandler SceneRenderer::makeBrushLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app, float minSize) {
+    brushLiquidNodeEventCallback = [this, scene, app, minSize](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
-            [this, app](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
+            [this, app](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const std::vector<LoDMesh>& lods) {
                 // Route brush-liquid results to the SEPARATE brush queue.
                 std::lock_guard<std::mutex> lock(brushPendingMutex);
-                brushPendingQueue.push_back({layer, nid_, nd_, geom, nd_.node->version});
+                brushPendingQueue.push_back({layer, nid_, nd_, lods, nd_.node->version});
             },
+            minSize,
             &brushGenPool
         );
         
