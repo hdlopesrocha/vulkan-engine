@@ -1075,6 +1075,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             }
             if(process) {    
                 shapeChildren(frame, args, threadContext, children);
+                
                 bool childResultSolid = true;
                 bool childResultEmpty = true;
                 bool childShapeSolid = true;
@@ -1199,7 +1200,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 OctreeNode *childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
                 r.node->getChildren(*allocator, childNodes);
                 uint8_t minLod = 0;
-                uint8_t maxChunkLod = 0;
+                uint8_t minChunkLod = 0;
                 // Propagate the most common brushIndex among children
                 // (excluding DISCARD_BRUSH_INDEX) so every node from all LoD
                 // levels carries the dominant material of its subtree; coarse
@@ -1209,11 +1210,10 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 for(OctreeNode * childNode : childNodes) {
                     if(childNode != NULL) {
                         const uint8_t childLod = childNode->getLod();
+                        const uint8_t childChunkLod = childNode->getChunkLod();
 
-                        if(childLod > 0) {
-                            minLod = minLod == 0 ? childLod : glm::min(minLod, childLod);
-                        }
-                        maxChunkLod = glm::max(maxChunkLod, childNode->getChunkLod());
+                        minLod = childLod ? (minLod == 0 ? childLod : glm::min(minLod, childLod)) : 0;
+                        minChunkLod = childChunkLod ? (minChunkLod == 0 ? childChunkLod : glm::min(minChunkLod, childChunkLod)) : 0;
 
                         const int brush = childNode->getBrush();
                         if(brush != DISCARD_BRUSH_INDEX && brush >= 0 && brush < 64) {
@@ -1221,8 +1221,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                         }
                     }
                 }
-                r.node->setLod(minLod == 0 ? 0 : static_cast<uint8_t>(minLod + 1));
-                r.node->setChunkLod(maxChunkLod == 0 ? 0 : static_cast<uint8_t>(maxChunkLod + 1));
+                r.node->setLod(minLod == 0 ? 0 : minLod + 1);
+                r.node->setChunkLod(minChunkLod == 0 ? 0 : minChunkLod + 1);
 
                 int bestBrush = DISCARD_BRUSH_INDEX;
                 int bestCount = 0;
