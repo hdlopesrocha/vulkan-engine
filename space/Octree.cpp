@@ -768,21 +768,7 @@ void Octree::apply(
     ThreadContext localChunkContext = ThreadContext(*this);
     NodeOperationResult r = NodeOperationResult();
     shape(r, frame, args, &localChunkContext);
-    // Chunk change events were deferred during the traversal; dispatch them
-    // now that the recursion has unwound (leafs → root) so handlers (and the
-    // tessellation walks they dispatch) observe fresh per-node lod/chunkLod
-    // values. Dispatch level by level, first chunkLod 0 (the chunks) then
-    // chunkLod 1 (their parents), ...: ascending chunkLod. Combined with the
-    // renderer's distance-sorted drain (closest chunks get the lowest slots,
-    // and the GPU cull preserves input order), the resulting draw command
-    // order renders near geometry first so far geometry's depth tests fail
-    // early against the depth buffer.
-    std::stable_sort(args.deferredChunkEvents->begin(), args.deferredChunkEvents->end(),
-        [](const ShapeArgs::DeferredChunkEvent &a, const ShapeArgs::DeferredChunkEvent &b) {
-            const int lodA = a.data.node ? a.data.node->getChunkLod() : -1;
-            const int lodB = b.data.node ? b.data.node->getChunkLod() : -1;
-            return lodA < lodB;
-        });
+
     for(const ShapeArgs::DeferredChunkEvent &ev : *args.deferredChunkEvents) {
         // Handlers are dispatched per node with level = node.chunkLod: a
         // chunk (chunkLod 0) tessellates until lod 0 (the frontier), its
@@ -804,8 +790,12 @@ void Octree::apply(
         for(const ShapeArgs::DeferredChunkEvent &ev : *args.deferredChunkEvents) {
             int cl = ev.data.node ? ev.data.node->getChunkLod() : -1;
             float L = ev.data.cube.getLengthX();
-            if(cl >= 0 && cl < 32) { ++hist[cl]; if(cl > maxCl) maxCl = cl;
-                if(L<minLen[cl])minLen[cl]=L; if(L>maxLen[cl])maxLen[cl]=L; }
+            if(cl >= 0 && cl < 32) {
+                ++hist[cl];
+                if(cl > maxCl) maxCl = cl;
+                if(L < minLen[cl]) minLen[cl] = L;
+                if(L > maxLen[cl]) maxLen[cl] = L;
+            }
         }
         std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << ", prunedEmpty=" << prunedEmptyNodes << ", prunedSolid=" << prunedSolidNodes
                   << ", events=" << args.deferredChunkEvents->size() << ", chunkLodHist=[";
@@ -1172,11 +1162,10 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 r.node->setLod(r.isSimplified ? 0 : -1);
                 r.node->setChunkLod(r.node->isChunk() ? 0 : -1);
             } else {
-                OctreeNode *children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-                r.node->getChildren(*allocator, children);
+                OctreeNode *childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+                r.node->getChildren(*allocator, childNodes);
                 int8_t maxLod = -1;
                 int8_t maxChunkLod = -1;
-                bool hasChild = false;
                 // Propagate the most common brushIndex among children
                 // (excluding DISCARD_BRUSH_INDEX) so every node from all LoD
                 // levels carries the dominant material of its subtree; coarse
@@ -1184,15 +1173,12 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 // inheriting an arbitrary single child's brush.
                 int brushCounts[64] = {};
                 for(int i = 0; i < 8; ++i) {
-                    if(children[i] != NULL) {
-                        hasChild = true;
-                        if(children[i]->getLod() > maxLod) {
-                            maxLod = children[i]->getLod();
+                    if(childNodes[i] != NULL) {
+                        if(childNodes[i]->getLod() > maxLod) {
+                            maxLod = childNodes[i]->getLod();
                         }
-                        if(children[i]->getChunkLod() > maxChunkLod) {
-                            maxChunkLod = children[i]->getChunkLod();
-                        }
-                        const int brush = children[i]->getBrush();
+                        maxChunkLod = glm::max(maxChunkLod, childNodes[i]->getChunkLod());
+                        const int brush = childNodes[i]->getBrush();
                         if(brush != DISCARD_BRUSH_INDEX && brush >= 0 && brush < 64) {
                             ++brushCounts[brush];
                         }
@@ -1235,7 +1221,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             // the renderer reuses the non-empty finer chunk meshes for every
             // distance band (band meta maxLevel = 0 → chunks always kept), so
             // there are no holes. chunkLod is still computed (widget/bands).
-            if(r.node->getChunkLod() == 0) {
+            if(r.node->getChunkLod() >= 0) {
                 ++r.node->version;
                 // Deferred: see Octree::apply — the recursion has fully
                 // unwound (leafs → root) when events are dispatched, so
