@@ -67,6 +67,16 @@ int getNodeIndex(const glm::vec3 &vec, const BoundingCube &cube) {
     return cube.getChildIndex(vec);
 }
 
+SpaceType childToParent(bool childSolid, bool childEmpty) {
+    if(childSolid) {
+        return SpaceType::Solid;
+    } else if(childEmpty) {
+        return SpaceType::Empty;
+    } else {
+        return SpaceType::Surface;
+    }
+}
+
 bool Octree::intersect(const Ray& ray, glm::vec3& outPos) const {
     float tNear, tFar;
     if (!ray.intersects(*this, &tNear, &tFar))
@@ -805,19 +815,45 @@ float Octree::evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float
     return d;
 }
 
-void Octree::buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], ThreadContext * threadContext) const {
+void Octree::buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext, bool force) const {
     const glm::vec3 cubeMin = frame.cube.getMin();
     const glm::vec3 cubeLength = frame.cube.getLength();
     tsl::robin_map<glm::vec3, float> * shapeSdfCache = &threadContext->shapeSdfCache;
 
-    for (uint i = 0; i < 8; ++i) {
-        shapeSDF[i] = evaluateSDF(args, shapeSdfCache, cubeMin + cubeLength * Octree::getShift(i));
+    if(r.isLeaf || force) {
+        for (uint i = 0; i < 8; ++i) {
+            r.shapeSDF[i] = evaluateSDF(args, shapeSdfCache, cubeMin + cubeLength * Octree::getShift(i));
+        }
+        r.shapeType = SDF::eval(r.shapeSDF);
+    } else {
+        bool childShapeSolid = true;
+        bool childShapeEmpty = true;
+        for(uint i = 0; i < 8; ++i) {
+            NodeOperationResult &child = children[i];
+            childShapeEmpty &= child.shapeType == SpaceType::Empty;
+            childShapeSolid &= child.shapeType == SpaceType::Solid;
+            r.shapeSDF[i] = child.shapeSDF[i];
+        }
+        r.shapeType = childToParent(childShapeSolid, childShapeEmpty);
     }
 }
 
-void Octree::buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], float resultSDF[8], ThreadContext * threadContext) const {
-    for (uint i = 0; i < 8; ++i) {
-        resultSDF[i] = args.operation->combine(frame.sdf[i], shapeSDF[i]);
+void Octree::buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext) const {
+    if(r.isLeaf) {
+        for (uint i = 0; i < 8; ++i) {
+            r.resultSDF[i] = args.operation->combine(frame.sdf[i], r.shapeSDF[i]);
+        }
+        r.resultType = SDF::eval(r.resultSDF);
+    } else {
+        bool childResultSolid = true;
+        bool childResultEmpty = true;
+        for(uint i = 0; i < 8; ++i) {
+            NodeOperationResult &child = children[i];
+            childResultEmpty &= child.resultType == SpaceType::Empty;
+            childResultSolid &= child.resultType == SpaceType::Solid;
+            r.resultSDF[i] = child.resultSDF[i];
+        }
+        r.resultType = childToParent(childResultSolid, childResultEmpty);
     }
 }
 
@@ -859,16 +895,6 @@ int Octree::heightRootToChunk(int lod, float minSize) const {
     return maxLevels - lod;
 }
 
-
-SpaceType childToParent(bool childSolid, bool childEmpty) {
-    if(childSolid) {
-        return SpaceType::Solid;
-    } else if(childEmpty) {
-        return SpaceType::Empty;
-    } else {
-        return SpaceType::Surface;
-    }
-}
 
 bool Octree::isChunkNode(float nodeLength) const {
     return chunkSize*0.5f < nodeLength && nodeLength <= chunkSize;
@@ -951,6 +977,7 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
     }
 }
 
+
 void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext) {    
     r.node = frame.node;
     const float nodeLength = frame.cube.getLengthX();
@@ -969,69 +996,99 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         NodeOperationResult(), NodeOperationResult() 
     };
 
-    buildShapeSDF(args, frame, r.shapeSDF, threadContext);
+    buildShapeSDF(args, frame, r, children, threadContext, true);
 
     const glm::vec3 center = frame.cube.getCenter();
-    r.shapeSdfCenter = evaluateSDF(args, &threadContext->shapeSdfCache, center);
+    float shapeSdfCenter = evaluateSDF(args, &threadContext->shapeSdfCache, center);
 
     bool process = true;
-    if(r.isLeaf) {
-        buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
-        r.shapeType = SDF::eval(r.shapeSDF);
-        r.resultType = SDF::eval(r.resultSDF);
-    }
-    else {
+    bool processed = false;
+    if(!r.isLeaf) {
         const float halfDiagonal = nodeLength * 0.866025403784439f;
-        bool processed = false;
 
         // No existing SDF data (all INFINITY) — result is purely the shape.
-        // Operations that propagate from infinity: need the Lipschitz center check for safety.
-        // Others: result is INFINITY = Empty.
+        // Operations that propagate from infinity: need the Lipschitz center
+        // check for safety. Others: result is INFINITY = Empty.
         if(!processed && isNodeLeaf) {
-            bool allInfinity = true;
-            for(int i = 0; i < 8; ++i)
-                if(frame.sdf[i] != INFINITY) { allInfinity = false; break; }
-            if(allInfinity) {
-                if(args.operation->propagatesFromInfinity()) {
-                    if(r.shapeSdfCenter < -halfDiagonal) {
-                        SDF::copySDF(r.shapeSDF, r.resultSDF);
-                        r.shapeType = SpaceType::Solid;
-                        r.resultType = SpaceType::Solid;
-                        r.isSimplified = true;
-                        ++prunedSolidNodes;
-                        processed = true;
-                    } else if(r.shapeSdfCenter > halfDiagonal) {
-                        SDF::copySDF(r.shapeSDF, r.resultSDF);
-                        r.shapeType = SpaceType::Empty;
-                        r.resultType = SpaceType::Empty;
-                        r.isSimplified = true;
-                        ++prunedEmptyNodes;
-                        processed = true;
-                    }
-                } else {
-                    // Non-propagating: INFINITY op anything = INFINITY = Empty
-                    r.shapeType = SDF::eval(r.shapeSDF);
+
+            if(args.operation->propagatesFromInfinity()) {
+                if(shapeSdfCenter < -halfDiagonal) {
+                    SDF::copySDF(r.shapeSDF, r.resultSDF);
+                    r.shapeType = SpaceType::Solid;
+                    r.resultType = SpaceType::Solid;
+                    r.isSimplified = true;
+                    ++prunedSolidNodes;
+                    processed = true;
+                } else if(shapeSdfCenter > halfDiagonal) {
+                    SDF::copySDF(r.shapeSDF, r.resultSDF);
+                    r.shapeType = SpaceType::Empty;
                     r.resultType = SpaceType::Empty;
                     r.isSimplified = true;
                     ++prunedEmptyNodes;
                     processed = true;
                 }
+            } else {
+                // Non-propagating: INFINITY op anything = INFINITY = Empty
+                SDF::copySDF(r.shapeSDF, r.resultSDF);
+                r.shapeType = SDF::eval(r.shapeSDF);
+                r.resultType = SpaceType::Empty;
+                r.isSimplified = true;
+                ++prunedEmptyNodes;
+                processed = true;
             }
+            
         }
 
         // Operations that preserve Solid — existing Solid → always Solid everywhere
         if(!processed && frame.type == SpaceType::Solid &&
            args.operation->preservesSolid()) {
-            bool allFinite = true;
-            for(int i = 0; i < 8; ++i)
-                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
-            if(allFinite) {
-                buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
+
+            // Painting prunes the whole subtree here (no descent to leaves
+            // where the painter normally runs), so apply the painter at the
+            // node center to keep the paint stroke visible in solid regions.
+            if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
+                if(r.node != NULL) {
+                    r.brushIndex = args.painter.paint(r.node->vertex);
+                    r.brushHsv = args.painter.paintHSV(r.node->vertex);
+                    r.node->vertex.normal = SDF::getNormalFromPosition(r.resultSDF, frame.cube, r.node->vertex.position);
+                    r.node->vertex.hsv = r.brushHsv;
+                    r.node->vertex.brushIndex = r.brushIndex;
+                    r.node->setBrush(r.brushIndex);
+                }
+            }
+            ++prunedSolidNodes;
+            processed = true;
+            
+        }
+
+        // Operations that preserve Empty — existing Empty → always Empty everywhere
+        if(!processed && frame.type == SpaceType::Empty && args.operation->preservesEmpty()) {
+            for(uint i = 0; i < 8; ++i) {
+                r.resultSDF[i] = args.operation->combine(frame.sdf[i], r.shapeSDF[i]);
+            }
+            r.shapeType = SDF::eval(r.shapeSDF);
+            r.resultType = SpaceType::Empty;
+            r.brushIndex = frame.brushIndex;
+            r.brushHsv = frame.hsv;
+            ++prunedEmptyNodes;
+            processed = true;
+        }
+
+        // For remaining operations (or types): check if the shape center is far enough
+        // that the entire cube is definitely Solid/Empty.
+        if(!processed && frame.type == SpaceType::Solid) {
+
+            const float existingSdfCenter = SDF::interpolate(frame.sdf, center, frame.cube);
+            const float resultSdfCenter = args.operation->combine(existingSdfCenter, shapeSdfCenter);
+            if(resultSdfCenter < -halfDiagonal) {
+                for(uint i = 0; i < 8; ++i) {
+                    r.resultSDF[i] = args.operation->combine(frame.sdf[i], r.shapeSDF[i]);
+                }
                 r.shapeType = SDF::eval(r.shapeSDF);
                 r.resultType = SpaceType::Solid;
-                // Painting prunes the whole subtree here (no descent to leaves
-                // where the painter normally runs), so apply the painter at the
-                // node center to keep the paint stroke visible in solid regions.
+                // Same painting concern as the preserves-Solid prune above:
+                // apply the painter at the node center so painted operations
+                // pruned here still leave a visible stroke.
                 if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
                     if(r.node != NULL) {
                         r.brushIndex = args.painter.paint(r.node->vertex);
@@ -1045,58 +1102,11 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 ++prunedSolidNodes;
                 processed = true;
             }
-        }
-
-        // Operations that preserve Empty — existing Empty → always Empty everywhere
-        if(!processed && frame.type == SpaceType::Empty && args.operation->preservesEmpty()) {
-            bool allFinite = true;
-            for(int i = 0; i < 8; ++i)
-                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
-            if(allFinite) {
-                buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
-                r.shapeType = SDF::eval(r.shapeSDF);
-                r.resultType = SpaceType::Empty;
-                r.brushIndex = frame.brushIndex;
-                r.brushHsv = frame.hsv;
-                ++prunedEmptyNodes;
-                processed = true;
-            }
-        }
-
-        // For remaining operations (or types): check if the shape center is far enough
-        // that the entire cube is definitely Solid/Empty.
-        if(!processed && frame.type == SpaceType::Solid) {
-            bool allFinite = true;
-            for(int i = 0; i < 8; ++i)
-                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
-            if(allFinite) {
-                const float existingSdfCenter = SDF::interpolate(frame.sdf, center, frame.cube);
-                const float resultSdfCenter = args.operation->combine(existingSdfCenter, r.shapeSdfCenter);
-                if(resultSdfCenter < -halfDiagonal) {
-                    buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
-                    r.shapeType = SDF::eval(r.shapeSDF);
-                    r.resultType = SpaceType::Solid;
-                    // Same painting concern as the preserves-Solid prune above:
-                    // apply the painter at the node center so painted operations
-                    // pruned here still leave a visible stroke.
-                    if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
-                        if(r.node != NULL) {
-                            r.brushIndex = args.painter.paint(r.node->vertex);
-                            r.brushHsv = args.painter.paintHSV(r.node->vertex);
-                            r.node->vertex.normal = SDF::getNormalFromPosition(r.resultSDF, frame.cube, r.node->vertex.position);
-                            r.node->vertex.hsv = r.brushHsv;
-                            r.node->vertex.brushIndex = r.brushIndex;
-                            r.node->setBrush(r.brushIndex);
-                        }
-                    }
-                    ++prunedSolidNodes;
-                    processed = true;
-                }
-            }
+            
         }
 
         if(!processed) {
-            process = r.shapeSdfCenter <= halfDiagonal;
+            process = shapeSdfCenter <= halfDiagonal;
 
             if(process) {
                 const ContainmentType check = args.function.check(frame.cube);
@@ -1104,23 +1114,9 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             }
             if(process) {    
                 shapeChildren(frame, args, threadContext, children);
-                
-                bool childResultSolid = true;
-                bool childResultEmpty = true;
-                bool childShapeSolid = true;
-                bool childShapeEmpty = true;
-                for(uint i = 0; i < 8; ++i) {
-                    NodeOperationResult &child = children[i];
-                    childResultEmpty &= child.resultType == SpaceType::Empty;
-                    childResultSolid &= child.resultType == SpaceType::Solid;
-                    childShapeEmpty &= child.shapeType == SpaceType::Empty;
-                    childShapeSolid &= child.shapeType == SpaceType::Solid;
-                    r.shapeSDF[i] = child.shapeSDF[i];
-                    r.resultSDF[i] = child.resultSDF[i];
-                }
-                r.shapeType = childToParent(childShapeSolid, childShapeEmpty);
-                r.resultType = childToParent(childResultSolid, childResultEmpty);
             } else {
+                // Shape does not reach this cell — keep the existing cell's
+                // data untouched (result is the pre-existing field).
                 r.shapeType = SDF::eval(r.shapeSDF);
                 r.resultType = frame.type;
                 if(frame.type == SpaceType::Empty) ++prunedEmptyNodes;
@@ -1128,6 +1124,15 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             }
         }
     }
+
+    // Leaf: combine shape with the existing field; non-leaf with computed
+    // children: aggregate upward. Pruned/disjoint cells were fully resolved
+    // above and must NOT be re-aggregated from default (Empty) children.
+    if(r.isLeaf || (process && !processed && !r.isLeaf)) {
+        buildShapeSDF(args, frame, r, children, threadContext, false);
+        buildResultSDF(args, frame, r, children, threadContext);
+    }
+
     bool interpolatedSurface = (frame.node == NULL)
                                 && SDF::eval(frame.sdf) == SpaceType::Surface 
                                 && frame.type == SpaceType::Surface
@@ -1179,7 +1184,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                             childNode->setSDF(child.resultSDF);
                             childNode->setSimplification(child.isSimplified);
                             childNode->setChunk(child.isChunk);
-                            childNode->setBrush(child.brushIndex > DISCARD_BRUSH_INDEX ? child.brushIndex : r.brushIndex);
+                            childNode->setBrush(r.brushIndex);
                             childNode->setChunkLod(child.selectedChunkLod);
                             childNode->setLod(child.selectedLod);
                             childNode->vertex.hsv = child.brushHsv;

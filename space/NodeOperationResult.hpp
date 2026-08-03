@@ -14,7 +14,6 @@ struct NodeOperationResult {
     SpaceType resultType;
     float resultSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
     float shapeSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
-    float shapeSdfCenter = INFINITY;
     uint8_t isSimplified;
     bool isLeaf;
     bool isChunk;

@@ -9,8 +9,8 @@ NodeOperationResult::NodeOperationResult()
     : node(NULL), shapeType(SpaceType::Empty), 
     resultType(SpaceType::Empty),  isSimplified(0u), 
     isLeaf(false), isChunk(false), brushIndex(DISCARD_BRUSH_INDEX),
-    selectedLod(0), selectedChunkLod(0),
-    brushHsv(0.0f, 0.5f, 0.5f)
+    brushHsv(0.0f, 0.5f, 0.5f),
+    selectedLod(0), selectedChunkLod(0)
 {
 
 }
@@ -19,8 +19,8 @@ NodeOperationResult::NodeOperationResult(OctreeNode * node_, SpaceType shapeType
     : node(node_), shapeType(shapeType_), resultType(resultType_), 
     isSimplified(isSimplified_), isLeaf(isLeaf_), 
     isChunk(isChunk_), brushIndex(brushIndex_),
-    selectedLod(selectedLod_), selectedChunkLod(selectedChunkLod_),
-    brushHsv(0.0f, 0.5f, 0.5f)
+    brushHsv(0.0f, 0.5f, 0.5f),
+    selectedLod(selectedLod_), selectedChunkLod(selectedChunkLod_)
 {
     if (resultSDF_) 
         std::memcpy(this->resultSDF, resultSDF_, sizeof(this->resultSDF)); else for(int i=0;i<8;++i) this->resultSDF[i]=INFINITY;
