@@ -137,6 +137,33 @@ public:
                            uint32_t srcVertexOffset = 0, uint32_t srcIndexOffset = 0,
                            float cellSize = 0.0f, int maxLevel = 0);
 
+    // Zero every draw entry of a slot at levels [firstLevel, kMaxChunkLevels).
+    // After a ladder publish, levels the chunk no longer emits must not keep
+    // their old commands: the stale meta (old maxLevel/bounds) still passes
+    // the GPU band test, so the renderer would draw vertex data the new
+    // ladder already overwrote — i.e. read uninitialized meshes. Zeroing
+    // makes the cull shader drop them on indexCount == 0.
+    void clearSlotLevelsFrom(uint32_t slotIndex, uint32_t firstLevel);
+
+    // Data for one deferred alias entry (see finalizeSlotLadder).
+    struct SlotLevelAlias {
+        uint32_t level = 0;
+        uint32_t indexCount = 0;   // of the finest published level's geometry
+        glm::vec3 boundsMin{0.0f};
+        glm::vec3 boundsMax{0.0f};
+    };
+    // Deferred ladder finalization, called at the last level's upload
+    // completion: writes alias entries for empty levels (drawing the finest
+    // published level, at slot sub-offset 0) and clears levels above
+    // lastPublishedLevel. Deferring is required for correctness: transfer
+    // completion is FIFO, so every deferred meta write from a previous
+    // publish of this slot has already fired — an immediate alias/clear could
+    // be overwritten afterwards by a stale completion, resurrecting entries
+    // that reference overwritten slot data.
+    void finalizeSlotLadder(uint32_t slotIndex, uint32_t lastPublishedLevel,
+                            const std::vector<SlotLevelAlias>& aliases,
+                            float cellSize, int maxLevel);
+
     // Upload a single slot's vertex/index data to the GPU, and write its
     // indirect command + bounds into the host-visible metadata buffers.
     // This is the per-chunk equivalent of a full rebuild — but only touches

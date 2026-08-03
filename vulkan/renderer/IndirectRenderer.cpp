@@ -1535,7 +1535,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);
 
     // Barrier to make shader writes to the compact indirect buffer and visible count visible to indirect draw
-    VkBufferMemoryBarrier2 barriers[2] = {};
+    VkBufferMemoryBarrier2 barriers[3] = {};
     barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     barriers[0].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
@@ -1557,6 +1557,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     barriers[1].buffer = visibleCount.buffer;
     barriers[1].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
 
+    // visibleLods is a third consumer of the dispatch writes: the coarse
+    // chosen-LoD pass reads it in a follow-up dispatch.
     barriers[2] = barriers[0];
     barriers[2].buffer = visibleLods.buffer;
     barriers[2].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
@@ -2544,6 +2546,92 @@ void IndirectRenderer::publishAliasLevel(uint32_t slotIndex, int level, const Ge
             boundsBuffer.unmap();
         }
     }
+    activeMeshCountDirty_ = true;
+}
+
+void IndirectRenderer::clearSlotLevelsFrom(uint32_t slotIndex, uint32_t firstLevel)
+{
+    if (!slottedMode) return;
+
+    std::lock_guard<std::recursive_mutex> guard(mutex);
+
+    // Zero every draw entry of this slot at levels [firstLevel, kMaxChunkLevels):
+    // the current ladder does not publish them, so any stale command kept here
+    // (from a previous, longer ladder of this chunk or a prior slot occupant)
+    // would still pass the GPU band test with its old meta and draw vertex data
+    // the new ladder already overwrote — the renderer must never read those
+    // uninitialized entries. GPU culling drops them on indexCount == 0.
+    for (uint32_t lv = firstLevel; lv < kMaxChunkLevels; ++lv) {
+        uint32_t entry = slotIndex * kMaxChunkLevels + lv;
+        if (entry >= indirectCommands.size()) break;
+        indirectCommands[entry] = VkDrawIndexedIndirectCommand{};
+        if (indirectBuffer.buffer != VK_NULL_HANDLE) {
+            VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(entry) * sizeof(VkDrawIndexedIndirectCommand);
+            void* data = indirectBuffer.map(cmdOffset);
+            if (data) {
+                std::memset(data, 0, sizeof(VkDrawIndexedIndirectCommand));
+                indirectBuffer.unmap();
+            }
+        }
+        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(entry) * 3 * sizeof(glm::vec4);
+            void* data = boundsBuffer.map(boundsOffset);
+            if (data) {
+                std::memset(data, 0, 3 * sizeof(glm::vec4));
+                indirectBuffer.unmap();
+            }
+        }
+    }
+    activeMeshCountDirty_ = true;
+}
+
+void IndirectRenderer::finalizeSlotLadder(uint32_t slotIndex, uint32_t lastPublishedLevel,
+                                          const std::vector<SlotLevelAlias>& aliases,
+                                          float cellSize, int maxLevel)
+{
+    if (!slottedMode) return;
+
+    std::lock_guard<std::recursive_mutex> guard(mutex);
+
+    // Alias entries for levels that tessellated empty: zero-copy — the entry
+    // draws the finest published level's data (always at slot sub-offset 0)
+    // band-tested at the alias level, so the chunk renders at every band.
+    for (const SlotLevelAlias& a : aliases) {
+        if (a.level >= kMaxChunkLevels) continue;
+        size_t di = static_cast<size_t>(slotIndex) * kMaxChunkLevels + a.level;
+        if (di >= indirectCommands.size()) continue;
+
+        VkDrawIndexedIndirectCommand cmd{};
+        cmd.indexCount    = a.indexCount;
+        cmd.instanceCount = 1;
+        cmd.firstIndex    = slotIndex * slotIndexCapacity;
+        cmd.vertexOffset  = static_cast<int32_t>(slotIndex * slotVertexCapacity);
+        cmd.firstInstance = static_cast<uint32_t>(di);
+        indirectCommands[di] = cmd;
+
+        if (indirectBuffer.buffer != VK_NULL_HANDLE) {
+            VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(di) * sizeof(VkDrawIndexedIndirectCommand);
+            void* data = indirectBuffer.map(cmdOffset);
+            if (data) {
+                std::memcpy(data, &cmd, sizeof(cmd));
+                indirectBuffer.unmap();
+            }
+        }
+        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(di) * 3 * sizeof(glm::vec4);
+            glm::vec4 bounds[3] = { glm::vec4(a.boundsMin, 0.0f), glm::vec4(a.boundsMax, 0.0f),
+                                    lodMetaFor(cellSize, static_cast<int>(a.level), maxLevel) };
+            void* data = boundsBuffer.map(boundsOffset);
+            if (data) {
+                std::memcpy(data, bounds, sizeof(bounds));
+                indirectBuffer.unmap();
+            }
+        }
+    }
+
+    // Levels above the coarsest published one: clear stale entries (recursive
+    // lock — same thread, already held above).
+    clearSlotLevelsFrom(slotIndex, lastPublishedLevel + 1);
     activeMeshCountDirty_ = true;
 }
 

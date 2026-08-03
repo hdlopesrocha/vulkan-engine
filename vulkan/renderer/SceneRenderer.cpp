@@ -1424,6 +1424,39 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // must cover every remaining band (else the band test would drop
             // the chunk past the cut level -> holes).
             const uint32_t maxLevel = std::min(ladderMaxLevel, lastPublishedLevel);
+
+            // Deferred ladder finalize data: alias entries for levels that
+            // tessellated empty (they draw the finest published level's data,
+            // band-tested at their own level). Computed now, but only WRITTEN
+            // at the last level's upload completion (see the isLast callback)
+            // so a stale deferred meta write from a previous publish of this
+            // slot cannot overwrite them afterwards (completion is FIFO).
+            std::vector<IndirectRenderer::SlotLevelAlias> pendingAliases;
+            float aliasCellSize = 0.0f;
+            {
+                bool srcFound = false;
+                uint32_t srcIndexCount = 0;
+                glm::vec3 srcBmin(0.0f), srcBmax(0.0f);
+                bool have[kMaxChunkLevels] = {false};
+                for (const auto& lod : pd.lods) {
+                    if (lod.level > lastPublishedLevel) break;
+                    if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
+                    if (lod.level < kMaxChunkLevels) have[lod.level] = true;
+                    if (!srcFound) {
+                        srcFound = true;
+                        aliasCellSize = lod.cellSize;
+                        srcIndexCount = static_cast<uint32_t>(lod.geom.indices.size());
+                        srcBmin = glm::vec3(FLT_MAX); srcBmax = glm::vec3(-FLT_MAX);
+                        for (const auto& v : lod.geom.vertices) {
+                            srcBmin = glm::min(srcBmin, v.position);
+                            srcBmax = glm::max(srcBmax, v.position);
+                        }
+                    }
+                }
+                for (uint32_t k = 0; k <= lastPublishedLevel; ++k) {
+                    if (!have[k]) pendingAliases.push_back({k, srcIndexCount, srcBmin, srcBmax});
+                }
+            }
             // Publish + upload pass, interleaved per level: addMeshSlotted sets
             // the MeshInfo's level to the level just published, so uploadSlot's
             // validation (level == info->level) matches while the info still
@@ -1434,8 +1467,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // we free the old slot and let the ChunkManager swap the proxy in.
             uint32_t slotIdx = UINT32_MAX;
             levelVertexOffset = 0; levelIndexOffset = 0;
-            bool publishedLevels[kMaxChunkLevels] = {false};
-            int finestPublishedLevel = -1;
             for (const auto& lod : pd.lods) {
                 if (lod.level > lastPublishedLevel) break;
                 if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
@@ -1443,14 +1474,20 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                                              slotIdx, levelVertexOffset, levelIndexOffset,
                                              lod.cellSize, (int)maxLevel);
                 if (slotIdx == UINT32_MAX) break;
-                publishedLevels[lod.level] = true;
-                if (finestPublishedLevel < 0) finestPublishedLevel = (int)lod.level;
                 // If addMeshSlotted reused the same slot (update in-place), no free needed.
                 if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
                     oldSlot = UINT32_MAX;
                 const bool isLast = (lod.level == lastPublishedLevel);
                 ir->uploadSlot(app, slotIdx, (int)lod.level, 0.0f,
-                    isLast ? [ir, cid, oldSlot, this]() {
+                    isLast ? [ir, cid, oldSlot, this, slotIdx, lastPublishedLevel,
+                              aliases = pendingAliases, aliasCellSize, maxLevel]() {
+                        // Deferred ladder finalize: write alias entries for empty
+                        // levels and clear stale levels above the coarsest
+                        // published one. Runs at the last level's upload
+                        // completion, so prior deferred writes for this slot
+                        // (FIFO) have already fired and cannot resurrect them.
+                        ir->finalizeSlotLadder(slotIdx, lastPublishedLevel, aliases,
+                                               aliasCellSize, (int)maxLevel);
                         if (oldSlot != UINT32_MAX)
                             ir->removeMeshSlotted(oldSlot);
                         if (this->world_) this->world_->chunkManager().finishUpload(cid);
@@ -1460,22 +1497,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             }
             if (slotIdx == UINT32_MAX) {
                 continue;
-            }
-
-            // Always-render fallback: a ladder level that tessellated empty
-            // (e.g. coarse cells whose SDF corners are all sentinels) has no
-            // geometry of its own, and without an entry its distance band
-            // would be a hole. Publish a zero-copy ALIAS entry at that level
-            // that band-tests at level k but draws the finest published
-            // (sub-chunk) data instead — the chunk is always rendered.
-            if (finestPublishedLevel >= 0) {
-                const auto& src = pd.lods[finestPublishedLevel];
-                for (uint32_t k = 0; k <= lastPublishedLevel; ++k) {
-                    if (!publishedLevels[k]) {
-                        ir->publishAliasLevel(slotIdx, (int)k, src.geom, 0u, 0u,
-                                              src.cellSize, (int)maxLevel);
-                    }
-                }
             }
 
             // Store the slot index in the ChunkManager entry so the erase
@@ -1819,7 +1840,10 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
                 oldSlot = UINT32_MAX;
             const bool isLast = (lod.level == lastPublishedLevel);
             ir->uploadSlot(app, slotIdx, (int)lod.level, 0.0f,
-                isLast ? [ir, oldSlot]() {
+                isLast ? [ir, oldSlot, slotIdx, lastPublishedLevel]() {
+                    // Deferred finalize: clear stale levels above the coarsest
+                    // published one (no aliases on the brush path).
+                    ir->finalizeSlotLadder(slotIdx, lastPublishedLevel, {}, 0.0f, 0);
                     if (oldSlot != UINT32_MAX)
                         ir->removeMeshSlotted(oldSlot);
                 } : std::function<void()>());
@@ -2010,7 +2034,11 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
                     // The immutable RenderProxy carries the level-0 (finest)
                     // geometry; the coarse levels live in the shared slot regions.
                     auto proxy = std::make_shared<RenderProxy>(
-                        static_cast<uint32_t>(nid_), nd_.node->version, UINT32_MAX, lodMesh.geom);
+                        static_cast<uint32_t>(nid_), 
+                        nd_.node->version, 
+                        UINT32_MAX, 
+                        lodMesh.geom
+                    );
                     if (this->slottedModeEnabled && this->world_) {
                         this->world_->chunkManager().finishBuild(cid, std::move(proxy));
                     }

@@ -41,8 +41,17 @@ bool Processor::iterate(const Octree &tree, OctreeNodeData &params) {
     // values against this same stored target, keeping the whole ladder walk
     // self-consistent. Only the level handed to onGeometry (the renderer's
     // 0-based LADDER LEVEL: 0 = frontier mesh) is decoded back by (-1).
-    const uint8_t chunkLodStored = params.node->getChunkLod();
-    if(chunkLodStored > 0) {
+    uint8_t chunkLodStored = params.node->getChunkLod();
+    // Ladder levels are 0..kMaxChunkLevels-1 (kMaxChunkLevels = 5, see
+    // vulkan/includes/locations.hpp) and stored chunkLod is +1 shifted, so
+    // levels 0..4 correspond to stored 1..5. A node deeper than the ladder
+    // (stored chunkLod > 5 — e.g. a root cube larger than the map, like a
+    // 15360 root with stored chunkLod 6) has NO ladder level of its own:
+    // tessellating it must be skipped, NOT capped into an existing level,
+    // otherwise it re-emits the child's level (the stored-6 root re-emitted
+    // level 4 alongside the stored-5 node, doubling the coarse mesh).
+
+    if(chunkLodStored > 0 && chunkLodStored <= 5) {
         long trianglesCount = 0;
         Tesselator nodeTesselator(&trianglesCount);
         tree.iterateTriangles(params.node, params.cube, params.level, nodeTesselator, context, chunkLodStored);

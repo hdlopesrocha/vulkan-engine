@@ -7,7 +7,12 @@ UniqueOctreeChangeHandler::UniqueOctreeChangeHandler(const OctreeChangeHandler &
 void UniqueOctreeChangeHandler::onNodeAdded(const OctreeNodeData& data) const {
     NodeID id = reinterpret_cast<NodeID>(data.node);
     std::lock_guard<std::mutex> guard(mtx);
-    updates[id] = {OctreeNodeData{data} , true};
+
+    OctreeNodeData& existingData = updates[id].first;
+    if(existingData.node == nullptr ||
+        existingData.node->version < data.node->version) {
+        updates[id] = {OctreeNodeData{data} , true};
+    }
 }
 void UniqueOctreeChangeHandler::onNodeDeleted(const OctreeNodeData& data) const {
     NodeID id = reinterpret_cast<NodeID>(data.node);

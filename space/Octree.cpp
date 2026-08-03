@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <unordered_map>
 #include <limits>
+#include <set>
+#include <array>
 #include "OctreeAllocator.hpp"
 #include "OctreeNode.hpp"
 #include "IteratorHandler.hpp"
@@ -262,6 +264,18 @@ void Octree::iterateTriangles(
     // pure function of pos (the octree/context are constant during this call),
     // so cached results are reusable and bit-identical to a fresh lookup.
     tsl::robin_map<glm::vec3, EdgeCell> cellCache;
+
+    // Bit-pattern key for a vertex position (exact, no hashing of floats).
+    auto vertexKey = [](const glm::vec3 &p) {
+        uint32_t b[3];
+        std::memcpy(&b, &p, sizeof(b));
+        return (uint64_t)b[0] ^ ((uint64_t)b[1] << 21) ^ ((uint64_t)b[2] << 42);
+    };
+
+    // Emitted-triangle dedup set (see emitTriangle): every ladder mesh is built
+    // by walking each cell's 12 edges, and a segment on a cell boundary line is
+    // visited once per flanking cell. Meshes hold a few hundred triangles.
+    std::set<std::array<uint64_t, 3>> emitted;
 
     struct EdgeSpan {
         int axis = 0;
@@ -560,6 +574,22 @@ void Octree::iterateTriangles(
         if(samePosition(a->position, b->position, eps)) return;
         if(samePosition(b->position, c->position, eps)) return;
         if(samePosition(c->position, a->position, eps)) return;
+        // Tesselator::handle drops triangles with a DISCARD brush; mirror that
+        // check here so a triangle is only ever emitted once with a valid brush.
+        if(a->brushIndex <= DISCARD_BRUSH_INDEX || b->brushIndex <= DISCARD_BRUSH_INDEX
+            || c->brushIndex <= DISCARD_BRUSH_INDEX) return;
+        // A surface segment lying on the line shared by two (or four) flanking
+        // cells at the same level is walked once per flanking cell, so the
+        // same triangle can be submitted up to 4x with bit-identical vertices.
+        // Dedup by the sorted bit patterns of the 3 vertex positions: identical
+        // inputs produce identical UVs/normals/brushes (all derived from the
+        // positions here), so dropping the duplicates is exact and safe. Meshes
+        // are small (~hundreds of tris), so a set is cheap.
+        std::array<uint64_t, 3> key = { vertexKey(a->position), vertexKey(b->position), vertexKey(c->position) };
+        std::sort(key.begin(), key.end());
+        if(!emitted.insert(key).second) {
+            return;
+        }
         func.handle(*a, *b, *c);
     };
 
@@ -1231,8 +1261,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
 
                         r.selectedLod = childLod ? (r.selectedLod == 0 ? childLod : glm::min(r.selectedLod, childLod)) : 0;
                         r.selectedChunkLod = childChunkLod ? (r.selectedChunkLod == 0 ? childChunkLod : glm::min(r.selectedChunkLod, childChunkLod)) : 0;
-                    }
-                    if(childNode != NULL) {
+      
                         const int childBrush = childNode->getBrush();
                         if(childBrush > DISCARD_BRUSH_INDEX) {
                             const int count = ++brushCounts[childBrush];
@@ -1275,7 +1304,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         // the renderer reuses the non-empty finer chunk meshes for every
         // distance band (band meta maxLevel = 0 → chunks always kept), so
         // there are no holes. chunkLod is still computed (widget/bands).
-        if(r.node->getChunkLod() > 0 && r.node->getChunkLod() < 5) {
+        if(r.node->getChunkLod() > 0) {
             ++r.node->version;
             OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube, nullptr);
             r.resultType == SpaceType::Surface ? args.changeHandler.onNodeAdded(data) : args.changeHandler.onNodeDeleted(data);
