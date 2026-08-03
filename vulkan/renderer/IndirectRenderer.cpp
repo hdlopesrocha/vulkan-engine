@@ -27,7 +27,9 @@ struct CullPushConstants {
     float pad0[2];        // offset 72
     glm::vec3 camPos;     // offset 80
     float lodBias;        // offset 92
-}; // 96 bytes
+    float maxLod;         // offset 96: max chunkLod level to render (coarsest allowed)
+    float pad1[3];        // offset 100
+}; // 112 bytes
 
 struct CascadeCullPushConstants {
     uint32_t numChunks;   // offset 0
@@ -1364,7 +1366,7 @@ void IndirectRenderer::setCullFrame(uint32_t frame) {
 }
 
 void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
-                                   glm::vec3 camPos, float lodBias) {
+                                   glm::vec3 camPos, float lodBias, float maxLod) {
     // NOTE: No mutex lock here - this is only called from the main render thread
     // and all buffer modifications happen in rebuild() which does lock.
     Buffer& compactBuf = compactIndirectBuffers[currentCullFrame];
@@ -1525,6 +1527,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     pc.numCmds      = numCmds;
     pc.camPos       = camPos;
     pc.lodBias      = lodBias;
+    pc.maxLod       = maxLod;
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc);
 
     uint32_t groupSize = 64;
@@ -1569,7 +1572,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 
 void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
                                                 VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
-                                                glm::vec3 camPos, float lodBias) {
+                                                glm::vec3 camPos, float lodBias, float maxLod) {
     if (computePipeline == VK_NULL_HANDLE) {
         // No meshes loaded yet (e.g. during parallel background loading). Nothing to cull.
         return;
@@ -1694,6 +1697,7 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     pc2.numCmds      = numCmds;
     pc2.camPos       = camPos;
     pc2.lodBias      = lodBias;
+    pc2.maxLod       = maxLod;
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc2);
 
     uint32_t groupSize = 64;

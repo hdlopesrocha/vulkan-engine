@@ -40,6 +40,8 @@ layout(push_constant) uniform PC {
     uint numCmds;     // actual number of draw commands (guards against uninitialized buffer tail)
     vec3 camPos;      // camera position driving the LoD band selection
     float lodBias;    // band scale: larger = coarser levels kick in farther away
+    float maxLod;     // max chunkLod level to render: the coarsest band allowed.
+                      // Bands beyond it all fall back to this level (default 4).
 } pc;
 
 // Shared, per-workgroup cache of the six frustum planes. The viewProj matrix is
@@ -144,6 +146,11 @@ void main() {
     //   level maxLevel (the root): everything beyond (floor(band) >= maxLevel)
     // Single-level scenes (maxLevel == 0) have no coarse fallback: always keep.
     //
+    // maxLevel is clamped by the pc.maxLod push constant (max chunkLod level
+    // to render, default 4): every band beyond the cap falls back to the cap
+    // level, so the cap-level entries must be published (they are: ladders
+    // publish every level up to their own meta clamp).
+    //
     // The selection is computed for EVERY non-empty entry — even ones outside
     // the camera frustum — and stamped into visibleLods, so the shadow cascade
     // cull reads the exact same level instead of re-deriving the band with a
@@ -151,7 +158,7 @@ void main() {
     // not on the frustum.)
     float cellSize = lodMeta.x;
     int entryLevel = int(lodMeta.y + 0.5);
-    int maxLevel   = int(lodMeta.z + 0.5);
+    int maxLevel   = int(min(lodMeta.z + 0.5, pc.maxLod));
 
     uint selectedLevel = 0xFFFFFFFFu;
     if (cellSize > 0.0) {

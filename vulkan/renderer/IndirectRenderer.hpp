@@ -208,13 +208,14 @@ public:
     void acquireBuffers(VkCommandBuffer cmd);
 
     // Run GPU culling/compaction (must be called outside any render pass).
-    // `camPos`/`lodBias` drive the per-chunk LoD band selection.
+    // `camPos`/`lodBias` drive the per-chunk LoD band selection; `maxLod`
+    // caps the coarsest chunkLod level rendered (default 4).
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
-                     glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f);
+                     glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, float maxLod = 4.0f);
     // Run GPU culling into caller-provided output buffers using a provided compute descriptor set.
     void prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
                                    VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
-                                   glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f);
+                                   glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, float maxLod = 4.0f);
     // Issue indirect draw using the compacted indirect buffer (call inside render pass).
     void drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws = 0);
     void drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer compactBuffer, VkBuffer visibleCountBuffer, uint32_t maxDraws = 0);
