@@ -12,4 +12,5 @@ public:
     bool propagatesFromInfinity() const override { return false; }
     bool preservesSolid() const override { return true; }
     bool preservesEmpty() const override { return true; }
+    bool paintsVertices() const override { return true; }
 };

@@ -1029,6 +1029,18 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
                 r.shapeType = SDF::eval(r.shapeSDF);
                 r.resultType = SpaceType::Solid;
+                // Painting prunes the whole subtree here (no descent to leaves
+                // where the painter normally runs), so apply the painter at the
+                // node center to keep the paint stroke visible in solid regions.
+                if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
+                    Vertex centerVertex(frame.cube.getCenter());
+                    r.brushIndex = args.painter.paint(centerVertex);
+                    r.brushHsv = args.painter.paintHSV(centerVertex);
+                    if(r.node != NULL) {
+                        r.node->vertex.hsv = r.brushHsv;
+                        r.node->setBrush(r.brushIndex);
+                    }
+                }
                 ++prunedSolidNodes;
                 processed = true;
             }
@@ -1043,6 +1055,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
                 r.shapeType = SDF::eval(r.shapeSDF);
                 r.resultType = SpaceType::Empty;
+                r.brushIndex = frame.brushIndex;
+                r.brushHsv = frame.hsv;
                 ++prunedEmptyNodes;
                 processed = true;
             }
@@ -1061,6 +1075,18 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                     buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
                     r.shapeType = SDF::eval(r.shapeSDF);
                     r.resultType = SpaceType::Solid;
+                    // Same painting concern as the preserves-Solid prune above:
+                    // apply the painter at the node center so painted operations
+                    // pruned here still leave a visible stroke.
+                    if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
+                        Vertex centerVertex(frame.cube.getCenter());
+                        r.brushIndex = args.painter.paint(centerVertex);
+                        r.brushHsv = args.painter.paintHSV(centerVertex);
+                        if(r.node != NULL) {
+                            r.node->vertex.hsv = r.brushHsv;
+                            r.node->setBrush(r.brushIndex);
+                        }
+                    }
                     ++prunedSolidNodes;
                     processed = true;
                 }
@@ -1150,7 +1176,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                             childNode->setSDF(child.resultSDF);
                             childNode->setSimplification(child.isSimplified);
                             childNode->setChunk(child.isChunk);
-                            childNode->setBrush(child.brushIndex != DISCARD_BRUSH_INDEX ? child.brushIndex : frame.brushIndex);
+                            childNode->setBrush(child.brushIndex != DISCARD_BRUSH_INDEX ? child.brushIndex : r.brushIndex);
                             childNode->setChunkLod(child.selectedChunkLod);
                             childNode->setLod(child.selectedLod);
                             childNode->vertex.hsv = child.brushHsv;
