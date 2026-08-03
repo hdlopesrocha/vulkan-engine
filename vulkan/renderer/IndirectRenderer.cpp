@@ -2487,6 +2487,62 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
     }
 }
 
+void IndirectRenderer::publishAliasLevel(uint32_t slotIndex, int level, const Geometry& source,
+                                         uint32_t srcVertexOffset, uint32_t srcIndexOffset,
+                                         float cellSize, int maxLevel)
+{
+    if (!slottedMode) return;
+
+    std::lock_guard<std::recursive_mutex> guard(mutex);
+
+    uint32_t lv = static_cast<uint32_t>(level);
+    if (lv >= kMaxChunkLevels) return;
+    size_t di = static_cast<size_t>(slotIndex) * kMaxChunkLevels + lv;
+    if (di >= indirectCommands.size()) return;
+
+    // Zero-copy alias: the command draws the source level's sub-range of the
+    // slot (already uploaded), band-tested under this entry's own level.
+    VkDrawIndexedIndirectCommand cmd{};
+    cmd.indexCount    = static_cast<uint32_t>(source.indices.size());
+    cmd.instanceCount = 1;
+    cmd.firstIndex    = slotIndex * slotIndexCapacity + srcIndexOffset;
+    cmd.vertexOffset  = static_cast<int32_t>(slotIndex * slotVertexCapacity + srcVertexOffset);
+    cmd.firstInstance = static_cast<uint32_t>(di);
+    indirectCommands[di] = cmd;
+
+    if (indirectBuffer.buffer != VK_NULL_HANDLE) {
+        VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(di) * sizeof(VkDrawIndexedIndirectCommand);
+        void* data = indirectBuffer.map(cmdOffset);
+        if (data) {
+            memcpy(data, &cmd, sizeof(cmd));
+            indirectBuffer.unmap();
+        }
+    }
+
+    // Reuse the source geometry's bounds so frustum culling sees the real
+    // extent; the meta triple carries this entry's own level for the band test.
+    if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+        glm::vec3 bmin(FLT_MAX), bmax(-FLT_MAX);
+        for (const auto& v : source.vertices) {
+            bmin = glm::min(bmin, v.position);
+            bmax = glm::max(bmax, v.position);
+        }
+        if (source.vertices.empty()) {
+            bmin = glm::vec3(0.0f);
+            bmax = glm::vec3(0.0f);
+        }
+        VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(di) * 3 * sizeof(glm::vec4);
+        glm::vec4 bounds[3] = { glm::vec4(bmin, 0.0f), glm::vec4(bmax, 0.0f),
+                                lodMetaFor(cellSize, level, maxLevel) };
+        void* data = boundsBuffer.map(boundsOffset);
+        if (data) {
+            memcpy(data, bounds, sizeof(bounds));
+            boundsBuffer.unmap();
+        }
+    }
+    activeMeshCountDirty_ = true;
+}
+
 bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, int level, float priority,
                                    std::function<void()> onComplete)
 {

@@ -7,7 +7,7 @@
 OctreeNodeFrame::OctreeNodeFrame()
     : node(NULL), iteratedNode(NULL), cube(), type(SpaceType::Empty), level(0), brushIndex(DISCARD_BRUSH_INDEX), hsv(0.0f, 0.5f, 0.5f), chunkCube()
 {
-    for(int i=0;i<8;++i) sdf[i] = SDF_FAR;
+    for(int i=0;i<8;++i) sdf[i] = INFINITY;
 }
 
 OctreeNodeFrame::OctreeNodeFrame(const OctreeNodeFrame &t)
@@ -19,5 +19,5 @@ OctreeNodeFrame::OctreeNodeFrame(const OctreeNodeFrame &t)
 OctreeNodeFrame::OctreeNodeFrame(OctreeNode* node_, OctreeNode* iteratedNode_, const BoundingCube &cube_, SpaceType type_, uint level_, float * sdf_, int brushIndex_, const BoundingCube &chunkCube_)
     : node(node_), iteratedNode(iteratedNode_), cube(cube_), type(type_), level(level_), brushIndex(brushIndex_), hsv(0.0f, 0.5f, 0.5f), chunkCube(chunkCube_)
 {
-    if (sdf_) std::memcpy(this->sdf, sdf_, sizeof(this->sdf)); else for(int i=0;i<8;++i) this->sdf[i]=SDF_FAR;
+    if (sdf_) std::memcpy(this->sdf, sdf_, sizeof(this->sdf)); else for(int i=0;i<8;++i) this->sdf[i]=INFINITY;
 }

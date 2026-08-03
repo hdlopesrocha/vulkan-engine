@@ -1,15 +1,7 @@
 #pragma once
 #include <glm/glm.hpp>
 
-// Finite "far from surface" sentinel used in stored SDF cells. The SDF field
-// must never contain infinity: INFINITY/INFINITY arithmetic (t = INF/INF,
-// INF - INF, gradient differencing) produces NaN or inf that corrupts QEF
-// vertices and normals. Instead, untouched/empty corners hold a large but
-// finite distance, so every stored value is interpolatable and sign-consistent
-// (positive = outside, negative = inside). SDF_FAR is far beyond any reachable
-// SDF magnitude in the octree (root ~8k units) yet small enough that
-// t = d0/(d0-d1) stays finite and well-clamped.
-static constexpr float SDF_FAR = 1.0e5f;
+
 
 //      6-----7
 //     /|    /|

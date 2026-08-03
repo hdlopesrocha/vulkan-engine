@@ -84,7 +84,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                 // far from 0 (beyond ~0.25x the cell diagonal) means the vertex
                 // is parked where the tree holds no real surface.
                 float cellDiag = cube.getLengthX() * 1.73205080757f;
-                float d = std::isnan(v.position.x) ? SDF_FAR : tree->getSdfAt(v.position);
+                float d = std::isnan(v.position.x) ? INFINITY : tree->getSdfAt(v.position);
                 if (std::fabs(d) > cellDiag * 0.25f) {
                     ++offSurface;
                     float o = std::fabs(d) / cellDiag;

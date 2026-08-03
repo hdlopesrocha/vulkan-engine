@@ -12,14 +12,16 @@ struct NodeOperationResult {
     OctreeNode * node;
     SpaceType shapeType;
     SpaceType resultType;
-    float resultSDF[8] = {SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR};
-    float shapeSDF[8] = {SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR};
-    float shapeSdfCenter = SDF_FAR;
+    float resultSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
+    float shapeSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
+    float shapeSdfCenter = INFINITY;
     uint8_t isSimplified;
     bool isLeaf;
     bool isChunk;
     int brushIndex;
-    glm::vec3 hsv;
+    glm::vec3 brushHsv;
+    uint8_t selectedLod;
+    uint8_t selectedChunkLod;
     ContainmentType check;
     NodeOperationResult();
     NodeOperationResult(
@@ -31,5 +33,7 @@ struct NodeOperationResult {
         uint8_t isSimplified, 
         bool isLeaf,
         bool isChunk,
-        int brushIndex);
+        int brushIndex,
+        uint8_t selectedLod,
+        uint8_t selectedChunkLod);
 };

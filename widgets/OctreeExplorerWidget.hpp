@@ -42,6 +42,7 @@ private:
     bool expandAllPersistent = false; // Persistently keep nodes expanded
     bool collapseAll = false; // Trigger collapse of all nodes for one frame
     bool showDebugCubes = false; // Debug cubes visibility for octree explorer
+    bool showSdf = true;         // Show per-node SDF corner summary (min/max, sentinels, tooltip with all 8 corners)
     bool applyRayOpenState = false; // Apply ray-based open/closed state in next render pass
     bool rootRayOpen = false;
     std::unordered_map<const OctreeNode*, bool> rayOpenState;
@@ -56,6 +57,7 @@ private:
 
     void renderTree(const Octree& tree);
     void renderNode(OctreeNode* node, const BoundingCube& cube, int depth, OctreeAllocator* allocator, ImGuiTreeNodeFlags extraFlags = 0);
+    void renderSdfInline(const OctreeNode* node);
     void handleRayExpandShortcut(const Octree& tree);
     bool buildMouseRay(const Octree& tree, Ray& outRay) const;
     bool updateRayOpenStateRecursive(OctreeNode* node, const BoundingCube& cube, OctreeAllocator* allocator, const Ray& ray);

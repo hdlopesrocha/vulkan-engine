@@ -1368,7 +1368,12 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // zeroed (culled). maxLevel for the band meta is the scene-wide
             // clamp, not the ladder size (each node publishes exactly one
             // level per ladder step).
-            const uint32_t ladderMaxLevel = pd.lods.empty() ? 0 : static_cast<uint32_t>(pd.lods[0].maxLevel);
+            uint32_t ladderMaxLevel = 0;
+            for (const auto& lod : pd.lods) {
+                if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
+                ladderMaxLevel = lod.maxLevel;
+                break;
+            }
 
             // If this chunk had a pending-delete entry (erase callback saved
             // the old slot for this NodeID), defer cleanup until the new upload
@@ -1393,7 +1398,14 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // would make `lastPublishedLevel < lods[0].level` false for level 0).
             uint32_t levelVertexOffset = 0, levelIndexOffset = 0;
             uint32_t lastPublishedLevel = UINT32_MAX;
+            bool hasRealLevels = false;
             for (const auto& lod : pd.lods) {
+                // Missing ladder levels arrive as empty default LoDMesh
+                // entries (Processor skips empty meshes): they must not count
+                // as published levels, or the upload pass would overwrite the
+                // chunk's real level-0 draw entry with zero counts.
+                if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
+                hasRealLevels = true;
                 const uint32_t lv = lod.level;
                 bool fits = (static_cast<uint64_t>(levelVertexOffset) + lod.geom.vertices.size() <= ir->getSlotVertexCapacity()) &&
                             (static_cast<uint64_t>(levelIndexOffset) + lod.geom.indices.size()  <= ir->getSlotIndexCapacity());
@@ -1402,7 +1414,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                 levelVertexOffset += static_cast<uint32_t>(lod.geom.vertices.size());
                 levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
             }
-            if (pd.lods.empty() || lastPublishedLevel == UINT32_MAX || lastPublishedLevel < pd.lods[0].level) {
+            if (!hasRealLevels || lastPublishedLevel == UINT32_MAX || lastPublishedLevel < pd.lods[0].level) {
                 continue; // nothing fits the slot budget
             }
             // Clamp the band meta to what was actually published: if the ladder
@@ -1410,7 +1422,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // must cover every remaining band (else the band test would drop
             // the chunk past the cut level -> holes).
             const uint32_t maxLevel = std::min(ladderMaxLevel, lastPublishedLevel);
-
             // Publish + upload pass, interleaved per level: addMeshSlotted sets
             // the MeshInfo's level to the level just published, so uploadSlot's
             // validation (level == info->level) matches while the info still
@@ -1421,12 +1432,18 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // we free the old slot and let the ChunkManager swap the proxy in.
             uint32_t slotIdx = UINT32_MAX;
             levelVertexOffset = 0; levelIndexOffset = 0;
+            bool publishedLevels[kMaxChunkLevels] = {false};
+            int finestPublishedLevel = -1;
             for (const auto& lod : pd.lods) {
                 if (lod.level > lastPublishedLevel) break;
+                if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
                 slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(pd.nid), (int)lod.level,
                                              slotIdx, levelVertexOffset, levelIndexOffset,
                                              lod.cellSize, (int)maxLevel);
                 if (slotIdx == UINT32_MAX) break;
+                publishedLevels[lod.level] = true;
+                if (finestPublishedLevel < 0) finestPublishedLevel = (int)lod.level;
+                // If addMeshSlotted reused the same slot (update in-place), no free needed.
                 if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
                     oldSlot = UINT32_MAX;
                 const bool isLast = (lod.level == lastPublishedLevel);
@@ -1443,6 +1460,22 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                 continue;
             }
 
+            // Always-render fallback: a ladder level that tessellated empty
+            // (e.g. coarse cells whose SDF corners are all sentinels) has no
+            // geometry of its own, and without an entry its distance band
+            // would be a hole. Publish a zero-copy ALIAS entry at that level
+            // that band-tests at level k but draws the finest published
+            // (sub-chunk) data instead — the chunk is always rendered.
+            if (finestPublishedLevel >= 0) {
+                const auto& src = pd.lods[finestPublishedLevel];
+                for (uint32_t k = 0; k <= lastPublishedLevel; ++k) {
+                    if (!publishedLevels[k]) {
+                        ir->publishAliasLevel(slotIdx, (int)k, src.geom, 0u, 0u,
+                                              src.cellSize, (int)maxLevel);
+                    }
+                }
+            }
+
             // Store the slot index in the ChunkManager entry so the erase
             // path can free it via removeMeshSlotted (the RenderProxy
             // is created with slotIndex=UINT32_MAX and never updated).
@@ -1453,7 +1486,8 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // chunkLod > 0) never drive vegetation.
             // (Legacy path does this inside updateMeshForNode; slotted mode
             // must do it here since it never calls updateMeshForNode.)
-            if (pd.layer == LAYER_OPAQUE && vegetationRenderer && !pd.lods.empty() && pd.lods[0].level == 0) {
+            if (pd.layer == LAYER_OPAQUE && vegetationRenderer && !pd.lods.empty() &&
+                pd.lods[0].level == 0 && !pd.lods[0].geom.vertices.empty()) {
                 generateVegetationForNode(app, pd.nid, pd.lods[0].geom);
             }
         }
@@ -1527,8 +1561,13 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
         size_t solidNewV = 0, solidNewI = 0, solidNewM = 0;
         size_t waterNewV = 0, waterNewI = 0, waterNewM = 0;
         for (const auto &pd : chunks) {
-            const size_t vCount = pd.lods.empty() ? 0 : pd.lods[0].geom.vertices.size();
-            const size_t iCount = pd.lods.empty() ? 0 : pd.lods[0].geom.indices.size();
+            size_t vCount = 0, iCount = 0;
+            for (const auto& lod : pd.lods) {
+                if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
+                vCount = lod.geom.vertices.size();
+                iCount = lod.geom.indices.size();
+                break;
+            }
             if (pd.layer == LAYER_OPAQUE) {
                 solidNewV += vCount;
                 solidNewI += iCount;
@@ -1564,10 +1603,18 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
         Geometry emptyGeom;
         for (auto& pd : chunks) {
             // Legacy (non-slotted) mode publishes only the level-0 mesh: the
-            // append-based rebuild path has no per-level draw entries.
-            const Geometry& g0 = pd.lods.empty() ? emptyGeom : pd.lods[0].geom;
+            // append-based rebuild path has no per-level draw entries. If the
+            // frontier mesh is missing (empty ladder level), fall back to the
+            // finest published level so the chunk is still rendered.
+            const Geometry* g0 = nullptr;
+            for (const auto& lod : pd.lods) {
+                if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
+                g0 = &lod.geom;
+                break;
+            }
+            const Geometry& ref = g0 ? *g0 : emptyGeom;
             bool attemptUpload = (pd.layer == LAYER_OPAQUE) ? solidCanIncremental : waterCanIncremental;
-            updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, g0, attemptUpload, pd.version,
+            updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, ref, attemptUpload, pd.version,
                               &solidOrWaterHadRemovals,
                               pd.layer == LAYER_OPAQUE ? &solidUploads : &waterUploads);
         }
@@ -1717,25 +1764,38 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
         // scene-wide clamp, not the ladder size (one level per node).
         // lastPublishedLevel uses a sentinel so a level-0 mesh that does NOT
         // fit is correctly detected (init 0 would break the guard for level 0).
-        const uint32_t ladderMaxLevel = pd.lods.empty() ? 0 : static_cast<uint32_t>(pd.lods[0].maxLevel);
+        const uint32_t ladderMaxLevel = [&]() {
+            for (const auto& lod : pd.lods) {
+                if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
+                return static_cast<uint32_t>(lod.maxLevel);
+            }
+            return 0u;
+        }();
         uint32_t levelVertexOffset = 0, levelIndexOffset = 0;
         uint32_t lastPublishedLevel = UINT32_MAX;
+        bool hasRealLevels = false;
         for (const auto& lod : pd.lods) {
+            // Missing ladder levels arrive as empty default LoDMesh
+            // entries (Processor skips empty meshes): they must not count
+            // as published levels, or the upload pass would overwrite the
+            // chunk's real level-0 draw entry with zero counts.
+            if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
+            hasRealLevels = true;
             const uint32_t lv = lod.level;
             bool fits = (static_cast<uint64_t>(levelVertexOffset) + lod.geom.vertices.size() <= ir->getSlotVertexCapacity()) &&
                         (static_cast<uint64_t>(levelIndexOffset) + lod.geom.indices.size()  <= ir->getSlotIndexCapacity());
-            if (!fits) break;
+            if (!fits) break; // budget exhausted: skip remaining coarse levels
             lastPublishedLevel = lv;
             levelVertexOffset += static_cast<uint32_t>(lod.geom.vertices.size());
             levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
         }
-        if (pd.lods.empty() || lastPublishedLevel == UINT32_MAX || lastPublishedLevel < pd.lods[0].level) {
-            ++idx;
-            continue;
+        if (!hasRealLevels || lastPublishedLevel == UINT32_MAX || lastPublishedLevel < pd.lods[0].level) {
+            continue; // nothing fits the slot budget
         }
-        // Clamp the band meta to what was actually published (see
-        // processPendingMeshes): the coarsest published level covers the
-        // remaining bands, so the test never drops the chunk.
+        // Clamp the band meta to what was actually published: if the ladder
+        // was cut short by the slot budget, the coarsest published level
+        // must cover every remaining band (else the band test would drop
+        // the chunk past the cut level -> holes).
         const uint32_t maxLevel = std::min(ladderMaxLevel, lastPublishedLevel);
 
         // Publish + upload pass, interleaved per level (see processPendingMeshes
@@ -1747,6 +1807,7 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
         levelVertexOffset = 0; levelIndexOffset = 0;
         for (const auto& lod : pd.lods) {
             if (lod.level > lastPublishedLevel) break;
+            if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
             slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(pd.nid), (int)lod.level,
                                          slotIdx, levelVertexOffset, levelIndexOffset,
                                          lod.cellSize, (int)maxLevel);

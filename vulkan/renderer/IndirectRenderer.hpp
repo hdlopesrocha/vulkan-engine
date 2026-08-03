@@ -124,6 +124,19 @@ public:
                            float cellSize = 0.0f, int maxLevel = 0);
     void removeMeshSlotted(uint32_t slotIndex);
 
+    // Always-render fallback: publish a zero-copy ALIAS draw entry at `level`
+    // that band-tests at `level` (same cellSize/maxLevel conventions as
+    // addMeshSlotted) but draws the data of another (source) level of the
+    // same slot. Used when a ladder level tessellated empty (e.g. coarse
+    // cells with all-sentinel SDF corners): the missing level's distance band
+    // must still be covered, so it falls back to the finest published
+    // (sub-chunk) geometry instead of leaving a hole. No geometry is copied —
+    // the entry references the source level's sub-offsets, so it consumes no
+    // extra slot budget.
+    void publishAliasLevel(uint32_t slotIndex, int level, const Geometry& source,
+                           uint32_t srcVertexOffset = 0, uint32_t srcIndexOffset = 0,
+                           float cellSize = 0.0f, int maxLevel = 0);
+
     // Upload a single slot's vertex/index data to the GPU, and write its
     // indirect command + bounds into the host-visible metadata buffers.
     // This is the per-chunk equivalent of a full rebuild — but only touches

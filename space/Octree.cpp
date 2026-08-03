@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <unordered_map>
 #include <limits>
 #include "OctreeAllocator.hpp"
 #include "OctreeNode.hpp"
@@ -182,7 +183,7 @@ float Octree::getSdfAt(const glm::vec3 &pos) {
     BoundingCube nodeCube = candidateCube;
 
 	if(!contains(pos)) {
-		return SDF_FAR;
+		return INFINITY;
 	}
     while (candidate) {
         node = candidate;
@@ -196,7 +197,7 @@ float Octree::getSdfAt(const glm::vec3 &pos) {
     if(node) {
         return SDF::interpolate(node->sdf, pos, nodeCube);
     }
-    return SDF_FAR;
+    return INFINITY;
 }
 
 void Octree::iterateTriangles(
@@ -902,7 +903,7 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
             throw std::runtime_error("Infinite loop " + std::to_string((long)child) + " " + std::to_string((long)node));
         }
 
-        float childSDF[8] = {SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR,SDF_FAR};
+        float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
         int childBrushIndex = child ? child->vertex.brushIndex : brushIndex;
         if(childBrushIndex == DISCARD_BRUSH_INDEX) {
             childBrushIndex = brushIndex;
@@ -956,7 +957,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
     const bool isShapeLeaf = nodeLength <= args.minSize;
     const bool isNodeLeaf = r.node == NULL || r.node->isLeaf();
     r.brushIndex = r.node ? r.node->vertex.brushIndex : frame.brushIndex;
-    r.hsv = r.node ? r.node->vertex.hsv : frame.hsv;
+    r.brushHsv = r.node ? r.node->vertex.hsv : frame.hsv;
     r.isChunk = isChunkNode(nodeLength);
     r.isLeaf = isShapeLeaf && isNodeLeaf;
     r.isSimplified = r.isLeaf;
@@ -983,13 +984,13 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         const float halfDiagonal = nodeLength * 0.866025403784439f;
         bool processed = false;
 
-        // No existing SDF data (all SDF_FAR) — result is purely the shape.
+        // No existing SDF data (all INFINITY) — result is purely the shape.
         // Operations that propagate from infinity: need the Lipschitz center check for safety.
-        // Others: result is SDF_FAR = Empty.
+        // Others: result is INFINITY = Empty.
         if(!processed && isNodeLeaf) {
             bool allInfinity = true;
             for(int i = 0; i < 8; ++i)
-                if(frame.sdf[i] != SDF_FAR) { allInfinity = false; break; }
+                if(frame.sdf[i] != INFINITY) { allInfinity = false; break; }
             if(allInfinity) {
                 if(args.operation->propagatesFromInfinity()) {
                     if(r.shapeSdfCenter < -halfDiagonal) {
@@ -1008,7 +1009,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                         processed = true;
                     }
                 } else {
-                    // Non-propagating: SDF_FAR op anything = SDF_FAR = Empty
+                    // Non-propagating: INFINITY op anything = INFINITY = Empty
                     r.shapeType = SDF::eval(r.shapeSDF);
                     r.resultType = SpaceType::Empty;
                     r.isSimplified = true;
@@ -1023,7 +1024,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
            args.operation->preservesSolid()) {
             bool allFinite = true;
             for(int i = 0; i < 8; ++i)
-                if(frame.sdf[i] == SDF_FAR) { allFinite = false; break; }
+                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
             if(allFinite) {
                 buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
                 r.shapeType = SDF::eval(r.shapeSDF);
@@ -1037,7 +1038,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         if(!processed && frame.type == SpaceType::Empty && args.operation->preservesEmpty()) {
             bool allFinite = true;
             for(int i = 0; i < 8; ++i)
-                if(frame.sdf[i] == SDF_FAR) { allFinite = false; break; }
+                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
             if(allFinite) {
                 buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
                 r.shapeType = SDF::eval(r.shapeSDF);
@@ -1052,7 +1053,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         if(!processed && frame.type == SpaceType::Solid) {
             bool allFinite = true;
             for(int i = 0; i < 8; ++i)
-                if(frame.sdf[i] == SDF_FAR) { allFinite = false; break; }
+                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
             if(allFinite) {
                 const float existingSdfCenter = SDF::interpolate(frame.sdf, center, frame.cube);
                 const float resultSdfCenter = args.operation->combine(existingSdfCenter, r.shapeSdfCenter);
@@ -1119,7 +1120,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                     if(r.shapeType != SpaceType::Empty) {
                         r.brushIndex = args.painter.paint(r.node->vertex);
                         r.node->vertex.hsv = args.painter.paintHSV(r.node->vertex);
-                        r.hsv = r.node->vertex.hsv;
+                        r.brushHsv = r.node->vertex.hsv;
                     }  
                 } else if(!process) {
                     // process=false and non-leaf: shapeChildren() was never called,
@@ -1134,15 +1135,6 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                         // Pass frame.chunkCube so the simplifier can guard chunk borders.
                         SimplificationResult simplificationResult = args.simplifier.simplify(frame.cube, r.resultSDF, children, frame.chunkCube);
                         r.isSimplified = simplificationResult.isSimplified;
-                        if(r.isSimplified) {
-                            r.brushIndex = simplificationResult.brushIndex;
-                            r.hsv = simplificationResult.hsv;
-                            // Fall back to inherited brush if simplifier had no surface children
-                            if(r.brushIndex == DISCARD_BRUSH_INDEX) {
-                                r.brushIndex = frame.brushIndex;
-                                r.hsv = frame.hsv;
-                            }
-                        } 
                     }
                     OctreeNode * childNodes[8] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
                     for(uint i =0 ; i < 8 ; ++i) {
@@ -1159,9 +1151,9 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                             childNode->setSimplification(child.isSimplified);
                             childNode->setChunk(child.isChunk);
                             childNode->setBrush(child.brushIndex != DISCARD_BRUSH_INDEX ? child.brushIndex : frame.brushIndex);
-                            childNode->setChunkLod(0);
-                            childNode->setLod(0);
-                            childNode->vertex.hsv = child.hsv;
+                            childNode->setChunkLod(child.selectedChunkLod);
+                            childNode->setLod(child.selectedLod);
+                            childNode->vertex.hsv = child.brushHsv;
                         }
                                                 
                         if(frame.node != NULL && childNode == r.node) {
@@ -1173,95 +1165,89 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 }
             }
         }
+    } 
 
-        if(r.node != NULL) {
-            r.node->setType(r.resultType);
-            r.node->setSDF(r.resultSDF);
-            r.node->setSimplification(r.isSimplified);
-            r.node->setChunk(r.isChunk);
-            r.node->setBrush(r.brushIndex);
-            r.node->vertex.hsv = r.hsv;
-      
-            if(r.resultType != SpaceType::Surface) {
-                // Compression: a fully Solid/Empty subtree collapses to a leaf
-                // (children are released) before the lod rule runs, so the
-                // collapsed node follows the leaf rule, not max(child)+1.
-                r.node->clear(*allocator, NULL);
-            }
-            // chunkLod: stored 1 when the node is a chunk (first chunk level), else
-            // climb max(children.chunkLod)+1 while any child carries a
-            // chunkLod (max != 0); leaves and cells below chunks stay 0
-            // (unset). Handlers are dispatched per node with level = chunkLod:
-            // a chunk (stored chunkLod 1) tessellates until frontier, its
-            // parent (stored 2) until lod 2, and so on up toward the root.
+    if(r.node != NULL) {
+        r.node->setType(r.resultType);
+        r.node->setSDF(r.resultSDF);
+        r.node->setSimplification(r.isSimplified);
+        r.node->setChunk(r.isChunk);
 
-
+        
+        if(r.resultType == SpaceType::Surface) {
             if(!r.node->isLeaf()) {
                 OctreeNode *childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
                 r.node->getChildren(*allocator, childNodes);
-                uint8_t minLod = 0;
-                uint8_t minChunkLod = 0;
+                r.selectedLod = 0;
+                r.selectedChunkLod = 0;
                 // Propagate the most common brushIndex among children
                 // (excluding DISCARD_BRUSH_INDEX) so every node from all LoD
                 // levels carries the dominant material of its subtree; coarse
                 // cells then texture as the majority brush instead of
                 // inheriting an arbitrary single child's brush.
-                int brushCounts[64] = {};
+                std::unordered_map<int, int> brushCounts;
+                r.brushIndex = DISCARD_BRUSH_INDEX;
+                int bestCount = 0;
                 for(OctreeNode * childNode : childNodes) {
-                    if(childNode != NULL) {
+                    if(childNode != NULL && childNode->getType() == SpaceType::Surface) {
                         const uint8_t childLod = childNode->getLod();
                         const uint8_t childChunkLod = childNode->getChunkLod();
+                        const int childBrush = childNode->getBrush();
 
-                        minLod = childLod ? (minLod == 0 ? childLod : glm::min(minLod, childLod)) : 0;
-                        minChunkLod = childChunkLod ? (minChunkLod == 0 ? childChunkLod : glm::min(minChunkLod, childChunkLod)) : 0;
+                        r.selectedLod = childLod ? (r.selectedLod == 0 ? childLod : glm::min(r.selectedLod, childLod)) : 0;
+                        r.selectedChunkLod = childChunkLod ? (r.selectedChunkLod == 0 ? childChunkLod : glm::min(r.selectedChunkLod, childChunkLod)) : 0;
 
-                        const int brush = childNode->getBrush();
-                        if(brush != DISCARD_BRUSH_INDEX && brush >= 0 && brush < 64) {
-                            ++brushCounts[brush];
+                        if(childBrush > DISCARD_BRUSH_INDEX) {
+                            const int count = ++brushCounts[childBrush];
+                            if(count > bestCount) {
+                                bestCount = count;
+                                r.brushIndex = childBrush;
+                            }
                         }
                     }
                 }
-                r.node->setLod(minLod == 0 ? 0 : minLod + 1);
-                r.node->setChunkLod(minChunkLod == 0 ? 0 : minChunkLod + 1);
-
-                int bestBrush = DISCARD_BRUSH_INDEX;
-                int bestCount = 0;
-                for(int b = 0; b < 64; ++b) {
-                    if(brushCounts[b] > bestCount) {
-                        bestCount = brushCounts[b];
-                        bestBrush = b;
-                    }
-                }
-                if(bestBrush != DISCARD_BRUSH_INDEX) {
-                    r.brushIndex = bestBrush;
-                    r.node->setBrush(bestBrush);
-                }
+                r.node->setLod(r.node->getSimplification() == 1 ? 1 : r.selectedLod == 0 ? 0 : r.selectedLod + 1);
+                r.node->setChunkLod(r.node->isChunk() ? 1 : r.selectedChunkLod == 0 ? 0 : r.selectedChunkLod + 1);
+                r.node->setBrush(r.brushIndex);
             }
+            r.node->vertex.hsv = r.brushHsv;
             if(r.isSimplified) {
                 r.node->setLod(1);
             }
             if(r.isChunk) {
                 r.node->setChunkLod(1);
             }
-            // Dispatch a mesh event ONLY for chunks (stored chunkLod 1). Coarse
-            // ancestor meshes (stored chunkLod > 1) are DISABLED: tessellating
-            // an ancestor as one big Surface-Nets cell samples the SDF at the
-            // coarse cell's corners, which misses interior surface detail, so
-            // those meshes come out empty (0 triangles) — the cell is marked
-            // Surface by type but its stored sdf has no zero crossing. Instead
-            // the renderer reuses the non-empty finer chunk meshes for every
-            // distance band (band meta maxLevel = 0 → chunks always kept), so
-            // there are no holes. chunkLod is still computed (widget/bands).
-            if(r.node->getChunkLod() > 0) {
-                ++r.node->version;
-                OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube, nullptr);
-                r.resultType == SpaceType::Surface ? args.changeHandler.onNodeAdded(data) : args.changeHandler.onNodeDeleted(data);
-            }
         }
-    } else {
-        SDF::copySDF(frame.sdf, r.resultSDF);
-        r.resultType = frame.type;
+        else {
+            // Compression: a fully Solid/Empty subtree collapses to a leaf
+            // (children are released) before the lod rule runs, so the
+            // collapsed node follows the leaf rule, not max(child)+1.
+            r.node->clear(*allocator, NULL);
+        }
+        // chunkLod: stored 1 when the node is a chunk (first chunk level), else
+        // climb max(children.chunkLod)+1 while any child carries a
+        // chunkLod (max != 0); leaves and cells below chunks stay 0
+        // (unset). Handlers are dispatched per node with level = chunkLod:
+        // a chunk (stored chunkLod 1) tessellates until frontier, its
+        // parent (stored 2) until lod 2, and so on up toward the root.
+
+
+        // Dispatch a mesh event ONLY for chunks (stored chunkLod 1). Coarse
+        // ancestor meshes (stored chunkLod > 1) are DISABLED: tessellating
+        // an ancestor as one big Surface-Nets cell samples the SDF at the
+        // coarse cell's corners, which misses interior surface detail, so
+        // those meshes come out empty (0 triangles) — the cell is marked
+        // Surface by type but its stored sdf has no zero crossing. Instead
+        // the renderer reuses the non-empty finer chunk meshes for every
+        // distance band (band meta maxLevel = 0 → chunks always kept), so
+        // there are no holes. chunkLod is still computed (widget/bands).
+        if(r.node->getChunkLod() > 0 && r.node->getChunkLod() < 5) {
+            ++r.node->version;
+            OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube, nullptr);
+            r.resultType == SpaceType::Surface ? args.changeHandler.onNodeAdded(data) : args.changeHandler.onNodeDeleted(data);
+        }
     }
+
 }
 
 void Octree::iterate(IteratorHandler &handler, OctreeNodeData data) {

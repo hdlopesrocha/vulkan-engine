@@ -1,10 +1,13 @@
 #include "OctreeExplorerWidget.hpp"
 #include <array>
+#include <cmath>
 #include "components/ImGuiHelpers.hpp"
 #include "../math/Camera.hpp"
 #include "../math/Ray.hpp"
+#include "../sdf/SDF.hpp"
 #include <glm/glm.hpp>
 #include <limits>
+#include <string>
 
 OctreeExplorerWidget::OctreeExplorerWidget(LocalScene* scene_, Camera* camera_)
     : Widget("Octree Explorer", u8"\uf1ad"), scene(scene_), camera(camera_) {}
@@ -38,6 +41,8 @@ void OctreeExplorerWidget::render() {
     ImGui::Checkbox("Show chunks only", &chunksOnly);
     ImGui::Checkbox("Show Debug Cubes", &showDebugCubes);
     ImGuiHelpers::SetTooltipIfHovered("Render debug octree/node cubes produced by the engine and explorer");
+    ImGui::Checkbox("Show SDF", &showSdf);
+    ImGuiHelpers::SetTooltipIfHovered("Show per-node SDF corner summary (min/max + sentinel count). Hover a node to inspect all 8 corner values and the stored vertex.");
 
     // Expand all nodes on demand
     if (ImGui::Button("Expand All")) {
@@ -176,6 +181,7 @@ void OctreeExplorerWidget::renderTree(const Octree& tree) {
     ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[lod=%d]", (int)root->getLod()); ImGui::SameLine();
     ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunklod=%d]", (int)root->getChunkLod()); ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "v%u", root->version);
+    renderSdfInline(root);
     
     if (open) {
         renderNode(root, rootCube, 0, allocator, rootFlags);
@@ -222,10 +228,11 @@ void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube
             ImGui::SameLine();
             if (child->isChunk()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunk]"); ImGui::SameLine(); }
             if (child->isLeaf()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[leaf]"); ImGui::SameLine(); }
-            if (child->getSimplification() == 1u) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simplified]"); ImGui::SameLine(); }
+            ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simpl=%d]", (int)child->getSimplification()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[lod=%d]", (int)child->getLod()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunklod=%d]", (int)child->getChunkLod()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "v%u", child->version);
+            renderSdfInline(child);
         } else {
             // Apply expand/collapse to children (single-frame, persistent, or collapse)
             if (applyRayOpenState) {
@@ -242,10 +249,11 @@ void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube
             ImGui::SameLine();
             if (child->isChunk()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunk]"); ImGui::SameLine(); }
             if (child->isLeaf()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[leaf]"); ImGui::SameLine(); }
-            if (child->getSimplification() == 1u) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simplified]"); ImGui::SameLine(); }
+            ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simpl=%d]", (int)child->getSimplification()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[lod=%d]", (int)child->getLod()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunklod=%d]", (int)child->getChunkLod()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "v%u", child->version);
+            renderSdfInline(child);
             
             if (isExpanded) {
                 // Track this cube as expanded for debug visualization
@@ -254,5 +262,51 @@ void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube
                 ImGui::TreePop();
             }
         }
+    }
+}
+
+void OctreeExplorerWidget::renderSdfInline(const OctreeNode* node) {
+    if (!showSdf || !node) return;
+
+    float sMin = std::numeric_limits<float>::max();
+    float sMax = -std::numeric_limits<float>::max();
+    int farCount = 0;
+    int negCount = 0;
+    for (int i = 0; i < 8; ++i) {
+        const float v = node->sdf[i];
+        if (v == INFINITY || !std::isfinite(v)) {
+            ++farCount;
+            continue;
+        }
+        sMin = std::min(sMin, v);
+        sMax = std::max(sMax, v);
+        if (v < 0.0f) ++negCount;
+    }
+
+    // Red = sentinel/non-finite corners (poisoned/untouched cell), green =
+    // real sign-changing surface corners, gray = homogeneous real field.
+    ImVec4 col(0.6f, 0.6f, 0.6f, 1.0f);
+    if (farCount > 0) col = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
+    else if (negCount > 0 && negCount < 8) col = ImVec4(0.4f, 0.9f, 0.4f, 1.0f);
+
+    if (farCount > 0) {
+        ImGui::SameLine();
+        ImGui::TextColored(col, "[sdf %d/8 FAR]", farCount);
+    } else {
+        ImGui::SameLine();
+        ImGui::TextColored(col, "[sdf %.1f..%.1f]", sMin, sMax);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::Text("Vertex: (%.2f, %.2f, %.2f)", node->vertex.position.x, node->vertex.position.y, node->vertex.position.z);
+        for (int i = 0; i < 8; i += 2) {
+            auto fmt = [&](int c) {
+                if (node->sdf[c] == INFINITY) return std::string("FAR");
+                if (!std::isfinite(node->sdf[c])) return std::string("NaN");
+                return std::to_string(node->sdf[c]);
+            };
+            ImGui::Text("c%d=%s  c%d=%s", i, fmt(i).c_str(), i + 1, fmt(i + 1).c_str());
+        }
+        ImGui::EndTooltip();
     }
 }

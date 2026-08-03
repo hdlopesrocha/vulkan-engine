@@ -7,6 +7,7 @@
 #include "../sdf/SDF.hpp"
 #include "../math/BrushMode.hpp"
 #include "../math/Math.hpp"
+#include <unordered_map>
 
 
 
@@ -116,7 +117,9 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 		node->getChildren(*tree->allocator, childNodes);
 		uint8_t maxLod = 0;
 		uint8_t maxChunkLod = 0;
-		int brushCounts[64] = {};
+		std::unordered_map<int, int> brushCounts;
+		int bestBrush = DISCARD_BRUSH_INDEX;
+		int bestCount = 0;
 		for(int j = 0; j < 8; ++j) {
 			if(childNodes[j] != NULL) {
 				if(childNodes[j]->getLod() > maxLod) {
@@ -126,8 +129,12 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 					maxChunkLod = childNodes[j]->getChunkLod();
 				}
 				const int brush = childNodes[j]->getBrush();
-				if(brush != DISCARD_BRUSH_INDEX && brush >= 0 && brush < 64) {
-					++brushCounts[brush];
+				if(brush != DISCARD_BRUSH_INDEX && brush >= 0) {
+					const int count = ++brushCounts[brush];
+					if(count > bestCount || (count == bestCount && brush < bestBrush)) {
+						bestCount = count;
+						bestBrush = brush;
+					}
 				}
 			}
 		}
@@ -136,14 +143,6 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 			node->setChunkLod(1);
 		} else {
 			node->setChunkLod(maxChunkLod > 0 ? static_cast<uint8_t>(maxChunkLod + 1) : 0);
-		}
-		int bestBrush = DISCARD_BRUSH_INDEX;
-		int bestCount = 0;
-		for(int b = 0; b < 64; ++b) {
-			if(brushCounts[b] > bestCount) {
-				bestCount = brushCounts[b];
-				bestBrush = b;
-			}
 		}
 		if(bestBrush != DISCARD_BRUSH_INDEX) {
 			node->setBrush(bestBrush);

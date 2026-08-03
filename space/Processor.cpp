@@ -47,7 +47,7 @@ bool Processor::iterate(const Octree &tree, OctreeNodeData &params) {
         Tesselator nodeTesselator(&trianglesCount);
         tree.iterateTriangles(params.node, params.cube, params.level, nodeTesselator, context, chunkLodStored);
         if(!nodeTesselator.geometry.indices.empty()) {
-            onGeometry(params.level, params.node, params.cube, nodeTesselator.geometry, chunkLodStored);
+            onGeometry(params.level, params.node, params.cube, nodeTesselator.geometry, static_cast<uint8_t>(chunkLodStored - 1));
         }
     }
     // Keep descending along the root path: the children hold the finer ladder
