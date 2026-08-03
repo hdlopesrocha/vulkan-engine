@@ -53,6 +53,7 @@ public:
         uploadMgr_ = mgr;
         streamCategory_ = category;
     }
+    bool hasUploadManager() const { return uploadMgr_ != nullptr; }
     // Write all mesh indirect/model/bounds buffers for all active meshes
     void uploadMeshMetaBuffers(VulkanApp* app);
     struct MeshInfo {
@@ -176,6 +177,33 @@ public:
     // Returns true on success.
     bool uploadSlot(VulkanApp* app, uint32_t slotIndex, int level = 0, float priority = 0.0f,
                     std::function<void()> onComplete = nullptr);
+
+    // Per-level upload descriptor for uploadSlotLadder. vertexOffset/
+    // indexOffset are ABSOLUTE offsets into the merged vertex/index buffers
+    // (slotBase + level sub-offset), matching MeshInfo.baseVertex/firstIndex.
+    struct SlotLevelUpload {
+        uint32_t level = 0;
+        uint32_t vertexCount = 0;
+        uint32_t indexCount = 0;
+        uint32_t vertexOffset = 0;
+        uint32_t indexOffset = 0;
+        glm::vec4 boundsMin{0.0f};
+        glm::vec4 boundsMax{0.0f};
+        float cellSize = 0.0f;
+        int maxLevel = 0;
+    };
+    // Upload a chunk's whole LoD ladder in ONE UploadJob (single staging
+    // buffer, single command buffer, single queue submit + semaphore instead
+    // of one per level): the job carries the vertex+index data of every
+    // non-empty level of `levels`, and the per-level indirect/bounds meta
+    // writes + `onComplete` fire after the one transfer completes (FIFO — all
+    // prior publishes of this slot have already written their metas). If the
+    // combined data exceeds one staging slot, it falls back to one job per
+    // level (equivalent semantics). Returns false only when no UploadManager
+    // is attached (caller then uses per-level uploadSlot instead).
+    bool uploadSlotLadder(VulkanApp* app, uint32_t slotIndex,
+                          const std::vector<SlotLevelUpload>& levels,
+                          float priority, std::function<void()> onComplete);
 
     // Convenience: create a proxy, upload it, and return the slot index.
     uint32_t installProxy(VulkanApp* app, std::unique_ptr<RenderProxy> proxy);

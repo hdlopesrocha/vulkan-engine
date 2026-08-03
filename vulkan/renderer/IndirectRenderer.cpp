@@ -2778,6 +2778,157 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, int level,
     return true;
 }
 
+bool IndirectRenderer::uploadSlotLadder(VulkanApp* app, uint32_t slotIndex,
+                                        const std::vector<SlotLevelUpload>& levels,
+                                        float priority, std::function<void()> onComplete)
+{
+    if (!slottedMode) return false;
+    if (uploadMgr_ == nullptr) return false;
+
+    std::lock_guard<std::recursive_mutex> guard(mutex);
+
+    if (levels.empty()) {
+        if (onComplete) onComplete();
+        return true;
+    }
+
+    // Snapshot each level's draw parameters by value (the MeshInfo is
+    // overwritten by the next addMeshSlotted call), and copy the vertex/index
+    // bytes out of the merged CPU arrays like uploadSlot does — the snapshot
+    // keeps the job correct even if the slot is re-published before the
+    // staging copy executes.
+    struct Meta {
+        uint32_t drawIndex = 0;
+        uint32_t indexCount = 0;
+        uint32_t firstIndex = 0;
+        uint32_t firstInstance = 0;
+        int32_t  vertexOffset = 0;
+        glm::vec4 boundsMin{0.0f};
+        glm::vec4 boundsMax{0.0f};
+        glm::vec4 lodMeta{0.0f};
+    };
+    std::vector<Meta> metas;
+    metas.reserve(levels.size());
+    std::vector<streaming::BufferUpload> uploads;
+    uploads.reserve(levels.size() * 2);
+    VkDeviceSize totalBytes = 0;
+
+    for (const auto& lv : levels) {
+        if (lv.vertexCount == 0 || lv.indexCount == 0) continue;
+        const VkDeviceSize vb = static_cast<VkDeviceSize>(lv.vertexCount) * sizeof(Vertex);
+        const VkDeviceSize ib = static_cast<VkDeviceSize>(lv.indexCount) * sizeof(uint32_t);
+        totalBytes += vb + ib;
+
+        streaming::BufferUpload vu;
+        vu.dst       = vertexBuffer;
+        vu.dstOffset = static_cast<VkDeviceSize>(lv.vertexOffset) * sizeof(Vertex);
+        vu.cpuData.resize(vb);
+        std::memcpy(vu.cpuData.data(), &mergedVertices[lv.vertexOffset], vb);
+        uploads.push_back(std::move(vu));
+
+        streaming::BufferUpload iu;
+        iu.dst       = indexBuffer;
+        iu.dstOffset = static_cast<VkDeviceSize>(lv.indexOffset) * sizeof(uint32_t);
+        iu.cpuData.resize(ib);
+        std::memcpy(iu.cpuData.data(), &mergedIndices[lv.indexOffset], ib);
+        uploads.push_back(std::move(iu));
+
+        Meta m{};
+        m.drawIndex     = slotIndex * kMaxChunkLevels + lv.level;
+        m.indexCount    = lv.indexCount;
+        m.firstIndex    = lv.indexOffset;
+        m.vertexOffset  = static_cast<int32_t>(lv.vertexOffset);
+        m.firstInstance = m.drawIndex;
+        m.boundsMin     = lv.boundsMin;
+        m.boundsMax     = lv.boundsMax;
+        m.lodMeta       = lodMetaFor(lv.cellSize, static_cast<int>(lv.level), lv.maxLevel);
+        metas.push_back(m);
+    }
+    if (metas.empty()) {
+        if (onComplete) onComplete();
+        return true;
+    }
+
+    // Publish ONE level's indirect command + bounds. Runs deferred (after the
+    // transfer completes) so in-flight frames never see new meta + stale data.
+    auto writeMeta = [this](const Meta& m) {
+        std::lock_guard<std::recursive_mutex> lock(mutex);
+        if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
+        if (m.drawIndex >= indirectCommands.size()) return;
+
+        VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(m.drawIndex) * sizeof(VkDrawIndexedIndirectCommand);
+        void* cmdData = indirectBuffer.map(cmdOffset);
+        if (cmdData) {
+            VkDrawIndexedIndirectCommand cmd{};
+            cmd.indexCount    = m.indexCount;
+            cmd.instanceCount = 1;
+            cmd.firstIndex    = m.firstIndex;
+            cmd.vertexOffset  = m.vertexOffset;
+            cmd.firstInstance = m.firstInstance;
+            std::memcpy(cmdData, &cmd, sizeof(cmd));
+            indirectBuffer.unmap();
+        }
+
+        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(m.drawIndex) * 3 * sizeof(glm::vec4);
+            void* bndData = boundsBuffer.map(boundsOffset);
+            if (bndData) {
+                glm::vec4 bounds[3] = { m.boundsMin, m.boundsMax, m.lodMeta };
+                std::memcpy(bndData, bounds, sizeof(bounds));
+                boundsBuffer.unmap();
+            }
+        }
+    };
+
+    auto writeAllMetas = [writeMeta, metas]() {
+        for (const auto& m : metas) writeMeta(m);
+    };
+
+    if (totalBytes <= uploadMgr_->slotSize()) {
+        // Preferred: ONE job for the whole ladder — one staging copy, one
+        // command buffer, one vkQueueSubmit2 + binary semaphore instead of one
+        // per level. Meta writes + caller completion chain after it retires.
+        streaming::UploadJob job;
+        job.category   = streamCategory_;
+        job.priority   = priority;
+        job.chunkSlot  = nullptr;
+        job.uploads    = std::move(uploads);
+        job.onComplete = [writeAllMetas = std::move(writeAllMetas),
+                          onComplete = std::move(onComplete)]() mutable {
+            writeAllMetas();
+            if (onComplete) onComplete();
+        };
+        uploadMgr_->enqueue(std::move(job));
+    } else {
+        // Oversized ladder: fall back to one job per level. Same semantics as
+        // the per-level uploadSlot path; only the last level chains the
+        // caller's completion (after all metas of that job, FIFO).
+        const size_t n = metas.size();
+        for (size_t i = 0; i < n; ++i) {
+            streaming::UploadJob job;
+            job.category  = streamCategory_;
+            job.priority  = priority;
+            job.chunkSlot = nullptr;
+            job.uploads.push_back(std::move(uploads[i * 2]));
+            job.uploads.push_back(std::move(uploads[i * 2 + 1]));
+            if (i == n - 1) {
+                auto thisMeta = metas[i];
+                job.onComplete = [writeAllMetas = writeAllMetas, thisMeta,
+                                  onComplete = onComplete]() mutable {
+                    writeAllMetas();
+                    if (onComplete) onComplete();
+                };
+            } else {
+                auto thisMeta = metas[i];
+                job.onComplete = [writeMeta, thisMeta]() { writeMeta(thisMeta); };
+            }
+            uploadMgr_->enqueue(std::move(job));
+        }
+    }
+
+    return true;
+}
+
 uint32_t IndirectRenderer::installProxy(VulkanApp* app, std::unique_ptr<RenderProxy> proxy)
 {
     if (!proxy || !slottedMode) return UINT32_MAX;

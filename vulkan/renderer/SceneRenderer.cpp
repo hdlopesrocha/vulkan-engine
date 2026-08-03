@@ -743,7 +743,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     streamer.init(app,
                   /*chunkVertexBytes*/ 1u << 20,
                   /*chunkIndexBytes*/  1u << 20,
-                  /*stagingSlots*/     4,
+                  /*stagingSlots*/     16,
                   /*initialChunkSlots*/ 8,
                   /*workersPerCategory*/ 2);
 
@@ -1457,30 +1457,80 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                     if (!have[k]) pendingAliases.push_back({k, srcIndexCount, srcBmin, srcBmax});
                 }
             }
-            // Publish + upload pass, interleaved per level: addMeshSlotted sets
-            // the MeshInfo's level to the level just published, so uploadSlot's
-            // validation (level == info->level) matches while the info still
-            // describes that level; its deferred meta write captures the
-            // level's draw parameters by value. All uploads are enqueued in
-            // ascending order in this frame's command buffer, so the last
-            // level's completion implies every level is resident: only then do
-            // we free the old slot and let the ChunkManager swap the proxy in.
+            // Publish + upload pass. addMeshSlotted sets the MeshInfo's level
+            // to the level just published; per-level uploads must be
+            // enqueued in ascending order in this frame's command buffer, so
+            // the last level's completion implies every level is resident:
+            // only then do we free the old slot and let the ChunkManager swap
+            // the proxy in.
+            //
+            // With an UploadManager attached, all levels go out as ONE
+            // UploadJob (single submit/semaphore instead of one per level) —
+            // the dominant cost for a full scene load is submission overhead
+            // and staging-slot concurrency, not the bytes copied. Without a
+            // manager, the per-level interleaved uploadSlot path is kept.
             uint32_t slotIdx = UINT32_MAX;
             levelVertexOffset = 0; levelIndexOffset = 0;
+            std::vector<IndirectRenderer::SlotLevelUpload> ladderUploads;
+            const bool canBatch = ir->hasUploadManager();
+            if (canBatch) ladderUploads.reserve(pd.lods.size());
             for (const auto& lod : pd.lods) {
                 if (lod.level > lastPublishedLevel) break;
                 if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
+                const uint32_t relV = levelVertexOffset;
+                const uint32_t relI = levelIndexOffset;
                 slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(pd.nid), (int)lod.level,
-                                             slotIdx, levelVertexOffset, levelIndexOffset,
+                                             slotIdx, relV, relI,
                                              lod.cellSize, (int)maxLevel);
                 if (slotIdx == UINT32_MAX) break;
                 // If addMeshSlotted reused the same slot (update in-place), no free needed.
                 if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
                     oldSlot = UINT32_MAX;
-                const bool isLast = (lod.level == lastPublishedLevel);
-                ir->uploadSlot(app, slotIdx, (int)lod.level, 0.0f,
-                    isLast ? [ir, cid, oldSlot, this, slotIdx, lastPublishedLevel,
-                              aliases = pendingAliases, aliasCellSize, maxLevel]() {
+                if (canBatch) {
+                    IndirectRenderer::SlotLevelUpload lu;
+                    lu.level       = lod.level;
+                    lu.vertexCount = static_cast<uint32_t>(lod.geom.vertices.size());
+                    lu.indexCount  = static_cast<uint32_t>(lod.geom.indices.size());
+                    // Absolute offsets into the merged buffers (slot base +
+                    // accumulated level sub-offset), matching MeshInfo offsets.
+                    lu.vertexOffset = slotIdx * ir->getSlotVertexCapacity() + relV;
+                    lu.indexOffset  = slotIdx * ir->getSlotIndexCapacity()  + relI;
+                    lu.cellSize     = lod.cellSize;
+                    lu.maxLevel     = (int)maxLevel;
+                    lu.boundsMin = glm::vec4(FLT_MAX);
+                    lu.boundsMax = glm::vec4(-FLT_MAX);
+                    for (const auto& v : lod.geom.vertices) {
+                        lu.boundsMin = glm::min(lu.boundsMin, glm::vec4(v.position, 1.0f));
+                        lu.boundsMax = glm::max(lu.boundsMax, glm::vec4(v.position, 1.0f));
+                    }
+                    ladderUploads.push_back(lu);
+                } else {
+                    const bool isLast = (lod.level == lastPublishedLevel);
+                    ir->uploadSlot(app, slotIdx, (int)lod.level, 0.0f,
+                        isLast ? [ir, cid, oldSlot, this, slotIdx, lastPublishedLevel,
+                                  aliases = pendingAliases, aliasCellSize, maxLevel]() {
+                            // Deferred ladder finalize: write alias entries for empty
+                            // levels and clear stale levels above the coarsest
+                            // published one. Runs at the last level's upload
+                            // completion, so prior deferred writes for this slot
+                            // (FIFO) have already fired and cannot resurrect them.
+                            ir->finalizeSlotLadder(slotIdx, lastPublishedLevel, aliases,
+                                                   aliasCellSize, (int)maxLevel);
+                            if (oldSlot != UINT32_MAX)
+                                ir->removeMeshSlotted(oldSlot);
+                            if (this->world_) this->world_->chunkManager().finishUpload(cid);
+                        } : std::function<void()>());
+                }
+                levelVertexOffset += static_cast<uint32_t>(lod.geom.vertices.size());
+                levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
+            }
+            if (slotIdx == UINT32_MAX) {
+                continue;
+            }
+            if (canBatch && !ladderUploads.empty()) {
+                ir->uploadSlotLadder(app, slotIdx, ladderUploads, 0.0f,
+                    [ir, cid, oldSlot, this, slotIdx, lastPublishedLevel,
+                     aliases = pendingAliases, aliasCellSize, maxLevel]() {
                         // Deferred ladder finalize: write alias entries for empty
                         // levels and clear stale levels above the coarsest
                         // published one. Runs at the last level's upload
@@ -1491,12 +1541,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                         if (oldSlot != UINT32_MAX)
                             ir->removeMeshSlotted(oldSlot);
                         if (this->world_) this->world_->chunkManager().finishUpload(cid);
-                    } : std::function<void()>());
-                levelVertexOffset += static_cast<uint32_t>(lod.geom.vertices.size());
-                levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
-            }
-            if (slotIdx == UINT32_MAX) {
-                continue;
+                    });
             }
 
             // Store the slot index in the ChunkManager entry so the erase
