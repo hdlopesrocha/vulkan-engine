@@ -38,8 +38,6 @@ public:
 
     void setType(SpaceType type);
 
-    uint8_t getSimplification() const;
-    void setSimplification(uint8_t value);
 
     uint8_t getLod() const { return lod; }
     void setLod(uint8_t value) { lod = value; }

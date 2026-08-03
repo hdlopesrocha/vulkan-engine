@@ -110,8 +110,8 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 	// carries a chunkLod (max != 0); leaves and cells below chunks stay 0.
 	// All stored values are uint8_t (+1 from the ladder level, 0 = unset).
 	if(isLeaf) {
-		node->setLod(node->getSimplification() ? 1 : 0);
-		node->setChunkLod(node->isChunk() ? 1 : 0);
+		node->setLod(node->getLod());
+		node->setChunkLod(node->getChunkLod());
 	} else {
 		OctreeNode * childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 		node->getChildren(*tree->allocator, childNodes);

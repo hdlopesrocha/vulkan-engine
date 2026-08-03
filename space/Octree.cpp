@@ -151,7 +151,7 @@ OctreeNodeLevel Octree::getNodeAt(const glm::vec3 &pos, int level, bool simplifi
 		return OctreeNodeLevel(NULL, 0);
 	}
     while (candidate != NULL && level-- > 0 ) {
-        if (simplification && node->getSimplification() == 1u) {
+        if (simplification && node->getLod() == 1u) {
             break;
         }
         int i = getNodeIndex(pos, cube);
@@ -174,7 +174,7 @@ OctreeNode* Octree::getNodeAt(const glm::vec3 &pos, bool simplification) const {
 		return NULL;
 	}
     while (candidate != NULL) {
-        if (simplification && node->getSimplification() == 1u) {
+        if (simplification && node->getLod() == 1u) {
             break;
         }
         int i = getNodeIndex(pos, cube);
@@ -235,7 +235,7 @@ void Octree::iterateTriangles(
         // lod and targetLod are both in the +1-shifted STORED space.
         bool isSurface(int targetLod) const {
             return node != NULL && node->getType() == SpaceType::Surface &&
-                (targetLod == 0 ? node->getSimplification() == 1u : node->getLod() == targetLod);
+                (targetLod == 0 ? node->getLod() == 1u : node->getLod() == targetLod);
         }
     };
 
@@ -379,7 +379,7 @@ void Octree::iterateTriangles(
         BoundingCube cube = startCube;
 
         while(node != NULL && !node->isLeaf() &&
-              ((targetLod == 0) ? (node->getSimplification() == 0u) : (node->getLod() > targetLod))) {
+              ((targetLod == 0) ? (node->getLod() == 0u) : (node->getLod() > targetLod))) {
             ChildBlock *block = node->getBlock(*allocator);
             if(block == NULL) {
                 node = NULL;
@@ -703,7 +703,7 @@ void Octree::iterateTriangles(
     // internal ancestor (simplification 0 but developed > 0). Reject only
     // non-ladder leaves (stored lod 0).
     if(from == NULL || from->getType() != SpaceType::Surface ||
-       (from->getSimplification() == 0u && from->getLod() == 0)) {
+       (from->getLod() == 0u && from->getLod() == 0)) {
         return;
     }
 
@@ -1017,7 +1017,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
     r.brushHsv = r.node ? r.node->vertex.hsv : frame.hsv;
     r.isChunk = isChunkNode(nodeLength);
     r.isLeaf = isShapeLeaf && isNodeLeaf;
-    r.isSimplified = r.isLeaf;
+    r.selectedLod = r.isLeaf ? 1 : 0;
 
     NodeOperationResult children[8] = { 
         NodeOperationResult(), NodeOperationResult(), 
@@ -1046,14 +1046,14 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                     SDF::copySDF(r.shapeSDF, r.resultSDF);
                     r.shapeType = SpaceType::Solid;
                     r.resultType = SpaceType::Solid;
-                    r.isSimplified = true;
+                    r.selectedLod = 1;
                     ++prunedSolidNodes;
                     processed = true;
                 } else if(shapeSdfCenter > halfDiagonal) {
                     SDF::copySDF(r.shapeSDF, r.resultSDF);
                     r.shapeType = SpaceType::Empty;
                     r.resultType = SpaceType::Empty;
-                    r.isSimplified = true;
+                    r.selectedLod = 1;
                     ++prunedEmptyNodes;
                     processed = true;
                 }
@@ -1062,7 +1062,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 SDF::copySDF(r.shapeSDF, r.resultSDF);
                 r.shapeType = SDF::eval(r.shapeSDF);
                 r.resultType = SpaceType::Empty;
-                r.isSimplified = true;
+                r.selectedLod = 1;
                 ++prunedEmptyNodes;
                 processed = true;
             }
@@ -1193,12 +1193,12 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                     // the node's children (setChildren writes all NULLs) or create a
                     // Surface node with no children. Instead, mark as simplified so
                     // iterateTriangles can generate geometry directly from this node's SDF.
-                    r.isSimplified = true;
+                    r.selectedLod = 1;
                 } else {    
                     if (!r.isChunk) {
                         // Pass frame.chunkCube so the simplifier can guard chunk borders.
                         SimplificationResult simplificationResult = args.simplifier.simplify(frame.cube, r.resultSDF, children, frame.chunkCube);
-                        r.isSimplified = simplificationResult.isSimplified;
+                        r.selectedLod = simplificationResult.isSimplified ? 1 : 0;
                     }
                     OctreeNode * childNodes[8] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
                     for(uint i =0 ; i < 8 ; ++i) {
@@ -1212,7 +1212,6 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                             }
                             childNode->setType(child.resultType);
                             childNode->setSDF(child.resultSDF);
-                            childNode->setSimplification(child.isSimplified);
                             childNode->setChunk(child.isChunk);
                             childNode->setBrush(r.brushIndex);
                             childNode->setChunkLod(child.selectedChunkLod);
@@ -1229,88 +1228,94 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 }
             }
         }
-    } 
+     
 
-    if(r.node != NULL) {
-        r.node->setType(r.resultType);
-        r.node->setSDF(r.resultSDF);
-        r.node->setSimplification(r.isSimplified);
-        r.node->setChunk(r.isChunk);
+        if(r.node != NULL) {
+            r.node->setType(r.resultType);
+            r.node->setSDF(r.resultSDF);
+            r.node->setChunk(r.isChunk);
 
+            
+            if(r.resultType == SpaceType::Surface) {
+                if(!r.node->isLeaf()) {
+                    OctreeNode *childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+                    r.node->getChildren(*allocator, childNodes);
+                    r.selectedLod = 0;
+                    r.selectedChunkLod = 0;
+                    // Propagate the most common brushIndex among children
+                    // (excluding DISCARD_BRUSH_INDEX) so every node from all LoD
+                    // levels carries the dominant material of its subtree; coarse
+                    // cells then texture as the majority brush instead of
+                    // inheriting an arbitrary single child's brush. The winning
+                    // child's hsv travels with the brush so the painted tint
+                    // reaches the root; if no child carries a brush, keep this
+                    // node's own brush/hsv instead of resetting to DISCARD.
+                    std::unordered_map<int, int> brushCounts;
+                    int bestCount = 0;
+                    for(OctreeNode * childNode : childNodes) {
+                        if(childNode != NULL && childNode->getType() == SpaceType::Surface) {
+                            const uint8_t childLod = childNode->getLod();
+                            const uint8_t childChunkLod = childNode->getChunkLod();
+
+                            r.selectedLod = (r.selectedLod == 0 ? childLod : glm::min(r.selectedLod, childLod));
+                            r.selectedChunkLod = (r.selectedChunkLod == 0 ? childChunkLod : glm::min(r.selectedChunkLod, childChunkLod));
         
-        if(r.resultType == SpaceType::Surface) {
-            if(!r.node->isLeaf()) {
-                OctreeNode *childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-                r.node->getChildren(*allocator, childNodes);
-                r.selectedLod = 0;
-                r.selectedChunkLod = 0;
-                // Propagate the most common brushIndex among children
-                // (excluding DISCARD_BRUSH_INDEX) so every node from all LoD
-                // levels carries the dominant material of its subtree; coarse
-                // cells then texture as the majority brush instead of
-                // inheriting an arbitrary single child's brush. The winning
-                // child's hsv travels with the brush so the painted tint
-                // reaches the root; if no child carries a brush, keep this
-                // node's own brush/hsv instead of resetting to DISCARD.
-                std::unordered_map<int, int> brushCounts;
-                int bestCount = 0;
-                for(OctreeNode * childNode : childNodes) {
-                    if(childNode != NULL && childNode->getType() == SpaceType::Surface) {
-                        const uint8_t childLod = childNode->getLod();
-                        const uint8_t childChunkLod = childNode->getChunkLod();
-
-                        r.selectedLod = childLod ? (r.selectedLod == 0 ? childLod : glm::min(r.selectedLod, childLod)) : 0;
-                        r.selectedChunkLod = childChunkLod ? (r.selectedChunkLod == 0 ? childChunkLod : glm::min(r.selectedChunkLod, childChunkLod)) : 0;
-      
-                        const int childBrush = childNode->getBrush();
-                        if(childBrush > DISCARD_BRUSH_INDEX) {
-                            const int count = ++brushCounts[childBrush];
-                            if(count > bestCount) {
-                                bestCount = count;
-                                r.brushIndex = childBrush;
-                                r.brushHsv = childNode->vertex.hsv;
+                            const int childBrush = childNode->getBrush();
+                            if(childBrush > DISCARD_BRUSH_INDEX) {
+                                const int count = ++brushCounts[childBrush];
+                                if(count > bestCount) {
+                                    bestCount = count;
+                                    r.brushIndex = childBrush;
+                                    r.brushHsv = childNode->vertex.hsv;
+                                }
                             }
                         }
                     }
-                }
 
+                }
+            }
+            else {
+                // Compression: a fully Solid/Empty subtree collapses to a leaf
+                // (children are released) before the lod rule runs, so the
+                // collapsed node follows the leaf rule, not max(child)+1.
+                r.node->clear(*allocator, NULL);
+            }
+
+
+            r.node->setBrush(r.brushIndex);
+            r.node->vertex.hsv = r.brushHsv;
+          
+            if(r.isChunk) {
+                r.node->setChunkLod(1);
+                r.selectedChunkLod = 1u;
+            }
+            else {
+                r.node->setChunkLod(r.selectedChunkLod == 0 ? 0 : r.selectedChunkLod + 1);
+            }
+            
+            if(r.isLeaf) {
+                r.node->setLod(1);
+                r.selectedLod = 1u;
+            }
+            else {
+                r.node->setLod(r.selectedLod == 0 ? 0 : r.selectedLod + 1);
+            }
+            // Dispatch a mesh event ONLY for chunks (stored chunkLod 1). Coarse
+            // ancestor meshes (stored chunkLod > 1) are DISABLED: tessellating
+            // an ancestor as one big Surface-Nets cell samples the SDF at the
+            // coarse cell's corners, which misses interior surface detail, so
+            // those meshes come out empty (0 triangles) — the cell is marked
+            // Surface by type but its stored sdf has no zero crossing. Instead
+            // the renderer reuses the non-empty finer chunk meshes for every
+            // distance band (band meta maxLevel = 0 → chunks always kept), so
+            // there are no holes. chunkLod is still computed (widget/bands).
+            if(r.node->getChunkLod() > 0) {
+                ++r.node->version;
+                OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube, nullptr);
+                r.resultType == SpaceType::Surface ? args.changeHandler.onNodeAdded(data) : args.changeHandler.onNodeDeleted(data);
             }
         }
-        else {
-            // Compression: a fully Solid/Empty subtree collapses to a leaf
-            // (children are released) before the lod rule runs, so the
-            // collapsed node follows the leaf rule, not max(child)+1.
-            r.node->clear(*allocator, NULL);
-        }
-
-
-        r.node->setLod(r.node->getSimplification() == 1 ? 1 : r.selectedLod == 0 ? 0 : r.selectedLod + 1);
-        r.node->setChunkLod(r.node->isChunk() ? 1 : r.selectedChunkLod == 0 ? 0 : r.selectedChunkLod + 1);
-        r.node->setBrush(r.brushIndex);
-        r.node->vertex.hsv = r.brushHsv;
-        if(r.isSimplified) {
-            r.node->setLod(1);
-        }
-        if(r.isChunk) {
-            r.node->setChunkLod(1);
-        }
-
-        // Dispatch a mesh event ONLY for chunks (stored chunkLod 1). Coarse
-        // ancestor meshes (stored chunkLod > 1) are DISABLED: tessellating
-        // an ancestor as one big Surface-Nets cell samples the SDF at the
-        // coarse cell's corners, which misses interior surface detail, so
-        // those meshes come out empty (0 triangles) — the cell is marked
-        // Surface by type but its stored sdf has no zero crossing. Instead
-        // the renderer reuses the non-empty finer chunk meshes for every
-        // distance band (band meta maxLevel = 0 → chunks always kept), so
-        // there are no holes. chunkLod is still computed (widget/bands).
-        if(r.node->getChunkLod() > 0) {
-            ++r.node->version;
-            OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube, nullptr);
-            r.resultType == SpaceType::Surface ? args.changeHandler.onNodeAdded(data) : args.changeHandler.onNodeDeleted(data);
-        }
     }
-
 }
 
 void Octree::iterate(IteratorHandler &handler, OctreeNodeData data) {

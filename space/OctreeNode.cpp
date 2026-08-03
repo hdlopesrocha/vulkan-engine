@@ -32,7 +32,6 @@ OctreeNode * OctreeNode::init(Vertex vert) {
 	// +1-shifted uint8_t representation.
 	this->lod = 0;
 	this->chunkLod = 0;
-	this->setSimplification(0u);
 	this->setChunk(false);
 	this->setType(SpaceType::Surface);
 	this->vertex = vert;
@@ -126,15 +125,6 @@ void OctreeNode::setType(SpaceType type) {
 	uint8_t mask = (0x1 << 0) | (0x1 << 1);
 	uint8_t value = (type  == SpaceType::Solid ? 0x1 : 0x0) | (type  == SpaceType::Empty ? 0x1 : 0x0) << 1;
 	this->bits = (this->bits & (mask ^ 0xff)) | value;
-}
-
-uint8_t OctreeNode::getSimplification() const {
-	return (this->bits >> 2) & 0x1Fu;
-}
-
-void OctreeNode::setSimplification(uint8_t value){
-	uint8_t mask = 0x7Cu;
-	this->bits = (this->bits & ~mask) | ((value & 0x1Fu) << 2);
 }
 
 bool OctreeNode::isChunk() const {

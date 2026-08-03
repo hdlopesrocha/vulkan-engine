@@ -177,7 +177,7 @@ void OctreeExplorerWidget::renderTree(const Octree& tree) {
     glm::vec3 nodeColor = getNodeColor(root);
     if (root->isChunk()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunk]"); ImGui::SameLine(); }
     if (root->isLeaf()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[leaf]"); ImGui::SameLine(); }
-    if (root->getSimplification() == 1u) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simplified]"); ImGui::SameLine(); }
+    if (root->getLod() == 1u) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simplified]"); ImGui::SameLine(); }
     ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[lod=%d]", (int)root->getLod()); ImGui::SameLine();
     ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunklod=%d]", (int)root->getChunkLod()); ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "v%u", root->version);
@@ -228,7 +228,6 @@ void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube
             ImGui::SameLine();
             if (child->isChunk()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunk]"); ImGui::SameLine(); }
             if (child->isLeaf()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[leaf]"); ImGui::SameLine(); }
-            ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simpl=%d]", (int)child->getSimplification()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[lod=%d]", (int)child->getLod()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunklod=%d]", (int)child->getChunkLod()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "v%u", child->version);
@@ -249,7 +248,6 @@ void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube
             ImGui::SameLine();
             if (child->isChunk()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunk]"); ImGui::SameLine(); }
             if (child->isLeaf()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[leaf]"); ImGui::SameLine(); }
-            ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simpl=%d]", (int)child->getSimplification()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[lod=%d]", (int)child->getLod()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunklod=%d]", (int)child->getChunkLod()); ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "v%u", child->version);
