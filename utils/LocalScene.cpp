@@ -60,17 +60,8 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
         &context, 
         data.cube, 
         &cellSize,
-        [&data,&callback,&tree]
-        (
-            int level, 
-            const OctreeNode* node, 
-            const BoundingCube &cube, 
-            const Geometry& g, 
-            const uint8_t lod
-        ) {
-
-        callback(g, lod);
-    });
+        callback
+    );
     tree->iterateFlat(processor, OctreeNodeData(0, tree->root, static_cast<const BoundingCube&>(*tree), &context));
 }
 

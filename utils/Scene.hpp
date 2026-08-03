@@ -25,7 +25,6 @@ class ThreadPool;
 using VisibleNodeCallback = std::function<void(std::vector<OctreeNodeData>&)>;
 // One tessellation walk returns the chunk's whole LoD ladder: lods[i] is the
 // level-i mesh (0 = full-detail frontier, up to the chunk root's coarse cell).
-using GeometryLodCallback = std::function<void(const Geometry& geo, uint8_t lod)>;
 
 class SceneLoaderCallback {
 public:

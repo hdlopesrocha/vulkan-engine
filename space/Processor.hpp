@@ -6,13 +6,6 @@
 #include <functional>
 #include <vector>
 #include <unordered_set>
-using ProcessorHandler = std::function<void(
-    int level, 
-    const OctreeNode* node, 
-    const BoundingCube &cube, 
-    const Geometry &geometry, 
-    const uint8_t lod
-)>;
 
 class Processor : public IteratorHandler {
     ThreadPool &threadPool;
@@ -29,7 +22,7 @@ public:
         ThreadContext * context, 
         const BoundingCube &targetCube, 
         float * cellSizeOut_, 
-        const ProcessorHandler& ph_
+        const GeometryLodCallback& ph_
     );
     // One Tesselator per node: called once per tessellated node with its
     // ladder level (the node's chunkLod), the node itself and the node's own
@@ -41,6 +34,6 @@ public:
     void virtualize(Octree * tree, const BoundingCube &cube, float * sdf, uint level, uint levels);
 
 private:
-    ProcessorHandler onGeometry;
+    GeometryLodCallback onGeometry;
 
 };

@@ -5,7 +5,7 @@
 #include "Tesselator.hpp"
 
 
-Processor::Processor(long * count_, ThreadPool &threadPool_, ThreadContext * context_, const BoundingCube &targetCube_, float * cellSizeOut_, const ProcessorHandler& ph_): threadPool(threadPool_), context(context_), count(count_), targetCube(targetCube_), onGeometry(ph_) {
+Processor::Processor(long * count_, ThreadPool &threadPool_, ThreadContext * context_, const BoundingCube &targetCube_, float * cellSizeOut_, const GeometryLodCallback& ph_): threadPool(threadPool_), context(context_), count(count_), targetCube(targetCube_), onGeometry(ph_) {
 
 }
 
@@ -47,7 +47,7 @@ bool Processor::iterate(const Octree &tree, OctreeNodeData &params) {
         Tesselator nodeTesselator(&trianglesCount);
         tree.iterateTriangles(params.node, params.cube, params.level, nodeTesselator, context, chunkLodStored);
         if(!nodeTesselator.geometry.indices.empty()) {
-            onGeometry(params.level, params.node, params.cube, nodeTesselator.geometry, static_cast<uint8_t>(chunkLodStored - 1));
+            onGeometry(nodeTesselator.geometry, chunkLodStored - 1);
         }
     }
     // Keep descending along the root path: the children hold the finer ladder

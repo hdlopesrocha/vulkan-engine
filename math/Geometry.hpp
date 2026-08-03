@@ -5,6 +5,8 @@
 #include <type_traits>
 #include <tsl/robin_map.h>
 
+
+
 class Geometry
 {
 
@@ -28,4 +30,8 @@ public:
     void setCenter();
 };
 
+using GeometryLodCallback = std::function<void(
+    const Geometry& geo, 
+    uint8_t lod
+)>;
  
