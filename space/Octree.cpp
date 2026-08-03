@@ -1033,11 +1033,12 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 // where the painter normally runs), so apply the painter at the
                 // node center to keep the paint stroke visible in solid regions.
                 if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
-                    Vertex centerVertex(frame.cube.getCenter());
-                    r.brushIndex = args.painter.paint(centerVertex);
-                    r.brushHsv = args.painter.paintHSV(centerVertex);
                     if(r.node != NULL) {
+                        r.brushIndex = args.painter.paint(r.node->vertex);
+                        r.brushHsv = args.painter.paintHSV(r.node->vertex);
+                        r.node->vertex.normal = SDF::getNormalFromPosition(r.resultSDF, frame.cube, r.node->vertex.position);
                         r.node->vertex.hsv = r.brushHsv;
+                        r.node->vertex.brushIndex = r.brushIndex;
                         r.node->setBrush(r.brushIndex);
                     }
                 }
@@ -1079,11 +1080,12 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                     // apply the painter at the node center so painted operations
                     // pruned here still leave a visible stroke.
                     if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
-                        Vertex centerVertex(frame.cube.getCenter());
-                        r.brushIndex = args.painter.paint(centerVertex);
-                        r.brushHsv = args.painter.paintHSV(centerVertex);
                         if(r.node != NULL) {
+                            r.brushIndex = args.painter.paint(r.node->vertex);
+                            r.brushHsv = args.painter.paintHSV(r.node->vertex);
+                            r.node->vertex.normal = SDF::getNormalFromPosition(r.resultSDF, frame.cube, r.node->vertex.position);
                             r.node->vertex.hsv = r.brushHsv;
+                            r.node->vertex.brushIndex = r.brushIndex;
                             r.node->setBrush(r.brushIndex);
                         }
                     }
@@ -1146,6 +1148,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                     if(r.shapeType != SpaceType::Empty) {
                         r.brushIndex = args.painter.paint(r.node->vertex);
                         r.node->vertex.hsv = args.painter.paintHSV(r.node->vertex);
+                        r.node->vertex.brushIndex = r.brushIndex;
                         r.brushHsv = r.node->vertex.hsv;
                     }  
                 } else if(!process) {
@@ -1176,7 +1179,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                             childNode->setSDF(child.resultSDF);
                             childNode->setSimplification(child.isSimplified);
                             childNode->setChunk(child.isChunk);
-                            childNode->setBrush(child.brushIndex != DISCARD_BRUSH_INDEX ? child.brushIndex : r.brushIndex);
+                            childNode->setBrush(child.brushIndex > DISCARD_BRUSH_INDEX ? child.brushIndex : r.brushIndex);
                             childNode->setChunkLod(child.selectedChunkLod);
                             childNode->setLod(child.selectedLod);
                             childNode->vertex.hsv = child.brushHsv;
@@ -1210,38 +1213,33 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 // (excluding DISCARD_BRUSH_INDEX) so every node from all LoD
                 // levels carries the dominant material of its subtree; coarse
                 // cells then texture as the majority brush instead of
-                // inheriting an arbitrary single child's brush.
+                // inheriting an arbitrary single child's brush. The winning
+                // child's hsv travels with the brush so the painted tint
+                // reaches the root; if no child carries a brush, keep this
+                // node's own brush/hsv instead of resetting to DISCARD.
                 std::unordered_map<int, int> brushCounts;
-                r.brushIndex = DISCARD_BRUSH_INDEX;
                 int bestCount = 0;
                 for(OctreeNode * childNode : childNodes) {
                     if(childNode != NULL && childNode->getType() == SpaceType::Surface) {
                         const uint8_t childLod = childNode->getLod();
                         const uint8_t childChunkLod = childNode->getChunkLod();
-                        const int childBrush = childNode->getBrush();
 
                         r.selectedLod = childLod ? (r.selectedLod == 0 ? childLod : glm::min(r.selectedLod, childLod)) : 0;
                         r.selectedChunkLod = childChunkLod ? (r.selectedChunkLod == 0 ? childChunkLod : glm::min(r.selectedChunkLod, childChunkLod)) : 0;
-
+                    }
+                    if(childNode != NULL) {
+                        const int childBrush = childNode->getBrush();
                         if(childBrush > DISCARD_BRUSH_INDEX) {
                             const int count = ++brushCounts[childBrush];
                             if(count > bestCount) {
                                 bestCount = count;
                                 r.brushIndex = childBrush;
+                                r.brushHsv = childNode->vertex.hsv;
                             }
                         }
                     }
                 }
-                r.node->setLod(r.node->getSimplification() == 1 ? 1 : r.selectedLod == 0 ? 0 : r.selectedLod + 1);
-                r.node->setChunkLod(r.node->isChunk() ? 1 : r.selectedChunkLod == 0 ? 0 : r.selectedChunkLod + 1);
-                r.node->setBrush(r.brushIndex);
-            }
-            r.node->vertex.hsv = r.brushHsv;
-            if(r.isSimplified) {
-                r.node->setLod(1);
-            }
-            if(r.isChunk) {
-                r.node->setChunkLod(1);
+
             }
         }
         else {
@@ -1250,13 +1248,18 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             // collapsed node follows the leaf rule, not max(child)+1.
             r.node->clear(*allocator, NULL);
         }
-        // chunkLod: stored 1 when the node is a chunk (first chunk level), else
-        // climb max(children.chunkLod)+1 while any child carries a
-        // chunkLod (max != 0); leaves and cells below chunks stay 0
-        // (unset). Handlers are dispatched per node with level = chunkLod:
-        // a chunk (stored chunkLod 1) tessellates until frontier, its
-        // parent (stored 2) until lod 2, and so on up toward the root.
 
+
+        r.node->setLod(r.node->getSimplification() == 1 ? 1 : r.selectedLod == 0 ? 0 : r.selectedLod + 1);
+        r.node->setChunkLod(r.node->isChunk() ? 1 : r.selectedChunkLod == 0 ? 0 : r.selectedChunkLod + 1);
+        r.node->setBrush(r.brushIndex);
+        r.node->vertex.hsv = r.brushHsv;
+        if(r.isSimplified) {
+            r.node->setLod(1);
+        }
+        if(r.isChunk) {
+            r.node->setChunkLod(1);
+        }
 
         // Dispatch a mesh event ONLY for chunks (stored chunkLod 1). Coarse
         // ancestor meshes (stored chunkLod > 1) are DISABLED: tessellating
