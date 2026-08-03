@@ -6,6 +6,13 @@
 #include <functional>
 #include <vector>
 #include <unordered_set>
+using ProcessorHandler = std::function<void(
+    int level, 
+    const OctreeNode* node, 
+    const BoundingCube &cube, 
+    const Geometry &geometry, 
+    const uint8_t lod
+)>;
 
 class Processor : public IteratorHandler {
     ThreadPool &threadPool;
@@ -15,15 +22,25 @@ class Processor : public IteratorHandler {
     // node off this chunk's root path, so only the chunk and its ancestors
     // emit meshes.
     const BoundingCube targetCube;
-
 public:
-    Processor(long * count, ThreadPool &threadPool, ThreadContext * context, const BoundingCube &targetCube, float * cellSizeOut_ = nullptr);
+    Processor(
+        long * count, 
+        ThreadPool &threadPool, 
+        ThreadContext * context, 
+        const BoundingCube &targetCube, 
+        float * cellSizeOut_, 
+        const ProcessorHandler& ph_
+    );
     // One Tesselator per node: called once per tessellated node with its
     // ladder level (the node's chunkLod), the node itself and the node's own
     // root-descended bounding cube (used for the tessellation bounds — no
     // reconstructed cubes), plus the node's geometry.
-    std::function<void(int level, const OctreeNode* node, const BoundingCube &cube, Geometry &geometry, uint8_t lod)> onGeometry;
+    
     bool iterate(const Octree &tree, OctreeNodeData &params) override;
     void getOrder(const Octree &tree, OctreeNodeData &params, uint8_t order[8]) override;
     void virtualize(Octree * tree, const BoundingCube &cube, float * sdf, uint level, uint levels);
+
+private:
+    ProcessorHandler onGeometry;
+
 };

@@ -47,63 +47,30 @@ const Octree& LocalScene::getOpaqueOctree() const { return opaqueOctree; }
 
 void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride) {
     long tessCount = 0;
+    float cellSize = 0;
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
     ThreadContext context = ThreadContext(data.cube);
     // Use the caller-supplied pool when present (e.g. brush editing runs on a
     // dedicated pool so it never competes with solid/water streaming
     // generation); otherwise fall back to the scene's shared pool.
     ThreadPool& pool = poolOverride ? *poolOverride : threadPool;
-    Processor processor(&tessCount, pool, &context, data.cube);
-// ONE Tesselator per node, from the WORLD ROOT down: the flat walk visits
-    // the whole tree, but the Processor prunes everything off this chunk's
-    // root path, so only the chunk and its ancestors tessellate — each at
-    // targetLod = its own stored chunkLod (1 = frontier, k = ancestor, in the
-    // +1-shifted uint8_t space; the onGeometry `lod` param is decoded back to
-    // the 0-based LADDER level). The walk hands the node info and the
-    // node's own root-descended bounding cube to the handler (no reconstructed
-    // cubes), and propagates every parent link (root -> chunk -> leaves) —
-    // the parents are required for the root-consistent cube rebuilds inside
-    // iterateTriangles.
-    processor.onGeometry = [&data,&callback,&tree](int level, const OctreeNode* node, const BoundingCube &cube, Geometry& g, uint8_t lod) {
-        size_t farOut = 0; size_t sentinelPos = 0;
-        glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
-        for (const auto& v : g.vertices) {
-            glm::vec3 p = v.position;
-            if (glm::dot(p,p) > 9.0e7f) ++farOut;          // |p| > 9500 (outside root cube ~6650)
-            if (std::fabs(p.x) > 1.0e4f || std::fabs(p.y) > 1.0e4f || std::fabs(p.z) > 1.0e4f) ++sentinelPos;
-            mn = glm::min(mn, p); mx = glm::max(mx, p);
-        }
-        if (!g.vertices.empty()) {
-            size_t offSurface = 0; size_t maxOff = 0; size_t farEmpty = 0;
-            size_t h = 1469598103934665603ull;
-            for (const auto& v : g.vertices) {
-                uint32_t b[3];
-                std::memcpy(&b, &v.position, sizeof(b));
-                for (uint32_t x : b) { h ^= x; h *= 1099511628211ull; }
-                // Surface-net vertex should sit ON the tree's zero set; a value
-                // far from 0 (beyond ~0.25x the cell diagonal) means the vertex
-                // is parked where the tree holds no real surface.
-                float cellDiag = cube.getLengthX() * 1.73205080757f;
-                float d = std::isnan(v.position.x) ? INFINITY : tree->getSdfAt(v.position);
-                if (std::fabs(d) > cellDiag * 0.25f) {
-                    ++offSurface;
-                    float o = std::fabs(d) / cellDiag;
-                    if (o > 10.0f) ++farEmpty;
-                    maxOff = std::max(maxOff, (size_t)o);
-                }
-            }
-            static int printed = 0;
-            bool flag = offSurface > 0 && cube.getLengthX() <= 960.0f && printed < 20;
-            std::cout << (flag ? "[LocalScene!] " : "[LocalScene] ") << "L=" << level << " lod=" << lod << " cube=" << cube.getLengthX()
-                      << " tris=" << g.indices.size()/3 << " v=" << g.vertices.size()
-                      << " OFF=" << offSurface << "/" << g.vertices.size() << " maxOff=" << maxOff << " farEmpty=" << farEmpty
-                      << " hash=" << h
-                      << " pos=[" << mn.x << "," << mn.y << "," << mn.z << "]..["
-                      << mx.x << "," << mx.y << "," << mx.z << "]" << std::endl;
-            if (flag) ++printed;
-        }
+    Processor processor(
+        &tessCount, 
+        pool, 
+        &context, 
+        data.cube, 
+        &cellSize,
+        [&data,&callback,&tree]
+        (
+            int level, 
+            const OctreeNode* node, 
+            const BoundingCube &cube, 
+            const Geometry& g, 
+            const uint8_t lod
+        ) {
+
         callback(g, lod);
-    };
+    });
     tree->iterateFlat(processor, OctreeNodeData(0, tree->root, static_cast<const BoundingCube&>(*tree), &context));
 }
 

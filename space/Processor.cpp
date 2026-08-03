@@ -5,7 +5,7 @@
 #include "Tesselator.hpp"
 
 
-Processor::Processor(long * count_, ThreadPool &threadPool_, ThreadContext * context_, const BoundingCube &targetCube_, float * cellSizeOut_): threadPool(threadPool_), context(context_), count(count_), targetCube(targetCube_) {
+Processor::Processor(long * count_, ThreadPool &threadPool_, ThreadContext * context_, const BoundingCube &targetCube_, float * cellSizeOut_, const ProcessorHandler& ph_): threadPool(threadPool_), context(context_), count(count_), targetCube(targetCube_), onGeometry(ph_) {
 
 }
 
