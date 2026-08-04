@@ -12,7 +12,7 @@
 #include "../ubo/UniformObject.hpp"
 #include "../../widgets/SkySettings.hpp"
 #include <unordered_map>
-#include "../../utils/Model3DVersion.hpp"
+#include "../../space/Model3DVersion.hpp"
 #include "../../utils/WaterParams.hpp"
 #include "../ubo/WaterParamsGPU.hpp"
 #include "../ubo/WaterRenderUBO.hpp"

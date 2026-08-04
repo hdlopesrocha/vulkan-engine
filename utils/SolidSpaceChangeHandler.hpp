@@ -6,7 +6,7 @@
 #include "../space/InstanceData.hpp"
 #include "../space/DebugInstanceData.hpp"
 #include <functional>
-#include "UniqueOctreeChangeHandler.hpp"
+#include "../space/UniqueOctreeChangeHandler.hpp"
 
 class SolidSpaceChangeHandler : public OctreeChangeHandler {
 

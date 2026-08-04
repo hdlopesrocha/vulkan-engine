@@ -33,7 +33,7 @@ class World;
 #include <mutex>
 #include <deque>
 #include <vector>
-#include "../../utils/Model3DVersion.hpp"
+#include "../../space/Model3DVersion.hpp"
 #include "../../space/ThreadPool.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
@@ -41,7 +41,7 @@ class World;
 #include "../streaming/UploadManager.hpp"   // TerrainStreamer: async streaming orchestration
 #include "ShadowRenderer.hpp"
 #include "WaterRenderer.hpp"
-#include "../../utils/UniqueOctreeChangeHandler.hpp"
+#include "../../space/UniqueOctreeChangeHandler.hpp"
 #include "../../world/World.hpp"
 
 #include "../ubo/PassUBO.hpp"

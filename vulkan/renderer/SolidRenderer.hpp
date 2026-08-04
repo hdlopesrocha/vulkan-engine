@@ -3,7 +3,7 @@
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
-#include "../../utils/Model3DVersion.hpp"
+#include "../../space/Model3DVersion.hpp"
 #include "../ShaderStage.hpp"
 #include "../../math/Vertex.hpp"
 #include "../../utils/Scene.hpp"

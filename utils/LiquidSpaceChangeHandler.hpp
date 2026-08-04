@@ -5,7 +5,7 @@
 #include "../space/OctreeNodeData.hpp"
 #include "../space/InstanceData.hpp"
 #include <functional>
-#include "UniqueOctreeChangeHandler.hpp"
+#include "../space/UniqueOctreeChangeHandler.hpp"
 
 class LiquidSpaceChangeHandler : public OctreeChangeHandler {
 

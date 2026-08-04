@@ -1292,13 +1292,12 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
     std::deque<PendingMeshData> batch;
     {
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
-        size_t qsize = pendingMeshQueue.size();
-        if (qsize > 0) {
+        if (!pendingMeshQueue.empty()) {
             // Sort by ascending distance so chunks closest to the camera are uploaded first.
             std::sort(pendingMeshQueue.begin(), pendingMeshQueue.end(),
                 [&cameraPos](const PendingMeshData& a, const PendingMeshData& b) {
                     if(a.lod.level != b.lod.level) 
-                        return a.lod.level > b.lod.level;
+                        return a.lod.level < b.lod.level;
                     glm::vec3 da = cameraPos - a.nodeData.cube.getCenter();
                     glm::vec3 db = cameraPos - b.nodeData.cube.getCenter();
                     return glm::dot(da, da) < glm::dot(db, db);

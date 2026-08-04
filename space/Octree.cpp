@@ -30,6 +30,18 @@
 //    |/    |/
 //    0-----1x
 
+// Ladder base cell size: the frontier (stored lod 1) is one chunk divided
+// by 2^(kMaxChunkLevels-1) per axis (kMaxChunkLevels = 5 in
+// vulkan/includes/locations.hpp — ladder levels 0..4). With the standard
+// 512-chunk this anchors at 32, i.e. the heightmap's 30^3 minSize frontier;
+// the log2 rounding below maps every 30*2^k ladder cell to its level
+// exactly (30^3→1, 60^3→2, 120^3→3, 240^3→4, 480^3→5, ...).
+static uint8_t lodForCellSize(float nodeLength, float chunkSize) {
+    const float frontierSize = chunkSize / static_cast<float>(1u << (5u - 1u));
+    const int levelsAboveFrontier = std::lround(std::log2(nodeLength / frontierSize));
+    return static_cast<uint8_t>(std::max(1, levelsAboveFrontier + 1));
+}
+
 static std::vector<glm::ivec4> TESSELATION_ORDERS;
 static std::vector<glm::ivec2> TESSELATION_EDGES;
 static bool initialized = false;
@@ -760,11 +772,18 @@ void Octree::iterateTriangles(
         if(node == NULL) return;
         // Stored (+1-shifted → uint8) lod: 0 = unset, 1 = frontier, k+1 = parent.
         const uint8_t lod = node->getLod();
-        if(node->isLeaf() && lod < targetLod) {
-            // Finer than this level: not part of the level-k aggregate.
+        // A leaf is part of the level-k mesh ONLY when its stored lod IS k.
+        // Coarse leaves carry their true interpolated lod (60^3→2, 120^3→3…),
+        // so they never leak into finer levels (mixed-resolution L0 meshes,
+        // duplicate triangles across levels) and their own level still
+        // tessellates them.
+        if(node->isLeaf()) {
+            if(lod == targetLod) {
+                scanCell(node, cube);
+            }
             return;
         }
-        if(lod == targetLod || node->isLeaf()) {
+        if(lod == targetLod) {
             scanCell(node, cube);
             return;
         }
@@ -907,14 +926,6 @@ void Octree::apply(
     ThreadContext localChunkContext = ThreadContext(*this);
     NodeOperationResult r = NodeOperationResult();
     shape(r, frame, args, &localChunkContext);
-
-
-#ifdef DEBUG
-    {
-        std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << ", prunedEmpty=" << prunedEmptyNodes << ", prunedSolid=" << prunedSolidNodes
-                  << ", << chunkSize=" << chunkSize << std::endl;
-    }
-#endif
 }
 
 int Octree::heightRootToChunk(int lod, float minSize) const {
@@ -1039,39 +1050,54 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         // No existing SDF data (all INFINITY) — result is purely the shape.
         // Operations that propagate from infinity: need the Lipschitz center
         // check for safety. Others: result is INFINITY = Empty.
+        // The allInfinity guard is mandatory: a cell that ALREADY has SDF
+        // data (e.g. an interpolated surface from a parent, or a previous
+        // shape op) must NOT be pruned by this new shape's center alone —
+        // pruning it would wipe the existing field.
         if(!processed && isNodeLeaf) {
-
-            if(args.operation->propagatesFromInfinity()) {
-                if(shapeSdfCenter < -halfDiagonal) {
+            bool allInfinity = true;
+            for(int i = 0; i < 8; ++i)
+                if(frame.sdf[i] != INFINITY) { allInfinity = false; break; }
+            if(allInfinity) {
+                if(args.operation->propagatesFromInfinity()) {
+                    if(shapeSdfCenter < -halfDiagonal) {
+                        SDF::copySDF(r.shapeSDF, r.resultSDF);
+                        r.shapeType = SpaceType::Solid;
+                        r.resultType = SpaceType::Solid;
+                        r.selectedLod = 1;
+                        ++prunedSolidNodes;
+                        processed = true;
+                    } else if(shapeSdfCenter > halfDiagonal) {
+                        SDF::copySDF(r.shapeSDF, r.resultSDF);
+                        r.shapeType = SpaceType::Empty;
+                        r.resultType = SpaceType::Empty;
+                        r.selectedLod = 1;
+                        ++prunedEmptyNodes;
+                        processed = true;
+                    }
+                } else {
+                    // Non-propagating: INFINITY op anything = INFINITY = Empty
                     SDF::copySDF(r.shapeSDF, r.resultSDF);
-                    r.shapeType = SpaceType::Solid;
-                    r.resultType = SpaceType::Solid;
-                    r.selectedLod = 1;
-                    ++prunedSolidNodes;
-                    processed = true;
-                } else if(shapeSdfCenter > halfDiagonal) {
-                    SDF::copySDF(r.shapeSDF, r.resultSDF);
-                    r.shapeType = SpaceType::Empty;
+                    r.shapeType = SDF::eval(r.shapeSDF);
                     r.resultType = SpaceType::Empty;
                     r.selectedLod = 1;
                     ++prunedEmptyNodes;
                     processed = true;
                 }
-            } else {
-                // Non-propagating: INFINITY op anything = INFINITY = Empty
-                SDF::copySDF(r.shapeSDF, r.resultSDF);
-                r.shapeType = SDF::eval(r.shapeSDF);
-                r.resultType = SpaceType::Empty;
-                r.selectedLod = 1;
-                ++prunedEmptyNodes;
-                processed = true;
             }
             
         }
 
         // Operations that preserve Solid — existing Solid → always Solid everywhere
+        // The allFinite guard: only prune when the existing field is fully
+        // resolved (no INFINITY corners). An interpolated/partial field must
+        // descend so its corners get real values.
         if(!processed && frame.type == SpaceType::Solid &&
            args.operation->preservesSolid()) {
+            bool allFinite = true;
+            for(int i = 0; i < 8; ++i)
+                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
+            if(allFinite) {
 
             // Painting prunes the whole subtree here (no descent to leaves
             // where the painter normally runs), so apply the painter at the
@@ -1088,25 +1114,37 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             }
             ++prunedSolidNodes;
             processed = true;
-            
+            }
         }
 
         // Operations that preserve Empty — existing Empty → always Empty everywhere
+        // allFinite guard: an unresolved (INFINITY-corner) field must descend.
         if(!processed && frame.type == SpaceType::Empty && args.operation->preservesEmpty()) {
-            for(uint i = 0; i < 8; ++i) {
-                r.resultSDF[i] = args.operation->combine(frame.sdf[i], r.shapeSDF[i]);
+            bool allFinite = true;
+            for(int i = 0; i < 8; ++i)
+                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
+            if(allFinite) {
+                for(uint i = 0; i < 8; ++i) {
+                    r.resultSDF[i] = args.operation->combine(frame.sdf[i], r.shapeSDF[i]);
+                }
+                r.shapeType = SDF::eval(r.shapeSDF);
+                r.resultType = SpaceType::Empty;
+                r.brushIndex = frame.brushIndex;
+                r.brushHsv = frame.hsv;
+                ++prunedEmptyNodes;
+                processed = true;
             }
-            r.shapeType = SDF::eval(r.shapeSDF);
-            r.resultType = SpaceType::Empty;
-            r.brushIndex = frame.brushIndex;
-            r.brushHsv = frame.hsv;
-            ++prunedEmptyNodes;
-            processed = true;
         }
 
         // For remaining operations (or types): check if the shape center is far enough
         // that the entire cube is definitely Solid/Empty.
+        // allFinite guard: interpolating an unresolved field (INFINITY corners)
+        // would compare garbage — the cell must descend instead.
         if(!processed && frame.type == SpaceType::Solid) {
+            bool allFinite = true;
+            for(int i = 0; i < 8; ++i)
+                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
+            if(allFinite) {
 
             const float existingSdfCenter = SDF::interpolate(frame.sdf, center, frame.cube);
             const float resultSdfCenter = args.operation->combine(existingSdfCenter, shapeSdfCenter);
@@ -1131,6 +1169,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 }
                 ++prunedSolidNodes;
                 processed = true;
+            }
             }
             
         }
@@ -1293,9 +1332,16 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 r.node->setChunkLod(r.selectedChunkLod == 0 ? 0 : r.selectedChunkLod + 1);
             }
             
-            if(r.isLeaf) {
-                r.node->setLod(1);
-                r.selectedLod = 1u;
+            if(r.node->isLeaf()) {
+                // A leaf's stored lod is its TRUE ladder level, derived from
+                // its size (lodForCellSize): frontier leaves are 1, coarse
+                // leaves left by coarser passes (e.g. the minSize=120 demo
+                // box) carry their own level (2, 3, …) instead of claiming
+                // the frontier. This propagates the true interpolated lod so
+                // the walk emits each cell at exactly its ladder level.
+                const uint8_t sizeLod = lodForCellSize(nodeLength, chunkSize);
+                r.node->setLod(sizeLod);
+                r.selectedLod = sizeLod;
             }
             else {
                 r.node->setLod(r.selectedLod == 0 ? 0 : r.selectedLod + 1);
@@ -1314,6 +1360,19 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube, nullptr);
                 r.resultType == SpaceType::Surface ? args.changeHandler.onNodeAdded(data) : args.changeHandler.onNodeDeleted(data);
             }
+        }
+    }
+
+    // Coarse leaves skipped by the gate above (process=false with an existing
+    // node — the shape does not reach this cell) never re-enter the lod rule,
+    // so they keep whatever lod an earlier pass left behind: a 60^3/120^3 leaf
+    // created by a coarser pass (e.g. the minSize=120 demo box) would keep
+    // claiming the frontier (lod 1). Propagate its true interpolated lod here
+    // so the walk emits it at its own ladder level and not at every level.
+    if(r.node != NULL && r.node->isLeaf() && !r.isLeaf) {
+        const uint8_t sizeLod = lodForCellSize(nodeLength, chunkSize);
+        if(r.node->getLod() != sizeLod) {
+            r.node->setLod(sizeLod);
         }
     }
 }
