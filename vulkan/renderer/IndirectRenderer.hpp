@@ -116,13 +116,22 @@ public:
     // (previous level of the same chunk) and only validated against the
     // level offsets. `levelVertexOffset`/`levelIndexOffset` are the offsets
     // of this level's data within the chunk's slot range.
+    // `cubeMin`/`cubeMax`: the chunk's OWN cube bounds. When provided they
+    // are published as the draw entry's bounds triple instead of the mesh
+    // AABB — the GPU band test measures distance to the bounds CENTER, which
+    // must be the same for every level of a chunk or the levels' bands shift
+    // relative to each other and two levels can keep simultaneously
+    // (parallel simplification LoDs). Cube bounds also keep frustum culling
+    // conservative-correct for edge-surface chunks.
     uint32_t addMeshSlotted(const Geometry& mesh, uint32_t chunkId, int level = 0,
                             uint32_t forcedSlot = UINT32_MAX,
                             uint32_t levelVertexOffset = 0, uint32_t levelIndexOffset = 0,
-                            float cellSize = 0.0f, int maxLevel = 0);
+                            float cellSize = 0.0f, int maxLevel = 0,
+                            const glm::vec3* cubeMin = nullptr, const glm::vec3* cubeMax = nullptr);
     void updateMeshSlotted(uint32_t slotIndex, const Geometry& mesh, int level = 0,
                            uint32_t levelVertexOffset = 0, uint32_t levelIndexOffset = 0,
-                           float cellSize = 0.0f, int maxLevel = 0);
+                           float cellSize = 0.0f, int maxLevel = 0,
+                           const glm::vec3* cubeMin = nullptr, const glm::vec3* cubeMax = nullptr);
     void removeMeshSlotted(uint32_t slotIndex);
 
     // Always-render fallback: publish a zero-copy ALIAS draw entry at `level`

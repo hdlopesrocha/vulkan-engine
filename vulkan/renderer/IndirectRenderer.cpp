@@ -2240,7 +2240,8 @@ void IndirectRenderer::writeSlotMeta(uint32_t slotIndex, const MeshInfo& info)
 
 uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId, int level,
                                           uint32_t forcedSlot, uint32_t levelVertexOffset,
-                                          uint32_t levelIndexOffset, float cellSize, int maxLevel)
+                                          uint32_t levelIndexOffset, float cellSize, int maxLevel,
+                                          const glm::vec3* cubeMin, const glm::vec3* cubeMax)
 {
     if (!slottedMode) return UINT32_MAX;
 
@@ -2253,7 +2254,8 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
     auto existing = meshes.find(chunkId);
     if (existing != meshes.end() && existing->second.active) {
         updateMeshSlotted(existing->second.slotIndex, mesh, level,
-                          levelVertexOffset, levelIndexOffset, cellSize, maxLevel);
+                          levelVertexOffset, levelIndexOffset, cellSize, maxLevel,
+                          cubeMin, cubeMax);
         return existing->second.slotIndex;
     }
 
@@ -2327,8 +2329,13 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
     m.maxLevel           = maxLevel;
     m.active             = true;
 
-    // Compute bounds
-    if (mesh.vertices.empty()) {
+    // Compute bounds. The chunk's cube bounds (stable band center shared by
+    // every level of the chunk) take precedence; the mesh AABB is only a
+    // fallback for callers without cube info.
+    if (cubeMin && cubeMax) {
+        m.boundsMin = glm::vec4(*cubeMin, 0.0f);
+        m.boundsMax = glm::vec4(*cubeMax, 0.0f);
+    } else if (mesh.vertices.empty()) {
         m.boundsMin = glm::vec4(0.0f);
         m.boundsMax = glm::vec4(0.0f);
     } else {
@@ -2382,7 +2389,8 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
 
 void IndirectRenderer::updateMeshSlotted(uint32_t slotIndex, const Geometry& mesh, int level,
                                          uint32_t levelVertexOffset, uint32_t levelIndexOffset,
-                                         float cellSize, int maxLevel)
+                                         float cellSize, int maxLevel,
+                                         const glm::vec3* cubeMin, const glm::vec3* cubeMax)
 {
     if (!slottedMode) return;
 
@@ -2421,8 +2429,12 @@ void IndirectRenderer::updateMeshSlotted(uint32_t slotIndex, const Geometry& mes
     info->cellSize          = cellSize;
     info->maxLevel          = maxLevel;
 
-    // Recompute bounds
-    if (mesh.vertices.empty()) {
+    // Recompute bounds (cube bounds when provided — stable band center; see
+    // addMeshSlotted for the rationale).
+    if (cubeMin && cubeMax) {
+        info->boundsMin = glm::vec4(*cubeMin, 0.0f);
+        info->boundsMax = glm::vec4(*cubeMax, 0.0f);
+    } else if (mesh.vertices.empty()) {
         info->boundsMin = glm::vec4(0.0f);
         info->boundsMax = glm::vec4(0.0f);
     } else {

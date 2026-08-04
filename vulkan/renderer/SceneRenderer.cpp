@@ -1433,6 +1433,12 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // slot cannot overwrite them afterwards (completion is FIFO).
             std::vector<IndirectRenderer::SlotLevelAlias> pendingAliases;
             float aliasCellSize = 0.0f;
+            // The chunk's own cube bounds: published as every level's bounds
+            // triple so the GPU band test measures distance to a single,
+            // stable center per chunk (per-level mesh AABBs would shift each
+            // level's bands independently -> parallel simplification LoDs).
+            const glm::vec3 cubeMin = pd.nodeData.cube.getMin();
+            const glm::vec3 cubeMax = pd.nodeData.cube.getMax();
             {
                 bool srcFound = false;
                 uint32_t srcIndexCount = 0;
@@ -1446,11 +1452,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                         srcFound = true;
                         aliasCellSize = lod.cellSize;
                         srcIndexCount = static_cast<uint32_t>(lod.geom.indices.size());
-                        srcBmin = glm::vec3(FLT_MAX); srcBmax = glm::vec3(-FLT_MAX);
-                        for (const auto& v : lod.geom.vertices) {
-                            srcBmin = glm::min(srcBmin, v.position);
-                            srcBmax = glm::max(srcBmax, v.position);
-                        }
+                        srcBmin = cubeMin; srcBmax = cubeMax;
                     }
                 }
                 for (uint32_t k = 0; k <= lastPublishedLevel; ++k) {
@@ -1481,7 +1483,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                 const uint32_t relI = levelIndexOffset;
                 slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(pd.nid), (int)lod.level,
                                              slotIdx, relV, relI,
-                                             lod.cellSize, (int)maxLevel);
+                                             lod.cellSize, (int)maxLevel, &cubeMin, &cubeMax);
                 if (slotIdx == UINT32_MAX) break;
                 // If addMeshSlotted reused the same slot (update in-place), no free needed.
                 if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
@@ -1497,12 +1499,8 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                     lu.indexOffset  = slotIdx * ir->getSlotIndexCapacity()  + relI;
                     lu.cellSize     = lod.cellSize;
                     lu.maxLevel     = (int)maxLevel;
-                    lu.boundsMin = glm::vec4(FLT_MAX);
-                    lu.boundsMax = glm::vec4(-FLT_MAX);
-                    for (const auto& v : lod.geom.vertices) {
-                        lu.boundsMin = glm::min(lu.boundsMin, glm::vec4(v.position, 1.0f));
-                        lu.boundsMax = glm::max(lu.boundsMax, glm::vec4(v.position, 1.0f));
-                    }
+                    lu.boundsMin = glm::vec4(cubeMin, 1.0f);
+                    lu.boundsMax = glm::vec4(cubeMax, 1.0f);
                     ladderUploads.push_back(lu);
                 } else {
                     const bool isLast = (lod.level == lastPublishedLevel);
@@ -1873,12 +1871,15 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
         // last level's upload completion, when every level is resident.
         uint32_t slotIdx = UINT32_MAX;
         levelVertexOffset = 0; levelIndexOffset = 0;
+        const glm::vec3 brushCubeMin = pd.nodeData.cube.getMin();
+        const glm::vec3 brushCubeMax = pd.nodeData.cube.getMax();
         for (const auto& lod : pd.lods) {
             if (lod.level > lastPublishedLevel) break;
             if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
             slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(pd.nid), (int)lod.level,
                                          slotIdx, levelVertexOffset, levelIndexOffset,
-                                         lod.cellSize, (int)maxLevel);
+                                         lod.cellSize, (int)maxLevel,
+                                         &brushCubeMin, &brushCubeMax);
             if (slotIdx == UINT32_MAX) break;
             // If addMeshSlotted reused the same slot (update in-place), no free needed.
             if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
