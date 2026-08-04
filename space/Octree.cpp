@@ -1394,30 +1394,40 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
     }
 }
 
-void Octree::iterate(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler, OctreeNodeData data) {
+void Octree::iterate(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
 	IteratorHandler handler;
-	handler.iterateOctree(*this, data, iterateHandler, getOrderHandler);
+	handler.iterate(*this, data, iterateHandler, getOrderHandler);
 }
 
-void Octree::iterate(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler) {
+void Octree::iterate(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
     OctreeNodeData data(0, root, *this, nullptr);
 	IteratorHandler handler;
-	handler.iterateOctree(*this, data, iterateHandler, getOrderHandler);
+	handler.iterate(*this, data, iterateHandler, getOrderHandler);
 }
 
-void Octree::iterateFlat(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler, OctreeNodeData data) {
+void Octree::iterateFlat(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
     IteratorHandler handler;
     handler.iterateFlatIn(*this, data, iterateHandler, getOrderHandler);
 }
 
+void Octree::iterateMultiThreaded(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler, const IterateThreadedHandler &iterateThreadedHandler) {
+    OctreeNodeData data(0, root, *this, nullptr);
+    IteratorHandler handler;
+    handler.iterateMultiThreaded(*this, data, threadPool, iterateHandler, getOrderHandler, iterateThreadedHandler);
+}
 
-void Octree::iterateFlat(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler) {
+void Octree::iterateFlat(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
     OctreeNodeData data(0, root, *this, nullptr);
     IteratorHandler handler;
     handler.iterateFlatIn(*this, data, iterateHandler, getOrderHandler);
 }
 
-void Octree::iterateParallel(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler) {
+void Octree::iterateParallel(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
+    IteratorHandler handler;
+    handler.iterateBFS(*this, data, iterateHandler, getOrderHandler);
+}
+
+void Octree::iterateParallel(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
     OctreeNodeData data(0, root, *this, nullptr);
     IteratorHandler handler;
     handler.iterateBFS(*this, data, iterateHandler, getOrderHandler);

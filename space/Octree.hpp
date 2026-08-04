@@ -30,6 +30,7 @@ public:
     
     using IterateHandler = std::function<bool(const Octree &tree, OctreeNodeData &params)>;
     using IterateOrderHandler = std::function<void(const Octree &tree, OctreeNodeData &params, uint8_t order[8])>;
+    using IterateThreadedHandler = std::function<bool(const Octree &tree, OctreeNodeData &params)>;
 
     OctreeAllocator * allocator;
     int threadsCreated;
@@ -49,12 +50,13 @@ public:
     void apply(const SignedDistanceOperation &operation, const SignedDistanceFunction &function, const Transformation &model, const TexturePainter &painter, float minSize, const Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
     void reset();
     void shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext);
-        void iterate(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler);
-        void iterateFlat(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler);
-        void iterate(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler, OctreeNodeData data);
-        void iterateFlat(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler, OctreeNodeData data);
-
-    void iterateParallel(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler);
+        void iterate(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
+        void iterateFlat(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
+        void iterate(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
+        void iterateFlat(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
+    void iterateMultiThreaded(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler, const IterateThreadedHandler &iterateThreadedHandler);
+    void iterateParallel(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
+    void iterateParallel(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
     bool intersect(const Ray& ray, glm::vec3& outPos) const;
     OctreeNodeLevel getNodeAt(const glm::vec3 &pos, int level, bool simplification) const;
     OctreeNode* getNodeAt(const glm::vec3 &pos, bool simplification) const;

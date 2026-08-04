@@ -14,17 +14,20 @@ class IteratorHandler {
     std::stack<StackFrameOut> stackOut;
 
 public:
-    void iterateOctree(const Octree &tree, OctreeNodeData &params,
-        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
+    void iterate(const Octree &tree, OctreeNodeData &params,
+        const Octree::IterateHandler &iterateHandler, const Octree::IterateOrderHandler &getOrderHandler);
     void iterateMultiThreaded(const Octree &tree, OctreeNodeData &params, ThreadPool& pool,
-        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
+        const Octree::IterateHandler &iterateHandler, 
+        const Octree::IterateOrderHandler &getOrderHandler,
+        const Octree::IterateThreadedHandler &iterateThreadedHandler
+    );
 
     void iterateFlatIn(const Octree &tree, OctreeNodeData &params,
-        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
+        const Octree::IterateHandler &iterateHandler, const Octree::IterateOrderHandler &getOrderHandler);
     void iterateFlatOut(const Octree &tree, OctreeNodeData &params,
-        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
+        const Octree::IterateHandler &iterateHandler, const Octree::IterateOrderHandler &getOrderHandler);
     void iterateBFS(const Octree &tree, OctreeNodeData &rootParams,
-        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
+        const Octree::IterateHandler &iterateHandler, const Octree::IterateOrderHandler &getOrderHandler);
     void iterateParallelBFS(const Octree &tree, OctreeNodeData &rootParams, ThreadPool& pool,
-        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
+        const Octree::IterateHandler &iterateHandler, const Octree::IterateOrderHandler &getOrderHandler);
 };

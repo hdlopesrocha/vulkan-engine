@@ -48,10 +48,8 @@ const Octree& LocalScene::getOpaqueOctree() const { return opaqueOctree; }
 void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride) {
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
     ThreadContext context = ThreadContext(data.cube);
-    // Use the caller-supplied pool when present (e.g. brush editing runs on a
-    // dedicated pool so it never competes with solid/water streaming
-    // generation); otherwise fall back to the scene's shared pool.
-    tree->iterateFlat(
+
+    tree->iterateMultiThreaded(
         [tree,&data,&context,&callback](const Octree &treeRef, OctreeNodeData &params) {
             if(params.node->getType() != SpaceType::Surface) {
                 return false;
@@ -68,7 +66,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                 Tesselator nodeTesselator(&trianglesCount);
                 tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLodStored);
                 if(!nodeTesselator.geometry.indices.empty()) {
-                    callback(nodeTesselator.geometry, chunkLodStored);
+                    callback(nodeTesselator.geometry, chunkLodStored - 1);
                 }
             }
             // Keep descending along the root path: the children hold the finer ladder
@@ -81,7 +79,9 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                 order[i] = i;
             }   
         },
-        OctreeNodeData(0, tree->root, static_cast<const BoundingCube&>(*tree), &context)
+        [tree,&data,&context](const Octree &treeRef, OctreeNodeData &params) {
+            return params.node ? params.node->chunkLod > 0 : false;
+        }
     );
 }
 
