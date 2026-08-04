@@ -46,23 +46,43 @@ const Octree& LocalScene::getOpaqueOctree() const { return opaqueOctree; }
 
 
 void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride) {
-    long tessCount = 0;
-    float cellSize = 0;
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
     ThreadContext context = ThreadContext(data.cube);
     // Use the caller-supplied pool when present (e.g. brush editing runs on a
     // dedicated pool so it never competes with solid/water streaming
     // generation); otherwise fall back to the scene's shared pool.
-    ThreadPool& pool = poolOverride ? *poolOverride : threadPool;
-    Processor processor(
-        &tessCount, 
-        pool, 
-        &context, 
-        data.cube, 
-        &cellSize,
-        callback
+    tree->iterateFlat(
+        [tree,&data,&context,&callback](const Octree &treeRef, OctreeNodeData &params) {
+            if(params.node->getType() != SpaceType::Surface) {
+                return false;
+            }
+
+            if(!params.cube.contains(data.cube.getCenter())) {
+                return false;
+            }
+
+            uint8_t chunkLodStored = params.node->getChunkLod();
+
+            if(chunkLodStored > 0 && chunkLodStored <= 5) {
+                long trianglesCount = 0;
+                Tesselator nodeTesselator(&trianglesCount);
+                tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLodStored);
+                if(!nodeTesselator.geometry.indices.empty()) {
+                    callback(nodeTesselator.geometry, chunkLodStored);
+                }
+            }
+            // Keep descending along the root path: the children hold the finer ladder
+            // levels. Cells without a chunkLod (stored 0) never tessellate and end the
+            // walk — their parent links are already propagated for neighbor lookups.
+            return chunkLodStored > 0;
+        },
+        [](const Octree &treeRef, OctreeNodeData &params, uint8_t order[8]) {
+            for(int i = 0 ; i < 8 ; ++i) {
+                order[i] = i;
+            }   
+        },
+        OctreeNodeData(0, tree->root, static_cast<const BoundingCube&>(*tree), &context)
     );
-    tree->iterateFlat(processor, OctreeNodeData(0, tree->root, static_cast<const BoundingCube&>(*tree), &context));
 }
 
 bool LocalScene::isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) {

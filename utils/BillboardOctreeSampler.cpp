@@ -1,28 +1,20 @@
 #include "BillboardOctreeSampler.hpp"
-#include "../space/IteratorHandler.hpp"
 #include <unordered_set>
 
-class GrassIteratorHandler : public IteratorHandler {
-public:
-    std::vector<glm::vec3> positions;
-    bool iterate(const Octree &tree, OctreeNodeData &params) override {
-        // Only process leaf nodes
-        
-        bool result = params.node && !params.node->isLeaf();
-        
-        if (params.node && params.node->vertex.brushIndex == 4) {
-            positions.push_back(params.node->vertex.position);
-        }       
-        
-        return result;
-    }
-    void getOrder(const Octree &, OctreeNodeData &, uint8_t order[8]) override {
-        for (int i = 0; i < 8; ++i) order[i] = i;
-    }
-};
-
 std::vector<glm::vec3> BillboardOctreeSampler::collectGrassPositions(Octree& octree) {
-    GrassIteratorHandler handler;
-    octree.iterate(handler);
-    return handler.positions;
+    std::vector<glm::vec3> positions;
+    octree.iterate(
+        [&positions](const Octree &treeRef, OctreeNodeData &params) {
+            // Only process leaf nodes
+            bool result = params.node && !params.node->isLeaf();
+            if (params.node && params.node->vertex.brushIndex == 4) {
+                positions.push_back(params.node->vertex.position);
+            }
+            return result;
+        },
+        [](const Octree &, OctreeNodeData &, uint8_t order[8]) {
+            for (int i = 0; i < 8; ++i) order[i] = i;
+        }
+    );
+    return positions;
 }

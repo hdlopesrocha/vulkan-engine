@@ -2,6 +2,7 @@
 #include "Octree.hpp"
 #include "OctreeNode.hpp"
 #include "../math/Frustum.hpp"
+#include <algorithm>
 
 OctreeVisibilityChecker::OctreeVisibilityChecker() {
 	visibleNodes.reserve(1024);

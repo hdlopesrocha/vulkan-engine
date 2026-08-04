@@ -8,7 +8,8 @@
 #include <atomic>
 #include <functional>
 
-void IteratorHandler::iterateParallelBFS(const Octree &tree, OctreeNodeData &rootParams, ThreadPool& pool)
+void IteratorHandler::iterateParallelBFS(const Octree &tree, OctreeNodeData &rootParams, ThreadPool& pool,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler)
 {
     if (rootParams.node == NULL)
         return;
@@ -38,9 +39,9 @@ void IteratorHandler::iterateParallelBFS(const Octree &tree, OctreeNodeData &roo
             activeTasks.fetch_add(1);
 
             if (params.node != NULL) {
-                if (params.node != NULL && iterate(tree, params)) {
+                if (params.node != NULL && iterateHandler(tree, params)) {
                     uint8_t internalOrder[8];
-                    getOrder(tree, params, internalOrder);
+                    getOrderHandler(tree, params, internalOrder);
 
                     OctreeNode* children[8] = {
                         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
@@ -90,7 +91,8 @@ void IteratorHandler::iterateParallelBFS(const Octree &tree, OctreeNodeData &roo
 }
 
 
-void IteratorHandler::iterateBFS(const Octree &tree, OctreeNodeData &rootParams)
+void IteratorHandler::iterateBFS(const Octree &tree, OctreeNodeData &rootParams,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler)
 {
     if (rootParams.node == NULL)
         return;
@@ -111,9 +113,9 @@ void IteratorHandler::iterateBFS(const Octree &tree, OctreeNodeData &rootParams)
 
         // Same as recursive version
 
-        if (params.node != NULL && iterate(tree, params)) {
+        if (params.node != NULL && iterateHandler(tree, params)) {
             uint8_t internalOrder[8];
-            getOrder(tree, params, internalOrder);
+            getOrderHandler(tree, params, internalOrder);
 
             OctreeNode* children[8] = {
                 NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
@@ -148,15 +150,17 @@ void IteratorHandler::iterateBFS(const Octree &tree, OctreeNodeData &rootParams)
 
 
 
-void IteratorHandler::iterateMultiThreaded(const Octree &tree, OctreeNodeData &params, ThreadPool& pool) {
-    iterateParallelBFS(tree, params, pool);
+void IteratorHandler::iterateMultiThreaded(const Octree &tree, OctreeNodeData &params, ThreadPool& pool,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler) {
+    iterateParallelBFS(tree, params, pool, iterateHandler, getOrderHandler);
 }
 
-void IteratorHandler::iterateOctree(const Octree &tree, OctreeNodeData &params) {
+void IteratorHandler::iterateOctree(const Octree &tree, OctreeNodeData &params,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler) {
     if(params.node != NULL) {
-        if(params.node != NULL && iterate(tree, params)) {
+        if(params.node != NULL && iterateHandler(tree, params)) {
             uint8_t internalOrder[8];
-            getOrder(tree, params, internalOrder);
+            getOrderHandler(tree, params, internalOrder);
 
             OctreeNode* children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
             params.node->getChildren(*tree.allocator, children);
@@ -168,14 +172,15 @@ void IteratorHandler::iterateOctree(const Octree &tree, OctreeNodeData &params) 
                 }                
                 if(child != NULL && params.node != child) {
                     OctreeNodeData data = OctreeNodeData( params.level+1, child, params.cube.getChild(j), params.context);
-                    this->iterate(tree, data);
+                    this->iterateOctree(tree, data, iterateHandler, getOrderHandler);
                 }
             }
         }
     }
 }
 
-void IteratorHandler::iterateFlatIn(const Octree &tree, OctreeNodeData &params) {
+void IteratorHandler::iterateFlatIn(const Octree &tree, OctreeNodeData &params,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler) {
     if (params.context != NULL) {
         ThreadContext *tc = reinterpret_cast<ThreadContext*>(params.context);
         tc->parentOf.clear();
@@ -218,8 +223,8 @@ void IteratorHandler::iterateFlatIn(const Octree &tree, OctreeNodeData &params) 
 
         OctreeNode* node = data.node;
 
-        if (node != NULL && iterate(tree, data)) {
-            getOrder(tree, data, internalOrder);
+        if (node != NULL && iterateHandler(tree, data)) {
+            getOrderHandler(tree, data, internalOrder);
             OctreeNode* children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
             node->getChildren(*tree.allocator, children);
             for (int i = 7; i >= 0; --i) {
@@ -250,7 +255,8 @@ void IteratorHandler::iterateFlatIn(const Octree &tree, OctreeNodeData &params) 
     }
 }
 
-void IteratorHandler::iterateFlatOut(const Octree &tree, OctreeNodeData &params) {
+void IteratorHandler::iterateFlatOut(const Octree &tree, OctreeNodeData &params,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler) {
     if (!params.node) return;
     params.context = NULL;
 
@@ -268,13 +274,13 @@ void IteratorHandler::iterateFlatOut(const Octree &tree, OctreeNodeData &params)
             frame.visited = true;
 
             // Only process children if the test passes.
-            if (!iterate(tree, frame)) {
+            if (!iterateHandler(tree, frame)) {
                 stackOut.pop();
                 continue;
             }
 
             // Compute the child order for this node.
-            getOrder(tree, frame, internalOrder);
+            getOrderHandler(tree, frame, internalOrder);
 
             // Push all valid children in reverse order so that they are processed
             // in the original (correct) order when popped.

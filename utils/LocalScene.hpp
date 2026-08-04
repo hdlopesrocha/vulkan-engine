@@ -2,9 +2,7 @@
 
 #include "Scene.hpp"
 #include "../space/Octree.hpp"
-#include "../space/OctreeVisibilityChecker.hpp"
 #include "../space/Tesselator.hpp"
-#include "../space/Processor.hpp"
 #include "../utils/Settings.hpp"
 #include <unordered_map>
 #include "LiquidSpaceChangeHandler.hpp"

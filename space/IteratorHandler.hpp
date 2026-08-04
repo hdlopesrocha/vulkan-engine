@@ -1,11 +1,12 @@
 #pragma once
 #include <stack>
+#include <functional>
 
 #include "OctreeNodeData.hpp"
 #include "StackFrame.hpp"
 #include "StackFrameOut.hpp"
+#include "Octree.hpp"
 
-class Octree;
 class ThreadPool;
 
 class IteratorHandler {
@@ -13,15 +14,17 @@ class IteratorHandler {
     std::stack<StackFrameOut> stackOut;
 
 public:
-    virtual bool iterate(const Octree &tree, OctreeNodeData &params) = 0;
-    virtual void getOrder(const Octree &tree, OctreeNodeData &params, uint8_t order[8]) = 0;
-    void iterateOctree(const Octree &tree, OctreeNodeData &params);
-    void iterateMultiThreaded(const Octree &tree, OctreeNodeData &params, ThreadPool& pool);
+    void iterateOctree(const Octree &tree, OctreeNodeData &params,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
+    void iterateMultiThreaded(const Octree &tree, OctreeNodeData &params, ThreadPool& pool,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
 
-    void iterateFlatIn(const Octree &tree, OctreeNodeData &params);
-    void iterateFlatOut(const Octree &tree, OctreeNodeData &params);
-    void iterateBFS(const Octree &tree, OctreeNodeData &rootParams);
-    void iterateParallelBFS(const Octree &tree, OctreeNodeData &rootParams, ThreadPool& pool);
+    void iterateFlatIn(const Octree &tree, OctreeNodeData &params,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
+    void iterateFlatOut(const Octree &tree, OctreeNodeData &params,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
+    void iterateBFS(const Octree &tree, OctreeNodeData &rootParams,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
+    void iterateParallelBFS(const Octree &tree, OctreeNodeData &rootParams, ThreadPool& pool,
+        Octree::IterateHandler iterateHandler, Octree::IterateOrderHandler getOrderHandler);
 };
-
- 

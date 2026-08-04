@@ -27,6 +27,10 @@ public:
     typedef unsigned int uint;
 
     using IterateBorderHandler = std::function<void(const BoundingCube &childCube, const float sdf[8], uint level)>;
+    
+    using IterateHandler = std::function<bool(const Octree &tree, OctreeNodeData &params)>;
+    using IterateOrderHandler = std::function<void(const Octree &tree, OctreeNodeData &params, uint8_t order[8])>;
+
     OctreeAllocator * allocator;
     int threadsCreated;
     int prunedEmptyNodes;
@@ -45,12 +49,12 @@ public:
     void apply(const SignedDistanceOperation &operation, const SignedDistanceFunction &function, const Transformation &model, const TexturePainter &painter, float minSize, const Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
     void reset();
     void shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext);
-        void iterate(IteratorHandler &handler);
-        void iterateFlat(IteratorHandler &handler);
-        void iterate(IteratorHandler &handler, OctreeNodeData data);
-        void iterateFlat(IteratorHandler &handler, OctreeNodeData data);
+        void iterate(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler);
+        void iterateFlat(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler);
+        void iterate(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler, OctreeNodeData data);
+        void iterateFlat(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler, OctreeNodeData data);
 
-    void iterateParallel(IteratorHandler &handler);
+    void iterateParallel(IterateHandler iterateHandler, IterateOrderHandler getOrderHandler);
     bool intersect(const Ray& ray, glm::vec3& outPos) const;
     OctreeNodeLevel getNodeAt(const glm::vec3 &pos, int level, bool simplification) const;
     OctreeNode* getNodeAt(const glm::vec3 &pos, bool simplification) const;

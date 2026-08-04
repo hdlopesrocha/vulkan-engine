@@ -1,6 +1,6 @@
 #pragma once
 
-template <typename T> class InstanceBuilder : public IteratorHandler{
+template <typename T> class InstanceBuilder {
     InstanceBuilderHandler<T> * handler;
     std::vector<T> * instances;
     ThreadContext * context;
