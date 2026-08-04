@@ -5,7 +5,6 @@
 #include "../streaming/UploadManager.hpp"
 #include "../../utils/FileReader.hpp"
 #include "../includes/locations.hpp"
-#include "RenderProxy.hpp"
 #include "SlotAllocator.hpp"
 #include <cassert>
 #include <cmath>
@@ -2939,60 +2938,6 @@ bool IndirectRenderer::uploadSlotLadder(VulkanApp* app, uint32_t slotIndex,
     }
 
     return true;
-}
-
-uint32_t IndirectRenderer::installProxy(VulkanApp* app, std::unique_ptr<RenderProxy> proxy)
-{
-    if (!proxy || !slottedMode) return UINT32_MAX;
-
-    // The proxy should already have its slotIndex set
-    uint32_t slotIdx = proxy->slotIndex;
-    if (slotIdx == UINT32_MAX) {
-        return UINT32_MAX;
-    }
-
-    // Register or update the MeshInfo for this proxy
-    {
-        std::lock_guard<std::recursive_mutex> guard(mutex);
-
-        MeshInfo m{};
-        m.id          = proxy->chunkId;
-        m.baseVertex  = proxy->drawCmd.vertexOffset >= 0
-                        ? static_cast<uint32_t>(proxy->drawCmd.vertexOffset)
-                        : 0;
-        m.vertexCount = static_cast<uint32_t>(proxy->vertexCount);
-        m.firstIndex  = proxy->drawCmd.firstIndex;
-        m.indexCount  = proxy->drawCmd.indexCount;
-        m.boundsMin   = proxy->boundsMin;
-        m.boundsMax   = proxy->boundsMax;
-        m.drawIndex   = slotIdx * kMaxChunkLevels; // proxies are level-0 entries
-        m.slotIndex   = slotIdx;
-        m.active      = true;
-
-        if (proxy->isEmpty()) {
-            m.vertexCount = 0;
-            m.indexCount  = 0;
-        }
-
-        // Store in the indirect commands array at the slot's level-0 entry
-        if (m.drawIndex < indirectCommands.size()) {
-            indirectCommands[m.drawIndex] = proxy->drawCmd;
-            indirectCommands[m.drawIndex].firstInstance = m.drawIndex;
-        }
-
-        meshes[proxy->chunkId] = m;
-        activeMeshCountDirty_ = true;
-
-        // Write meta (indirect + bounds) to the host-visible GPU buffers
-        writeSlotMeta(m.drawIndex, m);
-    }
-
-    // Upload vertex/index data from the proxy's buffers (or from CPU data)
-    // For now, upload an empty range if the proxy has valid buffers already
-    // on the GPU — the caller is responsible for the GPU upload.
-    // If the proxy's buffers are already on the GPU, just write meta.
-
-    return slotIdx;
 }
 
 // ── Cascade-aware culling ────────────────────────────────────────────────────

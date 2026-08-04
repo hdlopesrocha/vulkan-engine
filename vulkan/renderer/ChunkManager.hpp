@@ -1,7 +1,6 @@
 #pragma once
 
 #include "ChunkState.hpp"
-#include "RenderProxy.hpp"
 #include "../../space/ThreadPool.hpp"
 #include <cstdint>
 #include <unordered_map>
@@ -17,14 +16,14 @@
 //
 // The main thread never waits for mesh generation. Worker threads produce
 // Geometry on the CPU and enqueue uploads to the UploadManager. When the
-// GPU transfer completes, the proxy is atomically swapped into the live
-// scene and the old proxy is deferred for destruction.
+// GPU transfer completes, the new mesh version is swapped into the live
+// scene state (the slot data itself lives in the IndirectRenderer).
 //
 // Thread safety:
 //   - stateMap_ is protected by a mutex for non-atomic operations
 //   - dirtyQueue_ is a thread-safe MPSC queue
 //   - swapQueue_ is consumed on the main thread only
-//   - RenderProxy pointers are swapped atomically
+//   - version bookkeeping is protected by mapMutex_
 
 class ChunkManager {
 public:
@@ -34,8 +33,8 @@ public:
     // Per-chunk tracking data.
     struct ChunkEntry {
         ChunkState state = ChunkState::Clean;
-        std::shared_ptr<const RenderProxy> currentProxy; // currently rendering (immutable)
-        std::shared_ptr<const RenderProxy> pendingProxy; // being built (nullptr until ReadyToSwap)
+        uint32_t currentVersion = 0; // octree version of the live mesh
+        uint32_t pendingVersion = 0; // octree version being built (ReadyToSwap)
         uint32_t slotIndex = UINT32_MAX; // stable IndirectRenderer slot (assigned on upload)
         uint32_t version = 0;       // octree version at last rebuild
         uint32_t rebuildCount = 0;  // monotonically increasing
@@ -58,15 +57,11 @@ public:
     // is the first queue for this chunk (new work to do).
     bool markDirty(ChunkId id, uint32_t version);
 
-    // Drain the swap queue: for each proxy that is ready, atomically
-    // replace the current proxy and schedule the old one for deferred
-    // destruction. Returns a list of swapped-out proxies whose GPU
-    // resources must be destroyed after the current frame completes.
+    // Drain the swap queue: for each chunk that is ready, record the new
+    // mesh version as current. GPU resources are owned by the
+    // IndirectRenderer slots and are never held here.
     // Call once per frame from the main thread.
-    std::vector<std::shared_ptr<const RenderProxy>> processSwapQueue();
-
-    // Get the current proxy for a chunk (thread-safe, lock-free via shared_ptr).
-    std::shared_ptr<const RenderProxy> getCurrentProxy(ChunkId id) const;
+    void processSwapQueue();
 
     // Check if a chunk is currently being processed.
     bool isChunkBusy(ChunkId id) const;
@@ -92,8 +87,8 @@ public:
     ChunkEntry beginBuild(ChunkId id);
 
     // Transition a chunk from BuildingCPU → UploadingGPU.
-    // Stores the newly built proxy as pendingProxy.
-    void finishBuild(ChunkId id, std::shared_ptr<RenderProxy> proxy);
+    // Records the octree version of the mesh being uploaded.
+    void finishBuild(ChunkId id, uint32_t version);
 
     // Transition a chunk from UploadingGPU → ReadyToSwap.
     // Called when the GPU transfer for this chunk completes.
@@ -153,13 +148,6 @@ inline bool ChunkManager::markDirty(ChunkId id, uint32_t version) {
     return true;
 }
 
-inline std::shared_ptr<const RenderProxy> ChunkManager::getCurrentProxy(ChunkId id) const {
-    std::lock_guard<std::mutex> lock(mapMutex_);
-    auto it = stateMap_.find(id);
-    if (it == stateMap_.end()) return nullptr;
-    return it->second.currentProxy;
-}
-
 inline bool ChunkManager::isChunkBusy(ChunkId id) const {
     std::lock_guard<std::mutex> lock(mapMutex_);
     auto it = stateMap_.find(id);
@@ -188,12 +176,12 @@ inline ChunkManager::ChunkEntry ChunkManager::beginBuild(ChunkId id) {
     return it->second;
 }
 
-inline void ChunkManager::finishBuild(ChunkId id, std::shared_ptr<RenderProxy> proxy) {
+inline void ChunkManager::finishBuild(ChunkId id, uint32_t version) {
     std::lock_guard<std::mutex> lock(mapMutex_);
     auto it = stateMap_.find(id);
     if (it == stateMap_.end()) return;
     it->second.state = ChunkState::UploadingGPU;
-    it->second.pendingProxy = std::move(proxy);
+    it->second.pendingVersion = version;
 }
 
 inline void ChunkManager::finishUpload(ChunkId id) {
@@ -214,10 +202,10 @@ inline void ChunkManager::cancelRebuild(ChunkId id) {
     if (it == stateMap_.end()) return;
     it->second.state = ChunkState::Clean;
     it->second.queuedForRebuild = false;
-    it->second.pendingProxy.reset();
+    it->second.pendingVersion = 0;
 }
 
-inline std::vector<std::shared_ptr<const RenderProxy>> ChunkManager::processSwapQueue() {
+inline void ChunkManager::processSwapQueue() {
     // Collect swap queue entries
     std::deque<ChunkId> ready;
     {
@@ -225,7 +213,6 @@ inline std::vector<std::shared_ptr<const RenderProxy>> ChunkManager::processSwap
         ready.swap(swapQueue_);
     }
 
-    std::vector<std::shared_ptr<const RenderProxy>> retired;
     std::lock_guard<std::mutex> lock(mapMutex_);
 
     for (ChunkId id : ready) {
@@ -234,30 +221,21 @@ inline std::vector<std::shared_ptr<const RenderProxy>> ChunkManager::processSwap
 
         ChunkEntry& entry = it->second;
         if (entry.state != ChunkState::ReadyToSwap) continue;
-        if (!entry.pendingProxy) continue;
 
-        // Atomically swap proxies: the old proxy becomes current,
-        // the pending proxy becomes new current.
-        if (entry.currentProxy) {
-            // Retire the old proxy (will be destroyed after fence)
-            retired.push_back(std::move(entry.currentProxy));
-        }
-
-        // Swap in the new proxy
-        entry.currentProxy = std::move(entry.pendingProxy);
+        // The new mesh version becomes current; the GPU-side slot data was
+        // already installed by the upload completion callback.
+        entry.currentVersion = entry.pendingVersion;
         entry.state = ChunkState::Clean;
         entry.queuedForRebuild = false;
         entry.rebuildCount++;
 
         // Check if chunk was dirtied again during the build
-        if (entry.version > entry.currentProxy->version) {
+        if (entry.version > entry.currentVersion) {
             entry.state = ChunkState::Queued;
             entry.queuedForRebuild = true;
             dirtyQueue_.push_back(id);
         }
     }
-
-    return retired;
 }
 
 inline size_t ChunkManager::dirtyQueueSize() const {

@@ -7,7 +7,7 @@
 // live render set. Transitions are driven by the async job pipeline
 // and are thread-safe via atomics/queues (not a global lock).
 enum class ChunkState : uint8_t {
-    // No pending work; the chunk's RenderProxy (if any) is current.
+    // No pending work; the chunk's current mesh (if any) is live.
     Clean,
 
     // A change was detected; the chunk has been added to the dirty
@@ -22,8 +22,8 @@ enum class ChunkState : uint8_t {
     // (either via the UploadManager or the legacy staging path).
     UploadingGPU,
 
-    // The new RenderProxy is fully built (CPU + GPU) and ready to
-    // be atomically swapped into the live scene. The main thread
+    // The new mesh is fully built (CPU + GPU) and ready to
+    // be swapped into the live scene. The main thread
     // will perform the swap on its next call to processDirtyChunks.
     ReadyToSwap
 };

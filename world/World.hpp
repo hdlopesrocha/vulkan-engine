@@ -2,7 +2,6 @@
 
 #include "Chunk.hpp"
 #include "../vulkan/renderer/ChunkManager.hpp"
-#include "../vulkan/renderer/RenderProxy.hpp"
 #include "../utils/LocalScene.hpp"
 #include "../utils/SolidSpaceChangeHandler.hpp"
 #include "../utils/LiquidSpaceChangeHandler.hpp"
@@ -16,17 +15,16 @@
 //
 // Responsibility boundary:
 //   WORLD owns: Chunks, Octrees (SDF), dirty tracking, ChunkManager state machine
-//   RENDERER owns: GPU resources, RenderProxy creation/destruction, indirect draw
+//   RENDERER owns: GPU resources, indirect draw, slot data
 //
 // The World knows nothing about Vulkan. It manages chunk lifecycle and provides
 // dirty notifications. The renderer queries dirty chunks, generates meshes,
-// uploads to GPU, and swaps RenderProxy pointers back into the Chunks.
+// uploads to GPU, and records the resulting mesh version in the ChunkManager.
 //
 // Thread safety:
 //   - chunkMap_ is protected by a mutex
 //   - ChunkManager provides its own fine-grained locking
 //   - The dirty chunk queue is a deque protected by the chunk mutex
-//   - RenderProxy pointers in Chunk are shared_ptr (ref-counted, atomically swappable)
 class World {
 public:
     // Unique identifier for a chunk (typically the octree node ID cast to uint64).
@@ -107,12 +105,12 @@ public:
 
     // ── Debug / query ───────────────────────────────────────────────────────
 
-    // Visit every chunk with a valid RenderProxy.
+    // Visit every chunk.
     template<typename F>
     void visitChunks(F&& visitor) const {
         std::lock_guard<std::mutex> lock(chunkMutex_);
         for (const auto& [id, chunk] : chunkMap_) {
-            if (chunk && chunk->currentProxy && chunk->currentProxy->isValid()) {
+            if (chunk) {
                 std::forward<F>(visitor)(*chunk);
             }
         }
@@ -122,11 +120,6 @@ public:
         std::lock_guard<std::mutex> lock(chunkMutex_);
         return chunkMap_.size();
     }
-
-    // ── Swap notification ───────────────────────────────────────────────────
-    // Called by the renderer after atomically swapping a new RenderProxy in.
-    // Updates the Chunk's currentProxy pointer.
-    void notifyProxySwapped(ChunkId id, std::shared_ptr<const RenderProxy> newProxy);
 
 private:
     // The main scene with octrees (SDF storage + meshing).

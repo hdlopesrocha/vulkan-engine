@@ -66,11 +66,3 @@ bool World::markChunkDirty(ChunkId id, uint32_t version, uint32_t layer) {
 
     return newlyQueued;
 }
-
-void World::notifyProxySwapped(ChunkId id, std::shared_ptr<const RenderProxy> newProxy) {
-    std::lock_guard<std::mutex> lock(chunkMutex_);
-    auto it = chunkMap_.find(id);
-    if (it != chunkMap_.end()) {
-        it->second->currentProxy = std::move(newProxy);
-    }
-}

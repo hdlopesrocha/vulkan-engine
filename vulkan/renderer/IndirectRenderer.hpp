@@ -15,7 +15,6 @@
 #include "CommandBufferState.hpp"
 #include "../streaming/StreamCommon.hpp"
 #include "SlotAllocator.hpp"
-#include "RenderProxy.hpp"
 
 namespace streaming { class UploadManager; }
 
@@ -213,9 +212,6 @@ public:
     bool uploadSlotLadder(VulkanApp* app, uint32_t slotIndex,
                           const std::vector<SlotLevelUpload>& levels,
                           float priority, std::function<void()> onComplete);
-
-    // Convenience: create a proxy, upload it, and return the slot index.
-    uint32_t installProxy(VulkanApp* app, std::unique_ptr<RenderProxy> proxy);
 
     // Upload a single mesh to GPU (incremental update). Requires buffers to have capacity.
     // Returns true if upload succeeded, false if rebuild() is needed (capacity exceeded or buffers not created).

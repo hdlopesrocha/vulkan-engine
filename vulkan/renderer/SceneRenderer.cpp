@@ -1542,8 +1542,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             }
 
             // Store the slot index in the ChunkManager entry so the erase
-            // path can free it via removeMeshSlotted (the RenderProxy
-            // is created with slotIndex=UINT32_MAX and never updated).
+            // path can free it via removeMeshSlotted.
             if (world_) world_->chunkManager().setSlotIndex(cid, slotIdx);
 
             // Generate vegetation instances for grass chunks using the level-0
@@ -1972,35 +1971,10 @@ void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
 {
     if (!slottedModeEnabled) return;
 
-    // Drain the swap queue: for each ready chunk, atomically swap its
-    // RenderProxy and retire the old one.
-    auto retired = world_ ? world_->chunkManager().processSwapQueue() : std::vector<std::shared_ptr<const RenderProxy>>{};
-
-    if (retired.empty()) return;
-
-    // Schedule old proxy GPU resources for deferred destruction.
-    // They must remain valid until the current frame's GPU work completes.
-    for (auto& proxy : retired) {
-        if (!proxy) continue;
-        // Defer destruction of the proxy's vertex/index buffers until the
-        // current frame fence signals.
-        Buffer vbuf = proxy->vertexBuffer;
-        Buffer ibuf = proxy->indexBuffer;
-        if (vbuf.buffer != VK_NULL_HANDLE) {
-            app->deferDestroyUntilFence(app->getCurrentFrameFence(),
-                [app, vbuf]() {
-                    if (vbuf.buffer != VK_NULL_HANDLE)
-                        app->resources.removeBufferVma(vbuf.buffer, vbuf.allocation);
-                });
-        }
-        if (ibuf.buffer != VK_NULL_HANDLE) {
-            app->deferDestroyUntilFence(app->getCurrentFrameFence(),
-                [app, ibuf]() {
-                    if (ibuf.buffer != VK_NULL_HANDLE)
-                        app->resources.removeBufferVma(ibuf.buffer, ibuf.allocation);
-                });
-        }
-    }
+    // Drain the swap queue: mark each ready chunk's new mesh version as
+    // current. GPU slot data was already installed by the upload completion
+    // callback, so no resource cleanup is needed here.
+    if (world_) world_->chunkManager().processSwapQueue();
 }
 
 void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, GeometryHandler onGeometry, float minSize, ThreadPool* poolOverride) {
@@ -2076,16 +2050,11 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
                 }
                 if (lodMesh.level == 0) {
                     // Phase 3: tessellation complete on a worker thread.
-                    // The immutable RenderProxy carries the level-0 (finest)
-                    // geometry; the coarse levels live in the shared slot regions.
-                    auto proxy = std::make_shared<RenderProxy>(
-                        static_cast<uint32_t>(nid_), 
-                        nd_.node->version, 
-                        UINT32_MAX, 
-                        lodMesh.geom
-                    );
+                    // The level-0 (finest) geometry is the chunk mesh; coarse
+                    // levels live in the shared slot regions. Only the octree
+                    // version is tracked here — GPU data goes through slots.
                     if (this->slottedModeEnabled && this->world_) {
-                        this->world_->chunkManager().finishBuild(cid, std::move(proxy));
+                        this->world_->chunkManager().finishBuild(cid, nd_.node->version);
                     }
                 }
                 // Phase 4: Queue for main-thread GPU upload (one entry per
@@ -2154,16 +2123,10 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
                     return; // no surface at this level: nothing to publish
                 }
                 if (lodMesh.level == 0) {
-                    // Phase 3: Tessellation complete — create proxy (level 0
-                    // geometry), transition to UploadingGPU
-                    auto proxy = std::make_shared<RenderProxy>(
-                        static_cast<uint32_t>(nid_),
-                        nd_.node->version, 
-                        UINT32_MAX, 
-                        lodMesh.geom
-                    );
+                    // Phase 3: Tessellation complete — record the level-0
+                    // (finest) mesh version, transition to UploadingGPU.
                     if (this->slottedModeEnabled && this->world_) {
-                        this->world_->chunkManager().finishBuild(cid, std::move(proxy));
+                        this->world_->chunkManager().finishBuild(cid, nd_.node->version);
                     }
                 }
                 // Phase 4: Queue for main-thread GPU upload (one entry per

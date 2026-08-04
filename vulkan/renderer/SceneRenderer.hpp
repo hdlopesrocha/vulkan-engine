@@ -167,7 +167,7 @@ public:
     // ── World reference (separates world logic from rendering) ──
     // The World owns chunks, octrees, and the ChunkManager state machine.
     // The SceneRenderer only reads chunk state and produces/consumes
-    // RenderProxy objects. Call setWorld() before scene loading.
+    // per-level meshes. Call setWorld() before scene loading.
     void setWorld(World* world) { world_ = world; }
     World* world() { return world_; }
     const World* world() const { return world_; }
@@ -279,7 +279,7 @@ public:
 
     // Process a single chunk's mesh in slotted mode.
     // To be called from the change handler callback (on a worker thread).
-    // Generates the mesh, creates a RenderProxy, and queues it for GPU upload.
+    // Generates the mesh and queues it for GPU upload.
     // Returns true if the chunk was processed successfully.
     bool processChunkSlotted(Layer layer, NodeID nid, const OctreeNodeData& nd,
                              const Geometry& geom, uint32_t version);
