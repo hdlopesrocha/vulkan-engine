@@ -1029,6 +1029,12 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
     r.isChunk = isChunkNode(nodeLength);
     r.isLeaf = isShapeLeaf && isNodeLeaf;
     r.selectedLod = r.isLeaf ? 1 : 0;
+    // True when the shape does not reach this cell (process=false) but the
+    // cell still carries an interpolated surface. The node is marked
+    // simplified below (selectedLod=1) so geometry is generated directly from
+    // its SDF; the final lod store must preserve that marker (getLod()==1)
+    // instead of overwriting it with the size-derived ladder level.
+    bool interpolatedSimplified = false;
 
     NodeOperationResult children[8] = { 
         NodeOperationResult(), NodeOperationResult(), 
@@ -1233,6 +1239,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                     // Surface node with no children. Instead, mark as simplified so
                     // iterateTriangles can generate geometry directly from this node's SDF.
                     r.selectedLod = 1;
+                    interpolatedSimplified = true;
                 } else {    
                     if (!r.isChunk) {
                         // Pass frame.chunkCube so the simplifier can guard chunk borders.
@@ -1333,15 +1340,25 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             }
             
             if(r.node->isLeaf()) {
-                // A leaf's stored lod is its TRUE ladder level, derived from
-                // its size (lodForCellSize): frontier leaves are 1, coarse
-                // leaves left by coarser passes (e.g. the minSize=120 demo
-                // box) carry their own level (2, 3, …) instead of claiming
-                // the frontier. This propagates the true interpolated lod so
-                // the walk emits each cell at exactly its ladder level.
-                const uint8_t sizeLod = lodForCellSize(nodeLength, chunkSize);
-                r.node->setLod(sizeLod);
-                r.selectedLod = sizeLod;
+                if(interpolatedSimplified) {
+                    // Interpolated node (shape does not reach this cell, no
+                    // children): keep the simplification marker (lod 1) so the
+                    // unified "simplified iff getLod()==1" semantic holds and
+                    // visibility/simplified-node consumers treat it as a
+                    // frontier cell tessellated directly from its SDF.
+                    r.node->setLod(1);
+                    r.selectedLod = 1;
+                } else {
+                    // A leaf's stored lod is its TRUE ladder level, derived from
+                    // its size (lodForCellSize): frontier leaves are 1, coarse
+                    // leaves left by coarser passes (e.g. the minSize=120 demo
+                    // box) carry their own level (2, 3, …) instead of claiming
+                    // the frontier. This propagates the true interpolated lod so
+                    // the walk emits each cell at exactly its ladder level.
+                    const uint8_t sizeLod = lodForCellSize(nodeLength, chunkSize);
+                    r.node->setLod(sizeLod);
+                    r.selectedLod = sizeLod;
+                }
             }
             else {
                 r.node->setLod(r.selectedLod == 0 ? 0 : r.selectedLod + 1);
@@ -1369,7 +1386,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
     // created by a coarser pass (e.g. the minSize=120 demo box) would keep
     // claiming the frontier (lod 1). Propagate its true interpolated lod here
     // so the walk emits it at its own ladder level and not at every level.
-    if(r.node != NULL && r.node->isLeaf() && !r.isLeaf) {
+    if(r.node != NULL && r.node->isLeaf() && !r.isLeaf && !interpolatedSimplified) {
         const uint8_t sizeLod = lodForCellSize(nodeLength, chunkSize);
         if(r.node->getLod() != sizeLod) {
             r.node->setLod(sizeLod);
