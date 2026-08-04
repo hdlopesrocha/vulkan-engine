@@ -2157,7 +2157,11 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
                     // Phase 3: Tessellation complete — create proxy (level 0
                     // geometry), transition to UploadingGPU
                     auto proxy = std::make_shared<RenderProxy>(
-                        static_cast<uint32_t>(nid_), nd_.node->version, UINT32_MAX, lodMesh.geom);
+                        static_cast<uint32_t>(nid_),
+                        nd_.node->version, 
+                        UINT32_MAX, 
+                        lodMesh.geom
+                    );
                     if (this->slottedModeEnabled && this->world_) {
                         this->world_->chunkManager().finishBuild(cid, std::move(proxy));
                     }
