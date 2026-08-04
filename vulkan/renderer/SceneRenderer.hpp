@@ -178,7 +178,7 @@ public:
     // Enable the slot-based stable indirect renderer path.
     // When true, chunks use the slot-based API instead of the legacy
     // append+rebuild path. This must be set before any chunks are created.
-    bool slottedModeEnabled = false;
+    bool slottedModeEnabled = true;
     // Separate IndirectRenderer for brush solid meshes (so the brush backface
     // buffer only renders brush geometry, not all scene solids).
     IndirectRenderer brushSolidIndirectRenderer;
@@ -229,17 +229,6 @@ public:
     void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);
     // cleanup declared above (accepts VulkanApp*)
 
-    // Process pending node change queues on the main thread
-    // If `attemptUpload` is false the mesh will be added but the immediate
-    // GPU upload will be skipped (deferred to a later rebuild).
-    // `sourceVersion` when non-zero is the snapshot of the node version that
-    // produced the geometry; prefer it over `nd.node->version` to avoid race
-    // conditions between tessellation and main-thread upload.
-    // When `pendingUploads` is non-null, incremental uploads are deferred and
-    // the added mesh ids are appended to it (so the caller can coalesce them
-    // into a single GPU transfer). When null, the upload runs inline.
-    void updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom, bool attemptUpload = true, uint sourceVersion = 0, bool* hadRemovals = nullptr, std::vector<uint32_t>* pendingUploads = nullptr);
-
     // Generate vegetation instances for a given opaque node / chunk.
     // Extracted so both legacy and slotted mode paths share the same logic.
     void generateVegetationForNode(VulkanApp* app, NodeID nid, const Geometry& geom);
@@ -250,17 +239,17 @@ public:
     // the actual Vulkan uploads.
     struct LoDMesh {
         Geometry geom;
-        uint8_t  level = 0;     // LoD level of this mesh (= node's chunkLod, 0 = chunks)
+        uint8_t  lod = 0;     // LoD level of this mesh (= node's chunkLod, 0 = chunks)
+        uint     version = 0; // snapshot of node->version at generation time
         float    cellSize = 0;  // this level's cell size, used by the GPU band test
         uint8_t  maxLevel = 0;  // scene-wide band clamp (LocalScene::maxChunkLod); 0 = always keep
     };
-    using GeometryHandler = const std::function<void(Layer, NodeID, const OctreeNodeData&, const LoDMesh&)>&;
+    using GeometryHandler = const std::function<void(Layer, NodeID, const LoDMesh&)>&;
     struct PendingMeshData {
         Layer          layer;
         NodeID         nid;
-        OctreeNodeData nodeData;
-        LoDMesh lod;
-        uint           version = 0; // snapshot of node->version at generation time
+        LoDMesh        lodMesh;
+        OctreeNodeData nodeData;   // world cube of the source node (stable band center)
     };
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map

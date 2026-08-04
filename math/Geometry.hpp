@@ -32,6 +32,7 @@ public:
 
 using GeometryLodCallback = std::function<void(
     const Geometry& geo, 
-    uint8_t lod
+    uint8_t lod,
+    uint version
 )>;
  

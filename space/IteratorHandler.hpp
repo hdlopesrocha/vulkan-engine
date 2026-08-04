@@ -16,7 +16,10 @@ class IteratorHandler {
 public:
     void iterate(const Octree &tree, OctreeNodeData &params,
         const Octree::IterateHandler &iterateHandler, const Octree::IterateOrderHandler &getOrderHandler);
-    void iterateMultiThreaded(const Octree &tree, OctreeNodeData &params, ThreadPool& pool,
+    void iterateMultiThreaded(
+        const Octree &tree, 
+        OctreeNodeData &params, 
+        ThreadPool& pool,
         const Octree::IterateHandler &iterateHandler, 
         const Octree::IterateOrderHandler &getOrderHandler,
         const Octree::IterateThreadedHandler &iterateThreadedHandler

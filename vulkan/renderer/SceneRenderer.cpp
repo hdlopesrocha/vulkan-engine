@@ -1293,15 +1293,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
     {
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
         if (!pendingMeshQueue.empty()) {
-            // Sort by ascending distance so chunks closest to the camera are uploaded first.
-            std::sort(pendingMeshQueue.begin(), pendingMeshQueue.end(),
-                [&cameraPos](const PendingMeshData& a, const PendingMeshData& b) {
-                    if(a.lod.level != b.lod.level) 
-                        return a.lod.level < b.lod.level;
-                    glm::vec3 da = cameraPos - a.nodeData.cube.getCenter();
-                    glm::vec3 db = cameraPos - b.nodeData.cube.getCenter();
-                    return glm::dot(da, da) < glm::dot(db, db);
-                });
             batch.insert(batch.end(),
                          std::make_move_iterator(pendingMeshQueue.begin()),
                          std::make_move_iterator(pendingMeshQueue.end()));
@@ -1318,63 +1309,43 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
     solidIR.pollPendingTransfers(app);
     waterIR.pollPendingTransfers(app);
 
-    if (slottedModeEnabled && !batch.empty()) {
+    if (!batch.empty()) {
         // ── Slotted mode: per-slot updates, NO global rebuilds ───────────────
         // Each chunk update only touches its own stable slot. The indirect
         // buffer layout is unchanged, so GPU culling never sees stale data.
         //
-        // The queue holds ONE entry per (chunk, level) pair, pushed in
-        // ascending level order; reassemble them into per-chunk ladders so
-        // the fit/publish passes can accumulate slot sub-offsets across a
-        // chunk's levels (levels may be interleaved with other chunks after
-        // the distance sort above, so index by level instead of order).
-        struct PendingChunkData {
-            Layer layer;
-            NodeID nid;
-            OctreeNodeData nodeData;
-            std::vector<LoDMesh> lods;
-            uint version = 0;
-        };
-        std::vector<PendingChunkData> chunks;
-        {
-            std::unordered_map<NodeID, size_t> index;
-            for (auto& pd : batch) {
-                const NodeID key = pd.nid;
-                auto it = index.find(key);
-                if (it == index.end()) {
-                    index[key] = chunks.size();
-                    PendingChunkData c;
-                    c.layer = pd.layer;
-                    c.nid = pd.nid;
-                    c.nodeData = pd.nodeData;
-                    c.version = pd.version;
-                    chunks.push_back(std::move(c));
-                    it = index.find(key);
-                }
-                auto& lods = chunks[it->second].lods;
-                if (lods.size() <= pd.lod.level) lods.resize(pd.lod.level + 1);
-                lods[pd.lod.level] = std::move(pd.lod);
-            }
-        }
-        for (auto& pd : chunks) {
-            ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(pd.nid);
+        // The queue holds ONE entry per (chunk, level) pair; each PendingMeshData
+        // carries exactly ONE LoDMesh. Tessellation runs on worker threads, so a
+        // chunk's ladder levels arrive in arbitrary order — sort by (nid, level)
+        // and process the batch directly as per-chunk runs (no reassembly
+        // container): running slot sub-offsets accumulate across a run's levels.
+        std::sort(batch.begin(), batch.end(),
+            [](const PendingMeshData& a, const PendingMeshData& b) {
+                if (a.nid != b.nid) return a.nid < b.nid;
+                return a.lodMesh.lod < b.lodMesh.lod;
+            });
 
-            IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &solidIR : &waterIR;
-            if (!ir) continue;
+        size_t chunksProcessed = 0;
+        for (auto run = batch.begin(); run != batch.end(); ) {
+            const NodeID nid = run->nid;
+            const Layer layer = run->layer;
+            auto runEnd = run;
+            while (runEnd != batch.end() && runEnd->nid == nid) ++runEnd;
+            const LoDMesh& finest = run->lodMesh;
+            const glm::vec3 cubeMin = run->nodeData.cube.getMin();
+            const glm::vec3 cubeMax = run->nodeData.cube.getMax();
 
-            // Phase 3: publish the chunk's LoD mesh (ONE per node: the node's
-            // own chunkLod level). All levels share the slot's single
-            // vertex/index budget, so per-level sub-offsets accumulate; a mesh
-            // that would exceed the budget is skipped and its draw entry stays
-            // zeroed (culled). maxLevel for the band meta is the scene-wide
-            // clamp, not the ladder size (each node publishes exactly one
-            // level per ladder step).
-            uint32_t ladderMaxLevel = 0;
-            for (const auto& lod : pd.lods) {
-                if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
-                ladderMaxLevel = lod.maxLevel;
-                break;
-            }
+            ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
+            IndirectRenderer* ir = (layer == LAYER_OPAQUE) ? &solidIR : &waterIR;
+            if (!ir) { run = runEnd; continue; }
+
+            // Phase 3: publish the chunk's LoD ladder — ONE draw entry per
+            // ladder level, each a single LoDMesh. All levels share the slot's
+            // single vertex/index budget, so per-level sub-offsets accumulate; a
+            // mesh that would exceed the budget is skipped and its draw entry
+            // stays zeroed (culled). maxLevel for the band meta is the
+            // scene-wide clamp carried by the level itself.
+            const uint32_t ladderMaxLevel = finest.maxLevel;
 
             // If this chunk had a pending-delete entry (erase callback saved
             // the old slot for this NodeID), defer cleanup until the new upload
@@ -1383,9 +1354,9 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // (oldSlot == slotIdx) — no free needed then.
             uint32_t oldSlot = UINT32_MAX;
             {
-                auto& deleteMap = (pd.layer == LAYER_OPAQUE)
+                auto& deleteMap = (layer == LAYER_OPAQUE)
                     ? pendingDeleteSolidSlots : pendingDeleteWaterSlots;
-                auto it = deleteMap.find(pd.nid);
+                auto it = deleteMap.find(nid);
                 if (it != deleteMap.end()) {
                     oldSlot = it->second.slotIndex;
                     deleteMap.erase(it);
@@ -1393,21 +1364,16 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             }
 
             // Fit pass: levels accumulate sub-offsets inside the slot's single
-            // vertex/index budget (finest first). The publish pass stops at the
-            // last level that fits. lastPublishedLevel uses a sentinel so a
-            // level-0 mesh that does NOT fit is correctly detected (init 0
-            // would make `lastPublishedLevel < lods[0].level` false for level 0).
+            // vertex/index budget (finest first). lastPublishedLevel uses a
+            // sentinel so a level-0 mesh that does NOT fit is correctly detected.
             uint32_t levelVertexOffset = 0, levelIndexOffset = 0;
             uint32_t lastPublishedLevel = UINT32_MAX;
             bool hasRealLevels = false;
-            for (const auto& lod : pd.lods) {
-                // Missing ladder levels arrive as empty default LoDMesh
-                // entries (Processor skips empty meshes): they must not count
-                // as published levels, or the upload pass would overwrite the
-                // chunk's real level-0 draw entry with zero counts.
+            for (auto it = run; it != runEnd; ++it) {
+                const LoDMesh& lod = it->lodMesh;
                 if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
                 hasRealLevels = true;
-                const uint32_t lv = lod.level;
+                const uint32_t lv = lod.lod;
                 bool fits = (static_cast<uint64_t>(levelVertexOffset) + lod.geom.vertices.size() <= ir->getSlotVertexCapacity()) &&
                             (static_cast<uint64_t>(levelIndexOffset) + lod.geom.indices.size()  <= ir->getSlotIndexCapacity());
                 if (!fits) break; // budget exhausted: skip remaining coarse levels
@@ -1415,14 +1381,15 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                 levelVertexOffset += static_cast<uint32_t>(lod.geom.vertices.size());
                 levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
             }
-            if (!hasRealLevels || lastPublishedLevel == UINT32_MAX || lastPublishedLevel < pd.lods[0].level) {
-                continue; // nothing fits the slot budget
+            if (!hasRealLevels || lastPublishedLevel == UINT32_MAX || lastPublishedLevel < finest.lod) {
+                run = runEnd; // nothing fits the slot budget
+                continue;
             }
             // Clamp the band meta to what was actually published: if the ladder
             // was cut short by the slot budget, the coarsest published level
             // must cover every remaining band (else the band test would drop
             // the chunk past the cut level -> holes).
-            const uint32_t maxLevel = std::min(ladderMaxLevel, lastPublishedLevel);
+            const uint32_t maxLevel = std::min<uint32_t>(ladderMaxLevel, lastPublishedLevel);
 
             // Deferred ladder finalize data: alias entries for levels that
             // tessellated empty (they draw the finest published level's data,
@@ -1436,17 +1403,16 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // triple so the GPU band test measures distance to a single,
             // stable center per chunk (per-level mesh AABBs would shift each
             // level's bands independently -> parallel simplification LoDs).
-            const glm::vec3 cubeMin = pd.nodeData.cube.getMin();
-            const glm::vec3 cubeMax = pd.nodeData.cube.getMax();
             {
                 bool srcFound = false;
                 uint32_t srcIndexCount = 0;
                 glm::vec3 srcBmin(0.0f), srcBmax(0.0f);
                 bool have[kMaxChunkLevels] = {false};
-                for (const auto& lod : pd.lods) {
-                    if (lod.level > lastPublishedLevel) break;
+                for (auto it = run; it != runEnd; ++it) {
+                    const LoDMesh& lod = it->lodMesh;
+                    if (lod.lod > lastPublishedLevel) break;
                     if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
-                    if (lod.level < kMaxChunkLevels) have[lod.level] = true;
+                    if (lod.lod < kMaxChunkLevels) have[lod.lod] = true;
                     if (!srcFound) {
                         srcFound = true;
                         aliasCellSize = lod.cellSize;
@@ -1474,13 +1440,14 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             levelVertexOffset = 0; levelIndexOffset = 0;
             std::vector<IndirectRenderer::SlotLevelUpload> ladderUploads;
             const bool canBatch = ir->hasUploadManager();
-            if (canBatch) ladderUploads.reserve(pd.lods.size());
-            for (const auto& lod : pd.lods) {
-                if (lod.level > lastPublishedLevel) break;
+            if (canBatch) ladderUploads.reserve(static_cast<size_t>(runEnd - run));
+            for (auto it = run; it != runEnd; ++it) {
+                const LoDMesh& lod = it->lodMesh;
+                if (lod.lod > lastPublishedLevel) break;
                 if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
                 const uint32_t relV = levelVertexOffset;
                 const uint32_t relI = levelIndexOffset;
-                slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(pd.nid), (int)lod.level,
+                slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(nid), (int)lod.lod,
                                              slotIdx, relV, relI,
                                              lod.cellSize, (int)maxLevel, &cubeMin, &cubeMax);
                 if (slotIdx == UINT32_MAX) break;
@@ -1489,7 +1456,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                     oldSlot = UINT32_MAX;
                 if (canBatch) {
                     IndirectRenderer::SlotLevelUpload lu;
-                    lu.level       = lod.level;
+                    lu.level       = lod.lod;
                     lu.vertexCount = static_cast<uint32_t>(lod.geom.vertices.size());
                     lu.indexCount  = static_cast<uint32_t>(lod.geom.indices.size());
                     // Absolute offsets into the merged buffers (slot base +
@@ -1502,8 +1469,8 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                     lu.boundsMax = glm::vec4(cubeMax, 1.0f);
                     ladderUploads.push_back(lu);
                 } else {
-                    const bool isLast = (lod.level == lastPublishedLevel);
-                    ir->uploadSlot(app, slotIdx, (int)lod.level, 0.0f,
+                    const bool isLast = (lod.lod == lastPublishedLevel);
+                    ir->uploadSlot(app, slotIdx, (int)lod.lod, 0.0f,
                         isLast ? [ir, cid, oldSlot, this, slotIdx, lastPublishedLevel,
                                   aliases = pendingAliases, aliasCellSize, maxLevel]() {
                             // Deferred ladder finalize: write alias entries for empty
@@ -1522,6 +1489,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                 levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
             }
             if (slotIdx == UINT32_MAX) {
+                run = runEnd;
                 continue;
             }
             if (canBatch && !ladderUploads.empty()) {
@@ -1548,12 +1516,12 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             // Generate vegetation instances for grass chunks using the level-0
             // (finest) geometry only. Coarse levels (ancestor nodes with
             // chunkLod > 0) never drive vegetation.
-            // (Legacy path does this inside updateMeshForNode; slotted mode
-            // must do it here since it never calls updateMeshForNode.)
-            if (pd.layer == LAYER_OPAQUE && vegetationRenderer && !pd.lods.empty() &&
-                pd.lods[0].level == 0 && !pd.lods[0].geom.vertices.empty()) {
-                generateVegetationForNode(app, pd.nid, pd.lods[0].geom);
+            if (layer == LAYER_OPAQUE && vegetationRenderer &&
+                finest.lod == 0 && !finest.geom.vertices.empty()) {
+                generateVegetationForNode(app, nid, finest.geom);
             }
+            ++chunksProcessed;
+            run = runEnd;
         }
 
         // Age out pending-delete entries that have been waiting longer than
@@ -1582,126 +1550,12 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
         auto nowD = std::chrono::steady_clock::now();
         if (nowD - lastDiag >= std::chrono::seconds(1)) {
             lastDiag = nowD;
-            std::cout << "[SceneRenderer::diag] chunksInBatch=" << chunks.size()
+            std::cout << "[SceneRenderer::diag] chunksInBatch=" << chunksProcessed
                       << " pendingDelSolid=" << pendingDeleteSolidSlots.size()
                       << " pendingDelWater=" << pendingDeleteWaterSlots.size()
                       << " curFrame=" << curFrame << std::endl;
         }
 #endif
-    } else if (!slottedModeEnabled && !batch.empty()) {
-        // ── Legacy mode: append-based with full rebuild ──
-        // Compute per-layer totals for the incoming batch so we can pre-size
-        // renderer buffers and enable incremental uploads when possible.
-        // Only the level-0 mesh is published (the append-based rebuild path
-        // has no per-level draw entries), so reassemble level-0 entries.
-        struct PendingChunkData {
-            Layer layer;
-            NodeID nid;
-            OctreeNodeData nodeData;
-            std::vector<LoDMesh> lods;
-            uint version = 0;
-        };
-        std::vector<PendingChunkData> chunks;
-        {
-            std::unordered_map<NodeID, size_t> index;
-            for (auto& pd : batch) {
-                const NodeID key = pd.nid;
-                auto it = index.find(key);
-                if (it == index.end()) {
-                    index[key] = chunks.size();
-                    PendingChunkData c;
-                    c.layer = pd.layer;
-                    c.nid = pd.nid;
-                    c.nodeData = pd.nodeData;
-                    c.version = pd.version;
-                    chunks.push_back(std::move(c));
-                    it = index.find(key);
-                }
-                auto& lods = chunks[it->second].lods;
-                if (lods.size() <= pd.lod.level) lods.resize(pd.lod.level + 1);
-                lods[pd.lod.level] = std::move(pd.lod);
-            }
-        }
-        size_t solidNewV = 0, solidNewI = 0, solidNewM = 0;
-        size_t waterNewV = 0, waterNewI = 0, waterNewM = 0;
-        for (const auto &pd : chunks) {
-            size_t vCount = 0, iCount = 0;
-            for (const auto& lod : pd.lods) {
-                if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
-                vCount = lod.geom.vertices.size();
-                iCount = lod.geom.indices.size();
-                break;
-            }
-            if (pd.layer == LAYER_OPAQUE) {
-                solidNewV += vCount;
-                solidNewI += iCount;
-                solidNewM += 1;
-            } else {
-                waterNewV += vCount;
-                waterNewI += iCount;
-                waterNewM += 1;
-            }
-        }
-
-        bool solidCanIncremental = true;
-        bool waterCanIncremental = true;
-
-        if (solidNewM > 0) {
-            size_t desiredV = solidIR.getMergedVertexCount() + solidNewV;
-            size_t desiredI = solidIR.getMergedIndexCount() + solidNewI;
-            size_t desiredM = solidIR.getMeshCount() + solidNewM;
-            solidCanIncremental = solidIR.ensureCapacity(desiredV, desiredI, desiredM);
-        }
-
-        if (waterNewM > 0) {
-            size_t desiredV = waterIR.getMergedVertexCount() + waterNewV;
-            size_t desiredI = waterIR.getMergedIndexCount() + waterNewI;
-            size_t desiredM = waterIR.getMeshCount() + waterNewM;
-            waterCanIncremental = waterIR.ensureCapacity(desiredV, desiredI, desiredM);
-        }
-
-        // Process meshes and attempt incremental upload only when pre-sizing succeeded.
-        bool solidOrWaterHadRemovals = false;
-        std::vector<uint32_t> solidUploads;
-        std::vector<uint32_t> waterUploads;
-        Geometry emptyGeom;
-        for (auto& pd : chunks) {
-            // Legacy (non-slotted) mode publishes only the level-0 mesh: the
-            // append-based rebuild path has no per-level draw entries. If the
-            // frontier mesh is missing (empty ladder level), fall back to the
-            // finest published level so the chunk is still rendered.
-            const Geometry* g0 = nullptr;
-            for (const auto& lod : pd.lods) {
-                if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
-                g0 = &lod.geom;
-                break;
-            }
-            const Geometry& ref = g0 ? *g0 : emptyGeom;
-            bool attemptUpload = (pd.layer == LAYER_OPAQUE) ? solidCanIncremental : waterCanIncremental;
-            updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, ref, attemptUpload, pd.version,
-                              &solidOrWaterHadRemovals,
-                              pd.layer == LAYER_OPAQUE ? &solidUploads : &waterUploads);
-        }
-
-        // Coalesce each layer's incremental uploads into a single GPU transfer.
-        if (!solidUploads.empty()) solidIR.uploadMeshes(app, solidUploads);
-        if (!waterUploads.empty()) waterIR.uploadMeshes(app, waterUploads);
-
-        // Batch rebuild.
-        if (solidIR.isDirty()) {
-            if (solidCanIncremental && solidNewM > 0 && !solidOrWaterHadRemovals && !solidIR.needsFullRebuild()) {
-                solidIR.setDirty(false);
-            } else {
-                solidIR.rebuild(app);
-            }
-        }
-        if (waterIR.isDirty()) {
-            if (waterCanIncremental && waterNewM > 0 && !solidOrWaterHadRemovals && !waterIR.needsFullRebuild()) {
-                waterIR.setDirty(false);
-            } else {
-                waterIR.rebuild(app);
-            }
-        }
     }
 
     // Every frame, process the chunk swap queue (slotted mode).
@@ -1716,12 +1570,6 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
         std::lock_guard<std::mutex> lock(brushPendingMutex);
         size_t qsize = brushPendingQueue.size();
         if (qsize > 0) {
-            std::sort(brushPendingQueue.begin(), brushPendingQueue.end(),
-                [&cameraPos](const PendingMeshData& a, const PendingMeshData& b) {
-                    glm::vec3 da = cameraPos - a.nodeData.cube.getCenter();
-                    glm::vec3 db = cameraPos - b.nodeData.cube.getCenter();
-                    return glm::dot(da, da) < glm::dot(db, db);
-                });
             batch.insert(batch.end(),
                          std::make_move_iterator(brushPendingQueue.begin()),
                          std::make_move_iterator(brushPendingQueue.end()));
@@ -1776,76 +1624,54 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     }
 
     std::unordered_set<NodeID> matchedNids;
-    // The brush queue holds ONE entry per (chunk, level) pair (ascending);
-    // reassemble into per-chunk ladders so the fit/publish passes accumulate
-    // slot sub-offsets across a chunk's levels.
-    struct PendingChunkData {
-        Layer layer;
-        NodeID nid;
-        OctreeNodeData nodeData;
-        std::vector<LoDMesh> lods;
-        uint version = 0;
-    };
-    std::vector<PendingChunkData> chunks;
-    {
-        std::unordered_map<NodeID, size_t> index;
-        for (auto& pd : batch) {
-            const NodeID key = pd.nid;
-            auto it = index.find(key);
-            if (it == index.end()) {
-                index[key] = chunks.size();
-                PendingChunkData c;
-                c.layer = pd.layer;
-                c.nid = pd.nid;
-                c.nodeData = pd.nodeData;
-                c.version = pd.version;
-                chunks.push_back(std::move(c));
-                it = index.find(key);
-            }
-            auto& lods = chunks[it->second].lods;
-            if (lods.size() <= pd.lod.level) lods.resize(pd.lod.level + 1);
-            lods[pd.lod.level] = std::move(pd.lod);
-        }
-    }
+    // The brush queue holds ONE entry per (chunk, level) pair; each entry
+    // carries exactly ONE LoDMesh. Tessellation runs on worker threads, so a
+    // chunk's ladder levels arrive in arbitrary order — sort by (nid, level)
+    // and process the batch directly as per-chunk runs (no reassembly
+    // container, mirrors processPendingMeshes): running slot sub-offsets
+    // accumulate across a run's levels.
+    std::sort(batch.begin(), batch.end(),
+        [](const PendingMeshData& a, const PendingMeshData& b) {
+            if (a.nid != b.nid) return a.nid < b.nid;
+            return a.lodMesh.lod < b.lodMesh.lod;
+        });
+
     uint32_t idx = 0;
-    for (auto& pd : chunks) {
-        IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &brushIR : &waterIR;
+    for (auto run = batch.begin(); run != batch.end(); ) {
+        const NodeID nid = run->nid;
+        const Layer layer = run->layer;
+        auto runEnd = run;
+        while (runEnd != batch.end() && runEnd->nid == nid) ++runEnd;
+        const LoDMesh& finest = run->lodMesh;
+
+        IndirectRenderer* ir = (layer == LAYER_OPAQUE) ? &brushIR : &waterIR;
 
         // Look up the old slot for this NodeID before publishing: cleanup is
         // deferred until the new data is resident on the GPU (upload pass).
         uint32_t oldSlot = UINT32_MAX;
         {
-            auto& oldMap = (pd.layer == LAYER_OPAQUE) ? oldSolidSlots : oldTransparentSlots;
-            auto it = oldMap.find(pd.nid);
+            auto& oldMap = (layer == LAYER_OPAQUE) ? oldSolidSlots : oldTransparentSlots;
+            auto it = oldMap.find(nid);
             if (it != oldMap.end()) {
                 oldSlot = it->second;
-                matchedNids.insert(pd.nid);
+                matchedNids.insert(nid);
             }
         }
 
-        // Fit pass: the node's single LoD mesh shares the slot's budget via
+        // Fit pass: the node's LoD levels share the slot's budget via
         // accumulating sub-offsets. maxLevel for the band meta is the
-        // scene-wide clamp, not the ladder size (one level per node).
-        // lastPublishedLevel uses a sentinel so a level-0 mesh that does NOT
-        // fit is correctly detected (init 0 would break the guard for level 0).
-        const uint32_t ladderMaxLevel = [&]() {
-            for (const auto& lod : pd.lods) {
-                if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
-                return static_cast<uint32_t>(lod.maxLevel);
-            }
-            return 0u;
-        }();
+        // scene-wide clamp carried by the level. lastPublishedLevel uses a
+        // sentinel so a level-0 mesh that does NOT fit is correctly detected
+        // (init 0 would break the guard for level 0).
+        const uint32_t ladderMaxLevel = finest.maxLevel;
         uint32_t levelVertexOffset = 0, levelIndexOffset = 0;
         uint32_t lastPublishedLevel = UINT32_MAX;
         bool hasRealLevels = false;
-        for (const auto& lod : pd.lods) {
-            // Missing ladder levels arrive as empty default LoDMesh
-            // entries (Processor skips empty meshes): they must not count
-            // as published levels, or the upload pass would overwrite the
-            // chunk's real level-0 draw entry with zero counts.
+        for (auto it = run; it != runEnd; ++it) {
+            const LoDMesh& lod = it->lodMesh;
             if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
             hasRealLevels = true;
-            const uint32_t lv = lod.level;
+            const uint32_t lv = lod.lod;
             bool fits = (static_cast<uint64_t>(levelVertexOffset) + lod.geom.vertices.size() <= ir->getSlotVertexCapacity()) &&
                         (static_cast<uint64_t>(levelIndexOffset) + lod.geom.indices.size()  <= ir->getSlotIndexCapacity());
             if (!fits) break; // budget exhausted: skip remaining coarse levels
@@ -1853,28 +1679,31 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
             levelVertexOffset += static_cast<uint32_t>(lod.geom.vertices.size());
             levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
         }
-        if (!hasRealLevels || lastPublishedLevel == UINT32_MAX || lastPublishedLevel < pd.lods[0].level) {
+        if (!hasRealLevels || lastPublishedLevel == UINT32_MAX || lastPublishedLevel < finest.lod) {
+            ++idx;
+            run = runEnd;
             continue; // nothing fits the slot budget
         }
         // Clamp the band meta to what was actually published: if the ladder
         // was cut short by the slot budget, the coarsest published level
         // must cover every remaining band (else the band test would drop
         // the chunk past the cut level -> holes).
-        const uint32_t maxLevel = std::min(ladderMaxLevel, lastPublishedLevel);
+        const uint32_t maxLevel = std::min<uint32_t>(ladderMaxLevel, lastPublishedLevel);
 
-        // Publish + upload pass, interleaved per level (see processPendingMeshes
-        // for the same pattern): addMeshSlotted sets the MeshInfo's level to
+        // Publish + upload pass, interleaved per level (mirrors
+        // processPendingMeshes): addMeshSlotted sets the MeshInfo's level to
         // the level just published, so uploadSlot's validation passes while the
         // info still describes that level. Old-slot cleanup is deferred to the
         // last level's upload completion, when every level is resident.
         uint32_t slotIdx = UINT32_MAX;
         levelVertexOffset = 0; levelIndexOffset = 0;
-        const glm::vec3 brushCubeMin = pd.nodeData.cube.getMin();
-        const glm::vec3 brushCubeMax = pd.nodeData.cube.getMax();
-        for (const auto& lod : pd.lods) {
-            if (lod.level > lastPublishedLevel) break;
+        const glm::vec3 brushCubeMin = run->nodeData.cube.getMin();
+        const glm::vec3 brushCubeMax = run->nodeData.cube.getMax();
+        for (auto it = run; it != runEnd; ++it) {
+            const LoDMesh& lod = it->lodMesh;
+            if (lod.lod > lastPublishedLevel) break;
             if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
-            slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(pd.nid), (int)lod.level,
+            slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(nid), (int)lod.lod,
                                          slotIdx, levelVertexOffset, levelIndexOffset,
                                          lod.cellSize, (int)maxLevel,
                                          &brushCubeMin, &brushCubeMax);
@@ -1882,8 +1711,8 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
             // If addMeshSlotted reused the same slot (update in-place), no free needed.
             if (oldSlot != UINT32_MAX && oldSlot == slotIdx)
                 oldSlot = UINT32_MAX;
-            const bool isLast = (lod.level == lastPublishedLevel);
-            ir->uploadSlot(app, slotIdx, (int)lod.level, 0.0f,
+            const bool isLast = (lod.lod == lastPublishedLevel);
+            ir->uploadSlot(app, slotIdx, (int)lod.lod, 0.0f,
                 isLast ? [ir, oldSlot, slotIdx, lastPublishedLevel]() {
                     // Deferred finalize: clear stale levels above the coarsest
                     // published one (no aliases on the brush path).
@@ -1894,15 +1723,13 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
             levelVertexOffset += static_cast<uint32_t>(lod.geom.vertices.size());
             levelIndexOffset  += static_cast<uint32_t>(lod.geom.indices.size());
         }
-        if (slotIdx == UINT32_MAX) {
-            ++idx;
-            continue;
+        if (slotIdx != UINT32_MAX) {
+            auto& chunkMap = (layer == LAYER_OPAQUE) ? brushSolidChunks : brushTransparentChunks;
+            Model3DVersion mv{slotIdx, finest.version};
+            chunkMap[nid] = mv;
         }
-
-        auto& chunkMap = (pd.layer == LAYER_OPAQUE) ? brushSolidChunks : brushTransparentChunks;
-        Model3DVersion mv{slotIdx, pd.version};
-        chunkMap[pd.nid] = mv;
         ++idx;
+        run = runEnd;
     }
 
     // Free orphaned old slots whose NodeID no longer appears in the new set.
@@ -1961,7 +1788,7 @@ bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
     {
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
         LoDMesh lod = {geom, 0, nd.cube.getLength().x};
-        pendingMeshQueue.push_back({layer, nid, nd, std::move(lod), version});
+        pendingMeshQueue.push_back({layer, nid, std::move(lod), nd});
     }
 
     return true;
@@ -2000,13 +1827,14 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     const float cubeLength = nodeData.cube.getLength().x;
     const uint8_t maxLevel = scene.maxChunkLod(layer, minSize);
 
-    scene.requestModel3D(layer, nodeData, [&layer,&nid,&nodeData,&onGeometry,cubeLength,maxLevel](const Geometry& geo, uint8_t lod) {
+    scene.requestModel3D(layer, nodeData, [&layer,&nid,&nodeData,&onGeometry,cubeLength,maxLevel](const Geometry& geo, uint8_t lod, uint version) {
         LoDMesh lm;
         lm.geom = geo;
-        lm.level = lod;
+        lm.lod = lod;
+        lm.version = version;
         lm.cellSize = cubeLength;
         lm.maxLevel = maxLevel;
-        onGeometry(layer, nid, nodeData, lm);
+        onGeometry(layer, nid, lm);
     }, poolOverride);
 
 
@@ -2044,17 +1872,17 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
         // each level is queued as its own entry — the consumer reassembles
         // per-chunk ladders and accumulates slot sub-offsets across levels.
         this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
-            [this, cid](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const LoDMesh& lodMesh) {
+            [this, cid, nodeCopy](Layer layer, NodeID nid_, const LoDMesh& lodMesh) {
                 if (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty()) {
                     return; // no surface at this level: nothing to publish
                 }
-                if (lodMesh.level == 0) {
+                if (lodMesh.lod == 0) {
                     // Phase 3: tessellation complete on a worker thread.
                     // The level-0 (finest) geometry is the chunk mesh; coarse
                     // levels live in the shared slot regions. Only the octree
                     // version is tracked here — GPU data goes through slots.
                     if (this->slottedModeEnabled && this->world_) {
-                        this->world_->chunkManager().finishBuild(cid, nd_.node->version);
+                        this->world_->chunkManager().finishBuild(cid, lodMesh.version);
                     }
                 }
                 // Phase 4: Queue for main-thread GPU upload (one entry per
@@ -2063,7 +1891,7 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
                 // upload completion callback will call finishUpload → ReadyToSwap.
                 {
                     std::lock_guard<std::mutex> lock(this->pendingMeshMutex);
-                    this->pendingMeshQueue.push_back({layer, nid_, nd_, lodMesh, nd_.node->version});
+                    this->pendingMeshQueue.push_back({layer, nid_, lodMesh, nodeCopy});
                 }
             },
             minSize,
@@ -2118,22 +1946,22 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
 
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
-            [this, cid](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const LoDMesh& lodMesh) {
+            [this, cid, nodeCopy](Layer layer, NodeID nid_, const LoDMesh& lodMesh) {
                 if (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty()) {
                     return; // no surface at this level: nothing to publish
                 }
-                if (lodMesh.level == 0) {
+                if (lodMesh.lod == 0) {
                     // Phase 3: Tessellation complete — record the level-0
                     // (finest) mesh version, transition to UploadingGPU.
                     if (this->slottedModeEnabled && this->world_) {
-                        this->world_->chunkManager().finishBuild(cid, nd_.node->version);
+                        this->world_->chunkManager().finishBuild(cid, lodMesh.version);
                     }
                 }
                 // Phase 4: Queue for main-thread GPU upload (one entry per
                 // level, ascending).
                 {
                     std::lock_guard<std::mutex> lock(this->pendingMeshMutex);
-                    this->pendingMeshQueue.push_back({layer, nid_, nd_, lodMesh, nd_.node->version});
+                    this->pendingMeshQueue.push_back({layer, nid_, lodMesh, nodeCopy});
                 }
             },
             minSize,
@@ -2167,55 +1995,6 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
     return LiquidSpaceChangeHandler(liquidNodeEventCallback, liquidNodeEraseCallback);
 }
 
-
-// Ensure mesh exists and is up-to-date for a node: insert or replace when needed
-void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom, bool attemptUpload, uint sourceVersion, bool* hadRemovals, std::vector<uint32_t>* pendingUploads) {
-    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
-    IndirectRenderer &renderer = layer == LAYER_OPAQUE ? solidRenderer->getIndirectRenderer() : waterRenderer->getIndirectRenderer();
-    auto &cur = layer == LAYER_OPAQUE ? solidChunks : transparentChunks;
-    auto it = cur.find(nid);
-    uint effectiveVersion = sourceVersion != 0 ? sourceVersion : nd.node->version;
-        if (it != cur.end()) {
-        if (it->second.version >= effectiveVersion) {
-            return; // already up-to-date
-        }
-        if (it->second.meshId != UINT32_MAX) {
-            renderer.removeMesh(it->second.meshId);
-            // Do NOT call eraseMeshFromGPU here — it maps & zeroes the GPU
-            // indirect buffer while the previous in-flight frame may still be
-            // reading that slot.  The stale indirect command is harmless: it
-            // points to vertex/index data that hasn't been overwritten
-            // (append-only), so the old mesh renders correctly until the next
-            // rebuild() compacts the buffers.
-            if (hadRemovals) *hadRemovals = true;
-        }
-    }
-    uint32_t meshId = renderer.addMesh(geom);
-    Model3DVersion mv{meshId, effectiveVersion};
-    cur[nid] = mv;
-    // Upload mesh into the renderer (may mark renderer dirty). The renderer
-    // rebuild will perform GPU uploads; we keep that responsibility centralized
-    // so uploads may be performed asynchronously inside the renderer.
-    // When a batch collector is provided the upload is deferred and the mesh id
-    // queued so the caller can coalesce the whole batch into one transfer.
-    if (attemptUpload) {
-        if (pendingUploads) {
-            pendingUploads->push_back(meshId);
-        } else {
-            renderer.uploadMesh(app, meshId);
-        }
-    }
-    // Rebuild is deferred to the end of processPendingMeshes() for efficiency.
-    // When called from brush rebuild paths, the caller invokes rebuild() explicitly.
-
-    // Generate vegetation instances for this node using the compute shader.
-    // The generated instance buffer is published only after the compute fence
-    // signals, and graphics waits on the compute semaphore before drawing it.
-    if (layer == LAYER_OPAQUE && vegetationRenderer) {
-        generateVegetationForNode(app, nid, geom);
-    }
-
-}
 
 void SceneRenderer::generateVegetationForNode(VulkanApp* app, NodeID nid, const Geometry& geom) {
     if (!vegetationRenderer) return;
@@ -2392,7 +2171,7 @@ SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* s
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
-            [this](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const LoDMesh& lodMesh) {
+            [this, nodeCopy](Layer layer, NodeID nid_, const LoDMesh& lodMesh) {
                 if (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty()) {
                     return; // no surface at this level: nothing to publish
                 }
@@ -2400,7 +2179,7 @@ SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* s
                 // are drained independently of the solid/water stream (one
                 // entry per ladder level, ascending).
                 std::lock_guard<std::mutex> lock(brushPendingMutex);
-                brushPendingQueue.push_back({layer, nid_, nd_, lodMesh, nd_.node->version});
+                brushPendingQueue.push_back({layer, nid_, lodMesh, nodeCopy});
             },
             minSize,
             &brushGenPool
@@ -2427,14 +2206,14 @@ LiquidSpaceChangeHandler SceneRenderer::makeBrushLiquidSpaceChangeHandler(Scene*
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
-            [this](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const LoDMesh& lodMesh) {
+            [this, nodeCopy](Layer layer, NodeID nid_, const LoDMesh& lodMesh) {
                 if (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty()) {
                     return; // no surface at this level: nothing to publish
                 }
                 // Route brush-liquid results to the SEPARATE brush queue (one
                 // entry per ladder level, ascending).
                 std::lock_guard<std::mutex> lock(brushPendingMutex);
-                brushPendingQueue.push_back({layer, nid_, nd_, lodMesh, nd_.node->version});
+                brushPendingQueue.push_back({layer, nid_, lodMesh, nodeCopy});
             },
             minSize,
             &brushGenPool
