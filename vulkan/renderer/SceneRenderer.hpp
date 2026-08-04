@@ -323,6 +323,31 @@ public:
 private:
     void updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree);
 
+    // Shared slotted publish+upload core for a pending mesh batch, used by
+    // both the solid/water stream (processPendingMeshes) and the brush stream
+    // (processPendingBrushMeshes) — they must behave identically. Sorts the
+    // batch by (nid, level), processes each chunk's ladder run in place
+    // (fit -> publish -> upload) and finalizes the slot ladder on the last
+    // level's upload completion. Returns the number of chunks published.
+    //  takeOldSlot:      resolve and consume the old slot for a chunk, or
+    //                    UINT32_MAX when none. Callers free it after the new
+    //                    upload completes (ChunkManager swap path).
+    //  onChunkPublished: main-thread side effect once a chunk's slot is
+    //                    published (the brush stream records its
+    //                    Model3DVersion map; solid/water pass a noop since
+    //                    ChunkManager setSlotIndex runs inside the core).
+    //  onFinestPublished: notified with the level-0 (finest) geometry of
+    //                    opaque chunks so they can drive vegetation; the
+    //                    brush stream passes a noop.
+    size_t publishPendingLadders(
+        VulkanApp* app,
+        std::deque<PendingMeshData>& batch,
+        IndirectRenderer& opaqueIR,
+        IndirectRenderer& waterIR,
+        const std::function<uint32_t(Layer layer, NodeID nid)>& takeOldSlot,
+        const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version)>& onChunkPublished,
+        const std::function<void(NodeID nid, const Geometry& geom)>& onFinestPublished);
+
     // World reference (null until setWorld is called).
     // The World owns ChunkManager and all chunk state.
     World* world_ = nullptr;
