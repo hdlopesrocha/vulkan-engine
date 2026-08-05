@@ -351,7 +351,8 @@ public:
 
     UniqueChangeCollector mainSolidCollector;
     UniqueChangeCollector mainLiquidCollector;
-
+    UniqueChangeCollector brushSolidCollector;
+    UniqueChangeCollector brushLiquidCollector;
     // Per-slot resources for the async back-face task, reused in a ring of
     // ASYNC_RING_SIZE slots so the per-frame task allocates nothing.
     // Slot-safety: slot N%ASYNC_RING_SIZE is reused by task N+ASYNC_RING_SIZE.
@@ -703,8 +704,9 @@ public:
         brushLiquidRemoveHandler = brushTransparentHandlers.second;
 
 
-        // 5. Ready; no brush scene yet — brush collectors are local to
-        // rebuildBrushScene(). No events exist at setup time, so nothing to flush.
+
+        // 5. Brush collectors are members; rebuildBrushScene feeds them via
+        // apply and dispatches on the main thread.
 
 
         // Scene starts empty — use File > Generate Map to populate it.
@@ -2759,8 +2761,7 @@ void MyApp::rebuildBrushScene() {
     // chunk maps. The octree invokes change handlers on its own worker
     // threads, so the renderer lambdas must NOT run during traversal — collect
     // here and dispatch() on this (main) thread below.
-    UniqueChangeCollector brushSolidCollector;
-    UniqueChangeCollector brushLiquidCollector;
+
 
     // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
     // distance=0.2: flat patches may have up to 20% cube-size SDF error (curved gets 10%).
