@@ -11,6 +11,7 @@
 #include "OctreeSerialized.hpp"
 #include "../sdf/SignedDistanceFunction.hpp"
 #include <functional>
+#include <shared_mutex>
 #include "../math/BoundingCube.hpp"
 #include "../math/Ray.hpp"
 #include <string>
@@ -57,6 +58,10 @@ class Octree: public BoundingCube {
     tsl::robin_map<glm::vec3, ThreadContext> chunks;
     ThreadPool threadPool = ThreadPool(std::thread::hardware_concurrency());
     std::mutex mutex;
+    // Read/write guard for tree structure + node data. iterate* take a shared
+    // (read) lock; apply takes a unique (write) lock so traversal threads never
+    // walk nodes that a concurrent brush/mesh op is mutating.
+    mutable std::shared_mutex treeMutex;
 
     Octree(const BoundingCube &minCube, float chunkSize);
     Octree();
