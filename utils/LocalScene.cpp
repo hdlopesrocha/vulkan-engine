@@ -49,7 +49,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
     ThreadContext context = ThreadContext(data.cube);
 
-    tree->iterateFlat(
+    tree->iterateMultiThreaded(
         [tree,&data,&context,&callback](const Octree &treeRef, OctreeNodeData &params) {
             if(params.node->getType() != SpaceType::Surface) {
                 return false;
@@ -78,6 +78,9 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
             for(int i = 0 ; i < 8 ; ++i) {
                 order[i] = i;
             }   
+        },
+        [tree,&data,&context](const Octree &treeRef, OctreeNodeData &params) {
+            return params.node ? params.node->chunkLod > 0 : false;
         }
     );
 }
