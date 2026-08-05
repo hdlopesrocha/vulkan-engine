@@ -89,88 +89,36 @@
 #include "services/BillboardService.hpp"
 #include "utils/ShadowParams.hpp"
 #include "space/ThreadPool.hpp"
+#include "space/Octree.hpp"
 
-// ── SpaceChangeHandler ───────────────────────────────────────────────────────
-// One instance per space (main-scene solid, main-scene liquid, brush solid,
-// brush liquid). Owns BOTH the {onAdded, onDeleted} renderer lambdas AND the
-// UniqueChangeCollector dedup stage that feeds them, so a space is described
-// by a single object:
-//
-//   - updateHandler / deleteHandler: the two lambdas handed to Octree::apply,
-//     Scene::action and Scene::loadScene (the collector's dedup lambdas).
-//   - dispatch(): replay deduped changes into the renderer callbacks.
-//   - clear(): drop pending changes without dispatching.
-//
-// Configure via init() once the World/renderer exist (setup() builds the two
-// scene spaces; rebuildBrushScene() builds the two brush spaces). Not
-// copyable/movable: the collector's lambdas capture their own address.
-class SpaceChangeHandler {
-public:
-    SpaceChangeHandler() = default;
-    SpaceChangeHandler(const SpaceChangeHandler&) = delete;
-    SpaceChangeHandler& operator=(const SpaceChangeHandler&) = delete;
-
-    void init(SceneRenderer* renderer, VulkanApp* app, Scene* scene,
+// Build the {onAdded, onDeleted} renderer lambdas for one space. The main
+// scene drives the ChunkManager state machine and SDF debug markers; the
+// brush scene routes geometry to the separate brush queue and chunk maps
+// instead. Returns the pair of renderer-side lambdas; the caller wires them
+// behind a UniqueChangeCollector dedup stage and dispatches on the main
+// thread.
+std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(SceneRenderer* renderer, VulkanApp* app, Scene* scene,
               Layer layer, float minSize, ThreadPool* genPool, bool isBrush) {
-        renderer_ = renderer;
-        app_ = app;
-        scene_ = scene;
-        layer_ = layer;
-        minSize_ = minSize;
-        genPool_ = genPool;
-        isBrush_ = isBrush;
-        build();
-    }
+    const bool isOpaque = (layer == LAYER_OPAQUE);
 
-
-    // Lambdas handed to Octree::apply / Scene::action / Scene::loadScene.
-    Octree::OctreeNodeDataHandler updateHandler;
-    Octree::OctreeNodeDataHandler deleteHandler;
-
-    // Flush deduped node changes into the renderer (owning thread only).
-    void dispatch() { collector_.dispatch(onAdded_, onDeleted_); }
-    void clear() { collector_.clear(); }
-
-private:
-    void build();
-
-    SceneRenderer* renderer_ = nullptr;
-    VulkanApp* app_ = nullptr;
-    Scene* scene_ = nullptr;
-    Layer layer_ = LAYER_OPAQUE;
-    float minSize_ = 0.0f;
-    ThreadPool* genPool_ = nullptr;
-    bool isBrush_ = false;
-
-    UniqueChangeCollector collector_;
-    Octree::OctreeNodeDataHandler onAdded_;
-    Octree::OctreeNodeDataHandler onDeleted_;
-};
-
-// Build the {onAdded, onDeleted} lambdas bound to this space. The main scene
-// drives the ChunkManager state machine and SDF debug markers; the brush scene
-// routes geometry to the separate brush queue and chunk maps instead.
-void SpaceChangeHandler::build() {
-    const bool isOpaque = (layer_ == LAYER_OPAQUE);
-
-    onAdded_ = [this](const OctreeNodeData& nd) {
+    Octree::OctreeNodeDataHandler onAdded = [renderer, app, scene, layer, minSize, genPool, isBrush](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
 
-        if (!isBrush_) {
+        if (!isBrush) {
             // Debug markers for the main scene only (no SDF cubes for brush).
-            if (auto* localScene = dynamic_cast<LocalScene*>(scene_)) {
-                const Octree& debugTree = (layer_ == LAYER_OPAQUE)
+            if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
+                const Octree& debugTree = (layer == LAYER_OPAQUE)
                     ? localScene->getOpaqueOctree()
                     : localScene->transparentOctree;
-                renderer_->updateDebugSDFCubesForChunk(nid, nd, debugTree);
+                renderer->updateDebugSDFCubesForChunk(nid, nd, debugTree);
             }
             // Phase 1: mark dirty and begin build IMMEDIATELY when the octree
             // change is detected (before tessellation is dispatched to the
             // worker pool). This transitions Clean → Queued → BuildingCPU.
-            if (renderer_->slottedModeEnabled && renderer_->world()) {
-                renderer_->world()->chunkManager().markDirty(cid, nd.node->version);
-                renderer_->world()->chunkManager().beginBuild(cid);
+            if (renderer->slottedModeEnabled && renderer->world()) {
+                renderer->world()->chunkManager().markDirty(cid, nd.node->version);
+                renderer->world()->chunkManager().beginBuild(cid);
             }
         }
 
@@ -179,61 +127,61 @@ void SpaceChangeHandler::build() {
         // (ascending). Level 0 carries the chunk's finest mesh; each level is
         // queued as its own entry — the consumer reassembles per-chunk ladders
         // and accumulates slot sub-offsets across levels.
-        renderer_->processNodeLayer(*scene_, layer_, nid, nodeCopy,
-            [this, cid, nodeCopy](Layer layer, NodeID nid_, const Octree::LoDMesh& lodMesh) {
+        renderer->processNodeLayer(*scene, layer, nid, nodeCopy,
+            [renderer, cid, nodeCopy, isBrush](Layer layer_, NodeID nid_, const Octree::LoDMesh& lodMesh) {
                 if (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty()) {
                     return; // no surface at this level: nothing to publish
                 }
-                if (!isBrush_ && lodMesh.lod == 0) {
+                if (!isBrush && lodMesh.lod == 0) {
                     // Phase 3: tessellation complete on a worker thread. The
                     // level-0 (finest) geometry is the chunk mesh; coarse
                     // levels live in shared slot regions. Only the octree
                     // version is tracked here — GPU data goes through slots.
-                    if (renderer_->slottedModeEnabled && renderer_->world()) {
-                        renderer_->world()->chunkManager().finishBuild(cid, lodMesh.version);
+                    if (renderer->slottedModeEnabled && renderer->world()) {
+                        renderer->world()->chunkManager().finishBuild(cid, lodMesh.version);
                     }
                 }
                 // Phase 4: Queue for main-thread GPU upload (one entry per
                 // level, ascending). Brush meshes use the dedicated brush
                 // queue so interactive editing never gates the streaming
                 // solid/water generation.
-                if (isBrush_) {
-                    std::lock_guard<std::mutex> lock(renderer_->brushPendingMutex);
-                    renderer_->brushPendingQueue.push_back({layer, nid_, lodMesh, nodeCopy});
+                if (isBrush) {
+                    std::lock_guard<std::mutex> lock(renderer->brushPendingMutex);
+                    renderer->brushPendingQueue.push_back({layer_, nid_, lodMesh, nodeCopy});
                 } else {
-                    std::lock_guard<std::mutex> lock(renderer_->pendingMeshMutex);
-                    renderer_->pendingMeshQueue.push_back({layer, nid_, lodMesh, nodeCopy});
+                    std::lock_guard<std::mutex> lock(renderer->pendingMeshMutex);
+                    renderer->pendingMeshQueue.push_back({layer_, nid_, lodMesh, nodeCopy});
                 }
             },
-            minSize_,
-            genPool_);
+            minSize,
+            genPool);
     };
 
-    onDeleted_ = [this, isOpaque](const OctreeNodeData& nd) {
+    Octree::OctreeNodeDataHandler onDeleted = [renderer, app, isOpaque, isBrush](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
 
-        if (isBrush_) {
+        if (isBrush) {
             // Brush chunks live in the dedicated brush maps + brush IR.
-            std::lock_guard<std::recursive_mutex> lock(renderer_->chunksMutex);
+            std::lock_guard<std::recursive_mutex> lock(renderer->chunksMutex);
             if (isOpaque) {
-                auto it = renderer_->brushSolidChunks.find(nid);
-                if (it != renderer_->brushSolidChunks.end()) {
+                auto it = renderer->brushSolidChunks.find(nid);
+                if (it != renderer->brushSolidChunks.end()) {
                     if (it->second.meshId != UINT32_MAX)
-                        renderer_->brushSolidIndirectRenderer.removeMeshSlotted(it->second.meshId);
-                    renderer_->brushSolidChunks.erase(it);
+                        renderer->brushSolidIndirectRenderer.removeMeshSlotted(it->second.meshId);
+                    renderer->brushSolidChunks.erase(it);
                 }
             } else {
-                auto it = renderer_->brushTransparentChunks.find(nid);
-                if (it != renderer_->brushTransparentChunks.end()) {
+                auto it = renderer->brushTransparentChunks.find(nid);
+                if (it != renderer->brushTransparentChunks.end()) {
                     if (it->second.meshId != UINT32_MAX)
-                        renderer_->waterRenderer->getIndirectRenderer().removeMeshSlotted(it->second.meshId);
-                    renderer_->brushTransparentChunks.erase(it);
+                        renderer->waterRenderer->getIndirectRenderer().removeMeshSlotted(it->second.meshId);
+                    renderer->brushTransparentChunks.erase(it);
                 }
             }
             return;
         }
 
-        if (renderer_->slottedModeEnabled && renderer_->world()) {
+        if (renderer->slottedModeEnabled && renderer->world()) {
             // One slot per chunk (the whole LoD ladder shares it): defer the
             // chunk's single slot until its matching re-publish completes (or
             // it ages out in processPendingMeshes). Don't free immediately —
@@ -241,35 +189,36 @@ void SpaceChangeHandler::build() {
             // so republishing the chunk's levels updates the slot in place and
             // consumes this entry.
             const ChunkManager::ChunkId base = static_cast<ChunkManager::ChunkId>(nid);
-            uint32_t sidx = renderer_->world()->chunkManager().getSlotIndex(base);
+            uint32_t sidx = renderer->world()->chunkManager().getSlotIndex(base);
             if (sidx != UINT32_MAX) {
                 if (isOpaque)
-                    renderer_->pendingDeleteSolidSlots[nid] = {sidx, app_->getCurrentFrame()};
+                    renderer->pendingDeleteSolidSlots[nid] = {sidx, app->getCurrentFrame()};
                 else
-                    renderer_->pendingDeleteWaterSlots[nid] = {sidx, app_->getCurrentFrame()};
+                    renderer->pendingDeleteWaterSlots[nid] = {sidx, app->getCurrentFrame()};
             }
-            renderer_->world()->chunkManager().removeChunk(base);
+            renderer->world()->chunkManager().removeChunk(base);
         } else {
-            std::lock_guard<std::recursive_mutex> lock(renderer_->chunksMutex);
+            std::lock_guard<std::recursive_mutex> lock(renderer->chunksMutex);
             if (isOpaque) {
-                auto it = renderer_->solidChunks.find(nid);
-                if (it != renderer_->solidChunks.end()) {
+                auto it = renderer->solidChunks.find(nid);
+                if (it != renderer->solidChunks.end()) {
                     if (it->second.meshId != UINT32_MAX)
-                        renderer_->solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
-                    renderer_->solidChunks.erase(it);
+                        renderer->solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+                    renderer->solidChunks.erase(it);
                 }
             } else {
-                auto it = renderer_->transparentChunks.find(nid);
-                if (it != renderer_->transparentChunks.end()) {
+                auto it = renderer->transparentChunks.find(nid);
+                if (it != renderer->transparentChunks.end()) {
                     if (it->second.meshId != UINT32_MAX)
-                        renderer_->waterRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
-                    renderer_->transparentChunks.erase(it);
+                        renderer->waterRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+                    renderer->transparentChunks.erase(it);
                 }
             }
         }
-        renderer_->removeDebugCubeForNode(nid);
-        renderer_->removeDebugSDFCubesForNode(nid);
+        renderer->removeDebugCubeForNode(nid);
+        renderer->removeDebugSDFCubesForNode(nid);
     };
+    return { onAdded, onDeleted };
 }
 
 class MyApp : public VulkanApp, public IEventHandler {
@@ -381,8 +330,6 @@ public:
     // them (scene solid + scene liquid are the two "main" scene spaces).
     // Kept alive as members so the tessellation background thread can safely
     // dispatch them after setup() returns.
-    SpaceChangeHandler sceneSolidHandlers;
-    SpaceChangeHandler sceneLiquidHandlers;
     std::thread sceneProcessThread; // tessellates chunks after octree is built
 
     // Pre-allocated descriptor pool+set rings to avoid per-frame create/destroy
@@ -390,6 +337,24 @@ public:
     struct PoolSetPair { VkDescriptorPool pool; VkDescriptorSet set; };
     PoolSetPair cachedBackfaceCompute[ASYNC_RING_SIZE]{};
     uint32_t ringBackfaceCompute = 0;
+
+
+    Octree::OctreeNodeDataHandler brushSolidAddHandler;
+    Octree::OctreeNodeDataHandler brushLiquidAddHandler;
+    Octree::OctreeNodeDataHandler mainSolidAddHandler;
+    Octree::OctreeNodeDataHandler mainLiquidAddHandler;
+    
+    Octree::OctreeNodeDataHandler brushSolidRemoveHandler;
+    Octree::OctreeNodeDataHandler brushLiquidRemoveHandler;
+    Octree::OctreeNodeDataHandler mainSolidRemoveHandler;
+    Octree::OctreeNodeDataHandler mainLiquidRemoveHandler;
+
+    // Dedup collectors in front of the renderer handlers above. Octree::apply
+    // / Scene::load / Scene::action feed these per-node lambdas; dispatch()
+    // replays each node's final state (added or deleted, newest version) into
+    // the matching {Add,Remove} renderer handlers exactly once per node.
+    UniqueChangeCollector mainSolidCollector;
+    UniqueChangeCollector mainLiquidCollector;
 
     // Per-slot resources for the async back-face task, reused in a ring of
     // ASYNC_RING_SIZE slots so the per-frame task allocates nothing.
@@ -715,16 +680,34 @@ public:
         brushManager.getEntries()[2].hsv = glm::vec3(240.0f, 0.7f, 1.0f);
         // minSize = tessellation frontier (MainSceneLoader default 30); the
         // renderer clamps each chunk's LoD ladder with heightRootToChunk.
-        // One SpaceChangeHandler per space: each owns both the {onAdded,
-        // onDeleted} renderer lambdas AND the dedup collector, so the scene
-        // solid/liquid spaces are each a single instance built here (after
-        // the World is attached) and safe to dispatch from the background
-        // tessellation threads.
+        // build() creates the {onAdded, onDeleted} renderer lambdas for each
+        // main-scene space; the dedup collectors in front of them (fed to
+        // Scene::loadScene/action and Octree::apply) replay final per-node
+        // state into these handlers on the tessellation threads.
         Scene* sceneForChanges = &world->scene();
-        sceneSolidHandlers.init(sceneRenderer, this, sceneForChanges,
-                                LAYER_OPAQUE, 30.0f, &sceneRenderer->solidGenPool, false);
-        sceneLiquidHandlers.init(sceneRenderer, this, sceneForChanges,
-                                 LAYER_TRANSPARENT, 30.0f, &sceneRenderer->waterGenPool, false);
+        float minSize = 30.0f;
+        std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> mainOpaqueHandlers = build(
+            sceneRenderer, this, sceneForChanges, LAYER_OPAQUE, minSize, &sceneRenderer->solidGenPool, false);
+        mainSolidAddHandler = mainOpaqueHandlers.first;
+        mainSolidRemoveHandler = mainOpaqueHandlers.second;
+
+        std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> mainTransparentHandlers = build(
+            sceneRenderer, this, sceneForChanges, LAYER_TRANSPARENT, minSize, &sceneRenderer->waterGenPool, false);
+        mainLiquidAddHandler = mainTransparentHandlers.first;
+        mainLiquidRemoveHandler = mainTransparentHandlers.second;
+
+        std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> brushOpaqueHandlers = build(
+            sceneRenderer, this, world->brushScene(), LAYER_OPAQUE, minSize, &sceneRenderer->brushGenPool, true);
+        brushSolidAddHandler = brushOpaqueHandlers.first;
+        brushSolidRemoveHandler = brushOpaqueHandlers.second;
+
+        std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> brushTransparentHandlers = build(
+            sceneRenderer, this, world->brushScene(), LAYER_TRANSPARENT, minSize, &sceneRenderer->brushGenPool, true);
+        brushLiquidAddHandler = brushTransparentHandlers.first;
+        brushLiquidRemoveHandler = brushTransparentHandlers.second;
+
+
+
 
         // Scene starts empty — use File > Generate Map to populate it.
         if (octreeExplorerWidget)
@@ -895,7 +878,7 @@ public:
     void loadSceneFromFile(const std::string& path);
     // Shared scene state reset (join thread, wait GPU, clear meshes/octrees/handlers)
     void resetSceneState();
-    // Replay the deduplicated scene change events into the SpaceChangeHandlers
+    // Replay the deduplicated scene change events into the renderer handlers
     // (replaces UniqueOctreeChangeHandler::handleEvents).
     void dispatchSolidEvents();
     void dispatchLiquidEvents();
@@ -916,7 +899,7 @@ public:
             nunchukPublisher.update();
             nunchukPublisher.applyControls(&eventManager, camera, deltaTime,
                                            &controllerManager, &brushManager,
-                                            world ? &world->opaqueOctree() : nullptr);
+                                            world ? &world->scene().opaqueOctree : nullptr);
         } else {
             // Still poll nunchuk state so Home/A button edge detection works
             nunchukPublisher.update();
@@ -2771,16 +2754,12 @@ void MyApp::rebuildBrushScene() {
         sceneRenderer->processPendingBrushMeshes(this, camera.getPosition());
         return;
     }
-    // 3. One SpaceChangeHandler per brush space (solid + liquid). Each owns
-    // both the {onAdded, onDeleted} renderer lambdas AND the dedup collector;
-    // dispatch() below replays the deduped changes on this (main) thread.
-    SpaceChangeHandler brushSolidHandlers;
-    SpaceChangeHandler brushLiquidHandlers;
-    brushSolidHandlers.init(sceneRenderer, this, world->brushScene(),
-                            LAYER_OPAQUE, selectedEntry->minSize, &sceneRenderer->brushGenPool, true);
-    brushLiquidHandlers.init(sceneRenderer, this, world->brushScene(),
-                             LAYER_TRANSPARENT, selectedEntry->minSize, &sceneRenderer->brushGenPool, true);
-    // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
+    // 3. The brush {onAdded, onDeleted} renderer lambdas were built in
+    // setup() (world->brushScene() is stable); they route geometry to the
+    // dedicated brush queue + chunk maps.
+
+
+                             // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
     // distance=0.2: flat patches may have up to 20% cube-size SDF error (curved gets 10%).
     Simplifier simplifier(0.95f, 0.2f, true);
     // 4. Process the selected brush entry only
@@ -2790,11 +2769,11 @@ void MyApp::rebuildBrushScene() {
             ? world->brushScene()->getOpaqueOctree()
             : world->brushScene()->transparentOctree;
         Octree::OctreeNodeDataHandler& updateHandler = (entry.targetLayer == 0)
-            ? brushSolidHandlers.updateHandler
-            : brushLiquidHandlers.updateHandler;
+            ? brushSolidAddHandler
+            : brushLiquidAddHandler;
         Octree::OctreeNodeDataHandler& deleteHandler = (entry.targetLayer == 0)
-            ? brushSolidHandlers.deleteHandler
-            : brushLiquidHandlers.deleteHandler;
+            ? brushSolidRemoveHandler
+            : brushLiquidRemoveHandler;
 
         Transformation model(entry.scale, entry.translate, entry.rot);
         SimpleBrush brush(entry.materialIndex, entry.hsv);
@@ -2808,9 +2787,9 @@ void MyApp::rebuildBrushScene() {
         };
 
         forEachBrushSDF(entry, model, cachedSweepStart, entry.minSize, "[rebuildBrushScene]", applyEntry);
-    // 5. Flush queued change events (triggers mesh creation via SceneRenderer)
-    brushSolidHandlers.dispatch();
-    brushLiquidHandlers.dispatch();
+    // 5. The brush octree feeds the renderer lambdas (brushSolid/brushLiquid
+    // Add/Remove handlers, built in setup()) directly during traversal — no
+    // collector hop. Proceed straight to GPU processing.
 
     // 6. Process all brush meshes IMMEDIATELY (synchronous, not deferred to
     // the next frame's update()). The brush scene is small — this avoids the
@@ -2851,15 +2830,17 @@ void MyApp::applyBrushToScene() {
 
     // Select target octree and handler based on targetLayer
     Octree& octree = (entry.targetLayer == 0)
-        ? world->opaqueOctree()
-        : world->transparentOctree();
+        ? world->scene().opaqueOctree
+        : world->scene().transparentOctree;
+
+
 
     Octree::OctreeNodeDataHandler& updateHandler = (entry.targetLayer == 0)
-        ? sceneSolidHandlers.updateHandler
-        : sceneLiquidHandlers.updateHandler;
+        ? mainSolidCollector.updateHandler
+        : mainLiquidCollector.updateHandler;
     Octree::OctreeNodeDataHandler& deleteHandler = (entry.targetLayer == 0)
-        ? sceneSolidHandlers.deleteHandler
-        : sceneLiquidHandlers.deleteHandler;
+        ? mainSolidCollector.deleteHandler
+        : mainLiquidCollector.deleteHandler;
 
     // cachedSweepStart was already set by rebuildBrushScene — use the same pair
     Transformation model(entry.scale, entry.translate, entry.rot);
@@ -2874,8 +2855,8 @@ void MyApp::applyBrushToScene() {
     forEachBrushSDF(entry, model, cachedSweepStart, entry.minSize, "[applyBrushToScene]", applyEntry);
 
     // Flush queued change events to trigger mesh creation
-    sceneSolidHandlers.dispatch();
-    sceneLiquidHandlers.dispatch();
+    mainSolidCollector.dispatch(mainSolidAddHandler, mainSolidRemoveHandler);
+    mainLiquidCollector.dispatch(mainLiquidAddHandler, mainLiquidRemoveHandler);
 
     // Mark indirect buffers dirty so the mesh changes are visible
     sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
@@ -2933,8 +2914,8 @@ void MyApp::action() {
 
     MainSceneLoader loader;
     world->scene().action(loader,
-        sceneSolidHandlers.updateHandler, sceneSolidHandlers.deleteHandler,
-        sceneLiquidHandlers.updateHandler, sceneLiquidHandlers.deleteHandler);
+        mainSolidCollector.updateHandler, mainSolidCollector.deleteHandler,
+        mainLiquidCollector.updateHandler, mainLiquidCollector.deleteHandler);
     std::cout << "[MyApp::action] Octree construction complete\n";
 
     // Tessellate chunks in a background thread. Solid and water are handled on
@@ -2966,19 +2947,19 @@ void MyApp::resetSceneState() {
         }
     }
 
-    world->opaqueOctree().reset();
-    world->transparentOctree().reset();
+    world->scene().opaqueOctree.reset();
+    world->scene().transparentOctree.reset();
 
-    sceneSolidHandlers.clear();
-    sceneLiquidHandlers.clear();
+    mainSolidCollector.clear();
+    mainLiquidCollector.clear();
 }
 
 void MyApp::dispatchSolidEvents() {
-    sceneSolidHandlers.dispatch();
+    mainSolidCollector.dispatch(mainSolidAddHandler, mainSolidRemoveHandler);
 }
 
 void MyApp::dispatchLiquidEvents() {
-    sceneLiquidHandlers.dispatch();
+    mainLiquidCollector.dispatch(mainLiquidAddHandler, mainLiquidRemoveHandler);
 }
 
 void MyApp::generateMap() {
@@ -2987,8 +2968,8 @@ void MyApp::generateMap() {
     // Build the octree (CPU only, no tessellation)
     MainSceneLoader loader;
     world->scene().loadScene(loader,
-        sceneSolidHandlers.updateHandler, sceneSolidHandlers.deleteHandler,
-        sceneLiquidHandlers.updateHandler, sceneLiquidHandlers.deleteHandler);
+        mainSolidCollector.updateHandler, mainSolidCollector.deleteHandler,
+        mainLiquidCollector.updateHandler, mainLiquidCollector.deleteHandler);
     std::cout << "[MyApp::generateMap] Octree construction complete\n";
 
     // Tessellate chunks in a background thread. Solid and water are handled on
@@ -3007,8 +2988,8 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     resetSceneState();
 
     world->scene().load(path,
-        sceneSolidHandlers.updateHandler, sceneSolidHandlers.deleteHandler,
-        sceneLiquidHandlers.updateHandler, sceneLiquidHandlers.deleteHandler,
+        mainSolidCollector.updateHandler, mainSolidCollector.deleteHandler,
+        mainLiquidCollector.updateHandler, mainLiquidCollector.deleteHandler,
         &settings);
     std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '" << path << "'\n";
 

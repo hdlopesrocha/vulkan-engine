@@ -9,13 +9,14 @@
 #include "OctreeLayer.tpp"
 
 class LocalScene : public Scene {
-    Octree opaqueOctree;
 public:
-    Octree& getOpaqueOctree();
-    const Octree& getOpaqueOctree() const;
+
+    Octree opaqueOctree;
     Octree transparentOctree;
     ThreadPool threadPool;
 
+    Octree& getOpaqueOctree();
+    const Octree& getOpaqueOctree() const;
 public:
     // Instance/visibility layers and change handlers (owned by LocalScene)
     OctreeLayer<InstanceData> opaqueLayerInfo;

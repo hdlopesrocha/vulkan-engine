@@ -68,12 +68,6 @@ public:
     LocalScene& scene() { return *scene_; }
     const LocalScene& scene() const { return *scene_; }
 
-    // Convenience access to octrees.
-    Octree& opaqueOctree() { return scene_->getOpaqueOctree(); }
-    const Octree& opaqueOctree() const { return scene_->getOpaqueOctree(); }
-    Octree& transparentOctree() { return scene_->transparentOctree; }
-    const Octree& transparentOctree() const { return scene_->transparentOctree; }
-
     // ── Brush scene (separate scene for editing previews) ────────────────────
     // The brush scene has its own octrees for brush preview geometry. It is
     // managed separately from the main scene and uses its own IndirectRenderer.
