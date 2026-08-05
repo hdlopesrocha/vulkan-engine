@@ -3,9 +3,6 @@
 #include "Chunk.hpp"
 #include "../vulkan/renderer/ChunkManager.hpp"
 #include "../utils/LocalScene.hpp"
-#include "../utils/SolidSpaceChangeHandler.hpp"
-#include "../utils/LiquidSpaceChangeHandler.hpp"
-#include "../space/OctreeChangeHandler.hpp"
 #include <unordered_map>
 #include <memory>
 #include <mutex>

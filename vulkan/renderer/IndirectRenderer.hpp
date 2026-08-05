@@ -14,6 +14,7 @@
 #include <functional>
 #include "CommandBufferState.hpp"
 #include "../streaming/StreamCommon.hpp"
+#include "../includes/locations.hpp"
 #include "SlotAllocator.hpp"
 
 namespace streaming { class UploadManager; }
@@ -255,6 +256,16 @@ public:
     uint32_t getSlotVertexCapacity() const { return slotVertexCapacity; }
     uint32_t getSlotIndexCapacity()  const { return slotIndexCapacity; }
 
+    // Static per-level row layout of each slot (set by initSlots): level k's
+    // vertex/index data lives at the slot base + the level row offset, inside
+    // a row of the level row capacity. Static rows (instead of running
+    // sub-offset accumulation) mean a republish of one level overwrites only
+    // its own range, and the budget check is per row.
+    uint32_t getSlotLevelVertexOffset(int level) const;
+    uint32_t getSlotLevelIndexOffset(int level) const;
+    uint32_t getSlotLevelVertexCapacity(int level) const;
+    uint32_t getSlotLevelIndexCapacity(int level) const;
+
     // Poll for completion of an in-flight async transfer and publish
     // the results (update meta-buffers, etc.).  Call once per frame
     // before acquireBuffers so deferred publications are visible to
@@ -407,6 +418,15 @@ private:
     // Per-slot maximum capacities (set by initSlots)
     uint32_t slotVertexCapacity = 0;
     uint32_t slotIndexCapacity  = 0;
+
+    // Static per-level row layout within each slot (set by initSlots).
+    // slotVertexCapacity/slotIndexCapacity are the SUMS of the per-level row
+    // capacities; level k's data lives at row offsets in [rowOffset[k],
+    // rowOffset[k] + rowCapacity[k]).
+    uint32_t levelRowVertexOffset[kMaxChunkLevels] = {};
+    uint32_t levelRowVertexCapacity[kMaxChunkLevels] = {};
+    uint32_t levelRowIndexOffset[kMaxChunkLevels] = {};
+    uint32_t levelRowIndexCapacity[kMaxChunkLevels] = {};
 
     // Slot allocator for the stable slot pool
     SlotAllocator slotAlloc;

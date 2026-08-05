@@ -6,7 +6,6 @@
 #include "OctreeNodeFrame.hpp"
 #include "OctreeNodeLevel.hpp"
 #include "OctreeAllocator.hpp"
-#include "OctreeChangeHandler.hpp"
 #include "OctreeNodeTriangleHandler.hpp"
 #include "ShapeArgs.hpp"
 #include "OctreeSerialized.hpp"
@@ -15,22 +14,39 @@
 #include "../math/BoundingCube.hpp"
 #include "../math/Ray.hpp"
 #include <string>
-
+#include "../math/Geometry.hpp"
+// Node identifier used by change handlers/collectors to key per-node state
+// (previously defined in the removed OctreeChangeHandler.hpp).
+typedef uintptr_t NodeID;
 class IteratorHandler;
 
+
+
 class Octree: public BoundingCube {
-    using BoundingCube::BoundingCube;
-public:
+    public:
+    // ── Parallel scene loading ─────────────────────────────────────────────────
+    // CPU mesh-generation results are pushed here from the background loading
+    // thread; the main (render) thread drains the queue each frame and performs
+    // the actual Vulkan uploads.
+    struct LoDMesh {
+        Geometry geom;
+        uint8_t  lod = 0;     // LoD level of this mesh (= node's chunkLod, 0 = chunks)
+        unsigned int     version = 0; // snapshot of node->version at generation time
+        float    cellSize = 0;  // this level's cell size, used by the GPU band test
+        uint8_t  maxLevel = 0;  // scene-wide band clamp (LocalScene::maxChunkLod); 0 = always keep
+    };
+
+
     float chunkSize;
 
     OctreeNode * root;
     typedef unsigned int uint;
 
-    using IterateBorderHandler = std::function<void(const BoundingCube &childCube, const float sdf[8], uint level)>;
-    
-    using IterateHandler = std::function<bool(const Octree &tree, OctreeNodeData &params)>;
-    using IterateOrderHandler = std::function<void(const Octree &tree, OctreeNodeData &params, uint8_t order[8])>;
-    using IterateThreadedHandler = std::function<bool(const Octree &tree, OctreeNodeData &params)>;
+    using IterateBorderHandler = std::function<void(const BoundingCube&, const float[8], uint)>;
+    using OctreeNodeDataHandler = std::function<void(const OctreeNodeData&)>;
+    using IterateHandler = std::function<bool(const Octree&, OctreeNodeData&)>;
+    using IterateOrderHandler = std::function<void(const Octree&, OctreeNodeData&, uint8_t[8])>;
+    using IterateThreadedHandler = std::function<bool(const Octree&, OctreeNodeData&)>;
 
     OctreeAllocator * allocator;
     int threadsCreated;
@@ -47,13 +63,29 @@ public:
     ~Octree();
 
     void expand(const ShapeArgs &args);
-    void apply(const SignedDistanceOperation &operation, const SignedDistanceFunction &function, const Transformation &model, const TexturePainter &painter, float minSize, const Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
+    void apply(
+        const SignedDistanceOperation &operation, 
+        const SignedDistanceFunction &function, 
+        const Transformation &model, 
+        const TexturePainter &painter, 
+        float minSize, 
+        const Simplifier &simplifier, 
+        OctreeNodeDataHandler &updateHandler,
+        OctreeNodeDataHandler &deleteHandler
+    );
     void reset();
-    void shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext);
-        void iterate(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
-        void iterateFlat(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
-        void iterate(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
-        void iterateFlat(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
+    void shape(
+        NodeOperationResult &r,
+        OctreeNodeFrame frame, 
+        const ShapeArgs &args, 
+        ThreadContext * threadContext,
+        OctreeNodeDataHandler &updateHandler,
+        OctreeNodeDataHandler &deleteHandler
+    );
+    void iterate(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
+    void iterateFlat(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
+    void iterate(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
+    void iterateFlat(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
     void iterateMultiThreaded(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler, const IterateThreadedHandler &iterateThreadedHandler);
     void iterateParallel(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
     void iterateParallel(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
@@ -63,14 +95,14 @@ public:
     float getSdfAt(const glm::vec3 &pos);
     OctreeNodeLevel fetch(glm::vec3 pos, uint level, bool simplification, ThreadContext * context) const;
 
-        void iterateTriangles(OctreeNode * from,
-            const BoundingCube &fromCube,
-            int fromLevel,
-            OctreeNodeTriangleHandler &func,
-            ThreadContext * context,
-            // targetLod uses the +1-shifted STORED ladder level:
-            // 0 = no LoD (legacy full-walk mode), 1 = frontier, k = ancestor.
-            int targetLod = 0) const;
+    void iterateTriangles(OctreeNode * from,
+        const BoundingCube &fromCube,
+        int fromLevel,
+        OctreeNodeTriangleHandler &func,
+        ThreadContext * context,
+        // targetLod uses the +1-shifted STORED ladder level:
+        // 0 = no LoD (legacy full-walk mode), 1 = frontier, k = ancestor.
+        int targetLod = 0) const;
 
     // HeightRootToChunk(N): how many LoD levels a chunk can hold above its
     // tessellation frontier before reaching the chunk-size boundary, i.e.
@@ -91,7 +123,14 @@ private:
     void buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext, bool force) const;
     void buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext) const;
     float evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float> * threadContext, glm::vec3 p) const;
-    void shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, ThreadContext * threadContext, NodeOperationResult childResult[8]);
+    void shapeChildren(
+        const OctreeNodeFrame &frame, 
+        const ShapeArgs &args, 
+        ThreadContext * threadContext, 
+        NodeOperationResult childResult[8],
+        OctreeNodeDataHandler &updateHandler,
+        OctreeNodeDataHandler &deleteHandler
+    );
 };
 
 

@@ -31,8 +31,26 @@ public:
     SceneLoaderCallback() = default;
     ~SceneLoaderCallback() = default;
 
-    virtual void loadScene(Octree &opaqueLayer, const OctreeChangeHandler& opaqueHandler, Octree &transparentLayer, const OctreeChangeHandler& transparentHandler) = 0;
-    virtual void action(Octree &opaqueLayer, const OctreeChangeHandler& opaqueHandler, Octree &transparentLayer, const OctreeChangeHandler& transparentHandler) = 0;
+
+    virtual void action(
+        Octree &opaqueLayer, 
+        const Octree::OctreeNodeDataHandler& opaqueUpdateHandler, 
+        const Octree::OctreeNodeDataHandler& opaqueDeleteHandler, 
+        Octree &transparentLayer, 
+        const Octree::OctreeNodeDataHandler& transparentUpdateHandler, 
+        const Octree::OctreeNodeDataHandler& transparentDeleteHandler
+    ) = 0;
+
+    virtual void loadScene(
+        Octree &opaqueLayer, 
+        Octree::OctreeNodeDataHandler &opaqueUpdateHandler,
+        Octree::OctreeNodeDataHandler &opaqueDeleteHandler,
+        Octree &transparentLayer,
+        Octree::OctreeNodeDataHandler &transparentUpdateHandler,
+        Octree::OctreeNodeDataHandler &transparentDeleteHandler
+    ) = 0;
+
+   
 };
 
 class Scene {
@@ -40,8 +58,8 @@ class Scene {
 public:
     Scene() = default;
     ~Scene() = default;
-    virtual void action(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) = 0;
-    virtual void loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) = 0;
+    virtual void action(SceneLoaderCallback& callback, const Octree::OctreeNodeDataHandler opaqueUpdateHandler, const Octree::OctreeNodeDataHandler opaqueDeleteHandler, const Octree::OctreeNodeDataHandler transparentUpdateHandler, const Octree::OctreeNodeDataHandler transparentDeleteHandler) = 0;
+    virtual void loadScene(SceneLoaderCallback& callback, const Octree::OctreeNodeDataHandler opaqueUpdateHandler, const Octree::OctreeNodeDataHandler opaqueDeleteHandler, const Octree::OctreeNodeDataHandler transparentUpdateHandler, const Octree::OctreeNodeDataHandler transparentDeleteHandler) = 0;
     virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride = nullptr) = 0;
     virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
 

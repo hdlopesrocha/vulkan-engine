@@ -48,9 +48,7 @@
 #include "../sdf/RoadDistanceFunction.hpp"
 #include "../sdf/TriangleStripDistanceFunction.hpp"
 
-// change handlers & brushes
-#include "LiquidSpaceChangeHandler.hpp"
-#include "SolidSpaceChangeHandler.hpp"
+
 #include "LandBrush.hpp"
 #include "SimpleBrush.hpp"
 #include "WaterBrush.hpp"
@@ -65,11 +63,25 @@ public:
     Simplifier simplifier = Simplifier(0.95f, 0.2f, true);
     MainSceneLoader() {};
     ~MainSceneLoader() = default;
-    void action(Octree &opaqueLayer, const OctreeChangeHandler& opaqueHandler,Octree &transparentLayer,const OctreeChangeHandler& transparentHandler) {
+    void action(
+        Octree &opaqueLayer, 
+        const Octree::OctreeNodeDataHandler& opaqueUpdateHandler, 
+        const Octree::OctreeNodeDataHandler& opaqueDeleteHandler, 
+        Octree &transparentLayer, 
+        const Octree::OctreeNodeDataHandler& transparentUpdateHandler, 
+        const Octree::OctreeNodeDataHandler& transparentDeleteHandler
+    ) {
 
     }
 
-    void loadScene(Octree &opaqueLayer, const OctreeChangeHandler& opaqueHandler,Octree &transparentLayer,const OctreeChangeHandler& transparentHandler) {
+    void loadScene(
+        Octree &opaqueLayer, 
+        Octree::OctreeNodeDataHandler &opaqueUpdateHandler,
+        Octree::OctreeNodeDataHandler &opaqueDeleteHandler,
+        Octree &transparentLayer,
+        Octree::OctreeNodeDataHandler &transparentUpdateHandler,
+        Octree::OctreeNodeDataHandler &transparentDeleteHandler
+        ) {
 
         int sizePerTile = 30;
         int tiles= 256;
@@ -92,7 +104,7 @@ public:
             HeightMapDistanceFunction function = HeightMapDistanceFunction(&heightMap, minSize);
             
             std::cout << "\topaqueLayer.add(heightmap)"<< std::endl;
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, LandBrush(), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, LandBrush(), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         {
             std::cout << "\topaqueLayer.add(box)"<< std::endl;
@@ -101,7 +113,7 @@ public:
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -111,7 +123,7 @@ public:
             BoundingSphere sphere = BoundingSphere(min+3.0f*len/4.0f, 256);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(5), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(5), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -121,7 +133,7 @@ public:
             BoundingSphere sphere = BoundingSphere(min+len, 128);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, model, SimpleBrush(20), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, model, SimpleBrush(20), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -131,7 +143,7 @@ public:
             BoundingSphere sphere = BoundingSphere(min+3.0f*len/4.0f, 128);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, model, SimpleBrush(4), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, model, SimpleBrush(4), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         
         {
@@ -142,7 +154,7 @@ public:
             float r = 256.0f;
             CapsuleDistanceFunction function(a, b, r, model, minSize);
             PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, 64.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
-            opaqueLayer.apply(DeleteSignedDistanceOperation(), distortedFunction, model, SimpleBrush(7), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(DeleteSignedDistanceOperation(), distortedFunction, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -152,7 +164,7 @@ public:
             BoundingSphere sphere = BoundingSphere(min+len, 64);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, transparentHandler);
+            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
 
         {
@@ -162,7 +174,7 @@ public:
             BoundingSphere sphere = BoundingSphere(min+len, 256);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(2), minSize, simplifier, transparentHandler);
+            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(2), minSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
 
         {
@@ -171,7 +183,7 @@ public:
             float radius = 256.0f;
             Transformation model = Transformation(glm::vec3(radius), center, 0, 0, 0);
             OctahedronDistanceFunction function = OctahedronDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -185,7 +197,7 @@ public:
             OctahedronDistanceFunction fn1(modelA, minSize);
             OctahedronDistanceFunction fn2(modelB, minSize);
             SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, minSize*0.25f);
-            opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), minSize*0.25f, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -194,7 +206,7 @@ public:
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             PyramidDistanceFunction function = PyramidDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -203,7 +215,7 @@ public:
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             TorusDistanceFunction function = TorusDistanceFunction(glm::vec2(0.5, 0.25), model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -212,7 +224,7 @@ public:
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             ConeDistanceFunction function = ConeDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -221,7 +233,7 @@ public:
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             CylinderDistanceFunction function = CylinderDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -230,7 +242,7 @@ public:
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             TaperedCylinderDistanceFunction function(0.25f, 0.5f, model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(11), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(11), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -241,7 +253,7 @@ public:
             TaperedCapsuleDistanceFunction function(
                 glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f), 0.5f, 0.25f,
                 model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(11), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(11), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -251,7 +263,7 @@ public:
             BoundingBox box = BoundingBox(center - len * 0.5f, center + len * 0.5f);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(6), minSize*0.5f, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(6), minSize*0.5f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
     
@@ -263,7 +275,7 @@ public:
             Transformation model(glm::vec3(radius), center, 0,0,0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
             PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, 48.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), distortedFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), distortedFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -273,7 +285,7 @@ public:
             Transformation model(glm::vec3(radius), center, 0,0,0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
             PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(function, 64.0f, 0.1f/32.0f, 0.1f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -283,7 +295,7 @@ public:
             Transformation model(glm::vec3(radius), center, 0,0,0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
             SineDistortDistanceEffect carvedFunction = SineDistortDistanceEffect(function, 32.0f, 0.1f/2.0f, glm::vec3(0), model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -293,7 +305,7 @@ public:
             Transformation model(glm::vec3(radius), center, 0,0,0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
             VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, 64.0f, 64.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -303,7 +315,7 @@ public:
             Transformation model(glm::vec3(radius), center, 0,0,0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
             VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, 64.0f, 64.0f, glm::vec3(0), 0.0f, -1.0f, model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -315,7 +327,7 @@ public:
             waterBox.setMaxY(0);
             waterBox.setMinY(mapBox.getMinY()*0.5f);
             OctreeDifferenceFunction function(&opaqueLayer, waterBox, minSize*2.0f);
-            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize, simplifier, transparentHandler);
+            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
     
         {
@@ -325,7 +337,7 @@ public:
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize*4, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize*4, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         
         {
@@ -335,7 +347,7 @@ public:
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize*0.25, simplifier, opaqueHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize*0.25, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         
         {
@@ -372,7 +384,7 @@ public:
                                               segSphere.center, segSphere.radius, Transformation(), minSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), roadFunc, roadModel,
                                   SimpleBrush(12),
-                                  minSize, simplifier, opaqueHandler);
+                                  minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
             }
         }
 
@@ -421,7 +433,7 @@ public:
                                                          segCenter, segRadius, tsModel, minSize);
                     opaqueLayer.apply(AddSignedDistanceOperation(), tsFunc, tsModel,
                                       SimpleBrush(14),
-                                      minSize, simplifier, opaqueHandler);
+                                      minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 }
             }
         }
@@ -434,7 +446,7 @@ public:
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         
         {
@@ -444,7 +456,7 @@ public:
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
 

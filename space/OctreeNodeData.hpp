@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include "../math/BoundingCube.hpp"
 #include "../math/ContainmentType.hpp"
 
@@ -17,4 +18,3 @@ public:
     OctreeNodeData();
 };
 
-using NodeDataCallback = std::function<void(const OctreeNodeData&)>;

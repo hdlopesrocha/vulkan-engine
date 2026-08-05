@@ -6,7 +6,6 @@
 #include <cstdint>
 
 class OctreeAllocator;
-class OctreeChangeHandler;
 struct OctreeNodeCubeSerialized;
 
 class OctreeNode {

@@ -4393,6 +4393,16 @@ Buffer VulkanApp::createDeviceLocalBufferExclusive(const void* data, VkDeviceSiz
 }
 
 void VulkanApp::drawFrame() {
+    // Frame GPU-time probe: report any frame that took >100 ms of wall time so
+    // amdgpu-watchdog-scale frames (>2 s GPU time per submission) are visible.
+    struct FrameProbe {
+        double t0;
+        FrameProbe() : t0(glfwGetTime()) {}
+        ~FrameProbe() {
+            double ms = (glfwGetTime() - t0) * 1000.0;
+            if (ms > 100.0) std::cout << "[frame] " << ms << " ms\n";
+        }
+    } frameProbe;
     const uint32_t maxFrames = static_cast<uint32_t>(inFlightFences.size());
     uint32_t imageIndex;
 
@@ -4448,7 +4458,11 @@ void VulkanApp::drawFrame() {
     // VUID-vkAcquireNextImageKHR-semaphore-01779.
     VkFence prevFrameFence = inFlightFences[currentFrame];
     if (prevFrameFence != VK_NULL_HANDLE) {
+        double waitT0 = glfwGetTime();
         VkResult waitForFenceResult = waitFence(device, prevFrameFence);
+        double waitMs = (glfwGetTime() - waitT0) * 1000.0;
+        if (waitMs > 500.0)
+            std::cout << "[frame] frame-slot fence wait " << waitMs << " ms\n";
         if (waitForFenceResult == VK_ERROR_DEVICE_LOST) return;
         if (waitForFenceResult != VK_SUCCESS) {
             std::cerr << "vkWaitForFences (frame slot) failed: " << waitForFenceResult << std::endl;

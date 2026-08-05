@@ -116,6 +116,34 @@ void main() {
     // Empty entries (no mesh data) never draw and never count.
     if (inCmds.cmds[idx].indexCount == 0u) return;
 
+    // ── Published-ladder fallback range (one slot per chunk) ────────────────
+    // Draw entries are laid out as (chunk, level): entry index = chunk *
+    // CHUNK_LEVELS + level. A chunk's ladder may be PARTIAL on the GPU: the
+    // finest levels publish first (level 0 may even be absent for a dense
+    // chunk that outgrew its row budget), and with throttled streaming a
+    // republished ladder fills in across several frames. Bands must never
+    // select a level with no geometry, and bands without a matching entry
+    // must fall back to the chunk's best available level instead of drawing
+    // nothing:
+    //   band below the finest published entry -> draw the finest published
+    //   band above the coarsest published entry -> draw the coarsest published
+    //   otherwise -> the band's own level
+    // The scan is over the chunk's 5 entries' indexCount (data presence ==
+    // command presence: both are written by the same deferred meta write).
+    const uint CHUNK_LEVELS = 5u; // kMaxChunkLevels — must match IndirectRenderer
+    uint chunkBase = idx - (idx % CHUNK_LEVELS);
+    uint finestLvl = CHUNK_LEVELS, coarsestLvl = 0u;
+    for (uint l = 0u; l < CHUNK_LEVELS; ++l) {
+        if (inCmds.cmds[chunkBase + l].indexCount != 0u) {
+            if (l < finestLvl)    finestLvl    = l;
+            if (l > coarsestLvl)  coarsestLvl  = l;
+        }
+    }
+    // This entry itself has data (checked above), so the scan always found
+    // at least one level; clamp is well-defined.
+    uint publishedFinest   = min(finestLvl, CHUNK_LEVELS - 1u);
+    uint publishedCoarsest = coarsestLvl;
+
     // Note: All meshes in this renderer are from the same layer (targetLayer in push constants)
     // so no per-mesh layer filtering needed - separate IndirectRenderers handle opaque vs transparent
 
@@ -161,18 +189,20 @@ void main() {
     int maxLevel   = int(min(lodMeta.z + 0.5, pc.maxLod));
 
     uint selectedLevel = 0xFFFFFFFFu;
+    uint effLevel = selectedLevel;
     if (cellSize > 0.0) {
         vec3 center = (minp + maxp) * 0.5;
         float dist = distance(pc.camPos, center);
         float band = dist / (cellSize * pc.lodBias);
         selectedLevel = uint(min(floor(band), float(maxLevel)));
+        effLevel = clamp(selectedLevel, publishedFinest, publishedCoarsest);
     }
 
     // Publish the chosen level for this draw entry so external consumers
     // (shadow cascade cull, cubemap capture, backface pass, LoD stats) read
     // the exact same selection. Written for every non-empty entry.
     if (idx < visibleLods.data.length()) {
-        visibleLods.data[idx] = uvec2(inCmds.cmds[idx].firstInstance, selectedLevel);
+        visibleLods.data[idx] = uvec2(inCmds.cmds[idx].firstInstance, effLevel);
     }
 
     // If bounds missing, conservatively mark visible (legacy path).
@@ -185,11 +215,13 @@ void main() {
     // Models are identity now; frustum planes already extracted into gPlanes.
     if (!aabbVisible(gPlanes, minp, maxp)) return;
 
-    // Only the entry whose level matches the distance band survives to the
-    // compacted draw list.
+    // Only the entry whose level matches the effective selection survives to
+    // the compacted draw list. effLevel is chunk-uniform (band + fallback
+    // range), so exactly one entry per chunk can pass. Single-level ladders
+    // (maxLevel == 0) are subsumed: their only published entry has
+    // publishedFinest == publishedCoarsest == 0, so effLevel is 0 == entry.
     if (cellSize > 0.0) {
-        bool keep = (maxLevel == 0) || (int(selectedLevel) == entryLevel);
-        if (!keep) return;
+        if (int(effLevel) != entryLevel) return;
     }
 
     uint dst = atomicAdd(count, 1);

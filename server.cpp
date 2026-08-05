@@ -1,40 +1,35 @@
 #include <iostream>
 #include "utils/LocalScene.hpp"
 #include "utils/MainSceneLoader.hpp"
+#include "space/UniqueChangeCollector.hpp"
 
 
 int main(int argc, char** argv) {
 
-    NodeDataCallback liquidNodeEventCallback = [](const OctreeNodeData& nd) {
+    Octree::OctreeNodeDataHandler liquidNodeEventCallback = [](const OctreeNodeData& nd) {
         std::cout << "Transparent node updated" << std::endl;
     };
     
-    NodeDataCallback liquidNodeEraseCallback = [](const OctreeNodeData& nd) {
+    Octree::OctreeNodeDataHandler liquidNodeEraseCallback = [](const OctreeNodeData& nd) {
         std::cout << "Transparent node erased" << std::endl;
     };
 
-    NodeDataCallback solidNodeEventCallback = [](const OctreeNodeData& nd) {
+    Octree::OctreeNodeDataHandler solidNodeEventCallback = [](const OctreeNodeData& nd) {
         std::cout << "Opaque node updated" << std::endl;
     };
 
-    NodeDataCallback solidNodeEraseCallback = [](const OctreeNodeData& nd) {
+    Octree::OctreeNodeDataHandler solidNodeEraseCallback = [](const OctreeNodeData& nd) {
         std::cout << "Opaque node erased" << std::endl;
     };
-
-    // Initialize and load the main scene so rendering has valid scene data
-    UniqueOctreeChangeHandler solidHandler(
-        SolidSpaceChangeHandler(solidNodeEventCallback, solidNodeEraseCallback)
-    );
-
-    UniqueOctreeChangeHandler liquidHandler(
-        LiquidSpaceChangeHandler(liquidNodeEventCallback, liquidNodeEraseCallback)  
-    );
-        
 
     LocalScene mainScene;
 
     MainSceneLoader mainSceneLoader = MainSceneLoader();
-    mainScene.loadScene(mainSceneLoader, solidHandler, liquidHandler);
+    mainScene.loadScene(mainSceneLoader,
+        solidNodeEventCallback,
+        solidNodeEraseCallback,
+        liquidNodeEventCallback,
+        liquidNodeEraseCallback);
 
     std::cout << "server: started" << std::endl;
     return 0;

@@ -2,7 +2,6 @@
 #include "OctreeNodeCubeSerialized.hpp"
 #include "OctreeAllocator.hpp"
 #include "OctreeNodeData.hpp"
-#include "OctreeChangeHandler.hpp"
 #include "../sdf/SDF.hpp"
 #include <cmath>
 #include <cstring>

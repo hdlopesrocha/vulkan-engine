@@ -105,18 +105,18 @@ int LocalScene::maxChunkLod(Layer layer, float minSize) const {
     return std::max(0, std::min(tree.heightRootToChunk(0, minSize), rootChunkLod));
 }
 
-void LocalScene::loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) {
+void LocalScene::loadScene(SceneLoaderCallback& callback, Octree::OctreeNodeDataHandler opaqueUpdateHandler, Octree::OctreeNodeDataHandler opaqueDeleteHandler, Octree::OctreeNodeDataHandler transparentUpdateHandler, Octree::OctreeNodeDataHandler transparentDeleteHandler) {
     std::cout << "LocalScene::loadScene() " << std::endl;
     auto startTime = std::chrono::steady_clock::now();
-    callback.loadScene(opaqueOctree, opaqueLayerChangeHandler, transparentOctree, transparentLayerChangeHandler);
+    callback.loadScene(opaqueOctree, opaqueUpdateHandler, opaqueDeleteHandler, transparentOctree, transparentUpdateHandler, transparentDeleteHandler);
     auto endTime = std::chrono::steady_clock::now();
     double elapsed = std::chrono::duration<double>(endTime - startTime).count();
     std::cout << "LocalScene::loadScene Ok! " << std::to_string(elapsed) << "s"  << std::endl;
 }
-void LocalScene::action(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) {
+void LocalScene::action(SceneLoaderCallback& callback, Octree::OctreeNodeDataHandler opaqueUpdateHandler, Octree::OctreeNodeDataHandler opaqueDeleteHandler, Octree::OctreeNodeDataHandler transparentUpdateHandler, Octree::OctreeNodeDataHandler transparentDeleteHandler) {
     std::cout << "LocalScene::action() " << std::endl;
     auto startTime = std::chrono::steady_clock::now();
-    callback.action(opaqueOctree, opaqueLayerChangeHandler, transparentOctree, transparentLayerChangeHandler);
+    callback.action(opaqueOctree, opaqueUpdateHandler, opaqueDeleteHandler, transparentOctree, transparentUpdateHandler, transparentDeleteHandler);
     auto endTime = std::chrono::steady_clock::now();
     double elapsed = std::chrono::duration<double>(endTime - startTime).count();
     std::cout << "LocalScene::action Ok! " << std::to_string(elapsed) << "s"  << std::endl;
@@ -197,24 +197,24 @@ void LocalScene::load(const std::string& filePath, Settings* settings) {
 }
 
 static void notifyChunkNodes(OctreeNode* node, const BoundingCube& cube, uint level,
-                             OctreeAllocator& allocator, const OctreeChangeHandler& handler) {
+                             OctreeAllocator& allocator, Octree::OctreeNodeDataHandler updateHandler, Octree::OctreeNodeDataHandler deleteHandler) {
     if (!node) return;
     if (node->isChunk()) {
-        handler.onNodeAdded(OctreeNodeData(level, node, cube, nullptr));
+        updateHandler(OctreeNodeData(level, node, cube, nullptr));
         return;
     }
     OctreeNode* children[8] = {};
     node->getChildren(allocator, children);
     for (int i = 0; i < 8; ++i) {
         if (children[i])
-            notifyChunkNodes(children[i], cube.getChild(i), level + 1, allocator, handler);
+            notifyChunkNodes(children[i], cube.getChild(i), level + 1, allocator, updateHandler, deleteHandler);
     }
 }
 
-void LocalScene::load(const std::string& filePath, const OctreeChangeHandler& opaqueHandler, const OctreeChangeHandler& transparentHandler, Settings* settings) {
+void LocalScene::load(const std::string& filePath, const Octree::OctreeNodeDataHandler opaqueUpdateHandler, const Octree::OctreeNodeDataHandler opaqueDeleteHandler, const Octree::OctreeNodeDataHandler transparentUpdateHandler, const Octree::OctreeNodeDataHandler transparentDeleteHandler, Settings* settings) {
     load(filePath, settings);
     if (opaqueOctree.root)
-        notifyChunkNodes(opaqueOctree.root, opaqueOctree, 0, *opaqueOctree.allocator, opaqueHandler);
+        notifyChunkNodes(opaqueOctree.root, opaqueOctree, 0, *opaqueOctree.allocator, opaqueUpdateHandler, opaqueDeleteHandler);
     if (transparentOctree.root)
-        notifyChunkNodes(transparentOctree.root, transparentOctree, 0, *transparentOctree.allocator, transparentHandler);
+        notifyChunkNodes(transparentOctree.root, transparentOctree, 0, *transparentOctree.allocator, transparentUpdateHandler, transparentDeleteHandler);
 }

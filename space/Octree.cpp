@@ -913,19 +913,20 @@ void Octree::apply(
         const TexturePainter &painter,
         float minSize,
         const Simplifier &simplifier,
-        const OctreeChangeHandler &changeHandler
+        OctreeNodeDataHandler &updateHandler,
+        OctreeNodeDataHandler &deleteHandler
     ) {
     threadsCreated = 0;
     prunedEmptyNodes = 0;
     prunedSolidNodes = 0;
 
     *shapeCounter = 0;
-    ShapeArgs args = ShapeArgs(operation, function, painter, model, simplifier, changeHandler, minSize);	
+    ShapeArgs args = ShapeArgs(operation, function, painter, model, simplifier, minSize);	
     expand(args);
     OctreeNodeFrame frame = OctreeNodeFrame(root, NULL, *this, root ? root->getType() : SpaceType::Empty, 0, root ? root->sdf : nullptr, DISCARD_BRUSH_INDEX, *this);
     ThreadContext localChunkContext = ThreadContext(*this);
     NodeOperationResult r = NodeOperationResult();
-    shape(r, frame, args, &localChunkContext);
+    shape(r, frame, args, &localChunkContext, updateHandler, deleteHandler);
 }
 
 int Octree::heightRootToChunk(int lod, float minSize) const {
@@ -945,7 +946,13 @@ bool Octree::isThreadNode(float nodeLength, float minSize, int threadSize) const
     return minSize*threadSize*0.5f < nodeLength && nodeLength <= minSize*threadSize;
 }
 
-void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, ThreadContext * threadContext, NodeOperationResult childResult[8]) {
+void Octree::shapeChildren(
+    const OctreeNodeFrame &frame, 
+    const ShapeArgs &args, 
+    ThreadContext * threadContext, 
+    NodeOperationResult childResult[8],
+    OctreeNodeDataHandler &updateHandler,
+    OctreeNodeDataHandler &deleteHandler) {
     float childLength = frame.cube.getLengthX()*0.5f;
     bool isChildThread = isThreadNode(childLength, args.minSize, 16);
     bool isChildChunk = isChunkNode(childLength);
@@ -1000,13 +1007,13 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
             ++threadsCreated;
             NodeOperationResult * result = &childResult[i];
             inFlightShapeOps.fetch_add(1);
-            futures.push_back(threadPool.enqueue([this, childFrame, args, result]() {
+            futures.push_back(threadPool.enqueue([this, childFrame, args, result, &updateHandler, &deleteHandler]() {
                 ThreadContext localThreadContext(childFrame.cube);
-                shape(*result, childFrame, args, &localThreadContext);
+                shape(*result, childFrame, args, &localThreadContext, updateHandler, deleteHandler);
                 inFlightShapeOps.fetch_sub(1);
             }));
         } else {
-            shape(childResult[i], childFrame, args, threadContext);
+            shape(childResult[i], childFrame, args, threadContext, updateHandler, deleteHandler);
         }
         (*shapeCounter)++;
     
@@ -1019,7 +1026,14 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
 }
 
 
-void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext) {    
+void Octree::shape(
+    NodeOperationResult &r,
+    OctreeNodeFrame frame, 
+    const ShapeArgs &args, 
+    ThreadContext * threadContext,
+    OctreeNodeDataHandler &updateHandler,
+    OctreeNodeDataHandler &deleteHandler
+) {    
     r.node = frame.node;
     const float nodeLength = frame.cube.getLengthX();
     const bool isShapeLeaf = nodeLength <= args.minSize;
@@ -1188,7 +1202,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 process = check != ContainmentType::Disjoint;
             }
             if(process) {    
-                shapeChildren(frame, args, threadContext, children);
+                shapeChildren(frame, args, threadContext, children, updateHandler, deleteHandler);
             } else {
                 // Shape does not reach this cell — keep the existing cell's
                 // data untouched (result is the pre-existing field).
@@ -1375,7 +1389,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             if(r.node->getChunkLod() > 0) {
                 ++r.node->version;
                 OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube, nullptr);
-                r.resultType == SpaceType::Surface ? args.changeHandler.onNodeAdded(data) : args.changeHandler.onNodeDeleted(data);
+                r.resultType == SpaceType::Surface ? updateHandler(data) : deleteHandler(data);
             }
         }
     }

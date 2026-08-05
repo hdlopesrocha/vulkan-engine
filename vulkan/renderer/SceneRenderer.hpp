@@ -13,8 +13,6 @@
 #pragma once
 
 // Forward declarations for change handler types
-class SolidSpaceChangeHandler;
-class LiquidSpaceChangeHandler;
 class Octree;
 class World;
 
@@ -41,7 +39,6 @@ class World;
 #include "../streaming/UploadManager.hpp"   // TerrainStreamer: async streaming orchestration
 #include "ShadowRenderer.hpp"
 #include "WaterRenderer.hpp"
-#include "../../space/UniqueOctreeChangeHandler.hpp"
 #include "../../world/World.hpp"
 
 #include "../ubo/PassUBO.hpp"
@@ -233,22 +230,14 @@ public:
     // Extracted so both legacy and slotted mode paths share the same logic.
     void generateVegetationForNode(VulkanApp* app, NodeID nid, const Geometry& geom);
 
-    // ── Parallel scene loading ─────────────────────────────────────────────────
-    // CPU mesh-generation results are pushed here from the background loading
-    // thread; the main (render) thread drains the queue each frame and performs
-    // the actual Vulkan uploads.
-    struct LoDMesh {
-        Geometry geom;
-        uint8_t  lod = 0;     // LoD level of this mesh (= node's chunkLod, 0 = chunks)
-        uint     version = 0; // snapshot of node->version at generation time
-        float    cellSize = 0;  // this level's cell size, used by the GPU band test
-        uint8_t  maxLevel = 0;  // scene-wide band clamp (LocalScene::maxChunkLod); 0 = always keep
-    };
-    using GeometryHandler = const std::function<void(Layer, NodeID, const LoDMesh&)>&;
+    using GeometryHandler = const std::function<void(Layer, NodeID, const Octree::LoDMesh&)>&;
+
+
+    
     struct PendingMeshData {
         Layer          layer;
         NodeID         nid;
-        LoDMesh        lodMesh;
+        Octree::LoDMesh lodMesh;
         OctreeNodeData nodeData;   // world cube of the source node (stable band center)
     };
 
@@ -284,13 +273,9 @@ public:
     // Query whether a model for the given node is already registered
     bool hasModelForNode(Layer layer, NodeID nid) const;
 
-    // Create change handlers pre-bound to this renderer
-    SolidSpaceChangeHandler makeSolidSpaceChangeHandler(Scene* scene, VulkanApp* app, float minSize);
-    LiquidSpaceChangeHandler makeLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app, float minSize);
-
-    // Create change handlers for brush scene (uses brush chunk maps)
-    SolidSpaceChangeHandler makeBrushSolidSpaceChangeHandler(Scene* scene, VulkanApp* app, float minSize);
-    LiquidSpaceChangeHandler makeBrushLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app, float minSize);
+    // The solid/water AND brush space-change lambdas are constructed by the
+    // app (main.cpp) — they need world state, chunk management and debug
+    // markers. No make* handler factories remain here.
 
     // Remove all brush meshes from GPU and clear brush chunk maps
     void clearBrushMeshes();
@@ -321,21 +306,27 @@ public:
     streaming::TerrainStreamer streamer;
 
 private:
-    void updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree);
-
-    // Shared slotted publish+upload core for a pending mesh batch, used by
-    // both the solid/water stream (processPendingMeshes) and the brush stream
-    // (processPendingBrushMeshes) — they must behave identically. Sorts the
-    // batch by (nid, level), processes each chunk's ladder run in place
-    // (fit -> publish -> upload) and finalizes the slot ladder on the last
-    // level's upload completion. Returns the number of chunks published.
+    // Shared slotted publish core for a pending mesh batch, used by both the
+    // solid/water stream (processPendingMeshes) and the brush stream
+    // (processPendingBrushMeshes) — they must behave identically. Publishes
+    // each queued geometry chunk AS RECEIVED (no ladder reassembly): every
+    // PendingMeshData is a single LoDMesh at one LoD level. One SLOT per chunk
+    // holds the whole ladder: each level's data lands in its own static row of
+    // the slot (fixed per-level budget, row base from the IR), and each level
+    // publishes its own draw entry (drawIndex = slot * kMaxChunkLevels + level)
+    // for the GPU band test. No per-chunk run grouping, no fit pass, no shared
+    // sub-offsets, no aliases. Returns the number of slots published.
+    //
+    //  trackChunkManager: true for the solid/water stream (ChunkManager build
+    //                    state + per-chunk slot registry are updated), false
+    //                    for the brush stream (no ChunkManager involvement).
     //  takeOldSlot:      resolve and consume the old slot for a chunk, or
     //                    UINT32_MAX when none. Callers free it after the new
-    //                    upload completes (ChunkManager swap path).
+    //                    upload completes.
     //  onChunkPublished: main-thread side effect once a chunk's slot is
-    //                    published (the brush stream records its
-    //                    Model3DVersion map; solid/water pass a noop since
-    //                    ChunkManager setSlotIndex runs inside the core).
+    //                    published (the brush stream records its Model3DVersion
+    //                    map; solid/water pass a noop since the slot registry
+    //                    update runs inside the core).
     //  onFinestPublished: notified with the level-0 (finest) geometry of
     //                    opaque chunks so they can drive vegetation; the
     //                    brush stream passes a noop.
@@ -344,6 +335,7 @@ private:
         std::deque<PendingMeshData>& batch,
         IndirectRenderer& opaqueIR,
         IndirectRenderer& waterIR,
+        bool trackChunkManager,
         const std::function<uint32_t(Layer layer, NodeID nid)>& takeOldSlot,
         const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version)>& onChunkPublished,
         const std::function<void(NodeID nid, const Geometry& geom)>& onFinestPublished);
@@ -357,24 +349,24 @@ private:
     // shadow draws use the identical per-chunk LoD selection.
     glm::vec3 lastCameraPos_ = glm::vec3(0.0f);
 
-    // Callbacks stored here so handler references remain valid
-    NodeDataCallback solidNodeEventCallback;
-    NodeDataCallback solidNodeEraseCallback;
-    NodeDataCallback liquidNodeEventCallback;
-    NodeDataCallback liquidNodeEraseCallback;
+public:
+    // Debug helper: publish SDF cube debug markers for a (re)built chunk.
+    void updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree);
 
-    // Brush scene callbacks (kept alive so handler references remain valid)
-    NodeDataCallback brushSolidNodeEventCallback;
-    NodeDataCallback brushSolidNodeEraseCallback;
-    NodeDataCallback brushLiquidNodeEventCallback;
-    NodeDataCallback brushLiquidNodeEraseCallback;
-
-    // Thread-safe queue fed by the background loading thread
+    // Thread-safe mesh queue fed by tessellation on the generation pools;
+    // drained on the main thread by processPendingMeshes().
     mutable std::mutex pendingMeshMutex;
     std::deque<PendingMeshData> pendingMeshQueue;
 
-    // Separate queue for brush meshes so they are scheduled/drained independently
-    // of the solid/water stream (parallelism + no cross-gating).
+    // Dedicated generation pools for solid and water so both layers tessellate
+    // truly in parallel: neither waits for the other to finish, and neither
+    // competes for the shared scene pool. Public so the app can hand them to
+    // processNodeLayer when building its own solid/water space-change lambdas.
+    ThreadPool solidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
+    ThreadPool waterGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
+
+    // Separate queue for brush meshes so they are scheduled/drained
+    // independently of the solid/water stream (parallelism + no cross-gating).
     mutable std::mutex brushPendingMutex;
     std::deque<PendingMeshData> brushPendingQueue;
 
@@ -382,12 +374,6 @@ private:
     // competes with solid/water streaming generation on the shared scene pool.
     ThreadPool brushGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
 
-    // Dedicated generation pools for solid and water so both layers tessellate
-    // truly in parallel: neither waits for the other to finish, and neither
-    // competes for the shared scene pool.
-    ThreadPool solidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
-    ThreadPool waterGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
-public:
     CommandBufferState frameCmdState;
 };
 

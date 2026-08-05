@@ -1,5 +1,4 @@
 #pragma once
-#include "OctreeChangeHandler.hpp"
 
 class OctreeAllocator;
 class OctreeNode;
@@ -7,7 +6,6 @@ class OctreeNode;
 #include <cstdint>
 #include <climits>
 
-class OctreeChangeHandler;
 class OctreeAllocator;
 class OctreeNode;
 

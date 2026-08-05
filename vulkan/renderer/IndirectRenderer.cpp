@@ -6,6 +6,7 @@
 #include "../../utils/FileReader.hpp"
 #include "../includes/locations.hpp"
 #include "SlotAllocator.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -60,12 +61,14 @@ size_t IndirectRenderer::activeMeshCountLocked() const {
 }
 
 // Unlocked — caller must hold `mutex`. Returns the number of draw commands
-// (slots) to cull in the current mode. In slotted mode this is the total
-// slot pool capacity; in legacy mode it's the active mesh count.
+// (slots) to cull in the current mode. In slotted mode this is the fixed slot
+// pool capacity times kMaxChunkLevels (one draw entry per (chunk, level)); in
+// legacy mode it's the active mesh count.
 uint32_t IndirectRenderer::getCullDispatchCountLocked() const {
     if (slottedMode) {
         // One draw entry per (chunk, level): the cull shader band-tests each
-        // entry and keeps only the chunk's selected level.
+        // entry and keeps only the chunk's selected level. The pool holds one
+        // slot per chunk; each chunk publishes up to kMaxChunkLevels entries.
         return slotAlloc.capacity() * kMaxChunkLevels;
     }
     return static_cast<uint32_t>(activeMeshCountLocked());
@@ -1902,6 +1905,26 @@ void IndirectRenderer::eraseMeshFromGPU(VulkanApp* app, uint32_t meshId) {
 
 // ── Stable slot-based API ──────────────────────────────────────────────────
 
+uint32_t IndirectRenderer::getSlotLevelVertexOffset(int level) const {
+    if (level < 0 || static_cast<uint32_t>(level) >= kMaxChunkLevels) return 0;
+    return levelRowVertexOffset[level];
+}
+
+uint32_t IndirectRenderer::getSlotLevelIndexOffset(int level) const {
+    if (level < 0 || static_cast<uint32_t>(level) >= kMaxChunkLevels) return 0;
+    return levelRowIndexOffset[level];
+}
+
+uint32_t IndirectRenderer::getSlotLevelVertexCapacity(int level) const {
+    if (level < 0 || static_cast<uint32_t>(level) >= kMaxChunkLevels) return 0;
+    return levelRowVertexCapacity[level];
+}
+
+uint32_t IndirectRenderer::getSlotLevelIndexCapacity(int level) const {
+    if (level < 0 || static_cast<uint32_t>(level) >= kMaxChunkLevels) return 0;
+    return levelRowIndexCapacity[level];
+}
+
 void IndirectRenderer::initSlots(VulkanApp* app,
                                  uint32_t maxChunks,
                                  uint32_t vertexBytesPerChunk,
@@ -1909,9 +1932,35 @@ void IndirectRenderer::initSlots(VulkanApp* app,
 {
     std::lock_guard<std::recursive_mutex> guard(mutex);
 
-    // Convert bytes to element counts
-    uint32_t vertsPerChunk = static_cast<uint32_t>(vertexBytesPerChunk / sizeof(Vertex));
-    uint32_t idxsPerChunk  = static_cast<uint32_t>(indexBytesPerChunk / sizeof(uint32_t));
+    // The per-slot budget splits into STATIC per-level rows. A chunk's LoD
+    // ladder is its own frontier mesh plus the ancestor-cell meshes: each
+    // ancestor covers 4x the area at 2x the cell size, so every ladder level
+    // has ~the SAME vertex count as level 0 (measured: level 3/4 rejections
+    // with a 1/4-decay scheme). Rows are therefore EQUAL shares of the slot
+    // budget — a full 5-level ladder (total ~= the level-0 budget) fits, and
+    // chunks whose ladder outgrows a row reject the coarsest levels (the GPU
+    // band test falls back to the coarsest PUBLISHED level — see indirect.comp).
+    // Static rows mean a level republish overwrites only its own range — no
+    // running sub-offset accumulation across levels (which would require
+    // re-packing every later level on an edit). Each row keeps a byte floor so
+    // degenerate budgets never get a zero-size row.
+    uint32_t vertsPerChunk = 0;
+    uint32_t idxsPerChunk  = 0;
+    {
+        uint32_t vBytes[kMaxChunkLevels], iBytes[kMaxChunkLevels];
+        for (uint32_t k = 0; k < kMaxChunkLevels; ++k) {
+            vBytes[k] = std::max<uint32_t>(vertexBytesPerChunk / kMaxChunkLevels, 4096u);
+            iBytes[k] = std::max<uint32_t>(indexBytesPerChunk / kMaxChunkLevels, 1024u);
+        }
+        for (uint32_t k = 0; k < kMaxChunkLevels; ++k) {
+            levelRowVertexOffset[k]   = vertsPerChunk;
+            levelRowVertexCapacity[k] = vBytes[k] / sizeof(Vertex);
+            vertsPerChunk += levelRowVertexCapacity[k];
+            levelRowIndexOffset[k]   = idxsPerChunk;
+            levelRowIndexCapacity[k] = iBytes[k] / sizeof(uint32_t);
+            idxsPerChunk += levelRowIndexCapacity[k];
+        }
+    }
 
     // Configure the slot allocator
     slotAlloc.reserve(maxChunks, vertsPerChunk, idxsPerChunk);
@@ -1928,10 +1977,10 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     std::memset(indirectCommands.data(), 0, indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand));
 
     // Track capacity so ensureCapacity GPU buffer sizing works. Vertex/index
-    // storage is NOT multiplied by kMaxChunkLevels: a chunk's levels share the
-    // slot's single vertex/index budget (phase 3 places each level's data at
-    // its own sub-offset). Only the indirect command list is per-level, so the
-    // cull shader can band-test each (chunk, level) draw entry independently.
+    // storage is per-chunk (one slot per chunk); the slot's budget is split
+    // into static per-level rows above. Only the indirect command list is
+    // per-level, so the cull shader can band-test each (chunk, level) draw
+    // entry independently.
     vertexCapacity = maxChunks * vertsPerChunk;
     indexCapacity  = maxChunks * idxsPerChunk;
     meshCapacity   = maxChunks * kMaxChunkLevels;
@@ -2263,13 +2312,19 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
         return UINT32_MAX;
     }
 
-    // Validate that this level's data fits inside the per-slot budget BEFORE
-    // allocating. Doing this after slotAlloc.allocate would trip its capacity
-    // assert (debug) or silently publish out-of-bounds counts (release).
-    if (levelVertexOffset + neededVerts > slotVertexCapacity ||
-        levelIndexOffset + neededIdxs  > slotIndexCapacity) {
+    // Validate that this level's data fits inside its STATIC row of the
+    // per-slot budget BEFORE allocating. Doing this after slotAlloc.allocate
+    // would trip its capacity assert (debug) or silently publish
+    // out-of-bounds counts (release). The sub-offsets must be the level's own
+    // row base: every level has a fixed range, so a republish overwrites only
+    // its own row.
+    const uint32_t lv = static_cast<uint32_t>(level);
+    if (levelVertexOffset != levelRowVertexOffset[lv] ||
+        levelIndexOffset  != levelRowIndexOffset[lv] ||
+        levelVertexOffset + neededVerts > levelRowVertexOffset[lv] + levelRowVertexCapacity[lv] ||
+        levelIndexOffset + neededIdxs  > levelRowIndexOffset[lv]  + levelRowIndexCapacity[lv]) {
         std::cerr << "[IndirectRenderer] addMeshSlotted: level " << level
-                  << " data exceeds per-slot budget for chunk " << chunkId << std::endl;
+                  << " data exceeds its slot row budget for chunk " << chunkId << std::endl;
         return UINT32_MAX;
     }
 
@@ -2311,7 +2366,6 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
     // compacted draw list.
     uint32_t vertOffset = slotIdx * slotVertexCapacity + levelVertexOffset;
     uint32_t idxOffset  = slotIdx * slotIndexCapacity + levelIndexOffset;
-    uint32_t lv         = static_cast<uint32_t>(level);
 
     MeshInfo m{};
     m.id                 = chunkId;
@@ -2410,8 +2464,12 @@ void IndirectRenderer::updateMeshSlotted(uint32_t slotIndex, const Geometry& mes
     uint32_t lv          = static_cast<uint32_t>(level);
 
     if (lv >= kMaxChunkLevels) return;
-    if (levelVertexOffset + neededVerts > slotVertexCapacity ||
-        levelIndexOffset + neededIdxs  > slotIndexCapacity) return;
+    // Per-level static row check (see addMeshSlotted): the sub-offsets must be
+    // this level's own row base and the data must fit within the row.
+    if (levelVertexOffset != levelRowVertexOffset[lv] ||
+        levelIndexOffset  != levelRowIndexOffset[lv] ||
+        levelVertexOffset + neededVerts > levelRowVertexOffset[lv] + levelRowVertexCapacity[lv] ||
+        levelIndexOffset + neededIdxs  > levelRowIndexOffset[lv]  + levelRowIndexCapacity[lv]) return;
 
     // Update the slot's vertex/index counts
     slotAlloc.updateCounts(slotIndex, neededVerts, neededIdxs);
@@ -2589,7 +2647,7 @@ void IndirectRenderer::clearSlotLevelsFrom(uint32_t slotIndex, uint32_t firstLev
             void* data = boundsBuffer.map(boundsOffset);
             if (data) {
                 std::memset(data, 0, 3 * sizeof(glm::vec4));
-                indirectBuffer.unmap();
+                boundsBuffer.unmap();
             }
         }
     }

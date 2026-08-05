@@ -6,13 +6,11 @@
 #include "../sdf/SignedDistanceFunction.hpp"
 #include "../sdf/SignedDistanceOperation.hpp"
 #include "Simplifier.hpp"
-#include "OctreeChangeHandler.hpp"
 #include "OctreeNodeData.hpp"
 #include <vector>
 #include <mutex>
 #include <memory>
 
-class OctreeChangeHandler;
 
 struct ShapeArgs {
     const SignedDistanceOperation * operation;
@@ -20,7 +18,6 @@ struct ShapeArgs {
     const TexturePainter &painter;
     const Transformation &model;
     const Simplifier &simplifier;
-    const OctreeChangeHandler &changeHandler; // reference (non-null)
     float minSize;
 
     // Chunk change events fired during the shape traversal are deferred here
@@ -43,7 +40,6 @@ struct ShapeArgs {
         const TexturePainter &painter,
         const Transformation &model,
         const Simplifier &simplifier,
-        const OctreeChangeHandler &changeHandler,
         float minSize
     );
 };
