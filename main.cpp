@@ -349,10 +349,6 @@ public:
     Octree::OctreeNodeDataHandler mainSolidRemoveHandler;
     Octree::OctreeNodeDataHandler mainLiquidRemoveHandler;
 
-    // Dedup collectors in front of the renderer handlers above. Octree::apply
-    // / Scene::load / Scene::action feed these per-node lambdas; dispatch()
-    // replays each node's final state (added or deleted, newest version) into
-    // the matching {Add,Remove} renderer handlers exactly once per node.
     UniqueChangeCollector mainSolidCollector;
     UniqueChangeCollector mainLiquidCollector;
 
@@ -707,6 +703,8 @@ public:
         brushLiquidRemoveHandler = brushTransparentHandlers.second;
 
 
+        // 5. Ready; no brush scene yet — brush collectors are local to
+        // rebuildBrushScene(). No events exist at setup time, so nothing to flush.
 
 
         // Scene starts empty — use File > Generate Map to populate it.
@@ -2754,12 +2752,17 @@ void MyApp::rebuildBrushScene() {
         sceneRenderer->processPendingBrushMeshes(this, camera.getPosition());
         return;
     }
-    // 3. The brush {onAdded, onDeleted} renderer lambdas were built in
-    // setup() (world->brushScene() is stable); they route geometry to the
-    // dedicated brush queue + chunk maps.
 
 
-                             // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
+    // 3. The brush {onAdded, onDeleted} renderer lambdas (built in setup()
+    // with world->brushScene()) route geometry to the dedicated brush queue +
+    // chunk maps. The octree invokes change handlers on its own worker
+    // threads, so the renderer lambdas must NOT run during traversal — collect
+    // here and dispatch() on this (main) thread below.
+    UniqueChangeCollector brushSolidCollector;
+    UniqueChangeCollector brushLiquidCollector;
+
+    // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
     // distance=0.2: flat patches may have up to 20% cube-size SDF error (curved gets 10%).
     Simplifier simplifier(0.95f, 0.2f, true);
     // 4. Process the selected brush entry only
@@ -2769,11 +2772,11 @@ void MyApp::rebuildBrushScene() {
             ? world->brushScene()->getOpaqueOctree()
             : world->brushScene()->transparentOctree;
         Octree::OctreeNodeDataHandler& updateHandler = (entry.targetLayer == 0)
-            ? brushSolidAddHandler
-            : brushLiquidAddHandler;
+            ? brushSolidCollector.updateHandler
+            : brushLiquidCollector.updateHandler;
         Octree::OctreeNodeDataHandler& deleteHandler = (entry.targetLayer == 0)
-            ? brushSolidRemoveHandler
-            : brushLiquidRemoveHandler;
+            ? brushSolidCollector.deleteHandler
+            : brushLiquidCollector.deleteHandler;
 
         Transformation model(entry.scale, entry.translate, entry.rot);
         SimpleBrush brush(entry.materialIndex, entry.hsv);
@@ -2787,9 +2790,10 @@ void MyApp::rebuildBrushScene() {
         };
 
         forEachBrushSDF(entry, model, cachedSweepStart, entry.minSize, "[rebuildBrushScene]", applyEntry);
-    // 5. The brush octree feeds the renderer lambdas (brushSolid/brushLiquid
-    // Add/Remove handlers, built in setup()) directly during traversal — no
-    // collector hop. Proceed straight to GPU processing.
+    // 5. Flush queued change events on the MAIN thread (triggers mesh
+    // creation via the SceneRenderer brush handlers).
+    brushSolidCollector.dispatch(brushSolidAddHandler, brushSolidRemoveHandler);
+    brushLiquidCollector.dispatch(brushLiquidAddHandler, brushLiquidRemoveHandler);
 
     // 6. Process all brush meshes IMMEDIATELY (synchronous, not deferred to
     // the next frame's update()). The brush scene is small — this avoids the
@@ -2832,8 +2836,6 @@ void MyApp::applyBrushToScene() {
     Octree& octree = (entry.targetLayer == 0)
         ? world->scene().opaqueOctree
         : world->scene().transparentOctree;
-
-
 
     Octree::OctreeNodeDataHandler& updateHandler = (entry.targetLayer == 0)
         ? mainSolidCollector.updateHandler
@@ -2915,7 +2917,8 @@ void MyApp::action() {
     MainSceneLoader loader;
     world->scene().action(loader,
         mainSolidCollector.updateHandler, mainSolidCollector.deleteHandler,
-        mainLiquidCollector.updateHandler, mainLiquidCollector.deleteHandler);
+        mainLiquidCollector.updateHandler, mainLiquidCollector.deleteHandler
+    );
     std::cout << "[MyApp::action] Octree construction complete\n";
 
     // Tessellate chunks in a background thread. Solid and water are handled on
@@ -2969,7 +2972,8 @@ void MyApp::generateMap() {
     MainSceneLoader loader;
     world->scene().loadScene(loader,
         mainSolidCollector.updateHandler, mainSolidCollector.deleteHandler,
-        mainLiquidCollector.updateHandler, mainLiquidCollector.deleteHandler);
+        mainLiquidCollector.updateHandler, mainLiquidCollector.deleteHandler
+    );
     std::cout << "[MyApp::generateMap] Octree construction complete\n";
 
     // Tessellate chunks in a background thread. Solid and water are handled on
