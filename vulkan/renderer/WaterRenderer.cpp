@@ -833,7 +833,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 }
 
 // Back-face pass implementation moved to WaterBackFaceRenderer
-void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, VkImageView skyView) {
+void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, VkImageView skyView, IndirectRenderer* secondaryIR) {
     if (!app || cmd == VK_NULL_HANDLE) return;
 
     prepareRender(app, cmd, frameIndex, sceneColorView, sceneDepthView, skyView);
@@ -864,6 +864,10 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         if (cmdState) cmdState->bindGraphicsPipeline(cmd, waterGeometryPipeline);
         else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeometryPipeline);
         waterIndirectRenderer.drawPrepared(cmd);
+        // Brush liquid water: same pipeline, same descriptor sets, its own IR.
+        // Drawn right after the main water so brush liquid depth/color lands in
+        // the same offscreen target (self-occlusion tested by water depth).
+        if (secondaryIR) secondaryIR->drawPrepared(cmd);
     }
 
     endWaterGeometryPass(cmd);

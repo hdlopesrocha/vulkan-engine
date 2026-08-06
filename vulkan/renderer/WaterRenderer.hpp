@@ -45,9 +45,13 @@ public:
 
     // Execute the water offscreen geometry pass on the provided command buffer.
     // The solid render pass must have already ended on this same command buffer.
+    // `secondaryIR` is drawn with the same water pipeline, right after the main
+    // water IR, inside the same geometry pass (used for brush liquid geometry —
+    // brush water renders like main water but lives in its own IndirectRenderer).
     void render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                 VkImageView sceneColorView, VkImageView sceneDepthView,
-                VkImageView skyView = VK_NULL_HANDLE);
+                VkImageView skyView = VK_NULL_HANDLE,
+                IndirectRenderer* secondaryIR = nullptr);
 
     // Get water color/depth image view for post-process sampling
     VkImageView getWaterDepthView(uint32_t frameIndex) const { return waterDepthImageViews[frameIndex]; }
