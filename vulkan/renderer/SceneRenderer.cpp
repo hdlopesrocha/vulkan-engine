@@ -137,8 +137,8 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (postProcessRenderer && app) {
         postProcessRenderer->cleanup(app);
     }
-    if (waterRenderer && app) {
-        waterRenderer->cleanup(app);
+    if (mainLiquidRenderer && app) {
+        mainLiquidRenderer->cleanup(app);
     }
     // Cleanup scene-owned water sub-renderers
     if (backFaceRenderer && app) {
@@ -152,8 +152,9 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     }
     destroyBrushRenderTargets(app);
     brushSolidIndirectRenderer.cleanup();
-    if (solidRenderer && app) {
-        solidRenderer->cleanup(app);
+    brushLiquidIndirectRenderer.cleanup();
+    if (mainSolidRenderer && app) {
+        mainSolidRenderer->cleanup(app);
     }
     if (shadowMapper && app) {
         shadowMapper->cleanup(app);
@@ -202,9 +203,10 @@ void SceneRenderer::cleanup(VulkanApp* app) {
 }
 
 void SceneRenderer::stopGenPools() {
-    brushGenPool.stop();
-    solidGenPool.stop();
-    waterGenPool.stop();
+    brushWaterGenPool.stop();
+    brushSolidGenPool.stop();
+    mainSolidGenPool.stop();
+    mainWaterGenPool.stop();
 }
 
 void SceneRenderer::createBrushRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
@@ -258,19 +260,19 @@ void SceneRenderer::destroyBrushRenderTargets(VulkanApp* app) {
 
 void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height) {
     // Recreate offscreen targets that depend on swapchain size
-    if (solidRenderer) {
-        solidRenderer->createRenderTargets(app, width, height);
+    if (mainSolidRenderer) {
+        mainSolidRenderer->createRenderTargets(app, width, height);
     }
     destroyBrushRenderTargets(app);
     createBrushRenderTargets(app, width, height);
-    if (waterRenderer) {
-        waterRenderer->createRenderTargets(app, width, height);
+    if (mainLiquidRenderer) {
+        mainLiquidRenderer->createRenderTargets(app, width, height);
         // Recreate back-face and 360 reflection targets owned by SceneRenderer
         if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, width, height);
         if (brushBackFaceRenderer) brushBackFaceRenderer->createRenderTargets(app, width, height);
         if (solid360Renderer) {
             solid360Renderer->destroySolid360Targets(app);
-            solid360Renderer->createSolid360Targets(app, waterRenderer->getLinearSampler());
+            solid360Renderer->createSolid360Targets(app, mainLiquidRenderer->getLinearSampler());
             solid360Renderer->createSolid360Pipelines(app);
             // Rewrite binding 11 (cubemap) in all descriptor sets since the
             // old VkImageView handles were destroyed and new ones created.
@@ -324,8 +326,8 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
 
 void SceneRenderer::writeBrushDepthDescriptors(VulkanApp* app) {
     VkSampler brushDepthSampler = VK_NULL_HANDLE;
-    if (waterRenderer) {
-        brushDepthSampler = waterRenderer->getLinearSampler();
+    if (mainLiquidRenderer) {
+        brushDepthSampler = mainLiquidRenderer->getLinearSampler();
     }
     if (brushDepthSampler == VK_NULL_HANDLE && shadowMapper) {
         brushDepthSampler = shadowMapper->getShadowMapSampler();
@@ -358,10 +360,10 @@ void SceneRenderer::writeBrushDepthDescriptors(VulkanApp* app) {
 
 SceneRenderer::SceneRenderer() :
     shadowMapper(std::make_unique<ShadowRenderer>(2048)),
-    waterRenderer(std::make_unique<WaterRenderer>()),
+    mainLiquidRenderer(std::make_unique<WaterRenderer>()),
     postProcessRenderer(std::make_unique<PostProcessRenderer>()),
     skyRenderer(std::make_unique<SkyRenderer>()),
-    solidRenderer(std::make_unique<SolidRenderer>()),
+    mainSolidRenderer(std::make_unique<SolidRenderer>()),
     vegetationRenderer(std::make_unique<VegetationRenderer>()),
     debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
@@ -397,12 +399,12 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, u
     // it needs. The cascade cull reads the per-chunk LoD selection the main
     // pass stamped into the shared visibleLods buffer (single source of truth),
     // so shadow draws use the exact same LoD as the main pass.
-    solidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_, lodBias);
+    mainSolidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_, lodBias);
     // Water shadows share the same LoD sync: the water cascade cull reads the
     // water main pass's visibleLods (the water prepareCull ran before this
     // shadow pass, so the selection is fresh for the current frame).
-    if (waterRenderer) {
-        waterRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_, lodBias);
+    if (mainLiquidRenderer) {
+        mainLiquidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_, lodBias);
     }
 
     // Acquire vegetation instance/indirect buffers before dynamic rendering
@@ -495,7 +497,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, u
         // Draw solid geometry into shadow map (can be toggled off to isolate
         // vegetation shadows for debugging).
         if (renderSolid) {
-            auto& shadowIR = solidRenderer->getIndirectRenderer();
+            auto& shadowIR = mainSolidRenderer->getIndirectRenderer();
             shadowIR.bindBuffers(commandBuffer);
             shadowIR.drawCascadeOnly(commandBuffer, c);
         }
@@ -503,8 +505,8 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, u
         // Draw water geometry into the shadow map so water casts shadows at the
         // same LoD as the main pass (the water cascade cull read the shared
         // visibleLods selection). Reuses the same EVSM shadow pipeline.
-        if (waterRenderer) {
-            auto& waterShadowIR = waterRenderer->getIndirectRenderer();
+        if (mainLiquidRenderer) {
+            auto& waterShadowIR = mainLiquidRenderer->getIndirectRenderer();
             waterShadowIR.bindBuffers(commandBuffer);
             waterShadowIR.drawCascadeOnly(commandBuffer, c);
         }
@@ -530,7 +532,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, u
     // Restore GPU culling for the main camera frustum (was overwritten by
     // per-cascade prepareCull calls above) so drawPrepared in the main pass
     // uses the correct visible set.
-    solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_, lodBias);
+    mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_, lodBias);
     brushSolidIndirectRenderer.prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_, lodBias);
 
     // Restore the main UBO so subsequent passes see the original data.
@@ -589,10 +591,10 @@ void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uin
     }
     if (renderSolid) {
         VkDescriptorSet brushDepthSet = getBrushDepthDescriptorSet(frameIdx);
-        solidRenderer->renderDepthPrepass(commandBuffer, app, perTextureDescriptorSet, brushDepthSet);
-        solidRenderer->render(commandBuffer, app, perTextureDescriptorSet, brushDepthSet);
+        mainSolidRenderer->renderDepthPrepass(commandBuffer, app, perTextureDescriptorSet, brushDepthSet);
+        mainSolidRenderer->render(commandBuffer, app, perTextureDescriptorSet, brushDepthSet);
         if (wireframeEnabled) {
-            solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
+            solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, mainSolidRenderer->getIndirectRenderer());
         } 
     }
     
@@ -604,7 +606,7 @@ void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDe
 }
 
 void SceneRenderer::drawSolidWireframeOverlay(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled) {
-    solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
+    solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, mainSolidRenderer->getIndirectRenderer());
 }
 
 void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, bool waterWireframeEnabled, float waterTime, VkImageView skyView) {
@@ -625,8 +627,8 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
 
     // Delegate water offscreen work to WaterRenderer — record on the same
     // command buffer so the solid pass outputs are available for sampling.
-    VkImageView sceneColorView = solidRenderer->getColorView(frameIdx);
-    VkImageView sceneDepthView = solidRenderer->getDepthView(frameIdx);
+    VkImageView sceneColorView = mainSolidRenderer->getColorView(frameIdx);
+    VkImageView sceneDepthView = mainSolidRenderer->getDepthView(frameIdx);
     // (Re)allocate and update this slot's scene-texture descriptor set (set 2,
     // binding 1 = sceneDepthTex) here on the main command buffer, immediately
     // before any draw that binds it. The async back-face task uses its OWN
@@ -637,7 +639,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
     {
         VkImageView wBack = (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
         VkImageView wCube = (solid360Renderer) ? solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-        waterRenderer->prepareSceneTexturesForFrame(app, frameIdx, sceneColorView, sceneDepthView,
+        mainLiquidRenderer->prepareSceneTexturesForFrame(app, frameIdx, sceneColorView, sceneDepthView,
                                                     skyView, wBack, wCube);
     }
 
@@ -654,13 +656,13 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
         // Wireframe path: use WaterRenderer for setup/pass management,
         // but bind the wireframe pipeline instead of the normal one.
         if (!_wg_env_skip) {
-            waterRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
-            waterRenderer->beginWaterGeometryPass(commandBuffer, frameIdx);
+            mainLiquidRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
+            mainLiquidRenderer->beginWaterGeometryPass(commandBuffer, frameIdx);
 
             // First render filled water geometry to populate the water depth
             // buffer so the wireframe can depth-test against actual water depth.
-            VkPipeline waterPipe = waterRenderer->getWaterGeometryPipeline();
-            VkPipelineLayout waterLayout = waterRenderer->getWaterGeometryPipelineLayout();
+            VkPipeline waterPipe = mainLiquidRenderer->getWaterGeometryPipeline();
+            VkPipelineLayout waterLayout = mainLiquidRenderer->getWaterGeometryPipelineLayout();
             if (waterPipe != VK_NULL_HANDLE && waterLayout != VK_NULL_HANDLE) {
                 frameCmdState.bindGraphicsPipeline(commandBuffer, waterPipe);
 
@@ -669,13 +671,14 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
                     frameCmdState.bindGraphicsDescriptorSets(commandBuffer, waterLayout, 0, 1, &mainDs, 0, nullptr);
                 }
 
-                VkDescriptorSet sceneDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
+                VkDescriptorSet sceneDs = mainLiquidRenderer->getWaterDepthDescriptorSet(frameIdx);
                 if (sceneDs != VK_NULL_HANDLE) {
                     frameCmdState.bindGraphicsDescriptorSets(commandBuffer, waterLayout, 2, 1, &sceneDs, 0, nullptr);
                 }
 
                 // Draw filled water geometry (will update depth buffer)
-                waterRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
+                mainLiquidRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
+                brushLiquidIndirectRenderer.drawPrepared(commandBuffer);
             }
 
             // Draw wireframe overlay on top, inside the same render pass,
@@ -691,20 +694,22 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
                 if (wfMainDs != VK_NULL_HANDLE)
                     frameCmdState.bindGraphicsDescriptorSets(commandBuffer, wfLayout, 0, 1, &wfMainDs, 0, nullptr);
 
-                VkDescriptorSet wfDepthDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
+                VkDescriptorSet wfDepthDs = mainLiquidRenderer->getWaterDepthDescriptorSet(frameIdx);
                 if (wfDepthDs != VK_NULL_HANDLE)
                     frameCmdState.bindGraphicsDescriptorSets(commandBuffer, wfLayout, 2, 1, &wfDepthDs, 0, nullptr);
 
-                waterRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
+                mainLiquidRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
+                brushLiquidIndirectRenderer.drawPrepared(commandBuffer);
             }
 
-            waterRenderer->endWaterGeometryPass(commandBuffer);
+            mainLiquidRenderer->endWaterGeometryPass(commandBuffer);
         } else {
             // Skipping water geometry operations as requested by env guard
         }
     } else {
         if (!_wg_env_skip) {
-            waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
+            mainLiquidRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView,
+                                  &brushLiquidIndirectRenderer);
         } else {
             // Skipping waterRenderer::render due to VULKAN_DISABLE_WATERGEOM
         }
@@ -738,13 +743,16 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
                   /*workersPerCategory*/ 2);
 
     // Route solid/water IndirectRenderer incremental copies through the manager.
-    solidRenderer->getIndirectRenderer().setUploadManager(
+    mainSolidRenderer->getIndirectRenderer().setUploadManager(
         &streamer.uploadManager(), streaming::StreamCategory::Solid);
-    waterRenderer->getIndirectRenderer().setUploadManager(
+    mainLiquidRenderer->getIndirectRenderer().setUploadManager(
         &streamer.uploadManager(), streaming::StreamCategory::Water);
-    // Initialize the separate brush solid IndirectRenderer (no streamer — brush
-    // meshes are small and infrequent; upload fits in the legacy ring path).
+    // Initialize the separate brush solid/liquid IndirectRenderers (no
+    // streamer — brush meshes are small and infrequent; upload fits in the
+    // legacy ring path). Both are dedicated pools: brush geometry never shares
+    // the main scene IRs.
     brushSolidIndirectRenderer.init();
+    brushLiquidIndirectRenderer.init();
 
     // skySettingsRef was initialized at construction and must be valid
     
@@ -759,10 +767,10 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         }
     }
     
-    solidRenderer->init();
-    solidRenderer->destroyRenderTargets(app);
-    solidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    solidRenderer->createPipelines(app);
+    mainSolidRenderer->init();
+    mainSolidRenderer->destroyRenderTargets(app);
+    mainSolidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    mainSolidRenderer->createPipelines(app);
 
     // Create pipelines for all renderers (solid renderer now has its render pass ready)
     skyRenderer->init(app);
@@ -907,11 +915,11 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     solid360Renderer = std::make_unique<Solid360Renderer>();
 
     // Initialize WaterRenderer (creates its pipeline layout and initializes the param SSBO)
-    waterRenderer->init(app, waterParamsBuffer_, waterParams, layerCount);
+    mainLiquidRenderer->init(app, waterParamsBuffer_, waterParams, layerCount);
 
     // Now that WaterRenderer has created its pipeline layout, allow the
     // back-face renderer to create pipelines that depend on it.
-    if (backFaceRenderer) backFaceRenderer->createPipelines(app, waterRenderer->getWaterGeometryPipelineLayout());
+    if (backFaceRenderer) backFaceRenderer->createPipelines(app, mainLiquidRenderer->getWaterGeometryPipelineLayout());
     // Create back-face render targets early so their image views are
     // available before the first frame's water pass attempts to bind them.
     if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
@@ -924,10 +932,10 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     }
     if (solid360Renderer) {
         solid360Renderer->init(app);
-        solid360Renderer->setWaterRenderer(waterRenderer.get());
+        solid360Renderer->setWaterRenderer(mainLiquidRenderer.get());
         // Create cubemap targets now so the image view is available for
         // the environment-map descriptor binding (binding 11) below.
-        solid360Renderer->createSolid360Targets(app, waterRenderer->getLinearSampler());
+        solid360Renderer->createSolid360Targets(app, mainLiquidRenderer->getLinearSampler());
         solid360Renderer->createSolid360Pipelines(app);
         // Binding 11: environment cubemap for solid-shader reflections
         VkImageView cubeView = solid360Renderer->getSolid360View();
@@ -1087,7 +1095,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             this->updateTextureDescriptorSet(app, textureArrayManager);
         });
     }
-    waterRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    mainLiquidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
 
     // Ensure back-face render targets are created as well so the
     // `backFaceDepthView` is valid before the first frame's water pass.
@@ -1106,7 +1114,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         std::vector<VkDescriptorSetLayout> waterSetLayouts = {
             app->getDescriptorSetLayout(),
             app->getMaterialDescriptorSetLayout(),
-            waterRenderer->getWaterDepthDescriptorSetLayout()
+            mainLiquidRenderer->getWaterDepthDescriptorSetLayout()
         };
         waterWireframe->createPipeline(app, {VK_FORMAT_R32G32B32A32_SFLOAT},
             waterSetLayouts,
@@ -1142,17 +1150,22 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // command list is per-level (chunk * kMaxChunkLevels draw entries), so GPU
     // memory stays at the pre-refactor per-chunk footprint.
     // Must be called after all sub-renderers are initialized, before scene loading.
-    initSlottedMode(app, kMaxSolidChunkSlots,
-                    kMaxWaterChunkSlots,
-                    1u << 20,  // 1 MB vertex data per slot (level-0 row)
-                    1u << 18); // 256 KB index data per slot (level-0 row)
+    initSlottedMode(app, 
+        kMaxSolidChunkSlots,
+        kMaxWaterChunkSlots,
+        1u << 20,  // 1 MB vertex data per slot (level-0 row)
+        1u << 18
+    ); // 256 KB index data per slot (level-0 row)
 
-    // Initialize brush solid IndirectRenderer with its own slot pool (smaller —
-    // brush preview rarely exceeds a few dozen meshes). Brush water still shares
-    // the main water IR's slot pool (already initialized in initSlottedMode).
+    // Initialize brush solid/liquid IndirectRenderers with their own slot pools
+    // (smaller — brush preview rarely exceeds a few dozen meshes). Brush geometry
+    // no longer shares the main scene slot pools.
     brushSolidIndirectRenderer.initSlots(app, kMaxBrushChunkSlots,
                                          1u << 18,  // 256 KB vertex data per slot
                                          1u << 16); // 64 KB index data per slot
+    brushLiquidIndirectRenderer.initSlots(app, kMaxBrushChunkSlots,
+                                          1u << 18,  // 256 KB vertex data per slot
+                                          1u << 16); // 64 KB index data per slot
 }
 
 // Update only the static bindings (textures, materials, water params) in the
@@ -1274,15 +1287,16 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 // Drain whatever CPU-generated mesh data the background loading thread has
 // queued since the last frame, and perform the actual Vulkan GPU uploads.
 // Must be called from the main (render) thread each frame.
-size_t SceneRenderer::publishPendingLadders(
+size_t SceneRenderer::publishPendingMeshes(
     VulkanApp* app,
     std::deque<PendingMeshData>& batch,
     IndirectRenderer& opaqueIR,
+    IndirectRenderer& brushOpaqueIR,
     IndirectRenderer& waterIR,
-    bool trackChunkManager,
-    const std::function<uint32_t(Layer layer, NodeID nid)>& takeOldSlot,
-    const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version)>& onChunkPublished,
-    const std::function<void(NodeID nid, const Geometry& geom)>& onFinestPublished)
+    IndirectRenderer& brushWaterIR,
+    const std::function<uint32_t(Layer layer, NodeID nid, bool isBrush)>& takeOldSlot,
+    const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version, bool isBrush)>& onChunkPublished,
+    const std::function<void(NodeID nid, const Geometry& geom, bool isBrush)>& onFinestPublished)
 {
     // One-slot-per-chunk publish: NO ladder reassembly, NO running sub-offsets.
     // Each queue entry is a self-contained geometry chunk at a single LoD
@@ -1315,8 +1329,15 @@ size_t SceneRenderer::publishPendingLadders(
         const NodeID nid = item.nid;
         const Octree::LoDMesh& lod = item.lodMesh;
         const uint8_t level = lod.lod;
+        const bool isBrush = item.isBrush;
 
-        IndirectRenderer* ir = (layer == LAYER_OPAQUE) ? &opaqueIR : &waterIR;
+        // Per-entry routing: solid main → opaqueIR, solid brush → brushOpaqueIR,
+        // transparent main → waterIR, transparent brush → brushWaterIR. This is
+        // the ONLY stream distinction the publish core makes; everything
+        // downstream is one shared codepath.
+        IndirectRenderer* ir = (layer == LAYER_OPAQUE)
+            ? (isBrush ? &brushOpaqueIR : &opaqueIR)
+            : (isBrush ? &brushWaterIR : &waterIR);
         if (!ir) continue;
 
         const ChunkManager::ChunkId base = static_cast<ChunkManager::ChunkId>(nid);
@@ -1324,7 +1345,7 @@ size_t SceneRenderer::publishPendingLadders(
         // Resolve (and consume) any pending-delete slot for this chunk: the
         // old geometry stays resident until the new upload completes. Only the
         // first level of the chunk sees the entry (consumed on first hit).
-        uint32_t oldSlot = takeOldSlot(layer, nid);
+        uint32_t oldSlot = takeOldSlot(layer, nid, isBrush);
 
         if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
 
@@ -1336,7 +1357,11 @@ size_t SceneRenderer::publishPendingLadders(
         // meta maxLevel is the chunk's true ladder depth (unclamped — the GPU
         // shader clamps against the chunk's actually-published range).
         const uint32_t lv = level;
-        const ChunkManager::ChunkId key = (base << 1) | (layer == LAYER_OPAQUE ? 0u : 1u);
+        // Composite key: bit0 = transparent, bit1 = brush stream. Unique across
+        // streams so the end-of-drain cleanup resolves the owning IR.
+        const uint32_t key = (static_cast<uint32_t>(base) << 2) |
+                             (layer == LAYER_OPAQUE ? 0u : 1u) |
+                             (isBrush ? 2u : 0u);
         const uint32_t slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(base), (int)lv,
                                                     UINT32_MAX,
                                                     ir->getSlotLevelVertexOffset((int)lv),
@@ -1356,24 +1381,25 @@ size_t SceneRenderer::publishPendingLadders(
         // starts; the deferred completion frees any replaced old slot and
         // (level 0 -- the mesh the ChunkManager build state tracks) promotes
         // the chunk to ReadyToSwap once resident.
-        if (trackChunkManager && world_)
+        if (!isBrush && world_)
             world_->chunkManager().setSlotIndex(base, slotIdx);
 
+        const bool trackChunkManager = !isBrush;
         ir->uploadSlot(app, slotIdx, (int)lv, 0.0f,
-            [ir, oldSlot, base, this, lv, trackChunkManager]() {
+            [ir, oldSlot, this, base, lv, trackChunkManager]() {
                 if (oldSlot != UINT32_MAX) ir->removeMeshSlotted(oldSlot);
                 if (trackChunkManager && this->world_ && lv == 0)
                     this->world_->chunkManager().finishUpload(base);
             });
 
-        onChunkPublished(layer, nid, slotIdx, lod.version);
+        onChunkPublished(layer, nid, slotIdx, lod.version, isBrush);
 
         // Generate vegetation instances for grass chunks using the level-0
         // (finest) geometry only. Coarse levels (chunkLod > 0) never drive
         // vegetation.
         if (layer == LAYER_OPAQUE && vegetationRenderer && lv == 0 &&
             !lod.geom.vertices.empty()) {
-            onFinestPublished(nid, lod.geom);
+            onFinestPublished(nid, lod.geom, isBrush);
         }
 
         auto& acc = acceptedCoarsest[key];
@@ -1388,218 +1414,191 @@ size_t SceneRenderer::publishPendingLadders(
     // the immediate host write is safe.
     for (auto& [key, v] : acceptedCoarsest) {
         if (v.second + 1 >= kMaxChunkLevels) continue; // full ladder, nothing stale
-        IndirectRenderer* ir = (key & 1u) ? &waterIR : &opaqueIR;
+        const bool transparent = (key & 1u) != 0;
+        const bool brush = (key & 2u) != 0;
+        IndirectRenderer* ir = transparent ? (brush ? &brushWaterIR : &waterIR)
+                               : brush ? &brushOpaqueIR
+                               : &opaqueIR;
         ir->clearSlotLevelsFrom(v.first, v.second + 1);
     }
 
     return slotsPublished;
 }
 
-void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
+void SceneRenderer::drainPendingMeshes(std::deque<PendingMeshData>& out, size_t maxCount) {
+    // Drain the shared queue (main scene + brush scene) at a CONTROLLED rate.
+    // A full drain would burst hundreds of (chunk, level) uploads into one
+    // frame when a large map finishes tessellating at once — saturating the
+    // shared iGPU's command queue for seconds, tripping the amdgpu watchdog
+    // (GPU reset, observed on Radeon 680M with 64-470 chunk batches) and
+    // killing every GPU context on the machine. maxCount bounds the burst;
+    // leftover entries stay queued. Chunks appear progressively as their CPU
+    // tessellation completes. One shared budget spans every stream.
+    std::lock_guard<std::mutex> lock(pendingMeshMutex);
+    size_t taken = 0;
+    for (auto it = pendingMeshQueue.begin();
+         it != pendingMeshQueue.end() && taken < maxCount; ) {
+        out.push_back(std::move(it->second));
+        it = pendingMeshQueue.erase(it);
+        ++taken;
+    }
+}
+
+void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, std::deque<PendingMeshData>& batch) {
+    if (!mainLiquidRenderer) {
+        std::cerr << "[processPendingMeshes] FATAL: waterRenderer is null!" << std::endl;
+        return;
+    }
     // Cache the camera position for the shadow pass (which culls with the
     // same camPos/lodBias so shadow draws match the main pass LoD selection).
     lastCameraPos_ = cameraPos;
-    // Drain the pending queue at a CONTROLLED rate. A full drain would burst
-    // hundreds of (chunk, level) uploads into one frame when a large map
-    // finishes tessellating at once — saturating the shared iGPU's command
-    // queue for seconds, tripping the amdgpu watchdog (GPU reset, observed on
-    // Radeon 680M with 64-470 chunk batches) and killing every GPU context on
-    // the machine. 16 items/frame bounds the burst; leftover entries stay
-    // queued. Chunks appear progressively as their CPU tessellation completes.
-    static constexpr size_t kMaxItemsPerPublishFrame = 16;
-    std::deque<PendingMeshData> batch;
-    {
-        std::lock_guard<std::mutex> lock(pendingMeshMutex);
-        const size_t take = std::min<size_t>(pendingMeshQueue.size(), kMaxItemsPerPublishFrame);
-        if (take > 0) {
-            batch.insert(batch.end(),
-                         std::make_move_iterator(pendingMeshQueue.begin()),
-                         std::make_move_iterator(pendingMeshQueue.begin() + static_cast<ptrdiff_t>(take)));
-            pendingMeshQueue.erase(pendingMeshQueue.begin(), pendingMeshQueue.begin() + static_cast<ptrdiff_t>(take));
-        }
-    }
-    // Poll pending transfers so deferred meta-buffer writes (indirect commands
-    // and bounds) are published once the async transfer fence signals.
-    // Without this, the last batch of meshes never gets its indirect draw
-    // commands written to GPU memory — solid geometry silently missing while
-    // vegetation (independent pipeline) renders correctly.
-    IndirectRenderer& solidIR = solidRenderer->getIndirectRenderer();
-    IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
-    solidIR.pollPendingTransfers(app);
-    waterIR.pollPendingTransfers(app);
+    mainSolidRenderer->getIndirectRenderer().pollPendingTransfers(app);
+    mainLiquidRenderer->getIndirectRenderer().pollPendingTransfers(app);
+    brushSolidIndirectRenderer.pollPendingTransfers(app);
+    brushLiquidIndirectRenderer.pollPendingTransfers(app);
 
-    if (!batch.empty()) {
-
-        [[maybe_unused]] size_t chunksProcessed = publishPendingLadders(app, batch, solidIR, waterIR,
-            // The solid/water stream is tracked in the ChunkManager: the build
-            // state machine plus the per-chunk slot registry are updated.
-            true,
-            // takeOldSlot: consume the pending-delete entry for this chunk
-            // (one slot per chunk — every level shares it), returning its slot
-            // for the deferred free once the new upload completes.
-            [this](Layer layer, NodeID nid) -> uint32_t {
-                auto& deleteMap = (layer == LAYER_OPAQUE)
-                    ? this->pendingDeleteSolidSlots : this->pendingDeleteWaterSlots;
-                auto it = deleteMap.find(nid);
-                if (it == deleteMap.end()) return UINT32_MAX;
-                const uint32_t slot = it->second.slotIndex;
-                deleteMap.erase(it);
-                return slot;
-            },
-            // onChunkPublished: the per-chunk slot registry update runs inside
-            // the core; the solid/water stream records nothing else here.
-            [](Layer, NodeID, uint32_t, uint32_t) {},
-            // onFinestPublished: grass chunks drive vegetation from their
-            // level-0 (finest) geometry only.
-            [this, app](NodeID nid, const Geometry& geom) {
-                this->generateVegetationForNode(app, nid, geom);
-            });
-
-        // Age out pending-delete entries that have been waiting longer than
-        // MAX_FRAMES_IN_FLIGHT. For solid/water the octree node is reused with
-        // the same NodeID, so a matching entry is normally consumed within 1
-        // frame. Entries that age out are genuine deletions (no replacement).
+    if (batch.empty()) {
+        // No new geometry yet (brush tessellation may still be running). Keep
+        // old geometry visible — don't free anything. On the next rebuild,
+        // stageOldBrushChunks will re-capture the same slots. Still age out the
+        // main stream's orphaned pending-delete entries (genuine deletions with
+        // no replacement) so a mid-stream erase never leaks a slot.
         uint32_t curFrame = app ? app->getCurrentFrame() : 0;
-        auto ageOut = [&](auto& deleteMap, IndirectRenderer& ir) {
-            for (auto it = deleteMap.begin(); it != deleteMap.end(); ) {
-                if (curFrame - it->second.birthFrame > VulkanApp::MAX_FRAMES_IN_FLIGHT) {
-                    ir.removeMeshSlotted(it->second.slotIndex);
-                    it = deleteMap.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-        };
-        ageOut(pendingDeleteSolidSlots, solidIR);
-        ageOut(pendingDeleteWaterSlots, waterIR);
-#ifdef DEBUG
-        // DIAG: pending-delete backlog growth per second (user-reported
-        // draw-cmd accumulation). Entries are consumed by matching publishes
-        // or aged out after MAX_FRAMES_IN_FLIGHT; steady growth here means
-        // the erase path outpaces publishes (unmatched deletions).
-        static std::chrono::steady_clock::time_point lastDiag{};
-        auto nowD = std::chrono::steady_clock::now();
-        if (nowD - lastDiag >= std::chrono::seconds(1)) {
-            lastDiag = nowD;
-            std::cout << "[SceneRenderer::diag] chunksInBatch=" << chunksProcessed
-                      << " pendingDelSolid=" << pendingDeleteSolidSlots.size()
-                      << " pendingDelWater=" << pendingDeleteWaterSlots.size()
-                      << " curFrame=" << curFrame << std::endl;
-        }
-#endif
+        ageOutPendingDeletes(curFrame, mainSolidRenderer->getIndirectRenderer(), mainLiquidRenderer->getIndirectRenderer());
+        processChunkSwapQueue(app);
+        return;
     }
 
+    // ── Deferred old-slot staging (brush) ─────────────────────────────────────
+    // Instead of freeing old staged slots BEFORE allocating new ones (which
+    // creates a window where neither old nor new geometry is valid on GPU), we
+    // capture old slot indices now and free them AFTER each new slot's vertex
+    // upload completes. This keeps the old geometry visible until the new data
+    // is resident on the GPU, eliminating the 1-2 frame transient where the
+    // brush disappears or renders garbage.
+    //
+    // addMeshSlotted may reuse the same slot when the same NodeID exists
+    // (updateMeshSlotted path). In that case oldSlot == slotIdx and we must NOT
+    // free the old slot — it was updated in-place, not replaced.
+    //
+    // Old slots whose NodeID no longer appears in the new set are orphans: their
+    // chunk was removed in the rebuild and the stale geometry is freed
+    // immediately after all new slots are allocated.
+    std::unordered_map<NodeID, uint32_t> oldSolidSlots;
+    std::unordered_map<NodeID, uint32_t> oldTransparentSlots;
+    {
+        std::lock_guard<std::recursive_mutex> lock(pendingOldBrushSolidChunksMutex);
+        for (auto& entry : pendingOldBrushSolidChunks) {
+            if (entry.second.meshId != UINT32_MAX)
+                oldSolidSlots[entry.first] = entry.second.meshId;
+        }
+        pendingOldBrushSolidChunks.clear();
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(pendingOldBrushLiquidChunksMutex);
+        for (auto& entry : pendingOldBrushLiquidChunks) {
+            if (entry.second.meshId != UINT32_MAX)
+                oldTransparentSlots[entry.first] = entry.second.meshId;
+        }
+        pendingOldBrushLiquidChunks.clear();
+    }
+
+    // ── UNIFIED publish pass ──────────────────────────────────────────────────
+    // Both the main scene (solid/water) and the brush scene flow through the
+    // SAME publish core. Each entry's (layer, isBrush) tag routes it to the
+    // right IndirectRenderer, ChunkManager tracking and deferred-slot source:
+    // solid/water geometry is processed exactly the same way as brush geometry.
+    std::unordered_set<NodeID> matchedNids;
+    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch, mainSolidRenderer->getIndirectRenderer(), brushSolidIndirectRenderer, mainLiquidRenderer->getIndirectRenderer(), brushLiquidIndirectRenderer,
+        // takeOldSlot: resolve+consume the old slot for a chunk (one slot per
+        // chunk — its LoD rows share it), or UINT32_MAX when none. The main
+        // stream reads its pending-delete entry (one-frame grace); the brush
+        // stream reads the deferred slots staged above.
+        [this, &matchedNids, &oldSolidSlots, &oldTransparentSlots](Layer layer, NodeID nid, bool isBrush) -> uint32_t {
+            if (isBrush) {
+                auto& oldMap = (layer == LAYER_OPAQUE) ? oldSolidSlots : oldTransparentSlots;
+                auto it = oldMap.find(nid);
+                if (it == oldMap.end()) return UINT32_MAX;
+                const uint32_t slot = it->second;
+                oldMap.erase(it);
+                matchedNids.insert(nid);
+                return slot;
+            }
+            auto& deleteMap = (layer == LAYER_OPAQUE)
+                ? this->pendingDeleteSolidSlots : this->pendingDeleteWaterSlots;
+            auto it = deleteMap.find(nid);
+            if (it == deleteMap.end()) return UINT32_MAX;
+            const uint32_t slot = it->second.slotIndex;
+            deleteMap.erase(it);
+            return slot;
+        },
+        // onChunkPublished: the brush stream records the published slot/version
+        // in its chunk maps (so erasure can free it later). The main stream's
+        // slot registry update runs inside the core (ChunkManager) — nothing
+        // extra to record here.
+        [this](Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version, bool isBrush) {
+            if (!isBrush) return;
+            auto& chunkMap = (layer == LAYER_OPAQUE)
+                ? this->brushSolidChunks : this->brushTransparentChunks;
+            chunkMap[nid] = Model3DVersion{slotIdx, version};
+        },
+        // onFinestPublished: grass chunks (main scene only) drive vegetation
+        // from their level-0 (finest) geometry.
+        [this, app](NodeID nid, const Geometry& geom, bool isBrush) {
+            if (!isBrush) this->generateVegetationForNode(app, nid, geom);
+        });
+
+    // ── Orphan + grace sweeps (one sweep for ALL old slots) ──────────────────
+    // Brush orphans: staged old slots whose NodeID no longer appears in the new
+    // set. These chunks were removed in the rebuild and have stale geometry at
+    // the old brush position — they must not linger as visible garbage.
+    for (auto& [nid, oldSlot] : oldSolidSlots) {
+        if (!matchedNids.count(nid) && brushSolidChunks.find(nid) == brushSolidChunks.end())
+            brushSolidIndirectRenderer.removeMeshSlotted(oldSlot);
+    }
+    for (auto& [nid, oldSlot] : oldTransparentSlots) {
+        if (!matchedNids.count(nid) && brushTransparentChunks.find(nid) == brushTransparentChunks.end())
+            brushLiquidIndirectRenderer.removeMeshSlotted(oldSlot);
+    }
+    // Main stream: age out pending-delete entries that have been waiting longer
+    // than MAX_FRAMES_IN_FLIGHT. For solid/water the octree node is reused with
+    // the same NodeID, so a matching entry is normally consumed within 1 frame.
+    // Entries that age out are genuine deletions (no replacement).
+    uint32_t curFrame = app ? app->getCurrentFrame() : 0;
+    ageOutPendingDeletes(curFrame, mainSolidRenderer->getIndirectRenderer(), mainLiquidRenderer->getIndirectRenderer());
+    
     // Every frame, process the chunk swap queue (slotted mode).
     // This swaps in newly-built RenderProxies and retires old ones.
     processChunkSwapQueue(app);
 }
 
-
-void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPos) {
-    std::deque<PendingMeshData> batch;
-    {
-        std::lock_guard<std::mutex> lock(brushPendingMutex);
-        size_t qsize = brushPendingQueue.size();
-        if (qsize > 0) {
-            batch.insert(batch.end(),
-                         std::make_move_iterator(brushPendingQueue.begin()),
-                         std::make_move_iterator(brushPendingQueue.end()));
-            brushPendingQueue.clear();
+void SceneRenderer::ageOutPendingDeletes(uint32_t curFrame, IndirectRenderer& solidIR, IndirectRenderer& waterIR) {
+    auto ageOut = [curFrame](std::unordered_map<NodeID, PendingDeleteEntry>& deleteMap, IndirectRenderer& ir) {
+        for (auto it = deleteMap.begin(); it != deleteMap.end(); ) {
+            if (curFrame - it->second.birthFrame > VulkanApp::MAX_FRAMES_IN_FLIGHT) {
+                ir.removeMeshSlotted(it->second.slotIndex);
+                it = deleteMap.erase(it);
+            } else {
+                ++it;
+            }
         }
+    };
+    ageOut(pendingDeleteSolidSlots, solidIR);
+    ageOut(pendingDeleteWaterSlots, waterIR);
+#ifdef DEBUG
+    // DIAG: pending-delete backlog growth per second (user-reported draw-cmd
+    // accumulation). Entries are consumed by matching publishes or aged out
+    // after MAX_FRAMES_IN_FLIGHT; steady growth here means the erase path
+    // outpaces publishes (unmatched deletions).
+    static std::chrono::steady_clock::time_point lastDiag{};
+    auto nowD = std::chrono::steady_clock::now();
+    if (nowD - lastDiag >= std::chrono::seconds(1)) {
+        lastDiag = nowD;
+        std::cout << "[SceneRenderer::diag] pendingDelSolid=" << pendingDeleteSolidSlots.size()
+                  << " pendingDelWater=" << pendingDeleteWaterSlots.size()
+                  << " curFrame=" << curFrame << std::endl;
     }
-
-    if (!waterRenderer) {
-        std::cerr << "[BRUSH] FATAL: waterRenderer is null!" << std::endl;
-        return;
-    }
-    IndirectRenderer& brushIR = brushSolidIndirectRenderer;
-    IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
-    brushIR.pollPendingTransfers(app);
-    waterIR.pollPendingTransfers(app);
-
-    // Deferred old-slot cleanup: instead of freeing old staged slots BEFORE
-    // allocating new ones (which creates a window where neither old nor new
-    // geometry is valid on GPU), we capture old slot indices now and free
-    // them AFTER each new slot's vertex upload completes. This keeps the old
-    // geometry visible until the new data is resident on the GPU, eliminating
-    // the 1-2 frame transient where the brush disappears or renders garbage.
-    //
-    // addMeshSlotted may reuse the same slot when the same NodeID exists
-    // (updateMeshSlotted path). In that case oldSlot == slotIdx and we must
-    // NOT free the old slot — it was updated in-place, not replaced.
-    //
-    // Old slots whose NodeID no longer appears in the new set are orphans:
-    // their chunk was removed in the rebuild and the stale geometry is freed
-    // immediately after all new slots are allocated.
-    std::unordered_map<NodeID, uint32_t> oldSolidSlots;
-    std::unordered_map<NodeID, uint32_t> oldTransparentSlots;
-    {
-        std::lock_guard<std::recursive_mutex> lock(chunksMutex);
-        for (auto& entry : pendingOldBrushChunks) {
-            if (entry.second.meshId != UINT32_MAX)
-                oldSolidSlots[entry.first] = entry.second.meshId;
-        }
-        pendingOldBrushChunks.clear();
-        for (auto& entry : pendingOldBrushTransparentChunks) {
-            if (entry.second.meshId != UINT32_MAX)
-                oldTransparentSlots[entry.first] = entry.second.meshId;
-        }
-        pendingOldBrushTransparentChunks.clear();
-    }
-
-    if (batch.empty()) {
-        // No new geometry yet (tessellation hasn't completed). Keep old
-        // geometry visible — don't free anything. On the next rebuild,
-        // stageOldBrushChunks will re-capture these same slots.
-        return;
-    }
-
-    std::unordered_set<NodeID> matchedNids;
-    // The brush queue holds ONE entry per (chunk, level) pair; each entry
-    // carries exactly ONE LoDMesh. Tessellation runs on worker threads, so a
-    // chunk's ladder levels arrive in arbitrary order — the shared core
-    // publishes each AS RECEIVED into its static row of the chunk's single
-    // slot (keyed by base NodeID in the IR mesh map, so all levels resolve to
-    // the same slot).
-    publishPendingLadders(app, batch, brushIR, waterIR,
-        // The brush stream does not track chunks in the ChunkManager: slot
-        // free/erase bookkeeping lives in the brush maps below.
-        false,
-        // takeOldSlot: capture the old slot for this chunk (consumed once —
-        // the whole ladder shares it; cleanup deferred until the new upload
-        // completes) and remember it as matched so the orphan sweep below
-        // does not free a slot that is being reused.
-        [&matchedNids, &oldSolidSlots, &oldTransparentSlots](Layer layer, NodeID nid) -> uint32_t {
-            auto& oldMap = (layer == LAYER_OPAQUE) ? oldSolidSlots : oldTransparentSlots;
-            auto it = oldMap.find(nid);
-            if (it == oldMap.end()) return UINT32_MAX;
-            const uint32_t slot = it->second;
-            oldMap.erase(it);
-            matchedNids.insert(nid);
-            return slot;
-        },
-        // onChunkPublished: record the published slot/version in the brush
-        // chunks map (keyed by the base chunk id, one slot per chunk) so the
-        // erase callback can free it later.
-        [this](Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version) {
-            auto& chunkMap = (layer == LAYER_OPAQUE)
-                ? this->brushSolidChunks : this->brushTransparentChunks;
-            chunkMap[nid] = Model3DVersion{slotIdx, version};
-        },
-        // onFinestPublished: the brush scene drives no vegetation.
-        [](NodeID, const Geometry&) {});
-
-    // Free orphaned old slots whose NodeID no longer appears in the new set.
-    // These chunks were removed in the rebuild and have stale geometry at the
-    // old brush position — they must not linger as visible garbage.
-    for (auto& [nid, oldSlot] : oldSolidSlots) {
-        if (!matchedNids.count(nid) && brushSolidChunks.find(nid) == brushSolidChunks.end())
-            brushIR.removeMeshSlotted(oldSlot);
-    }
-    for (auto& [nid, oldSlot] : oldTransparentSlots) {
-        if (!matchedNids.count(nid) && brushTransparentChunks.find(nid) == brushTransparentChunks.end())
-            waterIR.removeMeshSlotted(oldSlot);
-    }
+#endif
 }
 
 // ── Slotted mode chunk processing ──────────────────────────────────────────
@@ -1609,16 +1608,8 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
                                     uint32_t vertexBytesPerChunk,
                                     uint32_t indexBytesPerChunk)
 {
-    // Initialize the stable slot pool on both solid and water indirect renderers.
-    // This pre-allocates GPU buffers and switches them to slotted mode, where
-    // each chunk gets a fixed slot that is updated independently — NO global
-    // rebuilds. Solid and water pools are sized independently (solid is the
-    // dense layer; water is sparse), so the GPU budget goes where it is needed.
-    IndirectRenderer& solidIR = solidRenderer->getIndirectRenderer();
-    IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
-
-    solidIR.initSlots(app, maxSolidChunks, vertexBytesPerChunk, indexBytesPerChunk);
-    waterIR.initSlots(app, maxWaterChunks, vertexBytesPerChunk, indexBytesPerChunk);
+    mainSolidRenderer->getIndirectRenderer().initSlots(app, maxSolidChunks, vertexBytesPerChunk, indexBytesPerChunk);
+    mainLiquidRenderer->getIndirectRenderer().initSlots(app, maxWaterChunks, vertexBytesPerChunk, indexBytesPerChunk);
 
     std::cout << "[SceneRenderer] slotted pools: solid=" << maxSolidChunks
               << " water=" << maxWaterChunks
@@ -1627,14 +1618,12 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
               << ((uint64_t)(maxSolidChunks + maxWaterChunks) * (vertexBytesPerChunk + indexBytesPerChunk) >> 20)
               << " MB device-local)" << std::endl;
 
-    slottedModeEnabled = true;
 }
 
 bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
                                          const OctreeNodeData& nd,
                                          const Geometry& geom, uint32_t version)
 {
-    if (!slottedModeEnabled) return false;
 
     // Queue the geometry for main-thread GPU upload.
     // NOTE: markDirty + beginBuild were already called in the change handler
@@ -1643,9 +1632,12 @@ bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
     // addMeshSlotted + uploadSlot, then the upload completion callback calls
     // finishUpload → ReadyToSwap → processChunkSwapQueue atomically swaps.
     {
+        // All streams share ONE pending queue (main solid/water + brush
+        // solid/water); entries are tagged isBrush=false here since this path
+        // feeds the main scene.
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
-        Octree::LoDMesh lod = {geom, 0, nd.cube.getLength().x};
-        pendingMeshQueue.push_back({layer, nid, std::move(lod), nd});
+        Octree::LoDMesh lod = {geom, /*lod*/ 0, /*version*/ version, nd.cube.getLength().x, /*maxLevel*/ 0};
+        pendingMeshQueue[nid] = {layer, nid, std::move(lod), nd, /*isBrush=*/false};
     }
 
     return true;
@@ -1653,8 +1645,6 @@ bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
 
 void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
 {
-    if (!slottedModeEnabled) return;
-
     // Drain the swap queue: mark each ready chunk's new mesh version as
     // current. GPU slot data was already installed by the upload completion
     // callback, so no resource cleanup is needed here.
@@ -1684,14 +1674,14 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     const float cubeLength = nodeData.cube.getLength().x;
     const uint8_t maxLevel = scene.maxChunkLod(layer, minSize);
 
-    scene.requestModel3D(layer, nodeData, [&layer,&nid,&nodeData,&onGeometry,cubeLength,maxLevel](const Geometry& geo, uint8_t lod, uint version) {
+    scene.requestModel3D(layer, nodeData, [&layer,&nid,&nodeData,&onGeometry,cubeLength,maxLevel](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId) {
         Octree::LoDMesh lm;
         lm.geom = geo;
         lm.lod = lod;
         lm.version = version;
         lm.cellSize = cubeLength;
         lm.maxLevel = maxLevel;
-        onGeometry(layer, nid, lm);
+        onGeometry(layer, reinterpret_cast<NodeID>(emittingNodeId), lm);
     }, poolOverride);
 
 
@@ -1799,14 +1789,14 @@ void SceneRenderer::generateVegetationForNode(VulkanApp* app, NodeID nid, const 
 }
 
 size_t SceneRenderer::getTransparentModelCount() {
-    return transparentChunks.size();
+    return mainLiquidChunks.size();
 }
 
 bool SceneRenderer::hasModelForNode(Layer layer, NodeID nid) const {
     if (layer == LAYER_OPAQUE) {
-        return solidChunks.find(nid) != solidChunks.end();
+        return mainSolidChunks.find(nid) != mainSolidChunks.end();
     } else {
-        return transparentChunks.find(nid) != transparentChunks.end();
+        return mainLiquidChunks.find(nid) != mainLiquidChunks.end();
     }
 }
 
@@ -1816,7 +1806,7 @@ void SceneRenderer::updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData
     std::vector<DebugSDFRenderer::CubeSDF> cubes;
     collectLeafSDFCubes(nd.node, nd.cube, *tree.allocator, cubes);
 
-    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+    std::lock_guard<std::recursive_mutex> lock(debugSDFCubesMutex);
     if (cubes.empty()) {
         nodeDebugSDFCubes.erase(nid);
     } else {
@@ -1825,17 +1815,17 @@ void SceneRenderer::updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData
 }
 
 void SceneRenderer::removeDebugSDFCubesForNode(NodeID id) {
-    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+    std::lock_guard<std::recursive_mutex> lock(debugSDFCubesMutex);
     nodeDebugSDFCubes.erase(id);
 }
 
 void SceneRenderer::clearDebugSDFCubes() {
-    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+    std::lock_guard<std::recursive_mutex> lock(debugSDFCubesMutex);
     nodeDebugSDFCubes.clear();
 }
 
 std::vector<DebugSDFRenderer::CubeSDF> SceneRenderer::getDebugSDFCubes() {
-    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+    std::lock_guard<std::recursive_mutex> lock(debugSDFCubesMutex);
     std::vector<DebugSDFRenderer::CubeSDF> out;
     size_t total = 0;
     for (const auto& entry : nodeDebugSDFCubes) {
@@ -1867,17 +1857,26 @@ void SceneRenderer::addDebugCubeForGeometry(Layer layer, NodeID nid, const Octre
 
 
 void SceneRenderer::clearBrushMeshes() {
-    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+    std::lock_guard<std::recursive_mutex> lock(brushSolidChunksMutex);
 
     // Drain any stale entries from a previous rebuild that haven't been
-    // processed yet (processPendingBrushMeshes runs once per frame in update()).
+    // processed yet (processPendingMeshes runs once per frame in update()).
     {
-        std::lock_guard<std::mutex> pqLock(brushPendingMutex);
-        brushPendingQueue.clear();
+        // Drain any stale brush entries from the shared queue (main-scene
+        // entries are unaffected — this only touches isBrush-tagged ones).
+        // processPendingMeshes runs once per frame in update().
+        std::lock_guard<std::mutex> pqLock(pendingMeshMutex);
+        for (auto it = pendingMeshQueue.begin(); it != pendingMeshQueue.end(); ) {
+            if (it->second.isBrush) {
+                it = pendingMeshQueue.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     IndirectRenderer& brushIR = brushSolidIndirectRenderer;
-    IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
+    IndirectRenderer& brushWaterIR = brushLiquidIndirectRenderer;
 
     // Remove all brush opaque meshes from the dedicated brush solid IR.
     for (auto &entry : brushSolidChunks) {
@@ -1887,23 +1886,28 @@ void SceneRenderer::clearBrushMeshes() {
     }
     brushSolidChunks.clear();
 
-    // Remove brush transparent meshes from the shared water IR.
+    // Remove brush transparent meshes from the dedicated brush liquid IR.
     for (auto &entry : brushTransparentChunks) {
         if (entry.second.meshId != UINT32_MAX) {
-            waterIR.removeMeshSlotted(entry.second.meshId);
+            brushWaterIR.removeMeshSlotted(entry.second.meshId);
         }
     }
     brushTransparentChunks.clear();
 }
 
 void SceneRenderer::stageOldBrushChunks() {
-    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
-    for (auto& entry : brushSolidChunks) {
-        pendingOldBrushChunks[entry.first] = entry.second;
+    {
+        std::lock_guard<std::recursive_mutex> lock(brushSolidChunksMutex);
+        for (auto& entry : brushSolidChunks) {
+            pendingOldBrushSolidChunks[entry.first] = entry.second;
+        }
+        brushSolidChunks.clear();
     }
-    brushSolidChunks.clear();
-    for (auto& entry : brushTransparentChunks) {
-        pendingOldBrushTransparentChunks[entry.first] = entry.second;
+    {
+        std::lock_guard<std::recursive_mutex> lock(brushTransparentChunksMutex);
+        for (auto& entry : brushTransparentChunks) {
+            pendingOldBrushLiquidChunks[entry.first] = entry.second;
+        }
+        brushTransparentChunks.clear();
     }
-    brushTransparentChunks.clear();
 }

@@ -392,10 +392,10 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
                 }
             }
             // Water renderer (water geometry depth, per-frame)
-            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer && sceneRenderer->waterRenderer) {
+            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer && sceneRenderer->mainLiquidRenderer) {
                 for (uint32_t f = 0; f < 2; ++f) {
-                    if (srcImage == sceneRenderer->waterRenderer->getWaterGeomDepthImage(f)) {
-                        trackedOld = sceneRenderer->waterRenderer->getWaterGeomDepthLayout(f);
+                    if (srcImage == sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(f)) {
+                        trackedOld = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthLayout(f);
                         break;
                     }
                 }
@@ -571,10 +571,10 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
                 }
             }
         }
-        if (sceneRenderer && sceneRenderer->waterRenderer) {
+        if (sceneRenderer && sceneRenderer->mainLiquidRenderer) {
             for (uint32_t f = 0; f < 2; ++f) {
-                if (srcImage == sceneRenderer->waterRenderer->getWaterGeomDepthImage(f)) {
-                    sceneRenderer->waterRenderer->setWaterGeomDepthLayout(f, finalTrackedLayout);
+                if (srcImage == sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(f)) {
+                    sceneRenderer->mainLiquidRenderer->setWaterGeomDepthLayout(f, finalTrackedLayout);
                     break;
                 }
             }
@@ -933,7 +933,7 @@ void RenderTargetsWidget::invalidateImGuiDescriptors() {
 }
 
 void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
-    if (!sceneRenderer || !sceneRenderer->waterRenderer) return;
+    if (!sceneRenderer || !sceneRenderer->mainLiquidRenderer) return;
 
     // Debug: print resource counts before cleanup (helps track leaks)
     if (app) {
@@ -1003,7 +1003,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         } break;
 
         case PreviewTarget::WaterColor: {
-            VkImageView waterView = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
+            VkImageView waterView = (sceneRenderer && sceneRenderer->mainLiquidRenderer) ? sceneRenderer->mainLiquidRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
             if (waterView != VK_NULL_HANDLE && waterColorDescriptor == VK_NULL_HANDLE) {
                 waterColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 waterColorDescriptorOwned = true;
@@ -1059,7 +1059,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         // Back-face depth pass
         // Back-face depth pass (use perspective linearization)
-        if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE) {
+        if (sceneRenderer && sceneRenderer->mainLiquidRenderer && linearizePipeline != VK_NULL_HANDLE) {
             // Use the current frame slot's depth image — its in-flight fence
             // was already waited on by drawFrame(). Any other slot may still
             // be executing on the GPU, causing a sync hazard.
@@ -1075,16 +1075,16 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         }
 
         // Water front-face depth pass (linearize the water geometry depth buffer)
-        if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE && waterDepthLinearView != VK_NULL_HANDLE) {
+        if (sceneRenderer && sceneRenderer->mainLiquidRenderer && linearizePipeline != VK_NULL_HANDLE && waterDepthLinearView != VK_NULL_HANDLE) {
             // Use the current frame slot's depth image — its in-flight fence
             // was already waited on by drawFrame(). Any other slot may still
             // be executing on the GPU, causing a sync hazard.
             uint32_t producerFrame = frameIndex;
-            VkImageView src = sceneRenderer->waterRenderer->getWaterGeomDepthView(producerFrame);
+            VkImageView src = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthView(producerFrame);
             if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, sceneRenderer->waterRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler, waterDepthLinearView,
+                runLinearizePass(app, sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler, waterDepthLinearView,
                                  waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 1.0f);
             }
@@ -1232,7 +1232,7 @@ void RenderTargetsWidget::render() {
     ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen, ImGuiWindowFlags_AlwaysAutoResize);
     if (!wg.visible()) return;
 
-    if (!sceneRenderer || !sceneRenderer->waterRenderer || !solidRenderer) {
+    if (!sceneRenderer || !sceneRenderer->mainLiquidRenderer || !solidRenderer) {
         ImGui::TextUnformatted("Renderers not available.");
         return;
     }

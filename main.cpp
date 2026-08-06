@@ -97,15 +97,39 @@
 // instead. Returns the pair of renderer-side lambdas; the caller wires them
 // behind a UniqueChangeCollector dedup stage and dispatches on the main
 // thread.
-std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(SceneRenderer* renderer, VulkanApp* app, Scene* scene,
-              Layer layer, float minSize, ThreadPool* genPool, bool isBrush) {
-    const bool isOpaque = (layer == LAYER_OPAQUE);
+//
+// Everything that differs between a space (solid vs water, main vs brush)
+// lives in this one struct so build() has no space-type branching — the four
+// call sites below only fill in a few fields each.
+struct PublishTarget {
+    // Where finished meshes are queued for main-thread GPU upload. ONE shared
+    // queue for every stream (main solid/water + brush solid/water); each
+    // entry is keyed by its emitting octree node id and carries its own
+    // single LoDMesh (no ladder structures anywhere).
+    std::unordered_map<NodeID, SceneRenderer::PendingMeshData>& meshData;
+    std::mutex& queueMutex;
+    // Chunk registry whose entries are removed on delete (solid/transparent vs brush).
+    std::unordered_map<NodeID, Model3DVersion>& chunks;
+    // Mutex guarding [chunks] (per-space, chosen by the caller).
+    std::recursive_mutex& chunksMutex;
+    // IndirectRenderer owning the meshes (removeMesh/removeMeshSlotted).
+    IndirectRenderer& indirect;
+    // Deferred slot-registry on delete (solid/water) — only used when
+    // chunkManaged + slotted mode.
+    std::unordered_map<NodeID, SceneRenderer::PendingDeleteEntry>& deferredSlots;
+    // True → main scene: ChunkManager state machine + SDF debug markers +
+    // slot deferral on delete. False → brush scene: dedicated brush maps / IR.
+    bool chunkManaged;
+};
 
-    Octree::OctreeNodeDataHandler onAdded = [renderer, app, scene, layer, minSize, genPool, isBrush](const OctreeNodeData& nd) {
+std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(SceneRenderer* renderer, VulkanApp* app, Scene* scene,
+              Layer layer, float minSize, ThreadPool* genPool, const PublishTarget& target) {
+
+    Octree::OctreeNodeDataHandler onAdded = [renderer, app, scene, layer, minSize, genPool, target](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
 
-        if (!isBrush) {
+        if (target.chunkManaged) {
             // Debug markers for the main scene only (no SDF cubes for brush).
             if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
                 const Octree& debugTree = (layer == LAYER_OPAQUE)
@@ -116,7 +140,7 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
             // Phase 1: mark dirty and begin build IMMEDIATELY when the octree
             // change is detected (before tessellation is dispatched to the
             // worker pool). This transitions Clean → Queued → BuildingCPU.
-            if (renderer->slottedModeEnabled && renderer->world()) {
+            if (renderer->world()) {
                 renderer->world()->chunkManager().markDirty(cid, nd.node->version);
                 renderer->world()->chunkManager().beginBuild(cid);
             }
@@ -128,60 +152,35 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
         // queued as its own entry — the consumer reassembles per-chunk ladders
         // and accumulates slot sub-offsets across levels.
         renderer->processNodeLayer(*scene, layer, nid, nodeCopy,
-            [renderer, cid, nodeCopy, isBrush](Layer layer_, NodeID nid_, const Octree::LoDMesh& lodMesh) {
+            [renderer, cid, nodeCopy, target](Layer layer_, NodeID nid_, const Octree::LoDMesh& lodMesh) {
                 if (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty()) {
                     return; // no surface at this level: nothing to publish
                 }
-                if (!isBrush && lodMesh.lod == 0) {
+                if (target.chunkManaged && lodMesh.lod == 0) {
                     // Phase 3: tessellation complete on a worker thread. The
                     // level-0 (finest) geometry is the chunk mesh; coarse
                     // levels live in shared slot regions. Only the octree
                     // version is tracked here — GPU data goes through slots.
-                    if (renderer->slottedModeEnabled && renderer->world()) {
+                    if (renderer->world()) {
                         renderer->world()->chunkManager().finishBuild(cid, lodMesh.version);
                     }
                 }
-                // Phase 4: Queue for main-thread GPU upload (one entry per
-                // level, ascending). Brush meshes use the dedicated brush
-                // queue so interactive editing never gates the streaming
-                // solid/water generation.
-                if (isBrush) {
-                    std::lock_guard<std::mutex> lock(renderer->brushPendingMutex);
-                    renderer->brushPendingQueue.push_back({layer_, nid_, lodMesh, nodeCopy});
-                } else {
-                    std::lock_guard<std::mutex> lock(renderer->pendingMeshMutex);
-                    renderer->pendingMeshQueue.push_back({layer_, nid_, lodMesh, nodeCopy});
-                }
+                // Phase 4: Queue for main-thread GPU upload. The map is keyed
+                // by the emitting octree node id (one entry per octree node;
+                // pushing again for the same node overwrites in place, so the
+                // last tessellation result wins). One shared queue for every
+                // stream — each entry is tagged brush vs main.
+                std::lock_guard<std::mutex> lock(target.queueMutex);
+                target.meshData[nid_] = {layer_, nid_, lodMesh, nodeCopy, /*isBrush=*/!target.chunkManaged};
             },
             minSize,
             genPool);
     };
 
-    Octree::OctreeNodeDataHandler onDeleted = [renderer, app, isOpaque, isBrush](const OctreeNodeData& nd) {
+    Octree::OctreeNodeDataHandler onDeleted = [renderer, app, target](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
 
-        if (isBrush) {
-            // Brush chunks live in the dedicated brush maps + brush IR.
-            std::lock_guard<std::recursive_mutex> lock(renderer->chunksMutex);
-            if (isOpaque) {
-                auto it = renderer->brushSolidChunks.find(nid);
-                if (it != renderer->brushSolidChunks.end()) {
-                    if (it->second.meshId != UINT32_MAX)
-                        renderer->brushSolidIndirectRenderer.removeMeshSlotted(it->second.meshId);
-                    renderer->brushSolidChunks.erase(it);
-                }
-            } else {
-                auto it = renderer->brushTransparentChunks.find(nid);
-                if (it != renderer->brushTransparentChunks.end()) {
-                    if (it->second.meshId != UINT32_MAX)
-                        renderer->waterRenderer->getIndirectRenderer().removeMeshSlotted(it->second.meshId);
-                    renderer->brushTransparentChunks.erase(it);
-                }
-            }
-            return;
-        }
-
-        if (renderer->slottedModeEnabled && renderer->world()) {
+        if (target.chunkManaged && renderer->world()) {
             // One slot per chunk (the whole LoD ladder shares it): defer the
             // chunk's single slot until its matching re-publish completes (or
             // it ages out in processPendingMeshes). Don't free immediately —
@@ -191,32 +190,35 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
             const ChunkManager::ChunkId base = static_cast<ChunkManager::ChunkId>(nid);
             uint32_t sidx = renderer->world()->chunkManager().getSlotIndex(base);
             if (sidx != UINT32_MAX) {
-                if (isOpaque)
-                    renderer->pendingDeleteSolidSlots[nid] = {sidx, app->getCurrentFrame()};
-                else
-                    renderer->pendingDeleteWaterSlots[nid] = {sidx, app->getCurrentFrame()};
+                target.deferredSlots[nid] = {sidx, app->getCurrentFrame()};
             }
             renderer->world()->chunkManager().removeChunk(base);
-        } else {
-            std::lock_guard<std::recursive_mutex> lock(renderer->chunksMutex);
-            if (isOpaque) {
-                auto it = renderer->solidChunks.find(nid);
-                if (it != renderer->solidChunks.end()) {
-                    if (it->second.meshId != UINT32_MAX)
-                        renderer->solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
-                    renderer->solidChunks.erase(it);
+            renderer->removeDebugCubeForNode(nid);
+            renderer->removeDebugSDFCubesForNode(nid);
+            return;
+        }
+
+        // Legacy (append-based) main scene or brush scene: the chunk's mesh
+        // is removed immediately from the target's chunk map + indirect
+        // renderer. Brush meshes live in the brush IR (slotted removal); the
+        // legacy main scene uses the append-based removal path.
+        {
+            std::lock_guard<std::recursive_mutex> lock(target.chunksMutex);
+            auto it = target.chunks.find(nid);
+            if (it != target.chunks.end()) {
+                if (it->second.meshId != UINT32_MAX) {
+                    if (target.chunkManaged)
+                        target.indirect.removeMesh(it->second.meshId);
+                    else
+                        target.indirect.removeMeshSlotted(it->second.meshId);
                 }
-            } else {
-                auto it = renderer->transparentChunks.find(nid);
-                if (it != renderer->transparentChunks.end()) {
-                    if (it->second.meshId != UINT32_MAX)
-                        renderer->waterRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
-                    renderer->transparentChunks.erase(it);
-                }
+                target.chunks.erase(it);
             }
         }
-        renderer->removeDebugCubeForNode(nid);
-        renderer->removeDebugSDFCubesForNode(nid);
+        if (target.chunkManaged) {
+            renderer->removeDebugCubeForNode(nid);
+            renderer->removeDebugSDFCubesForNode(nid);
+        }
     };
     return { onAdded, onDeleted };
 }
@@ -684,22 +686,83 @@ public:
         Scene* sceneForChanges = &world->scene();
         float minSize = 30.0f;
         std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> mainOpaqueHandlers = build(
-            sceneRenderer, this, sceneForChanges, LAYER_OPAQUE, minSize, &sceneRenderer->solidGenPool, false);
+            sceneRenderer, 
+            this, 
+            sceneForChanges, 
+            LAYER_OPAQUE, 
+            minSize, 
+            &sceneRenderer->mainSolidGenPool,
+            
+            {
+                sceneRenderer->pendingMeshQueue,
+                sceneRenderer->pendingMeshMutex,
+                sceneRenderer->mainSolidChunks,
+                sceneRenderer->mainSolidChunksMutex,
+                sceneRenderer->mainSolidRenderer->getIndirectRenderer(), 
+                sceneRenderer->pendingDeleteSolidSlots, 
+                true
+            }
+        );
         mainSolidAddHandler = mainOpaqueHandlers.first;
         mainSolidRemoveHandler = mainOpaqueHandlers.second;
 
         std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> mainTransparentHandlers = build(
-            sceneRenderer, this, sceneForChanges, LAYER_TRANSPARENT, minSize, &sceneRenderer->waterGenPool, false);
+            sceneRenderer, 
+            this, 
+            sceneForChanges, 
+            LAYER_TRANSPARENT, 
+            minSize, 
+            &sceneRenderer->mainWaterGenPool,
+            {
+                sceneRenderer->pendingMeshQueue,
+                sceneRenderer->pendingMeshMutex,
+                sceneRenderer->mainLiquidChunks,
+                sceneRenderer->mainLiquidChunksMutex,
+                sceneRenderer->mainLiquidRenderer->getIndirectRenderer(), 
+                sceneRenderer->pendingDeleteWaterSlots, 
+                true
+            }
+        );
         mainLiquidAddHandler = mainTransparentHandlers.first;
         mainLiquidRemoveHandler = mainTransparentHandlers.second;
 
         std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> brushOpaqueHandlers = build(
-            sceneRenderer, this, world->brushScene(), LAYER_OPAQUE, minSize, &sceneRenderer->brushGenPool, true);
+            sceneRenderer,
+            this, 
+            world->brushScene(), 
+            LAYER_OPAQUE, 
+            minSize, 
+            &sceneRenderer->brushSolidGenPool,
+            {
+                sceneRenderer->pendingMeshQueue,
+                sceneRenderer->pendingMeshMutex,
+                sceneRenderer->brushSolidChunks,
+                sceneRenderer->brushSolidChunksMutex,
+                sceneRenderer->brushSolidIndirectRenderer, 
+                sceneRenderer->pendingDeleteSolidSlots, 
+                false
+            }
+        );
         brushSolidAddHandler = brushOpaqueHandlers.first;
         brushSolidRemoveHandler = brushOpaqueHandlers.second;
 
         std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> brushTransparentHandlers = build(
-            sceneRenderer, this, world->brushScene(), LAYER_TRANSPARENT, minSize, &sceneRenderer->brushGenPool, true);
+            sceneRenderer,
+            this, 
+            world->brushScene(), 
+            LAYER_TRANSPARENT, 
+            minSize, 
+            &sceneRenderer->brushWaterGenPool,
+            {
+                sceneRenderer->pendingMeshQueue,
+                sceneRenderer->pendingMeshMutex,
+                sceneRenderer->brushTransparentChunks,
+                sceneRenderer->brushTransparentChunksMutex,
+                sceneRenderer->brushLiquidIndirectRenderer, 
+                sceneRenderer->pendingDeleteWaterSlots, 
+                false
+            }
+        );
         brushLiquidAddHandler = brushTransparentHandlers.first;
         brushLiquidRemoveHandler = brushTransparentHandlers.second;
 
@@ -754,11 +817,11 @@ public:
         // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings, &shadowParams);
         // Water UI uses the application-owned water params vector and updates GPU state explicitly.
-        waterWidget = std::make_shared<WaterWidget>(sceneRenderer->waterRenderer.get(), &waterParams);
+        waterWidget = std::make_shared<WaterWidget>(sceneRenderer->mainLiquidRenderer.get(), &waterParams);
 
         renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
             this,
-            sceneRenderer, sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get(),
+            sceneRenderer, sceneRenderer->mainSolidRenderer.get(), sceneRenderer->skyRenderer.get(),
             sceneRenderer->shadowMapper.get(), &shadowParams);
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
@@ -924,13 +987,13 @@ public:
         // thread.  GPU uploads happen here on the main thread so newly generated
         // chunks become visible progressively without blocking the render loop.
         // Process pending meshes at a controlled rate (10 per frame).
-        // Chunks closest to the camera are uploaded first.
-        if (sceneRenderer && !isLoading)
-            sceneRenderer->processPendingMeshes(this, camera.getPosition());
-
-        // Brush meshes drain from their OWN queue (decoupled from solid/water).
-        if (sceneRenderer && !isLoading)
-            sceneRenderer->processPendingBrushMeshes(this, camera.getPosition());
+        // Chunks closest to the camera are uploaded first. Drains both the
+        // main scene and brush scene entries from the ONE shared queue.
+        if (sceneRenderer && !isLoading) {
+            std::deque<SceneRenderer::PendingMeshData> pendingBatch;
+            sceneRenderer->drainPendingMeshes(pendingBatch, 16);
+            sceneRenderer->processPendingMeshes(this, camera.getPosition(), pendingBatch);
+        }
 
 #ifdef DEBUG
         // VRAM headroom watchdog: on 4 GB iGPUs (e.g. Radeon 680M) exceeding
@@ -1123,7 +1186,7 @@ public:
         // Null checks mirror existing guards in the render code below.
         sceneRenderer->frameCmdState.reset();
         if (sceneRenderer->shadowMapper) sceneRenderer->shadowMapper->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->solidRenderer) sceneRenderer->solidRenderer->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->mainSolidRenderer) sceneRenderer->mainSolidRenderer->setCmdState(&sceneRenderer->frameCmdState);
         if (sceneRenderer->skyRenderer) sceneRenderer->skyRenderer->setCmdState(&sceneRenderer->frameCmdState);
         if (sceneRenderer->vegetationRenderer) sceneRenderer->vegetationRenderer->setCmdState(&sceneRenderer->frameCmdState);
         if (sceneRenderer->postProcessRenderer) sceneRenderer->postProcessRenderer->setCmdState(&sceneRenderer->frameCmdState);
@@ -1132,15 +1195,15 @@ public:
         if (sceneRenderer->solidWireframe) sceneRenderer->solidWireframe->setCmdState(&sceneRenderer->frameCmdState);
         if (sceneRenderer->waterWireframe) sceneRenderer->waterWireframe->setCmdState(&sceneRenderer->frameCmdState);
         if (sceneRenderer->solid360Renderer) sceneRenderer->solid360Renderer->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->waterRenderer) sceneRenderer->waterRenderer->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->solidRenderer) sceneRenderer->solidRenderer->getIndirectRenderer().setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->mainLiquidRenderer) sceneRenderer->mainLiquidRenderer->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->mainSolidRenderer) sceneRenderer->mainSolidRenderer->getIndirectRenderer().setCmdState(&sceneRenderer->frameCmdState);
 
         // ── GPU culling: must run BEFORE shadow pass so drawPrepared has
         // current-frame compact/visibleCount buffers populated. ──
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
-        sceneRenderer->solidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-        sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+        sceneRenderer->mainSolidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
+        sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         sceneRenderer->brushSolidIndirectRenderer.acquireBuffers(commandBuffer);
         sceneRenderer->brushSolidIndirectRenderer.prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
@@ -1150,9 +1213,14 @@ public:
         // shadow cascade reads the fresh (current-frame) LoD selection from the
         // shared visibleLods buffer. prepareCull acquires the water buffers
         // internally and must run outside a render pass.
-        if (settings.waterEnabled && sceneRenderer->waterRenderer) {
-            sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+        if (settings.waterEnabled && sceneRenderer->mainLiquidRenderer) {
+            sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         }
+        // Brush liquid (painted water) is drawn inside the water geometry pass
+        // with the water pipeline, so it needs a current-frame cull of its own
+        // (its compact/visibleCount buffers are otherwise stale from the last
+        // prepareCull or uninitialized, which would draw garbage).
+        sceneRenderer->brushLiquidIndirectRenderer.prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
 
@@ -1198,7 +1266,7 @@ public:
         // Transition depth to DEPTH_STENCIL_ATTACHMENT_OPTIMAL for Instance 1 below.
         // (The previous frame left it in SHADER_READ_ONLY after the water pass.)
         {
-            VkImage solidDepthImg = sceneRenderer->solidRenderer->getDepthImage(frameIdx);
+            VkImage solidDepthImg = sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx);
             if (solidDepthImg != VK_NULL_HANDLE) {
                 RendererUtils::transitionImageLayout(
                     commandBuffer, solidDepthImg,
@@ -1280,7 +1348,7 @@ public:
                 vkCmdSetViewport(commandBuffer, 0, 1, &vp);
                 VkRect2D sc{{0,0},{static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())}};
                 vkCmdSetScissor(commandBuffer, 0, 1, &sc);
-                sceneRenderer->solidRenderer->drawDepthExternal(
+                sceneRenderer->mainSolidRenderer->drawDepthExternal(
                     commandBuffer, getMainDescriptorSet(),
                     sceneRenderer->brushSolidIndirectRenderer);
                 vkCmdEndRendering(commandBuffer);
@@ -1323,7 +1391,7 @@ public:
                 vkCmdSetViewport(commandBuffer, 0, 1, &vp);
                 VkRect2D sc{{0,0},{static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())}};
                 vkCmdSetScissor(commandBuffer, 0, 1, &sc);
-                sceneRenderer->solidRenderer->drawBrushColorExternal(
+                sceneRenderer->mainSolidRenderer->drawBrushColorExternal(
                     commandBuffer, getMainDescriptorSet(),
                     sceneRenderer->brushSolidIndirectRenderer);
                 vkCmdEndRendering(commandBuffer);
@@ -1362,7 +1430,7 @@ public:
             this->sceneRenderer->solid360Renderer->renderSolid360(
                 this, commandBuffer,
                 this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
-                this->sceneRenderer->solidRenderer.get(),
+                this->sceneRenderer->mainSolidRenderer.get(),
                 cube360GfxDs,
                 this->sceneRenderer->getBrushDepthDescriptorSet(frameIdx),
                 cube360UBO, ubo360,
@@ -1383,7 +1451,7 @@ public:
         {
             VkRenderingAttachmentInfo depthAtt{};
             depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depthAtt.imageView = sceneRenderer->solidRenderer->getDepthView(frameIdx);
+            depthAtt.imageView = sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
             depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1411,7 +1479,7 @@ public:
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
             if (settings.renderSolid) {
-                sceneRenderer->solidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
+                sceneRenderer->mainSolidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
             }
 
             // Vegetation depth (impostors render depth+color in Instance 2)
@@ -1430,7 +1498,7 @@ public:
 
         // Transition color to COLOR_ATTACHMENT_OPTIMAL for Instance 2 below.
         {
-            VkImage solidColorImg = sceneRenderer->solidRenderer->getColorImage(frameIdx);
+            VkImage solidColorImg = sceneRenderer->mainSolidRenderer->getColorImage(frameIdx);
             if (solidColorImg != VK_NULL_HANDLE) {
                 RendererUtils::transitionImageLayout(
                     commandBuffer, solidColorImg,
@@ -1445,7 +1513,7 @@ public:
         {
             VkRenderingAttachmentInfo colorAtt{};
             colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            colorAtt.imageView = sceneRenderer->solidRenderer->getColorView(frameIdx);
+            colorAtt.imageView = sceneRenderer->mainSolidRenderer->getColorView(frameIdx);
             colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1453,7 +1521,7 @@ public:
 
             VkRenderingAttachmentInfo depthAtt{};
             depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depthAtt.imageView = sceneRenderer->solidRenderer->getDepthView(frameIdx);
+            depthAtt.imageView = sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
             depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -1494,7 +1562,7 @@ public:
             // Solid geometry color (LESS_OR_EQUAL, no depth write)
             if (settings.renderSolid) {
                 VkDescriptorSet brushDepthSet = sceneRenderer->getBrushDepthDescriptorSet(frameIdx);
-                sceneRenderer->solidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet(), brushDepthSet);
+                sceneRenderer->mainSolidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet(), brushDepthSet);
             }
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -1539,8 +1607,8 @@ public:
                         boxes.push_back({BoundingBox(glm::vec3(mi.boundsMin), glm::vec3(mi.boundsMax)), color});
                     });
                 };
-                gatherBoxesFrom(sceneRenderer->solidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 1.0f, 0.0f));
-                gatherBoxesFrom(sceneRenderer->waterRenderer->getIndirectRenderer(), glm::vec3(0.0f, 0.5f, 1.0f));
+                gatherBoxesFrom(sceneRenderer->mainSolidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 1.0f, 0.0f));
+                gatherBoxesFrom(sceneRenderer->mainLiquidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 0.5f, 1.0f));
                 if (!boxes.empty()) {
                     sceneRenderer->boundingBoxRenderer->setCubes(boxes);
                     sceneRenderer->boundingBoxRenderer->render(this, commandBuffer, getMainDescriptorSet());
@@ -1566,8 +1634,8 @@ public:
         // The water pass's initializeGeomDepthFromSceneDepth expects the scene depth
         // in SHADER_READ_ONLY_OPTIMAL (it transitions to TRANSFER_SRC internally).
         {
-            VkImage solidColorImg = sceneRenderer->solidRenderer->getColorImage(frameIdx);
-            VkImage solidDepthImg = sceneRenderer->solidRenderer->getDepthImage(frameIdx);
+            VkImage solidColorImg = sceneRenderer->mainSolidRenderer->getColorImage(frameIdx);
+            VkImage solidDepthImg = sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx);
             uint32_t bc = 0;
             VkImageMemoryBarrier2 barriers[2]{};
 
@@ -1611,8 +1679,8 @@ public:
         // If water is disabled, clear its offscreen targets here (outside any active
         // dynamic rendering instance) so the post-process compositor won't sample
         // stale content.
-        if (!waterEnabled && sceneRenderer && sceneRenderer->waterRenderer) {
-            sceneRenderer->waterRenderer->clearRenderTargets(this, commandBuffer, frameIdx);
+        if (!waterEnabled && sceneRenderer && sceneRenderer->mainLiquidRenderer) {
+            sceneRenderer->mainLiquidRenderer->clearRenderTargets(this, commandBuffer, frameIdx);
         }
 
         // Launch asynchronous recording+submit for independent offscreen passes
@@ -1639,7 +1707,7 @@ public:
                 // using this slot (task N) has completed before task N+ASYNC_RING_SIZE
                 // runs, so reusing (and on growth, replacing) the buffers cannot race
                 // with the GPU.
-                IndirectRenderer &ind = this->sceneRenderer->waterRenderer->getIndirectRenderer();
+                IndirectRenderer &ind = this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
                 uint32_t numCmds = std::max({
                     static_cast<uint32_t>(ind.getMeshCount()),
                     static_cast<uint32_t>(ind.getMeshCapacity()),
@@ -1726,7 +1794,7 @@ public:
                 {
                     VkImageView bfBack = (this->sceneRenderer->backFaceRenderer) ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
                     VkImageView bfCube = (this->sceneRenderer->solid360Renderer) ? this->sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-                    VkDescriptorSetLayout wdsLayout = this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSetLayout();
+                    VkDescriptorSetLayout wdsLayout = this->sceneRenderer->mainLiquidRenderer->getWaterDepthDescriptorSetLayout();
                     if (wdsLayout != VK_NULL_HANDLE && bfBack != VK_NULL_HANDLE && bfCube != VK_NULL_HANDLE) {
                         if (slot.pool == VK_NULL_HANDLE) {
                             // Per-slot pool (maxSets=1) so the set is allocated once and
@@ -1751,10 +1819,10 @@ public:
                             }
                         }
                         if (slot.waterDs != VK_NULL_HANDLE) {
-                            VkImageView bfColor = this->sceneRenderer->solidRenderer->getColorView(frameIdx);
-                            VkImageView bfDepth = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
+                            VkImageView bfColor = this->sceneRenderer->mainSolidRenderer->getColorView(frameIdx);
+                            VkImageView bfDepth = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
                             VkImageView bfSky   = (this->sceneRenderer->skyRenderer) ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-                            this->sceneRenderer->waterRenderer->updateSceneTexturesBinding(this, slot.waterDs, bfColor, bfDepth, frameIdx, bfSky, bfBack, bfCube);
+                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs, bfColor, bfDepth, frameIdx, bfSky, bfBack, bfCube);
                             asyncWaterDs = slot.waterDs;
                         }
                     }
@@ -1775,7 +1843,7 @@ public:
                 auto tBackface = std::chrono::high_resolution_clock::now();
                 this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,
                                             ind,
-                                            this->sceneRenderer->waterRenderer->getWaterGeometryPipelineLayout(),
+                                            this->sceneRenderer->mainLiquidRenderer->getWaterGeometryPipelineLayout(),
                                             app->getMainDescriptorSet(),
                                             asyncWaterDs,
                                             (computeDs != VK_NULL_HANDLE) ? slot.compact.buffer : VK_NULL_HANDLE,
@@ -1818,7 +1886,7 @@ public:
             // buffer visibility for the water geometry draw (no re-cull needed —
             // the shadow cascade cull uses separate buffers and did not disturb
             // the main water compact buffer).
-            sceneRenderer->waterRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
+            sceneRenderer->mainLiquidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
             // Use 360° solid+sky reflection instead of the sky-only equirect view
             VkImageView skyView = (sceneRenderer && sceneRenderer->skyRenderer) ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -1829,14 +1897,14 @@ public:
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
 
             // Transition water geometry depth to SRO for the PostProcess compositor
-            VkImage wgdImg = sceneRenderer->waterRenderer->getWaterGeomDepthImage(frameIdx);
+            VkImage wgdImg = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(frameIdx);
             if (wgdImg != VK_NULL_HANDLE) {
                 recordTransitionImageLayoutLayer(commandBuffer, wgdImg,
                     VK_FORMAT_D32_SFLOAT,
-                    sceneRenderer->waterRenderer->getWaterGeomDepthLayout(frameIdx),
+                    sceneRenderer->mainLiquidRenderer->getWaterGeomDepthLayout(frameIdx),
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     1, 0, 1);
-                sceneRenderer->waterRenderer->setWaterGeomDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                sceneRenderer->mainLiquidRenderer->setWaterGeomDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             }
         }
 
@@ -1899,15 +1967,15 @@ public:
                 ImGui::Text("Textures Loaded (CPU): %u", loadedTextureLayers);
 
                 // Opaque (solid)
-                size_t opaqueLoaded = sceneRenderer->solidRenderer->getIndirectRenderer().getMeshCount();
-                uint32_t opaqueVisible = sceneRenderer->solidRenderer->getIndirectRenderer().readVisibleCount(this);
+                size_t opaqueLoaded = sceneRenderer->mainSolidRenderer->getIndirectRenderer().getMeshCount();
+                uint32_t opaqueVisible = sceneRenderer->mainSolidRenderer->getIndirectRenderer().readVisibleCount(this);
                 ImGui::Text("Opaque - Loaded (GPU): %zu  Visible (GPU cull): %u", opaqueLoaded, opaqueVisible);
                 size_t opaqueTracked = sceneRenderer ? sceneRenderer->getRegisteredModelCount() : 0;
                 ImGui::Text("Opaque Models Tracked: %zu", opaqueTracked);
 
                 // Transparent / water
-                size_t transparentLoaded = sceneRenderer && sceneRenderer->waterRenderer ? sceneRenderer->waterRenderer->getIndirectRenderer().getMeshCount() : 0;
-                uint32_t transparentVisible = sceneRenderer && sceneRenderer->waterRenderer ? sceneRenderer->waterRenderer->getIndirectRenderer().readVisibleCount(this) : 0;
+                size_t transparentLoaded = sceneRenderer && sceneRenderer->mainLiquidRenderer ? sceneRenderer->mainLiquidRenderer->getIndirectRenderer().getMeshCount() : 0;
+                uint32_t transparentVisible = sceneRenderer && sceneRenderer->mainLiquidRenderer ? sceneRenderer->mainLiquidRenderer->getIndirectRenderer().readVisibleCount(this) : 0;
                 ImGui::Text("Transparent - Loaded (GPU): %zu  Visible (GPU cull): %u", transparentLoaded, transparentVisible);
                 size_t transparentTracked = sceneRenderer ? sceneRenderer->getTransparentModelCount() : 0;
                 ImGui::Text("Transparent Models Tracked: %zu", transparentTracked);
@@ -2048,25 +2116,15 @@ public:
             return;
         }
 
-        // In slotted mode, the indirect renderer should never be dirty.
-        // Each chunk updates its own fixed slot independently — no global rebuild.
-        // Legacy mode still handles dirty checks in processPendingMeshes().
-        if (!sceneRenderer->slottedModeEnabled) {
-            if (sceneRenderer->solidRenderer->getIndirectRenderer().isDirty()) {
-                sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
-            }
-            if (sceneRenderer->waterRenderer->getIndirectRenderer().isDirty()) {
-                sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
-            }
-        }
+    
 
         uint32_t frameIdx = getCurrentFrame();
 
         // Per-frame cull buffers: each IndirectRenderer needs its own per-frame
         // compact/visibleCount buffer to avoid cross-frame overwrite races.
-        sceneRenderer->solidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
+        sceneRenderer->mainSolidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
         sceneRenderer->brushSolidIndirectRenderer.setCullFrame(frameIdx);
-        sceneRenderer->waterRenderer->getIndirectRenderer().setCullFrame(frameIdx);
+        sceneRenderer->mainLiquidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
 
         glm::mat4 viewProj = camera.getViewProjectionMatrix();
         glm::mat4 invViewProj = glm::inverse(viewProj);
@@ -2081,8 +2139,8 @@ public:
                 brushBackFaceDepthView = sceneRenderer->brushBackFaceRenderer->getBackFaceDepthView(frameIdx);
             }
             VkImageView waterGeomDepthView = VK_NULL_HANDLE;
-            if (sceneRenderer->waterRenderer) {
-                waterGeomDepthView = sceneRenderer->waterRenderer->getWaterGeomDepthView(frameIdx);
+            if (sceneRenderer->mainLiquidRenderer) {
+                waterGeomDepthView = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthView(frameIdx);
             }
             float brushAlpha = 0.5f;
             float brushMode = 0.0f;
@@ -2096,9 +2154,9 @@ public:
             sceneRenderer->postProcessRenderer->render(
                 this,
                 commandBuffer,
-                sceneRenderer->solidRenderer->getColorView(frameIdx),
-                sceneRenderer->solidRenderer->getDepthView(frameIdx),
-                sceneRenderer->waterRenderer->getWaterDepthView(frameIdx),
+                sceneRenderer->mainSolidRenderer->getColorView(frameIdx),
+                sceneRenderer->mainSolidRenderer->getDepthView(frameIdx),
+                sceneRenderer->mainLiquidRenderer->getWaterDepthView(frameIdx),
                 brushColorView,
                 brushDepthView,
                 brushBackFaceDepthView,
@@ -2556,8 +2614,8 @@ void MyApp::preAllocateAsyncDescriptorPools() {
     };
 
     // Backface compute (same layout as water compute)
-    if (sceneRenderer && sceneRenderer->waterRenderer) {
-        auto& waterInd = sceneRenderer->waterRenderer->getIndirectRenderer();
+    if (sceneRenderer && sceneRenderer->mainLiquidRenderer) {
+        auto& waterInd = sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
         allocateComputeRing(cachedBackfaceCompute, waterInd.getComputeDescriptorSetLayout(), "cachedBackfaceCompute");
     }
 }
@@ -2729,7 +2787,7 @@ void MyApp::rebuildBrushScene() {
 
     // No device-wide stall here. The brush flow uses the stable-slot indirect
     // pipeline: clearBrushMeshes() frees old slots, handleEvents() queues geometry,
-    // and processPendingBrushMeshes() commits each mesh independently via
+    // and processPendingMeshes() commits each mesh independently via
     // addMeshSlotted() + uploadSlot() — no global rebuild required.
 
     // Process only the currently-selected brush entry from the manager
@@ -2751,7 +2809,9 @@ void MyApp::rebuildBrushScene() {
 
     if (!selectedEntry) {
         // Nothing to add — free staged old slots immediately.
-        sceneRenderer->processPendingBrushMeshes(this, camera.getPosition());
+        std::deque<SceneRenderer::PendingMeshData> pendingBatch;
+        sceneRenderer->drainPendingMeshes(pendingBatch, 16);
+        sceneRenderer->processPendingMeshes(this, camera.getPosition(), pendingBatch);
         return;
     }
 
@@ -2802,7 +2862,9 @@ void MyApp::rebuildBrushScene() {
     // uploaded, eliminating the progressive "chunk by chunk" visual update.
     // Old staged slots are freed BEFORE new slots are allocated so the
     // 128-slot brush pool is never exhausted by stale old entries.
-    sceneRenderer->processPendingBrushMeshes(this, camera.getPosition());
+    std::deque<SceneRenderer::PendingMeshData> pendingBatch;
+    sceneRenderer->drainPendingMeshes(pendingBatch, 16);
+    sceneRenderer->processPendingMeshes(this, camera.getPosition(), pendingBatch);
 
     // Advance previousTranslate for next frame's sweep (frame-by-frame trail)
     if (selectedEntry && selectedEntry->sweepMode) {
@@ -2862,10 +2924,10 @@ void MyApp::applyBrushToScene() {
     mainLiquidCollector.dispatch(mainLiquidAddHandler, mainLiquidRemoveHandler);
 
     // Mark indirect buffers dirty so the mesh changes are visible
-    sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
-    sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
-    sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
-    sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+    sceneRenderer->mainSolidRenderer->getIndirectRenderer().setDirty(true);
+    sceneRenderer->mainSolidRenderer->getIndirectRenderer().rebuild(this);
+    sceneRenderer->mainLiquidRenderer->getIndirectRenderer().setDirty(true);
+    sceneRenderer->mainLiquidRenderer->getIndirectRenderer().rebuild(this);
 
     // Update previousTranslate for the next sweep apply
     if (entry.sweepMode) {
@@ -3056,7 +3118,7 @@ void MyApp::ensureCubemapResources() {
     // meshCapacity (e.g. 1024); getMeshCount() returns only active meshes (0
     // before the first scene load).  The compact buffer must be sized to the
     // full slot pool so that drawPreparedWithBuffers' maxCount is valid.
-    IndirectRenderer &solidInd = sceneRenderer->solidRenderer->getIndirectRenderer();
+    IndirectRenderer &solidInd = sceneRenderer->mainSolidRenderer->getIndirectRenderer();
     uint32_t solidCmds = std::max({
         static_cast<uint32_t>(solidInd.getMeshCount()),
         static_cast<uint32_t>(solidInd.getMeshCapacity()),
@@ -3071,7 +3133,7 @@ void MyApp::ensureCubemapResources() {
         "cube360Visible");
 
     // 3. Water culling buffers (reallocate if mesh count grew)
-    IndirectRenderer &waterInd = sceneRenderer->waterRenderer->getIndirectRenderer();
+    IndirectRenderer &waterInd = sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
     uint32_t waterCmds = std::max({
         static_cast<uint32_t>(waterInd.getMeshCount()),
         static_cast<uint32_t>(waterInd.getMeshCapacity()),

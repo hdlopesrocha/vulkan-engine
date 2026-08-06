@@ -75,10 +75,10 @@ public:
     std::vector<VkDescriptorSet> shadowDescriptorSets;
 
     std::unique_ptr<ShadowRenderer> shadowMapper;
-    std::unique_ptr<WaterRenderer> waterRenderer;
+    std::unique_ptr<WaterRenderer> mainLiquidRenderer;
     std::unique_ptr<PostProcessRenderer> postProcessRenderer;
     std::unique_ptr<SkyRenderer> skyRenderer;
-    std::unique_ptr<SolidRenderer> solidRenderer;
+    std::unique_ptr<SolidRenderer> mainSolidRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     // Brush offscreen render targets (color + front depth), matching MAX_FRAMES_IN_FLIGHT
     static constexpr uint32_t BRUSH_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
@@ -133,20 +133,27 @@ public:
     };
 
     // Mutex protecting all chunk maps (solid, transparent, brush) and mesh operations
-    std::recursive_mutex chunksMutex;
+    std::recursive_mutex mainSolidChunksMutex;
+    std::recursive_mutex mainLiquidChunksMutex;
+    std::recursive_mutex brushSolidChunksMutex;
+    std::recursive_mutex brushTransparentChunksMutex;
+    std::recursive_mutex pendingOldBrushSolidChunksMutex;
+    std::recursive_mutex pendingOldBrushLiquidChunksMutex;
+    // Debug SDF cube markers are a separate map (not a chunk registry) with
+    // their own guard. Written from the change handlers (build lambdas),
+    // read/cloned on the render thread draw path.
+    std::recursive_mutex debugSDFCubesMutex;
 
     // ── Legacy chunk tracking (append-based, full rebuild) ──
     // Track model ids for transparent/water meshes so we can remove them if erased/updated
-    std::unordered_map<NodeID, Model3DVersion> transparentChunks;
-
-    // Track model ids for opaque/solid meshes (moved from SolidRenderer)
-    std::unordered_map<NodeID, Model3DVersion> solidChunks;
+    std::unordered_map<NodeID, Model3DVersion> mainLiquidChunks;
+    std::unordered_map<NodeID, Model3DVersion> mainSolidChunks;
 
     // Brush scene chunk tracking (separate from main scene)
     std::unordered_map<NodeID, Model3DVersion> brushSolidChunks;
     std::unordered_map<NodeID, Model3DVersion> brushTransparentChunks;
-    std::unordered_map<NodeID, Model3DVersion> pendingOldBrushChunks;
-    std::unordered_map<NodeID, Model3DVersion> pendingOldBrushTransparentChunks;
+    std::unordered_map<NodeID, Model3DVersion> pendingOldBrushSolidChunks;
+    std::unordered_map<NodeID, Model3DVersion> pendingOldBrushLiquidChunks;
 
     // Slots whose chunks were erased but may be replaced (same NodeID, new
     // version). For solid/water the octree node is reused on edit, so NodeID
@@ -172,13 +179,14 @@ public:
     // Cached env-var flags (read once in init(), never per frame)
     bool envDisableWaterGeom = false;
 
-    // Enable the slot-based stable indirect renderer path.
-    // When true, chunks use the slot-based API instead of the legacy
-    // append+rebuild path. This must be set before any chunks are created.
-    bool slottedModeEnabled = true;
+
     // Separate IndirectRenderer for brush solid meshes (so the brush backface
     // buffer only renders brush geometry, not all scene solids).
     IndirectRenderer brushSolidIndirectRenderer;
+    // Separate IndirectRenderer for brush transparent/liquid meshes: brush
+    // water must NOT share the main water IR — the brush preview is rebuilt and
+    // republished independently, so its geometry belongs in a dedicated pool.
+    IndirectRenderer brushLiquidIndirectRenderer;
 
     // Debug cubes for nodes (populated by change handlers after geometry generation)
     std::unordered_map<NodeID, DebugCubeRenderer::CubeWithColor> nodeDebugCubes;
@@ -198,20 +206,20 @@ public:
     std::vector<DebugSDFRenderer::CubeSDF> getDebugSDFCubes();
 
     // Register/inspect opaque model versions (moved from SolidRenderer)
-    size_t getRegisteredModelCount() const { return solidChunks.size(); }
+    size_t getRegisteredModelCount() const { return mainSolidChunks.size(); }
 
     // Remove all registered opaque meshes via IndirectRenderer and clear the map
     void removeAllRegisteredMeshes() {
-        if (!solidRenderer) return;
-        solidRenderer->getIndirectRenderer().removeAllMeshes();
-        solidChunks.clear();
+        if (!mainSolidRenderer) return;
+        mainSolidRenderer->getIndirectRenderer().removeAllMeshes();
+        mainSolidChunks.clear();
     }
 
     // Remove all registered transparent/water meshes and clear the map
     void removeAllTransparentMeshes() {
-        if (!waterRenderer) return;
-        waterRenderer->getIndirectRenderer().removeAllMeshes();
-        transparentChunks.clear();
+        if (!mainLiquidRenderer) return;
+        mainLiquidRenderer->getIndirectRenderer().removeAllMeshes();
+        mainLiquidChunks.clear();
     }
 
     void shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool renderSolid, bool vegetationEnabled, bool shadowTessellationEnabled = false, float lodBias = 8.0f);
@@ -239,11 +247,20 @@ public:
         NodeID         nid;
         Octree::LoDMesh lodMesh;
         OctreeNodeData nodeData;   // world cube of the source node (stable band center)
+        bool           isBrush = false; // brush-scene entry (own IR + slot bookkeeping)
     };
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
-    void processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, GeometryHandler onGeometry, float minSize, ThreadPool* poolOverride = nullptr);
+    void processNodeLayer(
+        Scene& scene, 
+        Layer layer, 
+        NodeID nid, 
+        OctreeNodeData& nodeData, 
+        GeometryHandler onGeometry, 
+        float minSize, 
+        ThreadPool* poolOverride = nullptr
+    );
 
     // ── Slotted-mode chunk processing ────────────────────────────────────────
     // Initialize the slotted rendering pipeline for solid and water layers.
@@ -290,14 +307,17 @@ public:
     void writeBrushDepthDescriptors(VulkanApp* app);
 
     // ── Parallel scene loading ─────────────────────────────────────────────────
-    // Drain the pending mesh queue on the main (render) thread.
-    // Call once per frame from update() before recording command buffers.
-    void processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos);
+    // Drains the shared pending mesh queue (main thread) into a caller-provided
+    // batch, then processes it. Call once per frame from update() before
+    // recording command buffers. Drains BOTH the main scene and brush scene
+    // entries (one shared queue) with a single shared per-frame budget.
+    void drainPendingMeshes(std::deque<PendingMeshData>& out, size_t maxCount);
 
-    // Brush meshes are drained from their OWN queue/drain (not the shared
-    // solid/water pendingMeshQueue) so brush generation + upload are scheduled
-    // independently of solid/water and are no longer gated behind them.
-    void processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPos);
+    // Unify the given pending geometry batch into the GPU. One common path for
+    // the main scene AND the brush scene: each entry routes itself to the right
+    // IndirectRenderer and deferred-slot bookkeeping by (layer, isBrush), so
+    // solid/water geometry is processed the same way as brush geometry.
+    void processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, std::deque<PendingMeshData>& batch);
 
     // Async streaming orchestrator (parallel per-category pools, lock-free
     // queues, drop-in staging upload manager). Currently scaffolded: its
@@ -306,39 +326,41 @@ public:
     streaming::TerrainStreamer streamer;
 
 private:
-    // Shared slotted publish core for a pending mesh batch, used by both the
-    // solid/water stream (processPendingMeshes) and the brush stream
-    // (processPendingBrushMeshes) — they must behave identically. Publishes
-    // each queued geometry chunk AS RECEIVED (no ladder reassembly): every
-    // PendingMeshData is a single LoDMesh at one LoD level. One SLOT per chunk
-    // holds the whole ladder: each level's data lands in its own static row of
-    // the slot (fixed per-level budget, row base from the IR), and each level
-    // publishes its own draw entry (drawIndex = slot * kMaxChunkLevels + level)
-    // for the GPU band test. No per-chunk run grouping, no fit pass, no shared
-    // sub-offsets, no aliases. Returns the number of slots published.
+    // Single publish core for a pending mesh batch — every stream behaves
+    // identically. Publishes each generated geometry chunk AS RECEIVED: every
+    // PendingMeshData is ONE self-contained mesh (no ladder structures). Each
+    // chunk occupies a slot; the mesh lands in the slot row for its LoD level
+    // and publishes its own draw entry. No per-chunk reassembly. Returns the
+    // number of slots published.
     //
-    //  trackChunkManager: true for the solid/water stream (ChunkManager build
-    //                    state + per-chunk slot registry are updated), false
-    //                    for the brush stream (no ChunkManager involvement).
+    // The core selects, per-entry, by (layer, isBrush) which renderers are.
+    // (main solid / brush solid / shared water) and whether the chunk's build
+    // state runs through the ChunkManager (main scene only).
+    //
     //  takeOldSlot:      resolve and consume the old slot for a chunk, or
     //                    UINT32_MAX when none. Callers free it after the new
-    //                    upload completes.
+    //                    upload completes. Receives isBrush so each stream's
+    //                    deferred slot source is the SAME callback.
     //  onChunkPublished: main-thread side effect once a chunk's slot is
     //                    published (the brush stream records its Model3DVersion
-    //                    map; solid/water pass a noop since the slot registry
-    //                    update runs inside the core).
+    //                    map). Receives isBrush.
     //  onFinestPublished: notified with the level-0 (finest) geometry of
-    //                    opaque chunks so they can drive vegetation; the
-    //                    brush stream passes a noop.
-    size_t publishPendingLadders(
+    //                    opaque chunks so they can drive vegetation; brush
+    //                    entries pass a noop.
+    size_t publishPendingMeshes(
         VulkanApp* app,
         std::deque<PendingMeshData>& batch,
         IndirectRenderer& opaqueIR,
+        IndirectRenderer& brushOpaqueIR,
         IndirectRenderer& waterIR,
-        bool trackChunkManager,
-        const std::function<uint32_t(Layer layer, NodeID nid)>& takeOldSlot,
-        const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version)>& onChunkPublished,
-        const std::function<void(NodeID nid, const Geometry& geom)>& onFinestPublished);
+        IndirectRenderer& brushWaterIR,
+        const std::function<uint32_t(Layer layer, NodeID nid, bool isBrush)>& takeOldSlot,
+        const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version, bool isBrush)>& onChunkPublished,
+        const std::function<void(NodeID nid, const Geometry& geom, bool isBrush)>& onFinestPublished);
+
+    // Age out main-stream pending-delete slots older than MAX_FRAMES_IN_FLIGHT
+    // (genuine deletions with no replacement chunk).
+    void ageOutPendingDeletes(uint32_t curFrame, IndirectRenderer& solidIR, IndirectRenderer& waterIR);
 
     // World reference (null until setWorld is called).
     // The World owns ChunkManager and all chunk state.
@@ -354,25 +376,21 @@ public:
     void updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree);
 
     // Thread-safe mesh queue fed by tessellation on the generation pools;
-    // drained on the main thread by processPendingMeshes().
-    mutable std::mutex pendingMeshMutex;
-    std::deque<PendingMeshData> pendingMeshQueue;
+    // drained on the main thread by processPendingMeshes(). ONE shared queue
+    // for every stream (main solid/water + brush solid/water): entries are
+    // tagged with PendingMeshData::isBrush so the drain routes each entry to
+    // the right IndirectRenderer and slot bookkeeping.
+    mutable std::mutex                          pendingMeshMutex;
+    std::unordered_map<NodeID, PendingMeshData> pendingMeshQueue;
 
     // Dedicated generation pools for solid and water so both layers tessellate
     // truly in parallel: neither waits for the other to finish, and neither
     // competes for the shared scene pool. Public so the app can hand them to
     // processNodeLayer when building its own solid/water space-change lambdas.
-    ThreadPool solidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
-    ThreadPool waterGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
-
-    // Separate queue for brush meshes so they are scheduled/drained
-    // independently of the solid/water stream (parallelism + no cross-gating).
-    mutable std::mutex brushPendingMutex;
-    std::deque<PendingMeshData> brushPendingQueue;
-
-    // Dedicated pool for brush tessellation so interactive editing never
-    // competes with solid/water streaming generation on the shared scene pool.
-    ThreadPool brushGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
+    ThreadPool mainSolidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
+    ThreadPool mainWaterGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
+    ThreadPool brushSolidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
+    ThreadPool brushWaterGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
 
     CommandBufferState frameCmdState;
 };
