@@ -33,6 +33,7 @@ public:
 using GeometryLodCallback = std::function<void(
     const Geometry& geo, 
     uint8_t lod,
-    uint version
+    uint version,
+    uintptr_t emittingNodeId
 )>;
  

@@ -66,7 +66,8 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                 Tesselator nodeTesselator(&trianglesCount);
                 tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLodStored);
                 if(!nodeTesselator.geometry.indices.empty()) {
-                    callback(nodeTesselator.geometry, chunkLodStored - 1, params.node->version);
+                    callback(nodeTesselator.geometry, chunkLodStored - 1, params.node->version,
+                             reinterpret_cast<uintptr_t>(params.node));
                 }
             }
             // Keep descending along the root path: the children hold the finer ladder
