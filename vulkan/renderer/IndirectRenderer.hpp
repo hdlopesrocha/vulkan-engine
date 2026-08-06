@@ -16,6 +16,7 @@
 #include "../streaming/StreamCommon.hpp"
 #include "../includes/locations.hpp"
 #include "SlotAllocator.hpp"
+#include "PackedSpaceAllocator.hpp"
 
 namespace streaming { class UploadManager; }
 
@@ -25,11 +26,16 @@ namespace streaming { class UploadManager; }
 // append-first and supports reclamation on remove (simple free list rebuild).
 //
 // STABLE SLOT MODE (preferred):
-// Call initSlots() once with the maximum expected chunk count, then use
-// addMeshSlotted()/updateMeshSlotted()/removeMeshSlotted(). Each chunk gets a
-// fixed slot that is never compacted. Updating a chunk only touches its own
-// slot — there is NO global rebuild. The indirect/bounds buffer layout is
-// stable, so GPU culling continues to work without interruption.
+// Call initSlots() once with the maximum expected active chunk count and the
+// TOTAL vertex/index element budgets, then use addMeshSlotted()/
+// removeMeshSlotted(). Each chunk gets a fixed draw-entry block (a "slot")
+// that is never compacted, while its vertex/index data is packed into the
+// shared element pools by PackedSpaceAllocator — multiple chunks share the
+// pool space ("packed slots"), so the active chunk count is bounded by total
+// geometry bytes, not by a fixed slot count. Updating a chunk only touches
+// its own block and level ranges — there is NO global rebuild. The
+// indirect/bounds buffer layout is stable, so GPU culling continues to work
+// without interruption.
 class IndirectRenderer {
 public:
     static constexpr uint32_t MAX_CULL_FRAMES = 3;
@@ -68,12 +74,32 @@ public:
         uint32_t drawIndex = UINT32_MAX; // position in indirectCommands list
         uint32_t slotIndex = UINT32_MAX; // stable slot (if using slotted mode)
         bool active = false;
-        // LoD level info: `level` indexes the per-level draw entry inside the
-        // slot (drawIndex = slotIndex * kMaxChunkLevels + level). The vertex/
-        // index data of this level lives at the slot base + levelOffset.
+        // Per-level allocation table (slotted mode). Each (chunk, level)
+        // occupies its OWN packed span of the shared vertex/index element
+        // pools — levels do not need to be contiguous with each other, so a
+        // level can be republished without touching any other level. The
+        // draw entry is block* kMaxChunkLevels + level (see slotIndex).
+        struct LevelData {
+            bool allocated = false;
+            uint32_t baseVertex = 0;   // absolute element offset (mergedVertices)
+            uint32_t vertexCount = 0;
+            uint32_t firstIndex = 0;   // absolute element offset (mergedIndices)
+            uint32_t indexCount = 0;
+            // Ranges of the level's PREVIOUS geometry, freed once the
+            // replacement upload completes (deferred — in-flight frames may
+            // still reference them). UINT32_MAX base = nothing pending.
+            uint32_t oldVertexBase = UINT32_MAX;
+            uint32_t oldVertexCount = 0;
+            uint32_t oldIndexBase = UINT32_MAX;
+            uint32_t oldIndexCount = 0;
+            glm::vec4 boundsMin = glm::vec4(0.0f);
+            glm::vec4 boundsMax = glm::vec4(0.0f);
+            float cellSize = 0.0f;
+            int maxLevel = 0;
+        };
+        std::array<LevelData, kMaxChunkLevels> levels_ = {};
+        // Mirrors of the most recently published level (stats/debug reads).
         int level = 0;
-        uint32_t levelVertexOffset = 0;
-        uint32_t levelIndexOffset = 0;
         float cellSize = 0.0f;
         int maxLevel = 0;
         // NOTE: per-mesh buffers removed — meshes are packed into the merged buffers
@@ -97,25 +123,27 @@ public:
     void rebuild(VulkanApp* app);
 
     // ── Stable slot-based API (no global rebuilds) ──
-    // Pre-allocate the slot pool and create GPU buffers sized to capacity.
-    // `maxChunks` is the maximum number of concurrently active chunks.
-    // Must be called once on the main thread with no pending GPU work.
-    // vertexBytesPerChunk and indexBytesPerChunk are the max expected
-    // vertex/index data per chunk mesh.
+    // Pre-allocate the packed element pools and the draw-entry block pool and
+    // create GPU buffers sized to capacity. `maxActiveChunks` is the maximum
+    // number of concurrently active chunks (each owns a block of
+    // kMaxChunkLevels draw entries); `totalVertexBytes`/`totalIndexBytes` are
+    // the TOTAL shared element budgets (vertex + index pools) — chunks pack
+    // into them, so the element budgets are hard caps just like the block
+    // count. Must be called once on the main thread with no pending GPU work.
     void initSlots(VulkanApp* app,
-                   uint32_t maxChunks,
-                   uint32_t vertexBytesPerChunk = 1u << 20,
-                   uint32_t indexBytesPerChunk  = 1u << 19);
+                   uint32_t maxActiveChunks,
+                   uint32_t totalVertexBytes,
+                   uint32_t totalIndexBytes);
 
-    // Add or update a mesh in a stable slot. The slot is allocated on first
-    // use and freed on removal. Returns the stable slot index, or UINT32_MAX
-    // on failure (pool exhausted or per-level budget exceeded). Each call
-    // targets one LoD `level` of a chunk: the indirect command and bounds
-    // triple are published at the level's per-slot draw entry. When
-    // `forcedSlot` is not UINT32_MAX the slot is assumed already allocated
-    // (previous level of the same chunk) and only validated against the
-    // level offsets. `levelVertexOffset`/`levelIndexOffset` are the offsets
-    // of this level's data within the chunk's slot range.
+    // Add or update a mesh in a stable slot. The chunk's draw-entry block is
+    // allocated on first use and freed on removal; each level's vertex/index
+    // data is packed into the shared element pools. Returns the stable block
+    // index, or UINT32_MAX on failure (pool exhausted or element budget
+    // exceeded). Each call targets one LoD `level` of a chunk: the indirect
+    // command and bounds triple are published at the level's per-block draw
+    // entry. Re-publishing an already-allocated level allocates a NEW span
+    // and defers the free of the old span until the replacement upload
+    // completes (in-flight frames may still reference the old data).
     // `cubeMin`/`cubeMax`: the chunk's OWN cube bounds. When provided they
     // are published as the draw entry's bounds triple instead of the mesh
     // AABB — the GPU band test measures distance to the bounds CENTER, which
@@ -124,60 +152,23 @@ public:
     // (parallel simplification LoDs). Cube bounds also keep frustum culling
     // conservative-correct for edge-surface chunks.
     uint32_t addMeshSlotted(const Geometry& mesh, uint32_t chunkId, int level = 0,
-                            uint32_t forcedSlot = UINT32_MAX,
-                            uint32_t levelVertexOffset = 0, uint32_t levelIndexOffset = 0,
                             float cellSize = 0.0f, int maxLevel = 0,
                             const glm::vec3* cubeMin = nullptr, const glm::vec3* cubeMax = nullptr);
-    void updateMeshSlotted(uint32_t slotIndex, const Geometry& mesh, int level = 0,
-                           uint32_t levelVertexOffset = 0, uint32_t levelIndexOffset = 0,
-                           float cellSize = 0.0f, int maxLevel = 0,
-                           const glm::vec3* cubeMin = nullptr, const glm::vec3* cubeMax = nullptr);
     void removeMeshSlotted(uint32_t slotIndex);
 
-    // Always-render fallback: publish a zero-copy ALIAS draw entry at `level`
-    // that band-tests at `level` (same cellSize/maxLevel conventions as
-    // addMeshSlotted) but draws the data of another (source) level of the
-    // same slot. Used when a ladder level tessellated empty (e.g. coarse
-    // cells with all-sentinel SDF corners): the missing level's distance band
-    // must still be covered, so it falls back to the finest published
-    // (sub-chunk) geometry instead of leaving a hole. No geometry is copied —
-    // the entry references the source level's sub-offsets, so it consumes no
-    // extra slot budget.
-    void publishAliasLevel(uint32_t slotIndex, int level, const Geometry& source,
-                           uint32_t srcVertexOffset = 0, uint32_t srcIndexOffset = 0,
-                           float cellSize = 0.0f, int maxLevel = 0);
-
-    // Zero every draw entry of a slot at levels [firstLevel, kMaxChunkLevels).
-    // After a ladder publish, levels the chunk no longer emits must not keep
-    // their old commands: the stale meta (old maxLevel/bounds) still passes
-    // the GPU band test, so the renderer would draw vertex data the new
-    // ladder already overwrote — i.e. read uninitialized meshes. Zeroing
-    // makes the cull shader drop them on indexCount == 0.
+    // Zero every draw entry of a slot at levels [firstLevel, kMaxChunkLevels)
+    // and free those levels' packed spans. After a publish, levels the chunk
+    // no longer emits must not keep their old commands: the stale meta (old
+    // maxLevel/bounds) still passes the GPU band test, so the renderer would
+    // draw vertex data the new ladder already overwrote — i.e. read
+    // uninitialized meshes. Zeroing makes the cull shader drop them on
+    // indexCount == 0.
     void clearSlotLevelsFrom(uint32_t slotIndex, uint32_t firstLevel);
 
-    // Data for one deferred alias entry (see finalizeSlotLadder).
-    struct SlotLevelAlias {
-        uint32_t level = 0;
-        uint32_t indexCount = 0;   // of the finest published level's geometry
-        glm::vec3 boundsMin{0.0f};
-        glm::vec3 boundsMax{0.0f};
-    };
-    // Deferred ladder finalization, called at the last level's upload
-    // completion: writes alias entries for empty levels (drawing the finest
-    // published level, at slot sub-offset 0) and clears levels above
-    // lastPublishedLevel. Deferring is required for correctness: transfer
-    // completion is FIFO, so every deferred meta write from a previous
-    // publish of this slot has already fired — an immediate alias/clear could
-    // be overwritten afterwards by a stale completion, resurrecting entries
-    // that reference overwritten slot data.
-    void finalizeSlotLadder(uint32_t slotIndex, uint32_t lastPublishedLevel,
-                            const std::vector<SlotLevelAlias>& aliases,
-                            float cellSize, int maxLevel);
-
-    // Upload a single slot's vertex/index data to the GPU, and write its
+    // Upload a single level's vertex/index data to the GPU, and write its
     // indirect command + bounds into the host-visible metadata buffers.
     // This is the per-chunk equivalent of a full rebuild — but only touches
-    // one slot. The GPU culling buffer layout is unchanged.
+    // one slot/level. The GPU culling buffer layout is unchanged.
     // When using the UploadManager path, `onComplete` is invoked after the
     // transfer fence signals (async). For the legacy staging path, it's
     // called when the pending transfer fence signals.
@@ -186,33 +177,6 @@ public:
     // Returns true on success.
     bool uploadSlot(VulkanApp* app, uint32_t slotIndex, int level = 0, float priority = 0.0f,
                     std::function<void()> onComplete = nullptr);
-
-    // Per-level upload descriptor for uploadSlotLadder. vertexOffset/
-    // indexOffset are ABSOLUTE offsets into the merged vertex/index buffers
-    // (slotBase + level sub-offset), matching MeshInfo.baseVertex/firstIndex.
-    struct SlotLevelUpload {
-        uint32_t level = 0;
-        uint32_t vertexCount = 0;
-        uint32_t indexCount = 0;
-        uint32_t vertexOffset = 0;
-        uint32_t indexOffset = 0;
-        glm::vec4 boundsMin{0.0f};
-        glm::vec4 boundsMax{0.0f};
-        float cellSize = 0.0f;
-        int maxLevel = 0;
-    };
-    // Upload a chunk's whole LoD ladder in ONE UploadJob (single staging
-    // buffer, single command buffer, single queue submit + semaphore instead
-    // of one per level): the job carries the vertex+index data of every
-    // non-empty level of `levels`, and the per-level indirect/bounds meta
-    // writes + `onComplete` fire after the one transfer completes (FIFO — all
-    // prior publishes of this slot have already written their metas). If the
-    // combined data exceeds one staging slot, it falls back to one job per
-    // level (equivalent semantics). Returns false only when no UploadManager
-    // is attached (caller then uses per-level uploadSlot instead).
-    bool uploadSlotLadder(VulkanApp* app, uint32_t slotIndex,
-                          const std::vector<SlotLevelUpload>& levels,
-                          float priority, std::function<void()> onComplete);
 
     // Upload a single mesh to GPU (incremental update). Requires buffers to have capacity.
     // Returns true if upload succeeded, false if rebuild() is needed (capacity exceeded or buffers not created).
@@ -249,22 +213,6 @@ public:
     }
 
 public:
-
-    // CPU-side budget check used by the multi-level publisher: a chunk's LoD
-    // ladder shares the slot's single vertex/index budget, so per-level
-    // sub-offsets accumulate (level k sits at running offset, not slot start).
-    uint32_t getSlotVertexCapacity() const { return slotVertexCapacity; }
-    uint32_t getSlotIndexCapacity()  const { return slotIndexCapacity; }
-
-    // Static per-level row layout of each slot (set by initSlots): level k's
-    // vertex/index data lives at the slot base + the level row offset, inside
-    // a row of the level row capacity. Static rows (instead of running
-    // sub-offset accumulation) mean a republish of one level overwrites only
-    // its own range, and the budget check is per row.
-    uint32_t getSlotLevelVertexOffset(int level) const;
-    uint32_t getSlotLevelIndexOffset(int level) const;
-    uint32_t getSlotLevelVertexCapacity(int level) const;
-    uint32_t getSlotLevelIndexCapacity(int level) const;
 
     // Poll for completion of an in-flight async transfer and publish
     // the results (update meta-buffers, etc.).  Call once per frame
@@ -376,16 +324,9 @@ private:
     uint32_t getCullDispatchCountLocked() const;
 
     // ── Slotted-mode internals ──
-    // Copy vertex/index data from a Geometry into the pre-reserved slot
-    // position in mergedVertices/mergedIndices. Requires slotted mode.
-    // `levelVertexOffset`/`levelIndexOffset` place the data at the level's
-    // sub-range inside the slot.
-    void copyGeometryToSlot(const Geometry& mesh, uint32_t slotIndex,
-                            uint32_t levelVertexOffset, uint32_t levelIndexOffset);
-    // Write a single mesh's indirect command + bounds into the host-visible
-    // GPU buffers at the given slot position. Does NOT touch the vertex/index
-    // data (which must have been uploaded separately).
-    void writeSlotMeta(uint32_t slotIndex, const MeshInfo& info);
+    // Copy vertex/index data from a Geometry into the level's packed span in
+    // mergedVertices/mergedIndices (absolute offsets). Requires slotted mode.
+    void copyGeometryToLevel(const Geometry& mesh, MeshInfo::LevelData& ld);
 
     // Async transfer engine (optional). When non-null, uploadMeshes routes
     // through it instead of the single-slot pendingTransfer path.
@@ -410,26 +351,20 @@ private:
     std::vector<VkDrawIndexedIndirectCommand> indirectCommands;
 
     // When true, the slotted API is active. In this mode, mergedVertices and
-    // mergedIndices are pre-sized to capacity and each slot has a fixed
-    // position. The indirectCommands vector is also pre-sized. No full
-    // rebuilds are performed; each slot is updated independently.
+    // mergedIndices are pre-sized to the shared element pool capacity and each
+    // chunk owns a draw-entry block (see slotAlloc). The indirectCommands
+    // vector is also pre-sized. No full rebuilds are performed; each block and
+    // level span is updated independently.
     bool slottedMode = false;
 
-    // Per-slot maximum capacities (set by initSlots)
-    uint32_t slotVertexCapacity = 0;
-    uint32_t slotIndexCapacity  = 0;
-
-    // Static per-level row layout within each slot (set by initSlots).
-    // slotVertexCapacity/slotIndexCapacity are the SUMS of the per-level row
-    // capacities; level k's data lives at row offsets in [rowOffset[k],
-    // rowOffset[k] + rowCapacity[k]).
-    uint32_t levelRowVertexOffset[kMaxChunkLevels] = {};
-    uint32_t levelRowVertexCapacity[kMaxChunkLevels] = {};
-    uint32_t levelRowIndexOffset[kMaxChunkLevels] = {};
-    uint32_t levelRowIndexCapacity[kMaxChunkLevels] = {};
-
-    // Slot allocator for the stable slot pool
+    // Draw-entry block allocator: one block of kMaxChunkLevels consecutive
+    // draw entries per active chunk. allocate(1,1)/free under a capacity of
+    // kMaxChunkLevels — the block index IS the "slot" (nest-level identity).
     SlotAllocator slotAlloc;
+
+    // Packed element pools: variable-size spans of vertex/index elements
+    // shared by all chunks (a chunk's levels are independent spans).
+    PackedSpaceAllocator spaceAlloc;
 
     // Last slot-usage high-water mark logged (DEBUG capacity tuning aid).
     uint32_t lastPeakLogged_ = 0;

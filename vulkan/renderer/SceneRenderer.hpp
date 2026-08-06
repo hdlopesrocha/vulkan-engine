@@ -157,8 +157,9 @@ public:
 
     // Slots whose chunks were erased but may be replaced (same NodeID, new
     // version). For solid/water the octree node is reused on edit, so NodeID
-    // stays stable — addMeshSlotted finds the existing entry and updates it
-    // in-place (updateMeshSlotted). The old slot must survive until the new
+    // stays stable — addMeshSlotted finds the existing entry and republishes
+    // it in place (new packed span per level, old span freed after the
+    // replacement upload completes). The old slot must survive until the new
     // upload completes to avoid a 1-frame hole. Entries are matched by NodeID
     // and aged out after MAX_FRAMES_IN_FLIGHT frames past their birth frame.
     struct PendingDeleteEntry {

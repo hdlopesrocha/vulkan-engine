@@ -1144,28 +1144,32 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     
 
     // Activate the stable-slot indirect rendering pipeline (no global rebuilds).
-    // One slot PER CHUNK: the chunk's LoD levels share the slot, each in its
-    // own static row (IndirectRenderer::initSlots splits the per-slot budget
-    // into per-level rows, ~1.33x the level-0 budget total). Only the indirect
+    // One draw-entry block PER CHUNK: the chunk's LoD levels share the block,
+    // while each level's vertex/index data is packed into the shared element
+    // pools (PackedSpaceAllocator — no fixed per-level rows). Only the indirect
     // command list is per-level (chunk * kMaxChunkLevels draw entries), so GPU
-    // memory stays at the pre-refactor per-chunk footprint.
+    // memory is bounded by the element pools' TOTAL byte budgets passed to
+    // initSlottedMode (per-chunk budgets x chunk count — the packed model's
+    // ceiling, actual usage is data-driven).
     // Must be called after all sub-renderers are initialized, before scene loading.
     initSlottedMode(app, 
         kMaxSolidChunkSlots,
         kMaxWaterChunkSlots,
-        1u << 20,  // 1 MB vertex data per slot (level-0 row)
+        1u << 20,  // 1 MB vertex budget per chunk (total = chunks x this)
         1u << 18
-    ); // 256 KB index data per slot (level-0 row)
+    ); // 256 KB index budget per chunk (total = chunks x this)
 
-    // Initialize brush solid/liquid IndirectRenderers with their own slot pools
-    // (smaller — brush preview rarely exceeds a few dozen meshes). Brush geometry
-    // no longer shares the main scene slot pools.
+    // Initialize brush solid/liquid IndirectRenderers with their own packed
+    // element pools (smaller — brush preview rarely exceeds a few dozen
+    // meshes). Brush geometry no longer shares the main scene slot pools.
+    // The byte budgets are TOTAL shared pool budgets now (packed slots): each
+    // chunk consumes only what its mesh actually uses.
     brushSolidIndirectRenderer.initSlots(app, kMaxBrushChunkSlots,
-                                         1u << 18,  // 256 KB vertex data per slot
-                                         1u << 16); // 64 KB index data per slot
+                                         kMaxBrushChunkSlots * (1u << 18),  // total vertex pool
+                                         kMaxBrushChunkSlots * (1u << 16)); // total index pool
     brushLiquidIndirectRenderer.initSlots(app, kMaxBrushChunkSlots,
-                                          1u << 18,  // 256 KB vertex data per slot
-                                          1u << 16); // 64 KB index data per slot
+                                          kMaxBrushChunkSlots * (1u << 18),  // total vertex pool
+                                          kMaxBrushChunkSlots * (1u << 16)); // total index pool
 }
 
 // Update only the static bindings (textures, materials, water params) in the
@@ -1298,19 +1302,20 @@ size_t SceneRenderer::publishPendingMeshes(
     const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version, bool isBrush)>& onChunkPublished,
     const std::function<void(NodeID nid, const Geometry& geom, bool isBrush)>& onFinestPublished)
 {
-    // One-slot-per-chunk publish: NO ladder reassembly, NO running sub-offsets.
+    // One-block-per-chunk publish: NO ladder reassembly, NO running sub-offsets.
     // Each queue entry is a self-contained geometry chunk at a single LoD
-    // level. A chunk's levels share ONE slot: every level's data lands in its
-    // own static row of the slot (fixed per-level budget — see
-    // IndirectRenderer::initSlots), and every level publishes its own draw
-    // entry (drawIndex = slot * kMaxChunkLevels + level) so the GPU cull
-    // shader band-tests entries independently. addMeshSlotted is keyed by the
-    // BASE chunk id, so all levels of a chunk resolve to the same slot (the
-    // first allocates, later ones update in place) — including across frames
-    // and across edits of the same chunk.
+    // level. A chunk's levels share ONE draw-entry block: every level's data
+    // is packed into its own span of the shared element pools
+    // (PackedSpaceAllocator — see IndirectRenderer::initSlots), and every
+    // level publishes its own draw entry (drawIndex = block * kMaxChunkLevels
+    // + level) so the GPU cull shader band-tests entries independently.
+    // addMeshSlotted is keyed by the BASE chunk id, so all levels of a chunk
+    // resolve to the same block — including across frames and across edits of
+    // the same chunk (re-publishing a level allocates a NEW span and frees the
+    // old one once the replacement upload completes).
     //
     // takeOldSlot is consumed once per chunk: the first level that encounters
-    // a pending-delete entry captures the old slot and frees it after ITS
+    // a pending-delete entry captures the old block and frees it after ITS
     // upload completes (old geometry stays resident until the new data is
     // valid on GPU).
     //
@@ -1319,9 +1324,10 @@ size_t SceneRenderer::publishPendingMeshes(
     // published finest/coarsest range itself (scanning the 5 entries'
     // indexCount), clamping the band selection into it — so partial or
     // level-0-missing ladders still render at every distance. End-of-drain,
-    // draw entries ABOVE this drain's accepted coarsest level are zeroed: a
-    // chunk whose ladder shrank on republish would otherwise keep its old
-    // entries' meta (still band-passing) and draw stale geometry.
+    // draw entries ABOVE this drain's accepted coarsest level are zeroed and
+    // their spans freed: a chunk whose ladder shrank on republish would
+    // otherwise keep its old entries' meta (still band-passing) and draw
+    // stale geometry.
     std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> acceptedCoarsest; // key -> {slotIdx, coarsest accepted this drain}
     size_t slotsPublished = 0;
     for (auto& item : batch) {
@@ -1363,18 +1369,15 @@ size_t SceneRenderer::publishPendingMeshes(
                              (layer == LAYER_OPAQUE ? 0u : 1u) |
                              (isBrush ? 2u : 0u);
         const uint32_t slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(base), (int)lv,
-                                                    UINT32_MAX,
-                                                    ir->getSlotLevelVertexOffset((int)lv),
-                                                    ir->getSlotLevelIndexOffset((int)lv),
                                                     lod.cellSize,
                                                     lod.maxLevel,
                                                     &cubeMin,
                                                     &cubeMax);
-        if (slotIdx == UINT32_MAX) continue; // no free slot in the pool / row budget exceeded
+        if (slotIdx == UINT32_MAX) continue; // no free block / element pool exhausted
 
-        // addMeshSlotted re-publishes the existing chunk slot in place when
-        // one is already resident (updateMeshSlotted path); then oldSlot ==
-        // slotIdx and there is nothing to free.
+        // addMeshSlotted re-publishes the existing chunk block in place when
+        // one is already resident (it allocates a new packed span per level);
+        // then oldSlot == slotIdx and there is nothing to free.
         if (oldSlot != UINT32_MAX && oldSlot == slotIdx) oldSlot = UINT32_MAX;
 
         // Register the chunk's slot for the erase path before the upload
@@ -1477,8 +1480,8 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // is resident on the GPU, eliminating the 1-2 frame transient where the
     // brush disappears or renders garbage.
     //
-    // addMeshSlotted may reuse the same slot when the same NodeID exists
-    // (updateMeshSlotted path). In that case oldSlot == slotIdx and we must NOT
+    // addMeshSlotted may reuse the same block when the same NodeID exists
+    // (in-place republish). In that case oldSlot == slotIdx and we must NOT
     // free the old slot — it was updated in-place, not replaced.
     //
     // Old slots whose NodeID no longer appears in the new set are orphans: their
@@ -1608,15 +1611,27 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
                                     uint32_t vertexBytesPerChunk,
                                     uint32_t indexBytesPerChunk)
 {
-    mainSolidRenderer->getIndirectRenderer().initSlots(app, maxSolidChunks, vertexBytesPerChunk, indexBytesPerChunk);
-    mainLiquidRenderer->getIndirectRenderer().initSlots(app, maxWaterChunks, vertexBytesPerChunk, indexBytesPerChunk);
+    // Packed pools: the TOTAL shared element budget is the per-chunk ceiling
+    // times the chunk count. Actual allocation is data-driven (chunks pack
+    // into free spans), so this is the worst-case footprint.
+    const uint64_t solidVertBytes = static_cast<uint64_t>(maxSolidChunks) * vertexBytesPerChunk;
+    const uint64_t solidIdxBytes  = static_cast<uint64_t>(maxSolidChunks) * indexBytesPerChunk;
+    const uint64_t waterVertBytes = static_cast<uint64_t>(maxWaterChunks) * vertexBytesPerChunk;
+    const uint64_t waterIdxBytes  = static_cast<uint64_t>(maxWaterChunks) * indexBytesPerChunk;
 
-    std::cout << "[SceneRenderer] slotted pools: solid=" << maxSolidChunks
-              << " water=" << maxWaterChunks
-              << " (per-slot " << (vertexBytesPerChunk >> 10) << " KB vertex + "
-              << (indexBytesPerChunk >> 10) << " KB index, ~"
-              << ((uint64_t)(maxSolidChunks + maxWaterChunks) * (vertexBytesPerChunk + indexBytesPerChunk) >> 20)
-              << " MB device-local)" << std::endl;
+    mainSolidRenderer->getIndirectRenderer().initSlots(app, maxSolidChunks,
+                                                       static_cast<uint32_t>(solidVertBytes),
+                                                       static_cast<uint32_t>(solidIdxBytes));
+    mainLiquidRenderer->getIndirectRenderer().initSlots(app, maxWaterChunks,
+                                                        static_cast<uint32_t>(waterVertBytes),
+                                                        static_cast<uint32_t>(waterIdxBytes));
+
+    std::cout << "[SceneRenderer] packed pools: solid=" << maxSolidChunks
+              << " blocks / water=" << maxWaterChunks
+              << " blocks (total " << (solidVertBytes >> 20) << " MB + "
+              << (solidIdxBytes >> 20) << " MB index solid, "
+              << (waterVertBytes >> 20) << " MB + " << (waterIdxBytes >> 20)
+              << " MB index water, device-local)" << std::endl;
 
 }
 

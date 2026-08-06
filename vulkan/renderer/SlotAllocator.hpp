@@ -6,14 +6,17 @@
 #include <algorithm>
 #include <cassert>
 
-// Manages a pre-allocated pool of "slots" within a combined vertex/index
-// buffer. Each slot has a fixed maximum capacity (reserved at allocation
-// time). The allocator never compacts: once a slot index is assigned, it
-// remains valid until explicitly freed. Freed slots are recycled to a
+// Manages a pre-allocated pool of "slots" (draw-entry blocks) within the
+// indirect command list. In the packed-slot model a slot is a block of
+// kMaxChunkLevels consecutive draw entries that identifies ONE chunk; the
+// chunk's vertex/index data lives in the shared element pools managed by
+// PackedSpaceAllocator. Each block has a fixed capacity (kMaxChunkLevels).
+// The allocator never compacts: once a block index is assigned, it
+// remains valid until explicitly freed. Freed blocks are recycled to a
 // free list.
 //
 // This eliminates the need for global rebuilds when chunks change:
-// an update only touches the specific slot belonging to that chunk.
+// an update only touches the specific block belonging to that chunk.
 //
 // Thread safety: all public methods are thread-safe via internal mutex.
 class SlotAllocator {
