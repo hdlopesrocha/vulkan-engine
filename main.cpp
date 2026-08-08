@@ -1092,6 +1092,15 @@ public:
 
         uint32_t frameIdx = getCurrentFrame();
 
+        // Per-frame cull buffers: each IndirectRenderer needs its own per-frame
+        // compact/visibleCount buffer to avoid cross-frame overwrite races.
+        // Must be set BEFORE prepareCull below so culls and drawPrepared use
+        // the same per-frame compact/visibleCount slots (setCullFrame in
+        // draw() would make every draw read a stale, never-culled slot).
+        sceneRenderer->mainSolidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
+        sceneRenderer->brushRenderer->getSolidIR().setCullFrame(frameIdx);
+        sceneRenderer->mainLiquidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
+
         // Profiling: read previous frame's query results (with availability flag to
         // avoid even partial driver stalls), then reset for this frame.
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE) {
@@ -1988,12 +1997,6 @@ public:
     
 
         uint32_t frameIdx = getCurrentFrame();
-
-        // Per-frame cull buffers: each IndirectRenderer needs its own per-frame
-        // compact/visibleCount buffer to avoid cross-frame overwrite races.
-        sceneRenderer->mainSolidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
-        sceneRenderer->brushRenderer->getSolidIR().setCullFrame(frameIdx);
-        sceneRenderer->mainLiquidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
 
         glm::mat4 viewProj = camera.getViewProjectionMatrix();
         glm::mat4 invViewProj = glm::inverse(viewProj);
