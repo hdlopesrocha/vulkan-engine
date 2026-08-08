@@ -41,17 +41,10 @@ class World;
 #include "WaterRenderer.hpp"
 #include "../../world/World.hpp"
 
-#include "../ubo/PassUBO.hpp"
 #include "CommandBufferState.hpp"
 
 class SceneRenderer {
-    void addDebugCubeForGeometry(Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom);
 public:
-    // UBOs for main, shadow, and water passes
-    PassUBO<UniformObject> mainPassUBO;
-    PassUBO<UniformObject> shadowPassUBO;
-    PassUBO<WaterParamsGPU> waterPassUBO;
-
     // Main uniform buffers (one per frame-in-flight)
     std::vector<Buffer> mainUniformBuffers;
 
@@ -85,7 +78,6 @@ public:
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
     std::unique_ptr<DebugSDFRenderer> debugSDFRenderer;
-    std::unique_ptr<WireframeRenderer> solidWireframe;
     std::unique_ptr<WireframeRenderer> waterWireframe;
     // Sky settings owned by this renderer
     std::unique_ptr<SkySettings> skySettings;
@@ -110,10 +102,6 @@ public:
     // Mutex protecting all chunk maps (solid, transparent, brush) and mesh operations
     std::recursive_mutex mainSolidChunksMutex;
     std::recursive_mutex mainLiquidChunksMutex;
-    // Debug SDF cube markers are a separate map (not a chunk registry) with
-    // their own guard. Written from the change handlers (build lambdas),
-    // read/cloned on the render thread draw path.
-    std::recursive_mutex debugSDFCubesMutex;
 
     // ── Legacy chunk tracking (append-based, full rebuild) ──
     // Track model ids for transparent/water meshes so we can remove them if erased/updated
@@ -142,23 +130,6 @@ public:
     World* world() { return world_; }
     const World* world() const { return world_; }
 
-    // Debug cubes for nodes (populated by change handlers after geometry generation)
-    std::unordered_map<NodeID, DebugCubeRenderer::CubeWithColor> nodeDebugCubes;
-    void addDebugCubeForNode(NodeID id, const DebugCubeRenderer::CubeWithColor& cube) { nodeDebugCubes[id] = cube; }
-    void removeDebugCubeForNode(NodeID id) { nodeDebugCubes.erase(id); }
-    std::vector<DebugCubeRenderer::CubeWithColor> getDebugNodeCubes() const {
-        std::vector<DebugCubeRenderer::CubeWithColor> out;
-        out.reserve(nodeDebugCubes.size());
-        for (const auto &p : nodeDebugCubes) out.push_back(p.second);
-        return out;
-    }
-
-    // SDF face debug cubes for leaf nodes under each chunk.
-    std::unordered_map<NodeID, std::vector<DebugSDFRenderer::CubeSDF>> nodeDebugSDFCubes;
-    void removeDebugSDFCubesForNode(NodeID id);
-    void clearDebugSDFCubes();
-    std::vector<DebugSDFRenderer::CubeSDF> getDebugSDFCubes();
-
     // Register/inspect opaque model versions (moved from SolidRenderer)
     size_t getRegisteredModelCount() const { return mainSolidChunks.size(); }
 
@@ -176,7 +147,6 @@ public:
         mainLiquidChunks.clear();
     }
 
-    void drawSolidWireframeOverlay(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled);
     void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams);
     // Re-update main descriptor set when texture arrays are (re)allocated
     void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);
@@ -237,11 +207,6 @@ public:
     // The solid/water AND brush space-change lambdas are constructed by the
     // app (main.cpp) — they need world state, chunk management and debug
     // markers. No make* handler factories remain here.
-
-    // Remove all brush meshes from GPU and clear brush chunk maps. Drains the
-    // isBrush entries from the shared pending mesh queue, then delegates the
-    // IR/map clearing to BrushRenderer.
-    void clearBrushMeshes();
 
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height);
@@ -312,9 +277,6 @@ private:
     glm::vec3 lastCameraPos_ = glm::vec3(0.0f);
 
 public:
-    // Debug helper: publish SDF cube debug markers for a (re)built chunk.
-    void updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree);
-
     // Thread-safe mesh queue fed by tessellation on the generation pools;
     // drained on the main thread by processPendingMeshes(). ONE shared queue
     // for every stream (main solid/water + brush solid/water): entries are

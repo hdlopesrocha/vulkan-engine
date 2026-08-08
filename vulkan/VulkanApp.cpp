@@ -434,12 +434,6 @@ void VulkanApp::cleanup() {
         vkDestroySemaphore(device, uploadTimeline, nullptr);
         uploadTimeline = VK_NULL_HANDLE;
     }
-    // Process any deferred-destruction callbacks immediately so resources
-    // scheduled with deferDestroyUntilAllPending() are released while the
-    // device is still valid.  Must happen BEFORE destroying frameTimeline
-    // because the frame-signal semaphores are retired via deferDestroyUntilFence
-    // on the binary frame fence, which fires inside processPendingCommandBuffers().
-    processPendingCommandBuffers();
 
     // Do not destroy objects that are tracked by VulkanResourceManager here.
     // Let the centralized manager perform destruction while the device is still valid.

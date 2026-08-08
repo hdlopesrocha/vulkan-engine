@@ -485,6 +485,7 @@ void SolidRenderer::drawBrushColor(VkCommandBuffer &cmd, VkDescriptorSet descSet
 
 void SolidRenderer::cleanup(VulkanApp* app) {
     if (app == nullptr) return;
+    wireframe.cleanup();
     destroyRenderTargets(app);
     deferredPipelinesCreated = false;
 
@@ -494,4 +495,17 @@ void SolidRenderer::cleanup(VulkanApp* app) {
     solidChunks.clear();
 
     indirectRenderer.cleanup();
+}
+
+void SolidRenderer::createWireframe(VulkanApp* app) {
+    std::vector<VkDescriptorSetLayout> solidSetLayouts = { app->getDescriptorSetLayout() };
+    wireframe.createPipeline(app, {app->getSwapchainImageFormat()},
+        solidSetLayouts,
+        "shaders/main.vert.spv", "shaders/wireframe.frag.spv",
+        "shaders/main.tesc.spv", "shaders/main.tese.spv",
+        "solid wireframe");
+}
+
+void SolidRenderer::drawWireframeOverlay(VkCommandBuffer& commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet) {
+    wireframe.draw(commandBuffer, app, {perTextureDescriptorSet}, getIndirectRenderer());
 }

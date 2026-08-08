@@ -4,7 +4,10 @@
 #include "../TrackedHandle.hpp"
 #include "../VertexBufferObject.hpp"
 #include "../../math/BoundingBox.hpp"
+#include "../../space/Octree.hpp" // for NodeID
 #include <vector>
+#include <unordered_map>
+#include <mutex>
 #include <glm/glm.hpp>
 #include "CommandBufferState.hpp"
 
@@ -30,7 +33,19 @@ public:
 
     void cleanup();
 
+    // ── Per-node debug cube tracking (moved from SceneRenderer) ──
+    // Populated by the space-change handlers (worker threads) after geometry
+    // generation; consumed as a copy on the render thread.
+    void addCubeForNode(NodeID id, const CubeWithColor& cube);
+    void removeCubeForNode(NodeID id);
+    void clearCubes();
+    std::vector<CubeWithColor> getCubes() const;
+
 private:
+    // Per-node debug cubes keyed by octree node id
+    std::unordered_map<NodeID, CubeWithColor> nodeDebugCubes;
+    mutable std::recursive_mutex cubesMutex;
+
     // VulkanApp is not stored; pass `app` into methods that need it.
     TrackedHandle<VkPipeline> pipeline;
     TrackedHandle<VkPipelineLayout> pipelineLayout;

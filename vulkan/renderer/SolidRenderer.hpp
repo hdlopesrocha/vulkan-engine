@@ -3,6 +3,7 @@
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
+#include "WireframeRenderer.hpp"
 #include "../../space/Model3DVersion.hpp"
 #include "../ShaderStage.hpp"
 #include "../../math/Vertex.hpp"
@@ -19,11 +20,16 @@ public:
 
     void init();
     void createPipelines(VulkanApp* app);
+    void createWireframe(VulkanApp* app);
     void createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
     void destroyRenderTargets(VulkanApp* app);
     void beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear, VulkanApp* app);
     void endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp* app);
     void cleanup(VulkanApp* app);
+
+    // Draw the solid wireframe overlay on top of the existing solid render.
+    // Must be called inside a compatible render pass.
+    void drawWireframeOverlay(VkCommandBuffer& commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet);
 
     // Draw main solid geometry: bind pipeline and draw
     void render(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
@@ -105,6 +111,13 @@ private:
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
     CommandBufferState* cmdState = nullptr;
+
+    // Solid wireframe overlay (owned by this renderer so wireframe mode works
+    // uniformly for the solid pass)
+    WireframeRenderer wireframe;
 public:
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
+    void setCmdState(CommandBufferState* state) {
+        cmdState = state;
+        wireframe.setCmdState(state);
+    }
 };

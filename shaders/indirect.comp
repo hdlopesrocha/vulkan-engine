@@ -116,33 +116,30 @@ void main() {
     // Empty entries (no mesh data) never draw and never count.
     if (inCmds.cmds[idx].indexCount == 0u) return;
 
-    // ── Published-ladder fallback range (one slot per chunk) ────────────────
+    // ── Published-ladder fallback (one slot per chunk) ──────────────────────
     // Draw entries are laid out as (chunk, level): entry index = chunk *
     // CHUNK_LEVELS + level. A chunk's ladder may be PARTIAL on the GPU: the
     // finest levels publish first (level 0 may even be absent for a dense
     // chunk that outgrew its row budget), and with throttled streaming a
-    // republished ladder fills in across several frames. Bands must never
-    // select a level with no geometry, and bands without a matching entry
-    // must fall back to the chunk's best available level instead of drawing
-    // nothing:
-    //   band below the finest published entry -> draw the finest published
-    //   band above the coarsest published entry -> draw the coarsest published
-    //   otherwise -> the band's own level
+    // republished ladder fills in across several frames. Ancestor
+    // tessellations can also come back empty (no zero crossing at that
+    // resolution), leaving interior holes. Bands must never select a level
+    // with no geometry, and bands without a matching entry must fall back to
+    // the chunk's nearest published level instead of drawing nothing:
+    //   band selects a level inside a published-range hole -> nearest
+    //   published level (ties broken toward the finer level)
     // The scan is over the chunk's 5 entries' indexCount (data presence ==
-    // command presence: both are written by the same deferred meta write).
+    // command presence: both are written by the same deferred meta write) and
+    // produces a bitmask of published levels used for the snap below.
     const uint CHUNK_LEVELS = 5u; // kMaxChunkLevels — must match IndirectRenderer
     uint chunkBase = idx - (idx % CHUNK_LEVELS);
-    uint finestLvl = CHUNK_LEVELS, coarsestLvl = 0u;
+    uint publishedMask = 0u;
     for (uint l = 0u; l < CHUNK_LEVELS; ++l) {
         if (inCmds.cmds[chunkBase + l].indexCount != 0u) {
-            if (l < finestLvl)    finestLvl    = l;
-            if (l > coarsestLvl)  coarsestLvl  = l;
+            publishedMask |= 1u << l;
         }
     }
-    // This entry itself has data (checked above), so the scan always found
-    // at least one level; clamp is well-defined.
-    uint publishedFinest   = min(finestLvl, CHUNK_LEVELS - 1u);
-    uint publishedCoarsest = coarsestLvl;
+    // This entry itself has data (checked above), so publishedMask is non-zero.
 
     // Note: All meshes in this renderer are from the same layer (targetLayer in push constants)
     // so no per-mesh layer filtering needed - separate IndirectRenderers handle opaque vs transparent
@@ -167,10 +164,10 @@ void main() {
     // distance band survives to the compacted draw list. Entries without
     // LoD meta (cellSize <= 0) are legacy meshes: always kept.
     //
-    // Contiguous band rule: level k's cellSize is exactly 2^k times the
-    // finest cellSize, so with band = dist / (cellSize_k * lodBias) the
-    // levels tile distance without gaps or overlap:
-    //   level k: band in [2^k, 2^(k+1))  (min(floor(band), maxLevel) == k)
+    // Contiguous band rule: every level of a chunk carries the chunk's BASE
+    // cellSize in its meta (publish-side), so band = dist / (cellSize *
+    // lodBias) tiles distance without gaps or overlap:
+    //   level k: band in [k, k+1)  (min(floor(band), maxLevel) == k)
     //   level maxLevel (the root): everything beyond (floor(band) >= maxLevel)
     // Single-level scenes (maxLevel == 0) have no coarse fallback: always keep.
     //
@@ -195,7 +192,23 @@ void main() {
         float dist = distance(pc.camPos, center);
         float band = dist / (cellSize * pc.lodBias);
         selectedLevel = uint(min(floor(band), float(maxLevel)));
-        effLevel = clamp(selectedLevel, publishedFinest, publishedCoarsest);
+        // Snap to the NEAREST published level instead of clamping to the
+        // published-range extremes: a clamp leaves interior holes in the
+        // ladder (an ancestor level that never published) selecting a level
+        // with no geometry, so the whole chunk would produce no draw command
+        // at those distances. All 5 invocations of a chunk run the same
+        // deterministic ascending scan, so effLevel is chunk-uniform; ties
+        // keep the finer (lower) level.
+        effLevel = selectedLevel;
+        uint bestDist = CHUNK_LEVELS;
+        for (uint l = 0u; l < CHUNK_LEVELS; ++l) {
+            if ((publishedMask & (1u << l)) == 0u) continue;
+            uint d = (selectedLevel >= l) ? (selectedLevel - l) : (l - selectedLevel);
+            if (d < bestDist) {
+                bestDist = d;
+                effLevel = l;
+            }
+        }
     }
 
     // Publish the chosen level for this draw entry so external consumers
@@ -216,10 +229,10 @@ void main() {
     if (!aabbVisible(gPlanes, minp, maxp)) return;
 
     // Only the entry whose level matches the effective selection survives to
-    // the compacted draw list. effLevel is chunk-uniform (band + fallback
-    // range), so exactly one entry per chunk can pass. Single-level ladders
-    // (maxLevel == 0) are subsumed: their only published entry has
-    // publishedFinest == publishedCoarsest == 0, so effLevel is 0 == entry.
+    // the compacted draw list. effLevel is chunk-uniform (band + nearest
+    // published-level snap), so exactly one entry per chunk can pass.
+    // Single-level ladders (maxLevel == 0) are subsumed: their only
+    // published entry is the nearest published level, so effLevel == entry.
     if (cellSize > 0.0) {
         if (int(effLevel) != entryLevel) return;
     }

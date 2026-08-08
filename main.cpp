@@ -135,7 +135,8 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
                 const Octree& debugTree = (layer == LAYER_OPAQUE)
                     ? localScene->getOpaqueOctree()
                     : localScene->transparentOctree;
-                renderer->updateDebugSDFCubesForChunk(nid, nd, debugTree);
+                if (renderer->debugSDFRenderer)
+                    renderer->debugSDFRenderer->updateCubesForChunk(nid, nd, debugTree);
             }
             // Phase 1: mark dirty and begin build IMMEDIATELY when the octree
             // change is detected (before tessellation is dispatched to the
@@ -193,8 +194,8 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
                 target.deferredSlots[nid] = {sidx, app->getCurrentFrame()};
             }
             renderer->world()->chunkManager().removeChunk(base);
-            renderer->removeDebugCubeForNode(nid);
-            renderer->removeDebugSDFCubesForNode(nid);
+            if (renderer->debugCubeRenderer) renderer->debugCubeRenderer->removeCubeForNode(nid);
+            if (renderer->debugSDFRenderer) renderer->debugSDFRenderer->removeCubesForNode(nid);
             return;
         }
 
@@ -216,8 +217,8 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
             }
         }
         if (target.chunkManaged) {
-            renderer->removeDebugCubeForNode(nid);
-            renderer->removeDebugSDFCubesForNode(nid);
+            if (renderer->debugCubeRenderer) renderer->debugCubeRenderer->removeCubeForNode(nid);
+            if (renderer->debugSDFRenderer) renderer->debugSDFRenderer->removeCubesForNode(nid);
         }
     };
     return { onAdded, onDeleted };
@@ -1192,7 +1193,6 @@ public:
         if (sceneRenderer->postProcessRenderer) sceneRenderer->postProcessRenderer->setCmdState(&sceneRenderer->frameCmdState);
         if (sceneRenderer->debugCubeRenderer) sceneRenderer->debugCubeRenderer->setCmdState(&sceneRenderer->frameCmdState);
         if (sceneRenderer->debugSDFRenderer) sceneRenderer->debugSDFRenderer->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->solidWireframe) sceneRenderer->solidWireframe->setCmdState(&sceneRenderer->frameCmdState);
         if (sceneRenderer->waterWireframe) sceneRenderer->waterWireframe->setCmdState(&sceneRenderer->frameCmdState);
         if (sceneRenderer->solid360Renderer) sceneRenderer->solid360Renderer->setCmdState(&sceneRenderer->frameCmdState);
         if (sceneRenderer->mainLiquidRenderer) sceneRenderer->mainLiquidRenderer->setCmdState(&sceneRenderer->frameCmdState);
@@ -1469,7 +1469,7 @@ public:
                         debugCubes.push_back({BoundingBox(wc.cube.getMin(), wc.cube.getMax()), wc.color});
                 }
                 if (showOctreeDebug) {
-                    auto nodeCubes = sceneRenderer->getDebugNodeCubes();
+                    auto nodeCubes = sceneRenderer->debugCubeRenderer->getCubes();
                     debugCubes.reserve(debugCubes.size() + nodeCubes.size());
                     for (auto &nc : nodeCubes) debugCubes.push_back(nc);
                 }
@@ -1495,7 +1495,7 @@ public:
             }
 
             if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
-                auto sdfCubes = sceneRenderer->getDebugSDFCubes();
+                auto sdfCubes = sceneRenderer->debugSDFRenderer->getCubes();
                 if (!sdfCubes.empty()) {
                     sceneRenderer->debugSDFRenderer->setCubes(sdfCubes);
                     sceneRenderer->debugSDFRenderer->render(this, commandBuffer, getMainDescriptorSet());
@@ -1503,7 +1503,7 @@ public:
             }
 
             if (settings.renderSolid && settings.wireframeMode && sceneRenderer) {
-                sceneRenderer->drawSolidWireframeOverlay(this, commandBuffer, frameIdx, getMainDescriptorSet(), settings.wireframeMode);
+                sceneRenderer->mainSolidRenderer->drawWireframeOverlay(commandBuffer, this, getMainDescriptorSet());
             }
 
             vkCmdEndRendering(commandBuffer);
@@ -2882,8 +2882,8 @@ void MyApp::resetSceneState() {
         sceneRenderer->removeAllRegisteredMeshes();
         sceneRenderer->removeAllTransparentMeshes();
         world->chunkManager().removeAll();
-        sceneRenderer->nodeDebugCubes.clear();
-        sceneRenderer->clearDebugSDFCubes();
+        if (sceneRenderer->debugCubeRenderer) sceneRenderer->debugCubeRenderer->clearCubes();
+        if (sceneRenderer->debugSDFRenderer) sceneRenderer->debugSDFRenderer->clearCubes();
         if (sceneRenderer->vegetationRenderer) {
             sceneRenderer->vegetationRenderer->clearAllInstances();
         }

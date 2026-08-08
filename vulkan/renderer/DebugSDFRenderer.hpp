@@ -4,10 +4,14 @@
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "../../math/BoundingCube.hpp"
+#include "../../space/Octree.hpp" // for NodeID, Octree, OctreeNode
+#include "../../space/OctreeNodeData.hpp"
 #include <array>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <vector>
+#include <unordered_map>
+#include <mutex>
 #include "CommandBufferState.hpp"
 
 // Renders leaf-node cube faces colored by their SDF sign and magnitude.
@@ -27,7 +31,19 @@ public:
     void render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet);
     void cleanup();
 
+    // ── Per-chunk SDF cube tracking (moved from SceneRenderer) ──
+    // Populated by the space-change handlers (worker threads) after chunk
+    // (re)builds; consumed as a copy on the render thread.
+    void updateCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree);
+    void removeCubesForNode(NodeID id);
+    void clearCubes();
+    std::vector<CubeSDF> getCubes() const;
+
 private:
+    // Per-node SDF face cubes keyed by octree node id
+    std::unordered_map<NodeID, std::vector<CubeSDF>> nodeDebugSDFCubes;
+    mutable std::recursive_mutex cubesMutex;
+
     struct CubeVertex {
         glm::vec3 position;
         uint32_t cornerIndex;

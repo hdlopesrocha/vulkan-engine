@@ -6,6 +6,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstring>
 #include <iostream>
+#include <cmath>
+#include <utility>
 #include "../includes/locations.hpp"
 
 DebugSDFRenderer::DebugSDFRenderer() {}
@@ -205,4 +207,109 @@ void DebugSDFRenderer::cleanup() {
     indexCount = 0;
     instanceBufferCapacity = 0;
     activeCubes.clear();
+}
+
+namespace {
+
+constexpr float kDebugSDFClip = 10.0f;
+
+const uint32_t kDebugSDFFaces[6][4] = {
+    {0, 1, 3, 2},
+    {4, 6, 7, 5},
+    {0, 4, 5, 1},
+    {2, 3, 7, 6},
+    {0, 2, 6, 4},
+    {1, 5, 7, 3}
+};
+
+bool isDrawableSDF(float v) {
+    return std::isfinite(v) && std::abs(v) <= kDebugSDFClip;
+}
+
+bool hasDrawableSDFFace(const std::array<float, 8>& sdf) {
+    for (const auto& face : kDebugSDFFaces) {
+        for (uint32_t corner : face) {
+            if (isDrawableSDF(sdf[corner])) {
+                return true;
+            }
+        }
+
+        for (uint32_t edge = 0; edge < 4; ++edge) {
+            const float a = sdf[face[edge]];
+            const float b = sdf[face[(edge + 1) % 4]];
+            if (std::isfinite(a) && std::isfinite(b) && ((a <= 0.0f && b >= 0.0f) || (a >= 0.0f && b <= 0.0f))) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void collectLeafSDFCubes(OctreeNode* node, const BoundingCube& cube, OctreeAllocator& allocator,
+                         std::vector<DebugSDFRenderer::CubeSDF>& out) {
+    if (!node) return;
+
+    if (node->getLod() > 0u) {
+        DebugSDFRenderer::CubeSDF debugCube{};
+        debugCube.cube = cube;
+        for (size_t i = 0; i < debugCube.sdf.size(); ++i) {
+            debugCube.sdf[i] = node->sdf[i];
+        }
+        debugCube.brushIndex = node->vertex.brushIndex;
+        if (hasDrawableSDFFace(debugCube.sdf)) {
+            out.push_back(debugCube);
+            return;  // Parent covers this subtree — children are redundant
+        }
+        // Parent is simplified but has no drawable faces; traverse children
+        // in case individual child leaves still have visible SDF faces.
+    }
+
+    ChildBlock* block = node->getBlock(allocator);
+    if (!block) return;
+    for (uint32_t i = 0; i < 8; ++i) {
+        OctreeNode* child = block->get(i, allocator);
+        if (child && child != node) {
+            collectLeafSDFCubes(child, cube.getChild(i), allocator, out);
+        }
+    }
+}
+
+} // namespace
+
+void DebugSDFRenderer::updateCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree) {
+    if (!nd.node || !tree.allocator) return;
+
+    std::vector<CubeSDF> cubes;
+    collectLeafSDFCubes(nd.node, nd.cube, *tree.allocator, cubes);
+
+    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    if (cubes.empty()) {
+        nodeDebugSDFCubes.erase(nid);
+    } else {
+        nodeDebugSDFCubes[nid] = std::move(cubes);
+    }
+}
+
+void DebugSDFRenderer::removeCubesForNode(NodeID id) {
+    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    nodeDebugSDFCubes.erase(id);
+}
+
+void DebugSDFRenderer::clearCubes() {
+    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    nodeDebugSDFCubes.clear();
+}
+
+std::vector<DebugSDFRenderer::CubeSDF> DebugSDFRenderer::getCubes() const {
+    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    std::vector<CubeSDF> out;
+    size_t total = 0;
+    for (const auto& entry : nodeDebugSDFCubes) {
+        total += entry.second.size();
+    }
+    out.reserve(total);
+    for (const auto& entry : nodeDebugSDFCubes) {
+        out.insert(out.end(), entry.second.begin(), entry.second.end());
+    }
+    return out;
 }

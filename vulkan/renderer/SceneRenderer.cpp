@@ -17,17 +17,6 @@
 #include <cstdlib>
 
 namespace {
-constexpr float kDebugSDFClip = 10.0f;
-
-const uint32_t kDebugSDFFaces[6][4] = {
-    {0, 1, 3, 2},
-    {4, 6, 7, 5},
-    {0, 4, 5, 1},
-    {2, 3, 7, 6},
-    {0, 2, 6, 4},
-    {1, 5, 7, 3}
-};
-
 // Stable-slot pool capacities (pre-allocated GPU buffers, never reallocated).
 //
 // Every mesh-bearing octree node occupies one slot: each chunk (chunkLod 0)
@@ -70,59 +59,7 @@ const uint32_t kDebugSDFFaces[6][4] = {
 constexpr uint32_t kMaxSolidChunkSlots = 1024;   // main solid (opaque) pool
 constexpr uint32_t kMaxWaterChunkSlots = 192;   // main water (transparent) pool
 constexpr uint32_t kMaxBrushChunkSlots = 64;     // brush preview pool
-
-bool isDrawableSDF(float v) {
-    return std::isfinite(v) && std::abs(v) <= kDebugSDFClip;
-}
-
-bool hasDrawableSDFFace(const std::array<float, 8>& sdf) {
-    for (const auto& face : kDebugSDFFaces) {
-        for (uint32_t corner : face) {
-            if (isDrawableSDF(sdf[corner])) {
-                return true;
-            }
-        }
-
-        for (uint32_t edge = 0; edge < 4; ++edge) {
-            const float a = sdf[face[edge]];
-            const float b = sdf[face[(edge + 1) % 4]];
-            if (std::isfinite(a) && std::isfinite(b) && ((a <= 0.0f && b >= 0.0f) || (a >= 0.0f && b <= 0.0f))) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-void collectLeafSDFCubes(OctreeNode* node, const BoundingCube& cube, OctreeAllocator& allocator,
-                         std::vector<DebugSDFRenderer::CubeSDF>& out) {
-    if (!node) return;
-
-    if (node->getLod() > 0u) {
-        DebugSDFRenderer::CubeSDF debugCube{};
-        debugCube.cube = cube;
-        for (size_t i = 0; i < debugCube.sdf.size(); ++i) {
-            debugCube.sdf[i] = node->sdf[i];
-        }
-        debugCube.brushIndex = node->vertex.brushIndex;
-        if (hasDrawableSDFFace(debugCube.sdf)) {
-            out.push_back(debugCube);
-            return;  // Parent covers this subtree — children are redundant
-        }
-        // Parent is simplified but has no drawable faces; traverse children
-        // in case individual child leaves still have visible SDF faces.
-    }
-
-    ChildBlock* block = node->getBlock(allocator);
-    if (!block) return;
-    for (uint32_t i = 0; i < 8; ++i) {
-        OctreeNode* child = block->get(i, allocator);
-        if (child && child != node) {
-            collectLeafSDFCubes(child, cube.getChild(i), allocator, out);
-        }
-    }
-}
-}
+} // namespace
 
 void SceneRenderer::cleanup(VulkanApp* app) {
     // Tear down the async streaming engine FIRST, while the solid/water
@@ -171,9 +108,6 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (debugSDFRenderer) {
         debugSDFRenderer->cleanup();
     }
-    if (solidWireframe) {
-        solidWireframe->cleanup();
-    }
     if (waterWireframe) {
         waterWireframe->cleanup();
     }
@@ -183,16 +117,6 @@ void SceneRenderer::cleanup(VulkanApp* app) {
         if (b.buffer != VK_NULL_HANDLE) b = {};
     }
     mainUniformBuffers.clear();
-
-    if (mainPassUBO.buffer.buffer != VK_NULL_HANDLE) {
-        mainPassUBO.buffer = {};
-    }
-    if (shadowPassUBO.buffer.buffer != VK_NULL_HANDLE) {
-        shadowPassUBO.buffer = {};
-    }
-    if (waterPassUBO.buffer.buffer != VK_NULL_HANDLE) {
-        waterPassUBO.buffer = {};
-    }
 }
 
 void SceneRenderer::stopGenPools() {
@@ -272,7 +196,6 @@ SceneRenderer::SceneRenderer() :
     debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
     debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
-    solidWireframe(std::make_unique<WireframeRenderer>()),
     waterWireframe(std::make_unique<WireframeRenderer>()),
       skySettings(std::make_unique<SkySettings>())
 {
@@ -284,11 +207,6 @@ SceneRenderer::~SceneRenderer() {
     // (MyApp) must call `sceneRenderer->cleanup(app)` before destroying the
     // VulkanApp instance.
 }
-
-void SceneRenderer::drawSolidWireframeOverlay(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled) {
-    solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, mainSolidRenderer->getIndirectRenderer());
-}
-
 
 void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams) {
     if (!app) {
@@ -368,9 +286,10 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(0);
 
-    // Initialize sky renderer with our owned settings now that descriptor sets are ready.
-    // Write Sky UBO to the static descriptor set once; all per-frame descriptor sets
-    // will get binding 6 via the copy loop below.
+    // Initialize sky renderer now that descriptor sets are ready. Write the Sky
+    // UBO (binding 6) to the static descriptor set FIRST — the per-frame copy
+    // loop below propagates it to every per-frame set, and the copy must not
+    // run before binding 6 exists.
     if (skyRenderer) {
         VkDescriptorSet staticDs = app->getStaticDescriptorSet();
         if (staticDs != VK_NULL_HANDLE) {
@@ -385,7 +304,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             }
         }
     }
-    
+
     // Bind texture arrays, shadow maps, materials, sky, water params (bindings 1-13)
     // These static bindings are written once to the static descriptor set and then
     // copied into per-frame descriptor sets. Only binding 0 (per-frame UBO) is
@@ -671,15 +590,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // `backFaceDepthView` is valid before the first frame's water pass.
     if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
 
-    // Create wireframe pipelines for solid and water passes
-    if (solidWireframe) {
-        std::vector<VkDescriptorSetLayout> solidSetLayouts = { app->getDescriptorSetLayout() };
-        solidWireframe->createPipeline(app, {app->getSwapchainImageFormat()},
-            solidSetLayouts,
-            "shaders/main.vert.spv", "shaders/wireframe.frag.spv",
-            "shaders/main.tesc.spv", "shaders/main.tese.spv",
-            "solid wireframe");
-    }
+    // Create the solid wireframe pipeline (owned by SolidRenderer) and the
+    // water wireframe pipeline
+    mainSolidRenderer->createWireframe(app);
     if (waterWireframe) {
         std::vector<VkDescriptorSetLayout> waterSetLayouts = {
             app->getDescriptorSetLayout(),
@@ -697,22 +610,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     postProcessRenderer->init(app);
     postProcessRenderer->setRenderSize(app->getWidth(), app->getHeight());
     
-    // Finalize sky renderer with sphere VBO. Write Sky UBO to static descriptor set
-    // so all per-frame sets inherit it via the static copy (already done above).
-    VkDescriptorSet finalStaticDs = app->getStaticDescriptorSet();
-    if (finalStaticDs != VK_NULL_HANDLE) {
-        skyRenderer->init(app, *skySettings, finalStaticDs);
-    } else {
-        skyRenderer->init(app, *skySettings, mainDs);
-        for (uint32_t i = 1; i < static_cast<uint32_t>(app->getMainDescriptorSetCount()); ++i) {
-            VkDescriptorSet ds = app->getMainDescriptorSetForFrame(i);
-            if (ds != VK_NULL_HANDLE) {
-                skyRenderer->init(app, *skySettings, ds);
-            }
-        }
-    }
-    
-
     // Activate the stable-slot indirect rendering pipeline (no global rebuilds).
     // One draw-entry block PER CHUNK: the chunk's LoD levels share the block,
     // while each level's vertex/index data is packed into the shared element
@@ -1267,77 +1164,3 @@ bool SceneRenderer::hasModelForNode(Layer layer, NodeID nid) const {
     }
 }
 
-void SceneRenderer::updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree) {
-    if (!debugSDFRenderer || !nd.node || !tree.allocator) return;
-
-    std::vector<DebugSDFRenderer::CubeSDF> cubes;
-    collectLeafSDFCubes(nd.node, nd.cube, *tree.allocator, cubes);
-
-    std::lock_guard<std::recursive_mutex> lock(debugSDFCubesMutex);
-    if (cubes.empty()) {
-        nodeDebugSDFCubes.erase(nid);
-    } else {
-        nodeDebugSDFCubes[nid] = std::move(cubes);
-    }
-}
-
-void SceneRenderer::removeDebugSDFCubesForNode(NodeID id) {
-    std::lock_guard<std::recursive_mutex> lock(debugSDFCubesMutex);
-    nodeDebugSDFCubes.erase(id);
-}
-
-void SceneRenderer::clearDebugSDFCubes() {
-    std::lock_guard<std::recursive_mutex> lock(debugSDFCubesMutex);
-    nodeDebugSDFCubes.clear();
-}
-
-std::vector<DebugSDFRenderer::CubeSDF> SceneRenderer::getDebugSDFCubes() {
-    std::lock_guard<std::recursive_mutex> lock(debugSDFCubesMutex);
-    std::vector<DebugSDFRenderer::CubeSDF> out;
-    size_t total = 0;
-    for (const auto& entry : nodeDebugSDFCubes) {
-        total += entry.second.size();
-    }
-    out.reserve(total);
-    for (const auto& entry : nodeDebugSDFCubes) {
-        out.insert(out.end(), entry.second.begin(), entry.second.end());
-    }
-    return out;
-}
-
-void SceneRenderer::addDebugCubeForGeometry(Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
-    if (!debugCubeRenderer) return;
-    DebugCubeRenderer::CubeWithColor c;
-    // Compute world-space AABB from geometry vertices using same model as used for mesh
-    glm::vec3 minp(nd.cube.getMax()), maxp(nd.cube.getMin());
-    for (const auto &v : geom.vertices) {
-        minp = glm::min(minp, v.position);
-        maxp = glm::max(maxp, v.position);
-    }
-    if (minp.x == FLT_MAX) {
-        throw std::runtime_error("SceneRenderer::addDebugCubeForGeometry requires non-empty geometry (no fallback allowed)");
-    }
-    c.cube = BoundingBox(minp, maxp);
-    c.color = (layer == LAYER_OPAQUE) ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(0.0f, 0.5f, 1.0f);
-    addDebugCubeForNode(nid, c);
-}
-
-
-void SceneRenderer::clearBrushMeshes() {
-    // Drain any stale brush entries from the shared queue (main-scene entries
-    // are unaffected — this only touches isBrush-tagged ones). The queue is
-    // shared between the main scene and the brush scene, so this drain stays
-    // here; the IR/map clearing lives in BrushRenderer.
-    {
-        std::lock_guard<std::mutex> pqLock(pendingMeshMutex);
-        for (auto it = pendingMeshQueue.begin(); it != pendingMeshQueue.end(); ) {
-            if (it->second.isBrush) {
-                it = pendingMeshQueue.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
-
-    if (brushRenderer) brushRenderer->clearMeshes();
-}

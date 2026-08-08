@@ -317,3 +317,26 @@ void DebugCubeRenderer::cleanup() {
     cubeVBO.indexCount = 0;
     instanceBuffer = {};
 }
+
+void DebugCubeRenderer::addCubeForNode(NodeID id, const CubeWithColor& cube) {
+    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    nodeDebugCubes[id] = cube;
+}
+
+void DebugCubeRenderer::removeCubeForNode(NodeID id) {
+    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    nodeDebugCubes.erase(id);
+}
+
+void DebugCubeRenderer::clearCubes() {
+    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    nodeDebugCubes.clear();
+}
+
+std::vector<DebugCubeRenderer::CubeWithColor> DebugCubeRenderer::getCubes() const {
+    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    std::vector<CubeWithColor> out;
+    out.reserve(nodeDebugCubes.size());
+    for (const auto& p : nodeDebugCubes) out.push_back(p.second);
+    return out;
+}
