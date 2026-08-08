@@ -1151,7 +1151,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     }
 
     // Brush back-face depth: alias to brush back-face depth view
-    VkImageView bfView3 = (sceneRenderer && sceneRenderer->brushBackFaceRenderer) ? sceneRenderer->brushBackFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
+    VkImageView bfView3 = (sceneRenderer && sceneRenderer->brushRenderer && sceneRenderer->brushRenderer->backFaceRenderer) ? sceneRenderer->brushRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
     if (linearBrushBackFaceDepthDescriptor == VK_NULL_HANDLE && bfView3 != VK_NULL_HANDLE) {
         VkSampler depthSampler = widgetSampler;
         linearBrushBackFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, bfView3, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);

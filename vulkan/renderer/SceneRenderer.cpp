@@ -144,15 +144,12 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (backFaceRenderer && app) {
         backFaceRenderer->cleanup(app);
     }
-    if (brushBackFaceRenderer && app) {
-        brushBackFaceRenderer->cleanup(app);
+    if (brushRenderer && app) {
+        brushRenderer->cleanup(app);
     }
     if (solid360Renderer && app) {
         solid360Renderer->cleanup(app);
     }
-    destroyBrushRenderTargets(app);
-    brushSolidIndirectRenderer.cleanup();
-    brushLiquidIndirectRenderer.cleanup();
     if (mainSolidRenderer && app) {
         mainSolidRenderer->cleanup(app);
     }
@@ -203,59 +200,9 @@ void SceneRenderer::cleanup(VulkanApp* app) {
 }
 
 void SceneRenderer::stopGenPools() {
-    brushWaterGenPool.stop();
-    brushSolidGenPool.stop();
+    if (brushRenderer) brushRenderer->stopGenPools();
     mainSolidGenPool.stop();
     mainWaterGenPool.stop();
-}
-
-void SceneRenderer::createBrushRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
-    if (!app) return;
-    VkDevice device = app->getDevice();
-    auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
-                           VkImage& image, VmaAllocation& allocation, VkImageView& view) {
-        VkDeviceMemory dummyMem = VK_NULL_HANDLE;
-        RendererUtils::createImage2DWithVma(device, app, width, height, format, usage, aspect,
-                                            "SceneRenderer: brush", image, allocation, dummyMem, view);
-    };
-    VkFormat colorFormat = app->getSwapchainImageFormat();
-    for (uint32_t i = 0; i < SceneRenderer::BRUSH_FRAMES; ++i) {
-        createImage(colorFormat,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT,
-                    brushColorImages[i], brushColorAllocations[i], brushColorImageViews[i]);
-        createImage(VK_FORMAT_D32_SFLOAT,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT,
-                    brushDepthImages[i], brushDepthAllocations[i], brushDepthImageViews[i]);
-    }
-}
-
-void SceneRenderer::destroyBrushRenderTargets(VulkanApp* app) {
-    if (!app) return;
-    VkDevice device = app->getDevice();
-    for (uint32_t i = 0; i < SceneRenderer::BRUSH_FRAMES; ++i) {
-        if (brushColorImageViews[i] != VK_NULL_HANDLE) {
-            if (app->resources.removeImageView(brushColorImageViews[i]))
-                vkDestroyImageView(device, brushColorImageViews[i], nullptr);
-            brushColorImageViews[i] = VK_NULL_HANDLE;
-        }
-        if (brushColorImages[i] != VK_NULL_HANDLE) {
-            app->destroyImageWithVma(brushColorImages[i], brushColorAllocations[i], VK_NULL_HANDLE);
-            brushColorImages[i] = VK_NULL_HANDLE;
-            brushColorAllocations[i] = VK_NULL_HANDLE;
-        }
-        if (brushDepthImageViews[i] != VK_NULL_HANDLE) {
-            if (app->resources.removeImageView(brushDepthImageViews[i]))
-                vkDestroyImageView(device, brushDepthImageViews[i], nullptr);
-            brushDepthImageViews[i] = VK_NULL_HANDLE;
-        }
-        if (brushDepthImages[i] != VK_NULL_HANDLE) {
-            app->destroyImageWithVma(brushDepthImages[i], brushDepthAllocations[i], VK_NULL_HANDLE);
-            brushDepthImages[i] = VK_NULL_HANDLE;
-            brushDepthAllocations[i] = VK_NULL_HANDLE;
-        }
-    }
 }
 
 void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height) {
@@ -263,13 +210,13 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     if (mainSolidRenderer) {
         mainSolidRenderer->createRenderTargets(app, width, height);
     }
-    destroyBrushRenderTargets(app);
-    createBrushRenderTargets(app, width, height);
+    if (brushRenderer) {
+        brushRenderer->onSwapchainResized(app, width, height);
+    }
     if (mainLiquidRenderer) {
         mainLiquidRenderer->createRenderTargets(app, width, height);
         // Recreate back-face and 360 reflection targets owned by SceneRenderer
         if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, width, height);
-        if (brushBackFaceRenderer) brushBackFaceRenderer->createRenderTargets(app, width, height);
         if (solid360Renderer) {
             solid360Renderer->destroySolid360Targets(app);
             solid360Renderer->createSolid360Targets(app, mainLiquidRenderer->getLinearSampler());
@@ -316,46 +263,6 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         skyRenderer->destroyOffscreenTargets(app);
         skyRenderer->createOffscreenTargets(app, width, height);
     }
-    // Brush images have been destroyed and recreated; reset tracked layouts so
-    // the first barrier after resize uses VK_IMAGE_LAYOUT_UNDEFINED as oldLayout.
-    brushColorLayouts.fill(VK_IMAGE_LAYOUT_UNDEFINED);
-    brushDepthLayouts.fill(VK_IMAGE_LAYOUT_UNDEFINED);
-    // Rewrite brush depth descriptors after recreating brush targets
-    writeBrushDepthDescriptors(app);
-}
-
-void SceneRenderer::writeBrushDepthDescriptors(VulkanApp* app) {
-    VkSampler brushDepthSampler = VK_NULL_HANDLE;
-    if (mainLiquidRenderer) {
-        brushDepthSampler = mainLiquidRenderer->getLinearSampler();
-    }
-    if (brushDepthSampler == VK_NULL_HANDLE && shadowMapper) {
-        brushDepthSampler = shadowMapper->getShadowMapSampler();
-    }
-
-    for (size_t fi = 0; fi < brushDepthDescriptorSets.size(); ++fi) {
-        VkDescriptorSet dstSet = brushDepthDescriptorSets[fi];
-        if (dstSet == VK_NULL_HANDLE) continue;
-        VkImageView brushFrontView = getBrushDepthView(static_cast<uint32_t>(fi));
-        VkImageView brushBackView = VK_NULL_HANDLE;
-        if (brushBackFaceRenderer) {
-            brushBackView = brushBackFaceRenderer->getBackFaceDepthView(static_cast<uint32_t>(fi));
-        }
-        if (brushDepthSampler == VK_NULL_HANDLE) continue;
-
-        DescriptorWriter writer(app->getDevice());
-        if (brushFrontView != VK_NULL_HANDLE) {
-            writer.writeImage(dstSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                              brushDepthSampler, brushFrontView,
-                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-        if (brushBackView != VK_NULL_HANDLE) {
-            writer.writeImage(dstSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                              brushDepthSampler, brushBackView,
-                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-        writer.flush();
-    }
 }
 
 SceneRenderer::SceneRenderer() :
@@ -365,6 +272,7 @@ SceneRenderer::SceneRenderer() :
     skyRenderer(std::make_unique<SkyRenderer>()),
     mainSolidRenderer(std::make_unique<SolidRenderer>()),
     vegetationRenderer(std::make_unique<VegetationRenderer>()),
+    brushRenderer(std::make_unique<BrushRenderer>()),
     debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
     debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
@@ -533,7 +441,9 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, u
     // per-cascade prepareCull calls above) so drawPrepared in the main pass
     // uses the correct visible set.
     mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_, lodBias);
-    brushSolidIndirectRenderer.prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_, lodBias);
+    if (brushRenderer) {
+        brushRenderer->getSolidIR().prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_, lodBias);
+    }
 
     // Restore the main UBO so subsequent passes see the original data.
     // Wait for all shadow cascade draws to finish reading the UBO first.
@@ -590,7 +500,7 @@ void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uin
         return;
     }
     if (renderSolid) {
-        VkDescriptorSet brushDepthSet = getBrushDepthDescriptorSet(frameIdx);
+        VkDescriptorSet brushDepthSet = brushRenderer ? brushRenderer->getDepthDescriptorSet(frameIdx) : VK_NULL_HANDLE;
         mainSolidRenderer->renderDepthPrepass(commandBuffer, app, perTextureDescriptorSet, brushDepthSet);
         mainSolidRenderer->render(commandBuffer, app, perTextureDescriptorSet, brushDepthSet);
         if (wireframeEnabled) {
@@ -678,7 +588,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
 
                 // Draw filled water geometry (will update depth buffer)
                 mainLiquidRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
-                brushLiquidIndirectRenderer.drawPrepared(commandBuffer);
+                if (brushRenderer) brushRenderer->getLiquidIR().drawPrepared(commandBuffer);
             }
 
             // Draw wireframe overlay on top, inside the same render pass,
@@ -699,7 +609,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
                     frameCmdState.bindGraphicsDescriptorSets(commandBuffer, wfLayout, 2, 1, &wfDepthDs, 0, nullptr);
 
                 mainLiquidRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
-                brushLiquidIndirectRenderer.drawPrepared(commandBuffer);
+                if (brushRenderer) brushRenderer->getLiquidIR().drawPrepared(commandBuffer);
             }
 
             mainLiquidRenderer->endWaterGeometryPass(commandBuffer);
@@ -709,7 +619,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
     } else {
         if (!_wg_env_skip) {
             mainLiquidRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView,
-                                  &brushLiquidIndirectRenderer);
+                                  brushRenderer ? &brushRenderer->getLiquidIR() : nullptr);
         } else {
             // Skipping waterRenderer::render due to VULKAN_DISABLE_WATERGEOM
         }
@@ -747,12 +657,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         &streamer.uploadManager(), streaming::StreamCategory::Solid);
     mainLiquidRenderer->getIndirectRenderer().setUploadManager(
         &streamer.uploadManager(), streaming::StreamCategory::Water);
-    // Initialize the separate brush solid/liquid IndirectRenderers (no
-    // streamer — brush meshes are small and infrequent; upload fits in the
-    // legacy ring path). Both are dedicated pools: brush geometry never shares
-    // the main scene IRs.
-    brushSolidIndirectRenderer.init();
-    brushLiquidIndirectRenderer.init();
 
     // skySettingsRef was initialized at construction and must be valid
     
@@ -777,7 +681,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Create offscreen sky targets (destroy old first to prevent handle leak)
     skyRenderer->destroyOffscreenTargets(app);
     skyRenderer->createOffscreenTargets(app, app->getWidth(), app->getHeight());
-    createBrushRenderTargets(app, app->getWidth(), app->getHeight());
     shadowMapper->init(app);
     vegetationRenderer->init(app);
 
@@ -911,7 +814,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Create scene-owned water sub-renderers. Back-face renderpass must exist
     // before water pipelines are created, so create it first.
     backFaceRenderer = std::make_unique<WaterBackFaceRenderer>();
-    brushBackFaceRenderer = std::make_unique<BrushBackFaceRenderer>();
     solid360Renderer = std::make_unique<Solid360Renderer>();
 
     // Initialize WaterRenderer (creates its pipeline layout and initializes the param SSBO)
@@ -923,13 +825,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Create back-face render targets early so their image views are
     // available before the first frame's water pass attempts to bind them.
     if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    // Create brush back-face renderer: uses solid shaders (no water dependency)
-    // and VK_COMPARE_OP_GREATER to capture the farthest back-face depth.
-    if (brushBackFaceRenderer) {
-        brushBackFaceRenderer->init(app);
-        brushBackFaceRenderer->createPipelines(app);
-        brushBackFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    }
     if (solid360Renderer) {
         solid360Renderer->init(app);
         solid360Renderer->setWaterRenderer(mainLiquidRenderer.get());
@@ -1034,13 +929,18 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         }
     }
 
-    // ── Allocate (once) and write per-frame brush depth descriptor sets (set=1) ──
-    for (size_t fi = 0; fi < brushDepthDescriptorSets.size(); ++fi) {
-        if (brushDepthDescriptorSets[fi] == VK_NULL_HANDLE) {
-            brushDepthDescriptorSets[fi] = app->createDescriptorSet(app->getBrushDepthDescriptorSetLayout());
-        }
+    // ── Initialize the brush renderer ──
+    // Wire the samplers used by the brush depth descriptor writes (from the
+    // water and shadow renderers, which are initialized above), then create
+    // everything brush-related: offscreen targets, back-face renderer,
+    // per-frame brush depth descriptor sets (set=1) and the dedicated brush
+    // IndirectRenderers.
+    if (brushRenderer) {
+        brushRenderer->setDepthSamplers(
+            mainLiquidRenderer ? mainLiquidRenderer->getLinearSampler() : VK_NULL_HANDLE,
+            shadowMapper ? shadowMapper->getShadowMapSampler() : VK_NULL_HANDLE);
+        brushRenderer->init(app, app->getWidth(), app->getHeight());
     }
-    writeBrushDepthDescriptors(app);
 
     // ── Allocate (once) and write shadow-specific descriptor sets per-frame ──
     shadowDescriptorSets.resize(mainUniformBuffers.size());
@@ -1164,12 +1064,11 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // meshes). Brush geometry no longer shares the main scene slot pools.
     // The byte budgets are TOTAL shared pool budgets now (packed slots): each
     // chunk consumes only what its mesh actually uses.
-    brushSolidIndirectRenderer.initSlots(app, kMaxBrushChunkSlots,
-                                         kMaxBrushChunkSlots * (1u << 18),  // total vertex pool
-                                         kMaxBrushChunkSlots * (1u << 16)); // total index pool
-    brushLiquidIndirectRenderer.initSlots(app, kMaxBrushChunkSlots,
-                                          kMaxBrushChunkSlots * (1u << 18),  // total vertex pool
-                                          kMaxBrushChunkSlots * (1u << 16)); // total index pool
+    if (brushRenderer) {
+        brushRenderer->initSlots(app, kMaxBrushChunkSlots,
+                                 kMaxBrushChunkSlots * (1u << 18),  // total vertex pool
+                                 kMaxBrushChunkSlots * (1u << 16)); // total index pool
+    }
 }
 
 // Update only the static bindings (textures, materials, water params) in the
@@ -1284,7 +1183,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     }
 
     // Also rewrite brush depth descriptors for all per-frame main sets
-    writeBrushDepthDescriptors(app);
+    if (brushRenderer) brushRenderer->writeDepthDescriptors(app);
 }
 
 
@@ -1457,8 +1356,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     lastCameraPos_ = cameraPos;
     mainSolidRenderer->getIndirectRenderer().pollPendingTransfers(app);
     mainLiquidRenderer->getIndirectRenderer().pollPendingTransfers(app);
-    brushSolidIndirectRenderer.pollPendingTransfers(app);
-    brushLiquidIndirectRenderer.pollPendingTransfers(app);
+    if (brushRenderer) brushRenderer->pollPendingTransfers(app);
 
     if (batch.empty()) {
         // No new geometry yet (brush tessellation may still be running). Keep
@@ -1489,22 +1387,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // immediately after all new slots are allocated.
     std::unordered_map<NodeID, uint32_t> oldSolidSlots;
     std::unordered_map<NodeID, uint32_t> oldTransparentSlots;
-    {
-        std::lock_guard<std::recursive_mutex> lock(pendingOldBrushSolidChunksMutex);
-        for (auto& entry : pendingOldBrushSolidChunks) {
-            if (entry.second.meshId != UINT32_MAX)
-                oldSolidSlots[entry.first] = entry.second.meshId;
-        }
-        pendingOldBrushSolidChunks.clear();
-    }
-    {
-        std::lock_guard<std::recursive_mutex> lock(pendingOldBrushLiquidChunksMutex);
-        for (auto& entry : pendingOldBrushLiquidChunks) {
-            if (entry.second.meshId != UINT32_MAX)
-                oldTransparentSlots[entry.first] = entry.second.meshId;
-        }
-        pendingOldBrushLiquidChunks.clear();
-    }
+    if (brushRenderer) brushRenderer->captureOldSlots(oldSolidSlots, oldTransparentSlots);
 
     // ── UNIFIED publish pass ──────────────────────────────────────────────────
     // Both the main scene (solid/water) and the brush scene flow through the
@@ -1512,7 +1395,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // right IndirectRenderer, ChunkManager tracking and deferred-slot source:
     // solid/water geometry is processed exactly the same way as brush geometry.
     std::unordered_set<NodeID> matchedNids;
-    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch, mainSolidRenderer->getIndirectRenderer(), brushSolidIndirectRenderer, mainLiquidRenderer->getIndirectRenderer(), brushLiquidIndirectRenderer,
+    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch, mainSolidRenderer->getIndirectRenderer(), brushRenderer->getSolidIR(), mainLiquidRenderer->getIndirectRenderer(), brushRenderer->getLiquidIR(),
         // takeOldSlot: resolve+consume the old slot for a chunk (one slot per
         // chunk — its LoD rows share it), or UINT32_MAX when none. The main
         // stream reads its pending-delete entry (one-frame grace); the brush
@@ -1542,7 +1425,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         [this](Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version, bool isBrush) {
             if (!isBrush) return;
             auto& chunkMap = (layer == LAYER_OPAQUE)
-                ? this->brushSolidChunks : this->brushTransparentChunks;
+                ? this->brushRenderer->solidChunks : this->brushRenderer->transparentChunks;
             chunkMap[nid] = Model3DVersion{slotIdx, version};
         },
         // onFinestPublished: grass chunks (main scene only) drive vegetation
@@ -1556,12 +1439,12 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // set. These chunks were removed in the rebuild and have stale geometry at
     // the old brush position — they must not linger as visible garbage.
     for (auto& [nid, oldSlot] : oldSolidSlots) {
-        if (!matchedNids.count(nid) && brushSolidChunks.find(nid) == brushSolidChunks.end())
-            brushSolidIndirectRenderer.removeMeshSlotted(oldSlot);
+        if (!matchedNids.count(nid) && brushRenderer->solidChunks.find(nid) == brushRenderer->solidChunks.end())
+            brushRenderer->getSolidIR().removeMeshSlotted(oldSlot);
     }
     for (auto& [nid, oldSlot] : oldTransparentSlots) {
-        if (!matchedNids.count(nid) && brushTransparentChunks.find(nid) == brushTransparentChunks.end())
-            brushLiquidIndirectRenderer.removeMeshSlotted(oldSlot);
+        if (!matchedNids.count(nid) && brushRenderer->transparentChunks.find(nid) == brushRenderer->transparentChunks.end())
+            brushRenderer->getLiquidIR().removeMeshSlotted(oldSlot);
     }
     // Main stream: age out pending-delete entries that have been waiting longer
     // than MAX_FRAMES_IN_FLIGHT. For solid/water the octree node is reused with
@@ -1872,14 +1755,11 @@ void SceneRenderer::addDebugCubeForGeometry(Layer layer, NodeID nid, const Octre
 
 
 void SceneRenderer::clearBrushMeshes() {
-    std::lock_guard<std::recursive_mutex> lock(brushSolidChunksMutex);
-
-    // Drain any stale entries from a previous rebuild that haven't been
-    // processed yet (processPendingMeshes runs once per frame in update()).
+    // Drain any stale brush entries from the shared queue (main-scene entries
+    // are unaffected — this only touches isBrush-tagged ones). The queue is
+    // shared between the main scene and the brush scene, so this drain stays
+    // here; the IR/map clearing lives in BrushRenderer.
     {
-        // Drain any stale brush entries from the shared queue (main-scene
-        // entries are unaffected — this only touches isBrush-tagged ones).
-        // processPendingMeshes runs once per frame in update().
         std::lock_guard<std::mutex> pqLock(pendingMeshMutex);
         for (auto it = pendingMeshQueue.begin(); it != pendingMeshQueue.end(); ) {
             if (it->second.isBrush) {
@@ -1890,39 +1770,5 @@ void SceneRenderer::clearBrushMeshes() {
         }
     }
 
-    IndirectRenderer& brushIR = brushSolidIndirectRenderer;
-    IndirectRenderer& brushWaterIR = brushLiquidIndirectRenderer;
-
-    // Remove all brush opaque meshes from the dedicated brush solid IR.
-    for (auto &entry : brushSolidChunks) {
-        if (entry.second.meshId != UINT32_MAX) {
-            brushIR.removeMeshSlotted(entry.second.meshId);
-        }
-    }
-    brushSolidChunks.clear();
-
-    // Remove brush transparent meshes from the dedicated brush liquid IR.
-    for (auto &entry : brushTransparentChunks) {
-        if (entry.second.meshId != UINT32_MAX) {
-            brushWaterIR.removeMeshSlotted(entry.second.meshId);
-        }
-    }
-    brushTransparentChunks.clear();
-}
-
-void SceneRenderer::stageOldBrushChunks() {
-    {
-        std::lock_guard<std::recursive_mutex> lock(brushSolidChunksMutex);
-        for (auto& entry : brushSolidChunks) {
-            pendingOldBrushSolidChunks[entry.first] = entry.second;
-        }
-        brushSolidChunks.clear();
-    }
-    {
-        std::lock_guard<std::recursive_mutex> lock(brushTransparentChunksMutex);
-        for (auto& entry : brushTransparentChunks) {
-            pendingOldBrushLiquidChunks[entry.first] = entry.second;
-        }
-        brushTransparentChunks.clear();
-    }
+    if (brushRenderer) brushRenderer->clearMeshes();
 }

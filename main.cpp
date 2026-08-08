@@ -732,13 +732,13 @@ public:
             world->brushScene(), 
             LAYER_OPAQUE, 
             minSize, 
-            &sceneRenderer->brushSolidGenPool,
+            &sceneRenderer->brushRenderer->solidGenPool,
             {
                 sceneRenderer->pendingMeshQueue,
                 sceneRenderer->pendingMeshMutex,
-                sceneRenderer->brushSolidChunks,
-                sceneRenderer->brushSolidChunksMutex,
-                sceneRenderer->brushSolidIndirectRenderer, 
+                sceneRenderer->brushRenderer->solidChunks,
+                sceneRenderer->brushRenderer->solidChunksMutex,
+                sceneRenderer->brushRenderer->getSolidIR(), 
                 sceneRenderer->pendingDeleteSolidSlots, 
                 false
             }
@@ -752,13 +752,13 @@ public:
             world->brushScene(), 
             LAYER_TRANSPARENT, 
             minSize, 
-            &sceneRenderer->brushWaterGenPool,
+            &sceneRenderer->brushRenderer->liquidGenPool,
             {
                 sceneRenderer->pendingMeshQueue,
                 sceneRenderer->pendingMeshMutex,
-                sceneRenderer->brushTransparentChunks,
-                sceneRenderer->brushTransparentChunksMutex,
-                sceneRenderer->brushLiquidIndirectRenderer, 
+                sceneRenderer->brushRenderer->transparentChunks,
+                sceneRenderer->brushRenderer->transparentChunksMutex,
+                sceneRenderer->brushRenderer->getLiquidIR(), 
                 sceneRenderer->pendingDeleteWaterSlots, 
                 false
             }
@@ -1204,8 +1204,8 @@ public:
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
         sceneRenderer->mainSolidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
         sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
-        sceneRenderer->brushSolidIndirectRenderer.acquireBuffers(commandBuffer);
-        sceneRenderer->brushSolidIndirectRenderer.prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+        sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(commandBuffer);
+        sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
             sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
         }
@@ -1220,7 +1220,7 @@ public:
         // with the water pipeline, so it needs a current-frame cull of its own
         // (its compact/visibleCount buffers are otherwise stale from the last
         // prepareCull or uninitialized, which would draw garbage).
-        sceneRenderer->brushLiquidIndirectRenderer.prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+        sceneRenderer->brushRenderer->getLiquidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
 
@@ -1284,135 +1284,14 @@ public:
         // and brush color are all written here before solid geometry touches the
         // scene depth buffer. A later overlay pass renders brush with opacity on top
         // of solid/water using the scene depth buffer for occlusion culling.
+        // Recording lives in BrushRenderer::recordEarlyPass.
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 4);
-        {
-            VkImage brushColorImg = sceneRenderer->getBrushColorImage(frameIdx);
-            VkImage brushDepthImg = sceneRenderer->getBrushDepthImage(frameIdx);
-            VkImageLayout oldColLayout = sceneRenderer->brushColorLayouts[frameIdx];
-            VkImageLayout oldDepLayout = sceneRenderer->brushDepthLayouts[frameIdx];
-
-            // Transition brush color + depth to attachment layouts
-            if (brushColorImg != VK_NULL_HANDLE && oldColLayout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-                VkAccessFlags2 colSrcAccess = 0;
-                VkPipelineStageFlags2 colSrcStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-                if (oldColLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-                    colSrcAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                    colSrcStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                }
-                RendererUtils::transitionImageLayout(commandBuffer, brushColorImg,
-                    oldColLayout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    colSrcAccess, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                    colSrcStage, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
-                sceneRenderer->brushColorLayouts[frameIdx] = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            }
-            if (brushDepthImg != VK_NULL_HANDLE && oldDepLayout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-                VkAccessFlags2 depthSrcAccess = 0;
-                VkPipelineStageFlags2 depthSrcStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-                if (oldDepLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
-                    depthSrcAccess = 0;
-                    depthSrcStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-                } else if (oldDepLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-                    depthSrcAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                    depthSrcStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                } else {
-                    depthSrcAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                    depthSrcStage = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-                }
-                RendererUtils::transitionImageLayout(commandBuffer, brushDepthImg,
-                    oldDepLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                    depthSrcAccess, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    depthSrcStage, VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT);
-                sceneRenderer->brushDepthLayouts[frameIdx] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            }
-
-            // Instance B1: brush front depth (LESS, write, no color)
-            if (brushDepthImg != VK_NULL_HANDLE) {
-                VkClearValue bdClear{}; bdClear.depthStencil = {1.0f, 0};
-                VkRenderingAttachmentInfo bdAtt{};
-                bdAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                bdAtt.imageView = sceneRenderer->getBrushDepthView(frameIdx);
-                bdAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                bdAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                bdAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                bdAtt.clearValue = bdClear;
-                VkRenderingInfo bri{};
-                bri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-                bri.renderArea.offset = {0, 0};
-                bri.renderArea.extent = {static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())};
-                bri.layerCount = 1;
-                bri.pDepthAttachment = &bdAtt;
-                vkCmdBeginRendering(commandBuffer, &bri);
-                VkViewport vp{0,0,(float)getWidth(),(float)getHeight(),0,1};
-                vkCmdSetViewport(commandBuffer, 0, 1, &vp);
-                VkRect2D sc{{0,0},{static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())}};
-                vkCmdSetScissor(commandBuffer, 0, 1, &sc);
-                sceneRenderer->mainSolidRenderer->drawDepthExternal(
-                    commandBuffer, getMainDescriptorSet(),
-                    sceneRenderer->brushSolidIndirectRenderer);
-                vkCmdEndRendering(commandBuffer);
-            }
-
-            // Brush backface depth (GREATER, farthest depth wins) — to its own buffer
-            if (sceneRenderer->brushBackFaceRenderer) {
-                sceneRenderer->brushBackFaceRenderer->renderBackFacePass(
-                    this, commandBuffer, frameIdx,
-                    sceneRenderer->brushSolidIndirectRenderer,
-                    getMainDescriptorSet());
-            }
-
-            // Instance B2: brush color to brush color buffer (raw, no blending)
-            if (brushColorImg != VK_NULL_HANDLE && brushDepthImg != VK_NULL_HANDLE) {
-                VkClearValue bcClear{}; bcClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-                VkRenderingAttachmentInfo bcColor{};
-                bcColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                bcColor.imageView = sceneRenderer->getBrushColorView(frameIdx);
-                bcColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                bcColor.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                bcColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                bcColor.clearValue = bcClear;
-                VkRenderingAttachmentInfo bcDepth{};
-                bcDepth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                bcDepth.imageView = sceneRenderer->getBrushDepthView(frameIdx);
-                bcDepth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                bcDepth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                bcDepth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-                VkRenderingInfo bcri{};
-                bcri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-                bcri.renderArea.offset = {0, 0};
-                bcri.renderArea.extent = {static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())};
-                bcri.layerCount = 1;
-                bcri.colorAttachmentCount = 1;
-                bcri.pColorAttachments = &bcColor;
-                bcri.pDepthAttachment = &bcDepth;
-                vkCmdBeginRendering(commandBuffer, &bcri);
-                VkViewport vp{0,0,(float)getWidth(),(float)getHeight(),0,1};
-                vkCmdSetViewport(commandBuffer, 0, 1, &vp);
-                VkRect2D sc{{0,0},{static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())}};
-                vkCmdSetScissor(commandBuffer, 0, 1, &sc);
-                sceneRenderer->mainSolidRenderer->drawBrushColorExternal(
-                    commandBuffer, getMainDescriptorSet(),
-                    sceneRenderer->brushSolidIndirectRenderer);
-                vkCmdEndRendering(commandBuffer);
-            }
-
-            // Transition brush targets to SHADER_READ_ONLY after use
-            if (brushColorImg != VK_NULL_HANDLE && sceneRenderer->brushColorLayouts[frameIdx] == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-                RendererUtils::transitionImageLayout(commandBuffer, brushColorImg,
-                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
-                sceneRenderer->brushColorLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            }
-            if (brushDepthImg != VK_NULL_HANDLE && sceneRenderer->brushDepthLayouts[frameIdx] == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-                RendererUtils::transitionImageLayout(commandBuffer, brushDepthImg,
-                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                    VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT);
-                sceneRenderer->brushDepthLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            }
+        if (sceneRenderer->brushRenderer) {
+            sceneRenderer->brushRenderer->recordEarlyPass(
+                this, commandBuffer, frameIdx,
+                *sceneRenderer->mainSolidRenderer,
+                getMainDescriptorSet());
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
@@ -1432,7 +1311,7 @@ public:
                 this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
                 this->sceneRenderer->mainSolidRenderer.get(),
                 cube360GfxDs,
-                this->sceneRenderer->getBrushDepthDescriptorSet(frameIdx),
+                this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx),
                 cube360UBO, ubo360,
                 settings.renderSolid, waterEnabled,
                 cube360ComputeDs,
@@ -1561,7 +1440,7 @@ public:
 
             // Solid geometry color (LESS_OR_EQUAL, no depth write)
             if (settings.renderSolid) {
-                VkDescriptorSet brushDepthSet = sceneRenderer->getBrushDepthDescriptorSet(frameIdx);
+                VkDescriptorSet brushDepthSet = sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx);
                 sceneRenderer->mainSolidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet(), brushDepthSet);
             }
 
@@ -2123,7 +2002,7 @@ public:
         // Per-frame cull buffers: each IndirectRenderer needs its own per-frame
         // compact/visibleCount buffer to avoid cross-frame overwrite races.
         sceneRenderer->mainSolidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
-        sceneRenderer->brushSolidIndirectRenderer.setCullFrame(frameIdx);
+        sceneRenderer->brushRenderer->getSolidIR().setCullFrame(frameIdx);
         sceneRenderer->mainLiquidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
 
         glm::mat4 viewProj = camera.getViewProjectionMatrix();
@@ -2132,12 +2011,9 @@ public:
         // Composite offscreen scene + water + brush into the swapchain
         if (sceneRenderer && sceneRenderer->postProcessRenderer) {
             VkImageView skyViewPP = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-            VkImageView brushColorView = sceneRenderer->getBrushColorView(frameIdx);
-            VkImageView brushDepthView = sceneRenderer->getBrushDepthView(frameIdx);
-            VkImageView brushBackFaceDepthView = VK_NULL_HANDLE;
-            if (sceneRenderer->brushBackFaceRenderer) {
-                brushBackFaceDepthView = sceneRenderer->brushBackFaceRenderer->getBackFaceDepthView(frameIdx);
-            }
+            VkImageView brushColorView = sceneRenderer->brushRenderer ? sceneRenderer->brushRenderer->getColorView(frameIdx) : VK_NULL_HANDLE;
+            VkImageView brushDepthView = sceneRenderer->brushRenderer ? sceneRenderer->brushRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE;
+            VkImageView brushBackFaceDepthView = sceneRenderer->brushRenderer ? sceneRenderer->brushRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
             VkImageView waterGeomDepthView = VK_NULL_HANDLE;
             if (sceneRenderer->mainLiquidRenderer) {
                 waterGeomDepthView = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthView(frameIdx);
@@ -2801,7 +2677,7 @@ void MyApp::rebuildBrushScene() {
     std::cerr << "[MyApp::rebuildBrushScene] Rebuilding with " << selCount << " selected entries" << std::endl;
 
     // 1. Stage existing brush meshes for smooth transition (don't clear until new ones are ready)
-    sceneRenderer->stageOldBrushChunks();
+    sceneRenderer->brushRenderer->stageOldChunks();
 
     // 2. Reset the brush octrees (clears spatial data without change events)
     world->brushScene()->getOpaqueOctree().reset();

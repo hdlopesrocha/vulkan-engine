@@ -8,7 +8,7 @@
 #include "DebugSDFRenderer.hpp"
 #include "WireframeRenderer.hpp"
 #include "WaterBackFaceRenderer.hpp"
-#include "BrushBackFaceRenderer.hpp"
+#include "BrushRenderer.hpp"
 #include "Solid360Renderer.hpp"
 #pragma once
 
@@ -80,32 +80,14 @@ public:
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<SolidRenderer> mainSolidRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
-    // Brush offscreen render targets (color + front depth), matching MAX_FRAMES_IN_FLIGHT
-    static constexpr uint32_t BRUSH_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
-    std::array<VkImage, BRUSH_FRAMES> brushColorImages = {};
-    std::array<VmaAllocation, BRUSH_FRAMES> brushColorAllocations = {};
-    std::array<VkImageView, BRUSH_FRAMES> brushColorImageViews = {};
-    std::array<VkImageLayout, BRUSH_FRAMES> brushColorLayouts = {};
-    std::array<VkImage, BRUSH_FRAMES> brushDepthImages = {};
-    std::array<VmaAllocation, BRUSH_FRAMES> brushDepthAllocations = {};
-    std::array<VkImageView, BRUSH_FRAMES> brushDepthImageViews = {};
-    std::array<VkImageLayout, BRUSH_FRAMES> brushDepthLayouts = {};
-    VkImageView getBrushColorView(uint32_t i) const { return brushColorImageViews[i % BRUSH_FRAMES]; }
-    VkImage getBrushColorImage(uint32_t i) const { return brushColorImages[i % BRUSH_FRAMES]; }
-    VkImageView getBrushDepthView(uint32_t i) const { return brushDepthImageViews[i % BRUSH_FRAMES]; }
-    VkImage getBrushDepthImage(uint32_t i) const { return brushDepthImages[i % BRUSH_FRAMES]; }
-    // Per-frame descriptor sets for brush depth textures (set=1)
-    std::array<VkDescriptorSet, BRUSH_FRAMES> brushDepthDescriptorSets = {};
-    VkDescriptorSet getBrushDepthDescriptorSet(uint32_t frameIndex) const {
-        return brushDepthDescriptorSets[frameIndex % BRUSH_FRAMES];
-    }
-
-    void createBrushRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
-    void destroyBrushRenderTargets(VulkanApp* app);
+    // Brush preview renderer: owns the brush offscreen targets, the brush
+    // depth descriptor sets (set=1), the back-face renderer, the dedicated
+    // brush IndirectRenderers and the brush chunk registries (see
+    // BrushRenderer.hpp).
+    std::unique_ptr<BrushRenderer> brushRenderer;
 
     // Scene-owned sub-renderers for water (moved from WaterRenderer)
     std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
-    std::unique_ptr<BrushBackFaceRenderer> brushBackFaceRenderer;
     std::unique_ptr<Solid360Renderer> solid360Renderer;
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
@@ -135,10 +117,6 @@ public:
     // Mutex protecting all chunk maps (solid, transparent, brush) and mesh operations
     std::recursive_mutex mainSolidChunksMutex;
     std::recursive_mutex mainLiquidChunksMutex;
-    std::recursive_mutex brushSolidChunksMutex;
-    std::recursive_mutex brushTransparentChunksMutex;
-    std::recursive_mutex pendingOldBrushSolidChunksMutex;
-    std::recursive_mutex pendingOldBrushLiquidChunksMutex;
     // Debug SDF cube markers are a separate map (not a chunk registry) with
     // their own guard. Written from the change handlers (build lambdas),
     // read/cloned on the render thread draw path.
@@ -148,12 +126,6 @@ public:
     // Track model ids for transparent/water meshes so we can remove them if erased/updated
     std::unordered_map<NodeID, Model3DVersion> mainLiquidChunks;
     std::unordered_map<NodeID, Model3DVersion> mainSolidChunks;
-
-    // Brush scene chunk tracking (separate from main scene)
-    std::unordered_map<NodeID, Model3DVersion> brushSolidChunks;
-    std::unordered_map<NodeID, Model3DVersion> brushTransparentChunks;
-    std::unordered_map<NodeID, Model3DVersion> pendingOldBrushSolidChunks;
-    std::unordered_map<NodeID, Model3DVersion> pendingOldBrushLiquidChunks;
 
     // Slots whose chunks were erased but may be replaced (same NodeID, new
     // version). For solid/water the octree node is reused on edit, so NodeID
@@ -180,14 +152,6 @@ public:
     // Cached env-var flags (read once in init(), never per frame)
     bool envDisableWaterGeom = false;
 
-
-    // Separate IndirectRenderer for brush solid meshes (so the brush backface
-    // buffer only renders brush geometry, not all scene solids).
-    IndirectRenderer brushSolidIndirectRenderer;
-    // Separate IndirectRenderer for brush transparent/liquid meshes: brush
-    // water must NOT share the main water IR — the brush preview is rebuilt and
-    // republished independently, so its geometry belongs in a dedicated pool.
-    IndirectRenderer brushLiquidIndirectRenderer;
 
     // Debug cubes for nodes (populated by change handlers after geometry generation)
     std::unordered_map<NodeID, DebugCubeRenderer::CubeWithColor> nodeDebugCubes;
@@ -295,17 +259,13 @@ public:
     // app (main.cpp) — they need world state, chunk management and debug
     // markers. No make* handler factories remain here.
 
-    // Remove all brush meshes from GPU and clear brush chunk maps
+    // Remove all brush meshes from GPU and clear brush chunk maps. Drains the
+    // isBrush entries from the shared pending mesh queue, then delegates the
+    // IR/map clearing to BrushRenderer.
     void clearBrushMeshes();
-    void stageOldBrushChunks();
 
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height);
-
-    // Rewrite brush depth texture descriptors (bindings 14, 15) for all per-frame
-    // main descriptor sets. Must be called after brush render targets are
-    // recreated (on resize or after rebuildBrushScene).
-    void writeBrushDepthDescriptors(VulkanApp* app);
 
     // ── Parallel scene loading ─────────────────────────────────────────────────
     // Drains the shared pending mesh queue (main thread) into a caller-provided
@@ -390,8 +350,6 @@ public:
     // processNodeLayer when building its own solid/water space-change lambdas.
     ThreadPool mainSolidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
     ThreadPool mainWaterGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
-    ThreadPool brushSolidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
-    ThreadPool brushWaterGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
 
     CommandBufferState frameCmdState;
 };
