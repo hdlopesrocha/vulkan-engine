@@ -556,28 +556,31 @@ void Solid360Renderer::render(VulkanApp* app, VkCommandBuffer cmd,
         }
 
         // Barrier: ensure previous face's draw finishes reading compact/visible
-        // buffers before next face's cull overwrites them
+        // buffers before next face's cull overwrites them (fill + dispatch)
         {
-            VkBufferMemoryBarrier2 b[2]{};
+            VkBufferMemoryBarrier2 b[4]{};
             uint32_t bc = 0;
-            if (compactIndirectBuffer != VK_NULL_HANDLE) {
+            auto addIndirectBarrier = [&](VkBuffer buf) {
+                if (buf == VK_NULL_HANDLE) return;
                 b[bc].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
                 b[bc].srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
                 b[bc].srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-                b[bc].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                b[bc].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-                b[bc].buffer = compactIndirectBuffer;
-                b[bc].size = VK_WHOLE_SIZE; ++bc;
-            }
-            if (visibleCountBuffer != VK_NULL_HANDLE) {
-                b[bc].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-                b[bc].srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-                b[bc].srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+                // TRANSFER stage too: the next face's cull now clears the whole
+                // compact buffer with vkCmdFillBuffer (garbage-indexCount
+                // hardening), so the draw's indirect reads must complete before
+                // the fill overwrites them (WRITE_AFTER_READ hazard otherwise).
                 b[bc].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-                b[bc].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
-                b[bc].buffer = visibleCountBuffer;
+                b[bc].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                b[bc].buffer = buf;
                 b[bc].size = VK_WHOLE_SIZE; ++bc;
-            }
+            };
+            // Solid buffers
+            addIndirectBarrier(compactIndirectBuffer);
+            addIndirectBarrier(visibleCountBuffer);
+            // Water buffers: the water pass draws from them and the next face's
+            // water cull clears them, so they need the same ordering.
+            addIndirectBarrier(waterCompactIndirectBuffer);
+            addIndirectBarrier(waterVisibleCountBuffer);
             if (bc > 0) {
                 VkDependencyInfo dep_{};
                 dep_.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;

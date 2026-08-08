@@ -474,4 +474,33 @@ private:
     uint32_t currentCullFrame = 0;
     bool descriptorDirty = false;  // flag for deferred descriptor update
     VkDescriptorSet pendingDescriptorSet = VK_NULL_HANDLE; // ds to update (VK_NULL_HANDLE means use/create material set)
+
+    // ── Staged meta writes ───────────────────────────────────────────────────
+    // Host-side publishes (draw command + bounds) must NEVER memcpy directly
+    // into the HOST_VISIBLE indirect/bounds buffers: an in-flight cull
+    // dispatch may be reading the same entry mid-write, tearing the 20-byte
+    // DrawCmd and producing a garbage indexCount that makes
+    // vkCmdDrawIndexedIndirectCount spin the GE (GPU hang observed on RADV /
+    // Radeon 680M — see the compact-buffer zero fills). Instead the writes are
+    // queued here and copied to the GPU buffers via vkCmdCopyBuffer at the
+    // start of the next prepareCull (main thread, same command buffer), which
+    // is queue-ordered after every in-flight frame's reads.
+    struct MetaStageRecord {
+        uint32_t entryIndex = 0;
+        VkDrawIndexedIndirectCommand cmd{};
+        glm::vec4 bounds[3] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
+        bool boundsValid = false;
+    };
+    std::array<std::vector<MetaStageRecord>, MAX_CULL_FRAMES> metaStagePending_;
+    std::vector<MetaStageRecord> metaStageFlush_;
+    std::array<Buffer, MAX_CULL_FRAMES> metaStageBuffers{};
+    std::array<uint32_t, MAX_CULL_FRAMES> metaStageCapBytes{};
+    VulkanApp* app_ = nullptr;
+    // Caller must hold `mutex`. Queues a host-side write for flushStagedMetaWrites.
+    void stageMeshMetaWrite(uint32_t entryIndex, const VkDrawIndexedIndirectCommand& cmd,
+                            const glm::vec4* bounds, bool boundsValid);
+    // Copies the frame's staged writes into the GPU indirect/bounds buffers via
+    // vkCmdCopyBuffer (queue-ordered, race-free). Called at the top of
+    // prepareCull on the main thread before any acquireBuffers barrier.
+    void flushStagedMetaWrites(VkCommandBuffer cmd, uint32_t frame);
 };

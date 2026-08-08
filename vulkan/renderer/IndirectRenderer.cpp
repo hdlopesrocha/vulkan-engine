@@ -408,6 +408,7 @@ bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, siz
 }
 
 bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds, float priority) {
+    app_ = app;
     std::lock_guard<std::recursive_mutex> guard(mutex);
     if (meshIds.empty()) return true;
 
@@ -757,12 +758,109 @@ void IndirectRenderer::doUploadMeshMetaBuffers(VulkanApp* app) {
     metaBuffersWrittenCount = indirectCommands.size();
 }
 
+// Caller must hold `mutex`. Queues a host-side write of one draw entry (and
+// optionally its bounds) to be copied to the GPU indirect/bounds buffers by
+// flushStagedMetaWrites() during the next prepareCull. Never touches the
+// HOST_VISIBLE GPU buffer directly: a direct memcpy can be observed mid-write
+// by an in-flight cull dispatch reading the same entry (torn DrawCmd), which
+// produced the garbage-indexCount GE hang documented on the zero fills.
+void IndirectRenderer::stageMeshMetaWrite(uint32_t entryIndex,
+                                          const VkDrawIndexedIndirectCommand& cmd,
+                                          const glm::vec4* bounds, bool boundsValid) {
+    if (entryIndex >= meshCapacity) return; // must fit the GPU indirect/bounds buffers
+    // Target the NEXT cull frame: stages run before setCullFrame() advances
+    // (processPendingCommandBuffers precedes render), so currentCullFrame still
+    // holds the previous frame's index, whose pending list was already flushed.
+    const uint32_t frame = (currentCullFrame + 1u) % MAX_CULL_FRAMES;
+    MetaStageRecord rec{};
+    rec.entryIndex = entryIndex;
+    rec.cmd = cmd;
+    if (bounds && boundsValid) {
+        rec.bounds[0] = bounds[0];
+        rec.bounds[1] = bounds[1];
+        rec.bounds[2] = bounds[2];
+        rec.boundsValid = true;
+    }
+    metaStagePending_[frame].push_back(rec);
+}
+
+// Copy the frame's staged meta writes into the GPU indirect/bounds buffers via
+// vkCmdCopyBuffer. The copies execute in frame `frame`'s command buffer on the
+// graphics queue, so they are queue-ordered after every in-flight frame's cull
+// reads of the same entries (no torn-read window). The acquireBuffers barrier
+// that follows in prepareCull orders the copies (TRANSFER_WRITE) before the
+// cull dispatch (SHADER_READ). The per-frame staging buffer is only rewritten
+// MAX_CULL_FRAMES frames later, by which time this frame's fence has signaled
+// (same rotation guarantee as compactIndirectBuffers).
+void IndirectRenderer::flushStagedMetaWrites(VkCommandBuffer cmd, uint32_t frame) {
+    if (frame >= MAX_CULL_FRAMES) return;
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex);
+        if (metaStagePending_[frame].empty()) return;
+        metaStageFlush_.swap(metaStagePending_[frame]);
+    }
+
+    if (metaStageFlush_.empty()) return;
+    if (app_ == nullptr || indirectBuffer.buffer == VK_NULL_HANDLE) {
+        // No GPU buffers yet (pre-initSlots): drop the staged writes rather
+        // than accumulating them; the bulk init paths re-issue publishes once
+        // the buffers exist.
+        metaStageFlush_.clear();
+        return;
+    }
+
+    const size_t recordBytes = metaStageFlush_.size() * sizeof(MetaStageRecord);
+    Buffer& sbuf = metaStageBuffers[frame];
+    if (sbuf.buffer == VK_NULL_HANDLE || metaStageCapBytes[frame] < recordBytes) {
+        if (sbuf.buffer != VK_NULL_HANDLE) {
+            // Immediate destroy is safe: this staging buffer's last GPU use was
+            // frame-3's submission, which is guaranteed signaled before frame
+            // `frame`'s prepareCull runs (the frame-slot fence wait in drawFrame
+            // precedes render()/prepareCull — same rotation guarantee the
+            // compact buffers rely on).
+            app_->resources.removeBufferVma(sbuf.buffer, sbuf.allocation);
+        }
+        sbuf = app_->createBuffer(recordBytes,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        metaStageCapBytes[frame] = static_cast<uint32_t>(recordBytes);
+    }
+
+    void* mapped = sbuf.map(0);
+    if (!mapped) {
+        metaStageFlush_.clear();
+        return;
+    }
+    std::memcpy(mapped, metaStageFlush_.data(), recordBytes);
+    sbuf.unmap(); // VMA persistent mapping
+
+    // One vkCmdCopyBuffer per record: overlapping regions within a single call
+    // are undefined, and zero-then-final records can target the same entry.
+    for (const auto& rec : metaStageFlush_) {
+        const size_t recOffset = size_t(&rec - metaStageFlush_.data()) * sizeof(MetaStageRecord);
+        VkBufferCopy c{};
+        c.srcOffset = recOffset + offsetof(MetaStageRecord, cmd);
+        c.dstOffset = static_cast<VkDeviceSize>(rec.entryIndex) * sizeof(VkDrawIndexedIndirectCommand);
+        c.size = sizeof(VkDrawIndexedIndirectCommand);
+        vkCmdCopyBuffer(cmd, sbuf.buffer, indirectBuffer.buffer, 1, &c);
+        if (rec.boundsValid && boundsBuffer.buffer != VK_NULL_HANDLE) {
+            c.srcOffset = recOffset + offsetof(MetaStageRecord, bounds);
+            c.dstOffset = static_cast<VkDeviceSize>(rec.entryIndex) * 3 * sizeof(glm::vec4);
+            c.size = 3 * sizeof(glm::vec4);
+            vkCmdCopyBuffer(cmd, sbuf.buffer, boundsBuffer.buffer, 1, &c);
+        }
+    }
+
+    metaStageFlush_.clear();
+}
+
 // Unlocked — caller must hold mutex. Writes a single mesh's indirect command
 // and bounds at its CURRENT drawIndex offset. Both indirectCommands[drawIndex]
 // and meshes[id].drawIndex are read here under the lock, so they stay
 // consistent even if a rebuild() reordered draw indices between the upload
-// enqueue and its completion. The indirect/bounds buffers are append-only per
-// slot, so writing one mesh's entry never disturbs in-flight draws of others.
+// enqueue and its completion. The write is staged for the next prepareCull's
+// GPU copy, so it never races in-flight cull dispatches reading the same entry.
 void IndirectRenderer::publishMeshMeta(uint32_t meshId) {
     if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
     auto it = meshes.find(meshId);
@@ -773,19 +871,11 @@ void IndirectRenderer::publishMeshMeta(uint32_t meshId) {
 
     VkDeviceSize cmdOffset = i * sizeof(VkDrawIndexedIndirectCommand);
     const auto& cmd = indirectCommands[i];
-    void* data = indirectBuffer.map(cmdOffset);
-    memcpy(data, &cmd, sizeof(cmd));
-    indirectBuffer.unmap();
     info.indirectOffset = cmdOffset;
 
-    if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-        VkDeviceSize boundsOffset = i * 3 * sizeof(glm::vec4);
-        glm::vec4 bounds[3] = { info.boundsMin, info.boundsMax,
-                                lodMetaFor(info.cellSize, info.level, info.maxLevel) };
-        data = boundsBuffer.map(boundsOffset);
-        memcpy(data, bounds, sizeof(bounds));
-        boundsBuffer.unmap();
-    }
+    glm::vec4 bounds[3] = { info.boundsMin, info.boundsMax,
+                            lodMetaFor(info.cellSize, info.level, info.maxLevel) };
+    stageMeshMetaWrite(static_cast<uint32_t>(i), cmd, bounds, true);
 }
 
 void IndirectRenderer::rebuild(VulkanApp* app) {
@@ -793,8 +883,10 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // updates only its own slot via uploadSlot(). If we reach here in
     // slotted mode, the caller is using the legacy API incorrectly.
     if (slottedMode) {
+        app_ = app;
         return;
     }
+    app_ = app;
 
     // A rebuild may reallocate the merged vertex/index buffers below. Any
     // UploadJob still queued or in flight in the UploadManager captured the
@@ -1060,7 +1152,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         }
         if (meshCapacity > 0) {
             indirectBuffer = app->createBuffer(indirectBufferSize, 
-                VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
+                VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }
     }
@@ -1109,7 +1201,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             boundsBuffer = {};
         }
         if (meshCapacity > 0) {
-            boundsBuffer = app->createBuffer(boundsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
+            boundsBuffer = app->createBuffer(boundsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }
     }
@@ -1169,8 +1261,10 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         }
     }
     if (visibleLodsScratch.buffer == VK_NULL_HANDLE && lodBufSize > 0) {
+        // TRANSFER_DST required: prepareCullWithDescriptor clears it with
+        // vkCmdFillBuffer each cull.
         visibleLodsScratch = app->createBuffer(lodBufSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void* data = visibleLodsScratch.map(0);
         if (data) {
@@ -1372,6 +1466,13 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
                                    glm::vec3 camPos, float lodBias, float maxLod) {
     // NOTE: No mutex lock here - this is only called from the main render thread
     // and all buffer modifications happen in rebuild() which does lock.
+
+    // Flush staged host-side meta writes via GPU copies BEFORE any barrier or
+    // dispatch: the copies (TRANSFER_WRITE) are ordered before the cull reads
+    // (SHADER_READ) by the acquireBuffers barrier below, and queue-ordered
+    // after every in-flight frame's reads of the same entries.
+    flushStagedMetaWrites(cmd, currentCullFrame);
+
     Buffer& compactBuf = compactIndirectBuffers[currentCullFrame];
     Buffer& visibleCount = visibleCountBuffers[currentCullFrame];
     Buffer& visibleLods = visibleLodBuffers[currentCullFrame];
@@ -1595,8 +1696,12 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     // The caller owns the buffer; we clear it with a global memory barrier + fill.
     // Insert a TRANSFER→TRANSFER barrier before the fill so consecutive face
     // culls (same buffer, e.g. the 6 cubemap faces) don't race (WRITE_AFTER_WRITE).
+    // The caller's compact buffer is zeroed too (see below): entries the
+    // dispatch does NOT write (culled chunks) must read as indexCount=0, never
+    // as stale/allocator garbage that vkCmdDrawIndexedIndirectCount would
+    // process as a giant draw (GE hang observed on RADV / Radeon 680M).
     {
-        VkBufferMemoryBarrier2 preFill[2] = {};
+        VkBufferMemoryBarrier2 preFill[3] = {};
         preFill[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
         // Drain prior compute dispatches too: the caller-owned count buffer is
         // shared across faces/frames, and a previous face's vkCmdDispatch
@@ -1620,17 +1725,36 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
         // cubemap DS). That buffer is written by every face's dispatch, so a
         // prior dispatch's writes must complete before our fill overwrites
         // them — same WRITE_AFTER_WRITE reasoning as the count buffer.
-        preFill[1] = preFill[0];
-        preFill[1].buffer = visibleLodsScratch.buffer;
-        preFill[1].size = VK_WHOLE_SIZE;
+        // (Skipped when the scratch hasn't been allocated yet — VK_NULL_HANDLE
+        // is not a valid barrier buffer.)
+        uint32_t preFillCount = 1;
+        if (visibleLodsScratch.buffer != VK_NULL_HANDLE) {
+            preFill[preFillCount] = preFill[0];
+            preFill[preFillCount].buffer = visibleLodsScratch.buffer;
+            preFill[preFillCount].size = VK_WHOLE_SIZE;
+            ++preFillCount;
+        }
+
+        // The caller-owned compact buffer (same WRITE_AFTER_WRITE reasoning:
+        // a prior face's dispatch or the main pass's fill wrote it).
+        preFill[preFillCount] = preFill[0];
+        preFill[preFillCount].buffer = outCompactBuffer;
+        preFill[preFillCount].size = VK_WHOLE_SIZE;
+        ++preFillCount;
 
         VkDependencyInfo depInfo{};
         depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 2;
+        depInfo.bufferMemoryBarrierCount = preFillCount;
         depInfo.pBufferMemoryBarriers = preFill;
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
     vkCmdFillBuffer(cmd, outVisibleCountBuffer, 0, sizeof(uint32_t), 0);
+    // Zero the ENTIRE caller-owned compact buffer so any entry the cull
+    // dispatch does NOT write (frustum-culled or chunk with no surviving
+    // level) is a clean zeroed DrawCmd (indexCount=0) instead of stale
+    // data — a garbage indexCount here would make the indirect draw's GE
+    // process a giant draw and never finish.
+    vkCmdFillBuffer(cmd, outCompactBuffer, 0, VK_WHOLE_SIZE, 0);
     // Zero the shared chosen-LoD scratch as well: untouched entries from a
     // previous frame must never be misread as a stale (chunk, level) pair.
     if (visibleLodsScratch.buffer != VK_NULL_HANDLE)
@@ -1671,13 +1795,17 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
         compactBarriers[0].offset = 0;
         compactBarriers[0].size = VK_WHOLE_SIZE;
 
-        compactBarriers[1] = compactBarriers[0];
-        compactBarriers[1].buffer = visibleLodsScratch.buffer;
-        compactBarriers[1].size = VK_WHOLE_SIZE;
+        uint32_t compactBarrierCount = 1;
+        if (visibleLodsScratch.buffer != VK_NULL_HANDLE) {
+            compactBarriers[compactBarrierCount] = compactBarriers[0];
+            compactBarriers[compactBarrierCount].buffer = visibleLodsScratch.buffer;
+            compactBarriers[compactBarrierCount].size = VK_WHOLE_SIZE;
+            ++compactBarrierCount;
+        }
 
         VkDependencyInfo depInfo{};
         depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 2;
+        depInfo.bufferMemoryBarrierCount = compactBarrierCount;
         depInfo.pBufferMemoryBarriers = compactBarriers;
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
@@ -1911,6 +2039,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
                                  uint32_t totalVertexBytes,
                                  uint32_t totalIndexBytes)
 {
+    app_ = app;
     std::lock_guard<std::recursive_mutex> guard(mutex);
 
     // Packed-slot layout:
@@ -1967,9 +2096,10 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     // Zero the entire buffer so unallocated slots always have indexCount=0 and
     // the GPU cull shader never reads garbage bounds for slots whose meta hasn't
     // been written yet (between addMeshSlotted and the deferred writeSlotMeta).
+    // TRANSFER_DST: staged meta writes land here via vkCmdCopyBuffer.
     VkDeviceSize indirectBufferSize = sizeof(VkDrawIndexedIndirectCommand) * meshCapacity;
     indirectBuffer = app->createBuffer(indirectBufferSize,
-        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     {
         void* data = indirectBuffer.map(0);
@@ -1981,9 +2111,10 @@ void IndirectRenderer::initSlots(VulkanApp* app,
 
     // Bounds buffer (host-visible, persistently mapped). Same zeroing rationale.
     // Three vec4s per entry: min, max, lod meta {cellSize, level, maxLevel, 0}.
+    // TRANSFER_DST: staged bounds land here via vkCmdCopyBuffer.
     VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 3;
     boundsBuffer = app->createBuffer(boundsBufferSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     {
         void* data = boundsBuffer.map(0);
@@ -2399,26 +2530,17 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
 
     activeMeshCountDirty_ = true; // new or resurrected entry
 
-    // Zero the GPU indirect + bounds for THIS entry immediately so the cull
-    // shader never sees stale/garbage data during the window between this
-    // publish and the deferred writeSlotMeta (upload completion). Fresh blocks
-    // are redundant with initSlots zeroing, but recycled blocks may retain
-    // stale bounds from a prior occupant.
-    if (indirectBuffer.buffer != VK_NULL_HANDLE) {
-        VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(entryIndex) * sizeof(VkDrawIndexedIndirectCommand);
-        void* data = indirectBuffer.map(cmdOffset);
-        if (data) {
-            std::memset(data, 0, sizeof(VkDrawIndexedIndirectCommand));
-            indirectBuffer.unmap();
-        }
-    }
-    if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-        VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(entryIndex) * 3 * sizeof(glm::vec4);
-        void* data = boundsBuffer.map(boundsOffset);
-        if (data) {
-            std::memset(data, 0, 3 * sizeof(glm::vec4));
-            boundsBuffer.unmap();
-        }
+    // Zero the GPU indirect + bounds for THIS entry (staged for the next
+    // prepareCull) so the cull shader never sees stale/garbage data during the
+    // window between this publish and the deferred writeSlotMeta (upload
+    // completion). Fresh blocks are redundant with initSlots zeroing, but
+    // recycled blocks may retain stale bounds from a prior occupant. Staged
+    // (not memcpy'd): in-flight cull dispatches may still be reading this
+    // entry, and a torn write would be observed as garbage by the cull.
+    {
+        VkDrawIndexedIndirectCommand zeroCmd{};
+        glm::vec4 zeroBounds[3] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
+        stageMeshMetaWrite(entryIndex, zeroCmd, zeroBounds, true);
     }
 
     return slotIdx;
@@ -2472,29 +2594,18 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
     // Free the slot in the allocator
     slotAlloc.free(slotIndex);
 
-    // Zero every per-level draw entry of this slot: the chunk is gone, so no
-    // level may survive culling. GPU culling sees indexCount=0 and drops them.
+    // Zero every per-level draw entry of this slot (staged for the next
+    // prepareCull): the chunk is gone, so no level may survive culling. GPU
+    // culling sees indexCount=0 and drops them. Staged (not memcpy'd) so an
+    // in-flight cull dispatch never observes a torn entry mid-write.
+    VkDrawIndexedIndirectCommand zeroCmd{};
+    glm::vec4 zeroBounds[3] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
     for (uint32_t lv = 0; lv < kMaxChunkLevels; lv++) {
         uint32_t entry = slotIndex * kMaxChunkLevels + lv;
         if (entry < indirectCommands.size()) {
             indirectCommands[entry] = VkDrawIndexedIndirectCommand{};
         }
-        if (indirectBuffer.buffer != VK_NULL_HANDLE) {
-            VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(entry) * sizeof(VkDrawIndexedIndirectCommand);
-            void* data = indirectBuffer.map(cmdOffset);
-            if (data) {
-                std::memset(data, 0, sizeof(VkDrawIndexedIndirectCommand));
-                indirectBuffer.unmap();
-            }
-        }
-        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(entry) * 3 * sizeof(glm::vec4);
-            void* data = boundsBuffer.map(boundsOffset);
-            if (data) {
-                std::memset(data, 0, 3 * sizeof(glm::vec4));
-                boundsBuffer.unmap();
-            }
-        }
+        stageMeshMetaWrite(entry, zeroCmd, zeroBounds, true);
     }
 }
 
@@ -2527,22 +2638,11 @@ void IndirectRenderer::clearSlotLevelsFrom(uint32_t slotIndex, uint32_t firstLev
         uint32_t entry = slotIndex * kMaxChunkLevels + lv;
         if (entry >= indirectCommands.size()) break;
         indirectCommands[entry] = VkDrawIndexedIndirectCommand{};
-        if (indirectBuffer.buffer != VK_NULL_HANDLE) {
-            VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(entry) * sizeof(VkDrawIndexedIndirectCommand);
-            void* data = indirectBuffer.map(cmdOffset);
-            if (data) {
-                std::memset(data, 0, sizeof(VkDrawIndexedIndirectCommand));
-                indirectBuffer.unmap();
-            }
-        }
-        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(entry) * 3 * sizeof(glm::vec4);
-            void* data = boundsBuffer.map(boundsOffset);
-            if (data) {
-                std::memset(data, 0, 3 * sizeof(glm::vec4));
-                boundsBuffer.unmap();
-            }
-        }
+        // Staged zero (not direct memcpy): an in-flight cull dispatch must
+        // never observe a torn entry mid-write.
+        VkDrawIndexedIndirectCommand zeroCmd{};
+        glm::vec4 zeroBounds[3] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
+        stageMeshMetaWrite(entry, zeroCmd, zeroBounds, true);
         if (chunk) {
             MeshInfo::LevelData& ld = chunk->levels_[lv];
             if (ld.allocated) {
