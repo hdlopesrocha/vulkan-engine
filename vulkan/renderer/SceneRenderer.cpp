@@ -183,10 +183,6 @@ void SceneRenderer::cleanup(VulkanApp* app) {
         if (b.buffer != VK_NULL_HANDLE) b = {};
     }
     mainUniformBuffers.clear();
-    for (auto &b : uboStagingBuffers) {
-        if (b.buffer != VK_NULL_HANDLE) b = {};
-    }
-    uboStagingBuffers.clear();
 
     if (mainPassUBO.buffer.buffer != VK_NULL_HANDLE) {
         mainPassUBO.buffer = {};
@@ -289,355 +285,16 @@ SceneRenderer::~SceneRenderer() {
     // VulkanApp instance.
 }
 
-void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool renderSolid, bool vegetationEnabled, bool shadowTessellationEnabled, float lodBias) {
-    if (commandBuffer == VK_NULL_HANDLE) return;
-    if (!shadowsEnabled) return;
-
-    // Render each cascade: upload light-space UBO, draw scene, restore UBO
-    const glm::mat4 cascadeMatrices[SHADOW_CASCADE_COUNT] = {
-        uboStatic.lightSpaceMatrix,
-        uboStatic.lightSpaceMatrix1,
-        uboStatic.lightSpaceMatrix2
-    };
-
-    // Single cascade-aware GPU culling pass: culls all chunks against all 3
-    // cascade frustums simultaneously.  Each cascade independently receives
-    // every chunk visible in its frustum — no exclusion between cascades —
-    // so the fragment shader's per-cascade sampling always finds the geometry
-    // it needs. The cascade cull reads the per-chunk LoD selection the main
-    // pass stamped into the shared visibleLods buffer (single source of truth),
-    // so shadow draws use the exact same LoD as the main pass.
-    mainSolidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_, lodBias);
-    // Water shadows share the same LoD sync: the water cascade cull reads the
-    // water main pass's visibleLods (the water prepareCull ran before this
-    // shadow pass, so the selection is fresh for the current frame).
-    if (mainLiquidRenderer) {
-        mainLiquidRenderer->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, lastCameraPos_, lodBias);
-    }
-
-    // Acquire vegetation instance/indirect buffers before dynamic rendering
-    if (vegetationEnabled && vegetationRenderer) {
-        vegetationRenderer->recordReadBarriers(commandBuffer);
-        vegetationRenderer->prepareCullCascades(commandBuffer, cascadeMatrices);
-    }
-
-    for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
-        glm::mat4 lsMatrix = cascadeMatrices[c];
-
-        // Upload a shadow-specific UBO: viewProjection = cascade lightSpaceMatrix.
-        // passParams.x MUST be 0 so the TES computes fragPosWorld (needed by the EVSM
-        // fragment shader to produce correct moments).  With passParams.x=1 the TES
-        // outputs fragPosWorld = vec3(0) → EVSM gets garbage depth → no shadows.
-        UniformObject shadowUBO = uboStatic;
-        shadowUBO.viewProjection = lsMatrix;
-        shadowUBO.passParams.x = 0.0f;
-        shadowUBO.passParams.y = shadowTessellationEnabled ? 1.0f : 0.0f;
-
-        // Wait for previous cascade draws to finish reading the UBO
-        // before overwriting it via vkCmdCopyBuffer.
-        {
-            VkBufferMemoryBarrier2 preBarrier{};
-            preBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-            preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-            preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            preBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            preBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            preBarrier.buffer = mainUniformBuffer.buffer;
-            preBarrier.offset = 0;
-            preBarrier.size = VK_WHOLE_SIZE;
-            VkDependencyInfo depInfo{};
-            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            depInfo.bufferMemoryBarrierCount = 1;
-            depInfo.pBufferMemoryBarriers = &preBarrier;
-            vkCmdPipelineBarrier2(commandBuffer, &depInfo);
-        }
-
-        // Upload shadow UBO via vkCmdCopyBuffer from persistently mapped staging
-        // buffer (avoids vkCmdUpdateBuffer's implicit FULL_QUEUE barrier).
-        VkDeviceSize stagingOff = static_cast<VkDeviceSize>(c) * sizeof(UniformObject);
-        if (frameIdx < uboStagingBuffers.size()) {
-            memcpy(uboStagingBuffers[frameIdx].map(stagingOff), &shadowUBO, sizeof(UniformObject));
-            VkBufferCopy copy{ stagingOff, 0, sizeof(UniformObject) };
-            vkCmdCopyBuffer(commandBuffer, uboStagingBuffers[frameIdx].buffer, mainUniformBuffer.buffer, 1, &copy);
-        }
-        {
-            VkBufferMemoryBarrier2 memBarrier{};
-            memBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-            memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            memBarrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-            memBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            memBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            memBarrier.buffer = mainUniformBuffer.buffer;
-            memBarrier.offset = 0;
-            memBarrier.size = VK_WHOLE_SIZE;
-            VkDependencyInfo depInfo{};
-            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            depInfo.bufferMemoryBarrierCount = 1;
-            depInfo.pBufferMemoryBarriers = &memBarrier;
-            vkCmdPipelineBarrier2(commandBuffer, &depInfo);
-        }
-
-        // Cascade-specific draw (no per-cascade cull — already handled above)
-        shadowMapper->beginShadowPass(app, commandBuffer, c, lsMatrix);
-
-        // Bind shadow descriptor set (uses dummy depth at bindings 4,8,9)
-        VkPipelineLayout layout = shadowMapper->getShadowPipelineLayout();
-        VkDescriptorSet ds = VK_NULL_HANDLE;
-        if (!shadowDescriptorSets.empty()) {
-            uint32_t idx = frameIdx % static_cast<uint32_t>(shadowDescriptorSets.size());
-            ds = shadowDescriptorSets[idx];
-        }
-        if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
-            frameCmdState.bindGraphicsDescriptorSets(commandBuffer, layout, 0, 1, &ds, 0, nullptr);
-        }
-
-        // Bind the EVSM shadow pipeline (shared by the solid and water depth
-        // draws; both use the same Vertex format and indexed-indirect draws).
-        VkPipeline solidShadowPipeline = shadowMapper->getShadowPipeline();
-        if (solidShadowPipeline != VK_NULL_HANDLE) {
-            frameCmdState.bindGraphicsPipeline(commandBuffer, solidShadowPipeline);
-        }
-
-        // Draw solid geometry into shadow map (can be toggled off to isolate
-        // vegetation shadows for debugging).
-        if (renderSolid) {
-            auto& shadowIR = mainSolidRenderer->getIndirectRenderer();
-            shadowIR.bindBuffers(commandBuffer);
-            shadowIR.drawCascadeOnly(commandBuffer, c);
-        }
-
-        // Draw water geometry into the shadow map so water casts shadows at the
-        // same LoD as the main pass (the water cascade cull read the shared
-        // visibleLods selection). Reuses the same EVSM shadow pipeline.
-        if (mainLiquidRenderer) {
-            auto& waterShadowIR = mainLiquidRenderer->getIndirectRenderer();
-            waterShadowIR.bindBuffers(commandBuffer);
-            waterShadowIR.drawCascadeOnly(commandBuffer, c);
-        }
-
-        // Vegetation shadow pass: drawn after solid so its 2-buffer vertex
-        // bindings don't leak into the solid draw. Uses cascade-aware culling
-        // (prepareCullCascades dispatched above).
-        if (vegetationEnabled && vegetationRenderer) {
-            const glm::vec3 cameraPos = glm::vec3(uboStatic.viewPos);
-            vegetationRenderer->drawShadowCascade(app, commandBuffer, ds, cameraPos, c);
-        }
-
-        shadowMapper->endShadowPass(app, commandBuffer, c);
-
-        // Apply separable Gaussian blur (EVSM moment filtering) to reduce noise.
-        // Skip the smallest cascade: at 512x512 the 3-tap blur is barely visible
-        // and skipping it saves two fullscreen draws plus four layout transitions.
-        if (c < SHADOW_CASCADE_COUNT - 1) {
-            shadowMapper->blurCascade(app, commandBuffer, c);
-        }
-    }
-
-    // Restore GPU culling for the main camera frustum (was overwritten by
-    // per-cascade prepareCull calls above) so drawPrepared in the main pass
-    // uses the correct visible set.
-    mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_, lodBias);
-    if (brushRenderer) {
-        brushRenderer->getSolidIR().prepareCull(commandBuffer, uboStatic.viewProjection, lastCameraPos_, lodBias);
-    }
-
-    // Restore the main UBO so subsequent passes see the original data.
-    // Wait for all shadow cascade draws to finish reading the UBO first.
-    {
-        VkBufferMemoryBarrier2 preBarrier{};
-        preBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-        preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        preBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        preBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        preBarrier.buffer = mainUniformBuffer.buffer;
-        preBarrier.offset = 0;
-        preBarrier.size = VK_WHOLE_SIZE;
-        VkDependencyInfo depInfo{};
-        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 1;
-        depInfo.pBufferMemoryBarriers = &preBarrier;
-        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
-    }
-
-    // Restore main UBO via vkCmdCopyBuffer from persistently mapped staging buffer.
-    VkDeviceSize restoreOff = static_cast<VkDeviceSize>(SHADOW_CASCADE_COUNT) * sizeof(UniformObject);
-    if (frameIdx < uboStagingBuffers.size()) {
-        memcpy(uboStagingBuffers[frameIdx].map(restoreOff), &uboStatic, sizeof(UniformObject));
-        VkBufferCopy copy{ restoreOff, 0, sizeof(UniformObject) };
-        vkCmdCopyBuffer(commandBuffer, uboStagingBuffers[frameIdx].buffer, mainUniformBuffer.buffer, 1, &copy);
-    }
-    {
-        VkBufferMemoryBarrier2 memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-        memBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        memBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        memBarrier.buffer = mainUniformBuffer.buffer;
-        memBarrier.offset = 0;
-        memBarrier.size = VK_WHOLE_SIZE;
-        VkDependencyInfo depInfo{};
-        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 1;
-        depInfo.pBufferMemoryBarriers = &memBarrier;
-        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
-    }
-}
-
-void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, bool hasWater, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool renderSolid, bool wireframeEnabled, const glm::mat4 &viewProj,
-                  const UniformObject &uboStatic, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent) {
-    if (commandBuffer == VK_NULL_HANDLE) {
-        std::cerr << "[SceneRenderer::mainPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
-        return;
-    }
-    if (renderSolid) {
-        VkDescriptorSet brushDepthSet = brushRenderer ? brushRenderer->getDepthDescriptorSet(frameIdx) : VK_NULL_HANDLE;
-        mainSolidRenderer->renderDepthPrepass(commandBuffer, app, perTextureDescriptorSet, brushDepthSet);
-        mainSolidRenderer->render(commandBuffer, app, perTextureDescriptorSet, brushDepthSet);
-        if (wireframeEnabled) {
-            solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, mainSolidRenderer->getIndirectRenderer());
-        } 
-    }
-    
-}
-
-void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj) {
-    SkySettings::Mode mode = skySettings->mode;
-    skyRenderer->render(app, commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, mode);
-}
-
 void SceneRenderer::drawSolidWireframeOverlay(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled) {
     solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, mainSolidRenderer->getIndirectRenderer());
 }
 
-void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, bool waterWireframeEnabled, float waterTime, VkImageView skyView) {
-    if (commandBuffer == VK_NULL_HANDLE) {
-        std::cerr << "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
-        return;
-    }
-
-    // Update the water render UBO with the active layer time value.
-    if (waterRenderUBOBuffer_.buffer != VK_NULL_HANDLE) {
-        WaterRenderUBO renderUbo{};
-        renderUbo.timeParams = glm::vec4(waterTime, 0.0f, 0.0f, 0.0f);
-        void* data = nullptr;
-        data = waterRenderUBOBuffer_.map(0);
-        memcpy(data, &renderUbo, sizeof(WaterRenderUBO));
-        waterRenderUBOBuffer_.unmap(); // VMA persistent mapping
-    }
-
-    // Delegate water offscreen work to WaterRenderer — record on the same
-    // command buffer so the solid pass outputs are available for sampling.
-    VkImageView sceneColorView = mainSolidRenderer->getColorView(frameIdx);
-    VkImageView sceneDepthView = mainSolidRenderer->getDepthView(frameIdx);
-    // (Re)allocate and update this slot's scene-texture descriptor set (set 2,
-    // binding 1 = sceneDepthTex) here on the main command buffer, immediately
-    // before any draw that binds it. The async back-face task uses its OWN
-    // per-task set, so this slot's set is only ever referenced by the main
-    // command buffer and is freed/reallocated once its in-flight fence signals
-    // (no VUID-03047, and GPU-assisted validation sees it populated — no
-    // UPDATE_AFTER_BIND needed).
-    {
-        VkImageView wBack = (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
-        VkImageView wCube = (solid360Renderer) ? solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-        mainLiquidRenderer->prepareSceneTexturesForFrame(app, frameIdx, sceneColorView, sceneDepthView,
-                                                    skyView, wBack, wCube);
-    }
-
-    bool _wg_env_skip = envDisableWaterGeom;
-
-    // Scene textures were already bound before the async back-face/solid360 tasks were
-    // launched (see main.cpp), so we must NOT call updateSceneTexturesBinding here.
-    // Calling it after the async tasks submit their command buffers would update a
-    // descriptor set that is already referenced by a pending command buffer
-    // (VUID-vkUpdateDescriptorSets-None-03047).
-
-    bool wf = waterWireframeEnabled;
-    if (wf && waterWireframe && waterWireframe->getPipeline() != VK_NULL_HANDLE) {
-        // Wireframe path: use WaterRenderer for setup/pass management,
-        // but bind the wireframe pipeline instead of the normal one.
-        if (!_wg_env_skip) {
-            mainLiquidRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
-            mainLiquidRenderer->beginWaterGeometryPass(commandBuffer, frameIdx);
-
-            // First render filled water geometry to populate the water depth
-            // buffer so the wireframe can depth-test against actual water depth.
-            VkPipeline waterPipe = mainLiquidRenderer->getWaterGeometryPipeline();
-            VkPipelineLayout waterLayout = mainLiquidRenderer->getWaterGeometryPipelineLayout();
-            if (waterPipe != VK_NULL_HANDLE && waterLayout != VK_NULL_HANDLE) {
-                frameCmdState.bindGraphicsPipeline(commandBuffer, waterPipe);
-
-                VkDescriptorSet mainDs = app->getMainDescriptorSet();
-                if (mainDs != VK_NULL_HANDLE) {
-                    frameCmdState.bindGraphicsDescriptorSets(commandBuffer, waterLayout, 0, 1, &mainDs, 0, nullptr);
-                }
-
-                VkDescriptorSet sceneDs = mainLiquidRenderer->getWaterDepthDescriptorSet(frameIdx);
-                if (sceneDs != VK_NULL_HANDLE) {
-                    frameCmdState.bindGraphicsDescriptorSets(commandBuffer, waterLayout, 2, 1, &sceneDs, 0, nullptr);
-                }
-
-                // Draw filled water geometry (will update depth buffer)
-                mainLiquidRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
-                if (brushRenderer) brushRenderer->getLiquidIR().drawPrepared(commandBuffer);
-            }
-
-            // Draw wireframe overlay on top, inside the same render pass,
-            // reusing the depth buffer populated by the filled geometry pass.
-            // Bind descriptor sets individually with null checks (same pattern
-            // as the filled water pipeline) to handle missing sets gracefully.
-            VkPipeline waterWfPipe = waterWireframe->getPipeline();
-            VkPipelineLayout wfLayout = waterWireframe->getPipelineLayout();
-            if (waterWfPipe != VK_NULL_HANDLE && wfLayout != VK_NULL_HANDLE) {
-                frameCmdState.bindGraphicsPipeline(commandBuffer, waterWfPipe);
-
-                VkDescriptorSet wfMainDs = app->getMainDescriptorSet();
-                if (wfMainDs != VK_NULL_HANDLE)
-                    frameCmdState.bindGraphicsDescriptorSets(commandBuffer, wfLayout, 0, 1, &wfMainDs, 0, nullptr);
-
-                VkDescriptorSet wfDepthDs = mainLiquidRenderer->getWaterDepthDescriptorSet(frameIdx);
-                if (wfDepthDs != VK_NULL_HANDLE)
-                    frameCmdState.bindGraphicsDescriptorSets(commandBuffer, wfLayout, 2, 1, &wfDepthDs, 0, nullptr);
-
-                mainLiquidRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
-                if (brushRenderer) brushRenderer->getLiquidIR().drawPrepared(commandBuffer);
-            }
-
-            mainLiquidRenderer->endWaterGeometryPass(commandBuffer);
-        } else {
-            // Skipping water geometry operations as requested by env guard
-        }
-    } else {
-        if (!_wg_env_skip) {
-            mainLiquidRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView,
-                                  brushRenderer ? &brushRenderer->getLiquidIR() : nullptr);
-        } else {
-            // Skipping waterRenderer::render due to VULKAN_DISABLE_WATERGEOM
-        }
-    }
-
-    // Post-processing should run inside the active main render pass; caller (e.g. MyApp::draw) should invoke
-    // `postProcessRenderer->render` with valid scene/water views when available. Keep this function focused
-    // on executing offscreen geometry and returning control to the main pass.
-}
 
 void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams) {
     if (!app) {
         std::cerr << "[SceneRenderer::init] app is nullptr!" << std::endl;
         return;
     }
-
-    // Cache env-var flags once at startup instead of per-frame getenv() calls
-    envDisableWaterGeom = (std::getenv("VULKAN_DISABLE_WATERGEOM") != nullptr);
 
     // Initialize the async streaming orchestrator. It is now the real transfer
     // engine: solid/water incremental chunk uploads route through it (K
@@ -705,14 +362,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         mainUniformBuffers[i] = app->createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
-    // Per-frame staging buffers for GPU-timeline UBO uploads
-    VkDeviceSize stagingSize = sizeof(UniformObject) * (SHADOW_CASCADE_COUNT + 1);
-    uboStagingBuffers.clear();
-    uboStagingBuffers.resize(dsCount);
-    for (size_t i = 0; i < dsCount; ++i) {
-        uboStagingBuffers[i] = app->createBuffer(stagingSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    }
+    // Per-frame staging buffers for shadow-pass UBO uploads are owned by
+    // ShadowRenderer (see createStagingBuffers).
+    shadowMapper->createStagingBuffers(app, dsCount);
 
     VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(0);
 
@@ -851,10 +503,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     waterParamsWrite.pBufferInfo = &waterParamsInfo;
     writes.push_back(waterParamsWrite);
 
-    // Bind water render UBO to binding 10 of main descriptor set
-    waterRenderUBOBuffer_ = app->createBuffer(sizeof(WaterRenderUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkDescriptorBufferInfo& waterRenderUBOInfo = writesBuf.emplace_back(waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO));
+    // Bind water render UBO to binding 10 of main descriptor set (the buffer
+    // itself is created and updated by WaterRenderer).
+    VkDescriptorBufferInfo& waterRenderUBOInfo = writesBuf.emplace_back(mainLiquidRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
     VkWriteDescriptorSet waterRenderUBOWrite{};
     waterRenderUBOWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     waterRenderUBOWrite.dstSet = staticDs;
@@ -942,6 +593,20 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         brushRenderer->init(app, app->getWidth(), app->getHeight());
     }
 
+    // ── Wire scene sub-renderers into the pass orchestrators ──
+    // The shadow pass draws solid/water/vegetation/brush geometry and the
+    // water pass samples solid offscreen targets + brush liquid geometry,
+    // so each orchestrator caches the pointers it needs.
+    if (shadowMapper) {
+        shadowMapper->setSceneRenderers(mainSolidRenderer.get(), mainLiquidRenderer.get(),
+                                        vegetationRenderer.get(), brushRenderer.get());
+    }
+    if (mainLiquidRenderer) {
+        mainLiquidRenderer->setSceneRenderers(mainSolidRenderer.get(), brushRenderer.get(),
+                                              backFaceRenderer.get(), solid360Renderer.get(),
+                                              waterWireframe.get());
+    }
+
     // ── Allocate (once) and write shadow-specific descriptor sets per-frame ──
     shadowDescriptorSets.resize(mainUniformBuffers.size());
     for (size_t fi = 0; fi < shadowDescriptorSets.size(); ++fi) {
@@ -985,8 +650,13 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         wr.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                        waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
         wr.writeBuffer(ds, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                       waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO));
+                       mainLiquidRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
         wr.flush();
+    }
+    // Shadow descriptor set handles are stable after init (subsequent writes
+    // only update them in place), so ShadowRenderer can cache them once.
+    if (shadowMapper) {
+        shadowMapper->setShadowDescriptorSets(shadowDescriptorSets);
     }
 
     // Register listener so we update the main descriptor set when texture arrays are allocated later
@@ -1431,7 +1101,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         // onFinestPublished: grass chunks (main scene only) drive vegetation
         // from their level-0 (finest) geometry.
         [this, app](NodeID nid, const Geometry& geom, bool isBrush) {
-            if (!isBrush) this->generateVegetationForNode(app, nid, geom);
+            if (!isBrush && this->vegetationRenderer) this->vegetationRenderer->generateForChunk(app, nid, geom);
         });
 
     // ── Orphan + grace sweeps (one sweep for ALL old slots) ──────────────────
@@ -1583,107 +1253,6 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     }, poolOverride);
 
 
-}
-
-
-void SceneRenderer::generateVegetationForNode(VulkanApp* app, NodeID nid, const Geometry& geom) {
-    if (!vegetationRenderer) return;
-    if (geom.indices.size() < 3 || geom.vertices.empty()) return;
-    try {
-        constexpr int kGrassBrushIndex = 3; // See LandBrush::grass
-        // Instances per world-space unit² of triangle area.
-        constexpr float kVegetationDensity = 0.01f;
-
-        // Create tightly-packed position buffer (vec3[]) for the compute shader
-        std::vector<glm::vec3> positions;
-        positions.reserve(geom.vertices.size());
-        for (const auto &v : geom.vertices) positions.push_back(v.position);
-
-        // Build area-weighted virtual slots using unbiased stochastic rounding.
-        // expected = area * density (instances per world-space unit area)
-        // count = floor(expected) + Bernoulli(frac(expected))
-        // This preserves area-proportional density without bias.
-        std::vector<uint32_t> grassIndices;
-        grassIndices.reserve(geom.indices.size());
-        const uint32_t chunkSeed = static_cast<uint32_t>(nid ^ (nid >> 32)) ^ 0x9e3779b9u;
-        std::mt19937 samplingRng(chunkSeed);
-        std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
-        for (size_t i = 0; i + 2 < geom.indices.size(); i += 3) {
-            const uint32_t i0 = geom.indices[i + 0];
-            const uint32_t i1 = geom.indices[i + 1];
-            const uint32_t i2 = geom.indices[i + 2];
-            if (i0 >= geom.vertices.size() || i1 >= geom.vertices.size() || i2 >= geom.vertices.size()) continue;
-            const bool hasGrass =
-                geom.vertices[i0].brushIndex == kGrassBrushIndex ||
-                geom.vertices[i1].brushIndex == kGrassBrushIndex ||
-                geom.vertices[i2].brushIndex == kGrassBrushIndex;
-            if (!hasGrass) continue;
-            const glm::vec3& v0 = geom.vertices[i0].position;
-            const glm::vec3& v1 = geom.vertices[i1].position;
-            const glm::vec3& v2 = geom.vertices[i2].position;
-            // Skip steep / downward-facing triangles (same criterion as compute shader).
-            // This avoids allocating output slots that the compute shader would discard,
-            // preventing garbage uninitialized memory from reaching the draw call.
-            const glm::vec3 faceNormal = glm::cross(v1 - v0, v2 - v0);
-            if (glm::abs(faceNormal.y) <= 0.5f * glm::length(faceNormal)) continue;
-            const float area = 0.5f * glm::length(faceNormal);
-            const float expectedInstances = std::max(0.0f, area * kVegetationDensity);
-            uint32_t slotCount = static_cast<uint32_t>(std::floor(expectedInstances));
-            const float fractional = expectedInstances - static_cast<float>(slotCount);
-            if (unitDist(samplingRng) < fractional) {
-                ++slotCount;
-            }
-            for (uint32_t s = 0; s < slotCount; ++s) {
-                grassIndices.push_back(i0);
-                grassIndices.push_back(i1);
-                grassIndices.push_back(i2);
-            }
-        }
-
-        // Shuffle virtual triangle slots per chunk so reducing indirect instanceCount
-        // keeps a random spatial subset instead of always dropping the tail.
-        if (grassIndices.size() >= 6) {
-            std::mt19937 shuffleRng(chunkSeed ^ 0x85ebca6bu);
-            const size_t triangleCount = grassIndices.size() / 3;
-            for (size_t slot = triangleCount - 1; slot > 0; --slot) {
-                std::uniform_int_distribution<size_t> dist(0, slot);
-                const size_t other = dist(shuffleRng);
-                if (other == slot) continue;
-                for (size_t component = 0; component < 3; ++component) {
-                    std::swap(grassIndices[slot * 3 + component], grassIndices[other * 3 + component]);
-                }
-            }
-        }
-
-        // Each virtual triangle slot produces exactly 1 instance.
-        uint32_t instancesPerTriangle = 1u;
-        uint32_t seed = static_cast<uint32_t>(nid & 0xffffffffull);
-        glm::vec3 chunkCenter(0.0f);
-        for (const auto& position : positions) {
-            chunkCenter += position;
-        }
-        if (!positions.empty()) {
-            chunkCenter /= static_cast<float>(positions.size());
-        }
-        if (grassIndices.size() < 3) {
-            // No grass triangles in this chunk; ensure old chunk vegetation is cleared.
-            if (std::getenv("VULKAN_DISABLE_VEGETATION")) {
-                return;
-            }
-            // CPU path handles the empty case (clears any previous chunk data).
-            vegetationRenderer->generateChunkInstancesCPU(nid, positions, grassIndices,
-                chunkCenter, instancesPerTriangle, app, seed);
-            return;
-        }
-
-        // CPU-side instance generation — avoids RADV GPUVM faults where
-        // the Texture Cache/Pipe cannot read storage buffers on iGPUs.
-        vegetationRenderer->generateChunkInstancesCPU(nid, positions, grassIndices,
-            chunkCenter, instancesPerTriangle, app, seed);
-    } catch (const std::exception &e) {
-        std::cerr << "[SceneRenderer] Vegetation generation failed for node " << (unsigned long long)nid
-                  << ": " << e.what() << std::endl;
-    }
 }
 
 size_t SceneRenderer::getTransparentModelCount() {

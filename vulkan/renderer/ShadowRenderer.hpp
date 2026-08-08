@@ -2,9 +2,16 @@
 
 #include "../vulkan.hpp"
 #include "../TrackedHandle.hpp"
+#include "../Buffer.hpp"
 #include <array>
+#include <vector>
 #include "../ubo/UniformObject.hpp"
 #include "CommandBufferState.hpp"
+
+class SolidRenderer;
+class WaterRenderer;
+class VegetationRenderer;
+class BrushRenderer;
 
 class ShadowRenderer {
 public:
@@ -12,6 +19,36 @@ public:
     ~ShadowRenderer();
     void init(VulkanApp* app);
     void cleanup(VulkanApp* app);
+
+    // Inject the scene sub-renderers whose geometry is drawn into the shadow
+    // map. Called once by SceneRenderer after all sub-renderers are created.
+    void setSceneRenderers(SolidRenderer* solid, WaterRenderer* liquid,
+                           VegetationRenderer* vegetation, BrushRenderer* brush);
+
+    // Per-frame staging buffers for shadow UBO uploads via vkCmdCopyBuffer
+    // (replaces vkCmdUpdateBuffer to avoid implicit FULL_QUEUE barrier).
+    // Sized to hold SHADOW_CASCADE_COUNT cascade UBOs plus the restored main
+    // UBO per frame slot.
+    void createStagingBuffers(VulkanApp* app, size_t frameCount);
+    void destroyStagingBuffers();
+
+    // Shadow-specific descriptor sets (one per frame). Each mirrors the main
+    // descriptor set but bindings 4, 8, 9 point to a dummy depth view. The
+    // sets are allocated and maintained by SceneRenderer (which owns the
+    // static scene descriptor wiring); their handles are stable after init,
+    // so ShadowRenderer caches them once.
+    void setShadowDescriptorSets(const std::vector<VkDescriptorSet>& sets) { shadowDescriptorSets_ = sets; }
+
+    // Full shadow pass orchestration: per-cascade UBO upload, culling of the
+    // solid/water/vegetation scene against all cascade frustums, cascade
+    // draws, and restore of the main UBO + main-camera cull afterwards.
+    // `cameraPos` must be the same position used for the main pass cull so
+    // the cascade cull picks the identical per-chunk LoD selection.
+    void renderShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
+                          Buffer& mainUniformBuffer, const UniformObject& uboStatic,
+                          bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
+                          bool shadowTessellationEnabled, float lodBias,
+                          const glm::vec3& cameraPos);
     // Render shadow pass for a single cascade
     void beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex, const glm::mat4& lightSpaceMatrix);
     void endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
@@ -84,4 +121,16 @@ private:
     void createBlurResources(VulkanApp* app);
     std::array<VkImageLayout, SHADOW_CASCADE_COUNT> cascadeDepthLayouts = {};
     CommandBufferState* cmdState = nullptr;
+
+    // Per-frame staging buffers for UBO uploads via vkCmdCopyBuffer
+    std::vector<Buffer> uboStagingBuffers_;
+
+    // Per-frame shadow descriptor sets (cached handles, owned by SceneRenderer)
+    std::vector<VkDescriptorSet> shadowDescriptorSets_;
+
+    // Scene sub-renderers drawn into the shadow map (injected via setSceneRenderers)
+    SolidRenderer* solidRenderer_ = nullptr;
+    WaterRenderer* liquidRenderer_ = nullptr;
+    VegetationRenderer* vegetationRenderer_ = nullptr;
+    BrushRenderer* brushRenderer_ = nullptr;
 };

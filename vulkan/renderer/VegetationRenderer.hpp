@@ -4,6 +4,7 @@
 #include "../TextureArrayManager.hpp"
 #include "../EditableTexture.hpp"
 #include "../../math/Vertex.hpp"
+#include "../../math/Geometry.hpp"
 #include "DebugCubeRenderer.hpp"
 #include "../../utils/BillboardManager.hpp"
 #include "../VertexBufferObject.hpp"
@@ -73,6 +74,14 @@ public:
                                    const glm::vec3& chunkCenter,
                                    uint32_t instancesPerTriangle, VulkanApp* app,
                                    uint32_t seed = 1337);
+    // CPU-side per-chunk vegetation generation (moved from SceneRenderer).
+    // Samples grass-flagged triangles from the chunk's tessellated geometry,
+    // builds area-weighted virtual triangle slots with unbiased stochastic
+    // rounding (area-proportional density without bias), shuffles the slots
+    // per chunk (so reducing the indirect instanceCount keeps a random spatial
+    // subset), then hands the result to generateChunkInstancesCPU. With no
+    // grass triangles the chunk's previous instance data is cleared instead.
+    void generateForChunk(VulkanApp* app, NodeID nid, const Geometry& geom);
     // Drain up to maxChunks from the pending queue.  Call every frame from
     // draw() so chunks trickle in at a controlled rate.
     void processPendingChunks(uint32_t maxChunks);

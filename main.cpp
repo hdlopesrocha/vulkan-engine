@@ -1228,7 +1228,7 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
         if (sceneRenderer) {
-            sceneRenderer->shadowPass(this, commandBuffer, frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled, settings.lodBias);
+            sceneRenderer->shadowMapper->renderShadowPass(this, commandBuffer, frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled, settings.lodBias, camera.getPosition());
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 1);
@@ -1770,7 +1770,7 @@ public:
             VkImageView skyView = (sceneRenderer && sceneRenderer->skyRenderer) ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
-            sceneRenderer->waterPass(this, commandBuffer, frameIdx, settings.waterWireframeMode,
+            sceneRenderer->mainLiquidRenderer->renderPass(this, commandBuffer, frameIdx, settings.waterWireframeMode,
                 mainTime, skyView);
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
@@ -3094,9 +3094,9 @@ void MyApp::ensureCubemapResources() {
                     gfxWriter.writeBuffer(cube360GfxDs, 6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                           skyBuf.buffer, 0, sizeof(SkyUniform));
             }
-            if (sceneRenderer->waterRenderUBOBuffer_.buffer != VK_NULL_HANDLE)
+            if (sceneRenderer->mainLiquidRenderer->getWaterRenderUBO().buffer != VK_NULL_HANDLE)
                 gfxWriter.writeBuffer(cube360GfxDs, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                      sceneRenderer->waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO));
+                                      sceneRenderer->mainLiquidRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
 
             gfxWriter.flush();
         }

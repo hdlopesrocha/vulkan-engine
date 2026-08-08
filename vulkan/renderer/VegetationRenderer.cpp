@@ -13,6 +13,8 @@
 #include <numeric>
 #include <algorithm>
 #include <cmath>
+#include <random>
+#include <utility>
 #include "../includes/locations.hpp"
 #include "../includes/vertex_layouts.hpp"
 
@@ -1886,3 +1888,102 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
 
 // Ensure we clear the stored app pointer on cleanup
 // (cleanup() already clears handles; set appPtr to nullptr here)
+
+void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geometry& geom) {
+    if (geom.indices.size() < 3 || geom.vertices.empty()) return;
+    try {
+        constexpr int kGrassBrushIndex = 3; // See LandBrush::grass
+        // Instances per world-space unit² of triangle area.
+        constexpr float kVegetationDensity = 0.01f;
+
+        // Create tightly-packed position buffer (vec3[]) for the compute shader
+        std::vector<glm::vec3> positions;
+        positions.reserve(geom.vertices.size());
+        for (const auto &v : geom.vertices) positions.push_back(v.position);
+
+        // Build area-weighted virtual slots using unbiased stochastic rounding.
+        // expected = area * density (instances per world-space unit area)
+        // count = floor(expected) + Bernoulli(frac(expected))
+        // This preserves area-proportional density without bias.
+        std::vector<uint32_t> grassIndices;
+        grassIndices.reserve(geom.indices.size());
+        const uint32_t chunkSeed = static_cast<uint32_t>(nid ^ (nid >> 32)) ^ 0x9e3779b9u;
+        std::mt19937 samplingRng(chunkSeed);
+        std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
+        for (size_t i = 0; i + 2 < geom.indices.size(); i += 3) {
+            const uint32_t i0 = geom.indices[i + 0];
+            const uint32_t i1 = geom.indices[i + 1];
+            const uint32_t i2 = geom.indices[i + 2];
+            if (i0 >= geom.vertices.size() || i1 >= geom.vertices.size() || i2 >= geom.vertices.size()) continue;
+            const bool hasGrass =
+                geom.vertices[i0].brushIndex == kGrassBrushIndex ||
+                geom.vertices[i1].brushIndex == kGrassBrushIndex ||
+                geom.vertices[i2].brushIndex == kGrassBrushIndex;
+            if (!hasGrass) continue;
+            const glm::vec3& v0 = geom.vertices[i0].position;
+            const glm::vec3& v1 = geom.vertices[i1].position;
+            const glm::vec3& v2 = geom.vertices[i2].position;
+            // Skip steep / downward-facing triangles (same criterion as compute shader).
+            // This avoids allocating output slots that the compute shader would discard,
+            // preventing garbage uninitialized memory from reaching the draw call.
+            const glm::vec3 faceNormal = glm::cross(v1 - v0, v2 - v0);
+            if (glm::abs(faceNormal.y) <= 0.5f * glm::length(faceNormal)) continue;
+            const float area = 0.5f * glm::length(faceNormal);
+            const float expectedInstances = std::max(0.0f, area * kVegetationDensity);
+            uint32_t slotCount = static_cast<uint32_t>(std::floor(expectedInstances));
+            const float fractional = expectedInstances - static_cast<float>(slotCount);
+            if (unitDist(samplingRng) < fractional) {
+                ++slotCount;
+            }
+            for (uint32_t s = 0; s < slotCount; ++s) {
+                grassIndices.push_back(i0);
+                grassIndices.push_back(i1);
+                grassIndices.push_back(i2);
+            }
+        }
+
+        // Shuffle virtual triangle slots per chunk so reducing indirect instanceCount
+        // keeps a random spatial subset instead of always dropping the tail.
+        if (grassIndices.size() >= 6) {
+            std::mt19937 shuffleRng(chunkSeed ^ 0x85ebca6bu);
+            const size_t triangleCount = grassIndices.size() / 3;
+            for (size_t slot = triangleCount - 1; slot > 0; --slot) {
+                std::uniform_int_distribution<size_t> dist(0, slot);
+                const size_t other = dist(shuffleRng);
+                if (other == slot) continue;
+                for (size_t component = 0; component < 3; ++component) {
+                    std::swap(grassIndices[slot * 3 + component], grassIndices[other * 3 + component]);
+                }
+            }
+        }
+
+        // Each virtual triangle slot produces exactly 1 instance.
+        uint32_t instancesPerTriangle = 1u;
+        uint32_t seed = static_cast<uint32_t>(nid & 0xffffffffull);
+        glm::vec3 chunkCenter(0.0f);
+        for (const auto& position : positions) {
+            chunkCenter += position;
+        }
+        if (!positions.empty()) {
+            chunkCenter /= static_cast<float>(positions.size());
+        }
+        if (grassIndices.size() < 3) {
+            // No grass triangles in this chunk; ensure old chunk vegetation is cleared.
+            if (std::getenv("VULKAN_DISABLE_VEGETATION")) {
+                return;
+            }
+            // CPU path handles the empty case (clears any previous chunk data).
+            generateChunkInstancesCPU(nid, positions, grassIndices,
+                chunkCenter, instancesPerTriangle, app, seed);
+            return;
+        }
+
+        // CPU-side instance generation — avoids RADV GPUVM faults where
+        // the Texture Cache/Pipe cannot read storage buffers on iGPUs.
+        generateChunkInstancesCPU(nid, positions, grassIndices,
+            chunkCenter, instancesPerTriangle, app, seed);
+    } catch (const std::exception &e) {
+        std::cerr << "[VegetationRenderer] Vegetation generation failed for node " << (unsigned long long)nid
+                  << ": " << e.what() << std::endl;
+    }
+}

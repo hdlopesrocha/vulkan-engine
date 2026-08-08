@@ -2,6 +2,10 @@
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
 #include "RendererUtils.hpp"
+#include "SolidRenderer.hpp"
+#include "WaterRenderer.hpp"
+#include "VegetationRenderer.hpp"
+#include "BrushRenderer.hpp"
 
 #include "../VulkanApp.hpp"
 #include "../ShaderStage.hpp"
@@ -21,6 +25,35 @@ ShadowRenderer::ShadowRenderer(uint32_t maxShadowMapSize)
 
 ShadowRenderer::~ShadowRenderer() {}
 
+void ShadowRenderer::setSceneRenderers(SolidRenderer* solid, WaterRenderer* liquid,
+                                       VegetationRenderer* vegetation, BrushRenderer* brush) {
+    solidRenderer_ = solid;
+    liquidRenderer_ = liquid;
+    vegetationRenderer_ = vegetation;
+    brushRenderer_ = brush;
+}
+
+void ShadowRenderer::createStagingBuffers(VulkanApp* app, size_t frameCount) {
+    // Per-frame staging buffers for GPU-timeline UBO uploads: SHADOW_CASCADE_COUNT
+    // cascade slots + 1 restore slot for the main UBO.
+    const VkDeviceSize stagingSize = sizeof(UniformObject) * (SHADOW_CASCADE_COUNT + 1);
+    destroyStagingBuffers();
+    uboStagingBuffers_.resize(frameCount);
+    for (size_t i = 0; i < frameCount; ++i) {
+        uboStagingBuffers_[i] = app->createBuffer(stagingSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
+}
+
+void ShadowRenderer::destroyStagingBuffers() {
+    // Local CPU-side handles are cleared; Vulkan objects are destroyed via
+    // VulkanResourceManager.
+    for (auto& b : uboStagingBuffers_) {
+        if (b.buffer != VK_NULL_HANDLE) b = {};
+    }
+    uboStagingBuffers_.clear();
+}
+
 void ShadowRenderer::init(VulkanApp* app) {
     createShadowMaps(app);
     createShadowPipeline(app);
@@ -28,6 +61,8 @@ void ShadowRenderer::init(VulkanApp* app) {
 }
 
 void ShadowRenderer::cleanup(VulkanApp* app) {
+
+    destroyStagingBuffers();
 
     for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
         if (cascades[i].imguiDescSet != VK_NULL_HANDLE) {
@@ -538,5 +573,217 @@ void ShadowRenderer::recreateImGuiDescriptors() {
             cascades[i].imguiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
                 shadowMapSampler, cascades[i].colorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
+    }
+}
+
+void ShadowRenderer::renderShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
+                                      Buffer& mainUniformBuffer, const UniformObject& uboStatic,
+                                      bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
+                                      bool shadowTessellationEnabled, float lodBias,
+                                      const glm::vec3& cameraPos) {
+    if (commandBuffer == VK_NULL_HANDLE) return;
+    if (!shadowsEnabled) return;
+
+    // Render each cascade: upload light-space UBO, draw scene, restore UBO
+    const glm::mat4 cascadeMatrices[SHADOW_CASCADE_COUNT] = {
+        uboStatic.lightSpaceMatrix,
+        uboStatic.lightSpaceMatrix1,
+        uboStatic.lightSpaceMatrix2
+    };
+
+    // Single cascade-aware GPU culling pass: culls all chunks against all 3
+    // cascade frustums simultaneously.  Each cascade independently receives
+    // every chunk visible in its frustum — no exclusion between cascades —
+    // so the fragment shader's per-cascade sampling always finds the geometry
+    // it needs. The cascade cull reads the per-chunk LoD selection the main
+    // pass stamped into the shared visibleLods buffer (single source of truth),
+    // so shadow draws use the exact same LoD as the main pass.
+    if (solidRenderer_)
+        solidRenderer_->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, cameraPos, lodBias);
+    // Water shadows share the same LoD sync: the water cascade cull reads the
+    // water main pass's visibleLods (the water prepareCull ran before this
+    // shadow pass, so the selection is fresh for the current frame).
+    if (liquidRenderer_) {
+        liquidRenderer_->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, cameraPos, lodBias);
+    }
+
+    // Acquire vegetation instance/indirect buffers before dynamic rendering
+    if (vegetationEnabled && vegetationRenderer_) {
+        vegetationRenderer_->recordReadBarriers(commandBuffer);
+        vegetationRenderer_->prepareCullCascades(commandBuffer, cascadeMatrices);
+    }
+
+    for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
+        glm::mat4 lsMatrix = cascadeMatrices[c];
+
+        // Upload a shadow-specific UBO: viewProjection = cascade lightSpaceMatrix.
+        // passParams.x MUST be 0 so the TES computes fragPosWorld (needed by the EVSM
+        // fragment shader to produce correct moments).  With passParams.x=1 the TES
+        // outputs fragPosWorld = vec3(0) → EVSM gets garbage depth → no shadows.
+        UniformObject shadowUBO = uboStatic;
+        shadowUBO.viewProjection = lsMatrix;
+        shadowUBO.passParams.x = 0.0f;
+        shadowUBO.passParams.y = shadowTessellationEnabled ? 1.0f : 0.0f;
+
+        // Wait for previous cascade draws to finish reading the UBO
+        // before overwriting it via vkCmdCopyBuffer.
+        {
+            VkBufferMemoryBarrier2 preBarrier{};
+            preBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+            preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            preBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            preBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            preBarrier.buffer = mainUniformBuffer.buffer;
+            preBarrier.offset = 0;
+            preBarrier.size = VK_WHOLE_SIZE;
+            VkDependencyInfo depInfo{};
+            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            depInfo.bufferMemoryBarrierCount = 1;
+            depInfo.pBufferMemoryBarriers = &preBarrier;
+            vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+        }
+
+        // Upload shadow UBO via vkCmdCopyBuffer from persistently mapped staging
+        // buffer (avoids vkCmdUpdateBuffer's implicit FULL_QUEUE barrier).
+        VkDeviceSize stagingOff = static_cast<VkDeviceSize>(c) * sizeof(UniformObject);
+        if (frameIdx < uboStagingBuffers_.size()) {
+            memcpy(uboStagingBuffers_[frameIdx].map(stagingOff), &shadowUBO, sizeof(UniformObject));
+            VkBufferCopy copy{ stagingOff, 0, sizeof(UniformObject) };
+            vkCmdCopyBuffer(commandBuffer, uboStagingBuffers_[frameIdx].buffer, mainUniformBuffer.buffer, 1, &copy);
+        }
+        {
+            VkBufferMemoryBarrier2 memBarrier{};
+            memBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            memBarrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+            memBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            memBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            memBarrier.buffer = mainUniformBuffer.buffer;
+            memBarrier.offset = 0;
+            memBarrier.size = VK_WHOLE_SIZE;
+            VkDependencyInfo depInfo{};
+            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            depInfo.bufferMemoryBarrierCount = 1;
+            depInfo.pBufferMemoryBarriers = &memBarrier;
+            vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+        }
+
+        // Cascade-specific draw (no per-cascade cull — already handled above)
+        beginShadowPass(app, commandBuffer, c, lsMatrix);
+
+        // Bind shadow descriptor set (uses dummy depth at bindings 4,8,9)
+        VkPipelineLayout layout = getShadowPipelineLayout();
+        VkDescriptorSet ds = VK_NULL_HANDLE;
+        if (!shadowDescriptorSets_.empty()) {
+            uint32_t idx = frameIdx % static_cast<uint32_t>(shadowDescriptorSets_.size());
+            ds = shadowDescriptorSets_[idx];
+        }
+        if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
+            if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, layout, 0, 1, &ds, 0, nullptr);
+            else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
+        }
+
+        // Bind the EVSM shadow pipeline (shared by the solid and water depth
+        // draws; both use the same Vertex format and indexed-indirect draws).
+        VkPipeline solidShadowPipeline = getShadowPipeline();
+        if (solidShadowPipeline != VK_NULL_HANDLE) {
+            if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, solidShadowPipeline);
+            else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowPipeline);
+        }
+
+        // Draw solid geometry into shadow map (can be toggled off to isolate
+        // vegetation shadows for debugging).
+        if (renderSolid && solidRenderer_) {
+            auto& shadowIR = solidRenderer_->getIndirectRenderer();
+            shadowIR.bindBuffers(commandBuffer);
+            shadowIR.drawCascadeOnly(commandBuffer, c);
+        }
+
+        // Draw water geometry into the shadow map so water casts shadows at the
+        // same LoD as the main pass (the water cascade cull read the shared
+        // visibleLods selection). Reuses the same EVSM shadow pipeline.
+        if (liquidRenderer_) {
+            auto& waterShadowIR = liquidRenderer_->getIndirectRenderer();
+            waterShadowIR.bindBuffers(commandBuffer);
+            waterShadowIR.drawCascadeOnly(commandBuffer, c);
+        }
+
+        // Vegetation shadow pass: drawn after solid so its 2-buffer vertex
+        // bindings don't leak into the solid draw. Uses cascade-aware culling
+        // (prepareCullCascades dispatched above).
+        if (vegetationEnabled && vegetationRenderer_) {
+            const glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
+            vegetationRenderer_->drawShadowCascade(app, commandBuffer, ds, camPos, c);
+        }
+
+        endShadowPass(app, commandBuffer, c);
+
+        // Apply separable Gaussian blur (EVSM moment filtering) to reduce noise.
+        // Skip the smallest cascade: at 512x512 the 3-tap blur is barely visible
+        // and skipping it saves two fullscreen draws plus four layout transitions.
+        if (c < SHADOW_CASCADE_COUNT - 1) {
+            blurCascade(app, commandBuffer, c);
+        }
+    }
+
+    // Restore GPU culling for the main camera frustum (was overwritten by
+    // per-cascade prepareCull calls above) so drawPrepared in the main pass
+    // uses the correct visible set.
+    if (solidRenderer_)
+        solidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias);
+    if (brushRenderer_) {
+        brushRenderer_->getSolidIR().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias);
+    }
+
+    // Restore the main UBO so subsequent passes see the original data.
+    // Wait for all shadow cascade draws to finish reading the UBO first.
+    {
+        VkBufferMemoryBarrier2 preBarrier{};
+        preBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+        preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        preBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preBarrier.buffer = mainUniformBuffer.buffer;
+        preBarrier.offset = 0;
+        preBarrier.size = VK_WHOLE_SIZE;
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 1;
+        depInfo.pBufferMemoryBarriers = &preBarrier;
+        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+    }
+
+    // Restore main UBO via vkCmdCopyBuffer from persistently mapped staging buffer.
+    VkDeviceSize restoreOff = static_cast<VkDeviceSize>(SHADOW_CASCADE_COUNT) * sizeof(UniformObject);
+    if (frameIdx < uboStagingBuffers_.size()) {
+        memcpy(uboStagingBuffers_[frameIdx].map(restoreOff), &uboStatic, sizeof(UniformObject));
+        VkBufferCopy copy{ restoreOff, 0, sizeof(UniformObject) };
+        vkCmdCopyBuffer(commandBuffer, uboStagingBuffers_[frameIdx].buffer, mainUniformBuffer.buffer, 1, &copy);
+    }
+    {
+        VkBufferMemoryBarrier2 memBarrier{};
+        memBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+        memBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        memBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        memBarrier.buffer = mainUniformBuffer.buffer;
+        memBarrier.offset = 0;
+        memBarrier.size = VK_WHOLE_SIZE;
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 1;
+        depInfo.pBufferMemoryBarriers = &memBarrier;
+        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
     }
 }

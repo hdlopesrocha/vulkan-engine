@@ -19,6 +19,11 @@
 #include "../ubo/WaterUBO.hpp"
 #include "CommandBufferState.hpp"
 
+class BrushRenderer;
+class WaterBackFaceRenderer;
+class Solid360Renderer;
+class WireframeRenderer;
+
 class WaterRenderer {
 public:
     WaterRenderer();
@@ -26,6 +31,26 @@ public:
 
     void init(VulkanApp* app, Buffer& waterParamsBuffer_, const std::vector<WaterParams>& waterParams, uint32_t layerCount);
     void cleanup(VulkanApp* app);
+
+    // Inject the scene sub-renderers the water pass samples from or draws
+    // alongside (solid offscreen targets, brush liquid geometry, back-face
+    // depth, 360° reflection cubemap, wireframe overlay). Called once by
+    // SceneRenderer after all sub-renderers are created.
+    void setSceneRenderers(SolidRenderer* solid, BrushRenderer* brush,
+                           WaterBackFaceRenderer* backFace, Solid360Renderer* solid360,
+                           WireframeRenderer* waterWireframe);
+
+    // Full water pass orchestration: updates the water render UBO with the
+    // active layer time, (re)allocates this slot's scene-texture descriptor
+    // set, then records the offscreen water geometry pass (filled, wireframe
+    // overlay, or skipped via VULKAN_DISABLE_WATERGEOM) on the same command
+    // buffer so the solid pass outputs are available for sampling.
+    void renderPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
+                    bool waterWireframeEnabled, float waterTime, VkImageView skyView);
+
+    // Water render time UBO (binding 10) — created and updated here, but
+    // bound into the scene descriptor sets by SceneRenderer.
+    Buffer& getWaterRenderUBO() { return waterRenderUBO_; }
 
     // Create offscreen render targets for water rendering
     void createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
@@ -245,4 +270,18 @@ private:
     CommandBufferState* cmdState = nullptr;
 public:
     void setCmdState(CommandBufferState* state) { cmdState = state; }
+
+    // Scene sub-renderers injected via setSceneRenderers
+    SolidRenderer* solidRenderer_ = nullptr;
+    BrushRenderer* brushRenderer_ = nullptr;
+    WaterBackFaceRenderer* backFaceRenderer_ = nullptr;
+    Solid360Renderer* solid360Renderer_ = nullptr;
+    WireframeRenderer* waterWireframe_ = nullptr;
+
+    // Water render time UBO (binding 10)
+    Buffer waterRenderUBO_;
+
+    // Cached env-var flag: VULKAN_DISABLE_WATERGEOM skips the water geometry
+    // pass (read once in init, never per frame)
+    bool envDisableWaterGeom_ = false;
 };

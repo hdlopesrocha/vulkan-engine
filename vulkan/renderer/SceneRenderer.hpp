@@ -55,19 +55,12 @@ public:
     // Main uniform buffers (one per frame-in-flight)
     std::vector<Buffer> mainUniformBuffers;
 
-    // Per-frame staging buffers for UBO uploads via vkCmdCopyBuffer
-    // (replaces vkCmdUpdateBuffer to avoid implicit FULL_QUEUE barrier).
-    std::vector<Buffer> uboStagingBuffers;
-    
     // Materials SSBO
     Buffer materialsBuffer;
     MaterialManager* materialManagerPtr = nullptr;
 
     // Water params UBO (binding 7) — stored for descriptor rebinding
     Buffer waterParamsBuffer_;
-
-    // Water render time UBO (binding 10)
-    Buffer waterRenderUBOBuffer_;
 
     // Shadow-specific descriptor sets (one per frame). Each mirrors the main
     // descriptor set but binding 4 points to a dummy depth view to avoid
@@ -149,10 +142,6 @@ public:
     World* world() { return world_; }
     const World* world() const { return world_; }
 
-    // Cached env-var flags (read once in init(), never per frame)
-    bool envDisableWaterGeom = false;
-
-
     // Debug cubes for nodes (populated by change handlers after geometry generation)
     std::unordered_map<NodeID, DebugCubeRenderer::CubeWithColor> nodeDebugCubes;
     void addDebugCubeForNode(NodeID id, const DebugCubeRenderer::CubeWithColor& cube) { nodeDebugCubes[id] = cube; }
@@ -187,21 +176,11 @@ public:
         mainLiquidChunks.clear();
     }
 
-    void shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool renderSolid, bool vegetationEnabled, bool shadowTessellationEnabled = false, float lodBias = 8.0f);
-    void skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
-    void mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, bool hasWater, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool renderSolid, bool wireframeEnabled, const glm::mat4 &viewProj,
-                  const UniformObject &uboStatic, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent);
-    // Draw wireframe overlay for solid geometry on top of existing solid render
     void drawSolidWireframeOverlay(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled);
-    void waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, bool waterWireframeEnabled, float waterTime, VkImageView skyView);
     void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams);
     // Re-update main descriptor set when texture arrays are (re)allocated
     void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);
     // cleanup declared above (accepts VulkanApp*)
-
-    // Generate vegetation instances for a given opaque node / chunk.
-    // Extracted so both legacy and slotted mode paths share the same logic.
-    void generateVegetationForNode(VulkanApp* app, NodeID nid, const Geometry& geom);
 
     using GeometryHandler = const std::function<void(Layer, NodeID, const Octree::LoDMesh&)>&;
 

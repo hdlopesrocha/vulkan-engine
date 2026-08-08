@@ -4,6 +4,10 @@
 #include "DescriptorWriter.hpp"
 #include <cstdlib>
 #include "RendererUtils.hpp"
+#include "BrushRenderer.hpp"
+#include "WaterBackFaceRenderer.hpp"
+#include "Solid360Renderer.hpp"
+#include "WireframeRenderer.hpp"
 
 #include "../../utils/FileReader.hpp"
 #include <stdexcept>
@@ -36,7 +40,27 @@ void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer_, const std::
     // Create water pipelines and initialize the water params SSBO from the provided vector.
     createWaterPipelines(app, waterParams);
 
+    // Water render time UBO (binding 10): created here, bound into the scene
+    // descriptor sets by SceneRenderer, updated per frame in renderPass().
+    if (waterRenderUBO_.buffer == VK_NULL_HANDLE) {
+        waterRenderUBO_ = app->createBuffer(sizeof(WaterRenderUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
+
+    // Cache the env-var flag once (never read per frame)
+    envDisableWaterGeom_ = (std::getenv("VULKAN_DISABLE_WATERGEOM") != nullptr);
+
     // Sub-renderer initialization is owned by SceneRenderer
+}
+
+void WaterRenderer::setSceneRenderers(SolidRenderer* solid, BrushRenderer* brush,
+                                      WaterBackFaceRenderer* backFace, Solid360Renderer* solid360,
+                                      WireframeRenderer* waterWireframe) {
+    solidRenderer_ = solid;
+    brushRenderer_ = brush;
+    backFaceRenderer_ = backFace;
+    solid360Renderer_ = solid360;
+    waterWireframe_ = waterWireframe;
 }
 
 
@@ -72,6 +96,7 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
 void WaterRenderer::cleanup(VulkanApp* app) {
     waterIndirectRenderer.cleanup();
     destroyRenderTargets(app);
+    if (waterRenderUBO_.buffer != VK_NULL_HANDLE) waterRenderUBO_ = {};
 }
 
 void WaterRenderer::createSamplers(VulkanApp* app) {
@@ -1157,3 +1182,116 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
 }
 
 // Solid 360° cubemap reflection is owned and executed by SceneRenderer.
+
+void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
+                               bool waterWireframeEnabled, float waterTime, VkImageView skyView) {
+    if (commandBuffer == VK_NULL_HANDLE) {
+        std::cerr << "[WaterRenderer::renderPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
+        return;
+    }
+
+    // Update the water render UBO with the active layer time value.
+    if (waterRenderUBO_.buffer != VK_NULL_HANDLE) {
+        WaterRenderUBO renderUbo{};
+        renderUbo.timeParams = glm::vec4(waterTime, 0.0f, 0.0f, 0.0f);
+        void* data = nullptr;
+        data = waterRenderUBO_.map(0);
+        memcpy(data, &renderUbo, sizeof(WaterRenderUBO));
+        waterRenderUBO_.unmap(); // VMA persistent mapping
+    }
+
+    // Record the water offscreen work on the same command buffer so the solid
+    // pass outputs are available for sampling.
+    VkImageView sceneColorView = solidRenderer_ ? solidRenderer_->getColorView(frameIdx) : VK_NULL_HANDLE;
+    VkImageView sceneDepthView = solidRenderer_ ? solidRenderer_->getDepthView(frameIdx) : VK_NULL_HANDLE;
+    // (Re)allocate and update this slot's scene-texture descriptor set (set 2,
+    // binding 1 = sceneDepthTex) here on the main command buffer, immediately
+    // before any draw that binds it. The async back-face task uses its OWN
+    // per-task set, so this slot's set is only ever referenced by the main
+    // command buffer and is freed/reallocated once its in-flight fence signals
+    // (no VUID-03047, and GPU-assisted validation sees it populated — no
+    // UPDATE_AFTER_BIND needed).
+    {
+        VkImageView wBack = (backFaceRenderer_) ? backFaceRenderer_->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
+        VkImageView wCube = (solid360Renderer_) ? solid360Renderer_->getSolid360View() : VK_NULL_HANDLE;
+        prepareSceneTexturesForFrame(app, frameIdx, sceneColorView, sceneDepthView,
+                                     skyView, wBack, wCube);
+    }
+
+    bool _wg_env_skip = envDisableWaterGeom_;
+
+    // Scene textures were already bound before the async back-face/solid360 tasks were
+    // launched (see main.cpp), so we must NOT call updateSceneTexturesBinding here.
+    // Calling it after the async tasks submit their command buffers would update a
+    // descriptor set that is already referenced by a pending command buffer
+    // (VUID-vkUpdateDescriptorSets-None-03047).
+
+    bool wf = waterWireframeEnabled;
+    if (wf && waterWireframe_ && waterWireframe_->getPipeline() != VK_NULL_HANDLE) {
+        // Wireframe path: use WaterRenderer for setup/pass management,
+        // but bind the wireframe pipeline instead of the normal one.
+        if (!_wg_env_skip) {
+            prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
+            beginWaterGeometryPass(commandBuffer, frameIdx);
+
+            // First render filled water geometry to populate the water depth
+            // buffer so the wireframe can depth-test against actual water depth.
+            VkPipeline waterPipe = getWaterGeometryPipeline();
+            VkPipelineLayout waterLayout = getWaterGeometryPipelineLayout();
+            if (waterPipe != VK_NULL_HANDLE && waterLayout != VK_NULL_HANDLE) {
+                if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, waterPipe);
+
+                VkDescriptorSet mainDs = app->getMainDescriptorSet();
+                if (mainDs != VK_NULL_HANDLE) {
+                    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, waterLayout, 0, 1, &mainDs, 0, nullptr);
+                }
+
+                VkDescriptorSet sceneDs = getWaterDepthDescriptorSet(frameIdx);
+                if (sceneDs != VK_NULL_HANDLE) {
+                    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, waterLayout, 2, 1, &sceneDs, 0, nullptr);
+                }
+
+                // Draw filled water geometry (will update depth buffer)
+                getIndirectRenderer().drawPrepared(commandBuffer);
+                if (brushRenderer_) brushRenderer_->getLiquidIR().drawPrepared(commandBuffer);
+            }
+
+            // Draw wireframe overlay on top, inside the same render pass,
+            // reusing the depth buffer populated by the filled geometry pass.
+            // Bind descriptor sets individually with null checks (same pattern
+            // as the filled water pipeline) to handle missing sets gracefully.
+            VkPipeline waterWfPipe = waterWireframe_->getPipeline();
+            VkPipelineLayout wfLayout = waterWireframe_->getPipelineLayout();
+            if (waterWfPipe != VK_NULL_HANDLE && wfLayout != VK_NULL_HANDLE) {
+                if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, waterWfPipe);
+
+                VkDescriptorSet wfMainDs = app->getMainDescriptorSet();
+                if (wfMainDs != VK_NULL_HANDLE)
+                    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, wfLayout, 0, 1, &wfMainDs, 0, nullptr);
+
+                VkDescriptorSet wfDepthDs = getWaterDepthDescriptorSet(frameIdx);
+                if (wfDepthDs != VK_NULL_HANDLE)
+                    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, wfLayout, 2, 1, &wfDepthDs, 0, nullptr);
+
+                getIndirectRenderer().drawPrepared(commandBuffer);
+                if (brushRenderer_) brushRenderer_->getLiquidIR().drawPrepared(commandBuffer);
+            }
+
+            endWaterGeometryPass(commandBuffer);
+        } else {
+            // Skipping water geometry operations as requested by env guard
+        }
+    } else {
+        if (!_wg_env_skip) {
+            render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView,
+                   brushRenderer_ ? &brushRenderer_->getLiquidIR() : nullptr);
+        } else {
+            // Skipping waterRenderer::render due to VULKAN_DISABLE_WATERGEOM
+        }
+    }
+
+    // Post-processing runs inside the active main render pass; the caller
+    // (e.g. MyApp::draw) invokes `postProcessRenderer->render` with valid
+    // scene/water views when available. This function focuses on executing
+    // offscreen geometry and returning control to the main pass.
+}
