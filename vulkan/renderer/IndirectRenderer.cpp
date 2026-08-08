@@ -787,11 +787,17 @@ void IndirectRenderer::stageMeshMetaWrite(uint32_t entryIndex,
 // Copy the frame's staged meta writes into the GPU indirect/bounds buffers via
 // vkCmdCopyBuffer. The copies execute in frame `frame`'s command buffer on the
 // graphics queue, so they are queue-ordered after every in-flight frame's cull
-// reads of the same entries (no torn-read window). The acquireBuffers barrier
-// that follows in prepareCull orders the copies (TRANSFER_WRITE) before the
-// cull dispatch (SHADER_READ). The per-frame staging buffer is only rewritten
-// MAX_CULL_FRAMES frames later, by which time this frame's fence has signaled
-// (same rotation guarantee as compactIndirectBuffers).
+// reads of the same entries (no torn-read window). A barrier before the copies
+// orders those prior reads (cull dispatch SHADER_STORAGE_READ, legacy indirect
+// draws' INDIRECT_COMMAND_READ) against the copies' TRANSFER_WRITE — queue
+// order alone is NOT a memory dependency, and without it sync-validation
+// reports WRITE_AFTER_READ when a previous frame's async cull dispatch is
+// still in flight. The acquireBuffers barrier that follows in prepareCull then
+// orders the copies (TRANSFER_WRITE) before the cull dispatch (SHADER_READ).
+// The per-frame staging buffer is only rewritten MAX_CULL_FRAMES frames later,
+// by which time this frame's fence has signaled (same rotation guarantee as
+// compactIndirectBuffers); host writes to it are HOST_COHERENT and ordered by
+// vkQueueSubmit before the copies.
 void IndirectRenderer::flushStagedMetaWrites(VkCommandBuffer cmd, uint32_t frame) {
     if (frame >= MAX_CULL_FRAMES) return;
 
@@ -834,6 +840,35 @@ void IndirectRenderer::flushStagedMetaWrites(VkCommandBuffer cmd, uint32_t frame
     }
     std::memcpy(mapped, metaStageFlush_.data(), recordBytes);
     sbuf.unmap(); // VMA persistent mapping
+
+    // Order prior reads of the shared input buffers (a previous frame's still
+    // in-flight cull dispatch reading inCmds/bounds, or a legacy draw reading
+    // indirectBuffer as indirect commands) before these TRANSFER_WRITE copies.
+    // WRITE_AFTER_READ hazard otherwise (sync-validation, real race on RADV).
+    {
+        VkBufferMemoryBarrier2 flushBarriers[2] = {};
+        flushBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        flushBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                  | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        flushBarriers[0].srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+                                  | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        flushBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        flushBarriers[0].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        flushBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        flushBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        flushBarriers[0].buffer = indirectBuffer.buffer;
+        flushBarriers[0].offset = 0;
+        flushBarriers[0].size = VK_WHOLE_SIZE;
+
+        flushBarriers[1] = flushBarriers[0];
+        flushBarriers[1].buffer = boundsBuffer.buffer;
+
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 2;
+        depInfo.pBufferMemoryBarriers = flushBarriers;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
 
     // One vkCmdCopyBuffer per record: overlapping regions within a single call
     // are undefined, and zero-then-final records can target the same entry.
