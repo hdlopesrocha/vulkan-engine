@@ -21,7 +21,7 @@ public:
 
     // Execute back-face depth pre-pass. Caller provides indirect renderer
     // that actually draws the water geometry.
-    void renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
+    void render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                             IndirectRenderer& indirect, VkPipelineLayout pipelineLayout,
                             VkDescriptorSet mainDs, VkDescriptorSet sceneDs,
                             VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,

@@ -94,7 +94,7 @@ public:
     // If queryPool != VK_NULL_HANDLE, writes GPU timestamps:
     //   queryRealIndex .. queryRealIndex+1  = real billboard passes (depth prepass + shading)
     //   queryImpostorIndex .. queryImpostorIndex+1 = impostor passes (impostor depth + color)
-    void draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet,
+    void render(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet,
               const glm::mat4& viewProj, const glm::vec3& cameraPos,
               VkQueryPool queryPool = VK_NULL_HANDLE,
               uint32_t queryRealIndex = 0,

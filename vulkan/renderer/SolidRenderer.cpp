@@ -507,5 +507,5 @@ void SolidRenderer::createWireframe(VulkanApp* app) {
 }
 
 void SolidRenderer::drawWireframeOverlay(VkCommandBuffer& commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet) {
-    wireframe.draw(commandBuffer, app, {perTextureDescriptorSet}, getIndirectRenderer());
+    wireframe.render(commandBuffer, app, {perTextureDescriptorSet}, getIndirectRenderer());
 }

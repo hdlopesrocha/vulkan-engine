@@ -32,7 +32,7 @@ public:
     // Draw wireframe using the given indirect renderer's prepared buffers.
     // Must be called inside a compatible render pass.
     // `descriptorSets` are bound consecutively starting at set 0.
-    void draw(VkCommandBuffer cmd,
+    void render(VkCommandBuffer cmd,
               VulkanApp* app,
               const std::vector<VkDescriptorSet>& descriptorSets,
               IndirectRenderer& indirectRenderer);

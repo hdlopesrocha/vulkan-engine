@@ -305,7 +305,7 @@ void Solid360Renderer::createSolid360Pipelines(VulkanApp* app) {
     vertexShader.info.module = VK_NULL_HANDLE;
 }
 
-void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
+void Solid360Renderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                      SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                                      SolidRenderer* solidRenderer,
                                      VkDescriptorSet mainDescriptorSet,

@@ -576,7 +576,7 @@ void ShadowRenderer::recreateImGuiDescriptors() {
     }
 }
 
-void ShadowRenderer::renderShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
+void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
                                       Buffer& mainUniformBuffer, const UniformObject& uboStatic,
                                       bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
                                       bool shadowTessellationEnabled, float lodBias,

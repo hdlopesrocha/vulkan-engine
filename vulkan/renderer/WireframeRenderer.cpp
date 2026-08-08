@@ -186,7 +186,7 @@ void WireframeRenderer::createPipeline(VulkanApp* app,
     }
 }
 
-void WireframeRenderer::draw(VkCommandBuffer cmd,
+void WireframeRenderer::render(VkCommandBuffer cmd,
                              VulkanApp* app,
                              const std::vector<VkDescriptorSet>& descriptorSets,
                              IndirectRenderer& indirectRenderer) {

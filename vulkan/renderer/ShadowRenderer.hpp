@@ -45,7 +45,7 @@ public:
     // draws, and restore of the main UBO + main-camera cull afterwards.
     // `cameraPos` must be the same position used for the main pass cull so
     // the cascade cull picks the identical per-chunk LoD selection.
-    void renderShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
+    void render(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
                           Buffer& mainUniformBuffer, const UniformObject& uboStatic,
                           bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
                           bool shadowTessellationEnabled, float lodBias,

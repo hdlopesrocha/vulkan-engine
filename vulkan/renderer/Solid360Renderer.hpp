@@ -24,7 +24,7 @@ public:
     // Create depth-only and EQUAL-compare pipelines for deferred depth testing
     void createSolid360Pipelines(VulkanApp* app);
 
-    void renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
+    void render(VulkanApp* app, VkCommandBuffer cmd,
                         SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                         SolidRenderer* solidRenderer,
                         VkDescriptorSet mainDescriptorSet,

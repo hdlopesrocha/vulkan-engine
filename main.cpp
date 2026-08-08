@@ -1218,7 +1218,7 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
         if (sceneRenderer) {
-            sceneRenderer->shadowMapper->renderShadowPass(this, commandBuffer, frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled, settings.lodBias, camera.getPosition());
+            sceneRenderer->shadowMapper->render(this, commandBuffer, frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled, settings.lodBias, camera.getPosition());
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 1);
@@ -1296,7 +1296,7 @@ public:
             ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
 
             auto tCubemap = std::chrono::high_resolution_clock::now();
-            this->sceneRenderer->solid360Renderer->renderSolid360(
+            this->sceneRenderer->solid360Renderer->render(
                 this, commandBuffer,
                 this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
                 this->sceneRenderer->mainSolidRenderer.get(),
@@ -1710,7 +1710,7 @@ public:
                 // Render back-face pass using this slot's (ring-reused) compact/visible
                 // buffers so draws consume the cull results
                 auto tBackface = std::chrono::high_resolution_clock::now();
-                this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,
+                this->sceneRenderer->backFaceRenderer->render(app, cmd, frameIdx,
                                             ind,
                                             this->sceneRenderer->mainLiquidRenderer->getWaterGeometryPipelineLayout(),
                                             app->getMainDescriptorSet(),
