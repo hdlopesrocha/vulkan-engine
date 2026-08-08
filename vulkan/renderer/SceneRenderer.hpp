@@ -1,15 +1,3 @@
-#include "SolidRenderer.hpp"
-#include "VegetationRenderer.hpp"
-#include "WaterRenderer.hpp"
-#include "PostProcessRenderer.hpp"
-#include "SkyRenderer.hpp"
-#include "ShadowRenderer.hpp"
-#include "DebugCubeRenderer.hpp"
-#include "DebugSDFRenderer.hpp"
-#include "WireframeRenderer.hpp"
-#include "WaterBackFaceRenderer.hpp"
-#include "BrushRenderer.hpp"
-#include "Solid360Renderer.hpp"
 #pragma once
 
 // Forward declarations for change handler types
@@ -17,6 +5,7 @@ class Octree;
 class World;
 
 #include <vulkan/vulkan.h>
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include <glm/gtc/type_ptr.hpp>
 #include <cmath>
@@ -33,17 +22,25 @@ class World;
 #include <vector>
 #include "../../space/Model3DVersion.hpp"
 #include "../../space/ThreadPool.hpp"
-#include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
+#include "VegetationRenderer.hpp"
+#include "WaterRenderer.hpp"
+#include "PostProcessRenderer.hpp"
+#include "SkyRenderer.hpp"
+#include "ShadowRenderer.hpp"
+#include "DebugCubeRenderer.hpp"
+#include "DebugSDFRenderer.hpp"
+#include "WireframeRenderer.hpp"
+#include "WaterBackFaceRenderer.hpp"
+#include "BrushRenderer.hpp"
+#include "Solid360Renderer.hpp"
 #include "IndirectRenderer.hpp"
 #include "../streaming/UploadManager.hpp"   // TerrainStreamer: async streaming orchestration
-#include "ShadowRenderer.hpp"
-#include "WaterRenderer.hpp"
 #include "../../world/World.hpp"
 
 #include "CommandBufferState.hpp"
 
-class SceneRenderer {
+class SceneRenderer : public Renderer {
 public:
     // Main uniform buffers (one per frame-in-flight)
     std::vector<Buffer> mainUniformBuffers;
@@ -60,19 +57,13 @@ public:
     // layout-mismatch validation errors while writing the real shadow maps.
     std::vector<VkDescriptorSet> shadowDescriptorSets;
 
-    std::unique_ptr<ShadowRenderer> shadowMapper;
-    std::unique_ptr<WaterRenderer> mainLiquidRenderer;
-    std::unique_ptr<PostProcessRenderer> postProcessRenderer;
     std::unique_ptr<SkyRenderer> skyRenderer;
+    std::unique_ptr<ShadowRenderer> shadowMapper;
+    std::unique_ptr<PostProcessRenderer> postProcessRenderer;
     std::unique_ptr<SolidRenderer> mainSolidRenderer;
+    std::unique_ptr<WaterRenderer> mainLiquidRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
-    // Brush preview renderer: owns the brush offscreen targets, the brush
-    // depth descriptor sets (set=1), the back-face renderer, the dedicated
-    // brush IndirectRenderers and the brush chunk registries (see
-    // BrushRenderer.hpp).
     std::unique_ptr<BrushRenderer> brushRenderer;
-
-    // Scene-owned sub-renderers for water (moved from WaterRenderer)
     std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
     std::unique_ptr<Solid360Renderer> solid360Renderer;
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
@@ -87,7 +78,14 @@ public:
     ~SceneRenderer();
 
     // Cleanup and resource destruction (accepts app for Vulkan operations)
-    void cleanup(VulkanApp* app);
+    void cleanup(VulkanApp* app) override;
+
+    // Propagate the shared per-frame command state tracker to every renderer
+    // that only records on the main thread. backFaceRenderer and the water
+    // IndirectRenderer are deliberately excluded: the async back-face task
+    // uses them on a separate thread and keeping cmdState=nullptr there
+    // avoids a data race on frameCmdState.
+    void setCmdState(CommandBufferState* state) override;
 
     // Drain generation pools.  Must be called after all Octree pools are
     // stopped (their workers may still be enqueuing tasks to these pools).

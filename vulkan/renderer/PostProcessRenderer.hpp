@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include <glm/glm.hpp>
@@ -10,13 +11,13 @@
 struct WaterParams;
 struct WaterUBO;
 
-class PostProcessRenderer {
+class PostProcessRenderer : public Renderer {
 public:
     PostProcessRenderer();
     ~PostProcessRenderer();
 
     void init(VulkanApp* app);
-    void cleanup(VulkanApp* app);
+    void cleanup(VulkanApp* app) override;
 
     /// Composite scene + water + brush into the swapchain framebuffer.
     /// Brush color/depth views come from the early brush pass offscreen targets.
@@ -78,7 +79,4 @@ private:
 
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
-    CommandBufferState* cmdState = nullptr;
-public:
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

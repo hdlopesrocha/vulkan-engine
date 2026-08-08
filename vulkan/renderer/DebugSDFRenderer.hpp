@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Renderer.hpp"
 #include "../Buffer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
@@ -15,7 +16,7 @@
 #include "CommandBufferState.hpp"
 
 // Renders leaf-node cube faces colored by their SDF sign and magnitude.
-class DebugSDFRenderer {
+class DebugSDFRenderer : public Renderer {
 public:
     struct CubeSDF {
         BoundingCube cube;
@@ -29,7 +30,7 @@ public:
     void init(VulkanApp* app);
     void setCubes(const std::vector<CubeSDF>& cubes);
     void render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet);
-    void cleanup();
+    void cleanup(VulkanApp* app) override;
 
     // ── Per-chunk SDF cube tracking (moved from SceneRenderer) ──
     // Populated by the space-change handlers (worker threads) after chunk
@@ -65,9 +66,6 @@ private:
     uint32_t instanceBufferCapacity = 0;
 
     std::vector<CubeSDF> activeCubes;
-    CommandBufferState* cmdState = nullptr;
-public:
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 private:
     void createCubeBuffers(VulkanApp* app);
     void createDescriptorSet(VulkanApp* app);

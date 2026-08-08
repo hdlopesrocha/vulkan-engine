@@ -12,7 +12,7 @@
 
 DebugCubeRenderer::DebugCubeRenderer() {}
 
-DebugCubeRenderer::~DebugCubeRenderer() { cleanup(); }
+DebugCubeRenderer::~DebugCubeRenderer() { cleanup(nullptr); }
 
 void DebugCubeRenderer::init(VulkanApp* app) {
     // Create cube VBO
@@ -309,7 +309,8 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
     vkCmdDrawIndexed(cmd, cubeVBO.indexCount, static_cast<uint32_t>(activeCubes.size()), 0, 0, 0);
 }
 
-void DebugCubeRenderer::cleanup() {
+void DebugCubeRenderer::cleanup(VulkanApp* app) {
+    (void)app;
     cubeVBO.vertexBuffer.buffer = VK_NULL_HANDLE;
     cubeVBO.vertexBuffer.memory = VK_NULL_HANDLE;
     cubeVBO.indexBuffer.buffer = VK_NULL_HANDLE;

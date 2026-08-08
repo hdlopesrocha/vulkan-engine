@@ -29,7 +29,8 @@ void VegetationRenderer::init() {
 }
 
 
-void VegetationRenderer::cleanup() {
+void VegetationRenderer::cleanup(VulkanApp* app) {
+    (void)app;
     std::vector<NodeID> idsToDestroy;
     idsToDestroy.reserve(chunkBuffers.size());
     for (const auto& [id, _] : chunkBuffers) idsToDestroy.push_back(id);

@@ -1,17 +1,18 @@
 #pragma once
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
 #include <array>
 #include "CommandBufferState.hpp"
 
-class BrushBackFaceRenderer {
+class BrushBackFaceRenderer : public Renderer {
 public:
     BrushBackFaceRenderer();
     ~BrushBackFaceRenderer();
 
     void init(VulkanApp* app);
-    void cleanup(VulkanApp* app);
+    void cleanup(VulkanApp* app) override;
 
     void createPipelines(VulkanApp* app);
     void createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
@@ -28,7 +29,7 @@ public:
     VkImageLayout getBackFaceDepthLayout(uint32_t frameIndex) const { return backFaceDepthImageLayouts[frameIndex % backFaceDepthImageLayouts.size()]; }
     void setBackFaceDepthLayout(uint32_t frameIndex, VkImageLayout layout) { if (frameIndex < backFaceDepthImageLayouts.size()) backFaceDepthImageLayouts[frameIndex] = layout; }
 
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
+    void setCmdState(CommandBufferState* state) override { Renderer::setCmdState(state); }
     VkPipelineLayout getPipelineLayout() const { return pipelineLayout; }
 
 private:
@@ -43,5 +44,4 @@ private:
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
     VulkanApp* appPtr = nullptr;
-    CommandBufferState* cmdState = nullptr;
 };

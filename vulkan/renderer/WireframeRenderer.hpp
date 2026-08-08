@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
@@ -10,7 +11,7 @@
 // Lightweight renderer that creates wireframe pipelines against arbitrary render
 // passes and draws geometry from an external IndirectRenderer.  Owned by
 // SceneRenderer so wireframe mode works uniformly for solid and water passes.
-class WireframeRenderer {
+class WireframeRenderer : public Renderer {
 public:
     WireframeRenderer() = default;
     ~WireframeRenderer() = default;
@@ -39,12 +40,9 @@ public:
     VkPipeline getPipeline() const { return wireframePipeline; }
     VkPipelineLayout getPipelineLayout() const { return wireframePipelineLayout; }
 
-    void cleanup();
+    void cleanup(VulkanApp* app) override;
 
 private:
     TrackedHandle<VkPipeline> wireframePipeline;
     TrackedHandle<VkPipelineLayout> wireframePipelineLayout;
-    CommandBufferState* cmdState = nullptr;
-public:
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

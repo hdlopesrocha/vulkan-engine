@@ -1,6 +1,8 @@
 // IndirectRenderer.hpp
 #pragma once
 
+#include "Renderer.hpp"
+
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "../../math/Geometry.hpp"
@@ -36,7 +38,7 @@ namespace streaming { class UploadManager; }
 // its own block and level ranges — there is NO global rebuild. The
 // indirect/bounds buffer layout is stable, so GPU culling continues to work
 // without interruption.
-class IndirectRenderer {
+class IndirectRenderer : public Renderer {
 public:
     static constexpr uint32_t MAX_CULL_FRAMES = 3;
         // Allow external code to force the dirty flag
@@ -109,7 +111,7 @@ public:
     ~IndirectRenderer();
 
     void init();
-    void cleanup();
+    void cleanup(VulkanApp* app) override;
 
     // ── Legacy append-based API (triggers full rebuild) ──
     // Add mesh and return mesh id.
@@ -472,7 +474,4 @@ private:
     uint32_t currentCullFrame = 0;
     bool descriptorDirty = false;  // flag for deferred descriptor update
     VkDescriptorSet pendingDescriptorSet = VK_NULL_HANDLE; // ds to update (VK_NULL_HANDLE means use/create material set)
-public:
-    CommandBufferState* cmdState = nullptr;
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

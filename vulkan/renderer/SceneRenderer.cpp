@@ -94,22 +94,22 @@ void SceneRenderer::cleanup(VulkanApp* app) {
         shadowMapper->cleanup(app);
     }
     if (skyRenderer) {
-        skyRenderer->cleanup();
+        skyRenderer->cleanup(app);
     }
     if (vegetationRenderer) {
-        vegetationRenderer->cleanup();
+        vegetationRenderer->cleanup(app);
     }
     if (debugCubeRenderer) {
-        debugCubeRenderer->cleanup();
+        debugCubeRenderer->cleanup(app);
     }
     if (boundingBoxRenderer) {
-        boundingBoxRenderer->cleanup();
+        boundingBoxRenderer->cleanup(app);
     }
     if (debugSDFRenderer) {
-        debugSDFRenderer->cleanup();
+        debugSDFRenderer->cleanup(app);
     }
     if (waterWireframe) {
-        waterWireframe->cleanup();
+        waterWireframe->cleanup(app);
     }
 
     // Clear local CPU-side handles; Vulkan objects are destroyed via VulkanResourceManager
@@ -117,6 +117,26 @@ void SceneRenderer::cleanup(VulkanApp* app) {
         if (b.buffer != VK_NULL_HANDLE) b = {};
     }
     mainUniformBuffers.clear();
+}
+
+// Propagate the shared per-frame command state tracker to every renderer that
+// only records on the main thread (mirrors the pre-interface wiring in
+// main.cpp). backFaceRenderer and the water IndirectRenderer stay unwired:
+// the async back-face task records them on a separate thread and keeping
+// cmdState=nullptr avoids a data race on frameCmdState.
+void SceneRenderer::setCmdState(CommandBufferState* state) {
+    if (shadowMapper) shadowMapper->setCmdState(state);
+    if (mainSolidRenderer) mainSolidRenderer->setCmdState(state);
+    if (skyRenderer) skyRenderer->setCmdState(state);
+    if (vegetationRenderer) vegetationRenderer->setCmdState(state);
+    if (postProcessRenderer) postProcessRenderer->setCmdState(state);
+    if (debugCubeRenderer) debugCubeRenderer->setCmdState(state);
+    if (boundingBoxRenderer) boundingBoxRenderer->setCmdState(state);
+    if (debugSDFRenderer) debugSDFRenderer->setCmdState(state);
+    if (waterWireframe) waterWireframe->setCmdState(state);
+    if (solid360Renderer) solid360Renderer->setCmdState(state);
+    if (mainLiquidRenderer) mainLiquidRenderer->setCmdState(state);
+    if (brushRenderer) brushRenderer->setCmdState(state);
 }
 
 void SceneRenderer::stopGenPools() {
@@ -197,7 +217,7 @@ SceneRenderer::SceneRenderer() :
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
     debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
     waterWireframe(std::make_unique<WireframeRenderer>()),
-      skySettings(std::make_unique<SkySettings>())
+    skySettings(std::make_unique<SkySettings>())
 {
 
 }

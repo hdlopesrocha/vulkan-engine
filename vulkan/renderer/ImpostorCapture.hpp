@@ -1,4 +1,5 @@
 #pragma once
+#include "Renderer.hpp"
 #include <vulkan/vulkan.h>
 #include "../VmaContext.hpp"
 #include "../TrackedHandle.hpp"
@@ -13,7 +14,7 @@ class VegetationRenderer;
 // Captures vegetation billboard impostor views from a Fibonacci sphere grid.
 // 20 evenly-distributed camera positions orbit the billboard at capture time
 // for each of 3 billboard types, giving 60 layers total.
-class ImpostorCapture {
+class ImpostorCapture : public Renderer {
 public:
     static constexpr uint32_t NUM_VIEWS          = 20;
     static constexpr uint32_t NUM_BILLBOARD_TYPES = 3;
@@ -28,7 +29,7 @@ public:
     void init(VulkanApp* app, VegetationRenderer* vegRenderer = nullptr);
 
     // Destroy all GPU resources.
-    void cleanup(VulkanApp* app);
+    void cleanup(VulkanApp* app) override;
 
     // Capture NUM_VIEWS impostor frames for ONE billboard type into layers
     // [billboardIndex*NUM_VIEWS .. billboardIndex*NUM_VIEWS+NUM_VIEWS-1].
@@ -187,6 +188,4 @@ public:
     void destroyImGuiDescSets();
     void invalidateImGuiDescriptors() { destroyImGuiDescSets(); }
     void recreateAllImGuiDescSets(VulkanApp* app);
-    CommandBufferState* cmdState = nullptr;
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

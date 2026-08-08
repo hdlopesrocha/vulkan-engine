@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Renderer.hpp"
 #include "../vulkan.hpp"
 #include "../TrackedHandle.hpp"
 #include "../Buffer.hpp"
@@ -13,12 +14,12 @@ class WaterRenderer;
 class VegetationRenderer;
 class BrushRenderer;
 
-class ShadowRenderer {
+class ShadowRenderer : public Renderer {
 public:
     ShadowRenderer(uint32_t maxShadowMapSize = 2048);
     ~ShadowRenderer();
     void init(VulkanApp* app);
-    void cleanup(VulkanApp* app);
+    void cleanup(VulkanApp* app) override;
 
     // Inject the scene sub-renderers whose geometry is drawn into the shadow
     // map. Called once by SceneRenderer after all sub-renderers are created.
@@ -68,7 +69,7 @@ public:
     void setDepthLayout(uint32_t cascade, VkImageLayout layout);
     void freeImGuiDescriptors();
     void recreateImGuiDescriptors();
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
+    void setCmdState(CommandBufferState* state) override { Renderer::setCmdState(state); }
 private:
     uint32_t shadowMapSizes[SHADOW_CASCADE_COUNT];
 
@@ -120,7 +121,6 @@ private:
     void createShadowPipeline(VulkanApp* app);
     void createBlurResources(VulkanApp* app);
     std::array<VkImageLayout, SHADOW_CASCADE_COUNT> cascadeDepthLayouts = {};
-    CommandBufferState* cmdState = nullptr;
 
     // Per-frame staging buffers for UBO uploads via vkCmdCopyBuffer
     std::vector<Buffer> uboStagingBuffers_;

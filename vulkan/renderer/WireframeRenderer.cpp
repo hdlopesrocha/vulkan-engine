@@ -225,5 +225,6 @@ void WireframeRenderer::draw(VkCommandBuffer cmd,
     indirectRenderer.drawPrepared(cmd);
 }
 
-void WireframeRenderer::cleanup() {
+void WireframeRenderer::cleanup(VulkanApp* app) {
+    (void)app;
 }

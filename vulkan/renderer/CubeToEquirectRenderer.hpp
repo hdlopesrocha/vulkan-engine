@@ -1,4 +1,5 @@
 #pragma once
+#include "Renderer.hpp"
 #include <vulkan/vulkan.h>
 #include "../VmaContext.hpp"
 #include "../TrackedHandle.hpp"
@@ -6,12 +7,12 @@
 
 class VulkanApp;
 
-class CubeToEquirectRenderer {
+class CubeToEquirectRenderer : public Renderer {
 public:
     CubeToEquirectRenderer();
     ~CubeToEquirectRenderer();
 
-    void cleanup(VulkanApp* app);
+    void cleanup(VulkanApp* app) override;
     void render(VulkanApp* app, VkSampler sampler, VkImageView cubeMapView);
     VkImageView getEquirectView() const { return cube360EquirectView; }
     VkDescriptorSet getDescriptor() const { return cube360EquirectSampleDescriptorSet; }
@@ -37,7 +38,4 @@ private:
 
     static constexpr uint32_t EQ_WIDTH = 1024;
     static constexpr uint32_t EQ_HEIGHT = 512;
-public:
-    CommandBufferState* cmdState = nullptr;
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

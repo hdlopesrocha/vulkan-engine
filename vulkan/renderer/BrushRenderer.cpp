@@ -44,8 +44,8 @@ void BrushRenderer::cleanup(VulkanApp* app) {
     }
     backFaceRenderer.reset();
     destroyRenderTargets(app);
-    solidIndirectRenderer.cleanup();
-    liquidIndirectRenderer.cleanup();
+    solidIndirectRenderer.cleanup(app);
+    liquidIndirectRenderer.cleanup(app);
 }
 
 void BrushRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {

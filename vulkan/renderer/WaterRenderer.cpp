@@ -94,7 +94,7 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
 }
 
 void WaterRenderer::cleanup(VulkanApp* app) {
-    waterIndirectRenderer.cleanup();
+    waterIndirectRenderer.cleanup(app);
     destroyRenderTargets(app);
     if (waterRenderUBO_.buffer != VK_NULL_HANDLE) waterRenderUBO_ = {};
 }

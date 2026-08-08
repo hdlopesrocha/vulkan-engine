@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
@@ -24,13 +25,13 @@ class WaterBackFaceRenderer;
 class Solid360Renderer;
 class WireframeRenderer;
 
-class WaterRenderer {
+class WaterRenderer : public Renderer {
 public:
     WaterRenderer();
     ~WaterRenderer();
 
     void init(VulkanApp* app, Buffer& waterParamsBuffer_, const std::vector<WaterParams>& waterParams, uint32_t layerCount);
-    void cleanup(VulkanApp* app);
+    void cleanup(VulkanApp* app) override;
 
     // Inject the scene sub-renderers the water pass samples from or draws
     // alongside (solid offscreen targets, brush liquid geometry, back-face
@@ -266,10 +267,6 @@ private:
 
     // Cached frame index set by beginWaterGeometryPass, used by endWaterGeometryPass
     uint32_t activeWaterFrameIndex = 0;
-
-    CommandBufferState* cmdState = nullptr;
-public:
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 
     // Scene sub-renderers injected via setSceneRenderers
     SolidRenderer* solidRenderer_ = nullptr;

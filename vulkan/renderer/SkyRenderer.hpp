@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "../VertexBufferObject.hpp"
@@ -12,7 +13,7 @@
 #include <array>
 #include "CommandBufferState.hpp"
 
-class SkyRenderer {
+class SkyRenderer : public Renderer {
 public:
     explicit SkyRenderer();
     ~SkyRenderer();
@@ -29,7 +30,7 @@ public:
     // Update sky internals (e.g. SkySphere animation)
     void update(VulkanApp* app);
 
-    void cleanup();
+    void cleanup(VulkanApp* app) override;
 
     // --- Offscreen sky rendering ---
     // Create offscreen render targets (color + depth, 2 frames in flight)
@@ -95,7 +96,4 @@ private:
 
     uint32_t offscreenWidth = 0;
     uint32_t offscreenHeight = 0;
-    CommandBufferState* cmdState = nullptr;
-public:
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

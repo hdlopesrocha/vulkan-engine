@@ -1181,22 +1181,12 @@ public:
         }
 
         // Reset command buffer state tracker and wire it to all sub-renderers.
-        // NOTE: backFaceRenderer and waterRenderer's IndirectRenderer are deliberately
-        // excluded — they are accessed by the async back-face task on a separate thread
-        // and keeping cmdState=nullptr for them avoids a data race on frameCmdState.
-        // Null checks mirror existing guards in the render code below.
+        // NOTE: backFaceRenderer and the water IndirectRenderer are deliberately
+        // excluded by SceneRenderer::setCmdState — they are accessed by the
+        // async back-face task on a separate thread and keeping cmdState=nullptr
+        // for them avoids a data race on frameCmdState.
         sceneRenderer->frameCmdState.reset();
-        if (sceneRenderer->shadowMapper) sceneRenderer->shadowMapper->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->mainSolidRenderer) sceneRenderer->mainSolidRenderer->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->skyRenderer) sceneRenderer->skyRenderer->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->vegetationRenderer) sceneRenderer->vegetationRenderer->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->postProcessRenderer) sceneRenderer->postProcessRenderer->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->debugCubeRenderer) sceneRenderer->debugCubeRenderer->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->debugSDFRenderer) sceneRenderer->debugSDFRenderer->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->waterWireframe) sceneRenderer->waterWireframe->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->solid360Renderer) sceneRenderer->solid360Renderer->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->mainLiquidRenderer) sceneRenderer->mainLiquidRenderer->setCmdState(&sceneRenderer->frameCmdState);
-        if (sceneRenderer->mainSolidRenderer) sceneRenderer->mainSolidRenderer->getIndirectRenderer().setCmdState(&sceneRenderer->frameCmdState);
+        sceneRenderer->setCmdState(&sceneRenderer->frameCmdState);
 
         // ── GPU culling: must run BEFORE shadow pass so drawPrepared has
         // current-frame compact/visibleCount buffers populated. ──

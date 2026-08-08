@@ -1,4 +1,5 @@
 #pragma once
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "IndirectRenderer.hpp"
 #include "BrushBackFaceRenderer.hpp"
@@ -25,7 +26,7 @@ class SolidRenderer;
 //     generation pools the brush octree change handlers tessellate on
 // The early brush pass itself (front depth -> backface -> color, followed by
 // SHADER_READ_ONLY transitions) is recorded by recordEarlyPass().
-class BrushRenderer {
+class BrushRenderer : public Renderer {
 public:
     BrushRenderer();
     ~BrushRenderer();
@@ -35,7 +36,7 @@ public:
     // descriptor writes must be provided via setDepthSamplers() first (they
     // are queried lazily by writeDepthDescriptors()).
     void init(VulkanApp* app, uint32_t width, uint32_t height);
-    void cleanup(VulkanApp* app);
+    void cleanup(VulkanApp* app) override;
 
     // Offscreen brush targets (color + front depth), matching MAX_FRAMES_IN_FLIGHT
     static constexpr uint32_t BRUSH_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
@@ -120,6 +121,13 @@ public:
 
     // Back-face depth pass for the brush solid geometry (GREATER compare).
     std::unique_ptr<BrushBackFaceRenderer> backFaceRenderer;
+
+    // Attach the shared per-frame command state tracker. The brush pass only
+    // records on the main thread, so its back-face renderer is safe to wire in.
+    void setCmdState(CommandBufferState* state) override {
+        Renderer::setCmdState(state);
+        if (backFaceRenderer) backFaceRenderer->setCmdState(state);
+    }
 
 private:
     // Offscreen brush render targets (color + front depth), one per frame

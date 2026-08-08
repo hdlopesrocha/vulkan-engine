@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "../VertexBufferObject.hpp"
@@ -12,7 +13,7 @@
 #include "CommandBufferState.hpp"
 
 // Renders debug wireframe cubes for octree visualization
-class DebugCubeRenderer {
+class DebugCubeRenderer : public Renderer {
 public:
     struct CubeWithColor {
         BoundingBox cube;
@@ -31,7 +32,7 @@ public:
     // Render all registered cubes
     void render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet);
 
-    void cleanup();
+    void cleanup(VulkanApp* app) override;
 
     // ── Per-node debug cube tracking (moved from SceneRenderer) ──
     // Populated by the space-change handlers (worker threads) after geometry
@@ -71,9 +72,6 @@ private:
     
     // Cubes to render this frame
     std::vector<CubeWithColor> activeCubes;
-    CommandBufferState* cmdState = nullptr;
-public:
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 private:
     void createCubeVBO(VulkanApp* app);
     void loadGridTexture(VulkanApp* app);

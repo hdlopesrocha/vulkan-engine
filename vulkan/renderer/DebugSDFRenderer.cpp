@@ -12,7 +12,7 @@
 
 DebugSDFRenderer::DebugSDFRenderer() {}
 
-DebugSDFRenderer::~DebugSDFRenderer() { cleanup(); }
+DebugSDFRenderer::~DebugSDFRenderer() { cleanup(nullptr); }
 
 void DebugSDFRenderer::init(VulkanApp* app) {
     createCubeBuffers(app);
@@ -200,7 +200,8 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
     vkCmdDrawIndexed(cmd, indexCount, static_cast<uint32_t>(activeCubes.size()), 0, 0, 0);
 }
 
-void DebugSDFRenderer::cleanup() {
+void DebugSDFRenderer::cleanup(VulkanApp* app) {
+    (void)app;
     vertexBuffer = {};
     indexBuffer = {};
     instanceBuffer = {};

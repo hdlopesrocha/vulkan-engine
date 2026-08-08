@@ -1,4 +1,5 @@
 #pragma once
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "../TextureArrayManager.hpp"
@@ -20,7 +21,7 @@
 #include "CommandBufferState.hpp"
 
 // Per-chunk vegetation instance buffer and renderer
-class VegetationRenderer {
+class VegetationRenderer : public Renderer {
 public:
     struct WindSettings {
         bool enabled = true;
@@ -61,7 +62,7 @@ public:
     void setBillboardArrayTextures(VkImageView albedoView, VkImageView normalView, VkImageView opacityView, VkSampler sampler, VulkanApp* app);
     void onTextureArraysReallocated(VulkanApp* app);
     void init();
-    void cleanup();
+    void cleanup(VulkanApp* app) override;
     void init(VulkanApp* app);
     // CPU-side instance generation — avoids GPUVM faults on RADV iGPUs where
     // the Texture Cache/Pipe cannot read from device-local or host-visible
@@ -318,7 +319,4 @@ private:
     void issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
     void issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
     WindPushConstants buildWindPushConstants(const glm::vec3& cameraPos) const;
-    CommandBufferState* cmdState = nullptr;
-public:
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

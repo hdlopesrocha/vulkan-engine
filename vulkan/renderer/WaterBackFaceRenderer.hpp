@@ -1,16 +1,17 @@
 #pragma once
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
 #include <array>
 #include "CommandBufferState.hpp"
 
-class WaterBackFaceRenderer {
+class WaterBackFaceRenderer : public Renderer {
 public:
     WaterBackFaceRenderer();
     ~WaterBackFaceRenderer();
     void init(VulkanApp* app);
-    void cleanup(VulkanApp* app);
+    void cleanup(VulkanApp* app) override;
 
     void createPipelines(VulkanApp* app, VkPipelineLayout pipelineLayout);
 
@@ -59,7 +60,4 @@ private:
     VkImageView dummyDepthView = VK_NULL_HANDLE;
     TrackedHandle<VkSampler> nearestSampler;
     VulkanApp* appPtr = nullptr;
-public:
-    CommandBufferState* cmdState = nullptr;
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

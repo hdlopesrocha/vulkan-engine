@@ -13,7 +13,7 @@
 
 SkyRenderer::SkyRenderer() {}
 
-SkyRenderer::~SkyRenderer() { cleanup(); }
+SkyRenderer::~SkyRenderer() { cleanup(nullptr); }
 
 void SkyRenderer::init(VulkanApp* app) {
     // Use the application's main descriptor set layout (set 0 contains the shared UBO)
@@ -177,7 +177,8 @@ void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet d
     vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 
-void SkyRenderer::cleanup() {
+void SkyRenderer::cleanup(VulkanApp* app) {
+    (void)app;
     if (skySphere) {
         skySphere->cleanup();
         skySphere.reset();

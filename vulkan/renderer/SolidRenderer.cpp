@@ -485,7 +485,7 @@ void SolidRenderer::drawBrushColor(VkCommandBuffer &cmd, VkDescriptorSet descSet
 
 void SolidRenderer::cleanup(VulkanApp* app) {
     if (app == nullptr) return;
-    wireframe.cleanup();
+    wireframe.cleanup(app);
     destroyRenderTargets(app);
     deferredPipelinesCreated = false;
 
@@ -494,7 +494,7 @@ void SolidRenderer::cleanup(VulkanApp* app) {
     }
     solidChunks.clear();
 
-    indirectRenderer.cleanup();
+    indirectRenderer.cleanup(app);
 }
 
 void SolidRenderer::createWireframe(VulkanApp* app) {

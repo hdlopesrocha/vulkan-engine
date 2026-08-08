@@ -218,7 +218,8 @@ IndirectRenderer::~IndirectRenderer() {}
 void IndirectRenderer::init() {
 }
 
-void IndirectRenderer::cleanup() {
+void IndirectRenderer::cleanup(VulkanApp* app) {
+    (void)app;
     meshes.clear();
     activeMeshCountDirty_ = true;
     vertexBuffer = {};

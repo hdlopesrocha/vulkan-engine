@@ -1,4 +1,5 @@
 #pragma once
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "SkyRenderer.hpp"
@@ -8,12 +9,12 @@
 #include <array>
 #include "CommandBufferState.hpp"
 
-class Solid360Renderer {
+class Solid360Renderer : public Renderer {
 public:
     Solid360Renderer();
     ~Solid360Renderer();
     void init(VulkanApp* app);
-    void cleanup(VulkanApp* app);
+    void cleanup(VulkanApp* app) override;
 
     void createSolid360Targets(VulkanApp* app, VkSampler linearSampler);
     void destroySolid360Targets(VulkanApp* app);
@@ -94,7 +95,4 @@ private:
     static constexpr uint32_t STAGING_FRAMES = 3;
     Buffer stagingUBOs[STAGING_FRAMES];
     mutable uint32_t stagingFrameIndex = 0;
-public:
-    CommandBufferState* cmdState = nullptr;
-    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

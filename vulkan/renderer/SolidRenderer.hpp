@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
@@ -13,7 +14,7 @@
 #include <array>
 #include "CommandBufferState.hpp"
 
-class SolidRenderer {
+class SolidRenderer : public Renderer {
 public:
     explicit SolidRenderer();
     ~SolidRenderer();
@@ -25,7 +26,7 @@ public:
     void destroyRenderTargets(VulkanApp* app);
     void beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear, VulkanApp* app);
     void endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp* app);
-    void cleanup(VulkanApp* app);
+    void cleanup(VulkanApp* app) override;
 
     // Draw the solid wireframe overlay on top of the existing solid render.
     // Must be called inside a compatible render pass.
@@ -110,14 +111,16 @@ private:
     std::array<VkImageLayout, SOLID_FRAMES> solidDepthImageLayouts = {};
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
-    CommandBufferState* cmdState = nullptr;
 
     // Solid wireframe overlay (owned by this renderer so wireframe mode works
     // uniformly for the solid pass)
     WireframeRenderer wireframe;
 public:
-    void setCmdState(CommandBufferState* state) {
-        cmdState = state;
+    void setCmdState(CommandBufferState* state) override {
+        Renderer::setCmdState(state);
         wireframe.setCmdState(state);
+        // The solid IndirectRenderer is main-thread-only (main/shadow/solid360
+        // passes), so it is safe to wire into the shared per-frame tracker.
+        indirectRenderer.setCmdState(state);
     }
 };
