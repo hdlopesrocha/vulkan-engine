@@ -735,9 +735,9 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint3
     // per-cascade prepareCull calls above) so drawPrepared in the main pass
     // uses the correct visible set.
     if (solidRenderer_)
-        solidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias);
+        solidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection);
     if (brushRenderer_) {
-        brushRenderer_->getSolidIR().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias);
+        brushRenderer_->getSolidIR().prepareCull(commandBuffer, uboStatic.viewProjection);
     }
 
     // Restore the main UBO so subsequent passes see the original data.

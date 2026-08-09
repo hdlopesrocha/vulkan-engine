@@ -2,10 +2,6 @@
 
 #include <cstdint>
 
-// Maximum number of LoD levels per chunk (levels 0..kMaxChunkLevels-1).
-// Used to index per-level draw entries inside each chunk's stable slot.
-static constexpr uint32_t kMaxChunkLevels = 5u;
-
 // Shared shader location constants (must match shaders/includes/locations.glsl)
 // Keep these in sync with the GLSL header to avoid mismatches.
 static constexpr uint32_t ATTR_POS = 0u;

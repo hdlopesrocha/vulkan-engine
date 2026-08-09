@@ -33,8 +33,7 @@ class Octree: public BoundingCube {
         Geometry geom;
         uint8_t  lod = 0;     // LoD level of this mesh (= node's chunkLod, 0 = chunks)
         unsigned int     version = 0; // snapshot of node->version at generation time
-        float    cellSize = 0;  // this level's cell size, used by the GPU band test
-        uint8_t  maxLevel = 0;  // scene-wide band clamp (LocalScene::maxChunkLod); 0 = always keep
+        float    cellSize = 0;  // the chunk's cell size
     };
 
 

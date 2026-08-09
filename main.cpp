@@ -148,20 +148,18 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
         }
 
         OctreeNodeData nodeCopy = nd;
-        // Per-level handler: the walk emits one LoDMesh per ladder level
-        // (ascending). Level 0 carries the chunk's finest mesh; each level is
-        // queued as its own entry — the consumer reassembles per-chunk ladders
-        // and accumulates slot sub-offsets across levels.
+        // Single-mesh handler: each chunk emits exactly one LoDMesh and it is
+        // queued as its own entry — the consumer publishes it into the chunk's
+        // stable slot.
         renderer->processNodeLayer(*scene, layer, nid, nodeCopy,
             [renderer, cid, nodeCopy, target](Layer layer_, NodeID nid_, const Octree::LoDMesh& lodMesh) {
                 if (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty()) {
-                    return; // no surface at this level: nothing to publish
+                    return; // no surface: nothing to publish
                 }
                 if (target.chunkManaged && lodMesh.lod == 0) {
                     // Phase 3: tessellation complete on a worker thread. The
-                    // level-0 (finest) geometry is the chunk mesh; coarse
-                    // levels live in shared slot regions. Only the octree
-                    // version is tracked here — GPU data goes through slots.
+                    // chunk mesh is complete; only the octree version is
+                    // tracked here — GPU data goes through slots.
                     if (renderer->world()) {
                         renderer->world()->chunkManager().finishBuild(cid, lodMesh.version);
                     }
@@ -1202,9 +1200,9 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
         sceneRenderer->mainSolidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-        sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+        sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
         sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(commandBuffer);
-        sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+        sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj);
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
             sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
         }
@@ -1213,13 +1211,13 @@ public:
         // shared visibleLods buffer. prepareCull acquires the water buffers
         // internally and must run outside a render pass.
         if (settings.waterEnabled && sceneRenderer->mainLiquidRenderer) {
-            sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+            sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
         }
         // Brush liquid (painted water) is drawn inside the water geometry pass
         // with the water pipeline, so it needs a current-frame cull of its own
         // (its compact/visibleCount buffers are otherwise stale from the last
         // prepareCull or uninitialized, which would draw garbage).
-        sceneRenderer->brushRenderer->getLiquidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+        sceneRenderer->brushRenderer->getLiquidIR().prepareCull(commandBuffer, viewProj);
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
 
@@ -1656,8 +1654,7 @@ public:
 
                 // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
                 if (computeDs != VK_NULL_HANDLE) {
-                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, slot.compact.buffer, slot.visible.buffer,
-                                                  camera.getPosition());
+                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, slot.compact.buffer, slot.visible.buffer);
                 }
 
                 // Water-depth descriptor set for THIS task: pre-allocated per ring slot

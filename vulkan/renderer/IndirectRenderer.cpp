@@ -18,18 +18,14 @@
 static std::chrono::steady_clock::time_point g_lastNoSlotLog = std::chrono::steady_clock::time_point::min();
 
 namespace {
-// Push constant blocks are std430: vec3 members align to 16 bytes, so the
-// C++ mirrors carry explicit padding to match the shader layout exactly.
+// Push constant blocks are std430: the C++ mirrors carry explicit padding to
+// match the shader layout exactly.
 struct CullPushConstants {
     glm::mat4 viewProj;   // offset 0
     uint32_t targetLayer; // offset 64
     uint32_t numCmds;     // offset 68
     float pad0[2];        // offset 72
-    glm::vec3 camPos;     // offset 80
-    float lodBias;        // offset 92
-    float maxLod;         // offset 96: max chunkLod level to render (coarsest allowed)
-    float pad1[3];        // offset 100
-}; // 112 bytes
+}; // 80 bytes (shader reads the first 72)
 
 struct CascadeCullPushConstants {
     uint32_t numChunks;   // offset 0
@@ -37,12 +33,6 @@ struct CascadeCullPushConstants {
     glm::vec3 camPos;     // offset 16
     float lodBias;        // offset 28
 }; // 32 bytes
-
-// LoD meta triple stored at bounds entry drawIndex*3+2: {cellSize, level,
-// maxLevel, unused}. cellSize <= 0 marks an entry with no LoD data.
-glm::vec4 lodMetaFor(float cellSize, int level, int maxLevel) {
-    return glm::vec4(cellSize, static_cast<float>(level), static_cast<float>(maxLevel), 0.0f);
-}
 } // namespace
 
 // Unlocked — caller must hold `mutex`. Memoized active-mesh count; recomputed
@@ -62,14 +52,13 @@ size_t IndirectRenderer::activeMeshCountLocked() const {
 
 // Unlocked — caller must hold `mutex`. Returns the number of draw commands
 // (slots) to cull in the current mode. In slotted mode this is the fixed slot
-// pool capacity times kMaxChunkLevels (one draw entry per (chunk, level)); in
-// legacy mode it's the active mesh count.
+// pool capacity (one draw entry per chunk); in legacy mode it's the active
+// mesh count.
 uint32_t IndirectRenderer::getCullDispatchCountLocked() const {
     if (slottedMode) {
-        // One draw entry per (chunk, level): the cull shader band-tests each
-        // entry and keeps only the chunk's selected level. The pool holds one
-        // slot per chunk; each chunk publishes up to kMaxChunkLevels entries.
-        return slotAlloc.capacity() * kMaxChunkLevels;
+        // One draw entry per active chunk slot; the pool capacity is the
+        // fixed dispatch size (zeroed tail entries are skipped on indexCount).
+        return static_cast<uint32_t>(slotAlloc.capacity());
     }
     return static_cast<uint32_t>(activeMeshCountLocked());
 }
@@ -339,13 +328,13 @@ void IndirectRenderer::removeAllMeshes() {
         if (boundsBuffer.buffer != VK_NULL_HANDLE) {
             void* ptr = boundsBuffer.map(0);
             if (ptr) {
-                std::memset(ptr, 0, slotAlloc.capacity() * kMaxChunkLevels * 3 * sizeof(glm::vec4));
+                std::memset(ptr, 0, slotAlloc.capacity() * 3 * sizeof(glm::vec4));
                 boundsBuffer.unmap();
             }
         }
         // Zero the chosen-LoD outputs so no stale (chunk, level) pair survives
         // a scene clear.
-        VkDeviceSize lodBytes = sizeof(glm::uvec2) * slotAlloc.capacity() * kMaxChunkLevels;
+        VkDeviceSize lodBytes = sizeof(glm::uvec2) * slotAlloc.capacity();
         for (auto& b : visibleLodBuffers) {
             if (b.buffer != VK_NULL_HANDLE) {
                 void* ptr = b.map(0);
@@ -744,11 +733,10 @@ void IndirectRenderer::doUploadMeshMetaBuffers(VulkanApp* app) {
         if (info) {
             info->indirectOffset = cmdOffset;
             if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-                // Per draw entry the bounds buffer holds min, max and the LoD
-                // meta triple {cellSize, level, maxLevel, 0}.
+                // Per draw entry the bounds buffer holds min, max and an
+                // unused meta vec4 (zeroed — chunks carry no LoD band meta).
                 VkDeviceSize boundsOffset = i * 3 * sizeof(glm::vec4);
-                glm::vec4 bounds[3] = { info->boundsMin, info->boundsMax,
-                                        lodMetaFor(info->cellSize, info->level, info->maxLevel) };
+                glm::vec4 bounds[3] = { info->boundsMin, info->boundsMax, glm::vec4(0.0f) };
                 data = boundsBuffer.map(boundsOffset);
                 memcpy(data, bounds, sizeof(bounds));
                 boundsBuffer.unmap();
@@ -908,8 +896,7 @@ void IndirectRenderer::publishMeshMeta(uint32_t meshId) {
     const auto& cmd = indirectCommands[i];
     info.indirectOffset = cmdOffset;
 
-    glm::vec4 bounds[3] = { info.boundsMin, info.boundsMax,
-                            lodMetaFor(info.cellSize, info.level, info.maxLevel) };
+    glm::vec4 bounds[3] = { info.boundsMin, info.boundsMax, glm::vec4(0.0f) };
     stageMeshMetaWrite(static_cast<uint32_t>(i), cmd, bounds, true);
 }
 
@@ -1225,7 +1212,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         if (!info.active) continue;
         boundsData.push_back(info.boundsMin);
         boundsData.push_back(info.boundsMax);
-        boundsData.push_back(lodMetaFor(info.cellSize, info.level, info.maxLevel));
+        boundsData.push_back(glm::vec4(0.0f)); // meta: unused (no LoD bands)
     }
     VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 3;
     VkDeviceSize boundsDataSize = sizeof(glm::vec4) * boundsData.size();
@@ -1278,7 +1265,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Per-frame chosen-LoD output buffers (uvec2 per entry) + the scratch
     // buffer bound by external descriptor-set owners (cubemap/backface).
     // Same lifecycle as compactIndirectBuffers.
-    VkDeviceSize lodBufSize = sizeof(glm::uvec2) * meshCapacity * kMaxChunkLevels;
+    VkDeviceSize lodBufSize = sizeof(glm::uvec2) * meshCapacity;
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         if (visibleLodBuffers[f].buffer != VK_NULL_HANDLE || visibleLodBuffers[f].memory != VK_NULL_HANDLE) {
             scheduleDestroyBuffer(visibleLodBuffers[f]);
@@ -1375,7 +1362,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.offset = 0;
-        pc.size = sizeof(CullPushConstants); // 96 bytes: mat4 + 2*uint + pad + vec3 + float
+        pc.size = sizeof(CullPushConstants); // 80 bytes: mat4 + 2*uint + pad0[2]
 
         VkPipelineLayoutCreateInfo plinfo{};
         plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1497,8 +1484,7 @@ void IndirectRenderer::setCullFrame(uint32_t frame) {
     currentCullFrame = frame % MAX_CULL_FRAMES;
 }
 
-void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
-                                   glm::vec3 camPos, float lodBias, float maxLod) {
+void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj) {
     // NOTE: No mutex lock here - this is only called from the main render thread
     // and all buffer modifications happen in rebuild() which does lock.
 
@@ -1664,9 +1650,6 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     pc.viewProj     = viewProj;
     pc.targetLayer  = 0;
     pc.numCmds      = numCmds;
-    pc.camPos       = camPos;
-    pc.lodBias      = lodBias;
-    pc.maxLod       = maxLod;
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc);
 
     uint32_t groupSize = 64;
@@ -1712,8 +1695,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 
 
 void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
-                                                VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
-                                                glm::vec3 camPos, float lodBias, float maxLod) {
+                                                VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer) {
     if (computePipeline == VK_NULL_HANDLE) {
         // No meshes loaded yet (e.g. during parallel background loading). Nothing to cull.
         return;
@@ -1863,9 +1845,6 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     pc2.viewProj     = viewProj;
     pc2.targetLayer  = 0;
     pc2.numCmds      = numCmds;
-    pc2.camPos       = camPos;
-    pc2.lodBias      = lodBias;
-    pc2.maxLod       = maxLod;
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc2);
 
     uint32_t groupSize = 64;
@@ -2078,35 +2057,32 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     std::lock_guard<std::recursive_mutex> guard(mutex);
 
     // Packed-slot layout:
-    //  - vertexCapacity/indexCapacity: TOTAL shared element pools. Each
-    //    (chunk, level) packs its geometry into its OWN free-space span of
-    //    these pools (PackedSpaceAllocator, best-fit) instead of a fixed
-    //    worst-case per-chunk budget — so the pools host as many chunks as
-    //    their BYTES allow. Small chunks share space; a chunk publishes only
-    //    the levels it actually has, and republishing one level replaces just
-    //    that level's span (other levels are untouched).
-    //  - slotAlloc: draw-entry BLOCK allocator. Each active chunk owns a
-    //    contiguous block of kMaxChunkLevels consecutive draw entries; the
-    //    block index IS the stable "slot" (drawIndex = block * levels + level).
+    //  - vertexCapacity/indexCapacity: TOTAL shared element pools. Each chunk
+    //    packs its geometry into its OWN free-space span of these pools
+    //    (PackedSpaceAllocator, best-fit) instead of a fixed worst-case
+    //    per-chunk budget — so the pools host as many chunks as their BYTES
+    //    allow. Small chunks share space.
+    //  - slotAlloc: draw-entry allocator. Each active chunk owns ONE draw
+    //    entry; the entry index IS the stable "slot" (drawIndex == slotIndex).
     // GPU buffers are pre-reserved once and never grown: a publish/erase only
-    //    touches the chunk's own block + element spans — no global rebuild.
+    //    touches the chunk's own entry + element span — no global rebuild.
     vertexCapacity = totalVertexBytes / sizeof(Vertex);
     indexCapacity  = totalIndexBytes / sizeof(uint32_t);
-    meshCapacity   = static_cast<size_t>(maxActiveChunks) * kMaxChunkLevels;
+    meshCapacity   = static_cast<size_t>(maxActiveChunks);
 
-    // Draw-entry block pool (units of kMaxChunkLevels entries per block).
-    slotAlloc.reserve(maxActiveChunks, kMaxChunkLevels, kMaxChunkLevels);
+    // Draw-entry pool (one entry per chunk).
+    slotAlloc.reserve(maxActiveChunks, 1, 1);
 
     // Packed element pools.
     spaceAlloc.reserve(static_cast<uint32_t>(vertexCapacity),
                        static_cast<uint32_t>(indexCapacity));
 
     // Pre-size the CPU-side merged buffers (one element per pool, fixed at
-    // init). Each level's span is written into its allocated sub-range.
+    // init). The chunk's span is written into its allocated sub-range.
     mergedVertices.resize(vertexCapacity);
     mergedIndices.resize(indexCapacity);
 
-    // Pre-size indirect commands (one per block * level, initially zeroed).
+    // Pre-size indirect commands (one per chunk slot, initially zeroed).
     // Zeroed commands have indexCount=0, so GPU culling skips them.
     indirectCommands.resize(meshCapacity);
     std::memset(indirectCommands.data(), 0, indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand));
@@ -2145,7 +2121,8 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     }
 
     // Bounds buffer (host-visible, persistently mapped). Same zeroing rationale.
-    // Three vec4s per entry: min, max, lod meta {cellSize, level, maxLevel, 0}.
+    // Three vec4s per entry: min, max, meta (unused, kept zeroed for layout
+    // compatibility with cascade culling).
     // TRANSFER_DST: staged bounds land here via vkCmdCopyBuffer.
     VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 3;
     boundsBuffer = app->createBuffer(boundsBufferSize,
@@ -2173,10 +2150,11 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         }
     }
 
-    // Per-frame chosen-LoD output buffers (uvec2 per (chunk, level) entry) and
-    // the scratch buffer bound by external descriptor-set owners.
+    // Per-frame chosen-LoD output buffers (uvec2 per draw entry: the compacted
+    // firstInstance and the level, always 0 now that chunks are single-mesh)
+    // and the scratch buffer bound by external descriptor-set owners.
     // TRANSFER_DST: prepareCull zeroes them with vkCmdFillBuffer each frame.
-    VkDeviceSize lodBufSize = sizeof(glm::uvec2) * meshCapacity * kMaxChunkLevels;
+    VkDeviceSize lodBufSize = sizeof(glm::uvec2) * meshCapacity;
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         visibleLodBuffers[f] = app->createBuffer(lodBufSize,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -2256,7 +2234,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.offset = 0;
-        pc.size = sizeof(CullPushConstants); // 96 bytes
+        pc.size = sizeof(CullPushConstants); // 80 bytes: mat4 + 2*uint + pad0[2]
 
         VkPipelineLayoutCreateInfo plinfo{};
         plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -2378,19 +2356,12 @@ void IndirectRenderer::copyGeometryToLevel(const Geometry& mesh, MeshInfo::Level
     }
 }
 
-uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId, int level,
-                                          float cellSize, int maxLevel,
+uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId,
                                           const glm::vec3* cubeMin, const glm::vec3* cubeMax)
 {
     if (!slottedMode) return UINT32_MAX;
 
     std::lock_guard<std::recursive_mutex> guard(mutex);
-
-    if (level < 0 || static_cast<uint32_t>(level) >= kMaxChunkLevels) {
-        std::cerr << "[IndirectRenderer] addMeshSlotted: level " << level << " out of range" << std::endl;
-        return UINT32_MAX;
-    }
-    const uint32_t lv = static_cast<uint32_t>(level);
 
     uint32_t neededVerts = static_cast<uint32_t>(mesh.vertices.size());
     uint32_t neededIdxs  = static_cast<uint32_t>(mesh.indices.size());
@@ -2398,9 +2369,8 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
     auto existing = meshes.find(chunkId);
     const bool isNewChunk = (existing == meshes.end() || !existing->second.active);
 
-    // Allocate this chunk's draw-entry block on first use. The block index is
-    // the chunk's stable slot; every level publishes its entry at
-    // slot* kMaxChunkLevels + level.
+    // Allocate this chunk's draw entry on first use. The entry index is the
+    // chunk's stable slot (one draw entry per chunk).
     uint32_t slotIdx = isNewChunk ? UINT32_MAX : existing->second.slotIndex;
     if (slotIdx == UINT32_MAX) {
         slotIdx = slotAlloc.allocate(1, 1);
@@ -2431,13 +2401,13 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
                   << " out of range (capacity=" << slotAlloc.capacity() << ")" << std::endl;
         return UINT32_MAX;
     }
-    const uint32_t entryIndex = slotIdx * kMaxChunkLevels + lv; // draw entry == block*levels + level
+    const uint32_t entryIndex = slotIdx; // draw entry == slot (one entry per chunk)
 
-    // Pack this level's geometry into its own span of the shared element
+    // Pack this chunk's geometry into its own span of the shared element
     // pools (first-fit/best-fit free-space allocator). The old span — if any —
     // is NOT freed here: in-flight frames may still reference it, so it is
-    // recorded and released once this level's replacement upload completes
-    // (see uploadSlot). If the geometry is empty, release the old span now:
+    // recorded and released once the replacement upload completes (see
+    // uploadSlot). If the geometry is empty, release the old span now:
     // nothing will be uploaded and the entry is zeroed below, so the old data
     // is unreachable.
     MeshInfo* chunk = isNewChunk ? nullptr : &existing->second;
@@ -2453,7 +2423,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
             if (now - g_lastNoSlotLog >= std::chrono::seconds(1)) {
                 g_lastNoSlotLog = now;
                 std::cerr << "[IndirectRenderer] addMeshSlotted: element pool exhausted for chunk "
-                          << chunkId << " (level " << lv << ", verts=" << neededVerts
+                          << chunkId << " (verts=" << neededVerts
                           << " idxs=" << neededIdxs << "; usedVert=" << spaceAlloc.usedVertex()
                           << "/" << spaceAlloc.totalVertex()
                           << " usedIdx=" << spaceAlloc.usedIndex()
@@ -2462,14 +2432,14 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
             return UINT32_MAX;
         }
 
-        // Preserve the level's previous span for deferred freeing. On a fresh
+        // Preserve the chunk's previous span for deferred freeing. On a fresh
         // allocate (first publish) there is none. If an older span is already
         // pending (a previous republish whose upload never completed), free it
         // now: its entry was zeroed by that republish, so nothing references
         // it anymore and waiting for a completion that will never fire would
         // leak it.
         if (chunk) {
-            MeshInfo::LevelData& prev = chunk->levels_[lv];
+            MeshInfo::LevelData& prev = chunk->level_;
             if (prev.allocated) {
                 if (prev.oldVertexBase != UINT32_MAX) {
                     spaceAlloc.freeVertex(prev.oldVertexBase, prev.oldVertexCount);
@@ -2483,8 +2453,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
         }
 
         if (isNewChunk) {
-            // The previous levels of a brand-new block were stored under a
-            // different chunk id (a removed-and-recreated node); allocate a
+            // A brand-new slot for a removed-and-recreated node: allocate a
             // fresh entry and let the copy write into the packed span.
             MeshInfo m{};
             m.id         = chunkId;
@@ -2494,7 +2463,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
             chunk = &meshes[chunkId];
         }
 
-        MeshInfo::LevelData& ld = chunk->levels_[lv];
+        MeshInfo::LevelData& ld = chunk->level_;
         ld.allocated    = true;
         ld.baseVertex   = newVBase;
         ld.vertexCount  = neededVerts;
@@ -2515,13 +2484,10 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
             ld.boundsMin = glm::vec4(minp, 0.0f);
             ld.boundsMax = glm::vec4(maxp, 0.0f);
         }
-        ld.cellSize = cellSize;
-        ld.maxLevel = maxLevel;
-
-        // Copy geometry data into the level's packed span (absolute positions).
+        // Copy geometry data into the chunk's packed span (absolute positions).
         copyGeometryToLevel(mesh, ld);
 
-        // Publish the CPU-side indirect command for this level entry (the GPU
+        // Publish the CPU-side indirect command for this entry (the GPU
         // buffers stay zeroed until the deferred writeSlotMeta after upload).
         indirectCommands[entryIndex].indexCount    = ld.indexCount;
         indirectCommands[entryIndex].instanceCount = 1;
@@ -2530,7 +2496,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
         indirectCommands[entryIndex].firstInstance = entryIndex;
 
         // Also fill the mirror flat fields used by legacy-style callers that
-        // read the mesh info (e.g. stats) with this level.
+        // read the mesh info (e.g. stats).
         chunk->baseVertex   = ld.baseVertex;
         chunk->vertexCount  = ld.vertexCount;
         chunk->firstIndex   = ld.firstIndex;
@@ -2538,15 +2504,12 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
         chunk->drawIndex    = entryIndex;
         chunk->boundsMin    = ld.boundsMin;
         chunk->boundsMax    = ld.boundsMax;
-        chunk->cellSize     = cellSize;
-        chunk->maxLevel     = maxLevel;
-        chunk->level        = static_cast<int>(lv);
     } else {
         // Empty geometry: zero the entry so the GPU never draws it, and free
         // any previous span now (no upload will reference it). If the chunk is
-        // new, still register it so removeMeshSlotted can free the block.
+        // new, still register it so removeMeshSlotted can free the slot.
         if (chunk) {
-            MeshInfo::LevelData& prev = chunk->levels_[lv];
+            MeshInfo::LevelData& prev = chunk->level_;
             if (prev.allocated) {
                 spaceAlloc.freeVertex(prev.baseVertex, prev.vertexCount);
                 spaceAlloc.freeIndex(prev.firstIndex, prev.indexCount);
@@ -2568,8 +2531,8 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
     // Zero the GPU indirect + bounds for THIS entry (staged for the next
     // prepareCull) so the cull shader never sees stale/garbage data during the
     // window between this publish and the deferred writeSlotMeta (upload
-    // completion). Fresh blocks are redundant with initSlots zeroing, but
-    // recycled blocks may retain stale bounds from a prior occupant. Staged
+    // completion). Fresh slots are redundant with initSlots zeroing, but
+    // recycled slots may retain stale bounds from a prior occupant. Staged
     // (not memcpy'd): in-flight cull dispatches may still be reading this
     // entry, and a torn write would be observed as garbage by the cull.
     {
@@ -2587,14 +2550,14 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
 
     std::lock_guard<std::recursive_mutex> guard(mutex);
 
-    // Free the draw-entry block and every level's packed element span, then
-    // zero the block's entries so GPU culling drops them on indexCount == 0.
-    // NOTE: the packed spans are freed immediately. When this is called from
+    // Free the draw entry and the chunk's packed element span, then zero the
+    // entry so GPU culling drops it on indexCount == 0.
+    // NOTE: the packed span is freed immediately. When this is called from
     // an upload completion callback (the common chunk-replacement path) that
     // is safe: the transfer completed, so every prior frame has retired. When
     // called outside a completion (brush rebuilds), an in-flight frame that
-    // already culled this chunk may still reference the span — but its entries
-    // are zeroed right after, so the window only exists for already-queued
+    // already culled this chunk may still reference the span — but its entry
+    // is zeroed right after, so the window only exists for already-queued
     // draws and is the same class of transient the pre-packed code accepted.
     MeshInfo* info = nullptr;
     for (auto it = meshes.begin(); it != meshes.end(); ) {
@@ -2609,88 +2572,37 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
     }
 
     if (info) {
-        for (uint32_t lv = 0; lv < kMaxChunkLevels; lv++) {
-            MeshInfo::LevelData& ld = info->levels_[lv];
-            // A pending deferred old-span free of this level can never fire
-            // anymore (no upload of this chunk is in flight once the entries
-            // are zeroed below): release it now.
-            if (ld.oldVertexBase != UINT32_MAX) {
-                spaceAlloc.freeVertex(ld.oldVertexBase, ld.oldVertexCount);
-                spaceAlloc.freeIndex(ld.oldIndexBase, ld.oldIndexCount);
-            }
-            if (ld.allocated) {
-                spaceAlloc.freeVertex(ld.baseVertex, ld.vertexCount);
-                spaceAlloc.freeIndex(ld.firstIndex, ld.indexCount);
-            }
-            ld = MeshInfo::LevelData{};
+        MeshInfo::LevelData& ld = info->level_;
+        // A pending deferred old-span free can never fire anymore (no upload
+        // of this chunk is in flight once the entry is zeroed below): release
+        // it now.
+        if (ld.oldVertexBase != UINT32_MAX) {
+            spaceAlloc.freeVertex(ld.oldVertexBase, ld.oldVertexCount);
+            spaceAlloc.freeIndex(ld.oldIndexBase, ld.oldIndexCount);
         }
+        if (ld.allocated) {
+            spaceAlloc.freeVertex(ld.baseVertex, ld.vertexCount);
+            spaceAlloc.freeIndex(ld.firstIndex, ld.indexCount);
+        }
+        ld = MeshInfo::LevelData{};
     }
 
     // Free the slot in the allocator
     slotAlloc.free(slotIndex);
 
-    // Zero every per-level draw entry of this slot (staged for the next
-    // prepareCull): the chunk is gone, so no level may survive culling. GPU
-    // culling sees indexCount=0 and drops them. Staged (not memcpy'd) so an
-    // in-flight cull dispatch never observes a torn entry mid-write.
+    // Zero the slot's draw entry (staged for the next prepareCull): the chunk
+    // is gone, so it may not survive culling. GPU culling sees indexCount=0
+    // and drops it. Staged (not memcpy'd) so an in-flight cull dispatch never
+    // observes a torn entry mid-write.
     VkDrawIndexedIndirectCommand zeroCmd{};
     glm::vec4 zeroBounds[3] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
-    for (uint32_t lv = 0; lv < kMaxChunkLevels; lv++) {
-        uint32_t entry = slotIndex * kMaxChunkLevels + lv;
-        if (entry < indirectCommands.size()) {
-            indirectCommands[entry] = VkDrawIndexedIndirectCommand{};
-        }
-        stageMeshMetaWrite(entry, zeroCmd, zeroBounds, true);
+    if (slotIndex < indirectCommands.size()) {
+        indirectCommands[slotIndex] = VkDrawIndexedIndirectCommand{};
     }
+    stageMeshMetaWrite(slotIndex, zeroCmd, zeroBounds, true);
 }
 
-void IndirectRenderer::clearSlotLevelsFrom(uint32_t slotIndex, uint32_t firstLevel)
-{
-    if (!slottedMode) return;
-
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-
-    // Zero every draw entry of this slot at levels [firstLevel, kMaxChunkLevels)
-    // and free those levels' packed spans: the current publish does not cover
-    // them, so any stale command kept here (from a previous, longer ladder of
-    // this chunk or a prior slot occupant) would still pass the GPU band test
-    // with its old meta and draw vertex data the new publish already
-    // overwrote — the renderer must never read those stale entries. GPU
-    // culling drops them on indexCount == 0. Spans are freed immediately; the
-    // zeroed entries make them unreachable by any frame that has not yet
-    // culled, so the only risk is a frame that already culled (same transient
-    // window removeMeshSlotted accepts).
-    // Locate the chunk that owns this block once (not per level).
-    MeshInfo* chunk = nullptr;
-    for (auto it = meshes.begin(); it != meshes.end(); ++it) {
-        if (it->second.active && it->second.slotIndex == slotIndex) {
-            chunk = &it->second;
-            break;
-        }
-    }
-
-    for (uint32_t lv = firstLevel; lv < kMaxChunkLevels; ++lv) {
-        uint32_t entry = slotIndex * kMaxChunkLevels + lv;
-        if (entry >= indirectCommands.size()) break;
-        indirectCommands[entry] = VkDrawIndexedIndirectCommand{};
-        // Staged zero (not direct memcpy): an in-flight cull dispatch must
-        // never observe a torn entry mid-write.
-        VkDrawIndexedIndirectCommand zeroCmd{};
-        glm::vec4 zeroBounds[3] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
-        stageMeshMetaWrite(entry, zeroCmd, zeroBounds, true);
-        if (chunk) {
-            MeshInfo::LevelData& ld = chunk->levels_[lv];
-            if (ld.allocated) {
-                spaceAlloc.freeVertex(ld.baseVertex, ld.vertexCount);
-                spaceAlloc.freeIndex(ld.firstIndex, ld.indexCount);
-                ld = MeshInfo::LevelData{};
-            }
-        }
-    }
-    activeMeshCountDirty_ = true;
-}
-
-bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, int level, float priority,
+bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float priority,
                                    std::function<void()> onComplete)
 {
     if (!slottedMode) return false;
@@ -2707,18 +2619,12 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, int level,
     }
     if (!info || !info->active) return false;
 
-    const uint32_t lv = (level < 0) ? 0 : static_cast<uint32_t>(level);
-    if (lv >= kMaxChunkLevels) {
-        std::cerr << "[IndirectRenderer] uploadSlot: level " << level
-                  << " out of range for slot " << slotIndex << std::endl;
-        return false;
-    }
-    MeshInfo::LevelData& ld = info->levels_[lv];
+    MeshInfo::LevelData& ld = info->level_;
 
-    // If this level has no geometry, zero the entry (nothing to upload) and
+    // If the chunk has no geometry, zero the entry (nothing to upload) and
     // run the completion immediately.
     if (!ld.allocated || ld.vertexCount == 0 || ld.indexCount == 0) {
-        uint32_t entryIndex = slotIndex * kMaxChunkLevels + lv;
+        uint32_t entryIndex = slotIndex;
         if (entryIndex < indirectCommands.size())
             indirectCommands[entryIndex] = VkDrawIndexedIndirectCommand{};
         if (onComplete) onComplete();
@@ -2729,14 +2635,13 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, int level,
     // stable until the slot is freed, but we capture the actual draw parameters
     // by value so the write is correct even if the callback fires after the
     // slot's MeshInfo is modified by a later republish.
-    const uint32_t entryIndex      = slotIndex * kMaxChunkLevels + lv;
+    const uint32_t entryIndex      = slotIndex;
     uint32_t capEntryIndex         = entryIndex;
     uint32_t capIndexCount         = ld.indexCount;
     uint32_t capFirstIndex         = ld.firstIndex;
     int32_t  capVertexOffset       = static_cast<int32_t>(ld.baseVertex);
     glm::vec4 capBoundsMin         = ld.boundsMin;
     glm::vec4 capBoundsMax         = ld.boundsMax;
-    glm::vec4 capLodMeta           = lodMetaFor(ld.cellSize, static_cast<int>(lv), ld.maxLevel);
     uint32_t capOldVertexBase      = ld.oldVertexBase;
     uint32_t capOldVertexCount     = ld.oldVertexCount;
     uint32_t capOldIndexBase       = ld.oldIndexBase;
@@ -2748,7 +2653,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, int level,
     ld.oldVertexBase = UINT32_MAX;
     ld.oldIndexBase  = UINT32_MAX;
 
-    // Calculate vertex/index byte ranges for this level's packed span
+    // Calculate vertex/index byte ranges for this chunk's packed span
     VkDeviceSize vertexBytes = static_cast<VkDeviceSize>(ld.vertexCount) * sizeof(Vertex);
     VkDeviceSize indexBytes  = static_cast<VkDeviceSize>(ld.indexCount) * sizeof(uint32_t);
     VkDeviceSize vertexOffset = static_cast<VkDeviceSize>(ld.baseVertex) * sizeof(Vertex);
@@ -2791,7 +2696,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, int level,
     // proves every prior submission (including those frames' culls) finished,
     // so the old data can no longer be referenced.
     auto deferredWriteMeta = [this, capEntryIndex, capIndexCount, capFirstIndex,
-                              capVertexOffset, capBoundsMin, capBoundsMax, capLodMeta,
+                              capVertexOffset, capBoundsMin, capBoundsMax,
                               capOldVertexBase, capOldVertexCount,
                               capOldIndexBase, capOldIndexCount]()
     {
@@ -2816,13 +2721,15 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, int level,
             VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capEntryIndex) * 3 * sizeof(glm::vec4);
             void* bndData = boundsBuffer.map(boundsOffset);
             if (bndData) {
-                glm::vec4 bounds[3] = { capBoundsMin, capBoundsMax, capLodMeta };
+                // Third vec4 (meta) stays zeroed: single-level chunks carry no
+                // LoD band meta.
+                glm::vec4 bounds[3] = { capBoundsMin, capBoundsMax, glm::vec4(0.0f) };
                 std::memcpy(bndData, bounds, sizeof(bounds));
                 boundsBuffer.unmap();
             }
         }
 
-        // Free the level's replaced span now that the replacement is resident.
+        // Free the chunk's replaced span now that the replacement is resident.
         if (capOldVertexBase != UINT32_MAX) {
             spaceAlloc.freeVertex(capOldVertexBase, capOldVertexCount);
             spaceAlloc.freeIndex(capOldIndexBase, capOldIndexCount);

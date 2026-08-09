@@ -631,11 +631,10 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     postProcessRenderer->setRenderSize(app->getWidth(), app->getHeight());
     
     // Activate the stable-slot indirect rendering pipeline (no global rebuilds).
-    // One draw-entry block PER CHUNK: the chunk's LoD levels share the block,
-    // while each level's vertex/index data is packed into the shared element
-    // pools (PackedSpaceAllocator — no fixed per-level rows). Only the indirect
-    // command list is per-level (chunk * kMaxChunkLevels draw entries), so GPU
-    // memory is bounded by the element pools' TOTAL byte budgets passed to
+    // One draw entry PER CHUNK: each chunk's vertex/index data is packed into
+    // the shared element pools (PackedSpaceAllocator — no fixed per-level
+    // rows), and the indirect command list has one entry per chunk. GPU memory
+    // is bounded by the element pools' TOTAL byte budgets passed to
     // initSlottedMode (per-chunk budgets x chunk count — the packed model's
     // ceiling, actual usage is data-driven).
     // Must be called after all sub-renderers are initialized, before scene loading.
@@ -788,39 +787,23 @@ size_t SceneRenderer::publishPendingMeshes(
     const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version, bool isBrush)>& onChunkPublished,
     const std::function<void(NodeID nid, const Geometry& geom, bool isBrush)>& onFinestPublished)
 {
-    // One-block-per-chunk publish: NO ladder reassembly, NO running sub-offsets.
-    // Each queue entry is a self-contained geometry chunk at a single LoD
-    // level. A chunk's levels share ONE draw-entry block: every level's data
-    // is packed into its own span of the shared element pools
-    // (PackedSpaceAllocator — see IndirectRenderer::initSlots), and every
-    // level publishes its own draw entry (drawIndex = block * kMaxChunkLevels
-    // + level) so the GPU cull shader band-tests entries independently.
-    // addMeshSlotted is keyed by the BASE chunk id, so all levels of a chunk
-    // resolve to the same block — including across frames and across edits of
-    // the same chunk (re-publishing a level allocates a NEW span and frees the
-    // old one once the replacement upload completes).
+    // One-slot-per-chunk publish. Each queue entry is a self-contained
+    // geometry chunk (one mesh per chunk — chunks arrive one by one). The
+    // mesh is packed into its own span of the shared element pools
+    // (PackedSpaceAllocator — see IndirectRenderer::initSlots) and publishes
+    // its single draw entry. addMeshSlotted is keyed by the chunk id, so
+    // edits of the same chunk resolve to the same slot — re-publishing
+    // allocates a NEW span and frees the old one once the replacement upload
+    // completes.
     //
-    // takeOldSlot is consumed once per chunk: the first level that encounters
-    // a pending-delete entry captures the old block and frees it after ITS
-    // upload completes (old geometry stays resident until the new data is
-    // valid on GPU).
-    //
-    // Band coverage: NO publish-time clamp. Each entry's meta carries the
-    // chunk's true ladder depth, and the cull shader computes the chunk's
-    // published finest/coarsest range itself (scanning the 5 entries'
-    // indexCount), clamping the band selection into it — so partial or
-    // level-0-missing ladders still render at every distance. End-of-drain,
-    // draw entries ABOVE this drain's accepted coarsest level are zeroed and
-    // their spans freed: a chunk whose ladder shrank on republish would
-    // otherwise keep its old entries' meta (still band-passing) and draw
-    // stale geometry.
-    std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> acceptedCoarsest; // key -> {slotIdx, coarsest accepted this drain}
+    // takeOldSlot is consumed once per chunk: a pending-delete entry captures
+    // the old slot and frees it after ITS upload completes (old geometry
+    // stays resident until the new data is valid on GPU).
     size_t slotsPublished = 0;
     for (auto& item : batch) {
         const Layer layer = item.layer;
         const NodeID nid = item.nid;
         const Octree::LoDMesh& lod = item.lodMesh;
-        const uint8_t level = lod.lod;
         const bool isBrush = item.isBrush;
 
         // Per-entry routing: solid main → opaqueIR, solid brush → brushOpaqueIR,
@@ -835,8 +818,7 @@ size_t SceneRenderer::publishPendingMeshes(
         const ChunkManager::ChunkId base = static_cast<ChunkManager::ChunkId>(nid);
 
         // Resolve (and consume) any pending-delete slot for this chunk: the
-        // old geometry stays resident until the new upload completes. Only the
-        // first level of the chunk sees the entry (consumed on first hit).
+        // old geometry stays resident until the new upload completes.
         uint32_t oldSlot = takeOldSlot(layer, nid, isBrush);
 
         if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
@@ -844,71 +826,42 @@ size_t SceneRenderer::publishPendingMeshes(
         const glm::vec3 cubeMin = item.nodeData.cube.getMin();
         const glm::vec3 cubeMax = item.nodeData.cube.getMax();
 
-        // Publish this level into its static row of the chunk's slot. The
-        // level's sub-offsets are its row base (fixed per level). The band
-        // meta maxLevel is the chunk's true ladder depth (unclamped — the GPU
-        // shader clamps against the chunk's actually-published range).
-        const uint32_t lv = level;
-        // Composite key: bit0 = transparent, bit1 = brush stream. Unique across
-        // streams so the end-of-drain cleanup resolves the owning IR.
-        const uint32_t key = (static_cast<uint32_t>(base) << 2) |
-                             (layer == LAYER_OPAQUE ? 0u : 1u) |
-                             (isBrush ? 2u : 0u);
-        const uint32_t slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(base), (int)lv,
-                                                    lod.cellSize,
-                                                    lod.maxLevel,
+        // Publish the mesh into its single draw entry slot. The slot index is
+        // the chunk's stable slot (one draw entry per chunk).
+        const uint32_t slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(base),
                                                     &cubeMin,
                                                     &cubeMax);
         if (slotIdx == UINT32_MAX) continue; // no free block / element pool exhausted
 
-        // addMeshSlotted re-publishes the existing chunk block in place when
-        // one is already resident (it allocates a new packed span per level);
-        // then oldSlot == slotIdx and there is nothing to free.
+        // addMeshSlotted re-publishes the existing chunk slot in place when
+        // one is already resident (it allocates a new packed span); then
+        // oldSlot == slotIdx and there is nothing to free.
         if (oldSlot != UINT32_MAX && oldSlot == slotIdx) oldSlot = UINT32_MAX;
 
         // Register the chunk's slot for the erase path before the upload
         // starts; the deferred completion frees any replaced old slot and
-        // (level 0 -- the mesh the ChunkManager build state tracks) promotes
-        // the chunk to ReadyToSwap once resident.
+        // (the chunk mesh) promotes the chunk to ReadyToSwap once resident.
         if (!isBrush && world_)
             world_->chunkManager().setSlotIndex(base, slotIdx);
 
         const bool trackChunkManager = !isBrush;
-        ir->uploadSlot(app, slotIdx, (int)lv, 0.0f,
-            [ir, oldSlot, this, base, lv, trackChunkManager]() {
+        ir->uploadSlot(app, slotIdx, 0.0f,
+            [ir, oldSlot, this, base, trackChunkManager]() {
                 if (oldSlot != UINT32_MAX) ir->removeMeshSlotted(oldSlot);
-                if (trackChunkManager && this->world_ && lv == 0)
+                if (trackChunkManager && this->world_)
                     this->world_->chunkManager().finishUpload(base);
             });
 
         onChunkPublished(layer, nid, slotIdx, lod.version, isBrush);
 
-        // Generate vegetation instances for grass chunks using the level-0
-        // (finest) geometry only. Coarse levels (chunkLod > 0) never drive
-        // vegetation.
-        if (layer == LAYER_OPAQUE && vegetationRenderer && lv == 0 &&
+        // Generate vegetation instances for grass chunks using the chunk's
+        // (finest) geometry only.
+        if (layer == LAYER_OPAQUE && vegetationRenderer &&
             !lod.geom.vertices.empty()) {
             onFinestPublished(nid, lod.geom, isBrush);
         }
 
-        auto& acc = acceptedCoarsest[key];
-        acc.first = slotIdx;
-        acc.second = std::max<uint32_t>(acc.second, lv);
         ++slotsPublished;
-    }
-
-    // End-of-drain stale-entry cleanup: zero every draw entry of each
-    // published chunk above the coarsest level ACCEPTED this drain. Entries
-    // above it have no pending upload completion that could re-write them, so
-    // the immediate host write is safe.
-    for (auto& [key, v] : acceptedCoarsest) {
-        if (v.second + 1 >= kMaxChunkLevels) continue; // full ladder, nothing stale
-        const bool transparent = (key & 1u) != 0;
-        const bool brush = (key & 2u) != 0;
-        IndirectRenderer* ir = transparent ? (brush ? &brushWaterIR : &waterIR)
-                               : brush ? &brushOpaqueIR
-                               : &opaqueIR;
-        ir->clearSlotLevelsFrom(v.first, v.second + 1);
     }
 
     return slotsPublished;
@@ -1121,7 +1074,7 @@ bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
         // solid/water); entries are tagged isBrush=false here since this path
         // feeds the main scene.
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
-        Octree::LoDMesh lod = {geom, /*lod*/ 0, /*version*/ version, nd.cube.getLength().x, /*maxLevel*/ 0};
+        Octree::LoDMesh lod = {geom, /*lod*/ 0, /*version*/ version, nd.cube.getLength().x};
         pendingMeshQueue[nid] = {layer, nid, std::move(lod), nd, /*isBrush=*/false};
     }
 
@@ -1140,32 +1093,20 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
 
     // Only CHUNKS (stored chunkLod == 1 in the +1-shifted uint8_t space)
     // generate meshes. Coarse ancestor meshes (stored chunkLod > 1) are
-    // disabled — tessellating an ancestor as one big
-    // Surface-Nets cell samples the SDF at the coarse corners and misses
-    // interior surface, so those meshes come out empty. Instead each chunk
-    // publishes its own LoD LADDER: level 0 is the full-detail frontier mesh,
-    // levels 1..N are the ancestor cells' real Surface-Nets meshes (cell size
-    // frontierCell*2^lvl, sampled from each node's own stored corner SDFs) —
-    // the tesselator walks the whole ladder in ONE pass, so far chunks draw
-    // a fraction of the triangles.
-    //
-    // The GPU band test keeps ONE entry per chunk: entryLevel k covers
-    // dist in [k, k+1) * chunkBase * lodBias. Every level uses the chunk base
-    // cellSize (not its own density) so the bands TILE distance without gaps,
-    // and the coarser density degrades with distance.
+    // disabled — tessellating an ancestor as one big Surface-Nets cell
+    // samples the SDF at the coarse corners and misses interior surface, so
+    // those meshes come out empty. Each chunk publishes exactly ONE mesh.
     const uint8_t chunkLod = nodeData.node ? nodeData.node->getChunkLod() : 0;
     if (chunkLod != 1) return;
 
     const float cubeLength = nodeData.cube.getLength().x;
-    const uint8_t maxLevel = scene.maxChunkLod(layer, minSize);
 
-    scene.requestModel3D(layer, nodeData, [&layer,&nid,&nodeData,&onGeometry,cubeLength,maxLevel](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId) {
+    scene.requestModel3D(layer, nodeData, [&layer,&nid,&nodeData,&onGeometry,cubeLength](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId) {
         Octree::LoDMesh lm;
         lm.geom = geo;
         lm.lod = lod;
         lm.version = version;
         lm.cellSize = cubeLength;
-        lm.maxLevel = maxLevel;
         onGeometry(layer, reinterpret_cast<NodeID>(emittingNodeId), lm);
     }, poolOverride);
 
