@@ -1,5 +1,6 @@
 #include "UploadManager.hpp"
 #include "../VulkanApp.hpp"
+#include "../SubmissionTracker.hpp"
 #include "../../space/ThreadPool.hpp"
 
 #include <stdexcept>
@@ -229,6 +230,7 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
 
     {
         std::lock_guard<std::mutex> lk(pickMutex());
+        SubmissionTracker::record("upload");
         VkResult r = vkQueueSubmit2(queue_, 1, &si, s.fence);
         if (r != VK_SUCCESS)
             throw std::runtime_error("UploadManager: vkQueueSubmit2 failed");

@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <cstring>
 #include <cstdlib>
+#include <array>
 #include <sys/resource.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -923,6 +924,33 @@ public:
                         throw std::runtime_error("Failed to create timestamp query pool");
                 }
             }
+            // Stall hook: when drawFrame detects a GPU ring hang (frame-slot
+            // fence wait >0.5s or stale frame timeline), read every pool with
+            // PARTIAL_BIT (no wait) — the pool of the stuck frame has start
+            // timestamps written but its end timestamp missing, which names the
+            // exact pass the GPU is stuck in. Also dump the submission ring.
+            onFrameStall = [this](uint32_t) {
+                static const char* intervalNames[10] = {
+                    "shadow", "cull", "brush", "depth", "sky",
+                    "solid", "veg", "water", "post", "imgui"
+                };
+                for (uint32_t f = 0; f < 3; ++f) {
+                    if (queryPools[f] == VK_NULL_HANDLE) continue;
+                    std::array<uint64_t, QUERY_COUNT> ts{};
+                    if (vkGetQueryPoolResults(getDevice(), queryPools[f], 0, QUERY_COUNT,
+                            sizeof(ts[0]) * ts.size(), ts.data(), sizeof(ts[0]),
+                            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_PARTIAL_BIT) != VK_SUCCESS)
+                        continue;
+                    std::cerr << "[stall] pool " << f << " timestamps:\n";
+                    for (uint32_t i = 0; i < 10; ++i) {
+                        const uint64_t start = ts[i * 2], end = ts[i * 2 + 1];
+                        const bool haveStart = start != 0, haveEnd = end != 0;
+                        std::cerr << "[stall]   " << intervalNames[i]
+                                  << (haveEnd ? " DONE " : (haveStart ? " STUCK " : "  idle "))
+                                  << " start=" << start << " end=" << end << "\n";
+                    }
+                }
+            };
         }
         preAllocateAsyncDescriptorPools();
         // Try loading the default scene; fall back to procedural generation if it fails

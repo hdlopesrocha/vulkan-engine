@@ -277,25 +277,44 @@ private:
     mutable std::array<VkDrawIndexedIndirectCommand*, VEG_CULL_FRAMES> compactedCmdMapped = {nullptr, nullptr, nullptr};
 
     // ── Cascade-aware culling for vegetation shadows ──
+    // GPU-side cull (veg_cascade_cull.comp): per-cascade compact + count
+    // buffers for billboards (indexCount=36) and impostors (indexCount=6).
     struct VegCascadeCullFrame {
-        std::array<Buffer, 3> compactBuffers;
-        std::array<Buffer, 3> countBuffers;
+        std::array<Buffer, 3> compactBuffers;        // billboard draw commands
+        std::array<Buffer, 3> countBuffers;          // billboard counts (GPU atomics)
+        std::array<Buffer, 3> impostorCompactBuffers; // impostor draw commands
+        std::array<Buffer, 3> impostorCountBuffers;   // impostor counts (GPU atomics)
+        VkDescriptorSet descSet = VK_NULL_HANDLE;
     };
     std::array<VegCascadeCullFrame, VEG_CULL_FRAMES> vegCascadeCullFrames;
     bool vegCascadeCullInited = false;
     uint32_t vegCascadeCompactCapacity = 0;
     void initCascadeCull(VulkanApp* app);
+    void updateVegCascadeDescriptor(VulkanApp* app, uint32_t frame);
+    // Writes the GPU chunk table (aabbMin/aabbMax/instanceCount/firstInstance
+    // triples) via memcpy into the host-visible chunk info buffer. Iteration
+    // order MUST match consolidateChunks' concatenated-instance copy order so
+    // firstInstance offsets point at the right instance ranges.
+    void writeVegChunkInfo();
+
+    // Shared GPU-side chunk table + cascade matrices for the veg cascade cull.
+    Buffer vegChunkInfoBuffer;
+    void* vegChunkInfoMapped = nullptr;
+    Buffer vegCascadeMatrixBuffer;
+    TrackedHandle<VkPipeline> vegCascadeCullPipeline;
+    TrackedHandle<VkPipelineLayout> vegCascadeCullPipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> vegCascadeCullDescSetLayout;
+    TrackedHandle<VkDescriptorPool> vegCascadeCullDescPool;
 
     uint32_t vegNumChunks = 0;             // number of chunks in the consolidated metadata
+    uint32_t vegChunkInfoCapacity = 0;     // current chunk-info table capacity (grows as needed)
     uint32_t vegCullFrameIndex = 0;        // auto-cycling frame index for triple buffering
     uint32_t vegCullCurrentSlot = 0;       // slot selected for current frame's cull + draws
     bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata
 
-    // Per-frame scratch for CPU cascade culling (prepareCullCascades) and
-    // read-barrier recording (recordReadBarriers). Both run on the main frame
-    // thread only (SceneRenderer::shadowPass / preRenderPass) — plain members
-    // are safe; clear() + reserve() reuse capacity across frames.
-    std::array<std::vector<VkDrawIndexedIndirectCommand>, 3> cascadeCullScratch;
+    // Per-frame scratch for read-barrier recording (recordReadBarriers). Runs
+    // on the main frame thread only (SceneRenderer::shadowPass / preRenderPass)
+    // — plain members are safe; clear() + reserve() reuse capacity across frames.
     std::vector<VkBufferMemoryBarrier2> readBarrierScratch;
 
     // Pipelined consolidation: deferred callback handles fence lifecycle

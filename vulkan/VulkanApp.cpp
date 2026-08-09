@@ -1,5 +1,6 @@
 #include "Buffer.hpp"
 #include "VulkanApp.hpp"
+#include "SubmissionTracker.hpp"
 #include <cstring>
 #include <thread>
 #include <execinfo.h>
@@ -139,6 +140,19 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
 #include "backends/imgui_impl_vulkan.h"
 #include <cmath>
 #include "VulkanResourceManager.hpp"
+#include <ctime>
+
+// Wall-clock string ("HH:MM:SS") for stall diagnostics so they can be
+// correlated with the kernel log (journalctl -k / dmesg) around a GPU reset.
+static std::string wallClockNow() {
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm tmv{};
+    localtime_r(&t, &tmv);
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d", tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+    return std::string(buf);
+}
 
 // ImGui glue pointer (set during initImGui)
 VulkanApp* g_imguiVulkanApp = nullptr;
@@ -1037,6 +1051,7 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         submitInfo.pCommandBufferInfos = &cmdBufInfo;
         {
             std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
+            SubmissionTracker::record("sync");
             VkResult sr = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
             if (sr == VK_ERROR_DEVICE_LOST) {
                 deviceLost.store(true);
@@ -1073,6 +1088,7 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         // a populated authoritative layout for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(cmd);
 
+        SubmissionTracker::record("single");
         VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
         if (submitRes != VK_SUCCESS) {
             if (submitRes == VK_ERROR_DEVICE_LOST) {
@@ -1791,6 +1807,7 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         // a populated authoritative layout for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
+        SubmissionTracker::record("async");
         VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
         if (submitRes == VK_SUCCESS) {
             signalRingSlotFence(commandBuffer, graphicsQueue);
@@ -1969,6 +1986,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         // Promote pending layout updates for this submission
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
+        SubmissionTracker::record("async-q");
         VkResult submitRes = vkQueueSubmit2(targetQueue, 1, &submitInfo, fence);
         if (submitRes == VK_SUCCESS) {
             signalRingSlotFence(commandBuffer, targetQueue);
@@ -2053,6 +2071,7 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
         // sees populated layouts for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
+        SubmissionTracker::record("sync-2");
         VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
         if (submitRes == VK_SUCCESS) {
             // If this command buffer belongs to the async ring (it was
@@ -4426,8 +4445,12 @@ void VulkanApp::drawFrame() {
             VkResult r = vkWaitSemaphores(device, &waitInfo, 250'000'000ULL);
             if (r == VK_ERROR_DEVICE_LOST) return;
             if (r == VK_TIMEOUT) {
-                static bool warned = false;
-                if (!warned) { std::cerr << "[VulkanApp] WARNING: frameTimeline vkWaitSemaphores timed out (stale timeline) — proceeding to avoid deadlock\n"; warned = true; }
+                // The CPU is N+ frames ahead of the GPU, which during world load
+                // usually means the ring is already stuck. Dump recent submissions
+                // and (via the stall hook) partial query timestamps to attribute it.
+                std::cerr << "[" << wallClockNow() << "] [VulkanApp] WARNING: frameTimeline vkWaitSemaphores timed out (stale timeline) — proceeding to avoid deadlock\n";
+                SubmissionTracker::dump();
+                if (onFrameStall) onFrameStall(currentFrame);
             } else if (r != VK_SUCCESS) {
                 std::cerr << "vkWaitSemaphores (frameTimeline) failed: " << r << std::endl;
                 return;
@@ -4455,8 +4478,17 @@ void VulkanApp::drawFrame() {
         double waitT0 = glfwGetTime();
         VkResult waitForFenceResult = waitFence(device, prevFrameFence);
         double waitMs = (glfwGetTime() - waitT0) * 1000.0;
-        if (waitMs > 500.0)
-            std::cout << "[frame] frame-slot fence wait " << waitMs << " ms\n";
+        if (waitMs > 500.0) {
+            // The ring has been busy for >0.5s on this frame slot. During the
+            // world-load window this is the amdgpu watchdog signature; dump the
+            // submission ring and, via onFrameStall, the partial per-pass query
+            // timestamps of the stuck frame to attribute the hang to a pass.
+            // std::cerr: unbuffered, so the dump survives watchdog kills that
+            // drop the buffered stdout tail.
+            std::cerr << "[" << wallClockNow() << "] [frame] frame-slot fence wait " << waitMs << " ms\n";
+            SubmissionTracker::dump();
+            if (onFrameStall) onFrameStall(currentFrame);
+        }
         if (waitForFenceResult == VK_ERROR_DEVICE_LOST) return;
         if (waitForFenceResult != VK_SUCCESS) {
             std::cerr << "vkWaitForFences (frame slot) failed: " << waitForFenceResult << std::endl;
@@ -4868,6 +4900,7 @@ void VulkanApp::drawFrame() {
         }
 
         // Log submit details (verbose — disabled for production)
+        SubmissionTracker::record("frame");
 
         // Promote pending layout updates for this submission so validation
         // sees populated layouts for affected subresources.

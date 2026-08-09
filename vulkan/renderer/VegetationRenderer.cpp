@@ -264,10 +264,94 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
 void VegetationRenderer::initCascadeCull(VulkanApp* app) {
     if (vegCascadeCullInited) return;
     vegCascadeCullInited = true;
+    VkDevice device = app->getDevice();
+
+    // Shared GPU-side chunk table: one vec4 triple per chunk
+    // ({aabbMin.xyz|pad, aabbMax.xyz|pad, instanceCount|firstInstance|pad|pad}).
+    // Initial generous capacity (4096 chunks ≈ 192 KB); grown dynamically in
+    // prepareCullCascades when the scene exceeds it, with descriptor re-points.
+    constexpr uint32_t kChunkInfoCap = 4096;
+    vegChunkInfoCapacity = kChunkInfoCap;
+    vegChunkInfoBuffer = app->createBuffer(sizeof(glm::vec4) * 3 * kChunkInfoCap,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    vegChunkInfoMapped = vegChunkInfoBuffer.map(0);
+
+    // Cascade matrices storage buffer (3 mat4 = 192 bytes), host-written each frame.
+    vegCascadeMatrixBuffer = app->createBuffer(sizeof(glm::mat4) * 3,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    // Descriptor set layout: 14 bindings
+    //  0: chunk info (read)
+    //  1..6:  billboard compact + count, per cascade
+    //  7..12: impostor compact + count, per cascade
+    // 13: cascade matrices
+    std::array<VkDescriptorSetLayoutBinding, 14> bindings{};
+    VkDescriptorBindingFlags bindingFlags[14];
+    for (uint32_t i = 0; i < 14; i++) {
+        bindings[i].binding = i;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindingFlags[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+    }
+
+    DescriptorAllocator descAlloc{device, app};
+    vegCascadeCullDescSetLayout = descAlloc.createLayout(
+        bindings.data(), 14,
+        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        bindingFlags,
+        "VegetationRenderer: vegCascadeCullDescSetLayout");
+
+    VkPushConstantRange pc{};
+    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pc.offset = 0;
+    pc.size = sizeof(uint32_t); // numChunks
+
+    VkPipelineLayoutCreateInfo plinfo{};
+    plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plinfo.setLayoutCount = 1;
+    plinfo.pSetLayouts = &vegCascadeCullDescSetLayout;
+    plinfo.pushConstantRangeCount = 1;
+    plinfo.pPushConstantRanges = &pc;
+
+    if (vkCreatePipelineLayout(device, &plinfo, nullptr, &vegCascadeCullPipelineLayout) != VK_SUCCESS)
+        throw std::runtime_error("failed to create veg cascade cull pipeline layout!");
+    app->resources.addPipelineLayout(vegCascadeCullPipelineLayout, "VegetationRenderer: vegCascadeCullPipelineLayout");
+
+    VkShaderModule compModule = app->getOrCreateShaderModule("shaders/veg_cascade_cull.comp.spv");
+    VkPipelineShaderStageCreateInfo stage{};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = compModule;
+    stage.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = stage;
+    pipelineInfo.layout = vegCascadeCullPipelineLayout;
+    if (vkCreateComputePipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &vegCascadeCullPipeline) != VK_SUCCESS)
+        throw std::runtime_error("failed to create veg cascade cull compute pipeline!");
+    app->resources.addPipeline(vegCascadeCullPipeline, "VegetationRenderer: vegCascadeCullPipeline");
+
+    VkDescriptorPoolSize poolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64};
+    vegCascadeCullDescPool = descAlloc.createPool(
+        &poolSize, 1, VEG_CULL_FRAMES,
+        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+        "VegetationRenderer: vegCascadeCullDescPool");
+
+    VkDescriptorSet rawSets[VEG_CULL_FRAMES];
+    descAlloc.allocateSets(vegCascadeCullDescPool, vegCascadeCullDescSetLayout,
+                           VEG_CULL_FRAMES, rawSets,
+                           "VegetationRenderer: vegCascadeCullDescSet");
+    for (uint32_t f = 0; f < VEG_CULL_FRAMES; f++) {
+        vegCascadeCullFrames[f].descSet = rawSets[f];
+    }
 
     // Per-frame cascade buffers (sized conservatively). The GPU cascade-cull
-    // compute pipeline and its descriptor sets were removed: culling is done on
-    // the CPU in prepareCullCascades, which fills these buffers via memcpy.
+    // compute pipeline writes compact commands + counts via atomics; the
+    // shadow draws consume them through vkCmdDrawIndexedIndirectCount.
     VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * 1024;
     vegCascadeCompactCapacity = 1024;
     VkDeviceSize countSize = sizeof(uint32_t);
@@ -286,13 +370,80 @@ void VegetationRenderer::initCascadeCull(VulkanApp* app) {
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             uint32_t* mapped = static_cast<uint32_t*>(vegCascadeCullFrames[f].countBuffers[c].map(0));
             if (mapped) *mapped = 0;
+
+            vegCascadeCullFrames[f].impostorCompactBuffers[c] = app->createBuffer(compactSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            void* impData = vegCascadeCullFrames[f].impostorCompactBuffers[c].map(0);
+            if (impData) {
+                std::memset(impData, 0, (size_t)compactSize);
+                vegCascadeCullFrames[f].impostorCompactBuffers[c].unmap();
+            }
+            vegCascadeCullFrames[f].impostorCountBuffers[c] = app->createBuffer(countSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            uint32_t* impMapped = static_cast<uint32_t*>(vegCascadeCullFrames[f].impostorCountBuffers[c].map(0));
+            if (impMapped) *impMapped = 0;
         }
+        updateVegCascadeDescriptor(app, f);
+    }
+}
+
+void VegetationRenderer::updateVegCascadeDescriptor(VulkanApp* app, uint32_t frame) {
+    VkDescriptorSet ds = vegCascadeCullFrames[frame].descSet;
+    if (ds == VK_NULL_HANDLE || vegChunkInfoBuffer.buffer == VK_NULL_HANDLE) return;
+
+    DescriptorWriter writer(app->getDevice());
+    writer.writeBuffer(ds, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                       vegChunkInfoBuffer.buffer, 0, VK_WHOLE_SIZE);
+    for (uint32_t c = 0; c < 3; c++) {
+        static const uint32_t bbOutBindings[3] = {1, 3, 5};
+        static const uint32_t bbCntBindings[3] = {2, 4, 6};
+        static const uint32_t impOutBindings[3] = {7, 9, 11};
+        static const uint32_t impCntBindings[3] = {8, 10, 12};
+        writer.writeBuffer(ds, bbOutBindings[c], VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           vegCascadeCullFrames[frame].compactBuffers[c].buffer, 0, VK_WHOLE_SIZE);
+        writer.writeBuffer(ds, bbCntBindings[c], VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           vegCascadeCullFrames[frame].countBuffers[c].buffer, 0, VK_WHOLE_SIZE);
+        writer.writeBuffer(ds, impOutBindings[c], VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           vegCascadeCullFrames[frame].impostorCompactBuffers[c].buffer, 0, VK_WHOLE_SIZE);
+        writer.writeBuffer(ds, impCntBindings[c], VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           vegCascadeCullFrames[frame].impostorCountBuffers[c].buffer, 0, VK_WHOLE_SIZE);
+    }
+    writer.writeBuffer(ds, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                       vegCascadeMatrixBuffer.buffer, 0, VK_WHOLE_SIZE);
+    writer.flush();
+}
+
+void VegetationRenderer::writeVegChunkInfo() {
+    if (!vegChunkInfoMapped) return;
+    glm::vec4* dst = static_cast<glm::vec4*>(vegChunkInfoMapped);
+    uint32_t idx = 0;
+    for (const auto& [chunkId, buf] : chunkBuffers) {
+        (void)chunkId;
+        if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+        if (idx >= vegChunkInfoCapacity) {
+            // Unreachable (prepareCullCascades grows the table first) — guard
+            // against future call sites writing past the buffer.
+            std::cerr << "[veg] FATAL: writeVegChunkInfo overflow cap=" << vegChunkInfoCapacity << "\n";
+            break;
+        }
+        dst[idx * 3 + 0] = glm::vec4(buf.aabbMin, 0.0f);
+        dst[idx * 3 + 1] = glm::vec4(buf.aabbMax, 0.0f);
+        dst[idx * 3 + 2] = glm::vec4(static_cast<float>(buf.count), 0.0f, 0.0f, 0.0f);
+        ++idx;
+    }
+    // firstInstance per chunk = cumulative instance count (matches the
+    // concatenated instance buffer order built in consolidateChunks).
+    uint32_t instOff = 0;
+    for (uint32_t i = 0; i < idx; ++i) {
+        dst[i * 3 + 2].y = static_cast<float>(instOff);
+        instOff += static_cast<uint32_t>(dst[i * 3 + 2].x);
     }
 }
 
 void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
                                               const glm::mat4 cascadeMatrices[3]) {
-    (void)cmd;
     if (!appPtr) return;
     if (!vegCascadeCullInited) initCascadeCull(appPtr);
 
@@ -328,124 +479,199 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
                             app->resources.removeBufferVma(oldBuf.buffer, oldBuf.allocation);
                     });
                 }
+
+                Buffer oldImpBuf = vegCascadeCullFrames[ff].impostorCompactBuffers[cc];
+                vegCascadeCullFrames[ff].impostorCompactBuffers[cc] = app->createBuffer(newCompactSize,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                void* impData = vegCascadeCullFrames[ff].impostorCompactBuffers[cc].map(0);
+                if (impData) {
+                    std::memset(impData, 0, (size_t)newCompactSize);
+                    vegCascadeCullFrames[ff].impostorCompactBuffers[cc].unmap();
+                }
+                if (oldImpBuf.buffer != VK_NULL_HANDLE) {
+                    app->deferDestroyUntilAllPending([app, oldImpBuf]() {
+                        if (oldImpBuf.buffer != VK_NULL_HANDLE)
+                            app->resources.removeBufferVma(oldImpBuf.buffer, oldImpBuf.allocation);
+                    });
+                }
             }
         }
         vegCascadeCompactCapacity = newCap;
     }
 
-    // CPU-side cascade culling: extract frustum planes from each cascade
-    // matrix, test each chunk's AABB, and fill per-cascade compact buffers
-    // via memcpy (same pattern as prepareCull).
+    // Grow the GPU chunk table if the scene exceeds the current capacity.
+    // This must NEVER overflow: writeVegChunkInfo and the compute dispatch
+    // both index up to vegNumChunks — writing/reading past the buffer would
+    // corrupt adjacent GPU-visible memory (a GPU-hang candidate).
+    if (vegNumChunks > vegChunkInfoCapacity) {
+        VkDeviceSize newInfoSize = sizeof(glm::vec4) * 3 * vegNumChunks;
+        VulkanApp* app = appPtr;
+        Buffer oldInfo = vegChunkInfoBuffer;
+        vegChunkInfoBuffer = app->createBuffer(newInfoSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vegChunkInfoMapped = vegChunkInfoBuffer.map(0);
+        if (oldInfo.buffer != VK_NULL_HANDLE) {
+            app->deferDestroyUntilAllPending([app, oldInfo]() {
+                if (oldInfo.buffer != VK_NULL_HANDLE)
+                    app->resources.removeBufferVma(oldInfo.buffer, oldInfo.allocation);
+            });
+        }
+        vegChunkInfoCapacity = vegNumChunks;
+        // Binding 0 (chunk info) changed for every frame's descriptor set.
+        for (uint32_t ff = 0; ff < VEG_CULL_FRAMES; ff++)
+            updateVegCascadeDescriptor(appPtr, ff);
+        std::cerr << "[veg] chunk-info table grew to " << vegNumChunks << " chunks (" << newInfoSize << " bytes)\n";
+    }
 
-    // Extract 6 frustum planes from each of the 3 cascade matrices.
-    // Plane convention (standard Gribb-Hartmann frustum extraction):
-    //   row0 = vec4(mvp[0][0], mvp[1][0], mvp[2][0], mvp[3][0])  — 1st row
-    //   row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3])  — 4th row
-    // Using glm::row() gives the same result (accesses across columns).
-    glm::vec4 cascadePlanes[3][6];
-    for (uint32_t c = 0; c < 3; c++) {
-        const glm::mat4& m = cascadeMatrices[c];
-        glm::vec4 row0 = glm::vec4(m[0][0], m[1][0], m[2][0], m[3][0]);
-        glm::vec4 row1 = glm::vec4(m[0][1], m[1][1], m[2][1], m[3][1]);
-        glm::vec4 row2 = glm::vec4(m[0][2], m[1][2], m[2][2], m[3][2]);
-        glm::vec4 row3 = glm::vec4(m[0][3], m[1][3], m[2][3], m[3][3]);
-        cascadePlanes[c][0] = row3 + row0;  // left
-        cascadePlanes[c][1] = row3 - row0;  // right
-        cascadePlanes[c][2] = row3 + row1;  // bottom
-        cascadePlanes[c][3] = row3 - row1;  // top
-        cascadePlanes[c][4] = row2;         // near
-        cascadePlanes[c][5] = row3 - row2;  // far
-        for (int p = 0; p < 6; p++) {
-            float len = glm::length(glm::vec3(cascadePlanes[c][p]));
-            cascadePlanes[c][p] /= (len > 1e-8f) ? len : 1e-8f;
+    static bool vegCullStatsLogged = false;
+    if (!vegCullStatsLogged) {
+        vegCullStatsLogged = true;
+        std::cerr << "[veg] chunk stats: vegNumChunks=" << vegNumChunks
+                  << " compactCap=" << vegCascadeCompactCapacity
+                  << " chunkInfoCap=" << vegChunkInfoCapacity << "\n";
+    }
+
+    // Re-point descriptors if any cascade buffers were recreated above.
+    updateVegCascadeDescriptor(appPtr, f);
+
+    // Upload cascade matrices to the host-visible storage buffer. Writes
+    // complete before vkQueueSubmit, so no host→device barrier is required.
+    {
+        void* matData = vegCascadeMatrixBuffer.map(0);
+        if (matData) {
+            std::memcpy(matData, cascadeMatrices, sizeof(glm::mat4) * 3);
+            vegCascadeMatrixBuffer.unmap();
         }
     }
 
-    // Per-cascade draw command arrays: reuse frame-thread scratch (clear +
-    // reserve) instead of allocating three vectors every frame.
-    uint32_t cap = vegCascadeCompactCapacity;
-    for (uint32_t c = 0; c < 3; c++) {
-        cascadeCullScratch[c].clear();
-        cascadeCullScratch[c].reserve(cap);
-    }
-    std::array<std::vector<VkDrawIndexedIndirectCommand>, 3>& cCmds = cascadeCullScratch;
+    // Upload the GPU chunk table (AABBs + instance counts + firstInstance
+    // offsets) into the host-visible chunk-info buffer.
+    writeVegChunkInfo();
 
-    // Helper: test AABB against 6 planes
-    auto aabbVisible = [](const glm::vec4 planes[6],
-                          const glm::vec3& minp, const glm::vec3& maxp) -> bool {
-        for (int i = 0; i < 6; i++) {
-            glm::vec3 n = glm::vec3(planes[i]);
-            float d = planes[i].w;
-            glm::vec3 p;
-            p.x = (n.x >= 0.0f) ? maxp.x : minp.x;
-            p.y = (n.y >= 0.0f) ? maxp.y : minp.y;
-            p.z = (n.z >= 0.0f) ? maxp.z : minp.z;
-            if (glm::dot(n, p) + d < 0.0f) return false;
+    // Barrier: drain prior draws/compute before zeroing the 12 cascade
+    // output buffers (compact/count for billboards and impostors × 3 cascades).
+    {
+        VkBufferMemoryBarrier2 preFill[12]{};
+        for (uint32_t i = 0; i < 12; i++) {
+            preFill[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            preFill[i].srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
+                                      | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                      | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            preFill[i].srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT
+                                       | VK_ACCESS_2_SHADER_READ_BIT
+                                       | VK_ACCESS_2_SHADER_WRITE_BIT
+                                       | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            preFill[i].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            preFill[i].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            preFill[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            preFill[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            preFill[i].offset = 0;
+            preFill[i].size = VK_WHOLE_SIZE;
         }
-        return true;
-    };
+        for (uint32_t c = 0; c < 3; c++) {
+            preFill[c * 2 + 0].buffer = vegCascadeCullFrames[f].compactBuffers[c].buffer;
+            preFill[c * 2 + 1].buffer = vegCascadeCullFrames[f].countBuffers[c].buffer;
+            preFill[6 + c * 2 + 0].buffer = vegCascadeCullFrames[f].impostorCompactBuffers[c].buffer;
+            preFill[6 + c * 2 + 1].buffer = vegCascadeCullFrames[f].impostorCountBuffers[c].buffer;
+        }
 
-    // Lambda to append a draw command to a cascade's list
-    auto writeToCascade = [&](uint32_t cascade, const VkDrawIndexedIndirectCommand& dCmd) {
-        if (cascade < 3 && cCmds[cascade].size() < cap)
-            cCmds[cascade].push_back(dCmd);
-    };
-
-    // Iterate chunks in order, culling each chunk independently per cascade:
-    // a chunk is drawn to a cascade iff it is visible in that cascade's
-    // frustum.  No exclusion between cascades — every cascade receives
-    // everything that could possibly be sampled from it.
-    uint32_t instanceOff = 0;
-    for (const auto& [chunkId, buf] : chunkBuffers) {
-        (void)chunkId;
-        if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-
-        const glm::vec3& minp = buf.aabbMin;
-        const glm::vec3& maxp = buf.aabbMax;
-
-        VkDrawIndexedIndirectCommand drawCmd;
-        drawCmd.indexCount = 36;
-        drawCmd.instanceCount = static_cast<uint32_t>(buf.count);
-        drawCmd.firstIndex = 0;
-        drawCmd.vertexOffset = 0;
-        drawCmd.firstInstance = instanceOff;
-        instanceOff += static_cast<uint32_t>(buf.count);
-
-        if (aabbVisible(cascadePlanes[0], minp, maxp)) writeToCascade(0, drawCmd);
-        if (aabbVisible(cascadePlanes[1], minp, maxp)) writeToCascade(1, drawCmd);
-        if (aabbVisible(cascadePlanes[2], minp, maxp)) writeToCascade(2, drawCmd);
-
-        if (cCmds[0].size() + cCmds[1].size() + cCmds[2].size() >= vegNumChunks) break;
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 12;
+        depInfo.pBufferMemoryBarriers = preFill;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
     }
 
-    // Upload per-cascade commands to mapped host-coherent buffers
+    // Zero all compact + count buffers so GPU atomics start from a clean state.
     for (uint32_t c = 0; c < 3; c++) {
-        Buffer& compactBuf = vegCascadeCullFrames[f].compactBuffers[c];
-        Buffer& countBuf   = vegCascadeCullFrames[f].countBuffers[c];
+        vkCmdFillBuffer(cmd, vegCascadeCullFrames[f].compactBuffers[c].buffer, 0, VK_WHOLE_SIZE, 0);
+        vkCmdFillBuffer(cmd, vegCascadeCullFrames[f].countBuffers[c].buffer, 0, sizeof(uint32_t), 0);
+        vkCmdFillBuffer(cmd, vegCascadeCullFrames[f].impostorCompactBuffers[c].buffer, 0, VK_WHOLE_SIZE, 0);
+        vkCmdFillBuffer(cmd, vegCascadeCullFrames[f].impostorCountBuffers[c].buffer, 0, sizeof(uint32_t), 0);
+    }
 
-        VkDeviceSize cmdsSize = cCmds[c].size() * sizeof(VkDrawIndexedIndirectCommand);
-        if (cmdsSize > 0 && compactBuf.buffer != VK_NULL_HANDLE) {
-            void* dst = compactBuf.map(0);
-            if (dst) {
-                std::memcpy(dst, cCmds[c].data(), (size_t)cmdsSize);
-                compactBuf.unmap();
-            }
-        } else if (compactBuf.buffer != VK_NULL_HANDLE) {
-            // Zero the buffer when no commands to ensure clean state
-            void* dst = compactBuf.map(0);
-            if (dst) {
-                std::memset(dst, 0, (size_t)(sizeof(VkDrawIndexedIndirectCommand) * cap));
-                compactBuf.unmap();
-            }
+    // Barrier: fill → compute + indirect draw. The compute shader reads the
+    // counts (atomicAdd) and writes compact, so SHADER_READ|SHADER_WRITE at
+    // COMPUTE stage is required; DRAW_INDIRECT access covers the billboard
+    // draw that reads the count buffer even when the dispatch is skipped.
+    {
+        VkBufferMemoryBarrier2 barriers[12]{};
+        for (uint32_t i = 0; i < 12; i++) {
+            barriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barriers[i].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            barriers[i].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            barriers[i].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                    | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+            barriers[i].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT
+                                     | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+            barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[i].offset = 0;
+            barriers[i].size = VK_WHOLE_SIZE;
+        }
+        for (uint32_t c = 0; c < 3; c++) {
+            barriers[c * 2 + 0].buffer = vegCascadeCullFrames[f].compactBuffers[c].buffer;
+            barriers[c * 2 + 1].buffer = vegCascadeCullFrames[f].countBuffers[c].buffer;
+            barriers[c * 2 + 1].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT
+                                              | VK_ACCESS_2_SHADER_WRITE_BIT
+                                              | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+            barriers[6 + c * 2 + 0].buffer = vegCascadeCullFrames[f].impostorCompactBuffers[c].buffer;
+            barriers[6 + c * 2 + 1].buffer = vegCascadeCullFrames[f].impostorCountBuffers[c].buffer;
+            barriers[6 + c * 2 + 1].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT
+                                                  | VK_ACCESS_2_SHADER_WRITE_BIT
+                                                  | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
         }
 
-        if (countBuf.buffer != VK_NULL_HANDLE) {
-            uint32_t* cnt = static_cast<uint32_t*>(countBuf.map(0));
-            if (cnt) {
-                *cnt = static_cast<uint32_t>(cCmds[c].size());
-                countBuf.unmap();
-            }
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 12;
+        depInfo.pBufferMemoryBarriers = barriers;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
+
+    // Bind and dispatch the GPU cascade culling compute shader.
+    VkDescriptorSet descSet = vegCascadeCullFrames[f].descSet;
+    if (cmdState) cmdState->bindComputePipeline(cmd, vegCascadeCullPipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCascadeCullPipeline);
+    if (cmdState) cmdState->bindComputeDescriptorSets(cmd, vegCascadeCullPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCascadeCullPipelineLayout, 0, 1, &descSet, 0, nullptr);
+
+    uint32_t numChunks = vegNumChunks;
+    vkCmdPushConstants(cmd, vegCascadeCullPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &numChunks);
+
+    uint32_t groups = (numChunks + 63) / 64;
+    if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);
+
+    // Barrier: compute shader writes → indirect draw (all 12 buffers). The
+    // draw sees whichever wrote last (fill zeros or compute atomics).
+    {
+        VkBufferMemoryBarrier2 barriers[12]{};
+        for (uint32_t i = 0; i < 12; i++) {
+            barriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barriers[i].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            barriers[i].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            barriers[i].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
+                                    | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+            barriers[i].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+            barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[i].offset = 0;
+            barriers[i].size = VK_WHOLE_SIZE;
         }
+        for (uint32_t c = 0; c < 3; c++) {
+            barriers[c * 2 + 0].buffer = vegCascadeCullFrames[f].compactBuffers[c].buffer;
+            barriers[c * 2 + 1].buffer = vegCascadeCullFrames[f].countBuffers[c].buffer;
+            barriers[6 + c * 2 + 0].buffer = vegCascadeCullFrames[f].impostorCompactBuffers[c].buffer;
+            barriers[6 + c * 2 + 1].buffer = vegCascadeCullFrames[f].impostorCountBuffers[c].buffer;
+        }
+
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 12;
+        depInfo.pBufferMemoryBarriers = barriers;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
     }
 }
 
@@ -523,26 +749,18 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
             impVbs[1] = concatenatedInstanceBuffer.buffer;
             vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
 
-            // Read per-cascade draw commands from the mapped compact buffer
-            // to issue filtered impostor draws (indexCount=6 vs billboard's 36).
-            Buffer& compactBuf = vegCascadeCullFrames[f].compactBuffers[cascadeIndex];
-            Buffer& countBuf   = vegCascadeCullFrames[f].countBuffers[cascadeIndex];
-            if (compactBuf.buffer != VK_NULL_HANDLE && countBuf.buffer != VK_NULL_HANDLE) {
-                void* mapped = compactBuf.map(0);
-                uint32_t* cntPtr = static_cast<uint32_t*>(countBuf.map(0));
-                if (mapped && cntPtr) {
-                    uint32_t count = *cntPtr;
-                    countBuf.unmap();
-                    VkDrawIndexedIndirectCommand* cmds =
-                        static_cast<VkDrawIndexedIndirectCommand*>(mapped);
-                    for (uint32_t i = 0; i < count; i++) {
-                        vkCmdDrawIndexed(commandBuffer, 6,
-                            cmds[i].instanceCount, 0, 0, cmds[i].firstInstance);
-                    }
-                    compactBuf.unmap();
-                } else {
-                    if (mapped) compactBuf.unmap();
-                    if (cntPtr) countBuf.unmap();
+            // Impostor draw commands (indexCount=6) are written by the GPU
+            // veg_cascade_cull.comp into the per-cascade impostor compact +
+            // count buffers — no CPU readback of cull results.
+            Buffer& impCompactBuf = vegCascadeCullFrames[f].impostorCompactBuffers[cascadeIndex];
+            Buffer& impCountBuf   = vegCascadeCullFrames[f].impostorCountBuffers[cascadeIndex];
+            if (impCompactBuf.buffer != VK_NULL_HANDLE && impCountBuf.buffer != VK_NULL_HANDLE) {
+                uint32_t vegMaxImpostorDraws = std::min(vegNumChunks, vegCascadeCompactCapacity);
+                if (cmdDrawIndexedIndirectCount) {
+                    cmdDrawIndexedIndirectCount(commandBuffer,
+                        impCompactBuf.buffer, 0,
+                        impCountBuf.buffer, 0,
+                        vegMaxImpostorDraws, sizeof(VkDrawIndexedIndirectCommand));
                 }
             }
         }

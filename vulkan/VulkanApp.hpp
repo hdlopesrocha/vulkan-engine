@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <atomic>
+#include <functional>
 
 #include "vulkan.hpp"
 #include "VulkanResourceManager.hpp"
@@ -337,6 +338,11 @@ public:
 
 
         void drawFrame();
+        // Diagnostic hook invoked when a frame-slot fence wait or the frame
+        // timeline wait exceeds a stall threshold (GPU ring hang signature).
+        // MyApp uses it to dump partial per-pass query timestamps. Set before
+        // mainLoop() starts.
+        std::function<void(uint32_t frameSlot)> onFrameStall;
         void createInstance();
         bool checkValidationLayerSupport();
         void setupDebugMessenger();
