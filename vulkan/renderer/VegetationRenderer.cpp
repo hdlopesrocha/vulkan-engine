@@ -226,29 +226,28 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
     if (vegNumChunks == 0) return;
     if (compactedCmdBuffers[f].buffer == VK_NULL_HANDLE || visibleCountBuffers[f].buffer == VK_NULL_HANDLE) return;
 
-    // Upload every chunk as a visible draw command via memcpy to persistently
-    // mapped host-visible buffers (avoids vkCmdUpdateBuffer's implicit full
-    // queue barrier that stalls the entire graphics pipeline).
+    // Upload every chunk as a visible draw command directly into the
+    // persistently mapped host-visible buffer (avoids vkCmdUpdateBuffer's
+    // implicit full queue barrier that stalls the entire graphics pipeline).
+    // Written in place, bounded by vegNumChunks (<= buffer capacity): a
+    // previous fixed-size stack array overflowed once vegetation exceeded 256
+    // chunks, corrupting the caller's stack frame (GPU hang on RADV / 680M).
     uint32_t count = 0;
     {
-        // Build draw commands on the stack and upload in one batch
-        VkDrawIndexedIndirectCommand cmds[256];
+        VkDrawIndexedIndirectCommand* dst =
+            static_cast<VkDrawIndexedIndirectCommand*>(compactedCmdMapped[f]);
         uint32_t instanceOff = 0;
         for (auto& [cid, buf] : chunkBuffers) {
             (void)cid;
             if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            cmds[count].indexCount = 36;
-            cmds[count].instanceCount = buf.count;
-            cmds[count].firstIndex = 0;
-            cmds[count].vertexOffset = 0;
-            cmds[count].firstInstance = instanceOff;
+            dst[count].indexCount    = 36;
+            dst[count].instanceCount = buf.count;
+            dst[count].firstIndex    = 0;
+            dst[count].vertexOffset  = 0;
+            dst[count].firstInstance = instanceOff;
             instanceOff += buf.count;
             count++;
             if (count >= vegNumChunks) break;
-        }
-        VkDeviceSize upSize = count * sizeof(VkDrawIndexedIndirectCommand);
-        if (upSize > 0 && compactedCmdMapped[f]) {
-            memcpy(compactedCmdMapped[f], cmds, upSize);
         }
     }
 
