@@ -176,8 +176,15 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
             genPool);
     };
 
-    Octree::OctreeNodeDataHandler onDeleted = [renderer, app, target](const OctreeNodeData& nd) {
+    Octree::OctreeNodeDataHandler onDeleted = [renderer, app, scene, target](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
+
+        // Forget the node's tessellation dedupe record: the node memory may be
+        // reused, and a stale entry would suppress re-tessellation of the new
+        // occupant.
+        if (auto* ls = dynamic_cast<LocalScene*>(scene)) {
+            ls->noteDeletedNode(static_cast<uintptr_t>(nid));
+        }
 
         if (target.chunkManaged && renderer->world()) {
             // One slot per chunk: defer the chunk's single slot until its
@@ -1140,6 +1147,31 @@ public:
                     if (tsB[4].availability) profileWater              = msDiff(tsB[5].value, tsB[4].value);
                     if (tsB[6].availability) profilePostProcess        = msDiff(tsB[7].value, tsB[6].value);
                     if (tsB[8].availability) profileImGui              = msDiff(tsB[9].value, tsB[8].value);
+                }
+            }
+            // Throttled console dump of the previous frame's GPU passes so slow
+            // frames are attributable from run.log without the ImGui panel.
+            {
+                static uint32_t profilePrintTick = 0;
+                if ((++profilePrintTick & 0x1F) == 0) {
+                    const float gpuTotal = profileShadow + profileMainCull + profileBrush +
+                        profileDepthPrepass + profileSky + profileSolidDraw +
+                        profileVegetationImpostor + profileWater + profilePostProcess +
+                        profileImGui;
+                    if (gpuTotal > 40.0f) {
+                        std::cout << "[gpu] total=" << gpuTotal
+                                  << " shadow=" << profileShadow
+                                  << " cull=" << profileMainCull
+                                  << " brush=" << profileBrush
+                                  << " depth=" << profileDepthPrepass
+                                  << " sky=" << profileSky
+                                  << " solid=" << profileSolidDraw
+                                  << " veg=" << profileVegetationImpostor
+                                  << " water=" << profileWater
+                                  << " post=" << profilePostProcess
+                                  << " imgui=" << profileImGui
+                                  << " fps=" << profileFps << std::endl;
+                    }
                 }
             }
             vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 0, QUERY_COUNT);

@@ -823,8 +823,8 @@ size_t SceneRenderer::publishPendingMeshes(
 
         if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
 
-        const glm::vec3 cubeMin = item.nodeData.cube.getMin();
-        const glm::vec3 cubeMax = item.nodeData.cube.getMax();
+        const glm::vec3 cubeMin = lod.boundsMin;
+        const glm::vec3 cubeMax = lod.boundsMax;
 
         // Publish the mesh into its single draw entry slot. The slot index is
         // the chunk's stable slot (one draw entry per chunk); `lod.lod` is the
@@ -1086,7 +1086,8 @@ bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
         // solid/water); entries are tagged isBrush=false here since this path
         // feeds the main scene.
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
-        Octree::LoDMesh lod = {geom, /*lod*/ 0, /*version*/ version, nd.cube.getLength().x};
+        Octree::LoDMesh lod = {geom, /*lod*/ 0, /*version*/ version, nd.cube.getLength().x,
+                               nd.cube.getMin(), nd.cube.getMax()};
         pendingMeshQueue[nid] = {layer, nid, std::move(lod), nd, /*isBrush=*/false};
     }
 
@@ -1112,14 +1113,19 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     const uint8_t chunkLod = nodeData.node ? nodeData.node->getChunkLod() : 0;
     if (chunkLod < 1) return;
 
-    const float cubeLength = nodeData.cube.getLength().x;
-
-    scene.requestModel3D(layer, nodeData, [&layer,&nid,&nodeData,&onGeometry,cubeLength](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId) {
+    // NOTE: the walk emits one callback per cell on the root path (each
+    // ancestor at its own level); the cube passed is the EMITTING cell's own
+    // cube — the band center and the meta cellSize must come from it, never
+    // from nodeData (the added node), or every ancestor would publish the
+    // frontier cell's size.
+    scene.requestModel3D(layer, nodeData, [&layer,&onGeometry](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId, const BoundingCube& cube) {
         Octree::LoDMesh lm;
         lm.geom = geo;
         lm.lod = lod;
         lm.version = version;
-        lm.cellSize = cubeLength;
+        lm.cellSize = cube.getLength().x;
+        lm.boundsMin = cube.getMin();
+        lm.boundsMax = cube.getMax();
         onGeometry(layer, reinterpret_cast<NodeID>(emittingNodeId), lm);
     }, poolOverride);
 

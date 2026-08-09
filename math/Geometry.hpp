@@ -1,6 +1,7 @@
 #pragma once
 #include "Vertex.hpp"
 #include "VertexHasher.hpp"
+#include "BoundingCube.hpp"
 #include <vector>
 #include <type_traits>
 #include <tsl/robin_map.h>
@@ -31,9 +32,10 @@ public:
 };
 
 using GeometryLodCallback = std::function<void(
-    const Geometry& geo, 
+    const Geometry& geo,
     uint8_t lod,
     uint version,
-    uintptr_t emittingNodeId
+    uintptr_t emittingNodeId,
+    const BoundingCube& cube // the emitting cell's OWN cube (not the added node's)
 )>;
  

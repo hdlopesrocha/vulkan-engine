@@ -34,6 +34,8 @@ class Octree: public BoundingCube {
         uint8_t  lod = 0;     // 0-based LoD level of this mesh (0 = frontier chunks)
         unsigned int     version = 0; // snapshot of node->version at generation time
         float    cellSize = 0;  // the chunk's own cell size
+        glm::vec3 boundsMin = glm::vec3(0.0f); // emitting cell's world bounds (band center + meta)
+        glm::vec3 boundsMax = glm::vec3(0.0f);
     };
 
 
