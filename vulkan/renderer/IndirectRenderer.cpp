@@ -18,14 +18,16 @@
 static std::chrono::steady_clock::time_point g_lastNoSlotLog = std::chrono::steady_clock::time_point::min();
 
 namespace {
-// Push constant blocks are std430: the C++ mirrors carry explicit padding to
-// match the shader layout exactly.
+// Push constant blocks are std430: vec3 members align to 16 bytes, so the
+// C++ mirrors carry explicit padding to match the shader layout exactly.
 struct CullPushConstants {
     glm::mat4 viewProj;   // offset 0
     uint32_t targetLayer; // offset 64
     uint32_t numCmds;     // offset 68
     float pad0[2];        // offset 72
-}; // 80 bytes (shader reads the first 72)
+    glm::vec3 camPos;     // offset 80
+    float lodBias;        // offset 92
+}; // 96 bytes
 
 struct CascadeCullPushConstants {
     uint32_t numChunks;   // offset 0
@@ -1362,7 +1364,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.offset = 0;
-        pc.size = sizeof(CullPushConstants); // 80 bytes: mat4 + 2*uint + pad0[2]
+        pc.size = sizeof(CullPushConstants); // 96 bytes: mat4 + 2*uint + pad + vec3 + float
 
         VkPipelineLayoutCreateInfo plinfo{};
         plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1484,7 +1486,8 @@ void IndirectRenderer::setCullFrame(uint32_t frame) {
     currentCullFrame = frame % MAX_CULL_FRAMES;
 }
 
-void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj) {
+void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
+                                   glm::vec3 camPos, float lodBias) {
     // NOTE: No mutex lock here - this is only called from the main render thread
     // and all buffer modifications happen in rebuild() which does lock.
 
@@ -1650,6 +1653,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     pc.viewProj     = viewProj;
     pc.targetLayer  = 0;
     pc.numCmds      = numCmds;
+    pc.camPos       = camPos;
+    pc.lodBias      = lodBias;
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc);
 
     uint32_t groupSize = 64;
@@ -1695,7 +1700,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 
 
 void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
-                                                VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer) {
+                                                VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
+                                                glm::vec3 camPos, float lodBias) {
     if (computePipeline == VK_NULL_HANDLE) {
         // No meshes loaded yet (e.g. during parallel background loading). Nothing to cull.
         return;
@@ -1845,6 +1851,8 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     pc2.viewProj     = viewProj;
     pc2.targetLayer  = 0;
     pc2.numCmds      = numCmds;
+    pc2.camPos       = camPos;
+    pc2.lodBias      = lodBias;
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc2);
 
     uint32_t groupSize = 64;
@@ -2234,7 +2242,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.offset = 0;
-        pc.size = sizeof(CullPushConstants); // 80 bytes: mat4 + 2*uint + pad0[2]
+        pc.size = sizeof(CullPushConstants); // 96 bytes: mat4 + 2*uint + pad + vec3 + float
 
         VkPipelineLayoutCreateInfo plinfo{};
         plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -2357,7 +2365,8 @@ void IndirectRenderer::copyGeometryToLevel(const Geometry& mesh, MeshInfo::Level
 }
 
 uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId,
-                                          const glm::vec3* cubeMin, const glm::vec3* cubeMax)
+                                          const glm::vec3* cubeMin, const glm::vec3* cubeMax,
+                                          int level)
 {
     if (!slottedMode) return UINT32_MAX;
 
@@ -2469,6 +2478,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
         ld.vertexCount  = neededVerts;
         ld.firstIndex   = newIBase;
         ld.indexCount   = neededIdxs;
+        ld.level        = level;
         if (cubeMin && cubeMax) {
             ld.boundsMin = glm::vec4(*cubeMin, 0.0f);
             ld.boundsMax = glm::vec4(*cubeMax, 0.0f);
@@ -2642,6 +2652,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     int32_t  capVertexOffset       = static_cast<int32_t>(ld.baseVertex);
     glm::vec4 capBoundsMin         = ld.boundsMin;
     glm::vec4 capBoundsMax         = ld.boundsMax;
+    int      capLevel              = ld.level;
     uint32_t capOldVertexBase      = ld.oldVertexBase;
     uint32_t capOldVertexCount     = ld.oldVertexCount;
     uint32_t capOldIndexBase       = ld.oldIndexBase;
@@ -2696,7 +2707,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     // proves every prior submission (including those frames' culls) finished,
     // so the old data can no longer be referenced.
     auto deferredWriteMeta = [this, capEntryIndex, capIndexCount, capFirstIndex,
-                              capVertexOffset, capBoundsMin, capBoundsMax,
+                              capVertexOffset, capBoundsMin, capBoundsMax, capLevel,
                               capOldVertexBase, capOldVertexCount,
                               capOldIndexBase, capOldIndexCount]()
     {
@@ -2721,9 +2732,15 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
             VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capEntryIndex) * 3 * sizeof(glm::vec4);
             void* bndData = boundsBuffer.map(boundsOffset);
             if (bndData) {
-                // Third vec4 (meta) stays zeroed: single-level chunks carry no
-                // LoD band meta.
-                glm::vec4 bounds[3] = { capBoundsMin, capBoundsMax, glm::vec4(0.0f) };
+                // Third vec4 (meta): {cellSize, level, maxLevel, unused} —
+                // cellSize is the chunk's OWN cube length (the shader derives
+                // the frontier base as cellSize / 2^level); level is the
+                // 0-based LoD level; maxLevel is the coarsest published
+                // level (stored chunkLod 5 → level 4), so the cascade cull
+                // applies the same keep rule as the main pass.
+                const float cellSize = capBoundsMax.x - capBoundsMin.x;
+                const glm::vec4 lodMeta = glm::vec4(cellSize, static_cast<float>(capLevel), 4.0f, 0.0f);
+                glm::vec4 bounds[3] = { capBoundsMin, capBoundsMax, lodMeta };
                 std::memcpy(bndData, bounds, sizeof(bounds));
                 boundsBuffer.unmap();
             }

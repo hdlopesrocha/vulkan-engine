@@ -827,10 +827,13 @@ size_t SceneRenderer::publishPendingMeshes(
         const glm::vec3 cubeMax = item.nodeData.cube.getMax();
 
         // Publish the mesh into its single draw entry slot. The slot index is
-        // the chunk's stable slot (one draw entry per chunk).
+        // the chunk's stable slot (one draw entry per chunk); `lod.lod` is the
+        // chunk's 0-based LoD level (0 = frontier), published in the bounds
+        // meta for the GPU's per-chunk distance band test.
         const uint32_t slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(base),
                                                     &cubeMin,
-                                                    &cubeMax);
+                                                    &cubeMax,
+                                                    lod.lod);
         if (slotIdx == UINT32_MAX) continue; // no free block / element pool exhausted
 
         // addMeshSlotted re-publishes the existing chunk slot in place when
@@ -838,13 +841,15 @@ size_t SceneRenderer::publishPendingMeshes(
         // oldSlot == slotIdx and there is nothing to free.
         if (oldSlot != UINT32_MAX && oldSlot == slotIdx) oldSlot = UINT32_MAX;
 
-        // Register the chunk's slot for the erase path before the upload
-        // starts; the deferred completion frees any replaced old slot and
-        // (the chunk mesh) promotes the chunk to ReadyToSwap once resident.
-        if (!isBrush && world_)
+        // Register the frontier chunk's slot for the erase path before the
+        // upload starts; the deferred completion frees any replaced old slot
+        // and promotes the chunk to ReadyToSwap once resident. Coarse
+        // ancestor cells (level > 0) are not tracked by the ChunkManager.
+        const bool frontier = (lod.lod == 0);
+        if (!isBrush && world_ && frontier)
             world_->chunkManager().setSlotIndex(base, slotIdx);
 
-        const bool trackChunkManager = !isBrush;
+        const bool trackChunkManager = !isBrush && frontier;
         ir->uploadSlot(app, slotIdx, 0.0f,
             [ir, oldSlot, this, base, trackChunkManager]() {
                 if (oldSlot != UINT32_MAX) ir->removeMeshSlotted(oldSlot);
@@ -854,9 +859,10 @@ size_t SceneRenderer::publishPendingMeshes(
 
         onChunkPublished(layer, nid, slotIdx, lod.version, isBrush);
 
-        // Generate vegetation instances for grass chunks using the chunk's
-        // (finest) geometry only.
-        if (layer == LAYER_OPAQUE && vegetationRenderer &&
+        // Generate vegetation instances for grass chunks using the frontier
+        // (finest) geometry only. Coarse ancestor cells (level > 0) never
+        // drive vegetation.
+        if (layer == LAYER_OPAQUE && vegetationRenderer && frontier &&
             !lod.geom.vertices.empty()) {
             onFinestPublished(nid, lod.geom, isBrush);
         }
@@ -959,14 +965,20 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
             return slot;
         },
         // onChunkPublished: the brush stream records the published slot/version
-        // in its chunk maps (so erasure can free it later). The main stream's
-        // slot registry update runs inside the core (ChunkManager) — nothing
-        // extra to record here.
+        // in its chunk maps (so erasure can free it later); the main stream
+        // records the same in the scene chunk maps — frontier chunks are also
+        // tracked by the ChunkManager, but coarse ancestor cells are not, so
+        // their slot is resolved through this map when the cell is deleted.
         [this](Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version, bool isBrush) {
-            if (!isBrush) return;
-            auto& chunkMap = (layer == LAYER_OPAQUE)
-                ? this->brushRenderer->solidChunks : this->brushRenderer->transparentChunks;
-            chunkMap[nid] = Model3DVersion{slotIdx, version};
+            if (isBrush) {
+                auto& chunkMap = (layer == LAYER_OPAQUE)
+                    ? this->brushRenderer->solidChunks : this->brushRenderer->transparentChunks;
+                chunkMap[nid] = Model3DVersion{slotIdx, version};
+            } else {
+                auto& chunkMap = (layer == LAYER_OPAQUE)
+                    ? this->mainSolidChunks : this->mainLiquidChunks;
+                chunkMap[nid] = Model3DVersion{slotIdx, version};
+            }
         },
         // onFinestPublished: grass chunks (main scene only) drive vegetation
         // from their level-0 (finest) geometry.
@@ -1091,13 +1103,14 @@ void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
 
 void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, GeometryHandler onGeometry, float minSize, ThreadPool* poolOverride) {
 
-    // Only CHUNKS (stored chunkLod == 1 in the +1-shifted uint8_t space)
-    // generate meshes. Coarse ancestor meshes (stored chunkLod > 1) are
-    // disabled — tessellating an ancestor as one big Surface-Nets cell
-    // samples the SDF at the coarse corners and misses interior surface, so
-    // those meshes come out empty. Each chunk publishes exactly ONE mesh.
+    // Every cell with a chunkLod (stored 1..5, the +1-shifted uint8_t space)
+    // publishes its mesh — each chunk carries its own level and the GPU cull
+    // keeps only the chunk level matching the camera distance band. Coarse
+    // ancestor cells that come back empty (no zero crossing at that
+    // resolution) simply never reach the publisher (LocalScene's walk and the
+    // handler below filter empty geometry).
     const uint8_t chunkLod = nodeData.node ? nodeData.node->getChunkLod() : 0;
-    if (chunkLod != 1) return;
+    if (chunkLod < 1) return;
 
     const float cubeLength = nodeData.cube.getLength().x;
 

@@ -151,11 +151,12 @@ void main() {
     // (previous-frame) camera position and could diverge from the main pass.
     // Entries without LoD meta (cellSize <= 0) are legacy meshes: always kept.
     //
-    // Keep rule (identical to indirect.comp): levels tile distance with
-    // band = dist / (cellSize_k * lodBias):
-    //   level k: band in [2^k, 2^(k+1))  (min(floor(band), maxLevel) == k)
-    //   level maxLevel (the root): everything beyond (floor(band) >= maxLevel)
-    // Single-level scenes (maxLevel == 0) have no coarse fallback: always keep.
+    // Keep rule (identical to indirect.comp): the main pass keeps a chunk iff
+    // its 0-based level equals the distance band
+    // (band = dist / (baseCell * lodBias), baseCell = cellSize / 2^level);
+    // this shader mirrors that by keeping the entry iff the selected level
+    // (from visibleLods) equals the entry's own level. The coarsest level
+    // (meta.z == pc.maxLod) covers everything beyond its band.
     vec4 lodMeta = boundsBuf.data[bIndex + 2u];
     float cellSize = lodMeta.x;
     uint entryLevel = uint(lodMeta.y + 0.5);

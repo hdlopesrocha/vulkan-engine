@@ -180,14 +180,24 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
 
         if (target.chunkManaged && renderer->world()) {
-            // One slot per chunk (the whole LoD ladder shares it): defer the
-            // chunk's single slot until its matching re-publish completes (or
-            // it ages out in processPendingMeshes). Don't free immediately —
-            // for solid/water the octree node is reused on edit (same NodeID),
-            // so republishing the chunk's levels updates the slot in place and
-            // consumes this entry.
+            // One slot per chunk: defer the chunk's single slot until its
+            // matching re-publish completes (or it ages out in
+            // processPendingMeshes). Don't free immediately — for solid/water
+            // the octree node is reused on edit (same NodeID), so republishing
+            // the chunk updates the slot in place and consumes this entry.
             const ChunkManager::ChunkId base = static_cast<ChunkManager::ChunkId>(nid);
             uint32_t sidx = renderer->world()->chunkManager().getSlotIndex(base);
+            if (sidx == UINT32_MAX) {
+                // Coarse ancestor cells are not tracked by the ChunkManager
+                // (only frontier chunks are); resolve their slot through the
+                // scene chunk map recorded at publish time.
+                std::lock_guard<std::recursive_mutex> lock(target.chunksMutex);
+                auto it = target.chunks.find(nid);
+                if (it != target.chunks.end()) {
+                    sidx = it->second.meshId;
+                    target.chunks.erase(it);
+                }
+            }
             if (sidx != UINT32_MAX) {
                 target.deferredSlots[nid] = {sidx, app->getCurrentFrame()};
             }
@@ -677,7 +687,8 @@ public:
         brushManager.getEntries()[2].scale = glm::vec3(256.0f);
         brushManager.getEntries()[2].hsv = glm::vec3(240.0f, 0.7f, 1.0f);
         // minSize = tessellation frontier (MainSceneLoader default 30); the
-        // renderer clamps each chunk's LoD ladder with heightRootToChunk.
+        // octree walk emits cells at every ladder level (chunkLod 1..5) and
+        // the GPU cull keeps the level matching the camera distance.
         // build() creates the {onAdded, onDeleted} renderer lambdas for each
         // main-scene space; the dedup collectors in front of them (fed to
         // Scene::loadScene/action and Octree::apply) replay final per-node
@@ -1200,9 +1211,9 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
         sceneRenderer->mainSolidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-        sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
+        sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(commandBuffer);
-        sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj);
+        sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
             sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
         }
@@ -1211,13 +1222,13 @@ public:
         // shared visibleLods buffer. prepareCull acquires the water buffers
         // internally and must run outside a render pass.
         if (settings.waterEnabled && sceneRenderer->mainLiquidRenderer) {
-            sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
+            sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         }
         // Brush liquid (painted water) is drawn inside the water geometry pass
         // with the water pipeline, so it needs a current-frame cull of its own
         // (its compact/visibleCount buffers are otherwise stale from the last
         // prepareCull or uninitialized, which would draw garbage).
-        sceneRenderer->brushRenderer->getLiquidIR().prepareCull(commandBuffer, viewProj);
+        sceneRenderer->brushRenderer->getLiquidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
 
@@ -1654,7 +1665,8 @@ public:
 
                 // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
                 if (computeDs != VK_NULL_HANDLE) {
-                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, slot.compact.buffer, slot.visible.buffer);
+                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, slot.compact.buffer, slot.visible.buffer,
+                                                  camera.getPosition());
                 }
 
                 // Water-depth descriptor set for THIS task: pre-allocated per ring slot

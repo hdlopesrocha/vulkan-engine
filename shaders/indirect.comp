@@ -38,6 +38,8 @@ layout(push_constant) uniform PC {
     mat4 viewProj;
     uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now - all meshes in renderer are same layer)
     uint numCmds;     // actual number of draw commands (guards against uninitialized buffer tail)
+    vec3 camPos;      // camera position driving the per-chunk LoD band selection
+    float lodBias;    // band scale: larger = coarser levels kick in farther away
 } pc;
 
 // Shared, per-workgroup cache of the six frustum planes. The viewProj matrix is
@@ -115,23 +117,58 @@ void main() {
     // Note: All meshes in this renderer are from the same layer (targetLayer in push constants)
     // so no per-mesh layer filtering needed - separate IndirectRenderers handle opaque vs transparent
 
-    // bounds stored as min, max, meta triples in `boundsBuf.data` (the meta
-    // vec4 is unused — chunks carry no LoD band data).
+    // bounds stored as min, max, meta triples in `boundsBuf.data`
+    // meta = {cellSize, level, maxLevel, unused}: cellSize is the chunk's
+    // OWN cube length (frontier base = cellSize / 2^level), level is the
+    // 0-based LoD level. cellSize <= 0 marks an entry with no LoD data
+    // (always kept, legacy behavior).
     uint bIndex = idx * 3u;
     bool hasBounds = (bIndex + 2u) < boundsBuf.data.length();
     vec3 minp = vec3(0.0);
     vec3 maxp = vec3(0.0);
+    vec4 lodMeta = vec4(0.0);
     if (hasBounds) {
         minp = boundsBuf.data[bIndex].xyz;
         maxp = boundsBuf.data[bIndex + 1u].xyz;
+        lodMeta = boundsBuf.data[bIndex + 2u];
     }
 
-    // Publish the (always 0) level for this draw entry so external consumers
-    // (shadow cascade cull, cubemap capture, backface pass) read a stable
-    // selection: every chunk is single-mesh, so level is constant 0.
-    // Written for every non-empty entry.
+    // ── Per-chunk LoD band selection (frustum-independent) ──────────────────
+    // Chunks arrive one by one, each a single mesh tagged with its own
+    // chunkLod level. Every chunk covers a band of distance:
+    //   band = dist(camPos, chunkCenter) / (baseCell * lodBias)
+    // with baseCell = cellSize / 2^level (the frontier cell size), so the
+    // bands of the pyramid TILE distance: level k covers band [k, k+1),
+    // and the coarsest level (== meta.z) covers everything beyond.
+    // The chunk is kept iff its level matches the band — close chunks draw
+    // the fine frontier meshes, far chunks the coarse ancestor meshes.
+    //
+    // The selection is computed for EVERY non-empty entry — even ones outside
+    // the camera frustum — and stamped into visibleLods, so the shadow cascade
+    // cull reads the exact same level instead of re-deriving the band with a
+    // stale camera position. (The band depends only on distance to the camera,
+    // not on the frustum.)
+    float cellSize = lodMeta.x;
+    int entryLevel = int(lodMeta.y + 0.5);
+    int maxLevel   = int(lodMeta.z + 0.5);
+
+    uint selectedLevel = 0xFFFFFFFFu;
+    if (cellSize > 0.0) {
+        vec3 center = (minp + maxp) * 0.5;
+        float baseCell = cellSize / exp2(float(max(entryLevel, 0)));
+        float band = distance(pc.camPos, center) / (baseCell * pc.lodBias);
+        selectedLevel = uint(min(floor(band), float(maxLevel)));
+        // Only the entry whose level matches the effective selection survives
+        // to the compacted draw list. Entries without LoD meta (cellSize <= 0)
+        // are legacy meshes: always kept.
+        if (int(selectedLevel) != entryLevel) return;
+    }
+
+    // Publish the chosen level for this draw entry so external consumers
+    // (shadow cascade cull, cubemap capture, backface pass) read the exact
+    // same selection. Written for every non-empty entry.
     if (idx < visibleLods.data.length()) {
-        visibleLods.data[idx] = uvec2(inCmds.cmds[idx].firstInstance, 0u);
+        visibleLods.data[idx] = uvec2(inCmds.cmds[idx].firstInstance, selectedLevel);
     }
 
     // If bounds missing, conservatively mark visible (legacy path).

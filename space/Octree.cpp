@@ -56,8 +56,6 @@ private:
 // anchors at 32, i.e. the heightmap's 30^3 minSize frontier; the log2
 // rounding below maps every 30*2^k ladder cell to its level exactly
 // (30^3→1, 60^3→2, 120^3→3, 240^3→4, 480^3→5, ...).
-// Note: only chunkLod == 1 cells actually publish meshes; the coarser
-// ancestor levels (2..5) keep their geometry empty (see handler dispatch).
 static uint8_t lodForCellSize(float nodeLength, float chunkSize) {
     const float frontierSize = chunkSize / static_cast<float>(1u << (5u - 1u));
     const int levelsAboveFrontier = std::lround(std::log2(nodeLength / frontierSize));
@@ -1423,15 +1421,14 @@ void Octree::shape(
             else {
                 r.node->setLod(r.selectedLod == 0 ? 0 : r.selectedLod + 1);
             }
-            // Dispatch a mesh event ONLY for chunks (stored chunkLod 1). Coarse
-            // ancestor meshes (stored chunkLod > 1) are DISABLED: tessellating
-            // an ancestor as one big Surface-Nets cell samples the SDF at the
-            // coarse cell's corners, which misses interior surface detail, so
-            // those meshes come out empty (0 triangles) — the cell is marked
-            // Surface by type but its stored sdf has no zero crossing. Chunks
-            // therefore publish exactly ONE mesh each (their frontier mesh),
-            // which the renderer draws at every distance. chunkLod is still
-            // computed (widget/bands).
+            // Dispatch a mesh event for every cell with a chunkLod (stored
+            // 1..5). Each cell publishes exactly ONE mesh tagged with its own
+            // level; the GPU cull keeps only the cell level matching the
+            // camera distance band (fine cells near, coarse cells far). Cells
+            // whose Surface-Nets mesh comes out empty (no zero crossing at
+            // that resolution) simply publish nothing — the walk above emits
+            // only cells marked Surface, and the renderer skips empty
+            // geometry.
             if(r.node->getChunkLod() > 0) {
                 ++r.node->version;
                 OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube, nullptr);

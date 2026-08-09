@@ -61,7 +61,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
 
             uint8_t chunkLodStored = params.node->getChunkLod();
 
-            if(chunkLodStored > 0 && chunkLodStored <= 5) {
+            if(chunkLodStored > 0) {
                 long trianglesCount = 0;
                 Tesselator nodeTesselator(&trianglesCount);
                 tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLodStored);

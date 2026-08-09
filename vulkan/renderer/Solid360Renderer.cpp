@@ -417,11 +417,11 @@ void Solid360Renderer::render(VulkanApp* app, VkCommandBuffer cmd,
         // Per-face frustum cull — must run OUTSIDE dynamic rendering
         if (renderSolid && computeDs != VK_NULL_HANDLE && compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
             auto &ind = solidRenderer->getIndirectRenderer();
-            ind.prepareCullWithDescriptor(cmd, faceVP, computeDs, compactIndirectBuffer, visibleCountBuffer);
+            ind.prepareCullWithDescriptor(cmd, faceVP, computeDs, compactIndirectBuffer, visibleCountBuffer, camPos);
         }
         // Per-face water cull with dedicated buffers (no race with main pass)
         if (renderWater && waterRenderer && waterComputeDs != VK_NULL_HANDLE && waterCompactIndirectBuffer != VK_NULL_HANDLE && waterVisibleCountBuffer != VK_NULL_HANDLE) {
-            waterRenderer->getIndirectRenderer().prepareCullWithDescriptor(cmd, faceVP, waterComputeDs, waterCompactIndirectBuffer, waterVisibleCountBuffer);
+            waterRenderer->getIndirectRenderer().prepareCullWithDescriptor(cmd, faceVP, waterComputeDs, waterCompactIndirectBuffer, waterVisibleCountBuffer, camPos);
         }
 
         // ── Instance 1: Depth pre-pass (no color, lightweight depth_only.frag) ──

@@ -31,9 +31,9 @@ class Octree: public BoundingCube {
     // the actual Vulkan uploads.
     struct LoDMesh {
         Geometry geom;
-        uint8_t  lod = 0;     // LoD level of this mesh (= node's chunkLod, 0 = chunks)
+        uint8_t  lod = 0;     // 0-based LoD level of this mesh (0 = frontier chunks)
         unsigned int     version = 0; // snapshot of node->version at generation time
-        float    cellSize = 0;  // the chunk's cell size
+        float    cellSize = 0;  // the chunk's own cell size
     };
 
 
@@ -110,11 +110,9 @@ class Octree: public BoundingCube {
 
     // HeightRootToChunk(N): how many LoD levels a chunk can hold above its
     // tessellation frontier before reaching the chunk-size boundary, i.e.
-    // floor(log2(chunkSize / minSize)) - N. >= 0 means a chunk at LoD N is
-    // valid: its ladder (levels 0..N) fits inside its own size band, and the
-    // renderer clamps the chunk's maxLevel to this so coarse levels never
-    // exceed the chunk. Negative means the frontier sits deeper than the
-    // chunk can represent.
+    // floor(log2(chunkSize / minSize)) - N. >= 0 means a cell at LoD N is
+    // valid: its ladder (levels 0..N) fits inside its own size band.
+    // Negative means the frontier sits deeper than the chunk can represent.
     int heightRootToChunk(int lod, float minSize) const;
 
     bool isChunkNode(float nodeLength) const;

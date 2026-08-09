@@ -85,6 +85,7 @@ public:
             uint32_t vertexCount = 0;
             uint32_t firstIndex = 0;   // absolute element offset (mergedIndices)
             uint32_t indexCount = 0;
+            int level = 0;             // 0-based LoD level (0 = frontier chunk)
             // Ranges of the mesh's PREVIOUS geometry, freed once the
             // replacement upload completes (deferred — in-flight frames may
             // still reference them). UINT32_MAX base = nothing pending.
@@ -129,11 +130,11 @@ public:
                    uint32_t totalVertexBytes,
                    uint32_t totalIndexBytes);
 
-    // Add or update a mesh in a stable slot. The chunk's draw-entry block is
+    // Add or update a mesh in a stable slot. The chunk's draw entry is
     // allocated on first use and freed on removal; the vertex/index data is
-    // packed into the shared element pools. Returns the stable block index,
+    // packed into the shared element pools. Returns the stable slot index,
     // or UINT32_MAX on failure (pool exhausted or element budget exceeded).
-    // Each chunk owns exactly one draw entry (block index == entry index).
+    // Each chunk owns exactly one draw entry (slot index == entry index).
     // Re-publishing an already-allocated chunk allocates a NEW span and
     // defers the free of the old span until the replacement upload completes
     // (in-flight frames may still reference the old data).
@@ -141,8 +142,13 @@ public:
     // are published as the draw entry's bounds triple instead of the mesh
     // AABB, keeping frustum culling conservative-correct for edge-surface
     // chunks.
+    // `level`: the chunk's 0-based LoD level (0 = frontier chunks, the
+    // finest; higher = coarser ancestor cells). Stored in the entry's bounds
+    // meta and used by the GPU cull to keep only the chunk level matching
+    // the camera distance band.
     uint32_t addMeshSlotted(const Geometry& mesh, uint32_t chunkId,
-                            const glm::vec3* cubeMin = nullptr, const glm::vec3* cubeMax = nullptr);
+                            const glm::vec3* cubeMin = nullptr, const glm::vec3* cubeMax = nullptr,
+                            int level = 0);
     void removeMeshSlotted(uint32_t slotIndex);
 
     // Upload a single mesh's vertex/index data to the GPU, and write its
@@ -205,10 +211,13 @@ public:
     void acquireBuffers(VkCommandBuffer cmd);
 
     // Run GPU culling/compaction (must be called outside any render pass).
-    void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj);
+    // `camPos`/`lodBias` drive the per-chunk LoD band selection.
+    void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
+                     glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f);
     // Run GPU culling into caller-provided output buffers using a provided compute descriptor set.
     void prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
-                                   VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer);
+                                   VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
+                                   glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f);
     // Issue indirect draw using the compacted indirect buffer (call inside render pass).
     void drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws = 0);
     void drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer compactBuffer, VkBuffer visibleCountBuffer, uint32_t maxDraws = 0);
@@ -357,7 +366,7 @@ private:
     // their dispatches never race the per-frame zero fills.
     Buffer visibleLodsScratch;
     // GPU-side culling resources
-    Buffer boundsBuffer; // vec4 per draw entry: min, max, meta (meta unused)
+    Buffer boundsBuffer; // vec4 per draw entry: min, max, meta{cellSize, level, maxLevel, unused}
     // Per-frame visible count buffers
     std::array<Buffer, MAX_CULL_FRAMES> visibleCountBuffers;
     // Persistent host mapping for zeroing visible counts (avoids vkCmdFillBuffer + barrier on RADV)
