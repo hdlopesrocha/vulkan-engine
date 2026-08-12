@@ -28,7 +28,8 @@ namespace {
 //
 // Sizing is memory-bounded (target GPU: 4 GB integrated). Measured steady
 // demand on the reference scene (full octree, works=658688):
-//   solid  ~940 nodes (saturates a 1024 pool -> "no free slot"),
+//   solid  ~1084 nodes (1024 pool was too small -> "no free slot" dropped chunks;
+//          raised to 1536 to fit the reference scene with headroom),
 //   water  ~132 nodes (sparse),
 //   brush  ~10  nodes.
 // The budget is therefore REDISTRIBUTED: solid (the dense, dominant layer)
@@ -56,7 +57,7 @@ namespace {
 // relevant constant. DEBUG builds log "slot peak N / capacity" as usage climbs.
 // True runtime growth would require reallocating the buffers, which the design
 // deliberately avoids.
-constexpr uint32_t kMaxSolidChunkSlots = 1024;   // main solid (opaque) pool
+constexpr uint32_t kMaxSolidChunkSlots = 1536;   // main solid (opaque) pool
 constexpr uint32_t kMaxWaterChunkSlots = 192;   // main water (transparent) pool
 constexpr uint32_t kMaxBrushChunkSlots = 64;     // brush preview pool
 } // namespace
