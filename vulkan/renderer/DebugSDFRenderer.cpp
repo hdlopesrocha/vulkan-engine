@@ -72,12 +72,17 @@ void DebugSDFRenderer::createCubeBuffers(VulkanApp* app) {
         indices.push_back(base + 3);
     }
 
-    vertexBuffer = app->createDeviceLocalBuffer(vertices.data(),
+    // Upload via the async transfer path (graphics-family transfer queue when
+    // available, else main graphics queue). The completion semaphore is
+    // registered so drawFrame waits for the copy before the buffers are first
+    // consumed. A dedicated transfer-family queue is deliberately not used
+    // (documented RADV/RENOIR GPUVM-instability safety net in VulkanApp.cpp).
+    vertexBuffer = app->createDeviceLocalBufferAsync(vertices.data(),
         vertices.size() * sizeof(CubeVertex),
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-    indexBuffer = app->createDeviceLocalBuffer(indices.data(),
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, nullptr);
+    indexBuffer = app->createDeviceLocalBufferAsync(indices.data(),
         indices.size() * sizeof(uint32_t),
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT, nullptr);
     indexCount = static_cast<uint32_t>(indices.size());
 }
 
@@ -250,7 +255,7 @@ void collectLeafSDFCubes(OctreeNode* node, const BoundingCube& cube, OctreeAlloc
                          std::vector<DebugSDFRenderer::CubeSDF>& out) {
     if (!node) return;
 
-    if (node->getLod() > 0u) {
+    if (node->isLeaf()) {
         DebugSDFRenderer::CubeSDF debugCube{};
         debugCube.cube = cube;
         for (size_t i = 0; i < debugCube.sdf.size(); ++i) {
