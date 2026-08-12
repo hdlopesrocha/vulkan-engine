@@ -10,6 +10,19 @@ glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
         return cube.getCenter();
     }
 
+    // Exact-zero corner: the surface passes through a cell corner (e.g. a
+    // shape exactly tangent to the cell, like a sphere rim touching a shared
+    // corner). Neighboring cells then solve slightly different QEF systems
+    // (different normals/crossings), so their near-corner vertices differ in
+    // the low bits and the shared edges split into two n=1 edges — a crack.
+    // Snap onto the corner instead: every cell sharing the corner stores the
+    // same bit-exact zero, so all emit the identical position.
+    for(int i = 0; i < 8; ++i) {
+        if(sdf[i] == 0.0f) {
+            return cube.getCorner(i);
+        }
+    }
+
     glm::vec3 normals[8];
     for (int i = 0; i < 8; ++i) {
         normals[i] = SDF::getNormalFromPosition(sdf, cube, cube.getCorner(i));

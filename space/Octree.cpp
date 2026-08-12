@@ -631,16 +631,25 @@ void Octree::iterateTriangles(
         EdgeCell cells[4];
         for(int q = 0; q < 4; ++q) {
             cells[q] = findCellAt(edgeSamplePoint(edge, mid, q));
-            if(!cells[q].isSurface(targetLod)) {
-                return;
-            }
         }
 
+        // Owner = positionally-smallest SURFACE ring cell. Non-surface
+        // quadrants (Empty/Solid space, cells of a neighboring LOD level)
+        // never own the segment, but they do NOT abort it either: the segment
+        // still closes the mesh at the surface boundary (shape faces, chunk
+        // ladder seams, world edge) with the polygon of the surface quadrants
+        // alone. Aborting there left open edge chains along every face
+        // aligned with the cell grid.
         EdgeCell owner = cells[0];
-        for(int q = 1; q < 4; ++q) {
-            if(ownerLess(cells[q], owner)) {
+        bool ownerValid = false;
+        for(int q = 0; q < 4; ++q) {
+            if(cells[q].isSurface(targetLod) && (!ownerValid || ownerLess(cells[q], owner))) {
                 owner = cells[q];
+                ownerValid = true;
             }
+        }
+        if(!ownerValid) {
+            return;
         }
 
         // Attribute the segment to the walk root `from`: it is emitted iff
@@ -664,11 +673,16 @@ void Octree::iterateTriangles(
             return;
         }
 
-        // Bounded stack buffer: built from the 4 quadrant cells (deduped), so it
-        // never exceeds 4 elements — avoids a per-segment heap allocation.
+        // Bounded stack buffer: built from the surface quadrant cells
+        // (deduped), so it never exceeds 4 elements — avoids a per-segment
+        // heap allocation. Non-surface quadrants are skipped: their nodes
+        // have no usable vertex and their cells never tessellate.
         EdgeCell plist[4];
         int pcount = 0;
         for(int q = 0; q < 4; ++q) {
+            if(!cells[q].isSurface(targetLod)) {
+                continue;
+            }
             bool duplicate = (pcount > 0)
                 && (plist[pcount - 1].node == cells[q].node
                     || samePosition(plist[pcount - 1].node->vertex.position, cells[q].node->vertex.position, edge.eps));
@@ -744,7 +758,9 @@ void Octree::iterateTriangles(
     // cell's OWN stored corner samples and emit the segments whose owner
     // (finest of the four quadrant cells at the walk's resolution) lies
     // inside the outer from-cube. Cells one level finer/coarser stay out of
-    // the segment via the isSurface(targetLod) quadrant test.
+    // the segment via the isSurface(targetLod) quadrant filter; the polygon
+    // then closes with the remaining surface quadrants instead of leaving
+    // open edges at LOD band boundaries and shape faces.
     auto scanCell = [&](OctreeNode *cellNode, const BoundingCube &cellCube) {
         for(int edgeIndex = 0; edgeIndex < 12; ++edgeIndex) {
             glm::ivec2 edgeCorners = SDF_EDGES[edgeIndex];
@@ -1316,7 +1332,13 @@ void Octree::shape(
                     for(uint i =0 ; i < 8 ; ++i) {
                         NodeOperationResult &child = children[i];
                         OctreeNode * childNode = child.node;
-                        if(child.resultType != SpaceType::Surface) {
+                        if(child.resultType != SpaceType::Surface || childNode == NULL) {
+                            // A Surface result normally owns its node (created
+                            // by its own shape() run). Degenerate cells — e.g.
+                            // a delete rim exactly touching a corner, whose
+                            // -0.0 corner classifies the cell as Surface with
+                            // all-zero-or-negative corners — may return without
+                            // one; never store a NULL slot for them.
                             if(childNode == NULL) {
                                 BoundingCube childCube = frame.cube.getChild(i);
                                 childNode = allocator->allocate()->init(Vertex(childCube.getCenter()));
