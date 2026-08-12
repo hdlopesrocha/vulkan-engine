@@ -190,7 +190,13 @@ void IteratorHandler::iterateMultiThreaded(
                 }
             }
             for(auto &fut : futures) {
-                fut.get();
+                // Cooperative wait: help drain the pool while waiting. A plain
+                // fut.get() here starves the pool whenever the number of
+                // nested blocked tasks reaches the worker count — every worker
+                // ends up waiting on a future whose task is still queued, and
+                // the walk never finishes (the sceneProcessThread then hangs
+                // forever and clean() deadlocks joining it at window close).
+                pool.getCooperative(fut);
             }
         }
     }

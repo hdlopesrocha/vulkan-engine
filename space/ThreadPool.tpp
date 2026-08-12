@@ -41,3 +41,18 @@ void ThreadPool::enqueueDetached(F&& f, Args&&... args)
     condition.notify_one();
 }
 
+// Wait for a pool future, running queued tasks in the meantime so nested
+// fork-join waits can never starve the pool (see the header comment). While
+// the queue has work, the waiter drains it back-to-back; the brief 1 ms nap
+// only happens when the queue is momentarily empty (the future's task is
+// executing on another worker and about to resolve the wait anyway).
+template<typename T>
+T ThreadPool::getCooperative(std::future<T>& fut)
+{
+    while (fut.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+        if (!runOneTask())
+            fut.wait_for(std::chrono::milliseconds(1));
+    }
+    return fut.get();
+}
+

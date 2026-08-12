@@ -45,6 +45,23 @@ void ThreadPool::stop()
 	}
 }
 
+// Pop and run one queued task. Mirrors the worker loop's dequeue, minus the
+// condition-variable wait: cooperative waiters call this in a loop, so they
+// stay productive while there is queued work that would unblock them.
+bool ThreadPool::runOneTask()
+{
+	SmallFunction task;
+	{
+		std::unique_lock<std::mutex> lock(this->queue_mutex);
+		if(this->tasks.empty())
+			return false;
+		task = std::move(this->tasks.front());
+		this->tasks.pop();
+	}
+	task();
+	return true;
+}
+
 size_t ThreadPool::threadCount() const
 {
 	return workers.size();
