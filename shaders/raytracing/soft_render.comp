@@ -243,10 +243,105 @@ void main() {
         vec3 direct = albedo * (0.15 + 0.85 * ndl * (1.0 - shadow)) * ubo.lightColor.rgb;
         vec3 ambient = albedo * 0.18 * mix(sky.skyHorizon.rgb, sky.skyZenith.rgb, 0.5);
         color = direct + ambient;
+        // Traced reflection (brute-force secondary ray, single bounce)
         vec3 reflDir = reflect(dir, hitN);
-        vec3 env = environmentColor(reflDir);
+        vec3 reflColor = environmentColor(reflDir);
+        {
+            vec3 ro = hitPos + hitN * 0.05;
+            vec3 rd = reflDir;
+            vec3 invRd = 1.0 / rd;
+            float tMin = 1e30;
+            vec3 rHitN = vec3(0);
+            vec3 rHitPos = vec3(0);
+            vec3 rHitBary = vec3(0);
+            Vertex rV0, rV1, rV2;
+            uint rKind = 0;
+            bool rHit = false;
+            for (uint ci = 0; ci < pc.chunkCount; ++ci) {
+                ChunkInfo c = chunks[ci];
+                if (c.indexCount == 0) continue;
+                if (!rayAABBIntersect(ro, invRd, c.aabbMin, c.aabbMax, tMin)) continue;
+                for (uint i = 0; i < c.indexCount; i += 3) {
+                    Vertex vv0, vv1, vv2;
+                    vec3 v0, v1, v2;
+                    if (c.kind == 0) {
+                        uint idx0 = indicesSolid[c.firstIndex + i + 0];
+                        uint idx1 = indicesSolid[c.firstIndex + i + 1];
+                        uint idx2 = indicesSolid[c.firstIndex + i + 2];
+                        vv0 = vertsSolid[c.baseVertex + idx0];
+                        vv1 = vertsSolid[c.baseVertex + idx1];
+                        vv2 = vertsSolid[c.baseVertex + idx2];
+                    } else {
+                        uint idx0 = indicesWater[c.firstIndex + i + 0];
+                        uint idx1 = indicesWater[c.firstIndex + i + 1];
+                        uint idx2 = indicesWater[c.firstIndex + i + 2];
+                        vv0 = vertsWater[c.baseVertex + idx0];
+                        vv1 = vertsWater[c.baseVertex + idx1];
+                        vv2 = vertsWater[c.baseVertex + idx2];
+                    }
+                    v0 = vv0.position; v1 = vv1.position; v2 = vv2.position;
+                    float t, u, v;
+                    if (rayTriangleIntersect(ro, rd, v0, v1, v2, t, u, v)) {
+                        if (t < tMin) {
+                            tMin = t;
+                            float w = 1.0 - u - v;
+                            vec3 n = vv0.normal * w + vv1.normal * u + vv2.normal * v;
+                            if (length(n) < 0.5) n = normalize(cross(v1 - v0, v2 - v0));
+                            rHitN = normalize(n);
+                            if (dot(rHitN, -rd) < 0.0) rHitN = -rHitN;
+                            rHitPos = ro + rd * t;
+                            rHitBary = vec3(w, u, v);
+                            rV0 = vv0; rV1 = vv1; rV2 = vv2;
+                            rKind = c.kind;
+                            rHit = true;
+                        }
+                    }
+                }
+            }
+            if (rHit) {
+                // Shade the reflected hit simply (albedo + ambient, no secondary shadow for perf)
+                ivec3 rTexIdx = ivec3(rV0.brushIndex, rV1.brushIndex, rV2.brushIndex);
+                vec3 rw = rHitBary;
+                vec3 rAlbedo = vec3(0.7);
+                // triplanar check
+                float rTriFlag = 0.0;
+                for (int k=0;k<3;k++) {
+                    int idx = (k==0? rTexIdx.x : (k==1? rTexIdx.y : rTexIdx.z));
+                    if (idx >= 0 && idx < 512) rTriFlag += materials[idx].triplanarParams.z * rw[k];
+                }
+                if (rTriFlag > 0.5) {
+                    vec3 rrTriW = abs(rHitN);
+                    float rt = ubo.triplanarSettings.x;
+                    vec3 rwt = max(vec3(0.0), rrTriW - vec3(rt));
+                    float re = max(1.0, ubo.triplanarSettings.y);
+                    rwt = pow(rwt, vec3(re));
+                    float rSum = rwt.x + rwt.y + rwt.z + 1e-6;
+                    rrTriW = rwt / rSum;
+                    vec3 ra0 = vec3(0), ra1 = vec3(0), ra2 = vec3(0);
+                    if (rw.x > 0.0) { vec2 uvX, uvY, uvZ; computeTriplanarUVs(rHitPos, rTexIdx.x, rHitN, uvX, uvY, uvZ); ra0 = computeTriplanarAlbedoUVs(rrTriW, rTexIdx.x, uvX, uvY, uvZ); }
+                    if (rw.y > 0.0) { vec2 uvX, uvY, uvZ; computeTriplanarUVs(rHitPos, rTexIdx.y, rHitN, uvX, uvY, uvZ); ra1 = computeTriplanarAlbedoUVs(rrTriW, rTexIdx.y, uvX, uvY, uvZ); }
+                    if (rw.z > 0.0) { vec2 uvX, uvY, uvZ; computeTriplanarUVs(rHitPos, rTexIdx.z, rHitN, uvX, uvY, uvZ); ra2 = computeTriplanarAlbedoUVs(rrTriW, rTexIdx.z, uvX, uvY, uvZ); }
+                    rAlbedo = ra0 * rw.x + ra1 * rw.y + ra2 * rw.z;
+                    if (dot(rAlbedo, rAlbedo) < 0.001) { rAlbedo = vec3(0.7); if (rKind == 1) rAlbedo = vec3(0.20, 0.42, 0.72); }
+                } else {
+                    vec2 rUV = rV0.texCoord * rw.x + rV1.texCoord * rw.y + rV2.texCoord * rw.z;
+                    vec3 a0 = texture(albedoArray, vec3(rUV, float(rTexIdx.x))).rgb;
+                    vec3 a1 = texture(albedoArray, vec3(rUV, float(rTexIdx.y))).rgb;
+                    vec3 a2 = texture(albedoArray, vec3(rUV, float(rTexIdx.z))).rgb;
+                    rAlbedo = a0 * rw.x + a1 * rw.y + a2 * rw.z;
+                    if (dot(rAlbedo, rAlbedo) < 0.001) { rAlbedo = vec3(0.7); if (rKind == 1) rAlbedo = vec3(0.20, 0.42, 0.72); }
+                }
+                vec3 L2 = normalize(-ubo.lightDir.xyz);
+                float rNdl = max(dot(rHitN, L2), 0.0);
+                vec3 rDirect = rAlbedo * (0.15 + 0.85 * rNdl) * ubo.lightColor.rgb;
+                vec3 rAmbient = rAlbedo * 0.18 * mix(sky.skyHorizon.rgb, sky.skyZenith.rgb, 0.5);
+                reflColor = rDirect + rAmbient;
+            }
+        }
         float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(hitN, -dir), 0.0), 5.0);
-        color = mix(color, env, fresnel * 0.12);
+        // Solid gets subtle reflection, water would be stronger but we keep same for now
+        float reflStrength = (hitKind == 1) ? 0.35 : 0.12;
+        color = mix(color, reflColor, fresnel * reflStrength);
     } else {
         color = environmentColor(dir);
     }
