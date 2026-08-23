@@ -368,9 +368,80 @@ void main() {
             }
         }
         float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(hitN, -dir), 0.0), 5.0);
-        // Solid gets subtle reflection, water would be stronger but we keep same for now
         float reflStrength = (hitKind == 1) ? 0.35 : 0.12;
         color = mix(color, reflColor, fresnel * reflStrength);
+        // Water refraction (single bounce, tinted) - only for water to keep perf
+        if (hitKind == 1) {
+            vec3 transDir = refract(dir, hitN, 0.85);
+            if (dot(transDir, transDir) > 1e-4) {
+                vec3 tro = hitPos - hitN * 0.05;
+                vec3 invTr = 1.0 / transDir;
+                float tMin2 = 1e30;
+                vec3 tHitN = vec3(0); vec3 tHitPos = vec3(0); vec3 tHitBary = vec3(0);
+                Vertex tV0, tV1, tV2; uint tKind = 0; bool tHit = false;
+                for (uint ci = 0; ci < pc.chunkCount; ++ci) {
+                    ChunkInfo c = chunks[ci];
+                    if (c.indexCount == 0) continue;
+                    if (!rayAABBIntersect(tro, invTr, c.aabbMin, c.aabbMax, tMin2)) continue;
+                    for (uint i = 0; i < c.indexCount; i += 3) {
+                        Vertex vv0, vv1, vv2; vec3 v0, v1, v2;
+                        if (c.kind == 0) {
+                            uint idx0 = indicesSolid[c.firstIndex + i + 0];
+                            uint idx1 = indicesSolid[c.firstIndex + i + 1];
+                            uint idx2 = indicesSolid[c.firstIndex + i + 2];
+                            vv0 = vertsSolid[c.baseVertex + idx0]; vv1 = vertsSolid[c.baseVertex + idx1]; vv2 = vertsSolid[c.baseVertex + idx2];
+                        } else {
+                            uint idx0 = indicesWater[c.firstIndex + i + 0];
+                            uint idx1 = indicesWater[c.firstIndex + i + 1];
+                            uint idx2 = indicesWater[c.firstIndex + i + 2];
+                            vv0 = vertsWater[c.baseVertex + idx0]; vv1 = vertsWater[c.baseVertex + idx1]; vv2 = vertsWater[c.baseVertex + idx2];
+                        }
+                        v0 = vv0.position; v1 = vv1.position; v2 = vv2.position;
+                        float t, u, v;
+                        if (rayTriangleIntersect(tro, transDir, v0, v1, v2, t, u, v)) {
+                            if (t < tMin2) {
+                                tMin2 = t; float w = 1.0 - u - v;
+                                vec3 n = vv0.normal * w + vv1.normal * u + vv2.normal * v;
+                                if (length(n) < 0.5) n = normalize(cross(v1 - v0, v2 - v0));
+                                tHitN = normalize(n); if (dot(tHitN, -transDir) < 0.0) tHitN = -tHitN;
+                                tHitPos = tro + transDir * t; tHitBary = vec3(w,u,v); tV0=vv0; tV1=vv1; tV2=vv2; tKind=c.kind; tHit=true;
+                            }
+                        }
+                    }
+                }
+                vec3 transColor = environmentColor(transDir);
+                if (tHit) {
+                    ivec3 tTexIdx = ivec3(tV0.brushIndex, tV1.brushIndex, tV2.brushIndex);
+                    vec3 tw = tHitBary;
+                    vec3 tAlbedo = vec3(0.7);
+                    float tTriFlag = 0.0;
+                    for (int k=0;k<3;k++) { int idx=(k==0? tTexIdx.x : (k==1? tTexIdx.y : tTexIdx.z)); if (idx>=0 && idx<512) tTriFlag += materials[idx].triplanarParams.z * tw[k]; }
+                    if (tTriFlag > 0.5) {
+                        vec3 rTriW = abs(tHitN); float rt = ubo.triplanarSettings.x; vec3 rwt = max(vec3(0.0), rTriW - vec3(rt)); float re = max(1.0, ubo.triplanarSettings.y); rwt = pow(rwt, vec3(re)); float rSum = rwt.x + rwt.y + rwt.z + 1e-6; rTriW = rwt / rSum;
+                        vec3 ra0=vec3(0),ra1=vec3(0),ra2=vec3(0);
+                        if (tw.x>0.0) { vec2 uvX,uvY,uvZ; computeTriplanarUVs(tHitPos, tTexIdx.x, tHitN, uvX, uvY, uvZ); ra0 = computeTriplanarAlbedoUVs(rTriW, tTexIdx.x, uvX, uvY, uvZ); }
+                        if (tw.y>0.0) { vec2 uvX,uvY,uvZ; computeTriplanarUVs(tHitPos, tTexIdx.y, tHitN, uvX, uvY, uvZ); ra1 = computeTriplanarAlbedoUVs(rTriW, tTexIdx.y, uvX, uvY, uvZ); }
+                        if (tw.z>0.0) { vec2 uvX,uvY,uvZ; computeTriplanarUVs(tHitPos, tTexIdx.z, tHitN, uvX, uvY, uvZ); ra2 = computeTriplanarAlbedoUVs(rTriW, tTexIdx.z, uvX, uvY, uvZ); }
+                        tAlbedo = ra0 * tw.x + ra1 * tw.y + ra2 * tw.z;
+                        if (dot(tAlbedo,tAlbedo)<0.001) { tAlbedo=vec3(0.7); if (tKind==1) tAlbedo=vec3(0.20,0.42,0.72); }
+                    } else {
+                        vec2 tUV = tV0.texCoord * tw.x + tV1.texCoord * tw.y + tV2.texCoord * tw.z;
+                        vec3 a0 = texture(albedoArray, vec3(tUV, float(tTexIdx.x))).rgb;
+                        vec3 a1 = texture(albedoArray, vec3(tUV, float(tTexIdx.y))).rgb;
+                        vec3 a2 = texture(albedoArray, vec3(tUV, float(tTexIdx.z))).rgb;
+                        tAlbedo = a0 * tw.x + a1 * tw.y + a2 * tw.z;
+                        if (dot(tAlbedo,tAlbedo)<0.001) { tAlbedo=vec3(0.7); if (tKind==1) tAlbedo=vec3(0.20,0.42,0.72); }
+                    }
+                    vec3 L2 = normalize(-ubo.lightDir.xyz);
+                    float tNdl = max(dot(tHitN, L2), 0.0);
+                    vec3 tDirect = tAlbedo * (0.15 + 0.85 * tNdl) * ubo.lightColor.rgb;
+                    vec3 tAmbient = tAlbedo * 0.18 * mix(sky.skyHorizon.rgb, sky.skyZenith.rgb, 0.5);
+                    transColor = tDirect + tAmbient;
+                }
+                vec3 tint = vec3(0.30, 0.55, 0.80);
+                color = mix(color, transColor * tint, 0.25);
+            }
+        }
     } else {
         color = environmentColor(dir);
     }
