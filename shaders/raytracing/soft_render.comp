@@ -44,14 +44,17 @@ vec3 environmentColor(vec3 dir) {
     float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 horizon = sky.skyHorizon.rgb;
     vec3 zenith = sky.skyZenith.rgb;
-    // Fallback if sky UBO is zero (not yet updated) - use simple sky gradient
-    if (dot(horizon, horizon) < 0.001 && dot(zenith, zenith) < 0.001) {
-        horizon = vec3(0.55, 0.70, 0.85);
-        zenith = vec3(0.15, 0.35, 0.65);
+    // Fallback if sky UBO is zero - use distinct sky gradient for RT miss
+    bool useFallback = dot(horizon, horizon) < 0.001 && dot(zenith, zenith) < 0.001;
+    if (useFallback) {
+        horizon = vec3(0.60, 0.75, 0.90);
+        zenith = vec3(0.10, 0.25, 0.60);
+    } else {
+        horizon = mix(horizon, sky.nightHorizon.rgb, sky.nightParams.x);
+        zenith = mix(zenith, sky.nightZenith.rgb, sky.nightParams.x);
     }
-    horizon = mix(horizon, sky.nightHorizon.rgb, sky.nightParams.x);
-    zenith = mix(zenith, sky.nightZenith.rgb, sky.nightParams.x);
-    return mix(horizon, zenith, pow(t, max(sky.skyParams.y, 0.5)));
+    // More contrast for sky visibility
+    return mix(horizon, zenith, pow(t, useFallback ? 0.7 : max(sky.skyParams.y, 0.5)));
 }
 
 bool rayTriangleIntersect(vec3 orig, vec3 dir, vec3 v0, vec3 v1, vec3 v2, out float t, out float u, out float v) {
