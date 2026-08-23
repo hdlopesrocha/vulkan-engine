@@ -302,23 +302,38 @@ void RayTracingRenderer::createPipelines(VulkanApp* app) {
 }
 
 void RayTracingRenderer::createSoftDescriptorSetLayout(VulkanApp* app) {
-    // Software fallback uses compute, not ray tracing. Bindings match the soft_*.comp shaders:
-    // set 0: 0=UBO, 6=SkyUBO, 15=vertsSolid, 16=idxSolid, 17=vertsWater, 18=idxWater, 19=chunkInfos
+    // Software fallback uses compute. Bindings mirror the HW RT set (0-14) for
+    // textures/materials/UBOs so the same ubo.glsl can be reused, plus 15-19 for
+    // brute-force geometry.
+    // set 0: 0=UBO, 1-4,8,9,11-14=textures, 5,7=storage, 6,10=UBO, 15-19=geometry
     // set 1: 0=storage image output
-    auto make = [&](uint32_t b, VkDescriptorType t) {
+    auto mk = [&](uint32_t b, VkDescriptorType t) {
         VkDescriptorSetLayoutBinding bd{};
         bd.binding = b; bd.descriptorCount = 1; bd.descriptorType = t;
         bd.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         return bd;
     };
     std::vector<VkDescriptorSetLayoutBinding> bindings;
-    bindings.push_back(make(0,  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)); // ubo
-    bindings.push_back(make(6,  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)); // sky
-    bindings.push_back(make(15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
-    bindings.push_back(make(16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
-    bindings.push_back(make(17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
-    bindings.push_back(make(18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
-    bindings.push_back(make(19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
+    bindings.push_back(mk(0,  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER));
+    bindings.push_back(mk(1,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER));
+    bindings.push_back(mk(2,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER));
+    bindings.push_back(mk(3,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER));
+    bindings.push_back(mk(4,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER));
+    bindings.push_back(mk(5,  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
+    bindings.push_back(mk(6,  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER));
+    bindings.push_back(mk(7,  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
+    bindings.push_back(mk(8,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER));
+    bindings.push_back(mk(9,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER));
+    bindings.push_back(mk(10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER));
+    bindings.push_back(mk(11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER));
+    bindings.push_back(mk(12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER));
+    bindings.push_back(mk(13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER));
+    bindings.push_back(mk(14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER));
+    bindings.push_back(mk(15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
+    bindings.push_back(mk(16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
+    bindings.push_back(mk(17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
+    bindings.push_back(mk(18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
+    bindings.push_back(mk(19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
     std::vector<VkDescriptorBindingFlags> bflags(bindings.size(), VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT);
     VkDescriptorSetLayoutBindingFlagsCreateInfo bflagsInfo{};
     bflagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
@@ -350,9 +365,10 @@ void RayTracingRenderer::createSoftDescriptorSetLayout(VulkanApp* app) {
     if (vkCreateDescriptorSetLayout(app->getDevice(), &oli, nullptr, &softOutputLayout_) != VK_SUCCESS)
         throw std::runtime_error("RayTracingRenderer: failed to create soft output layout");
 
-    std::array<VkDescriptorPoolSize, 3> poolSizes = {
-        VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4 },
-        VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 },
+    std::array<VkDescriptorPoolSize, 4> poolSizes = {
+        VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8 },
+        VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16 },
+        VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 20 },
         VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4 },
     };
     VkDescriptorPoolCreateInfo pi{};
@@ -403,9 +419,10 @@ void RayTracingRenderer::createSoftPipelines(VulkanApp* app) {
 
 void RayTracingRenderer::updateSoftDescriptors(VulkanApp* app) {
     if (!useSoftware_ || softDescSet_ == VK_NULL_HANDLE) return;
-    // Copy UBO and SkyUBO from the main descriptor set (bindings 0 and 6) — same as HW path
+    // Copy all scene bindings (0-14) from the main descriptor set so the compute
+    // shaders can sample the same textures/materials as the HW RT path.
     std::vector<VkCopyDescriptorSet> copies;
-    for (uint32_t b : {0u, 6u}) {
+    for (uint32_t b = 0; b <= 14; ++b) {
         VkCopyDescriptorSet c{};
         c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
         c.srcSet = app->getMainDescriptorSet();

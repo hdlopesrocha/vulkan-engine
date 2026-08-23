@@ -2,6 +2,7 @@
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "ubo.glsl"
+#include "textures.glsl"
 
 struct Vertex {
     vec3 position;
@@ -135,6 +136,11 @@ void main() {
         if (dot(hitN, -dir) < 0.0) hitN = -hitN;
         vec3 albedo = vec3(0.7);
         if (hitKind == 1) albedo = vec3(0.20, 0.42, 0.72);
+        // Software fallback texture sample (world XZ as UV, layer 0)
+        // This verifies the descriptor is bound; full material UV requires barycentrics
+        vec3 texAlbedo = texture(albedoArray, vec3(fract(hitPos.xz * 0.05), 0)).rgb;
+        // Blend flat with texture so missing texture is still visible
+        albedo = mix(albedo, texAlbedo, 0.5);
         vec3 L = normalize(-ubo.lightDir.xyz);
         float ndl = max(dot(hitN, L), 0.0);
         bool shadowed = false;
