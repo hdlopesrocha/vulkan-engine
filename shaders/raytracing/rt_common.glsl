@@ -48,12 +48,29 @@ layout(push_constant) uniform PC {
 // reflection/refraction rays that escape the scene.
 vec3 environmentColor(vec3 dir) {
     float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 horizon = sky.skyHorizon.rgb;
-    vec3 zenith = sky.skyZenith.rgb;
-    // Blend night colors when night intensity is set.
-    horizon = mix(horizon, sky.nightHorizon.rgb, sky.nightParams.x);
-    zenith = mix(zenith, sky.nightZenith.rgb, sky.nightParams.x);
-    return mix(horizon, zenith, pow(t, max(sky.skyParams.y, 0.5)));
+    vec3 horizonColor = sky.skyHorizon.rgb;
+    vec3 zenithColor = sky.skyZenith.rgb;
+    float userWarmth = clamp(sky.skyParams.x, 0.0, 1.0);
+    float sunElev = -clamp(ubo.lightDir.y, -1.0, 1.0);
+    float sunFactor = clamp((1.0 - sunElev) * 0.75, 0.0, 1.0);
+    sunFactor = pow(sunFactor, 1.5);
+    vec3 warmTint = vec3(1.0, 0.45, 0.2);
+    horizonColor = mix(horizonColor, warmTint, sunFactor * userWarmth);
+    float zenithWarm = smoothstep(0.0, 0.4, sunFactor) * 0.35 * userWarmth;
+    zenithColor = mix(zenithColor, warmTint * 0.6, zenithWarm);
+    float exponent = max(sky.skyParams.y, 0.01);
+    exponent *= mix(1.0, 1.6, pow(sunFactor, 0.8));
+    float tt = pow(t, exponent);
+    vec3 dayColor = mix(horizonColor, zenithColor, tt);
+    float dayFactor = smoothstep(-0.2, 0.2, sunElev);
+    vec3 nightHor = sky.nightHorizon.rgb;
+    vec3 nightZen = sky.nightZenith.rgb;
+    float nightIntensity = clamp(sky.nightParams.x, 0.0, 1.0);
+    vec3 nightColor = mix(nightHor, nightZen, pow(t, max(sky.skyParams.y, 0.5)));
+    vec3 c = mix(nightColor, dayColor, dayFactor * (1.0 - nightIntensity) + nightIntensity * 0.0);
+    // Simple fallback if UBO is zero
+    if (dot(c, c) < 0.001) c = mix(vec3(0.60, 0.75, 0.90), vec3(0.10, 0.25, 0.60), pow(t, 0.7));
+    return c;
 }
 
 // Camera ray for the current launch pixel, reconstructed from the inverse view
