@@ -187,10 +187,12 @@ void main() {
         ivec3 texIndices = ivec3(hitV0.brushIndex, hitV1.brushIndex, hitV2.brushIndex);
         vec3 w = hitBary;
 
-        // Sample albedo: water is flat, solid uses triplanar/direct as in main.frag
+        // Sample albedo: water is tinted with simple wave, solid uses triplanar
         vec3 albedo;
         if (hitKind == 1) {
-            albedo = vec3(0.20, 0.42, 0.72);
+            // Simple water tint with slight wave based on world pos
+            float wave = sin(hitPos.x * 0.08 + ubo.viewPos.x * 0.01) * cos(hitPos.z * 0.08) * 0.04;
+            albedo = vec3(0.15 + wave, 0.38 + wave, 0.68 + wave * 0.5);
         } else {
         float triFlag = 0.0;
         for (int k=0;k<3;k++) {
@@ -368,7 +370,7 @@ void main() {
             }
         }
         float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(hitN, -dir), 0.0), 5.0);
-        float reflStrength = (hitKind == 1) ? 0.35 : 0.12;
+        float reflStrength = (hitKind == 1) ? 0.65 : 0.12;
         color = mix(color, reflColor, fresnel * reflStrength);
         // Water refraction (single bounce, tinted) - only for water to keep perf
         if (hitKind == 1) {
@@ -438,8 +440,8 @@ void main() {
                     vec3 tAmbient = tAlbedo * 0.18 * mix(sky.skyHorizon.rgb, sky.skyZenith.rgb, 0.5);
                     transColor = tDirect + tAmbient;
                 }
-                vec3 tint = vec3(0.30, 0.55, 0.80);
-                color = mix(color, transColor * tint, 0.25);
+                vec3 tint = vec3(0.25, 0.50, 0.75);
+                color = mix(color, transColor * tint, 0.45);
             }
         }
     } else {
