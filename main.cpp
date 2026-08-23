@@ -942,7 +942,7 @@ public:
                     std::array<uint64_t, QUERY_COUNT> ts{};
                     if (vkGetQueryPoolResults(getDevice(), queryPools[f], 0, QUERY_COUNT,
                             sizeof(ts[0]) * ts.size(), ts.data(), sizeof(ts[0]),
-                            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_PARTIAL_BIT) != VK_SUCCESS)
+                            VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
                         continue;
                     std::cerr << "[stall] pool " << f << " timestamps:\n";
                     for (uint32_t i = 0; i < 10; ++i) {
@@ -1424,7 +1424,8 @@ public:
                 RendererUtils::transitionImageLayout(
                     commandBuffer, solidColorImg,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
                 setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
             }
