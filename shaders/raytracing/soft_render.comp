@@ -243,10 +243,11 @@ void main() {
         vec3 direct = albedo * (0.15 + 0.85 * ndl * (1.0 - shadow)) * ubo.lightColor.rgb;
         vec3 ambient = albedo * 0.18 * mix(sky.skyHorizon.rgb, sky.skyZenith.rgb, 0.5);
         color = direct + ambient;
-        // Traced reflection (brute-force secondary ray, single bounce)
+        // Traced reflection: only for water (0.35 strength) do brute-force; solid keeps cheap env to stay under TDR
         vec3 reflDir = reflect(dir, hitN);
         vec3 reflColor = environmentColor(reflDir);
-        {
+        bool doTracedRefl = (hitKind == 1); // water only
+        if (doTracedRefl) {
             vec3 ro = hitPos + hitN * 0.05;
             vec3 rd = reflDir;
             vec3 invRd = 1.0 / rd;
