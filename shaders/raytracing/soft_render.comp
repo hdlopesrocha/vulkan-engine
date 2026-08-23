@@ -179,7 +179,7 @@ void main() {
         }
     }
     // Vegetation billboards (shared cross-quad, many instances)
-    if (!hit || closestT > 50.0) { // only check veg if no closer solid hit nearby, cheap cull
+    if (true) { // always check veg
         for (uint vi = 0; vi < pc.vegCount; ++vi) {
             VegInstance inst = vegInstances[vi];
             // Quick AABB via instance transform: approximate with a sphere at instance translation
