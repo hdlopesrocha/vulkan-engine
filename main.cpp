@@ -610,8 +610,6 @@ public:
 
     void setup() override {
         sceneRenderer = new SceneRenderer();
-        for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i)
-            shadowParams.shadowMapSizes[i] = sceneRenderer->shadowMapper->getShadowMapSize(i);
         // Initialize application-owned water params with two default elements
         waterParams.push_back(WaterParams{}); // Add a third layer to demonstrate pagination in UI even without texture arrays
         {
@@ -716,7 +714,7 @@ public:
                 sceneRenderer->pendingMeshMutex,
                 sceneRenderer->mainSolidChunks,
                 sceneRenderer->mainSolidChunksMutex,
-                sceneRenderer->mainSolidRenderer->getIndirectRenderer(), 
+                sceneRenderer->getSolidIndirectRenderer(), 
                 sceneRenderer->pendingDeleteSolidSlots, 
                 true
             }
@@ -805,6 +803,11 @@ public:
 
         sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
 
+        // Ray tracing is created eagerly when supported; it stays dormant (no
+        // workloads traced) until rtShadowEnabled is flipped on, so the raster
+        // pipeline is unaffected either way.
+        sceneRenderer->initRayTracing(this);
+
         // Re-wire impostors now that VegetationRenderer::init() has stored the render pass.
         if (impostorService) impostorService->rewire();
 
@@ -839,8 +842,8 @@ public:
 
         renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
             this,
-            sceneRenderer, sceneRenderer->mainSolidRenderer.get(), sceneRenderer->skyRenderer.get(),
-            sceneRenderer->shadowMapper.get(), &shadowParams);
+            sceneRenderer, sceneRenderer->skyRenderer.get(),
+            &shadowParams);
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
@@ -1038,6 +1041,8 @@ public:
             std::deque<SceneRenderer::PendingMeshData> pendingBatch;
             sceneRenderer->drainPendingMeshes(pendingBatch, 16);
             sceneRenderer->processPendingMeshes(this, camera.getPosition(), pendingBatch);
+            sceneRenderer->syncRayTracingScene(this);
+            sceneRenderer->updateRayTracing(this);
         }
 
 #ifdef DEBUG
@@ -1141,7 +1146,7 @@ public:
         // Must be set BEFORE prepareCull below so culls and drawPrepared use
         // the same per-frame compact/visibleCount slots (setCullFrame in
         // draw() would make every draw read a stale, never-culled slot).
-        sceneRenderer->mainSolidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
+        sceneRenderer->getSolidIndirectRenderer().setCullFrame(frameIdx);
         sceneRenderer->brushRenderer->getSolidIR().setCullFrame(frameIdx);
         sceneRenderer->mainLiquidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
 
@@ -1223,11 +1228,11 @@ public:
         uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
         uboStatic.lightDir = glm::vec4(light.getDirection(), 0.0f);
         uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 0.9f, 1.0f);
-        uboStatic.lightSpaceMatrix  = shadowParams.lightSpaceMatrix[0];
-        uboStatic.lightSpaceMatrix1 = shadowParams.lightSpaceMatrix[1];
-        uboStatic.lightSpaceMatrix2 = shadowParams.lightSpaceMatrix[2];
         // Encode debug/triplanar/tess parameters into the shared UBO
-        uboStatic.debugParams = glm::vec4(static_cast<float>(settings.debugMode), settings.roughnessEnabled ? 1.0f : 0.0f, settings.aoEnabled ? 1.0f : 0.0f, 0.0f);
+        // debugParams.w carries the ray-traced shadow enable flag so the lit
+        // shaders can choose between EVSM cascades and the RT occlusion mask.
+        float rtShadowFlag = (sceneRenderer && sceneRenderer->rtShadowEnabled) ? 1.0f : 0.0f;
+        uboStatic.debugParams = glm::vec4(static_cast<float>(settings.debugMode), settings.roughnessEnabled ? 1.0f : 0.0f, settings.aoEnabled ? 1.0f : 0.0f, rtShadowFlag);
         uboStatic.triplanarSettings = glm::vec4(settings.triplanarThreshold, settings.triplanarExponent, 0.0f, 0.0f);
         uboStatic.tessParams = glm::vec4(
             settings.tessMinDistance,
@@ -1270,8 +1275,8 @@ public:
         // current-frame compact/visibleCount buffers populated. ──
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
-        sceneRenderer->mainSolidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-        sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+        sceneRenderer->getSolidIndirectRenderer().acquireBuffers(commandBuffer);
+        sceneRenderer->getSolidIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(commandBuffer);
         sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
@@ -1296,7 +1301,21 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
         if (sceneRenderer) {
-            sceneRenderer->shadowMapper->render(this, commandBuffer, frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled, settings.lodBias, camera.getPosition());
+            // Ray-traced shadow trace: the old EVSM cascaded shadow-map render
+            // pass has been removed; all shadow visibility now comes from the
+            // lightweight shadow ray-tracing workload writing rtShadowImage.
+            // The frame's command buffer already waits on the AS-build semaphore
+            // (added in SceneRenderer::updateRayTracing), so the TLAS/BLAS are
+            // ready before this executes.
+            sceneRenderer->recordRayTracingShadow(commandBuffer);
+            // Ray-traced reflection trace (gated by rtEnabled). Writes the fully
+            // lit reflected scene colour into rtReflectImage, read by the solid
+            // lit pipeline's env-reflection path when RT is on.
+            sceneRenderer->recordRayTracingReflection(commandBuffer);
+            // Primary ray-traced scene render. Writes
+            // the fully shaded scene into rtSceneImage; composited into the solid
+            // offscreen colour target after the offscreen pass below.
+            sceneRenderer->recordRayTracingRender(commandBuffer);
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 1);
@@ -1311,13 +1330,7 @@ public:
         const bool waterEnabled = settings.waterEnabled;
         const bool vegetationEnabled = settings.vegetationEnabled;
 
-        // Render sky + solids/vegetation into the solid offscreen framebuffer (one per frame)
-
-        if (sceneRenderer->skyRenderer) {
-            SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
-            sceneRenderer->skyRenderer->renderOffscreen(this, commandBuffer, frameIdx,
-                getMainDescriptorSet(), sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
-        }
+        // Sky is handled by the ray-tracing primary pass (procedural SkyUBO) — no raster sky draw.
 
         VkClearValue colorClear{};
         // Clear solid offscreen color to transparent so composite starts from empty scene
@@ -1334,7 +1347,7 @@ public:
         // Transition depth to DEPTH_STENCIL_ATTACHMENT_OPTIMAL for Instance 1 below.
         // (The previous frame left it in SHADER_READ_ONLY after the water pass.)
         {
-            VkImage solidDepthImg = sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx);
+            VkImage solidDepthImg = sceneRenderer->getSolidDepthImage(frameIdx);
             if (solidDepthImg != VK_NULL_HANDLE) {
                 RendererUtils::transitionImageLayout(
                     commandBuffer, solidDepthImg,
@@ -1352,53 +1365,20 @@ public:
         // and brush color are all written here before solid geometry touches the
         // scene depth buffer. A later overlay pass renders brush with opacity on top
         // of solid/water using the scene depth buffer for occlusion culling.
-        // Recording lives in BrushRenderer::recordEarlyPass.
+        // (Brush raster recording was removed; brush geometry is produced for ray tracing only.)
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 4);
-        if (sceneRenderer->brushRenderer) {
-            sceneRenderer->brushRenderer->recordEarlyPass(
-                this, commandBuffer, frameIdx,
-                *sceneRenderer->mainSolidRenderer,
-                getMainDescriptorSet());
-        }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
 
-        // ── Cubemap render on main CB (after brush pass, reads brush depth textures) ──
-        const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
-        const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
-        if (renderCubemap) {
-            ensureCubemapResources();
-
-            UniformObject ubo360 = uboStatic;
-            ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
-
-            auto tCubemap = std::chrono::high_resolution_clock::now();
-            this->sceneRenderer->solid360Renderer->render(
-                this, commandBuffer,
-                this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
-                this->sceneRenderer->mainSolidRenderer.get(),
-                cube360GfxDs,
-                this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx),
-                cube360UBO, ubo360,
-                settings.renderSolid, waterEnabled,
-                cube360ComputeDs,
-                cube360Compact.buffer,
-                cube360Visible.buffer,
-                cube360WaterComputeDs,
-                cube360WaterCompact.buffer,
-                cube360WaterVisible.buffer,
-                frameIdx);
-            this->profileSolid360 = std::chrono::duration<float, std::milli>(
-                std::chrono::high_resolution_clock::now() - tCubemap).count();
-        }
+        // Cubemap/Solid360 render removed: ray tracing produces the primary scene (no raster cubemap pass).
 
         // ── Instance 1: Deferred depth pre-pass (no color attachment) ──
         // Solid + vegetation write depth; impostors use single-pass (depth+color in Instance 2).
         {
             VkRenderingAttachmentInfo depthAtt{};
             depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depthAtt.imageView = sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
+            depthAtt.imageView = sceneRenderer->getSolidDepthView(frameIdx);
             depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1422,17 +1402,11 @@ public:
                 vkCmdSetScissor(commandBuffer, 0, 1, &sc);
             }
 
-            // Solid geometry depth
+            // Solid/vegetation depth previously drawn here via the raster path; the
+            // ray-traced primary pass now produces the scene, so no raster depth is drawn.
+
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
-            if (settings.renderSolid) {
-                sceneRenderer->mainSolidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
-            }
-
-            // Vegetation depth (impostors render depth+color in Instance 2)
-            if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
-                sceneRenderer->vegetationRenderer->drawDepth(this, commandBuffer, viewProj, camera.getPosition());
-            }
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
@@ -1445,7 +1419,7 @@ public:
 
         // Transition color to COLOR_ATTACHMENT_OPTIMAL for Instance 2 below.
         {
-            VkImage solidColorImg = sceneRenderer->mainSolidRenderer->getColorImage(frameIdx);
+            VkImage solidColorImg = sceneRenderer->getSolidColorImage(frameIdx);
             if (solidColorImg != VK_NULL_HANDLE) {
                 RendererUtils::transitionImageLayout(
                     commandBuffer, solidColorImg,
@@ -1456,19 +1430,27 @@ public:
             }
         }
 
+        // Composite the primary ray-traced scene (rtSceneImage) into the solid
+        // colour target before the colour pass. The colour
+        // pass below uses LOAD_OP_LOAD so this blitted scene is preserved and the
+        // raster solid/veg colour draws are skipped.
+        sceneRenderer->compositeRayTracedScene(commandBuffer, frameIdx);
+
         // ── Instance 2: Color pass (load depth from prepass, LESS compare for impostors) ──
         {
             VkRenderingAttachmentInfo colorAtt{};
             colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            colorAtt.imageView = sceneRenderer->mainSolidRenderer->getColorView(frameIdx);
+            colorAtt.imageView = sceneRenderer->getSolidColorView(frameIdx);
             colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            // The primary ray-traced scene is always composited in, so LOAD the
+            // colour target to preserve the blitted RT result.
+            colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             colorAtt.clearValue = colorClear;
 
             VkRenderingAttachmentInfo depthAtt{};
             depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depthAtt.imageView = sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
+            depthAtt.imageView = sceneRenderer->getSolidDepthView(frameIdx);
             depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -1492,36 +1474,23 @@ public:
                 vkCmdSetScissor(commandBuffer, 0, 1, &sc);
             }
 
-            // Sky first (background, no depth write)
+            // Sky is provided by the ray-tracing primary pass; no raster sky draw.
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
-            if (sceneRenderer->skyRenderer) {
-                SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
-                sceneRenderer->skyRenderer->render(this, commandBuffer, getMainDescriptorSet(),
-                    sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
-            }
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 9);
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
 
-            // Solid geometry color (LESS_OR_EQUAL, no depth write)
-            if (settings.renderSolid) {
-                VkDescriptorSet brushDepthSet = sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx);
-                sceneRenderer->mainSolidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet(), brushDepthSet);
-            }
+            // Solid/vegetation color previously drawn here via the raster path; the
+            // ray-traced primary pass now produces the scene.
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 11);
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 12);
-
-            // Vegetation color + impostor color+depth (single-pass depth write)
-            if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
-                sceneRenderer->vegetationRenderer->drawColor(this, commandBuffer, viewProj, camera.getPosition());
-            }
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 13);
@@ -1554,7 +1523,7 @@ public:
                         boxes.push_back({BoundingBox(glm::vec3(mi.boundsMin), glm::vec3(mi.boundsMax)), color});
                     });
                 };
-                gatherBoxesFrom(sceneRenderer->mainSolidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 1.0f, 0.0f));
+                gatherBoxesFrom(sceneRenderer->getSolidIndirectRenderer(), glm::vec3(0.0f, 1.0f, 0.0f));
                 gatherBoxesFrom(sceneRenderer->mainLiquidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 0.5f, 1.0f));
                 if (!boxes.empty()) {
                     sceneRenderer->boundingBoxRenderer->setCubes(boxes);
@@ -1570,10 +1539,6 @@ public:
                 }
             }
 
-            if (settings.renderSolid && settings.wireframeMode && sceneRenderer) {
-                sceneRenderer->mainSolidRenderer->drawWireframeOverlay(commandBuffer, this, getMainDescriptorSet());
-            }
-
             vkCmdEndRendering(commandBuffer);
         }
 
@@ -1581,8 +1546,8 @@ public:
         // The water pass's initializeGeomDepthFromSceneDepth expects the scene depth
         // in SHADER_READ_ONLY_OPTIMAL (it transitions to TRANSFER_SRC internally).
         {
-            VkImage solidColorImg = sceneRenderer->mainSolidRenderer->getColorImage(frameIdx);
-            VkImage solidDepthImg = sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx);
+            VkImage solidColorImg = sceneRenderer->getSolidColorImage(frameIdx);
+            VkImage solidDepthImg = sceneRenderer->getSolidDepthImage(frameIdx);
             uint32_t bc = 0;
             VkImageMemoryBarrier2 barriers[2]{};
 
@@ -1623,237 +1588,16 @@ public:
                 setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
         }
 
-        // If water is disabled, clear its offscreen targets here (outside any active
-        // dynamic rendering instance) so the post-process compositor won't sample
-        // stale content.
-        if (!waterEnabled && sceneRenderer && sceneRenderer->mainLiquidRenderer) {
+        // If water is disabled (or the ray-traced primary pass already rendered
+        // water into the scene image), clear its offscreen targets here (outside
+        // any active dynamic rendering instance) so the post-process compositor
+        // won't sample stale content.
+        if (sceneRenderer && sceneRenderer->mainLiquidRenderer) {
             sceneRenderer->mainLiquidRenderer->clearRenderTargets(this, commandBuffer, frameIdx);
         }
 
-        // Launch asynchronous recording+submit for independent offscreen passes
-        // using a persistent thread pool to avoid per-frame std::thread creation overhead.
-        VkSemaphore semBackFace = VK_NULL_HANDLE;
-        std::future<void> asyncBackFaceFuture;
-
-        // Back-face depth for water
-        if (waterEnabled && sceneRenderer && sceneRenderer->backFaceRenderer) {
-            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semBackFace]() {
-                VulkanApp* app = this;
-                VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
-                VkCommandBufferBeginInfo beginInfo{};
-                beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
-                    std::cerr << "[Async] vkBeginCommandBuffer failed for backFace" << std::endl;
-                    app->freeCommandBuffer(cmd);
-                    return;
-                }
-                // Reuse a ring of pre-allocated per-task resources (cull output buffers)
-                // instead of creating host-visible buffers every frame. Slot safety:
-                // see the cachedBackfaceRing comment above -- the previous submission
-                // using this slot (task N) has completed before task N+ASYNC_RING_SIZE
-                // runs, so reusing (and on growth, replacing) the buffers cannot race
-                // with the GPU.
-                IndirectRenderer &ind = this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
-                uint32_t numCmds = std::max({
-                    static_cast<uint32_t>(ind.getMeshCount()),
-                    static_cast<uint32_t>(ind.getMeshCapacity()),
-                    1u
-                });
-                BackfaceSlot& slot = cachedBackfaceRing[ringBackface++ % ASYNC_RING_SIZE];
-
-                // Lazily create the slot's buffers once. The compact buffer is only
-                // recreated when the cull capacity grows; the old buffer's last
-                // submission (this slot's previous task) has completed (see above),
-                // so destroying it in place is safe and needs no deferred destroy.
-                if (slot.compact.buffer == VK_NULL_HANDLE || slot.compactCapacity < numCmds) {
-                    if (slot.compact.buffer != VK_NULL_HANDLE)
-                        app->destroyBuffer(slot.compact); // slot's previous task completed
-                    slot.compact = app->createBuffer(sizeof(VkDrawIndexedIndirectCommand) * numCmds,
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                    slot.compactCapacity = numCmds;
-                }
-                if (slot.visible.buffer == VK_NULL_HANDLE) {
-                    slot.visible = app->createBuffer(sizeof(uint32_t),
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                }
-
-                VkDevice dev = app->getDevice();
-                auto lazyComputeSlot = [&](PoolSetPair* ring, uint32_t& idx, VkDescriptorSetLayout layout, const char* label) -> PoolSetPair& {
-                    auto& s = ring[idx++ % ASYNC_RING_SIZE];
-                    if (s.pool != VK_NULL_HANDLE) return s;
-                    if (layout == VK_NULL_HANDLE) return s;
-                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 };
-                    VkDescriptorPoolCreateInfo pci{};
-                    pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                    pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
-                    pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-                    vkCreateDescriptorPool(dev, &pci, nullptr, &s.pool);
-                    app->resources.addDescriptorPool(s.pool, label);
-                    VkDescriptorSetAllocateInfo ai{};
-                    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                    ai.descriptorPool = s.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &layout;
-                    vkAllocateDescriptorSets(dev, &ai, &s.set);
-                    app->resources.addDescriptorSet(s.set, label);
-                    return s;
-                };
-                VkDescriptorSet computeDs = VK_NULL_HANDLE;
-                {
-                    VkDescriptorSetLayout bfLayout = ind.getComputeDescriptorSetLayout();
-                    auto& dsSlot = lazyComputeSlot(cachedBackfaceCompute, ringBackfaceCompute, bfLayout, "Lazy cachedBackfaceCompute");
-                    computeDs = dsSlot.set;
-                }
-
-                // Update descriptor set with buffers: inCmds, outCmds, bounds,
-                // visibleCount, visibleLods (binding 4 = persistent scratch).
-                if (computeDs != VK_NULL_HANDLE) {
-                    DescriptorWriter(dev)
-                        .writeBuffer(computeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     ind.getIndirectBuffer().buffer, 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     slot.compact.buffer, 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     ind.getBoundsBuffer().buffer, 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     slot.visible.buffer, 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     ind.getVisibleLodsScratchBuffer(), 0, VK_WHOLE_SIZE)
-                        .flush();
-                }
-
-                // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
-                if (computeDs != VK_NULL_HANDLE) {
-                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, slot.compact.buffer, slot.visible.buffer,
-                                                  camera.getPosition());
-                }
-
-                // Water-depth descriptor set for THIS task: pre-allocated per ring slot
-                // and rewritten each frame before submission. Reuse is safe because the
-                // slot's previous submission, which bound this set on the GPU, has
-                // completed before we rewrite it (see the cachedBackfaceRing comment).
-                // A dedicated set per slot keeps the async back-face pass from sharing
-                // the per-frame set with the main command buffer (which would require
-                // UPDATE_AFTER_BIND and trip GPU-assisted validation's descriptor-count
-                // check).
-                VkDescriptorSet asyncWaterDs = VK_NULL_HANDLE;
-                {
-                    VkImageView bfBack = (this->sceneRenderer->backFaceRenderer) ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
-                    VkImageView bfCube = (this->sceneRenderer->solid360Renderer) ? this->sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-                    VkDescriptorSetLayout wdsLayout = this->sceneRenderer->mainLiquidRenderer->getWaterDepthDescriptorSetLayout();
-                    if (wdsLayout != VK_NULL_HANDLE && bfBack != VK_NULL_HANDLE && bfCube != VK_NULL_HANDLE) {
-                        if (slot.pool == VK_NULL_HANDLE) {
-                            // Per-slot pool (maxSets=1) so the set is allocated once and
-                            // rewritten every task; flags mirror the renderer's async
-                            // pool (the water-depth layout has no UPDATE_AFTER_BIND
-                            // bindings, so none is required here).
-                            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 };
-                            VkDescriptorPoolCreateInfo pci{};
-                            pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                            pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
-                            pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-                            if (vkCreateDescriptorPool(dev, &pci, nullptr, &slot.pool) == VK_SUCCESS) {
-                                app->resources.addDescriptorPool(slot.pool, "cachedBackfaceWaterDepth pool");
-                                VkDescriptorSetAllocateInfo ai{};
-                                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                                ai.descriptorPool = slot.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &wdsLayout;
-                                if (vkAllocateDescriptorSets(dev, &ai, &slot.waterDs) != VK_SUCCESS) {
-                                    slot.waterDs = VK_NULL_HANDLE; // retried on a later task
-                                } else {
-                                    app->resources.addDescriptorSet(slot.waterDs, "cachedBackfaceWaterDepth DS");
-                                }
-                            }
-                        }
-                        if (slot.waterDs != VK_NULL_HANDLE) {
-                            VkImageView bfColor = this->sceneRenderer->mainSolidRenderer->getColorView(frameIdx);
-                            VkImageView bfDepth = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
-                            VkImageView bfSky   = (this->sceneRenderer->skyRenderer) ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs, bfColor, bfDepth, frameIdx, bfSky, bfBack, bfCube);
-                            asyncWaterDs = slot.waterDs;
-                        }
-                    }
-                }
-
-                // Patch binding #3 to the dummy depth to avoid the back-face
-                // pass reading-from the same image it writes-to as depth
-                // attachment (SYNC-HAZARD READ_AFTER_WRITE).
-                if (asyncWaterDs != VK_NULL_HANDLE) {
-                    WaterBackFaceRenderer* bfr = this->sceneRenderer->backFaceRenderer.get();
-                    if (bfr && bfr->getDummyDepthView() != VK_NULL_HANDLE) {
-                        bfr->patchBinding3(asyncWaterDs, bfr->getDummyDepthView());
-                    }
-                }
-
-                // Render back-face pass using this slot's (ring-reused) compact/visible
-                // buffers so draws consume the cull results
-                auto tBackface = std::chrono::high_resolution_clock::now();
-                this->sceneRenderer->backFaceRenderer->render(app, cmd, frameIdx,
-                                            ind,
-                                            this->sceneRenderer->mainLiquidRenderer->getWaterGeometryPipelineLayout(),
-                                            app->getMainDescriptorSet(),
-                                            asyncWaterDs,
-                                            (computeDs != VK_NULL_HANDLE) ? slot.compact.buffer : VK_NULL_HANDLE,
-                                            (computeDs != VK_NULL_HANDLE) ? slot.visible.buffer : VK_NULL_HANDLE);
-
-                this->profileBackface = std::chrono::duration<float, std::milli>(
-                    std::chrono::high_resolution_clock::now() - tBackface).count();
-                // Submit. The ring slot's buffers/set are NOT defer-destroyed: they are
-                // reused ASYNC_RING_SIZE tasks later, by which time this submission has
-                // completed (guaranteed by the frame-fence chain described on
-                // cachedBackfaceRing). Use submitCommandBufferAsyncToQueue on the
-                // graphics queue so the completion semaphore (semBackFace) is
-                // registered in m_extraWaitSemaphores and drawFrame waits on it before
-                // the main command buffer reads the back-face depth (e.g. in the water
-                // tessellation evaluation shader). A plain submitCommandBufferAsync
-                // would signal the semaphore but never register it, leaving the
-                // cross-command-buffer write->read dependency unsynchronized.
-                app->submitCommandBufferAsyncToQueue(cmd, app->getGraphicsQueue(), &semBackFace);
-            });
-        }
-
-        // Wait for the async back-face task to complete before water pass so no two
-        // threads call vkCmdBindDescriptorSets with the same descriptor set concurrently
-        // and to ensure semBackFace is signaled before waterPass uses it. get() rethrows
-        // task exceptions (wait() would swallow them, silently leaving semBackFace
-        // unsignaled and dropping the back-face pass for the frame).
-        if (asyncBackFaceFuture.valid()) {
-            try {
-                asyncBackFaceFuture.get();
-            } catch (const std::exception &e) {
-                std::cerr << "[Async] back-face task failed, skipping back-face pass this frame: " << e.what() << std::endl;
-            } catch (...) {
-                std::cerr << "[Async] back-face task failed with unknown error, skipping back-face pass this frame" << std::endl;
-            }
-        }
-
-        // Run water geometry pass offscreen and bind scene textures for post-process
-        if (waterEnabled) {
-            // Water frustum cull already ran before the shadow pass; re-assert
-            // buffer visibility for the water geometry draw (no re-cull needed —
-            // the shadow cascade cull uses separate buffers and did not disturb
-            // the main water compact buffer).
-            sceneRenderer->mainLiquidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-            // Use 360° solid+sky reflection instead of the sky-only equirect view
-            VkImageView skyView = (sceneRenderer && sceneRenderer->skyRenderer) ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
-            sceneRenderer->mainLiquidRenderer->renderPass(this, commandBuffer, frameIdx, settings.waterWireframeMode,
-                mainTime, skyView);
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
-
-            // Transition water geometry depth to SRO for the PostProcess compositor
-            VkImage wgdImg = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(frameIdx);
-            if (wgdImg != VK_NULL_HANDLE) {
-                recordTransitionImageLayoutLayer(commandBuffer, wgdImg,
-                    VK_FORMAT_D32_SFLOAT,
-                    sceneRenderer->mainLiquidRenderer->getWaterGeomDepthLayout(frameIdx),
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    1, 0, 1);
-                sceneRenderer->mainLiquidRenderer->setWaterGeomDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }
-        }
+        // Raster water geometry pass removed: the ray-traced primary pass renders
+        // water directly into the scene image; no offscreen raster water targets.
 
         profileCpuRecord = std::chrono::duration<float, std::milli>(
             std::chrono::high_resolution_clock::now() - cpuRecordT0).count();
@@ -1914,8 +1658,8 @@ public:
                 ImGui::Text("Textures Loaded (CPU): %u", loadedTextureLayers);
 
                 // Opaque (solid)
-                size_t opaqueLoaded = sceneRenderer->mainSolidRenderer->getIndirectRenderer().getMeshCount();
-                uint32_t opaqueVisible = sceneRenderer->mainSolidRenderer->getIndirectRenderer().readVisibleCount(this);
+                size_t opaqueLoaded = sceneRenderer->getSolidIndirectRenderer().getMeshCount();
+                uint32_t opaqueVisible = sceneRenderer->getSolidIndirectRenderer().readVisibleCount(this);
                 ImGui::Text("Opaque - Loaded (GPU): %zu  Visible (GPU cull): %u", opaqueLoaded, opaqueVisible);
                 size_t opaqueTracked = sceneRenderer ? sceneRenderer->getRegisteredModelCount() : 0;
                 ImGui::Text("Opaque Models Tracked: %zu", opaqueTracked);
@@ -2075,7 +1819,7 @@ public:
             VkImageView skyViewPP = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             VkImageView brushColorView = sceneRenderer->brushRenderer ? sceneRenderer->brushRenderer->getColorView(frameIdx) : VK_NULL_HANDLE;
             VkImageView brushDepthView = sceneRenderer->brushRenderer ? sceneRenderer->brushRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE;
-            VkImageView brushBackFaceDepthView = sceneRenderer->brushRenderer ? sceneRenderer->brushRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
+            VkImageView brushBackFaceDepthView = VK_NULL_HANDLE;
             VkImageView waterGeomDepthView = VK_NULL_HANDLE;
             if (sceneRenderer->mainLiquidRenderer) {
                 waterGeomDepthView = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthView(frameIdx);
@@ -2092,8 +1836,8 @@ public:
             sceneRenderer->postProcessRenderer->render(
                 this,
                 commandBuffer,
-                sceneRenderer->mainSolidRenderer->getColorView(frameIdx),
-                sceneRenderer->mainSolidRenderer->getDepthView(frameIdx),
+                sceneRenderer->getSolidColorView(frameIdx),
+                sceneRenderer->getSolidDepthView(frameIdx),
                 sceneRenderer->mainLiquidRenderer->getWaterDepthView(frameIdx),
                 brushColorView,
                 brushDepthView,
@@ -2214,9 +1958,6 @@ public:
         // Free all ImGui descriptor sets BEFORE Shutdown while the old backend data
         // is still alive. This avoids freeing DS allocated with the old descriptor
         // set layout through the new backend data after a Shutdown/Init cycle.
-        if (sceneRenderer && sceneRenderer->shadowMapper) {
-            sceneRenderer->shadowMapper->freeImGuiDescriptors();
-        }
         if (renderTargetsWidget) {
             renderTargetsWidget->invalidateImGuiDescriptors();
         }
@@ -2230,13 +1971,6 @@ public:
     }
 
     void onImGuiRecreated() override {
-        // Re-create ImGui AddTexture DS for shadow cascades — the old ones used the
-        // previous DescriptorSetLayout which was destroyed by ImGui_ImplVulkan_Shutdown.
-        // Old handles were freed by preImGuiShutdown() so recreateImGuiDescriptors
-        // will skip the free and go straight to allocation.
-        if (sceneRenderer && sceneRenderer->shadowMapper) {
-            sceneRenderer->shadowMapper->recreateImGuiDescriptors();
-        }
         // Widget handles were nulled by preImGuiShutdown(); this is a no-op.
         if (renderTargetsWidget) {
             renderTargetsWidget->invalidateImGuiDescriptors();
@@ -2356,7 +2090,6 @@ public:
         }
     }
     // Ensure persistent cubemap rendering resources are allocated
-    void ensureCubemapResources();
 
     // Called by VulkanApp after a frame has been submitted
     void postSubmit() override;
@@ -2862,8 +2595,8 @@ void MyApp::applyBrushToScene() {
     mainLiquidCollector.dispatch(mainLiquidAddHandler, mainLiquidRemoveHandler);
 
     // Mark indirect buffers dirty so the mesh changes are visible
-    sceneRenderer->mainSolidRenderer->getIndirectRenderer().setDirty(true);
-    sceneRenderer->mainSolidRenderer->getIndirectRenderer().rebuild(this);
+    sceneRenderer->getSolidIndirectRenderer().setDirty(true);
+    sceneRenderer->getSolidIndirectRenderer().rebuild(this);
     sceneRenderer->mainLiquidRenderer->getIndirectRenderer().setDirty(true);
     sceneRenderer->mainLiquidRenderer->getIndirectRenderer().rebuild(this);
 
@@ -3008,286 +2741,6 @@ void MyApp::loadSceneFromFile(const std::string& path) {
         std::cout << "[MyApp::loadSceneFromFile] Scene tessellation complete\n";
     });
 }
-void MyApp::ensureCubemapResources() {
-    VkDevice dev = getDevice();
-
-    // Always write dummy cubemap to cube360GfxDs binding #11,
-    // even if the DS was already allocated (e.g. before this fix was compiled).
-    if (cube360GfxDs != VK_NULL_HANDLE && sceneRenderer && sceneRenderer->solid360Renderer) {
-        VkImageView dummyView = sceneRenderer->solid360Renderer->getDummyCubeView();
-        VkSampler cubeSamp = sceneRenderer->solid360Renderer->getSolid360Sampler();
-        if (dummyView != VK_NULL_HANDLE && cubeSamp != VK_NULL_HANDLE) {
-            DescriptorWriter(dev)
-                .writeImage(cube360GfxDs, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            cubeSamp, dummyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-                .flush();
-        }
-    }
-
-    // 1. UBO buffer
-    if (cube360UBO.buffer == VK_NULL_HANDLE) {
-        cube360UBO = createBuffer(sizeof(UniformObject),
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    }
-
-    // Helper to destroy and recreate a buffer if its size is insufficient
-    auto ensureBufferSize = [&](Buffer& buf, VkDeviceSize needed,
-                                VkBufferUsageFlags usage, const char* label) {
-        if (buf.buffer != VK_NULL_HANDLE) {
-            VkMemoryRequirements reqs;
-            vkGetBufferMemoryRequirements(dev, buf.buffer, &reqs);
-            if (reqs.size >= needed) return; // already large enough
-            // The old buffer may still be referenced by command buffers that are
-            // currently in flight (the cube360 culling pass runs every frame).
-            // Destroying it synchronously here is the VUID-vkDestroyBuffer-buffer-00922
-            // crash; defer the destruction until the GPU is idle instead.
-            Buffer old = buf;
-            deferDestroyUntilAllPending([old, this]() mutable {
-                destroyBuffer(old);
-            });
-            buf = Buffer{};
-        }
-        buf = createBuffer(needed, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    };
-
-    // 2. Solid culling buffers (reallocate if mesh count grew)
-    // NOTE: In slotted mode the indirect commands are pre-allocated to
-    // meshCapacity (e.g. 1024); getMeshCount() returns only active meshes (0
-    // before the first scene load).  The compact buffer must be sized to the
-    // full slot pool so that drawPreparedWithBuffers' maxCount is valid.
-    IndirectRenderer &solidInd = sceneRenderer->mainSolidRenderer->getIndirectRenderer();
-    uint32_t solidCmds = std::max({
-        static_cast<uint32_t>(solidInd.getMeshCount()),
-        static_cast<uint32_t>(solidInd.getMeshCapacity()),
-        1u
-    });
-    VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * solidCmds;
-    ensureBufferSize(cube360Compact, compactSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        "cube360Compact");
-    ensureBufferSize(cube360Visible, std::max(sizeof(uint32_t), VkDeviceSize(4)),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-        "cube360Visible");
-
-    // 3. Water culling buffers (reallocate if mesh count grew)
-    IndirectRenderer &waterInd = sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
-    uint32_t waterCmds = std::max({
-        static_cast<uint32_t>(waterInd.getMeshCount()),
-        static_cast<uint32_t>(waterInd.getMeshCapacity()),
-        1u
-    });
-    VkDeviceSize waterCompactSize = sizeof(VkDrawIndexedIndirectCommand) * waterCmds;
-    ensureBufferSize(cube360WaterCompact, waterCompactSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        "cube360WaterCompact");
-    ensureBufferSize(cube360WaterVisible, std::max(sizeof(uint32_t), VkDeviceSize(4)),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-        "cube360WaterVisible");
-
-    // 4. Graphics descriptor set (mirrors main DS but uses cube360UBO)
-    if (cube360GfxDs == VK_NULL_HANDLE) {
-        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 };
-        VkDescriptorPoolSize ps2{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 11 };
-        VkDescriptorPoolSize ps3{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 };
-        VkDescriptorPoolSize poolSizes[] = {ps, ps2, ps3};
-
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = 3;
-        poolInfo.pPoolSizes = poolSizes;
-        poolInfo.maxSets = 1;
-        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-
-        VkDescriptorPool gfxPool;
-        if (vkCreateDescriptorPool(dev, &poolInfo, nullptr, &gfxPool) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create cubemap GFX descriptor pool");
-        resources.addDescriptorPool(gfxPool, "cubemap gfx pool");
-
-        VkDescriptorSetLayout gfxLayout = getDescriptorSetLayout();
-        VkDescriptorSetAllocateInfo ainfo{};
-        ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        ainfo.descriptorPool = gfxPool;
-        ainfo.descriptorSetCount = 1;
-        ainfo.pSetLayouts = &gfxLayout;
-        if (vkAllocateDescriptorSets(dev, &ainfo, &cube360GfxDs) != VK_SUCCESS)
-            throw std::runtime_error("Failed to allocate cubemap GFX descriptor set");
-        resources.addDescriptorSet(cube360GfxDs, "cubemap gfx DS");
-
-        // Write descriptor set bindings using DescriptorWriter
-        {
-            DescriptorWriter gfxWriter(dev);
-            gfxWriter.writeBuffer(cube360GfxDs, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                  cube360UBO.buffer, 0, sizeof(UniformObject));
-
-            auto addImg = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
-                if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-                gfxWriter.writeImage(cube360GfxDs, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                     sampler, view, layout);
-            };
-
-            if (textureArrayManager.albedoSampler != VK_NULL_HANDLE) {
-                addImg(1, textureArrayManager.albedoSampler, textureArrayManager.albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                addImg(2, textureArrayManager.normalSampler, textureArrayManager.normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                addImg(3, textureArrayManager.bumpSampler, textureArrayManager.bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                addImg(12, textureArrayManager.roughnessSampler, textureArrayManager.roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                addImg(13, textureArrayManager.aoSampler, textureArrayManager.aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }
-            addImg(4, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(8, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(9, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-            if (sceneRenderer->solid360Renderer) {
-                VkImageView dummyCubeView = sceneRenderer->solid360Renderer->getDummyCubeView();
-                VkSampler cubeSampler = sceneRenderer->solid360Renderer->getSolid360Sampler();
-                if (dummyCubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE)
-                    addImg(11, cubeSampler, dummyCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }
-
-            if (sceneRenderer->materialsBuffer.buffer != VK_NULL_HANDLE)
-                gfxWriter.writeBuffer(cube360GfxDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                      sceneRenderer->materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
-            if (sceneRenderer->waterParamsBuffer_.buffer != VK_NULL_HANDLE)
-                gfxWriter.writeBuffer(cube360GfxDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                      sceneRenderer->waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
-            {
-                Buffer skyBuf = sceneRenderer->skyRenderer->getSkyUniformBuffer();
-                if (skyBuf.buffer != VK_NULL_HANDLE)
-                    gfxWriter.writeBuffer(cube360GfxDs, 6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                          skyBuf.buffer, 0, sizeof(SkyUniform));
-            }
-            if (sceneRenderer->mainLiquidRenderer->getWaterRenderUBO().buffer != VK_NULL_HANDLE)
-                gfxWriter.writeBuffer(cube360GfxDs, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                      sceneRenderer->mainLiquidRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
-
-            gfxWriter.flush();
-        }
-        cube360TexVersion = textureArrayManager.getVersion();
-    }
-
-    // Refresh texture bindings on cube360GfxDs if texture arrays were re-allocated
-    // (e.g. after TextureMixer generates new layers). Without this, the cubemap
-    // capture would sample stale/deleted image views, producing wrong reflections.
-    if (cube360GfxDs != VK_NULL_HANDLE && cube360TexVersion != textureArrayManager.getVersion()) {
-        cube360TexVersion = textureArrayManager.getVersion();
-        DescriptorWriter texWriter(dev);
-        auto addImg = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
-            if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-            texWriter.writeImage(cube360GfxDs, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                 sampler, view, layout);
-        };
-        if (textureArrayManager.albedoSampler != VK_NULL_HANDLE) {
-            addImg(1, textureArrayManager.albedoSampler, textureArrayManager.albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(2, textureArrayManager.normalSampler, textureArrayManager.normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(3, textureArrayManager.bumpSampler, textureArrayManager.bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(12, textureArrayManager.roughnessSampler, textureArrayManager.roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(13, textureArrayManager.aoSampler, textureArrayManager.aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-        if (sceneRenderer && sceneRenderer->shadowMapper) {
-            addImg(4, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(8, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(9, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-        if (sceneRenderer->solid360Renderer) {
-            VkImageView dummyCubeView = sceneRenderer->solid360Renderer->getDummyCubeView();
-            VkSampler cubeSampler = sceneRenderer->solid360Renderer->getSolid360Sampler();
-            if (dummyCubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE)
-                addImg(11, cubeSampler, dummyCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-        texWriter.flush();
-    }
-
-    // 5. Solid compute descriptor set — allocate lazily, refresh buffer bindings only when buffers change
-    {
-        VkDescriptorSetLayout dsLayout = solidInd.getComputeDescriptorSetLayout();
-        if (dsLayout != VK_NULL_HANDLE && cube360ComputeDs == VK_NULL_HANDLE) {
-            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 };
-            VkDescriptorPoolCreateInfo pci{};
-            pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-            pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
-            pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-            VkDescriptorPool pool;
-            if (vkCreateDescriptorPool(dev, &pci, nullptr, &pool) == VK_SUCCESS) {
-                resources.addDescriptorPool(pool, "cubemap compute pool");
-                VkDescriptorSetAllocateInfo ai{};
-                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                ai.descriptorPool = pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &dsLayout;
-                if (vkAllocateDescriptorSets(dev, &ai, &cube360ComputeDs) == VK_SUCCESS)
-                    resources.addDescriptorSet(cube360ComputeDs, "cubemap compute DS");
-            }
-        }
-        if (cube360ComputeDs != VK_NULL_HANDLE) {
-            std::array<VkBuffer, 5> bufs = {
-                solidInd.getIndirectBuffer().buffer,
-                cube360Compact.buffer,
-                solidInd.getBoundsBuffer().buffer,
-                cube360Visible.buffer,
-                solidInd.getVisibleLodsScratchBuffer(),
-            };
-            if (bufs != cube360ComputeBuffers) {
-                cube360ComputeBuffers = bufs;
-                DescriptorWriter(dev)
-                    .writeBuffer(cube360ComputeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                 bufs[0], 0, VK_WHOLE_SIZE)
-                    .writeBuffer(cube360ComputeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                 bufs[1], 0, VK_WHOLE_SIZE)
-                    .writeBuffer(cube360ComputeDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                 bufs[2], 0, VK_WHOLE_SIZE)
-                    .writeBuffer(cube360ComputeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                 bufs[3], 0, VK_WHOLE_SIZE)
-                    .writeBuffer(cube360ComputeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                 bufs[4], 0, VK_WHOLE_SIZE)
-                    .flush();
-            }
-        }
-    }
-
-    // 6. Water compute descriptor set — allocate lazily, refresh buffer bindings only when buffers change
-    {
-        VkDescriptorSetLayout wDsLayout = waterInd.getComputeDescriptorSetLayout();
-        if (wDsLayout != VK_NULL_HANDLE && cube360WaterComputeDs == VK_NULL_HANDLE) {
-            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 };
-            VkDescriptorPoolCreateInfo pci{};
-            pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-            pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
-            pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-            VkDescriptorPool pool;
-            if (vkCreateDescriptorPool(dev, &pci, nullptr, &pool) == VK_SUCCESS) {
-                resources.addDescriptorPool(pool, "cubemap water compute pool");
-                VkDescriptorSetAllocateInfo ai{};
-                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                ai.descriptorPool = pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &wDsLayout;
-                if (vkAllocateDescriptorSets(dev, &ai, &cube360WaterComputeDs) == VK_SUCCESS)
-                    resources.addDescriptorSet(cube360WaterComputeDs, "cubemap water compute DS");
-            }
-        }
-        if (cube360WaterComputeDs != VK_NULL_HANDLE) {
-            std::array<VkBuffer, 5> bufs = {
-                waterInd.getIndirectBuffer().buffer,
-                cube360WaterCompact.buffer,
-                waterInd.getBoundsBuffer().buffer,
-                cube360WaterVisible.buffer,
-                waterInd.getVisibleLodsScratchBuffer(),
-            };
-            if (bufs != cube360WaterComputeBuffers) {
-                cube360WaterComputeBuffers = bufs;
-                DescriptorWriter(dev)
-                    .writeBuffer(cube360WaterComputeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                 bufs[0], 0, VK_WHOLE_SIZE)
-                    .writeBuffer(cube360WaterComputeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                 bufs[1], 0, VK_WHOLE_SIZE)
-                    .writeBuffer(cube360WaterComputeDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                 bufs[2], 0, VK_WHOLE_SIZE)
-                    .writeBuffer(cube360WaterComputeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                 bufs[3], 0, VK_WHOLE_SIZE)
-                    .writeBuffer(cube360WaterComputeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                 bufs[4], 0, VK_WHOLE_SIZE)
-                    .flush();
-            }
-        }
-    }
-}
-
 void MyApp::postSubmit() {
     if (textureMixer) {
         textureMixer->flushPendingRequests(this);

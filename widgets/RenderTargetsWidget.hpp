@@ -9,22 +9,18 @@
 class VulkanApp;
 class WaterRenderer;
 class SceneRenderer;
-class SolidRenderer;
 class SkyRenderer;
-class ShadowRenderer;
 struct ShadowParams;
 
-// Widget that displays render targets (Sky, Solid color/depth, Water depth,
-// Shadow cascades) as ImGui image thumbnails.
+// Widget that displays render targets (Sky, Solid color/depth, Water depth)
+// as ImGui image thumbnails.
 class Settings;
 
 class RenderTargetsWidget : public Widget {
 private:
     VulkanApp*      app;
     SceneRenderer*  sceneRenderer;
-    SolidRenderer*  solidRenderer;
     SkyRenderer*    skyRenderer;
-    ShadowRenderer* shadowMapper;
 
     // ImGui texture descriptors
     VkDescriptorSet skyDescriptor = VK_NULL_HANDLE;
@@ -100,14 +96,6 @@ private:
     // Single preview descriptor (widget displays one texture at a time)
     VkDescriptorSet previewDescriptor = VK_NULL_HANDLE;
 
-    // Per-cascade linearized shadow debug images
-    VkImage linearShadowDepthImage[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
-    VmaAllocation linearShadowDepthAllocation[SHADOW_CASCADE_COUNT] = {};
-    VkDeviceMemory linearShadowDepthMemory[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
-    VkImageView linearShadowDepthView[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
-    VkDescriptorSet linearShadowDepthDescriptor[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
-    bool linearShadowDepthDescriptorOwned[SHADOW_CASCADE_COUNT] = { false };
-
     ShadowParams* shadowParams = nullptr;
     Settings* settings = nullptr; // pointer to app settings for near/far
 
@@ -132,7 +120,6 @@ private:
     // Track sizes of linear debug images to detect resizes
     int linearSceneWidth = 0;
     int linearSceneHeight = 0;
-    int linearShadowSize[SHADOW_CASCADE_COUNT] = { 0 };
 
     // UI: which preview to show (only one at a time)
     enum class PreviewTarget {
@@ -150,13 +137,9 @@ private:
         WaterColor,
         WaterDepth,
         LinearSceneDepth,
-        ShadowCascade,
         Count
     };
     PreviewTarget selectedPreview = PreviewTarget::SolidColor;
-    int selectedShadowCascade = 0;
-    bool showAllCascades = false;
-    enum class ShadowViewMode { Raw = 0, Linearized = 1 } shadowViewMode = ShadowViewMode::Linearized;
 
     // Auto-advance: cycle through all preview targets every N frames
     bool autoAdvance = true;
@@ -164,11 +147,11 @@ private:
     int autoAdvanceFrameCounter = 0;
 
     // NOTE: widget no longer maintains fallbacks or heuristic layout maps.
-    // Rely on renderer-provided tracked layouts (e.g. Solid360Renderer).
+    // Rely on renderer-provided tracked layouts (e.g. SceneRenderer).
 
 public:
-    RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
-                        ShadowRenderer* shadow = nullptr, ShadowParams* shadowParams_ = nullptr, Settings* settings_ = nullptr);
+    RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SkyRenderer* sky,
+                        ShadowParams* shadowParams_ = nullptr, Settings* settings_ = nullptr);
     ~RenderTargetsWidget();
 
     // Initialize static GPU resources used by the widget (run once).

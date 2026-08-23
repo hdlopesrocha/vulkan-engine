@@ -79,20 +79,11 @@ void SceneRenderer::cleanup(VulkanApp* app) {
         mainLiquidRenderer->cleanup(app);
     }
     // Cleanup scene-owned water sub-renderers
-    if (backFaceRenderer && app) {
-        backFaceRenderer->cleanup(app);
-    }
     if (brushRenderer && app) {
         brushRenderer->cleanup(app);
     }
-    if (solid360Renderer && app) {
-        solid360Renderer->cleanup(app);
-    }
-    if (mainSolidRenderer && app) {
-        mainSolidRenderer->cleanup(app);
-    }
-    if (shadowMapper && app) {
-        shadowMapper->cleanup(app);
+    if (app) {
+        destroySolidTargets(app);
     }
     if (skyRenderer) {
         skyRenderer->cleanup(app);
@@ -109,9 +100,6 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (debugSDFRenderer) {
         debugSDFRenderer->cleanup(app);
     }
-    if (waterWireframe) {
-        waterWireframe->cleanup(app);
-    }
 
     // Clear local CPU-side handles; Vulkan objects are destroyed via VulkanResourceManager
     for (auto &b : mainUniformBuffers) {
@@ -120,22 +108,83 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     mainUniformBuffers.clear();
 }
 
+// Solid scene offscreen colour/depth targets (formerly SolidRenderer).
+void SceneRenderer::createSolidTargets(VulkanApp* app, uint32_t width, uint32_t height) {
+    if (!app) return;
+    VkDevice device = app->getDevice();
+    auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                           VkImage& image, VmaAllocation& allocation, VkDeviceMemory& memory, VkImageView& view) {
+        RendererUtils::createImage2DWithVma(device, app, width, height, format, usage, aspect,
+                                            "SceneRenderer: solid image", image, allocation, memory, view);
+    };
+    for (uint32_t i = 0; i < SOLID_FRAMES; ++i) {
+        createImage(app->getSwapchainImageFormat(),
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    solidColorImages[i], solidColorAllocations[i], solidColorMemories[i], solidColorImageViews[i]);
+        createImage(VK_FORMAT_D32_SFLOAT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT,
+                    solidDepthImages[i], solidDepthAllocations[i], solidDepthMemories[i], solidDepthImageViews[i]);
+        solidDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+    for (uint32_t i = 0; i < SOLID_FRAMES; ++i) {
+        if (solidColorImages[i] != VK_NULL_HANDLE && app) {
+            try {
+                app->transitionImageLayoutLayer(solidColorImages[i], app->getSwapchainImageFormat(),
+                                                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            } catch (...) {}
+        }
+        solidDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (solidDepthImages[i] != VK_NULL_HANDLE && app) {
+            try {
+                app->transitionImageLayoutLayerForce(solidDepthImages[i], VK_FORMAT_D32_SFLOAT,
+                                                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+                app->setImageLayoutTracked(solidDepthImages[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+                solidDepthImageLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            } catch (...) {}
+        }
+    }
+}
+
+void SceneRenderer::destroySolidTargets(VulkanApp* app) {
+    if (!app) return;
+    VkDevice device = app->getDevice();
+    for (uint32_t i = 0; i < SOLID_FRAMES; ++i) {
+        if (solidColorImageViews[i] != VK_NULL_HANDLE) {
+            if (app->resources.removeImageView(solidColorImageViews[i]))
+                vkDestroyImageView(device, solidColorImageViews[i], nullptr);
+            solidColorImageViews[i] = VK_NULL_HANDLE;
+        }
+        app->destroyImageWithVma(solidColorImages[i], solidColorAllocations[i], solidColorMemories[i]);
+        solidColorImages[i] = VK_NULL_HANDLE;
+        solidColorAllocations[i] = VK_NULL_HANDLE;
+        solidColorMemories[i] = VK_NULL_HANDLE;
+        if (solidDepthImageViews[i] != VK_NULL_HANDLE) {
+            if (app->resources.removeImageView(solidDepthImageViews[i]))
+                vkDestroyImageView(device, solidDepthImageViews[i], nullptr);
+            solidDepthImageViews[i] = VK_NULL_HANDLE;
+        }
+        app->destroyImageWithVma(solidDepthImages[i], solidDepthAllocations[i], solidDepthMemories[i]);
+        solidDepthImages[i] = VK_NULL_HANDLE;
+        solidDepthAllocations[i] = VK_NULL_HANDLE;
+        solidDepthMemories[i] = VK_NULL_HANDLE;
+    }
+}
+
 // Propagate the shared per-frame command state tracker to every renderer that
 // only records on the main thread (mirrors the pre-interface wiring in
 // main.cpp). backFaceRenderer and the water IndirectRenderer stay unwired:
 // the async back-face task records them on a separate thread and keeping
 // cmdState=nullptr avoids a data race on frameCmdState.
 void SceneRenderer::setCmdState(CommandBufferState* state) {
-    if (shadowMapper) shadowMapper->setCmdState(state);
-    if (mainSolidRenderer) mainSolidRenderer->setCmdState(state);
+    solidIndirectRenderer.setCmdState(state);
     if (skyRenderer) skyRenderer->setCmdState(state);
     if (vegetationRenderer) vegetationRenderer->setCmdState(state);
     if (postProcessRenderer) postProcessRenderer->setCmdState(state);
     if (debugCubeRenderer) debugCubeRenderer->setCmdState(state);
     if (boundingBoxRenderer) boundingBoxRenderer->setCmdState(state);
     if (debugSDFRenderer) debugSDFRenderer->setCmdState(state);
-    if (waterWireframe) waterWireframe->setCmdState(state);
-    if (solid360Renderer) solid360Renderer->setCmdState(state);
     if (mainLiquidRenderer) mainLiquidRenderer->setCmdState(state);
     if (brushRenderer) brushRenderer->setCmdState(state);
 }
@@ -148,54 +197,12 @@ void SceneRenderer::stopGenPools() {
 
 void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height) {
     // Recreate offscreen targets that depend on swapchain size
-    if (mainSolidRenderer) {
-        mainSolidRenderer->createRenderTargets(app, width, height);
-    }
+    createSolidTargets(app, width, height);
     if (brushRenderer) {
         brushRenderer->onSwapchainResized(app, width, height);
     }
     if (mainLiquidRenderer) {
         mainLiquidRenderer->createRenderTargets(app, width, height);
-        // Recreate back-face and 360 reflection targets owned by SceneRenderer
-        if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, width, height);
-        if (solid360Renderer) {
-            solid360Renderer->destroySolid360Targets(app);
-            solid360Renderer->createSolid360Targets(app, mainLiquidRenderer->getLinearSampler());
-            solid360Renderer->createSolid360Pipelines(app);
-            // Rewrite binding 11 (cubemap) in all descriptor sets since the
-            // old VkImageView handles were destroyed and new ones created.
-            VkImageView cubeView = solid360Renderer->getSolid360View();
-            VkSampler cubeSampler = solid360Renderer->getSolid360Sampler();
-            if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE) {
-                VkDescriptorSet staticDs = app->getStaticDescriptorSet();
-                if (staticDs != VK_NULL_HANDLE) {
-                    DescriptorWriter(app->getDevice())
-                        .writeImage(staticDs, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                    cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-                        .flush();
-                }
-                // Propagate to per-frame descriptor sets
-                for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi) {
-                    VkDescriptorSet dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
-                    if (dstSet == VK_NULL_HANDLE) continue;
-                    VkCopyDescriptorSet c{};
-                    c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
-                    c.srcSet = staticDs; c.srcBinding = 11; c.srcArrayElement = 0;
-                    c.dstSet = dstSet; c.dstBinding = 11; c.dstArrayElement = 0;
-                    c.descriptorCount = 1;
-                    vkUpdateDescriptorSets(app->getDevice(), 0, nullptr, 1, &c);
-                }
-                // Propagate to shadow descriptor sets
-                for (size_t fi = 0; fi < shadowDescriptorSets.size(); ++fi) {
-                    VkDescriptorSet ds = shadowDescriptorSets[fi];
-                    if (ds == VK_NULL_HANDLE) continue;
-                    DescriptorWriter(app->getDevice())
-                        .writeImage(ds, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                    cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-                        .flush();
-                }
-            }
-        }
     }
     if (postProcessRenderer) {
         postProcessRenderer->setRenderSize(width, height);
@@ -208,16 +215,13 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
 
 SceneRenderer::SceneRenderer() :
     skyRenderer(std::make_unique<SkyRenderer>()),
-    shadowMapper(std::make_unique<ShadowRenderer>(2048)),
     postProcessRenderer(std::make_unique<PostProcessRenderer>()),
-    mainSolidRenderer(std::make_unique<SolidRenderer>()),
     mainLiquidRenderer(std::make_unique<WaterRenderer>()),
     vegetationRenderer(std::make_unique<VegetationRenderer>()),
     brushRenderer(std::make_unique<BrushRenderer>()),
     debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
     debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
-    waterWireframe(std::make_unique<WireframeRenderer>()),
     skySettings(std::make_unique<SkySettings>())
 {
 
@@ -235,6 +239,192 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         return;
     }
 
+    // Create the RT shadow image up front so the dedicated rt shadow descriptor
+    // set (written via setRtShadowImageView) is always valid, regardless of
+    // whether initRayTracing runs before or after it. The image is transitioned
+    // to GENERAL here; initRayTracing reuses it and does no image creation.
+    rtShadowWidth = std::max(1u, (uint32_t)app->getWidth());
+    rtShadowHeight = std::max(1u, (uint32_t)app->getHeight());
+    {
+        VkImageCreateInfo ici{};
+        ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = VK_FORMAT_R32_SFLOAT;
+        ici.extent = { rtShadowWidth, rtShadowHeight, 1 };
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        app->createImageWithVma(ici, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            rtShadowImage, rtShadowImageAlloc, rtShadowImageMemory, "SceneRenderer::rtShadowImage");
+
+        VkImageViewCreateInfo vci{};
+        vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.image = rtShadowImage;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = VK_FORMAT_R32_SFLOAT;
+        vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(app->getDevice(), &vci, nullptr, &rtShadowImageView) != VK_SUCCESS)
+            throw std::runtime_error("SceneRenderer: failed to create RT shadow image view");
+        app->resources.addImageView(rtShadowImageView, "SceneRenderer::rtShadowImageView");
+        // Publish the view into the dedicated regular set=3 (created in
+        // VulkanApp::createDescriptorSetLayout) so the lit shaders can read it.
+        app->setRtShadowImageView(rtShadowImageView);
+        if (vegetationRenderer) vegetationRenderer->setRtShadowDescriptorSet(app->getRtShadowDescriptorSet());
+        // Transition UNDEFINED -> GENERAL via a one-shot command buffer
+        // (setImageLayoutTracked only updates bookkeeping and the shared helper
+        // does not cover UNDEFINED->GENERAL).
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            VkImageMemoryBarrier2 b{};
+            b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = rtShadowImage;
+            b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            b.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            b.srcAccessMask = 0;
+            // The rt shadow mask is read by fragment shaders (set=3) and, when RT
+            // is enabled, written by the ray-tracing pipeline. RAY_TRACING_SHADER
+            // stage is only a valid stage mask when the rayTracingPipeline feature
+            // is enabled, so gate it on rtSupport to keep validation-clean on GPUs
+            // without RT (e.g. Renoir).
+            VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+                | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            VkAccessFlags2 dstAccess = VK_ACCESS_2_SHADER_READ_BIT;
+            if (app->rtSupport.any()) {
+                dstStage |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+                dstAccess |= VK_ACCESS_2_SHADER_WRITE_BIT;
+            }
+            b.dstStageMask = dstStage;
+            b.dstAccessMask = dstAccess;
+            VkDependencyInfo di{};
+            di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            di.imageMemoryBarrierCount = 1;
+            di.pImageMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(cmd, &di);
+        });
+        app->setImageLayoutTracked(rtShadowImage, VK_IMAGE_LAYOUT_GENERAL);
+    }
+
+    // Create the RT reflection image up front so the dedicated rt reflection
+    // descriptor set (written via setRtReflectImageView) is always valid,
+    // regardless of whether initRayTracing runs. The reflection ray-tracing
+    // workload (RayTracingRenderer::traceReflection) writes fully-lit reflected
+    // scene colour here; the solid lit pipeline reads it via imageLoad (set 3).
+    {
+        VkImageCreateInfo ici{};
+        ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        ici.extent = { rtShadowWidth, rtShadowHeight, 1 };
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        app->createImageWithVma(ici, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            rtReflectImage, rtReflectImageAlloc, rtReflectImageMemory, "SceneRenderer::rtReflectImage");
+
+        VkImageViewCreateInfo vci{};
+        vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.image = rtReflectImage;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(app->getDevice(), &vci, nullptr, &rtReflectImageView) != VK_SUCCESS)
+            throw std::runtime_error("SceneRenderer: failed to create RT reflection image view");
+        app->resources.addImageView(rtReflectImageView, "SceneRenderer::rtReflectImageView");
+        app->setRtReflectImageView(rtReflectImageView);
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            VkImageMemoryBarrier2 b{};
+            b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = rtReflectImage;
+            b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            b.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            b.srcAccessMask = 0;
+            VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+                | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            VkAccessFlags2 dstAccess = VK_ACCESS_2_SHADER_READ_BIT;
+            if (app->rtSupport.any()) {
+                dstStage |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+                dstAccess |= VK_ACCESS_2_SHADER_WRITE_BIT;
+            }
+            b.dstStageMask = dstStage;
+            b.dstAccessMask = dstAccess;
+            VkDependencyInfo di{};
+            di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            di.imageMemoryBarrierCount = 1;
+            di.pImageMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(cmd, &di);
+        });
+        app->setImageLayoutTracked(rtReflectImage, VK_IMAGE_LAYOUT_GENERAL);
+    }
+
+    // Primary ray-traced scene image. The primary RT workload writes the fully
+    // shaded scene here as a storage image; it is then blitted into the solid
+    // offscreen colour target (compositing step) so water/post/UI that sample
+    // that target keep working unchanged. Created unconditionally (cheap when RT
+    // is off) so the descriptor set stays valid.
+    {
+        VkImageCreateInfo ici{};
+        ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        ici.extent = { rtShadowWidth, rtShadowHeight, 1 };
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        app->createImageWithVma(ici, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            rtSceneImage, rtSceneImageAlloc, rtSceneImageMemory, "SceneRenderer::rtSceneImage");
+
+        VkImageViewCreateInfo vci{};
+        vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.image = rtSceneImage;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(app->getDevice(), &vci, nullptr, &rtSceneImageView) != VK_SUCCESS)
+            throw std::runtime_error("SceneRenderer: failed to create RT scene image view");
+        app->resources.addImageView(rtSceneImageView, "SceneRenderer::rtSceneImageView");
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            VkImageMemoryBarrier2 b{};
+            b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = rtSceneImage;
+            b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            b.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            b.srcAccessMask = 0;
+            VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+            VkAccessFlags2 dstAccess = VK_ACCESS_2_SHADER_WRITE_BIT;
+            b.dstStageMask = dstStage;
+            b.dstAccessMask = dstAccess;
+            VkDependencyInfo di{};
+            di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            di.imageMemoryBarrierCount = 1;
+            di.pImageMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(cmd, &di);
+        });
+        app->setImageLayoutTracked(rtSceneImage, VK_IMAGE_LAYOUT_GENERAL);
+    }
+
     // Initialize the async streaming orchestrator. It is now the real transfer
     // engine: solid/water incremental chunk uploads route through it (K
     // concurrent staging slots, no per-frame cap) instead of the single-slot
@@ -249,7 +439,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
                   /*workersPerCategory*/ 2);
 
     // Route solid/water IndirectRenderer incremental copies through the manager.
-    mainSolidRenderer->getIndirectRenderer().setUploadManager(
+    solidIndirectRenderer.setUploadManager(
         &streamer.uploadManager(), streaming::StreamCategory::Solid);
     mainLiquidRenderer->getIndirectRenderer().setUploadManager(
         &streamer.uploadManager(), streaming::StreamCategory::Water);
@@ -267,17 +457,15 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         }
     }
     
-    mainSolidRenderer->init();
-    mainSolidRenderer->destroyRenderTargets(app);
-    mainSolidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    mainSolidRenderer->createPipelines(app);
+    solidIndirectRenderer.init();
+    destroySolidTargets(app);
+    createSolidTargets(app, app->getWidth(), app->getHeight());
 
     // Create pipelines for all renderers (solid renderer now has its render pass ready)
     skyRenderer->init(app);
     // Create offscreen sky targets (destroy old first to prevent handle leak)
     skyRenderer->destroyOffscreenTargets(app);
     skyRenderer->createOffscreenTargets(app, app->getWidth(), app->getHeight());
-    shadowMapper->init(app);
     vegetationRenderer->init(app);
 
     // Initialize debug cube renderer
@@ -301,9 +489,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         mainUniformBuffers[i] = app->createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
-    // Per-frame staging buffers for shadow-pass UBO uploads are owned by
-    // ShadowRenderer (see createStagingBuffers).
-    shadowMapper->createStagingBuffers(app, dsCount);
 
     VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(0);
 
@@ -369,9 +554,12 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     } else {
         std::cerr << "[SceneRenderer::init] No TextureArrayManager set — skipping texture array descriptor writes" << std::endl;
     }
-    addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    // The ray-traced shadow mask is NOT written into the scene set-0. It lives in
+    // its own dedicated regular descriptor set (VulkanApp::rtShadowDescriptorSet),
+    // written via setRtShadowImageView below, because radv crashes on STORAGE_IMAGE
+    // descriptors in the update-after-bind scene set-0. The lit shaders read it via
+    // imageLoad(rtShadow, ...) (set 2 in main.frag, set 3 in vegetation/impostors).
 
     // Create and bind Materials SSBO at binding 5. Require an external MaterialManager.
     materialManagerPtr = materialManager;
@@ -403,34 +591,11 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     size_t paramsBufferSize = sizeof(WaterParamsGPU) * static_cast<size_t>(layerCount);
     waterParamsBuffer_ = app->createBuffer(paramsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    // Create scene-owned water sub-renderers. Back-face renderpass must exist
-    // before water pipelines are created, so create it first.
-    backFaceRenderer = std::make_unique<WaterBackFaceRenderer>();
-    solid360Renderer = std::make_unique<Solid360Renderer>();
+    // Create scene-owned water sub-renderers.
 
     // Initialize WaterRenderer (creates its pipeline layout and initializes the param SSBO)
     mainLiquidRenderer->init(app, waterParamsBuffer_, waterParams, layerCount);
 
-    // Now that WaterRenderer has created its pipeline layout, allow the
-    // back-face renderer to create pipelines that depend on it.
-    if (backFaceRenderer) backFaceRenderer->createPipelines(app, mainLiquidRenderer->getWaterGeometryPipelineLayout());
-    // Create back-face render targets early so their image views are
-    // available before the first frame's water pass attempts to bind them.
-    if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    if (solid360Renderer) {
-        solid360Renderer->init(app);
-        solid360Renderer->setWaterRenderer(mainLiquidRenderer.get());
-        // Create cubemap targets now so the image view is available for
-        // the environment-map descriptor binding (binding 11) below.
-        solid360Renderer->createSolid360Targets(app, mainLiquidRenderer->getLinearSampler());
-        solid360Renderer->createSolid360Pipelines(app);
-        // Binding 11: environment cubemap for solid-shader reflections
-        VkImageView cubeView = solid360Renderer->getSolid360View();
-        VkSampler cubeSampler = solid360Renderer->getSolid360Sampler();
-        if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE) {
-            addImageWrite(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-    }
 
     // Bind water params SSBO to binding 7 of main descriptor set.
     VkDescriptorBufferInfo& waterParamsInfo = writesBuf.emplace_back(waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
@@ -522,29 +687,21 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // ── Initialize the brush renderer ──
     // Wire the samplers used by the brush depth descriptor writes (from the
-    // water and shadow renderers, which are initialized above), then create
-    // everything brush-related: offscreen targets, back-face renderer,
-    // per-frame brush depth descriptor sets (set=1) and the dedicated brush
-    // IndirectRenderers.
+    // water renderer, initialized above), then create everything brush-related:
+    // offscreen targets, back-face renderer, per-frame brush depth descriptor
+    // sets (set=1) and the dedicated brush IndirectRenderers.
     if (brushRenderer) {
         brushRenderer->setDepthSamplers(
             mainLiquidRenderer ? mainLiquidRenderer->getLinearSampler() : VK_NULL_HANDLE,
-            shadowMapper ? shadowMapper->getShadowMapSampler() : VK_NULL_HANDLE);
+            VK_NULL_HANDLE);
         brushRenderer->init(app, app->getWidth(), app->getHeight());
     }
 
     // ── Wire scene sub-renderers into the pass orchestrators ──
-    // The shadow pass draws solid/water/vegetation/brush geometry and the
-    // water pass samples solid offscreen targets + brush liquid geometry,
+    // The water pass samples solid offscreen targets + brush liquid geometry,
     // so each orchestrator caches the pointers it needs.
-    if (shadowMapper) {
-        shadowMapper->setSceneRenderers(mainSolidRenderer.get(), mainLiquidRenderer.get(),
-                                        vegetationRenderer.get(), brushRenderer.get());
-    }
     if (mainLiquidRenderer) {
-        mainLiquidRenderer->setSceneRenderers(mainSolidRenderer.get(), brushRenderer.get(),
-                                              backFaceRenderer.get(), solid360Renderer.get(),
-                                              waterWireframe.get());
+        mainLiquidRenderer->setSceneRenderers(brushRenderer.get());
     }
 
     // ── Allocate (once) and write shadow-specific descriptor sets per-frame ──
@@ -573,17 +730,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             addImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             addImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
-        addImg(4, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        addImg(8, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        addImg(9, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        if (solid360Renderer) {
-            VkImageView cubeView = solid360Renderer->getSolid360View();
-            VkSampler cubeSampler = solid360Renderer->getSolid360Sampler();
-            if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE) {
-                addImg(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }
-        }
 
         wr.writeBuffer(ds, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                        materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
@@ -592,11 +739,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         wr.writeBuffer(ds, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                        mainLiquidRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
         wr.flush();
-    }
-    // Shadow descriptor set handles are stable after init (subsequent writes
-    // only update them in place), so ShadowRenderer can cache them once.
-    if (shadowMapper) {
-        shadowMapper->setShadowDescriptorSets(shadowDescriptorSets);
     }
 
     // Register listener so we update the main descriptor set when texture arrays are allocated later
@@ -607,25 +749,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     }
     mainLiquidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
 
-    // Ensure back-face render targets are created as well so the
-    // `backFaceDepthView` is valid before the first frame's water pass.
-    if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-
-    // Create the solid wireframe pipeline (owned by SolidRenderer) and the
-    // water wireframe pipeline
-    mainSolidRenderer->createWireframe(app);
-    if (waterWireframe) {
-        std::vector<VkDescriptorSetLayout> waterSetLayouts = {
-            app->getDescriptorSetLayout(),
-            app->getMaterialDescriptorSetLayout(),
-            mainLiquidRenderer->getWaterDepthDescriptorSetLayout()
-        };
-        waterWireframe->createPipeline(app, {VK_FORMAT_R32G32B32A32_SFLOAT},
-            waterSetLayouts,
-            "shaders/water.vert.spv", "shaders/water_wireframe.frag.spv",
-            "shaders/water.tesc.spv", "shaders/water.tese.spv",
-            "water wireframe");
-    }
 
     // Initialize post-process renderer (composites scene + water into swapchain)
     postProcessRenderer->init(app);
@@ -683,12 +806,10 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         addImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         addImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // Shadow map samplers (bindings 4, 8, 9) for all cascades
-        if (shadowMapper) {
-            addImg(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
+        // Ray-traced shadow mask lives in its own dedicated descriptor set (not
+        // set-0); it is written once in init via setRtShadowImageView and never
+        // changes, so nothing to refresh here. (Left as a no-op to document intent.)
+        (void)staticDs;
 
         // Materials SSBO (binding 5) — refresh from MaterialManager in case the buffer
         // was allocated after SceneRenderer::init (setupTextures may run on a separate thread)
@@ -708,14 +829,16 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         writer.flush();
     }
 
-    // 2. Propagate static bindings (1-13) to all per-frame descriptor sets
-    const size_t setCount = app->getMainDescriptorSetCount();
-    for (size_t s = 0; s < setCount; ++s) {
-        VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(s));
-        if (mainDs == VK_NULL_HANDLE) continue;
+        // 2. Propagate static bindings (1-13) to all per-frame descriptor sets
+        const size_t setCount = app->getMainDescriptorSetCount();
+        for (size_t s = 0; s < setCount; ++s) {
+            VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(s));
+            if (mainDs == VK_NULL_HANDLE) continue;
 
-        // Build copy descriptors for all bindings 1-13
-        std::vector<VkCopyDescriptorSet> copies;
+            // Build copy descriptors for all bindings 1-13 present in set-0.
+            // The ray-traced shadow mask is no longer part of set-0 (it lives in
+            // its own dedicated set, bound separately by each renderer).
+            std::vector<VkCopyDescriptorSet> copies;
         // Binding 1..4, 8, 9, 11 (textures)
         for (uint32_t b : {1u, 2u, 3u, 4u, 8u, 9u, 11u, 12u, 13u}) {
             VkCopyDescriptorSet c{};
@@ -901,7 +1024,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // Cache the camera position for the shadow pass (which culls with the
     // same camPos/lodBias so shadow draws match the main pass LoD selection).
     lastCameraPos_ = cameraPos;
-    mainSolidRenderer->getIndirectRenderer().pollPendingTransfers(app);
+    solidIndirectRenderer.pollPendingTransfers(app);
     mainLiquidRenderer->getIndirectRenderer().pollPendingTransfers(app);
     if (brushRenderer) brushRenderer->pollPendingTransfers(app);
 
@@ -912,7 +1035,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         // main stream's orphaned pending-delete entries (genuine deletions with
         // no replacement) so a mid-stream erase never leaks a slot.
         uint32_t curFrame = app ? app->getCurrentFrame() : 0;
-        ageOutPendingDeletes(curFrame, mainSolidRenderer->getIndirectRenderer(), mainLiquidRenderer->getIndirectRenderer());
+        ageOutPendingDeletes(curFrame, solidIndirectRenderer, mainLiquidRenderer->getIndirectRenderer());
         processChunkSwapQueue(app);
         return;
     }
@@ -942,7 +1065,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // right IndirectRenderer, ChunkManager tracking and deferred-slot source:
     // solid/water geometry is processed exactly the same way as brush geometry.
     std::unordered_set<NodeID> matchedNids;
-    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch, mainSolidRenderer->getIndirectRenderer(), brushRenderer->getSolidIR(), mainLiquidRenderer->getIndirectRenderer(), brushRenderer->getLiquidIR(),
+    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch, solidIndirectRenderer, brushRenderer->getSolidIR(), mainLiquidRenderer->getIndirectRenderer(), brushRenderer->getLiquidIR(),
         // takeOldSlot: resolve+consume the old slot for a chunk (one slot per
         // chunk — its LoD rows share it), or UINT32_MAX when none. The main
         // stream reads its pending-delete entry (one-frame grace); the brush
@@ -1004,7 +1127,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // the same NodeID, so a matching entry is normally consumed within 1 frame.
     // Entries that age out are genuine deletions (no replacement).
     uint32_t curFrame = app ? app->getCurrentFrame() : 0;
-    ageOutPendingDeletes(curFrame, mainSolidRenderer->getIndirectRenderer(), mainLiquidRenderer->getIndirectRenderer());
+    ageOutPendingDeletes(curFrame, solidIndirectRenderer, mainLiquidRenderer->getIndirectRenderer());
     
     // Every frame, process the chunk swap queue (slotted mode).
     // This swaps in newly-built RenderProxies and retires old ones.
@@ -1055,7 +1178,7 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
     const uint64_t waterVertBytes = static_cast<uint64_t>(maxWaterChunks) * vertexBytesPerChunk;
     const uint64_t waterIdxBytes  = static_cast<uint64_t>(maxWaterChunks) * indexBytesPerChunk;
 
-    mainSolidRenderer->getIndirectRenderer().initSlots(app, maxSolidChunks,
+    solidIndirectRenderer.initSlots(app, maxSolidChunks,
                                                        static_cast<uint32_t>(solidVertBytes),
                                                        static_cast<uint32_t>(solidIdxBytes));
     mainLiquidRenderer->getIndirectRenderer().initSlots(app, maxWaterChunks,
@@ -1145,3 +1268,241 @@ bool SceneRenderer::hasModelForNode(Layer layer, NodeID nid) const {
     }
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ray-tracing integration. The RayTracingRenderer owns the per-chunk BLASes and
+// the unified TLAS; we only feed it the live slotted geometry and let it manage
+// rebuilds. Solid and water share one TLAS; geometry kind selects the HIT GROUP
+// (see RayTracingRenderer), so no separate pass / AS hierarchy is needed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+// Offset to keep water chunk ids distinct from solid chunk ids in the RT map.
+constexpr uint64_t RT_WATER_OFFSET = 1ULL << 40;
+} // namespace
+
+void SceneRenderer::initRayTracing(VulkanApp* app) {
+    if (!app->rtSupport.any()) {
+        printf("[SceneRenderer] ray tracing unsupported — RayTracingRenderer disabled\n");
+        return;
+    }
+    rtShadowWidth = std::max(1u, (uint32_t)app->getWidth());
+    rtShadowHeight = std::max(1u, (uint32_t)app->getHeight());
+
+    // rtShadowImage + rtShadowImageView are created in SceneRenderer::init; the
+    // image is already transitioned to GENERAL there and written into the
+    // dedicated rt shadow descriptor set via setRtShadowImageView.
+    rayTracingRenderer = std::make_unique<RayTracingRenderer>();
+    rayTracingRenderer->init(app, rtShadowImageView);
+    rtEnabled = true;
+    rtShadowEnabled = true;
+    printf("[SceneRenderer] ray tracing enabled (shadow output %ux%u, shadow trace %s, primary render ON)\n",
+        rtShadowWidth, rtShadowHeight, rtShadowEnabled ? "ON" : "OFF");
+}
+
+void SceneRenderer::syncRayTracingScene(VulkanApp* app) {
+    if (!rtEnabled) return;
+    VkDevice device = app->getDevice();
+
+    std::unordered_set<uint64_t> current;
+    auto walk = [&](IndirectRenderer& ir, GeometryKind kind, uint64_t idBase) {
+        VkDeviceAddress vbase = ir.vertexBufferDeviceAddress(device);
+        VkDeviceAddress ibase = ir.indexBufferDeviceAddress(device);
+        if (vbase == 0 || ibase == 0) return;
+        ir.visitActiveMeshInfos([&](const auto& m) {
+            uint64_t cid = idBase + m.id;
+            current.insert(cid);
+            if (rtRegisteredChunks.find(cid) != rtRegisteredChunks.end()) return; // unchanged
+            if (m.level_.indexCount == 0 || m.level_.vertexCount == 0) return;
+            // maxVertex for the BLAS is the highest absolute vertex index used.
+            uint32_t vertexCount = m.level_.baseVertex + m.level_.vertexCount;
+            VkDeviceAddress va = vbase + (VkDeviceSize)m.level_.baseVertex * sizeof(Vertex);
+            VkDeviceAddress ia = ibase + (VkDeviceSize)m.level_.firstIndex * sizeof(uint32_t);
+            rayTracingRenderer->registerChunk(cid, kind, va, vertexCount, ia,
+                                              m.level_.indexCount, VK_GEOMETRY_OPAQUE_BIT_KHR);
+            rtRegisteredChunks.insert(cid);
+        });
+    };
+
+    walk(solidIndirectRenderer, GeometryKind::Solid, 0);
+    walk(mainLiquidRenderer->getIndirectRenderer(), GeometryKind::Water, RT_WATER_OFFSET);
+
+    // Register vegetation billboards as alpha-tested instances in the unified
+    // TLAS (shared cross-quad BLAS + one transformed instance per billboard), and
+    // bind the leaf-opacity texture used by the any-hit alpha test.
+    if (vegetationRenderer) {
+        rayTracingRenderer->registerVegetation(app, vegetationRenderer.get());
+        rayTracingRenderer->setVegetationOpacity(app,
+            vegetationRenderer->getBillboardOpacityView(),
+            vegetationRenderer->getBillboardArraySampler());
+    }
+
+    // Unregister chunks whose geometry is gone (deferred teardown inside RT).
+    for (auto it = rtRegisteredChunks.begin(); it != rtRegisteredChunks.end(); ) {
+        if (current.find(*it) == current.end()) {
+            rayTracingRenderer->unregisterChunk(*it);
+            it = rtRegisteredChunks.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void SceneRenderer::updateRayTracing(VulkanApp* app) {
+    if (!rtEnabled) return;
+    rayTracingRenderer->update(app);
+}
+
+void SceneRenderer::recordRayTracingShadow(VkCommandBuffer cmd) {
+    if (!rtEnabled || !rtShadowEnabled) return;
+    // rtShadowImage is kept in VK_IMAGE_LAYOUT_GENERAL (set at creation), so the
+    // shadow ray-tracing workload can write it directly as a storage image.
+    rayTracingRenderer->traceShadow(cmd, rtShadowImageView);
+
+    // Ensure the ray-traced write is visible to the lit fragment shaders that
+    // sample this image later in the same command buffer (the offscreen phase
+    // precedes the main render pass). Layout stays GENERAL (valid for both the
+    // storage write and the sampled read).
+    VkImageMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = rtShadowImage;
+    b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    b.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    VkDependencyInfo di{};
+    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &di);
+}
+
+void SceneRenderer::recordRayTracingReflection(VkCommandBuffer cmd) {
+    if (!rtEnabled) return;
+    // rtReflectImage is kept in VK_IMAGE_LAYOUT_GENERAL (set at creation), so the
+    // reflection ray-tracing workload can write it directly as a storage image.
+    rayTracingRenderer->traceReflection(cmd, rtReflectImageView);
+
+    // Ensure the ray-traced write is visible to the lit fragment shaders that
+    // sample this image later in the same command buffer (the offscreen phase
+    // precedes the main render pass). Layout stays GENERAL. RAY_TRACING_SHADER
+    // stage mask is valid because rtEnabled implies rtSupport.any().
+    VkImageMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = rtReflectImage;
+    b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    b.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    VkDependencyInfo di{};
+    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &di);
+}
+
+void SceneRenderer::recordRayTracingRender(VkCommandBuffer cmd) {
+    if (!rtEnabled) return;
+    // rtSceneImage is kept in VK_IMAGE_LAYOUT_GENERAL (set at creation), so the
+    // primary ray-tracing workload can write it directly as a storage image.
+    rayTracingRenderer->traceRender(cmd, rtSceneImageView);
+
+    // Ensure the ray-traced write is visible to the compositing blit that copies
+    // this image into the solid offscreen colour target later in the same command
+    // buffer. Layout stays GENERAL. RAY_TRACING_SHADER stage mask is valid
+    // because rtEnabled implies rtSupport.any().
+    VkImageMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = rtSceneImage;
+    b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    b.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    VkDependencyInfo di{};
+    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &di);
+}
+
+void SceneRenderer::compositeRayTracedScene(VkCommandBuffer cmd, uint32_t frameIdx) {
+    if (!rtEnabled) return;
+    VkImage dst = getSolidColorImage(frameIdx);
+    if (dst == VK_NULL_HANDLE) return;
+
+    // rtSceneImage is GENERAL (tracked); dst is COLOR_ATTACHMENT_OPTIMAL (set by
+    // the transition just before the solid colour pass). Move both into transfer
+    // layouts for the blit.
+    VkImageMemoryBarrier2 b[2]{};
+    b[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b[0].image = rtSceneImage;
+    b[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    b[0].srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    b[0].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    b[0].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    b[0].dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+
+    b[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b[1].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    b[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b[1].image = dst;
+    b[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    b[1].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    b[1].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    b[1].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    b[1].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    VkDependencyInfo di{};
+    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    di.imageMemoryBarrierCount = 2;
+    di.pImageMemoryBarriers = b;
+    vkCmdPipelineBarrier2(cmd, &di);
+
+    VkImageBlit blit{};
+    blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    blit.srcOffsets[0] = { 0, 0, 0 };
+    blit.srcOffsets[1] = { (int32_t)rtShadowWidth, (int32_t)rtShadowHeight, 1 };
+    blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    blit.dstOffsets[0] = { 0, 0, 0 };
+    blit.dstOffsets[1] = { (int32_t)rtShadowWidth, (int32_t)rtShadowHeight, 1 };
+    vkCmdBlitImage(cmd, rtSceneImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+
+    // Restore rtSceneImage to GENERAL (for the next frame's trace) and dst to
+    // COLOR_ATTACHMENT_OPTIMAL (the colour pass uses LOAD_OP_LOAD). Tracker stays
+    // in sync: rtSceneImage is always GENERAL; dst is COLOR_ATTACHMENT_OPTIMAL.
+    b[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b[0].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    b[0].srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    b[0].dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    b[0].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+
+    b[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b[1].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    b[1].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    b[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b[1].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    b[1].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    vkCmdPipelineBarrier2(cmd, &di);
+}

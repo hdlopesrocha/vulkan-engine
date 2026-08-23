@@ -13,15 +13,12 @@ struct UniformObject {
     glm::vec4 lightDir;              // offset 80, size 16
     glm::vec4 lightColor;            // offset 96, size 16
     glm::vec4 materialFlags;         // offset 112, size 16
-    glm::mat4 lightSpaceMatrix;      // offset 128, size 64  (cascade 0)
-    glm::vec4 shadowEffects;         // offset 192, size 16
+    glm::vec4 shadowEffects;         // offset 128, size 16
     glm::vec4 debugParams;           // offset 208, size 16
     glm::vec4 triplanarSettings;     // offset 224, size 16
     glm::vec4 tessParams;            // offset 240, size 16
-    glm::vec4 passParams;            // offset 256, size 16  x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
-    glm::mat4 lightSpaceMatrix1;     // offset 272, size 64  (cascade 1 = 4x ortho0)
-    glm::mat4 lightSpaceMatrix2;     // offset 336, size 64  (cascade 2 = 16x ortho0)
-    glm::mat4 invViewProjection;     // offset 400, size 64  inverse of viewProjection (camera-constant)
+    glm::vec4 passParams;            // x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
+    glm::mat4 invViewProjection;     // inverse of viewProjection (camera-constant)
     glm::vec4 brushParams;           // offset 464, size 16  x=brushTextureIndex, y=brushMode (0=overlay, 2=PAINT)
     glm::vec4 brushHSV;              // offset 480, size 16  x=H(0..360), y=S(0..1), z=V(0..1), w=unused
 

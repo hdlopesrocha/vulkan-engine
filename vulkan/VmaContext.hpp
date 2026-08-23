@@ -40,7 +40,11 @@ public:
         ci.device = dev;
         ci.instance = instance;
         ci.pVulkanFunctions = &vf;
-        ci.flags = 0;
+        // Buffer device addresses are required by VK_KHR_acceleration_structure
+        // (geometry build inputs) and VK_KHR_ray_tracing_pipeline (SBT/callables).
+        // Enabling this allocator flag lets VMA return device-addressable memory
+        // for allocations created with VMA_ALLOCATION_CREATE_DEVICE_ADDRESS_BIT.
+        ci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 
         vmaCreateAllocator(&ci, &allocator);
     }

@@ -100,15 +100,12 @@ public:
               uint32_t queryRealIndex = 0,
               uint32_t queryImpostorIndex = 0);
     // Deferred depth test: draw vegetation + impostor depth only (no color)
-    void drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos);
     // Deferred depth test: draw vegetation + impostor color only (LESS_OR_EQUAL, no depth write)
-    void drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos);
     void recordReadBarriers(VkCommandBuffer& commandBuffer);
     
     // Draw vegetation to shadow map using light-space matrix in the bound UBO.
     // Camera position is used for distance-based LOD; viewProj is the camera's
     // view-projection for GPU frustum culling (matching solid shadow culling).
-    void drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos);
     PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
 
     // Stats helpers
@@ -156,10 +153,6 @@ public:
     void prepareCullCascades(VkCommandBuffer cmd,
                              const glm::mat4 cascadeMatrices[3]);
     // Draw a specific cascade's vegetation compacted output.
-    void drawShadowCascade(VulkanApp* app, VkCommandBuffer& commandBuffer,
-                           VkDescriptorSet shadowDescriptorSet,
-                           const glm::vec3& cameraPos,
-                           uint32_t cascadeIndex);
 
     // Update the wind params UBO with current settings.
     // Must be called before any draw that uses wind.  Updates per-frame values
@@ -172,14 +165,28 @@ public:
     VkDescriptorSetLayout getWindParamsDescSetLayout() const { return windParamsDescSetLayout; }
     VkDescriptorSet getWindParamsDescSet() const { return windParamsDescSet; }
 
+    // Ray-traced shadow mask descriptor set (set=3), published by SceneRenderer
+    // after it creates the rt shadow image.
+    VkDescriptorSet rtShadowDescriptorSet_ = VK_NULL_HANDLE;
+    void setRtShadowDescriptorSet(VkDescriptorSet ds) { rtShadowDescriptorSet_ = ds; }
+
+    // Ray-tracing accessors: expose the consolidated billboard instance buffer
+    // (one vec4 per billboard: xyz = world position, w = billboardIndex + rotFrac)
+    // and the shared billboard cross-quad geometry so RayTracingRenderer can
+    // register vegetation as alpha-tested instances in the unified TLAS.
+    const Buffer& getConcatenatedInstanceBuffer() const { return concatenatedInstanceBuffer; }
+    size_t getConcatenatedInstanceCount() const { return concatenatedInstanceCount_; }
+    // Bumped every time the consolidated billboard instance buffer is (re)built,
+    // so consumers (e.g. RayTracingRenderer) can detect changes without a GPU
+    // readback on every sync.
+    uint64_t getVegetationGeneration() const { return vegetationGeneration_; }
+    const VertexBufferObject& getBillboardVBO() const { return billboardVBO; }
+    float getBillboardScale() const { return billboardScale; }
+    VkImageView getBillboardOpacityView() const { return billboardOpacityView; }
+    VkSampler getBillboardArraySampler() const { return billboardArraySampler; }
+
 private:
     
-    TrackedHandle<VkPipeline> vegetationPipeline;
-    TrackedHandle<VkPipeline> vegetationDepthPipeline;
-    TrackedHandle<VkPipelineLayout> vegetationDepthPipelineLayout;
-    TrackedHandle<VkPipelineLayout> pipelineLayout;
-    TrackedHandle<VkPipeline> vegetationShadowPipeline;
-    TrackedHandle<VkPipelineLayout> shadowPipelineLayout;
     TrackedHandle<VkDescriptorSetLayout> descriptorSetLayout;
     TextureArrayManager* vegetationTextureArrayManager = nullptr;
     VkImageView billboardAlbedoView   = VK_NULL_HANDLE;
@@ -241,21 +248,14 @@ private:
     float windTimeSeconds = 0.0f;
 
     // Impostor pipeline resources (populated via setImpostorData).
-    TrackedHandle<VkPipeline> impostorPipeline;
-    TrackedHandle<VkPipelineLayout> impostorPipelineLayout;
     TrackedHandle<VkDescriptorSetLayout> impostorDescSetLayout;
     TrackedHandle<VkDescriptorPool> impostorDescPool;
     TrackedHandle<VkDescriptorSet> impostorDescSet;
 
     // Impostor depth pipeline (shadow map depth-only pass).
-    TrackedHandle<VkPipeline> impostorDepthPipeline;
-    TrackedHandle<VkPipelineLayout> impostorDepthPipelineLayout;
     TrackedHandle<VkDescriptorSetLayout> impostorDepthDescSetLayout;
     TrackedHandle<VkDescriptorPool> impostorDepthDescPool;
     TrackedHandle<VkDescriptorSet> impostorDepthDescSet;
-    // Impostor EVSM shadow pipeline (color + depth write, uses impostors_shadow.frag)
-    TrackedHandle<VkPipeline> impostorShadowPipeline;
-    TrackedHandle<VkPipelineLayout> impostorShadowPipelineLayout;
 
     float                 impostorDistance       = 0.0f;
     VkRenderPass storedSolidRenderPass = VK_NULL_HANDLE;
@@ -268,6 +268,8 @@ private:
 
     // ── CPU frustum culling (indirection via concatenated instance buffer) ────
     Buffer concatenatedInstanceBuffer;  // all instances concatenated (vec4 per element)
+    size_t concatenatedInstanceCount_ = 0;
+    uint64_t vegetationGeneration_ = 0; // number of vec4 instances in the buffer
     // Triple-buffered culling resources to prevent CPU/GPU race conditions
     // (same pattern as IndirectRenderer::MAX_CULL_FRAMES).
     static constexpr uint32_t VEG_CULL_FRAMES = 3;
@@ -335,7 +337,5 @@ private:
     std::vector<float> instanceGenScratch;
 
     void destroyCulling();
-    void issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
-    void issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
     WindPushConstants buildWindPushConstants(const glm::vec3& cameraPos) const;
 };

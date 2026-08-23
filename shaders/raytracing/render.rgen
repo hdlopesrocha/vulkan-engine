@@ -1,0 +1,26 @@
+#version 460
+#extension GL_EXT_ray_tracing : enable
+#include "rt_common.glsl"
+
+// Primary ray-traced render: one primary camera ray per pixel, shaded in the
+// closest-hit shader (render.rchit) with full direct+ambient lighting plus
+// secondary shadow / reflection / refraction rays. The result is the migrated
+// replacement for the raster solid/vegetation colour pass.
+layout(set = 1, binding = 0, rgba32f) uniform image2D outImage;
+
+layout(location = 0) rayPayloadEXT Payload payload;
+
+void main() {
+    vec3 origin, dir;
+    computeCameraRay(origin, dir);
+
+    payload.hit = 0.0;
+    payload.color = vec3(0.0);
+    payload.normal = vec3(0.0);
+    payload.pos = vec3(0.0);
+    payload.rayType = 0u; // PRIMARY
+
+    traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFFu, 0u, 0u, 0u, origin, 0.01, dir, 10000.0, 0);
+
+    imageStore(outImage, ivec2(gl_LaunchIDEXT.xy), vec4(payload.color, 1.0));
+}

@@ -5,7 +5,7 @@ struct CommandBufferState;
 
 // Common lifecycle interface implemented by every renderer in the engine.
 //
-// The concrete renderers (SolidRenderer, WaterRenderer, ShadowRenderer, ...)
+// The concrete renderers (SolidRenderer, WaterRenderer, ...)
 // keep their own, specialised drawing APIs — the interface only captures the
 // two lifecycle hooks every renderer shares, so owners (SceneRenderer) can
 // drive init/teardown wiring uniformly:

@@ -268,6 +268,25 @@ public:
     // Query mesh info (copy) for use in the app (bounds, offsets, flags).
     MeshInfo getMeshInfo(uint32_t meshId) const;
 
+    // Ray-tracing support: device addresses of the shared slotted geometry pools.
+    // The per-chunk vertex/index addresses are this base + level_.baseVertex *
+    // sizeof(Vertex) / level_.firstIndex * sizeof(uint32_t) (see
+    // SceneRenderer::syncRayTracingScene). Returns 0 if no buffer is allocated.
+    VkDeviceAddress vertexBufferDeviceAddress(VkDevice device) const {
+        if (vertexBuffer.buffer == VK_NULL_HANDLE) return 0;
+        VkBufferDeviceAddressInfo i{};
+        i.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        i.buffer = vertexBuffer.buffer;
+        return vkGetBufferDeviceAddress(device, &i);
+    }
+    VkDeviceAddress indexBufferDeviceAddress(VkDevice device) const {
+        if (indexBuffer.buffer == VK_NULL_HANDLE) return 0;
+        VkBufferDeviceAddressInfo i{};
+        i.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        i.buffer = indexBuffer.buffer;
+        return vkGetBufferDeviceAddress(device, &i);
+    }
+
     // Invoke `visitor(const MeshInfo&)` for each active mesh (thread-safe).
     // Avoids allocating a temporary vector.
     template<typename F>

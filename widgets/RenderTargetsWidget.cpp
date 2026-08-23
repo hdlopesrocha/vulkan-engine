@@ -3,9 +3,7 @@
 #include "../utils/Settings.hpp"
 #include "../vulkan/VulkanApp.hpp"
 #include "../vulkan/renderer/SceneRenderer.hpp"
-#include "../vulkan/renderer/SolidRenderer.hpp"
 #include "../vulkan/renderer/SkyRenderer.hpp"
-#include "../vulkan/renderer/ShadowRenderer.hpp"
 #include "../utils/ShadowParams.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
@@ -18,10 +16,10 @@
 #include "components/ImGuiHelpers.hpp"
 
 
-RenderTargetsWidget::RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
-                                                                                 ShadowRenderer* shadow, ShadowParams* shadowParams_, Settings* settings_)
-        : Widget("Render Targets", u8"\uf5b0"), app(app_), sceneRenderer(scene), solidRenderer(solid), skyRenderer(sky),
-            shadowMapper(shadow), shadowParams(shadowParams_), settings(settings_) {
+RenderTargetsWidget::RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SkyRenderer* sky,
+                                                                                ShadowParams* shadowParams_, Settings* settings_)
+        : Widget("Render Targets", u8"\uf5b0"), app(app_), sceneRenderer(scene), skyRenderer(sky),
+            shadowParams(shadowParams_), settings(settings_) {
     // Initialize static GPU resources used by this widget (run once)
     init(app_, 512, 512);
 }
@@ -282,34 +280,6 @@ void RenderTargetsWidget::init(VulkanApp* app_, int width, int height) {
             // No framebuffer needed with dynamic rendering
         }
     }
-
-    // Create per-cascade linear shadow targets if a shadow mapper exists.
-    if (shadowMapper) {
-        uint32_t shadowSize = shadowMapper->getShadowMapSize();
-        for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
-            if (linearShadowDepthImage[c] == VK_NULL_HANDLE) {
-                app->createImage(shadowSize, shadowSize, VK_FORMAT_R8G8B8A8_UNORM,
-                                 VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearShadowDepthImage[c], linearShadowDepthAllocation[c], linearShadowDepthMemory[c], "RenderTargetsWidget: linearShadowDepthImage");
-                VkImageViewCreateInfo iv{};
-                iv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-                iv.viewType = VK_IMAGE_VIEW_TYPE_2D;
-                iv.format = VK_FORMAT_R8G8B8A8_UNORM;
-                iv.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                iv.subresourceRange.baseMipLevel = 0;
-                iv.subresourceRange.levelCount = 1;
-                iv.subresourceRange.baseArrayLayer = 0;
-                iv.subresourceRange.layerCount = 1;
-                iv.image = linearShadowDepthImage[c];
-                if (vkCreateImageView(device, &iv, nullptr, &linearShadowDepthView[c]) == VK_SUCCESS) {
-                    app->resources.addImageView(linearShadowDepthView[c], "RenderTargetsWidget: linearShadowDepthView");
-                } else linearShadowDepthView[c] = VK_NULL_HANDLE;
-                linearShadowSize[c] = static_cast<int>(shadowSize);
-            }
-
-            // No framebuffer needed with dynamic rendering
-        }
-    }
 }
 
 bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
@@ -370,23 +340,11 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
         // Renderer-local fallback when VulkanApp has no entry yet.
         if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED) {
             // Solid 360 (per-face array)
-            if (sceneRenderer && sceneRenderer->solid360Renderer && srcImage == sceneRenderer->solid360Renderer->getCube360DepthImage()) {
-                trackedOld = sceneRenderer->solid360Renderer->getCube360DepthLayout(srcBaseArrayLayer);
-            }
             // Main solid renderer (per-frame depth images)
-            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && solidRenderer) {
+            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer) {
                 for (uint32_t f = 0; f < 2; ++f) {
-                    if (srcImage == solidRenderer->getDepthImage(f)) {
-                        trackedOld = solidRenderer->getDepthLayout(f);
-                        break;
-                    }
-                }
-            }
-            // Back-face renderer (per-frame)
-            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer && sceneRenderer->backFaceRenderer) {
-                for (uint32_t f = 0; f < 2; ++f) {
-                    if (srcImage == sceneRenderer->backFaceRenderer->getBackFaceDepthImage(f)) {
-                        trackedOld = sceneRenderer->backFaceRenderer->getBackFaceDepthLayout(f);
+                    if (srcImage == sceneRenderer->getSolidDepthImage(f)) {
+                        trackedOld = sceneRenderer->getSolidDepthLayout(f);
                         break;
                     }
                 }
@@ -396,15 +354,6 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
                 for (uint32_t f = 0; f < 2; ++f) {
                     if (srcImage == sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(f)) {
                         trackedOld = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthLayout(f);
-                        break;
-                    }
-                }
-            }
-            // Shadow cascades
-            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && shadowMapper) {
-                for (uint32_t sc = 0; sc < SHADOW_CASCADE_COUNT; ++sc) {
-                    if (srcImage == shadowMapper->getDepthImage(sc)) {
-                        trackedOld = shadowMapper->getDepthLayout(sc);
                         break;
                     }
                 }
@@ -435,11 +384,6 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
     if (dstImage == VK_NULL_HANDLE) {
         for (int i = 0; i < 6; ++i) {
             if (dstView == linearCubeFaceDepthView[i]) { dstImage = linearCubeFaceDepthImage[i]; break; }
-        }
-    }
-    if (dstImage == VK_NULL_HANDLE) {
-        for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
-            if (dstView == linearShadowDepthView[i]) { dstImage = linearShadowDepthImage[i]; break; }
         }
     }
     if (dstImage != VK_NULL_HANDLE) {
@@ -552,21 +496,10 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
         VkImageLayout finalTrackedLayout = (trackedOld != VK_IMAGE_LAYOUT_UNDEFINED)
                                                ? trackedOld
                                                : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        if (sceneRenderer && sceneRenderer->solid360Renderer && srcImage == sceneRenderer->solid360Renderer->getCube360DepthImage()) {
-            sceneRenderer->solid360Renderer->setCube360DepthLayout(srcBaseArrayLayer, finalTrackedLayout);
-        }
-        if (solidRenderer) {
+        if (sceneRenderer) {
             for (uint32_t f = 0; f < 2; ++f) {
-                if (srcImage == solidRenderer->getDepthImage(f)) {
-                    solidRenderer->setDepthLayout(f, finalTrackedLayout);
-                    break;
-                }
-            }
-        }
-        if (sceneRenderer && sceneRenderer->backFaceRenderer) {
-            for (uint32_t f = 0; f < 2; ++f) {
-                if (srcImage == sceneRenderer->backFaceRenderer->getBackFaceDepthImage(f)) {
-                    sceneRenderer->backFaceRenderer->setBackFaceDepthLayout(f, finalTrackedLayout);
+                if (srcImage == sceneRenderer->getSolidDepthImage(f)) {
+                    sceneRenderer->setSolidDepthLayout(f, finalTrackedLayout);
                     break;
                 }
             }
@@ -575,14 +508,6 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
             for (uint32_t f = 0; f < 2; ++f) {
                 if (srcImage == sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(f)) {
                     sceneRenderer->mainLiquidRenderer->setWaterGeomDepthLayout(f, finalTrackedLayout);
-                    break;
-                }
-            }
-        }
-        if (shadowMapper) {
-            for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
-                if (srcImage == shadowMapper->getDepthImage(c)) {
-                    shadowMapper->setDepthLayout(c, finalTrackedLayout);
                     break;
                 }
             }
@@ -671,9 +596,6 @@ void RenderTargetsWidget::destroyLinearTargets() {
     removeDescIfOwned(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
     removeDescIfOwned(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
     removeDescIfOwned(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
-    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
-        removeDescIfOwned(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
-    }
 
     // Destroy images, views, memories and framebuffers created for linearization.
     // Always defer via deferDestroyUntilAllPending to ensure in-flight graphics
@@ -711,9 +633,6 @@ void RenderTargetsWidget::destroyLinearTargets() {
     destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthAllocation, linearBackFaceDepthMemory);
     destroyImageAndMemory(linearBrushBackFaceDepthView, linearBrushBackFaceDepthImage, linearBrushBackFaceDepthAllocation, linearBrushBackFaceDepthMemory);
     destroyImageAndMemory(waterDepthLinearView, waterDepthLinearImage, waterDepthLinearAllocation, waterDepthLinearMemory);
-    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
-        destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthAllocation[i], linearShadowDepthMemory[i]);
-    }
     for (int i = 0; i < 6; ++i) {
         destroyImageAndMemory(linearCubeFaceDepthView[i], linearCubeFaceDepthImage[i], linearCubeFaceDepthAllocation[i], linearCubeFaceDepthMemory[i]);
     }
@@ -723,7 +642,6 @@ void RenderTargetsWidget::destroyLinearTargets() {
     // Reset tracked sizes
     linearSceneWidth = 0;
     linearSceneHeight = 0;
-    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) linearShadowSize[i] = 0;
 }
 
 void RenderTargetsWidget::cleanup() {
@@ -763,14 +681,6 @@ void RenderTargetsWidget::cleanup() {
     // Drop local buffer handles; actual destruction managed by VulkanResourceManager
     stagingReadBuffer = {};
     stagingUploadBuffer = {};
-    // Shadow cascade linear descriptors (use removeDesc to defer when necessary)
-    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
-        removeOwnedDesc(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
-    }
-    // Note: `previewDescriptor` may reference descriptor sets owned by other
-    // renderers (e.g. shadowMapper->getImGuiDescriptorSet). We must not call
-    // ImGui_ImplVulkan_RemoveTexture() on descriptor sets we don't own. The
-    // owned per-cascade descriptors are removed above in the loop.
 
     // Destroy any images / image views and persistent staging buffers that
     // this widget created. Always defer via deferDestroyUntilAllPending to
@@ -820,10 +730,6 @@ void RenderTargetsWidget::cleanup() {
     destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthAllocation, linearBackFaceDepthMemory);
     destroyImageAndMemory(linearBrushBackFaceDepthView, linearBrushBackFaceDepthImage, linearBrushBackFaceDepthAllocation, linearBrushBackFaceDepthMemory);
     destroyImageAndMemory(waterDepthLinearView, waterDepthLinearImage, waterDepthLinearAllocation, waterDepthLinearMemory);
-    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
-        destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthAllocation[i], linearShadowDepthMemory[i]);
-    }
-
     // Destroy persistent staging buffers
     if (stagingReadPtr && app && stagingReadBuffer.memory != VK_NULL_HANDLE) {
         stagingReadBuffer.unmap(); // VMA persistent mapping
@@ -926,9 +832,6 @@ void RenderTargetsWidget::invalidateImGuiDescriptors() {
     freeAndClear(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
     freeAndClear(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
     freeAndClear(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
-    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
-        freeAndClear(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
-    }
     previewDescriptor = VK_NULL_HANDLE;
 }
 
@@ -956,7 +859,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         case PreviewTarget::SolidColor: {
             if (solidColorDescriptor == VK_NULL_HANDLE) {
-                solidColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, solidRenderer->getColorView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                solidColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, sceneRenderer->getSolidColorView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 solidColorDescriptorOwned = true;
             }
         } break;
@@ -965,42 +868,13 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             if (solidDepthDescriptor == VK_NULL_HANDLE) {
                 VkSampler depthSampler = widgetSampler;
                 uint32_t producerFrame = frameIndex;
-                solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler,  solidRenderer->getDepthView(producerFrame), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler,  sceneRenderer->getSolidDepthView(producerFrame), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 solidDepthDescriptorOwned = true;
             }
         } break;
 
-        case PreviewTarget::Solid360Equirect: {
-            cube360EquirectRenderer.render(app, widgetSampler, sceneRenderer->solid360Renderer->getSolid360View());
-            if (cube360EquirectDescriptor == VK_NULL_HANDLE) {
-                cube360EquirectDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, cube360EquirectRenderer.getEquirectView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                cube360EquirectDescriptorOwned = true;
-            }
-        } break;
 
-        case PreviewTarget::Solid360Cube: {
-            uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
-            VkImageView faceView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360FaceView(f) : VK_NULL_HANDLE;
-            if (faceView != VK_NULL_HANDLE && cube360FaceDescriptor[f] == VK_NULL_HANDLE) {
-                cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(widgetSampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                cube360FaceDescriptorOwned[f] = true;
-            }
-        } break;
 
-        case PreviewTarget::Solid360DepthCube: {
-            uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
-            VkImageView depthView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360DepthView(f) : VK_NULL_HANDLE;
-            if (depthView != VK_NULL_HANDLE) {
-                float nearP = 0.1f, farP = 1000.0f;
-                if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                // Linearize the depth for this cubemap face into its own per-face linear target.
-                // The per-face ImGui descriptor is created once inside runLinearizePass.
-                runLinearizePass(app, sceneRenderer->solid360Renderer->getCube360DepthImage(), depthView, widgetSampler, widgetSampler,
-                                 linearCubeFaceDepthView[f],
-                                 cube360FaceDepthDescriptor[f], cube360FaceDepthDescriptorOwned[f],
-                                 static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f, f);
-            }
-        } break;
 
         case PreviewTarget::WaterColor: {
             VkImageView waterView = (sceneRenderer && sceneRenderer->mainLiquidRenderer) ? sceneRenderer->mainLiquidRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
@@ -1040,18 +914,18 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         // Prepare a sampler for sampling depth textures (use non-compare widget sampler)
         // Run the pass for scene depth (use perspective linearization)
-        if (solidRenderer && linearizePipeline != VK_NULL_HANDLE && linearSceneDepthView != VK_NULL_HANDLE) {
+        if (sceneRenderer && linearizePipeline != VK_NULL_HANDLE && linearSceneDepthView != VK_NULL_HANDLE) {
             // Use the current frame slot's depth image (from the previous
             // cycle). drawFrame() already waited for inFlightFences[currentFrame]
             // at the start, so this image is guaranteed complete. Using any
             // other slot risks a WRITE_AFTER_READ hazard if that slot's
             // command buffer is still in-flight.
             uint32_t producerFrame = frameIndex;
-            VkImageView src = solidRenderer->getDepthView(producerFrame);
+            VkImageView src = sceneRenderer->getSolidDepthView(producerFrame);
                 if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, solidRenderer->getDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView,
+                runLinearizePass(app, sceneRenderer->getSolidDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView,
                                  linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
             }
@@ -1059,20 +933,6 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         // Back-face depth pass
         // Back-face depth pass (use perspective linearization)
-        if (sceneRenderer && sceneRenderer->mainLiquidRenderer && linearizePipeline != VK_NULL_HANDLE) {
-            // Use the current frame slot's depth image — its in-flight fence
-            // was already waited on by drawFrame(). Any other slot may still
-            // be executing on the GPU, causing a sync hazard.
-            uint32_t producerFrame = frameIndex;
-            VkImageView src = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(producerFrame) : VK_NULL_HANDLE;
-                if (src != VK_NULL_HANDLE) {
-                float nearP = 0.1f, farP = 1000.0f;
-                if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, sceneRenderer->backFaceRenderer->getBackFaceDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearBackFaceDepthView,
-                                 linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned,
-                                 static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
-            }
-        }
 
         // Water front-face depth pass (linearize the water geometry depth buffer)
         if (sceneRenderer && sceneRenderer->mainLiquidRenderer && linearizePipeline != VK_NULL_HANDLE && waterDepthLinearView != VK_NULL_HANDLE) {
@@ -1089,42 +949,18 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 1.0f);
             }
         }
-        // Shadow cascade linearization: create per-cascade RGBA targets and
-        // run the same linearize pass used for scene/backface/water so all
-        // depth previews are produced consistently.
-        if (shadowMapper && linearizePipeline != VK_NULL_HANDLE) {
-            uint32_t shadowSize = shadowMapper->getShadowMapSize();
-            for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
-                VkImageView src = shadowMapper->getShadowDepthView(c);
-                if (src != VK_NULL_HANDLE && linearShadowDepthView[c] != VK_NULL_HANDLE) {
-                    float nearP = 0.0f, farP = 1.0f;
-                    runLinearizePass(app, shadowMapper->getDepthImage(c), src, widgetSampler, widgetSampler, linearShadowDepthView[c],
-                                     linearShadowDepthDescriptor[c], linearShadowDepthDescriptorOwned[c], shadowSize, shadowSize, nearP, farP, 1.0f);
-                }
-            }
-        }
-    }
-    // Water back-face depth (volume thickness pre-pass — D32_SFLOAT)
-    if (shadowMapper) {
-        VkImageView bfView = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
-        if (bfView != VK_NULL_HANDLE && backFaceDepthDescriptor == VK_NULL_HANDLE) {
-            backFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(
-                widgetSampler, bfView,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            backFaceDepthDescriptorOwned = true;
-        }
     }
 
     // Alias linear-depth previews to renderer-provided depth image views so
     // the widget displays depth entirely via GPU sampling (no CPU readback).
     // Scene linear depth: if we didn't create a GPU-linearized image above,
     // alias to the solid renderer depth view so we still show something.
-    if (linearSceneDepthDescriptor == VK_NULL_HANDLE && solidRenderer) {
+    if (linearSceneDepthDescriptor == VK_NULL_HANDLE && sceneRenderer) {
         // Try to produce a GPU-linearized RGBA preview first. If linearization
         // fails or is unavailable, fall back to aliasing the raw depth view.
         uint32_t producerFrame = frameIndex;
-        VkImageView sceneDepthView = solidRenderer->getDepthView(producerFrame);
-        VkImage sceneDepthImage = solidRenderer->getDepthImage(producerFrame);
+        VkImageView sceneDepthView = sceneRenderer->getSolidDepthView(producerFrame);
+        VkImage sceneDepthImage = sceneRenderer->getSolidDepthImage(producerFrame);
         if (sceneDepthView != VK_NULL_HANDLE) {
             bool linearized = false;
             // Only attempt linearize if we have the pipeline and target framebuffer
@@ -1141,21 +977,6 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
                 throw std::runtime_error("RenderTargetsWidget: GPU linearize pass failed (no fallback allowed)");
             }
         }
-    }
-    // Back-face depth (water): alias to water back-face depth view
-    VkImageView bfView2 = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
-    if (linearBackFaceDepthDescriptor == VK_NULL_HANDLE && bfView2 != VK_NULL_HANDLE) {
-        VkSampler depthSampler = widgetSampler;
-        linearBackFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, bfView2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        linearBackFaceDepthDescriptorOwned = true;
-    }
-
-    // Brush back-face depth: alias to brush back-face depth view
-    VkImageView bfView3 = (sceneRenderer && sceneRenderer->brushRenderer && sceneRenderer->brushRenderer->backFaceRenderer) ? sceneRenderer->brushRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
-    if (linearBrushBackFaceDepthDescriptor == VK_NULL_HANDLE && bfView3 != VK_NULL_HANDLE) {
-        VkSampler depthSampler = widgetSampler;
-        linearBrushBackFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, bfView3, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        linearBrushBackFaceDepthDescriptorOwned = true;
     }
 
     // Choose a single preview descriptor according to the current selection.
@@ -1207,15 +1028,6 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         case PreviewTarget::BrushBackFaceDepth:
             previewDescriptor = linearBrushBackFaceDepthDescriptor;
             break;
-        case PreviewTarget::ShadowCascade:
-            if (shadowViewMode == RenderTargetsWidget::ShadowViewMode::Linearized) {
-                if (linearShadowDepthDescriptor[selectedShadowCascade] != VK_NULL_HANDLE)
-                    previewDescriptor = linearShadowDepthDescriptor[selectedShadowCascade];
-                else if (shadowMapper) previewDescriptor = shadowMapper->getImGuiDescriptorSet(selectedShadowCascade);
-            } else {
-                if (shadowMapper) previewDescriptor = shadowMapper->getImGuiDescriptorSet(selectedShadowCascade);
-            }
-            break;
         default: 
             previewDescriptor = VK_NULL_HANDLE; 
             break;
@@ -1232,7 +1044,7 @@ void RenderTargetsWidget::render() {
     ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen, ImGuiWindowFlags_AlwaysAutoResize);
     if (!wg.visible()) return;
 
-    if (!sceneRenderer || !sceneRenderer->mainLiquidRenderer || !solidRenderer) {
+    if (!sceneRenderer || !sceneRenderer->mainLiquidRenderer || !sceneRenderer) {
         ImGui::TextUnformatted("Renderers not available.");
         return;
     }
@@ -1262,10 +1074,6 @@ void RenderTargetsWidget::render() {
             autoAdvanceFrameCounter = 0;
             int next = (static_cast<int>(selectedPreview) + 1) % static_cast<int>(PreviewTarget::Count);
             selectedPreview = static_cast<PreviewTarget>(next);
-            // Reset shadow cascade on wrap-around so all cascades get exercised over time
-            if (selectedPreview == PreviewTarget::ShadowCascade) {
-                selectedShadowCascade = (selectedShadowCascade + 1) % SHADOW_CASCADE_COUNT;
-            }
         }
     }
     // Add preview items array (prepare for dropdown selector)
@@ -1284,8 +1092,7 @@ void RenderTargetsWidget::render() {
         "BrushBackFaceDepth",
         "WaterColor",
         "WaterDepth",
-        "LinearSceneDepth",
-        "ShadowCascade"
+        "LinearSceneDepth"
     };
     int previewIndex = static_cast<int>(selectedPreview);
 
@@ -1293,19 +1100,6 @@ void RenderTargetsWidget::render() {
     if (ImGui::Combo("Preview", &previewIndex, previewItems, static_cast<int>(sizeof(previewItems)/sizeof(previewItems[0])))) {
         selectedPreview = static_cast<RenderTargetsWidget::PreviewTarget>(previewIndex);
     }
-    if (selectedPreview == PreviewTarget::ShadowCascade) {
-        ImGui::SliderInt("Cascade", &selectedShadowCascade, 0, SHADOW_CASCADE_COUNT - 1);
-    }
-    ImGui::Text("Shadow View"); ImGui::SameLine();
-    if (ImGui::RadioButton("Linearized", shadowViewMode == RenderTargetsWidget::ShadowViewMode::Linearized)) {
-        shadowViewMode = RenderTargetsWidget::ShadowViewMode::Linearized;
-    }
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Raw", shadowViewMode == RenderTargetsWidget::ShadowViewMode::Raw)) {
-        shadowViewMode = RenderTargetsWidget::ShadowViewMode::Raw;
-    }
-    ImGui::SameLine();
-    ImGui::Checkbox("Show All Cascades", &showAllCascades);
     ImGui::Separator();
 
     float aspect = 1.0f;
@@ -1338,21 +1132,4 @@ void RenderTargetsWidget::render() {
         ImVec2 imgSize = previewSize;
         ImGuiHelpers::ImageOrUnavailable((ImTextureID)ds, imgSize, "Preview unavailable");
     ImGui::Separator();
-
-
-
-    // Optionally show all cascades (in selected shadow view mode)
-    // Only show the full cascade grid when the shadow cascade preview is selected.
-    if (selectedPreview == PreviewTarget::ShadowCascade && showAllCascades && shadowMapper) {
-        float shadowSize = PREVIEW_WIDTH;
-        for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
-            ImGui::Text("Shadow Cascade %d", i);
-            if (shadowViewMode == RenderTargetsWidget::ShadowViewMode::Linearized) {
-                ImGuiHelpers::ImageOrUnavailable((ImTextureID)linearShadowDepthDescriptor[i], ImVec2(shadowSize, shadowSize));
-            } else {
-                ImGuiHelpers::ImageOrUnavailable((ImTextureID)shadowMapper->getImGuiDescriptorSet(i), ImVec2(shadowSize, shadowSize));
-            }
-            ImGui::Separator();
-        }
-    }
 }

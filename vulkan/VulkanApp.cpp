@@ -3618,6 +3618,62 @@ void VulkanApp::createDescriptorSetLayout() {
     // Register the main descriptor set layout for inspection/cleanup
     resources.addDescriptorSetLayout(descriptorSetLayout, "VulkanApp: descriptorSetLayout");
 
+    // ── Ray-traced shadow mask descriptor set (dedicated regular set) ──
+    // A dedicated REGULAR (non-update-after-bind) descriptor set holding the
+    // single read-only storage image written by RayTracingRenderer::traceShadow.
+    // It must NOT live in the update-after-bind scene set-0: radv crashes when a
+    // STORAGE_IMAGE descriptor is written into an update-after-bind set (used for
+    // the per-frame cubemap swap). The raster lit shaders read it via imageLoad.
+    // It is bound at set 2 by the solid lit pipeline (main.frag declares rtShadow
+    // at set=2) and at set 3 by the vegetation/impostor pipelines.
+    {
+        VkDescriptorSetLayoutBinding s{};
+        s.binding = 0;
+        s.descriptorCount = 1;
+        s.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        s.pImmutableSamplers = nullptr;
+        s.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo sli{};
+        sli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        sli.bindingCount = 1;
+        sli.pBindings = &s;
+        if (vkCreateDescriptorSetLayout(device, &sli, nullptr, &rtShadowSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("failed to create rtShadow descriptor set layout!");
+        resources.addDescriptorSetLayout(rtShadowSetLayout, "VulkanApp: rtShadowSetLayout");
+
+        // Small dedicated pool (regular; no update-after-bind) for the one set.
+        std::array<VkDescriptorPoolSize, 1> ps{};
+        ps[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        ps[0].descriptorCount = 1;
+        VkDescriptorPoolCreateInfo pi{};
+        pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pi.maxSets = 1;
+        pi.poolSizeCount = 1;
+        pi.pPoolSizes = ps.data();
+        if (vkCreateDescriptorPool(device, &pi, nullptr, &rtShadowPool) != VK_SUCCESS)
+            throw std::runtime_error("failed to create rtShadow descriptor pool!");
+        resources.addDescriptorPool(rtShadowPool, "VulkanApp: rtShadowPool");
+
+        rtShadowDescriptorSet = createDescriptorSet(rtShadowSetLayout, rtShadowPool);
+
+        // Dedicated set for the ray-traced reflection colour (set=3 in the
+        // solid lit pipeline). Reuses the same single STORAGE_IMAGE layout as
+        // rtShadow; a separate pool so the two images bind independently.
+        std::array<VkDescriptorPoolSize, 1> rps{};
+        rps[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        rps[0].descriptorCount = 1;
+        VkDescriptorPoolCreateInfo rpi{};
+        rpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        rpi.maxSets = 1;
+        rpi.poolSizeCount = 1;
+        rpi.pPoolSizes = rps.data();
+        if (vkCreateDescriptorPool(device, &rpi, nullptr, &rtReflectPool) != VK_SUCCESS)
+            throw std::runtime_error("failed to create rtReflect descriptor pool!");
+        resources.addDescriptorPool(rtReflectPool, "VulkanApp: rtReflectPool");
+
+        rtReflectDescriptorSet = createDescriptorSet(rtShadowSetLayout, rtReflectPool);
+    }
+
     // Allocate the main UBO/sampler/materials descriptor sets (one per frame)
     const uint32_t MAIN_DESC_SETS = MAX_FRAMES_IN_FLIGHT;
     mainDescriptorSets.clear();
@@ -3675,6 +3731,36 @@ void VulkanApp::createDescriptorSetLayout() {
     resources.addDescriptorSetLayout(brushDepthDescriptorSetLayout, "VulkanApp::createDescriptorSetLayout brushDepthDescriptorSetLayout");
 
     // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
+}
+
+void VulkanApp::setRtShadowImageView(VkImageView view) {
+    if (rtShadowDescriptorSet == VK_NULL_HANDLE || view == VK_NULL_HANDLE) return;
+    VkDescriptorImageInfo info{};
+    info.imageView = view;
+    info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet w{};
+    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet = rtShadowDescriptorSet;
+    w.dstBinding = 0;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    w.descriptorCount = 1;
+    w.pImageInfo = &info;
+    vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
+}
+
+void VulkanApp::setRtReflectImageView(VkImageView view) {
+    if (rtReflectDescriptorSet == VK_NULL_HANDLE || view == VK_NULL_HANDLE) return;
+    VkDescriptorImageInfo info{};
+    info.imageView = view;
+    info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet w{};
+    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet = rtReflectDescriptorSet;
+    w.dstBinding = 0;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    w.descriptorCount = 1;
+    w.pImageInfo = &info;
+    vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
 }
 
 void VulkanApp::createDepthResources() {
@@ -3758,8 +3844,11 @@ void VulkanApp::createDepthResources() {
 }
 
 void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
-    // Reserve descriptors: uniform buffers, combined image samplers, and storage buffers for materials
-    std::array<VkDescriptorPoolSize, 3> poolSizes{};
+    // Reserve descriptors: uniform buffers, combined image samplers, storage
+    // buffers for materials, and storage images (the ray-traced shadow mask is a
+    // read-only storage image written into its own dedicated descriptor set, not
+    // the update-after-bind scene set-0).
+    std::array<VkDescriptorPoolSize, 4> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     // Each descriptor set will reference the per-set scene UBO (binding 0)
     // and the shared Sky UBO (binding 6). Reserve two uniform descriptors per set.
@@ -3769,6 +3858,10 @@ void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     // Increase storage buffer descriptors for compute workloads (was: uboCount)
     poolSizes[2].descriptorCount = uboCount * 8;
+    poolSizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    // One storage image (binding 14) per set: the static set plus one per-frame
+    // main set (uboCount). Reserve uboCount + 1 with headroom.
+    poolSizes[3].descriptorCount = uboCount * 2 + 1;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -3813,6 +3906,34 @@ VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout) {
     if ((uint64_t)descriptorSet == 0x6c100000006c1ULL) {
         std::cerr << "[VulkanApp::createDescriptorSet] *** CRITICAL: allocated suspicious handle 0x6c100000006c1 ***" << std::endl;
     }
+    return descriptorSet;
+}
+
+VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool pool) {
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = pool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &layout;
+
+    if (layout == VK_NULL_HANDLE) {
+        std::cerr << "[VulkanApp::createDescriptorSet] ERROR: requested layout is VK_NULL_HANDLE" << std::endl;
+        throw std::runtime_error("createDescriptorSet called with VK_NULL_HANDLE layout");
+    }
+    if (pool == VK_NULL_HANDLE) {
+        std::cerr << "[VulkanApp::createDescriptorSet] ERROR: requested pool is VK_NULL_HANDLE" << std::endl;
+        throw std::runtime_error("createDescriptorSet called with VK_NULL_HANDLE pool");
+    }
+
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    {
+        std::lock_guard<std::mutex> lk(descriptorAllocMutex);
+        if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
+            std::cerr << "[VulkanApp::createDescriptorSet] vkAllocateDescriptorSets failed for layout=" << (void*)layout << " pool=" << (void*)pool << std::endl;
+            throw std::runtime_error("failed to allocate descriptor set from pool!");
+        }
+    }
+    resources.addDescriptorSet(descriptorSet, "VulkanApp: descriptorSet");
     return descriptorSet;
 }
 
@@ -4165,6 +4286,12 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     }
     if (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
         allocCI.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    // Buffers referenced by device address (RT acceleration-structure build inputs,
+    // SBT, storage buffers read via address) are allocated in device-addressable
+    // memory automatically: the allocator was created with
+    // VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT, which makes VMA add
+    // VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR to any buffer carrying
+    // VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT. No per-allocation flag needed.
 
     VmaAllocation allocation;
     VmaAllocationInfo allocInfo;
@@ -5259,6 +5386,9 @@ void VulkanApp::createInstance() {
     if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
         throw std::runtime_error("failed to create instance!");
     }
+    // Resolve ray-tracing KHR dispatch table now that the instance exists. The
+    // pointers remain null if RT is unavailable; callers gate on rtSupport/ready().
+    rtDispatch.load(instance);
 }
 
 bool VulkanApp::checkValidationLayerSupport() {
@@ -5390,15 +5520,48 @@ void VulkanApp::pickPhysicalDevice() {
         throw std::runtime_error("failed to enumerate physical devices!");
     }
 
+    // Collect all suitable devices, preferring one that supports ray tracing so
+    // the RT shadow/reflection/refraction workloads can actually run.
+    auto devHasRT = [](VkPhysicalDevice d) -> bool {
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR rt{};
+        rt.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+        VkPhysicalDeviceFeatures2 f2{};
+        f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        f2.pNext = &rt;
+        vkGetPhysicalDeviceFeatures2(d, &f2);
+        return rt.rayTracingPipeline == VK_TRUE;
+    };
+    std::vector<VkPhysicalDevice> suitable;
+    VkPhysicalDevice rtCandidate = VK_NULL_HANDLE;
     for (const auto& dev : devices) {
-        if (isDeviceSuitable(dev)) {
-            physicalDevice = dev;
-            break;
+        if (!isDeviceSuitable(dev)) continue;
+        suitable.push_back(dev);
+        if (rtCandidate == VK_NULL_HANDLE && devHasRT(dev)) {
+            rtCandidate = dev;
         }
+    }
+
+    if (!suitable.empty()) {
+        // Prefer the RT-capable device; otherwise fall back to the first suitable.
+        physicalDevice = (rtCandidate != VK_NULL_HANDLE) ? rtCandidate : suitable.front();
     }
 
     if (physicalDevice == VK_NULL_HANDLE) {
         throw std::runtime_error("failed to find a suitable GPU!");
+    }
+
+    {
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtChk{};
+        rtChk.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+        VkPhysicalDeviceFeatures2 f2{};
+        f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        f2.pNext = &rtChk;
+        vkGetPhysicalDeviceFeatures2(physicalDevice, &f2);
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &props);
+        printf("[VulkanApp] selected device: %s (ray tracing %s)\n",
+            props.deviceName,
+            rtChk.rayTracingPipeline == VK_TRUE ? "supported" : "unsupported");
     }
 }
 
@@ -5524,13 +5687,107 @@ void VulkanApp::createLogicalDevice() {
     vulkan12Features.drawIndirectCount = VK_TRUE;
     vulkan12Features.descriptorIndexing = VK_TRUE;
     vulkan12Features.timelineSemaphore = VK_TRUE;
-    // GPU-assisted validation (VULKAN_GPU_ASSISTED=1) instruments shaders and needs
-    // bufferDeviceAddress. Modern GPUs (Radeon 680M / RDNA2) support it; only older
-    // integrated parts lack it. Gate on the same env flag used for the instance layer.
-    {
-        const char* gpuAssistedEnv = std::getenv("VULKAN_GPU_ASSISTED");
-        bool gpuAssisted = gpuAssistedEnv && gpuAssistedEnv[0] != '\0' && gpuAssistedEnv[0] != '0';
-        if (gpuAssisted) vulkan12Features.bufferDeviceAddress = VK_TRUE;
+    // bufferDeviceAddress is REQUIRED for VK_KHR_acceleration_structure (build inputs
+    // reference geometry via device addresses) and for VK_KHR_ray_tracing_pipeline
+    // (SBT + callable shaders). Enable it unconditionally now that ray tracing is part
+    // of the architecture. The previous gate (VULKAN_GPU_ASSISTED=1) is removed.
+    vulkan12Features.bufferDeviceAddress = VK_TRUE;
+
+    // ── Ray tracing feature detection & enablement ──────────────────────────────
+    // Per AGENTS.md: never assume support by version alone — query extensions and
+    // features, and gracefully fall back when a capability is unavailable. All RT
+    // features are optional; rtSupport.any() becomes true only when both the
+    // acceleration-structure and ray-tracing-pipeline extensions + features are present.
+    rtSupport = RayTracingSupport{};
+
+    // Detect RT extension support via a dedicated enumeration (kept independent of the
+    // later maintenance5/pipelineBinary query so ordering cannot break it).
+    auto rtExtSupported = [this](const char* name) {
+        uint32_t count = 0;
+        vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr);
+        if (count == 0) return false;
+        std::vector<VkExtensionProperties> exts(count);
+        vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, exts.data());
+        for (const auto& ext : exts) {
+            if (strcmp(ext.extensionName, name) == 0) return true;
+        }
+        return false;
+    };
+
+    // Probe the physical-device feature structs for ray tracing. These structs are
+    // zero-initialized except sType; we read .accelerationStructure / .rayTracingPipeline
+    // after vkGetPhysicalDeviceFeatures2. (The deferred-host-operations and pipeline-library
+    // feature structs are intentionally omitted: the pinned SDK headers do not expose their
+    // KHR variants, and both extensions are optional for our RT usage — the extensions are
+    // still requested below when the driver reports them.)
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures{};
+    asFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtpFeatures{};
+    rtpFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+    VkPhysicalDeviceRayQueryFeaturesKHR rqFeatures{};
+    rqFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rtpfFeatures{};
+    rtpfFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR;
+    rtpFeatures.pNext = &rqFeatures;
+    rqFeatures.pNext = &rtpfFeatures;
+    asFeatures.pNext = &rtpFeatures;
+    VkPhysicalDeviceFeatures2 pdFeatures2{};
+    pdFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    pdFeatures2.pNext = &asFeatures;
+    vkGetPhysicalDeviceFeatures2(physicalDevice, &pdFeatures2);
+
+    rtSupport.bufferDeviceAddress = (vulkan12Features.bufferDeviceAddress == VK_TRUE);
+    rtSupport.accelerationStructure =
+        rtExtSupported(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+        (asFeatures.accelerationStructure == VK_TRUE);
+    rtSupport.rayTracingPipeline =
+        rtExtSupported(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) &&
+        (rtpFeatures.rayTracingPipeline == VK_TRUE);
+    rtSupport.rayQuery =
+        rtExtSupported(VK_KHR_RAY_QUERY_EXTENSION_NAME) && (rqFeatures.rayQuery == VK_TRUE);
+    rtSupport.rayTracingPositionFetch =
+        rtExtSupported(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME) &&
+        (rtpfFeatures.rayTracingPositionFetch == VK_TRUE);
+    rtSupport.deferredHostOperations = false;
+    rtSupport.pipelineLibrary = false;
+
+    // Chain the RT feature structs onto the device-create pNext chain ONLY when the
+    // corresponding extension is available, so we never request an unsupported feature.
+    // Inserted between the Vulkan 1.2 root (vulkan12Features) and its existing chain.
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR asEnable{};
+    asEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtpEnable{};
+    rtpEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+    VkPhysicalDeviceRayQueryFeaturesKHR rqEnable{};
+    rqEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rtpfEnable{};
+    rtpfEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR;
+
+    if (rtSupport.accelerationStructure) {
+        asEnable.accelerationStructure = VK_TRUE;
+        // Build the RT feature sub-chain: asEnable -> rtpEnable -> rqEnable -> rtpfEnable,
+        // then splice it in between the Vulkan 1.2 root and its existing tail (currently
+        // the Vulkan 1.1 node). Each link must be preserved, otherwise the trailing
+        // feature structs would be dropped from the pNext chain and their device
+        // features never enabled.
+        VkBaseOutStructure* tail = reinterpret_cast<VkBaseOutStructure*>(&asEnable);
+        if (rtSupport.rayTracingPipeline) {
+            rtpEnable.rayTracingPipeline = VK_TRUE;
+            tail->pNext = reinterpret_cast<VkBaseOutStructure*>(&rtpEnable);
+            tail = reinterpret_cast<VkBaseOutStructure*>(&rtpEnable);
+        }
+        if (rtSupport.rayQuery) {
+            rqEnable.rayQuery = VK_TRUE;
+            tail->pNext = reinterpret_cast<VkBaseOutStructure*>(&rqEnable);
+            tail = reinterpret_cast<VkBaseOutStructure*>(&rqEnable);
+        }
+        if (rtSupport.rayTracingPositionFetch) {
+            rtpfEnable.rayTracingPositionFetch = VK_TRUE;
+            tail->pNext = reinterpret_cast<VkBaseOutStructure*>(&rtpfEnable);
+            tail = reinterpret_cast<VkBaseOutStructure*>(&rtpfEnable);
+        }
+        tail->pNext = reinterpret_cast<VkBaseOutStructure*>(vulkan12Features.pNext); // existing tail (Vulkan 1.1 node)
+        vulkan12Features.pNext = &asEnable;
     }
     vulkan12Features.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
     vulkan12Features.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
@@ -5579,6 +5836,26 @@ void VulkanApp::createLogicalDevice() {
     if (pipelineBinarySupported) {
         extensions.push_back(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
         printf("[VulkanApp] VK_KHR_pipeline_binary supported — enabling for granular pipeline cache invalidation\n");
+    }
+
+    // Ray tracing extensions — only requested when the corresponding feature was detected,
+    // so a GPU/driver lacking RT still initializes cleanly (graceful fallback to raster).
+    if (rtSupport.accelerationStructure) {
+        extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        if (rtExtSupported(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)) {
+            extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        }
+        printf("[VulkanApp] VK_KHR_acceleration_structure enabled\n");
+    }
+    if (rtSupport.rayTracingPipeline) {
+        extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+        if (rtExtSupported(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME)) {
+            extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+        }
+        if (rtSupport.rayTracingPositionFetch) {
+            extensions.push_back(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME);
+        }
+        printf("[VulkanApp] VK_KHR_ray_tracing_pipeline enabled\n");
     }
 
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());

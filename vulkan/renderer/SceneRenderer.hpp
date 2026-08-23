@@ -22,20 +22,16 @@ class World;
 #include <vector>
 #include "../../space/Model3DVersion.hpp"
 #include "../../space/ThreadPool.hpp"
-#include "SolidRenderer.hpp"
 #include "VegetationRenderer.hpp"
 #include "WaterRenderer.hpp"
 #include "PostProcessRenderer.hpp"
 #include "SkyRenderer.hpp"
-#include "ShadowRenderer.hpp"
 #include "DebugCubeRenderer.hpp"
 #include "DebugSDFRenderer.hpp"
-#include "WireframeRenderer.hpp"
-#include "WaterBackFaceRenderer.hpp"
 #include "BrushRenderer.hpp"
-#include "Solid360Renderer.hpp"
 #include "IndirectRenderer.hpp"
 #include "../streaming/UploadManager.hpp"   // TerrainStreamer: async streaming orchestration
+#include "../raytracing/RayTracingRenderer.hpp"
 #include "../../world/World.hpp"
 
 #include "CommandBufferState.hpp"
@@ -58,18 +54,42 @@ public:
     std::vector<VkDescriptorSet> shadowDescriptorSets;
 
     std::unique_ptr<SkyRenderer> skyRenderer;
-    std::unique_ptr<ShadowRenderer> shadowMapper;
     std::unique_ptr<PostProcessRenderer> postProcessRenderer;
-    std::unique_ptr<SolidRenderer> mainSolidRenderer;
     std::unique_ptr<WaterRenderer> mainLiquidRenderer;
+
+    // Solid scene geometry + offscreen colour/depth targets, formerly owned by
+    // SolidRenderer. The ray-traced TLAS traces solidIndirectRenderer's geometry,
+    // and the primary RT pass composites into solidColorImage; post-process samples it.
+    IndirectRenderer solidIndirectRenderer;
+    static constexpr uint32_t SOLID_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    std::array<VkImage, SOLID_FRAMES> solidColorImages = {};
+    std::array<VmaAllocation, SOLID_FRAMES> solidColorAllocations = {};
+    std::array<VkDeviceMemory, SOLID_FRAMES> solidColorMemories = {};
+    std::array<VkImageView, SOLID_FRAMES> solidColorImageViews = {};
+    std::array<VkImage, SOLID_FRAMES> solidDepthImages = {};
+    std::array<VmaAllocation, SOLID_FRAMES> solidDepthAllocations = {};
+    std::array<VkDeviceMemory, SOLID_FRAMES> solidDepthMemories = {};
+    std::array<VkImageView, SOLID_FRAMES> solidDepthImageViews = {};
+    std::array<VkImageLayout, SOLID_FRAMES> solidDepthImageLayouts = {};
+
+    IndirectRenderer& getSolidIndirectRenderer() { return solidIndirectRenderer; }
+    VkImageView getSolidColorView(uint32_t fi) const { return solidColorImageViews[fi % SOLID_FRAMES]; }
+    VkImage getSolidColorImage(uint32_t fi) const { return solidColorImages[fi % SOLID_FRAMES]; }
+    VkImageView getSolidDepthView(uint32_t fi) const { return solidDepthImageViews[fi % SOLID_FRAMES]; }
+    VkImage getSolidDepthImage(uint32_t fi) const { return solidDepthImages[fi % SOLID_FRAMES]; }
+    VkImageLayout getSolidDepthLayout(uint32_t fi) const {
+        return (fi < solidDepthImageLayouts.size()) ? solidDepthImageLayouts[fi] : VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+    void setSolidDepthLayout(uint32_t fi, VkImageLayout l) {
+        if (fi < solidDepthImageLayouts.size()) solidDepthImageLayouts[fi] = l;
+    }
+    void createSolidTargets(VulkanApp* app, uint32_t w, uint32_t h);
+    void destroySolidTargets(VulkanApp* app);
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     std::unique_ptr<BrushRenderer> brushRenderer;
-    std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
-    std::unique_ptr<Solid360Renderer> solid360Renderer;
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
     std::unique_ptr<DebugSDFRenderer> debugSDFRenderer;
-    std::unique_ptr<WireframeRenderer> waterWireframe;
     // Sky settings owned by this renderer
     std::unique_ptr<SkySettings> skySettings;
     SkySettings& getSkySettings() { return *skySettings; }
@@ -133,8 +153,7 @@ public:
 
     // Remove all registered opaque meshes via IndirectRenderer and clear the map
     void removeAllRegisteredMeshes() {
-        if (!mainSolidRenderer) return;
-        mainSolidRenderer->getIndirectRenderer().removeAllMeshes();
+        solidIndirectRenderer.removeAllMeshes();
         mainSolidChunks.clear();
     }
 
@@ -227,6 +246,67 @@ public:
     // update()/frame-sync runs each frame; terrain/water/brush GPU copies still
     // flow through IndirectRenderer until that path is migrated to use it.
     streaming::TerrainStreamer streamer;
+
+    // ── Ray-tracing scene representation ──────────────────────────────────────
+    // The RayTracingRenderer owns the per-chunk BLASes (rebuilt only when a
+    // chunk's geometry changes) and the unified TLAS (rebuilt only when chunks
+    // are added/removed). Solid, water and vegetation coexist in ONE TLAS; the
+    // geometry/material kind routes each instance to a different HIT GROUP via
+    // the instance shader-binding-table record offset, not to a separate pass
+    // or acceleration-structure hierarchy. Lazily created when the device
+    // supports VK_KHR_acceleration_structure + VK_KHR_ray_tracing_pipeline.
+    std::unique_ptr<RayTracingRenderer> rayTracingRenderer;
+    bool rtEnabled = false;
+
+    // Offscreen image that the shadow ray-tracing workload writes occlusion to.
+    VkImage      rtShadowImage = VK_NULL_HANDLE;
+    VmaAllocation rtShadowImageAlloc = VK_NULL_HANDLE;
+    VkDeviceMemory rtShadowImageMemory = VK_NULL_HANDLE;
+    VkImageView  rtShadowImageView = VK_NULL_HANDLE;
+    uint32_t     rtShadowWidth = 0, rtShadowHeight = 0;
+    // Offscreen image that the reflection ray-tracing workload writes the
+    // fully-lit reflected scene colour to (read by the solid lit pipeline).
+    VkImage      rtReflectImage = VK_NULL_HANDLE;
+    VmaAllocation rtReflectImageAlloc = VK_NULL_HANDLE;
+    VkDeviceMemory rtReflectImageMemory = VK_NULL_HANDLE;
+    VkImageView  rtReflectImageView = VK_NULL_HANDLE;
+    // Offscreen image that the PRIMARY ray-tracing workload writes the fully
+    // shaded scene colour to (replaces the raster solid/vegetation colour pass).
+    // Composited into the solid offscreen colour target so water/post/UI that
+    // sample it keep working unchanged.
+    VkImage      rtSceneImage = VK_NULL_HANDLE;
+    VmaAllocation rtSceneImageAlloc = VK_NULL_HANDLE;
+    VkDeviceMemory rtSceneImageMemory = VK_NULL_HANDLE;
+    VkImageView  rtSceneImageView = VK_NULL_HANDLE;
+    std::unordered_set<uint64_t> rtRegisteredChunks; // change detection
+    bool         rtShadowEnabled = false;            // gate the actual shadow trace
+
+    // Build the RT shadow output image + RayTracingRenderer. No-op (rtEnabled
+    // stays false) when ray tracing is unsupported, so all existing raster
+    // paths continue to work unchanged.
+    void initRayTracing(VulkanApp* app);
+    // Reconcile the registered BLAS set with the live slotted geometry. Only
+    // registers/unregisters chunks whose set changed, so unchanged chunks keep
+    // their BLAS and the TLAS is not needlessly rebuilt.
+    void syncRayTracingScene(VulkanApp* app);
+    // Per-frame: process pending BLAS builds + (if needed) the TLAS rebuild.
+    void updateRayTracing(VulkanApp* app);
+    // Record the shadow-ray trace into the offscreen RT shadow image (GENERAL
+    // layout). Call during the offscreen phase when rtShadowEnabled.
+    void recordRayTracingShadow(VkCommandBuffer cmd);
+    // Record the reflection-ray trace into the offscreen RT reflection image
+    // (GENERAL layout). Call during the offscreen phase when rtEnabled.
+    void recordRayTracingReflection(VkCommandBuffer cmd);
+    // Record the primary ray-traced scene render into the offscreen RT scene
+    // image (GENERAL layout). The result is later composited into the solid
+    // offscreen colour target.
+    void recordRayTracingRender(VkCommandBuffer cmd);
+    // Composite the primary ray-traced scene (rtSceneImage) into the solid
+    // offscreen colour target via a full-screen blit, so water/post/UI that
+    // sample that target keep working unchanged. Call just before the solid
+    // colour pass beginRendering (the colour pass uses LOAD_OP_LOAD so the
+    // blitted scene is preserved).
+    void compositeRayTracedScene(VkCommandBuffer cmd, uint32_t frameIdx);
 
 private:
     // Single publish core for a pending mesh batch — every stream behaves

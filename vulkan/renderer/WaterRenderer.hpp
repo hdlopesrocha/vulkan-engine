@@ -5,7 +5,6 @@
 #include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
 #include "SkyRenderer.hpp"
-#include "SolidRenderer.hpp"
 #include <glm/glm.hpp>
 #include <memory>
 #include <vector>
@@ -21,9 +20,6 @@
 #include "CommandBufferState.hpp"
 
 class BrushRenderer;
-class WaterBackFaceRenderer;
-class Solid360Renderer;
-class WireframeRenderer;
 
 class WaterRenderer : public Renderer {
 public:
@@ -37,17 +33,13 @@ public:
     // alongside (solid offscreen targets, brush liquid geometry, back-face
     // depth, 360° reflection cubemap, wireframe overlay). Called once by
     // SceneRenderer after all sub-renderers are created.
-    void setSceneRenderers(SolidRenderer* solid, BrushRenderer* brush,
-                           WaterBackFaceRenderer* backFace, Solid360Renderer* solid360,
-                           WireframeRenderer* waterWireframe);
+    void setSceneRenderers(BrushRenderer* brush);
 
     // Full water pass orchestration: updates the water render UBO with the
     // active layer time, (re)allocates this slot's scene-texture descriptor
     // set, then records the offscreen water geometry pass (filled, wireframe
     // overlay, or skipped via VULKAN_DISABLE_WATERGEOM) on the same command
     // buffer so the solid pass outputs are available for sampling.
-    void renderPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
-                    bool waterWireframeEnabled, float waterTime, VkImageView skyView);
 
     // Water render time UBO (binding 10) — created and updated here, but
     // bound into the scene descriptor sets by SceneRenderer.
@@ -144,19 +136,6 @@ public:
     // never shared between the async back-face task and the main command buffer).
     // `backFaceDepthView` and `cube360View` may be VK_NULL_HANDLE if those targets
     // are not present; SceneRenderer should pass them when available.
-    void updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView = VK_NULL_HANDLE, VkImageView backFaceDepthView = VK_NULL_HANDLE, VkImageView cube360View = VK_NULL_HANDLE);
-
-    // Allocate a fresh per-frame scene-texture descriptor set, free the previous
-    // one, and update it with the given views. Returns the new set (or
-    // VK_NULL_HANDLE on failure). The previous set is freed only after its command
-    // buffer has completed (the caller must invoke this from preRenderPass, which
-    // runs after the per-slot in-flight fence wait), so the set is never reused
-    // while pending and never needs UPDATE_AFTER_BIND.
-    VkDescriptorSet prepareSceneTexturesForFrame(VulkanApp* app, uint32_t frameIndex,
-                                                 VkImageView colorImageView, VkImageView depthImageView,
-                                                 VkImageView skyImageView = VK_NULL_HANDLE,
-                                                 VkImageView backFaceDepthView = VK_NULL_HANDLE,
-                                                 VkImageView cube360View = VK_NULL_HANDLE);
 
     // Clear per-frame render targets (color/depth) into default values.
     // Call this each frame when water rendering is disabled to avoid sampling
@@ -269,11 +248,7 @@ private:
     uint32_t activeWaterFrameIndex = 0;
 
     // Scene sub-renderers injected via setSceneRenderers
-    SolidRenderer* solidRenderer_ = nullptr;
     BrushRenderer* brushRenderer_ = nullptr;
-    WaterBackFaceRenderer* backFaceRenderer_ = nullptr;
-    Solid360Renderer* solid360Renderer_ = nullptr;
-    WireframeRenderer* waterWireframe_ = nullptr;
 
     // Water render time UBO (binding 10)
     Buffer waterRenderUBO_;

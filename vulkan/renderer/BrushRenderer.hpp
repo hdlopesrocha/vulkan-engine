@@ -2,7 +2,6 @@
 #include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "IndirectRenderer.hpp"
-#include "BrushBackFaceRenderer.hpp"
 #include "../../space/Octree.hpp"
 #include "../../space/Model3DVersion.hpp"
 #include "../../space/ThreadPool.hpp"
@@ -10,8 +9,6 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
-
-class SolidRenderer;
 
 // Owns everything the brush preview needs on the GPU, mirroring how
 // SolidRenderer / WaterRenderer encapsulate their offscreen targets, pipelines
@@ -48,9 +45,6 @@ public:
     VkImage getColorImage(uint32_t i) const { return colorImages[i % BRUSH_FRAMES]; }
     VkImageView getDepthView(uint32_t i) const { return depthImageViews[i % BRUSH_FRAMES]; }
     VkImage getDepthImage(uint32_t i) const { return depthImages[i % BRUSH_FRAMES]; }
-    VkImageView getBackFaceDepthView(uint32_t i) const {
-        return backFaceRenderer ? backFaceRenderer->getBackFaceDepthView(i) : VK_NULL_HANDLE;
-    }
 
     // Per-frame descriptor sets for brush depth textures (set=1, binding 0/1:
     // front depth, back-face depth).
@@ -107,7 +101,7 @@ public:
     // back-face depth (GREATER), brush color (raw), then transition all brush
     // targets to SHADER_READ_ONLY_OPTIMAL for the deferred composite.
     void recordEarlyPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
-                         SolidRenderer& solidRenderer, VkDescriptorSet mainDs);
+                         VkDescriptorSet mainDs);
 
     // Initialize the brush slot pools (packed element pools; the byte budgets
     // are TOTAL shared pool budgets, not per-chunk).
@@ -119,14 +113,10 @@ public:
     ThreadPool liquidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
     void stopGenPools();
 
-    // Back-face depth pass for the brush solid geometry (GREATER compare).
-    std::unique_ptr<BrushBackFaceRenderer> backFaceRenderer;
-
     // Attach the shared per-frame command state tracker. The brush pass only
     // records on the main thread, so its back-face renderer is safe to wire in.
     void setCmdState(CommandBufferState* state) override {
         Renderer::setCmdState(state);
-        if (backFaceRenderer) backFaceRenderer->setCmdState(state);
     }
 
 private:

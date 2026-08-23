@@ -6,14 +6,11 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     vec4 lightDir;
     vec4 lightColor;
     vec4 materialFlags;
-    mat4 lightSpaceMatrix; // for shadow mapping
     vec4 shadowEffects; // x/y/z = unused, w=global shadows enabled (1.0 = on)
     vec4 debugParams; // x=debugMode (0=normal,1=fragment normal,2=normal map (world),3=uv,4=tangent,5=bitangent,6=geometry normal (world),7=albedo,8=normal texture,9=height/bump,10=lighting (N·L,shadow),11=normal from derivatives,12=light vector (rgb),13=N·L grayscale,14=shadow diagnostics,15=triplanar weights,16=tex indices (RGB),17=barycentric weights,18=albedo samples (R/G/B),19=triplanar albedo,20=per-projection triplanar heights (RGB),21=UV vs triplanar height diff,22=triplanar normal,23=per-projection triplanar normals (RGB),24=UV vs triplanar normal diff,25=triplanar bump (height),26=per-projection triplanar bump (RGB),27=UV vs triplanar bump diff,49=reflection factor (env map), y=roughnessEnabled, z=aoEnabled)
     vec4 triplanarSettings;
     vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessellationFactor, w = reserved
     vec4 passParams;   // x = isShadowPass, y = tessEnabled, z = nearPlane, w = farPlane
-    mat4 lightSpaceMatrix1; // cascade 1 (4x ortho0)
-    mat4 lightSpaceMatrix2; // cascade 2 (16x ortho0)
     mat4 invViewProjection; // inverse of viewProjection (camera-constant)
     vec4 brushParams;       // x=brushTextureIndex, y=brushMode (0=overlay, 2=PAINT)
     vec4 brushHSV;          // x=H(0..360), y=S(0..1), z=V(0..1), w=unused

@@ -106,6 +106,8 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     for (const auto& kv : chunkInstanceCounts)
         totalInstances += kv.second;
     if (totalInstances == 0) return;
+    concatenatedInstanceCount_ = totalInstances;
+    ++vegetationGeneration_;
 
     uint32_t numChunks = static_cast<uint32_t>(chunkBuffers.size());
 
@@ -121,7 +123,8 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             Buffer old = concatenatedInstanceBuffer;
             concatenatedInstanceBuffer = {};
             concatenatedInstanceBuffer = app->createBuffer(concatSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+                    | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
             if (old.buffer != VK_NULL_HANDLE) {
                 app->deferDestroyUntilAllPending([app, old]() {
@@ -675,97 +678,6 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
     }
 }
 
-void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& commandBuffer,
-                                            VkDescriptorSet shadowDescriptorSet,
-                                            const glm::vec3& cameraPos,
-                                            uint32_t cascadeIndex) {
-    if (cascadeIndex >= 3) return;
-    if (!app || vegetationShadowPipeline == VK_NULL_HANDLE) return;
-    if (chunkBuffers.empty()) return;
-    if (!ensureVegDescriptorSet(app)) return;
-    if (shadowDescriptorSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
-
-    uint32_t f = vegCullCurrentSlot;
-    if (vegCascadeCullFrames[f].compactBuffers[cascadeIndex].buffer == VK_NULL_HANDLE) return;
-
-    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationShadowPipeline);
-    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
-
-    updateWindParamsUBO(cameraPos);
-    VkDescriptorSet sets[3] = { shadowDescriptorSet, vegDescriptorSet, windParamsDescSet };
-    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
-    else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
-
-    WindPushConstants pc{};
-    pc.billboardScale = billboardScale;
-    pc.windEnabled = -1.0f;
-    pc.windTime = windTimeSeconds;
-    pc.impostorDistance = impostorDistance;
-
-    vkCmdPushConstants(commandBuffer, shadowPipelineLayout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(WindPushConstants), &pc);
-
-    vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
-        VkDeviceSize offsets[2] = { 0, 0 };
-        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-        if (cmdDrawIndexedIndirectCount) {
-            uint32_t vegMaxDraws = std::min(vegNumChunks, vegCascadeCompactCapacity);
-            cmdDrawIndexedIndirectCount(commandBuffer,
-                vegCascadeCullFrames[f].compactBuffers[cascadeIndex].buffer, 0,
-                vegCascadeCullFrames[f].countBuffers[cascadeIndex].buffer, 0,
-                vegMaxDraws, sizeof(VkDrawIndexedIndirectCommand));
-        }
-    }
-
-    // Impostor shadow pass — uses the same per-cascade visibility data from
-    // the cascade compact buffer (filled by prepareCullCascades) so impostors
-    // are only rendered in cascades where the chunk is visible.
-    VkPipeline impostorShadowPipe = (impostorShadowPipeline != VK_NULL_HANDLE)
-                                  ? impostorShadowPipeline : impostorDepthPipeline;
-    VkPipelineLayout impostorShadowLayout = (impostorShadowPipelineLayout != VK_NULL_HANDLE)
-                                          ? impostorShadowPipelineLayout : impostorDepthPipelineLayout;
-    if (impostorShadowPipe != VK_NULL_HANDLE &&
-        impostorDepthDescSet != VK_NULL_HANDLE &&
-        impostorDistance > 0.0f && impostorVBO.vertexBuffer.buffer != VK_NULL_HANDLE &&
-        !chunkBuffers.empty()) {
-        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorShadowPipe);
-        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowPipe);
-
-        VkDescriptorSet depthSets[3] = { shadowDescriptorSet, impostorDepthDescSet, windParamsDescSet };
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
-
-        vkCmdPushConstants(commandBuffer, impostorShadowLayout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(WindPushConstants), &pc);
-
-        vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        VkBuffer impVbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
-        VkDeviceSize impOffsets[2] = { 0, 0 };
-        if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-            impVbs[1] = concatenatedInstanceBuffer.buffer;
-            vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
-
-            // Impostor draw commands (indexCount=6) are written by the GPU
-            // veg_cascade_cull.comp into the per-cascade impostor compact +
-            // count buffers — no CPU readback of cull results.
-            Buffer& impCompactBuf = vegCascadeCullFrames[f].impostorCompactBuffers[cascadeIndex];
-            Buffer& impCountBuf   = vegCascadeCullFrames[f].impostorCountBuffers[cascadeIndex];
-            if (impCompactBuf.buffer != VK_NULL_HANDLE && impCountBuf.buffer != VK_NULL_HANDLE) {
-                uint32_t vegMaxImpostorDraws = std::min(vegNumChunks, vegCascadeCompactCapacity);
-                if (cmdDrawIndexedIndirectCount) {
-                    cmdDrawIndexedIndirectCount(commandBuffer,
-                        impCompactBuf.buffer, 0,
-                        impCountBuf.buffer, 0,
-                        vegMaxImpostorDraws, sizeof(VkDrawIndexedIndirectCommand));
-                }
-            }
-        }
-    }
-}
 
 void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app) {
     // Unregister old listener
@@ -932,159 +844,6 @@ void VegetationRenderer::init(VulkanApp* app) {
         app->registerDescriptorSet(windParamsDescSet);
     }
 
-    std::vector<VkDescriptorSetLayout> setLayouts;
-    setLayouts.push_back(app->getDescriptorSetLayout());
-    setLayouts.push_back(descriptorSetLayout);
-    setLayouts.push_back(windParamsDescSetLayout);
-    VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(WindPushConstants);
-
-    // Load shaders — no geometry shader
-    VkShaderModule vertShader = app->getOrCreateShaderModule("shaders/vegetation.vert.spv");
-    VkShaderModule fragShader = app->getOrCreateShaderModule("shaders/vegetation.frag.spv");
-    VkPipelineShaderStageCreateInfo vertStage{};
-    vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertStage.module = vertShader;
-    vertStage.pName = "main";
-
-    VkPipelineShaderStageCreateInfo fragStage{};
-    fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragStage.module = fragShader;
-    fragStage.pName = "main";
-
-    VkPipelineShaderStageCreateInfo stages[] = { vertStage, fragStage };
-
-    VkVertexInputBindingDescription bindingDescs[2] = {};
-    bindingDescs[0].binding = 0;
-    bindingDescs[0].stride = sizeof(Vertex);
-    bindingDescs[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    bindingDescs[1].binding = 1;
-    bindingDescs[1].stride = sizeof(float) * 4;
-    bindingDescs[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
-
-    // Shared attribute descriptions: localPos at POS, tangent at COLOR, UV, plane-data at BRUSH_INDEX
-    std::vector<VkVertexInputAttributeDescription> attribDescs(5);
-    attribDescs[0] = { ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) };
-    attribDescs[1] = { ATTR_COLOR, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) };
-    attribDescs[2] = { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) };
-    attribDescs[3] = { ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) };
-    attribDescs[4] = { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 };
-
-    // ── Shading pass pipeline (TRIANGLE_LIST, no geometry shader) ──
-    GraphicsPipelineConfig vegCfg{};
-    vegCfg.cullMode = VK_CULL_MODE_NONE;
-    vegCfg.depthWriteEnable = false;
-    vegCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    auto [pipeline, layout] = app->createGraphicsPipeline(
-        { stages[0], stages[1] },
-        std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
-        attribDescs,
-        setLayouts, &pushConstantRange,
-        vegCfg
-    );
-    vegetationPipeline = pipeline;
-    pipelineLayout = layout;
-    if (vegetationPipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION PIPELINE ERROR] Failed to create vegetation shading pipeline or layout!" << std::endl;
-    } else {
-        std::cerr << "[VEGETATION PIPELINE] Created shading pipeline=" << (void*)vegetationPipeline << " layout=" << (void*)pipelineLayout << std::endl;
-    }
-
-    // ── Depth prepass pipeline (TRIANGLE_LIST, no geometry shader) ──
-    {
-        VkShaderModule depthVertShader = app->getOrCreateShaderModule("shaders/vegetation.vert.spv");
-        VkShaderModule depthFragShader = app->getOrCreateShaderModule("shaders/vegetation_depth.frag.spv");
-        VkPipelineShaderStageCreateInfo depthVertStage{};
-        depthVertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        depthVertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-        depthVertStage.module = depthVertShader;
-        depthVertStage.pName = "main";
-
-        VkPipelineShaderStageCreateInfo depthFragStage{};
-        depthFragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        depthFragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        depthFragStage.module = depthFragShader;
-        depthFragStage.pName = "main";
-
-        VkPipelineShaderStageCreateInfo depthStages[] = { depthVertStage, depthFragStage };
-
-        GraphicsPipelineConfig depthCfg{};
-        depthCfg.cullMode = VK_CULL_MODE_NONE;
-        depthCfg.depthCompareOp = VK_COMPARE_OP_LESS;
-        depthCfg.noColorAttachment = true;
-        auto [depthPipe, depthLayout] = app->createGraphicsPipeline(
-            { depthStages[0], depthStages[1] },
-            std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
-            attribDescs,
-            setLayouts,
-            &pushConstantRange,
-            depthCfg
-        );
-        vegetationDepthPipeline = depthPipe;
-        vegetationDepthPipelineLayout = depthLayout;
-
-        depthVertShader = VK_NULL_HANDLE;
-        depthFragShader = VK_NULL_HANDLE;
-    }
-
-    // ── EVSM shadow pipeline (writes moments via shadow_evsm.frag ──
-    {
-        VkShaderModule shadowVertShader = app->getOrCreateShaderModule("shaders/vegetation_shadow.vert.spv");
-        VkShaderModule shadowFragShader = app->getOrCreateShaderModule("shaders/vegetation_shadow.frag.spv");
-        VkPipelineShaderStageCreateInfo shadowVertStage{};
-        shadowVertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        shadowVertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-        shadowVertStage.module = shadowVertShader;
-        shadowVertStage.pName = "main";
-
-        VkPipelineShaderStageCreateInfo shadowFragStage{};
-        shadowFragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        shadowFragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        shadowFragStage.module = shadowFragShader;
-        shadowFragStage.pName = "main";
-
-        VkPipelineShaderStageCreateInfo shadowStages[] = { shadowVertStage, shadowFragStage };
-
-        // Shadow vertex shader (vegetation_shadow.vert) omits ATTR_UV (location 2)
-        // — do not include it in the attribute descriptions to avoid a PERFORMANCE warning.
-        std::vector<VkVertexInputAttributeDescription> shadowAttribDescs = {
-            attribDescs[0], // ATTR_POS
-            attribDescs[1], // ATTR_COLOR
-            attribDescs[3], // ATTR_BRUSH_INDEX (location 4)
-            attribDescs[4], // ATTR_INSTANCE   (location 5)
-        };
-        GraphicsPipelineConfig shadowCfg{};
-        shadowCfg.cullMode = VK_CULL_MODE_NONE;
-        shadowCfg.depthCompareOp = VK_COMPARE_OP_LESS;
-        shadowCfg.colorFormats = { VK_FORMAT_R32G32_SFLOAT };
-        shadowCfg.depthBiasEnable = true;
-        auto [shadowPipeline, shadowLayout] = app->createGraphicsPipeline(
-            { shadowStages[0], shadowStages[1] },
-            std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
-            shadowAttribDescs,
-            setLayouts,
-            &pushConstantRange,
-            shadowCfg
-        );
-        vegetationShadowPipeline = shadowPipeline;
-        shadowPipelineLayout = shadowLayout;
-
-        shadowVertShader = VK_NULL_HANDLE;
-        shadowFragShader = VK_NULL_HANDLE;
-    }
-    if (vegetationShadowPipeline == VK_NULL_HANDLE || shadowPipelineLayout == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION SHADOW PIPELINE ERROR] Failed to create vegetation shadow pipeline/layout" << std::endl;
-    } else {
-        std::cerr << "[VEGETATION SHADOW PIPELINE] Created pipeline=" << (void*)vegetationShadowPipeline << " layout=" << (void*)shadowPipelineLayout << std::endl;
-    }
-
-    // Clear local shader module references; destruction handled by VulkanResourceManager
-    vertShader = VK_NULL_HANDLE;
-    fragShader = VK_NULL_HANDLE;
     // Build billboard corner mesh: 24 vertices (6 planes × 4 corners) + 36 indices
     // (12 triangles = 2 per plane) for TRIANGLE_LIST.
     if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) {
@@ -1113,7 +872,34 @@ void VegetationRenderer::init(VulkanApp* app) {
             corner(2, -tangent * hs + worldUp * h + outward * tilt, glm::vec2(0,0));  // TL
             corner(3,  tangent * hs + worldUp * h + outward * tilt, glm::vec2(1,0));  // TR
         }
-        billboardVBO.vertexBuffer = app->createVertexBuffer(verts);
+        // Vertex/index buffers are also used as ray-tracing BLAS inputs, so they
+        // need SHADER_DEVICE_ADDRESS_BIT and
+        // ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR (the ray-tracing
+        // renderer builds a shared cross-quad BLAS from them for alpha-tested
+        // vegetation shadows). The original VERTEX/INDEX_BUFFER usage is kept.
+        // Only add the RT usage flags when RT is actually supported — otherwise
+        // the validation layer rejects the buffer (those usages require the
+        // acceleration-structure / buffer-device-address extensions).
+        VkBufferUsageFlags rtBufferUsage = app->rtSupport.any()
+            ? (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+               | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR)
+            : 0;
+        {
+            VkDeviceSize sz = sizeof(Vertex) * verts.size();
+            VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+                | rtBufferUsage;
+            Buffer staging = app->createBuffer(sz, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            memcpy(staging.mappedData, verts.data(), (size_t)sz);
+            billboardVBO.vertexBuffer = app->createBuffer(sz, usage,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, /*zeroInit=*/false);
+            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+                VkBufferCopy r{}; r.size = sz;
+                vkCmdCopyBuffer(cmd, staging.buffer, billboardVBO.vertexBuffer.buffer, 1, &r);
+            });
+            app->destroyBuffer(staging);
+        }
 
         // 36 indices = 6 planes × 2 triangles × 3 indices
         std::vector<uint32_t> idx(36);
@@ -1123,7 +909,22 @@ void VegetationRenderer::init(VulkanApp* app) {
             idx[ib + 0] = b + 0; idx[ib + 1] = b + 1; idx[ib + 2] = b + 2;
             idx[ib + 3] = b + 1; idx[ib + 4] = b + 3; idx[ib + 5] = b + 2;
         }
-        billboardVBO.indexBuffer = app->createIndexBuffer(idx);
+        {
+            VkDeviceSize sz = sizeof(uint32_t) * idx.size();
+            VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+                | rtBufferUsage;
+            Buffer staging = app->createBuffer(sz, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            memcpy(staging.mappedData, idx.data(), (size_t)sz);
+            billboardVBO.indexBuffer = app->createBuffer(sz, usage,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, /*zeroInit=*/false);
+            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+                VkBufferCopy r{}; r.size = sz;
+                vkCmdCopyBuffer(cmd, staging.buffer, billboardVBO.indexBuffer.buffer, 1, &r);
+            });
+            app->destroyBuffer(staging);
+        }
         billboardVBO.indexCount = 36;
     }
 
@@ -1285,110 +1086,6 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
 }
 
 
-void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
-    (void)viewProj; // GPU culling is dispatched by prepareCull() outside the render pass
-    if (!app || vegetationShadowPipeline == VK_NULL_HANDLE) {
-        if (!app) std::cerr << "[VEGETATION SHADOW DRAW ERROR] app is null!" << std::endl;
-        if (vegetationShadowPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION SHADOW DRAW ERROR] Shadow pipeline is VK_NULL_HANDLE!" << std::endl;
-        return;
-    }
-
-    // Early-out when there are no chunks to draw: skip pipeline/descriptor
-    // binding entirely. On RADV iGPUs, binding pipelines that reference
-    // large texture arrays (via vegDescriptorSet) can trigger GPUVM faults
-    // even when zero draw calls are issued.
-    if (chunkBuffers.empty()) return;
-
-    // Ensure vegetation descriptor set is present and up-to-date
-    if (!ensureVegDescriptorSet(app)) {
-        std::cerr << "[VEGETATION SHADOW DRAW ERROR] vegDescriptorSet not ready, skipping draw." << std::endl;
-        return;
-    }
-
-    // Defensive checks: ensure both descriptor sets are valid before binding
-    if (shadowDescriptorSet == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION SHADOW DRAW ERROR] shadowDescriptorSet is VK_NULL_HANDLE, skipping draw." << std::endl;
-        return;
-    }
-    if (vegDescriptorSet == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION SHADOW DRAW ERROR] vegDescriptorSet is VK_NULL_HANDLE, skipping draw." << std::endl;
-        return;
-    }
-
-    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationShadowPipeline);
-    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
-
-    // Bind the shadow descriptor set (set 0), vegetation descriptor set (set 1),
-    // and wind params UBO (set 2)
-    updateWindParamsUBO(cameraPos);
-    VkDescriptorSet sets[3] = { shadowDescriptorSet, vegDescriptorSet, windParamsDescSet };
-    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
-    else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
-
-    // Push constants for shadow pass: same as regular draw but with wind disabled
-    // The UBO already contains the wind parameters; we only push the 16-byte header
-    WindPushConstants pc{};
-    pc.billboardScale = billboardScale;
-    pc.windEnabled = -1.0f;  // Negative means shadow pass: disable wind and tighten impostor cutoff.
-    pc.windTime = windTimeSeconds;
-    pc.impostorDistance = impostorDistance; // skip far instances in shadow pass
-
-    vkCmdPushConstants(commandBuffer, shadowPipelineLayout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(WindPushConstants), &pc);
-
-    // Draw consolidated via GPU culling only (no per-chunk fallback).
-    // New chunks appear gradually as they are uploaded and consolidated.
-    uint32_t sf = vegCullCurrentSlot;
-    vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
-        compactedCmdBuffers[sf].buffer != VK_NULL_HANDLE && visibleCountBuffers[sf].buffer != VK_NULL_HANDLE) {
-        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
-        VkDeviceSize offsets[2] = { 0, 0 };
-        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-        cmdDrawIndexedIndirectCount(commandBuffer, compactedCmdBuffers[sf].buffer, 0,
-        visibleCountBuffers[sf].buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
-    }
-
-    // ── Impostor shadow pass (EVSM color + depth) ─────────────────────────────
-    VkPipeline impostorShadowPipe = (impostorShadowPipeline != VK_NULL_HANDLE)
-                                  ? impostorShadowPipeline : impostorDepthPipeline;
-    VkPipelineLayout impostorShadowLayout = (impostorShadowPipelineLayout != VK_NULL_HANDLE)
-                                          ? impostorShadowPipelineLayout : impostorDepthPipelineLayout;
-    if (impostorShadowPipe != VK_NULL_HANDLE &&
-        impostorDepthDescSet  != VK_NULL_HANDLE &&
-        impostorDistance > 0.0f && impostorVBO.vertexBuffer.buffer != VK_NULL_HANDLE &&
-        !chunkBuffers.empty()) {
-
-        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorShadowPipe);
-        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowPipe);
-
-        VkDescriptorSet depthSets[3] = { shadowDescriptorSet, impostorDepthDescSet, windParamsDescSet };
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
-                    impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
-
-        vkCmdPushConstants(commandBuffer, impostorShadowLayout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(WindPushConstants), &pc);
-
-        vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        VkBuffer impVbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
-        VkDeviceSize impOffsets[2] = { 0, 0 };
-        if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-            impVbs[1] = concatenatedInstanceBuffer.buffer;
-            vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
-            uint32_t instOff = 0;
-            for (auto& [chunkId, buf] : chunkBuffers) {
-                (void)chunkId;
-                if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-                vkCmdDrawIndexed(commandBuffer, 6, static_cast<uint32_t>(buf.count), 0, 0, instOff);
-                instOff += buf.count;
-            }
-        }
-    }
-}
 
 void VegetationRenderer::setImpostorData(VulkanApp* app,
                                           VkImageView albedoArray60,
@@ -1406,18 +1103,12 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
     VkDevice device = app->getDevice();
 
     // Destroy any previous impostor resources (handles are tracked in the central manager).
-    impostorPipeline            = VK_NULL_HANDLE;
-    impostorPipelineLayout      = VK_NULL_HANDLE;
     impostorDescSetLayout       = VK_NULL_HANDLE;
     impostorDescPool            = VK_NULL_HANDLE;
     impostorDescSet             = VK_NULL_HANDLE;
-    impostorDepthPipeline       = VK_NULL_HANDLE;
-    impostorDepthPipelineLayout = VK_NULL_HANDLE;
     impostorDepthDescSetLayout  = VK_NULL_HANDLE;
     impostorDepthDescPool       = VK_NULL_HANDLE;
     impostorDepthDescSet        = VK_NULL_HANDLE;
-    impostorShadowPipeline      = VK_NULL_HANDLE;
-    impostorShadowPipelineLayout = VK_NULL_HANDLE;
 
     bool hasImpostorDepth = (depthArray60 != VK_NULL_HANDLE && captureInvVPBuf != VK_NULL_HANDLE);
 
@@ -1519,153 +1210,10 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
                          captureInvVPBuf, 0, VK_WHOLE_SIZE)
             .flush();
 
-        // ── Build impostor depth pipeline ────────────────────────────────
-        VkShaderModule depthVertMod = app->getOrCreateShaderModule("shaders/impostors_depth.vert.spv");
-        VkShaderModule depthFragMod = app->getOrCreateShaderModule("shaders/impostors_depth.frag.spv");
-
-        VkPipelineShaderStageCreateInfo depthStages[2]{};
-        depthStages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        depthStages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-        depthStages[0].module = depthVertMod;
-        depthStages[0].pName  = "main";
-        depthStages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        depthStages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-        depthStages[1].module = depthFragMod;
-        depthStages[1].pName  = "main";
-
-        VkVertexInputBindingDescription depthBindingDescs[2]{};
-        depthBindingDescs[0] = { 0, sizeof(Vertex),       VK_VERTEX_INPUT_RATE_VERTEX   };
-        depthBindingDescs[1] = { 1, sizeof(float) * 4,    VK_VERTEX_INPUT_RATE_INSTANCE };
-
-        std::vector<VkDescriptorSetLayout> depthSetLayouts = {
-            app->getDescriptorSetLayout(),
-            impostorDepthDescSetLayout,
-            windParamsDescSetLayout
-        };
-        VkPushConstantRange depthPCRange{};
-        depthPCRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        depthPCRange.offset     = 0;
-        depthPCRange.size       = sizeof(WindPushConstants);
-
-        GraphicsPipelineConfig impDepthCfg{};
-        impDepthCfg.cullMode = VK_CULL_MODE_NONE;
-        impDepthCfg.colorWrite = false;
-        impDepthCfg.depthCompareOp = VK_COMPARE_OP_LESS;
-        impDepthCfg.noColorAttachment = true;
-        auto [depthPipe, depthLayout] = app->createGraphicsPipeline(
-            { depthStages[0], depthStages[1] },
-            std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1] },
-            {
-                { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
-                { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
-            },
-            depthSetLayouts,
-            &depthPCRange,
-            impDepthCfg
-        );
-        impostorDepthPipeline       = depthPipe;
-        impostorDepthPipelineLayout = depthLayout;
-
-        if (impostorDepthPipeline == VK_NULL_HANDLE)
-            std::cerr << "[VegetationRenderer] WARNING: impostor depth pipeline creation failed\n";
-        else
-            std::cerr << "[VegetationRenderer] Impostor depth pipeline created: " << (void*)impostorDepthPipeline << "\n";
-
-        // ── Build impostor shadow EVSM pipeline (color+depth write) ──────
-        VkShaderModule shadowFragMod = app->getOrCreateShaderModule("shaders/impostors_shadow.frag.spv");
-        depthStages[1].module = shadowFragMod;  // reuse depthStages array, swap frag
-
-        VkFormat evsmColorFormat = VK_FORMAT_R32G32_SFLOAT;
-        GraphicsPipelineConfig impShadowCfg{};
-        impShadowCfg.cullMode = VK_CULL_MODE_NONE;
-        impShadowCfg.depthCompareOp = VK_COMPARE_OP_LESS;
-        impShadowCfg.colorFormats = { evsmColorFormat };
-        impShadowCfg.depthBiasEnable = true;
-        auto [shadowPipe, shadowLayout] = app->createGraphicsPipeline(
-            { depthStages[0], depthStages[1] },
-            std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1] },
-            {
-                { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
-                { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
-            },
-            depthSetLayouts,
-            &depthPCRange,
-            impShadowCfg
-        );
-        impostorShadowPipeline       = shadowPipe;
-        impostorShadowPipelineLayout = shadowLayout;
-
-        if (impostorShadowPipeline == VK_NULL_HANDLE)
-            std::cerr << "[VegetationRenderer] WARNING: impostor shadow pipeline creation failed\n";
-        else
-            std::cerr << "[VegetationRenderer] Impostor shadow pipeline created: " << (void*)impostorShadowPipeline << "\n";
-
-        // Shader module is cached by VulkanApp — kept alive for app lifetime.
     }
 
-    // ── Build impostor color pipeline ───────────────────────────────────
-    VkShaderModule vertShader = app->getOrCreateShaderModule("shaders/impostors.vert.spv");
-    VkShaderModule fragShader = app->getOrCreateShaderModule("shaders/impostors.frag.spv");
-
-    VkPipelineShaderStageCreateInfo vertStage{};
-    vertStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertStage.stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    vertStage.module = vertShader;
-    vertStage.pName  = "main";
-
-    VkPipelineShaderStageCreateInfo fragStage{};
-    fragStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragStage.stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragStage.module = fragShader;
-    fragStage.pName  = "main";
-
-    VkVertexInputBindingDescription bindingDescs[2]{};
-    bindingDescs[0] = { 0, sizeof(Vertex),       VK_VERTEX_INPUT_RATE_VERTEX   };
-    bindingDescs[1] = { 1, sizeof(float) * 4,    VK_VERTEX_INPUT_RATE_INSTANCE };
-
-    std::vector<VkDescriptorSetLayout> impSetLayouts = {
-        app->getDescriptorSetLayout(),
-        impostorDescSetLayout,
-        windParamsDescSetLayout
-    };
-    VkPushConstantRange pcRange{};
-    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    pcRange.offset     = 0;
-    pcRange.size       = sizeof(WindPushConstants);
-
-    GraphicsPipelineConfig impCfg{};
-    impCfg.cullMode = VK_CULL_MODE_NONE;
-    impCfg.depthCompareOp = VK_COMPARE_OP_LESS;
-    auto [impPipeline, impLayout] = app->createGraphicsPipeline(
-        { vertStage, fragStage },
-        std::vector<VkVertexInputBindingDescription>{ bindingDescs[0], bindingDescs[1] },
-        {
-            { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
-            { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
-        },
-        impSetLayouts,
-        &pcRange,
-        impCfg
-    );
-
-    impostorPipeline       = impPipeline;
-    impostorPipelineLayout = impLayout;
-
-    if (impostorPipeline == VK_NULL_HANDLE)
-        std::cerr << "[VegetationRenderer] WARNING: impostor pipeline creation failed\n";
-    else
-        std::cerr << "[VegetationRenderer] Impostor pipeline created: " << (void*)impostorPipeline << "\n";
 }
 
-void VegetationRenderer::render(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet,
-                              const glm::mat4& viewProj, const glm::vec3& cameraPos,
-                              VkQueryPool queryPool,
-                              uint32_t queryRealIndex,
-                              uint32_t queryImpostorIndex) {
-    (void)vegetationDescriptorSet;
-    drawDepth(app, commandBuffer, viewProj, cameraPos);
-    drawColor(app, commandBuffer, viewProj, cameraPos);
-}
 
 VegetationRenderer::WindPushConstants VegetationRenderer::buildWindPushConstants(const glm::vec3& cameraPos) const {
     (void)cameraPos;
@@ -1712,105 +1260,9 @@ void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
     std::memcpy(windParamsMapped, &params, sizeof(params));
 }
 
-void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc) {
-    uint32_t f = vegCullCurrentSlot;
-    vkCmdPushConstants(cmd, activeLayout, pushConstantStages, 0, sizeof(WindPushConstants), &pc);
-    if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE || billboardVBO.indexBuffer.buffer == VK_NULL_HANDLE) return;
-    VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
-    VkDeviceSize offsets[2] = { 0, 0 };
-    vkCmdBindIndexBuffer(cmd, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
-        compactedCmdBuffers[f].buffer != VK_NULL_HANDLE && visibleCountBuffers[f].buffer != VK_NULL_HANDLE) {
-        vbs[1] = concatenatedInstanceBuffer.buffer;
-        vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
-        if (cmdDrawIndexedIndirectCount) {
-            cmdDrawIndexedIndirectCount(cmd, compactedCmdBuffers[f].buffer, 0,
-                visibleCountBuffers[f].buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
-        }
-    }
-}
 
-void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc) {
-    vkCmdPushConstants(cmd, activeLayout, pushConstantStages, 0, sizeof(WindPushConstants), &pc);
-    if (impostorVBO.vertexBuffer.buffer == VK_NULL_HANDLE || impostorVBO.indexBuffer.buffer == VK_NULL_HANDLE) return;
-    VkBuffer vbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
-    VkDeviceSize offsets[2] = { 0, 0 };
-    vkCmdBindIndexBuffer(cmd, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-        vbs[1] = concatenatedInstanceBuffer.buffer;
-        vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
-        uint32_t instOff = 0;
-        for (auto& [chunkId, buf] : chunkBuffers) {
-            (void)chunkId;
-            if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            vkCmdDrawIndexed(cmd, 6, static_cast<uint32_t>(buf.count), 0, 0, instOff);
-            instOff += buf.count;
-        }
-    }
-}
 
-void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
-    (void)viewProj;
-    if (!app) return;
-    if (chunkBuffers.empty()) return;
-    if (billboardAlbedoView == VK_NULL_HANDLE || billboardNormalView == VK_NULL_HANDLE ||
-        billboardOpacityView == VK_NULL_HANDLE || billboardArraySampler == VK_NULL_HANDLE) return;
-    if (!ensureVegDescriptorSet(app)) return;
-    VkDescriptorSet globalSet = app->getMainDescriptorSet();
-    if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
-    updateWindParamsUBO(cameraPos);
-    WindPushConstants pc = buildWindPushConstants(cameraPos);
-    VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
 
-    // Depth prepass
-    if (vegetationDepthPipeline != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationDepthPipeline);
-        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationDepthPipeline);
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
-            vegetationDepthPipelineLayout, 0, 3, sets, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            vegetationDepthPipelineLayout, 0, 3, sets, 0, nullptr);
-        issueVegetationDraws(commandBuffer, vegetationDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
-    }
-
-}
-
-void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
-    (void)viewProj;
-    if (!app) return;
-    if (chunkBuffers.empty()) return;
-    if (billboardAlbedoView == VK_NULL_HANDLE || billboardNormalView == VK_NULL_HANDLE ||
-        billboardOpacityView == VK_NULL_HANDLE || billboardArraySampler == VK_NULL_HANDLE) return;
-    if (!ensureVegDescriptorSet(app)) return;
-    VkDescriptorSet globalSet = app->getMainDescriptorSet();
-    if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
-    updateWindParamsUBO(cameraPos);
-    WindPushConstants pc = buildWindPushConstants(cameraPos);
-    VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
-
-    // Shading pass
-    if (vegetationPipeline != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationPipeline);
-        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
-            pipelineLayout, 0, 3, sets, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pipelineLayout, 0, 3, sets, 0, nullptr);
-        issueVegetationDraws(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
-    }
-    // Impostor color pass
-    if (impostorPipeline != VK_NULL_HANDLE &&
-        impostorDescSet != VK_NULL_HANDLE && impostorDistance > 0.0f) {
-        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorPipeline);
-        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorPipeline);
-        VkDescriptorSet impSets[3] = { globalSet, impostorDescSet, windParamsDescSet };
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
-                    impostorPipelineLayout, 0, 3, impSets, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    impostorPipelineLayout, 0, 3, impSets, 0, nullptr);
-        issueImpostorDraws(commandBuffer, impostorPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
-    }
-}
 
 
 // ── CPU-side instance generation ─────────────────────────────────────────────

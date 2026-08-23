@@ -2099,16 +2099,28 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     // These are created ONCE and never rebuilt. Individual slots are updated
     // in-place without touching other slots or the buffer layout.
 
+    // Ray-traced shadows build a BLAS from the scene geometry, so the vertex/index
+    // buffers need SHADER_DEVICE_ADDRESS + ACCELERATION_STRUCTURE usage. Only add
+    // those when RT is actually supported — otherwise the validation layer rejects
+    // the buffer (those usages require the acceleration-structure / buffer-device-
+    // address extensions, which are absent on GPUs without RT support).
+    VkBufferUsageFlags rtBufferUsage = app->rtSupport.any()
+        ? (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+           | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR)
+        : 0;
+
     // Vertex buffer (device-local)
     VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
     vertexBuffer = app->createBuffer(vertexBufferSize,
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+            | rtBufferUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // Index buffer (device-local)
     VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
     indexBuffer = app->createBuffer(indexBufferSize,
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+            | rtBufferUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // Indirect buffer (host-visible, persistently mapped for per-slot writes).

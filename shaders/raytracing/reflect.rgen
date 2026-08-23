@@ -1,0 +1,24 @@
+#version 460
+#extension GL_EXT_ray_tracing : enable
+#include "rt_common.glsl"
+
+// Reflection output is a full-color rgba32f image.
+layout(set = 1, binding = 0, rgba32f) uniform image2D outImage;
+
+layout(location = 0) rayPayloadEXT Payload payload;
+
+void main() {
+    vec3 origin, dir;
+    computeCameraRay(origin, dir);
+
+    payload.hit = 0.0;
+    payload.color = vec3(0.0);
+    payload.normal = vec3(0.0);
+    payload.pos = vec3(0.0);
+
+    // Trace the primary (camera) ray. The closest-hit shader (mode 1) fills in
+    // direct shading + a single reflected environment sample.
+    traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFFu, 0u, 0u, 0u, origin, 0.01, dir, 10000.0, 0);
+
+    imageStore(outImage, ivec2(gl_LaunchIDEXT.xy), vec4(payload.color, 1.0));
+}

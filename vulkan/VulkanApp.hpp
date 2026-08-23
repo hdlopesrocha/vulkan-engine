@@ -24,6 +24,7 @@
 #include "vulkan.hpp"
 #include "VulkanResourceManager.hpp"
 #include "VmaContext.hpp"
+#include "raytracing/RtDispatch.hpp"
 
 struct GraphicsPipelineConfig {
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
@@ -72,6 +73,23 @@ class VulkanApp {
     // Whether VK_KHR_pipeline_binary (Vulkan 1.4) is supported by the physical device.
     // When true, per-pipeline binary keys can be used for granular cache invalidation.
     bool pipelineBinarySupported = false;
+
+    // Ray tracing (VK_KHR_acceleration_structure / VK_KHR_ray_tracing_pipeline) support.
+    // Populated in createLogicalDevice() after feature/extension detection. The renderer
+    // queries these flags to decide whether to build acceleration structures and ray-tracing
+    // pipelines, falling back to rasterization when any required capability is missing.
+    struct RayTracingSupport {
+        bool accelerationStructure = false;   // VK_KHR_acceleration_structure
+        bool rayTracingPipeline = false;      // VK_KHR_ray_tracing_pipeline
+        bool rayQuery = false;                // VK_KHR_ray_query (unused for now)
+        bool rayTracingPositionFetch = false; // VK_KHR_ray_tracing_position_fetch (gl_HitTriangleVertexPositionsEXT)
+        bool deferredHostOperations = false;  // VK_KHR_deferred_host_operations
+        bool pipelineLibrary = false;         // VK_KHR_pipeline_library (optional)
+        bool bufferDeviceAddress = false;    // required for AS + RT pipelines
+        bool any() const { return accelerationStructure && rayTracingPipeline; }
+    };
+    RayTracingSupport rtSupport;
+    RtDispatch rtDispatch; // resolved RT KHR function pointers (loaded post-instance)
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
     // Dedicated queues for async subsystems
@@ -146,6 +164,17 @@ private:
     // texture and descriptor
 
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    // Ray-traced shadow mask descriptor set (set=3): regular (non-update-after-bind)
+    // set holding a single read-only storage image. Kept out of the scene set-0
+    // because radv crashes writing a STORAGE_IMAGE into an update-after-bind set.
+    VkDescriptorSetLayout rtShadowSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool rtShadowPool = VK_NULL_HANDLE;
+    VkDescriptorSet rtShadowDescriptorSet = VK_NULL_HANDLE;
+    // Ray-traced reflection colour descriptor set (set=3 in the solid lit
+    // pipeline). Same single STORAGE_IMAGE layout as rtShadow; a separate pool
+    // + set so the two images are bound independently.
+    VkDescriptorPool rtReflectPool = VK_NULL_HANDLE;
+    VkDescriptorSet rtReflectDescriptorSet = VK_NULL_HANDLE;
     // Static descriptor set layout (bindings 1-13: textures, materials, sky, water params, cubemap)
     // These resources are written once and reused across all per-frame descriptor sets.
     VkDescriptorSet staticDescriptorSet = VK_NULL_HANDLE;
@@ -380,6 +409,7 @@ public:
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
     void createDescriptorPool(uint32_t uboCount, uint32_t samplerCount);
         VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout);
+        VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool pool);
     // Thread-safe wrapper for vkAllocateDescriptorSets that serializes
     // allocations using `descriptorAllocMutex`. Use this to allocate from
     // shared descriptor pools across multiple threads.
@@ -391,6 +421,16 @@ public:
         VkDescriptorSetLayout getMaterialDescriptorSetLayout() const { return materialDescriptorSetLayout; }
         VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
         VkDescriptorSet getStaticDescriptorSet() const { return staticDescriptorSet; }
+        // Ray-traced shadow mask: dedicated regular (non-update-after-bind) set=3.
+        VkDescriptorSetLayout getRtShadowSetLayout() const { return rtShadowSetLayout; }
+        VkDescriptorSet getRtShadowDescriptorSet() const { return rtShadowDescriptorSet; }
+        // The reflection set reuses the single STORAGE_IMAGE rtShadow layout.
+        VkDescriptorSetLayout getRtReflectSetLayout() const { return rtShadowSetLayout; }
+        VkDescriptorSet getRtReflectDescriptorSet() const { return rtReflectDescriptorSet; }
+        // Write the given image view into the rtShadow storage-image descriptor.
+        void setRtShadowImageView(VkImageView view);
+        // Write the given image view into the rtReflect storage-image descriptor.
+        void setRtReflectImageView(VkImageView view);
         VkDescriptorSetLayout getBrushDepthDescriptorSetLayout() const { return brushDepthDescriptorSetLayout; }
 
         const std::vector<VkPipeline>& getRegisteredPipelines() const { return registeredPipelines; }
