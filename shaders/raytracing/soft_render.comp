@@ -46,7 +46,7 @@ vec3 environmentColor(vec3 dir) {
     return mix(horizon, zenith, pow(t, max(sky.skyParams.y, 0.5)));
 }
 
-bool rayTriangleIntersect(vec3 orig, vec3 dir, vec3 v0, vec3 v1, vec3 v2, out float t, out vec3 n) {
+bool rayTriangleIntersect(vec3 orig, vec3 dir, vec3 v0, vec3 v1, vec3 v2, out float t, out float u, out float v) {
     vec3 e1 = v1 - v0;
     vec3 e2 = v2 - v0;
     vec3 p = cross(dir, e2);
@@ -54,14 +54,13 @@ bool rayTriangleIntersect(vec3 orig, vec3 dir, vec3 v0, vec3 v1, vec3 v2, out fl
     if (abs(det) < 1e-8) return false;
     float invDet = 1.0 / det;
     vec3 tvec = orig - v0;
-    float u = dot(tvec, p) * invDet;
+    u = dot(tvec, p) * invDet;
     if (u < 0.0 || u > 1.0) return false;
     vec3 q = cross(tvec, e1);
-    float v = dot(dir, q) * invDet;
+    v = dot(dir, q) * invDet;
     if (v < 0.0 || u + v > 1.0) return false;
     t = dot(e2, q) * invDet;
     if (t < 0.001 || t > 1e30) return false;
-    n = normalize(cross(e1, e2));
     return true;
 }
 
@@ -93,7 +92,11 @@ void main() {
     float closestT = 1e30;
     vec3 hitN = vec3(0,1,0);
     vec3 hitPos = vec3(0);
+    vec2 hitUV = vec2(0);
+    vec3 hitBary = vec3(0);
     uint hitKind = 0;
+    int hitBrush = 0;
+    vec3 hitV0 = vec3(0), hitV1 = vec3(0), hitV2 = vec3(0);
     bool hit = false;
 
     for (uint ci = 0; ci < pc.chunkCount; ++ci) {
@@ -102,29 +105,38 @@ void main() {
         if (!rayAABBIntersect(origin, invDir, c.aabbMin, c.aabbMax, closestT)) continue;
         for (uint i = 0; i < c.indexCount; i += 3) {
             uint idx0, idx1, idx2;
+            Vertex vv0, vv1, vv2;
             vec3 v0, v1, v2;
             if (c.kind == 0) {
                 idx0 = indicesSolid[c.firstIndex + i + 0];
                 idx1 = indicesSolid[c.firstIndex + i + 1];
                 idx2 = indicesSolid[c.firstIndex + i + 2];
-                v0 = vertsSolid[c.baseVertex + idx0].position;
-                v1 = vertsSolid[c.baseVertex + idx1].position;
-                v2 = vertsSolid[c.baseVertex + idx2].position;
+                vv0 = vertsSolid[c.baseVertex + idx0];
+                vv1 = vertsSolid[c.baseVertex + idx1];
+                vv2 = vertsSolid[c.baseVertex + idx2];
             } else {
                 idx0 = indicesWater[c.firstIndex + i + 0];
                 idx1 = indicesWater[c.firstIndex + i + 1];
                 idx2 = indicesWater[c.firstIndex + i + 2];
-                v0 = vertsWater[c.baseVertex + idx0].position;
-                v1 = vertsWater[c.baseVertex + idx1].position;
-                v2 = vertsWater[c.baseVertex + idx2].position;
+                vv0 = vertsWater[c.baseVertex + idx0];
+                vv1 = vertsWater[c.baseVertex + idx1];
+                vv2 = vertsWater[c.baseVertex + idx2];
             }
-            float t; vec3 n;
-            if (rayTriangleIntersect(origin, dir, v0, v1, v2, t, n)) {
+            v0 = vv0.position; v1 = vv1.position; v2 = vv2.position;
+            float t, u, v;
+            if (rayTriangleIntersect(origin, dir, v0, v1, v2, t, u, v)) {
                 if (t < closestT) {
                     closestT = t;
-                    hitN = n;
+                    float w = 1.0 - u - v;
+                    hitN = normalize(vv0.normal * w + vv1.normal * u + vv2.normal * v);
+                    // fallback to face normal if interpolated is degenerate
+                    if (length(hitN) < 0.5) hitN = normalize(cross(v1 - v0, v2 - v0));
                     hitPos = origin + dir * t;
+                    hitUV = vv0.texCoord * w + vv1.texCoord * u + vv2.texCoord * v;
+                    hitBary = vec3(w, u, v);
+                    hitV0 = v0; hitV1 = v1; hitV2 = v2;
                     hitKind = c.kind;
+                    hitBrush = vv0.brushIndex;
                     hit = true;
                 }
             }
@@ -135,12 +147,15 @@ void main() {
     if (hit) {
         if (dot(hitN, -dir) < 0.0) hitN = -hitN;
         vec3 albedo = vec3(0.7);
-        if (hitKind == 1) albedo = vec3(0.20, 0.42, 0.72);
-        // Software fallback texture sample (world XZ as UV, layer 0)
-        // This verifies the descriptor is bound; full material UV requires barycentrics
-        vec3 texAlbedo = texture(albedoArray, vec3(fract(hitPos.xz * 0.05), 0)).rgb;
-        // Blend flat with texture so missing texture is still visible
-        albedo = mix(albedo, texAlbedo, 0.5);
+        // Sample albedoArray with interpolated UV. Use hitBrush as layer if in range, else 0.
+        // The array has many layers; clamp layer to available range.
+        int layer = clamp(hitBrush, 0, 31);
+        // Use the interpolated UV directly; for terrain the UVs are already world-scaled
+        vec3 texAlbedo = texture(albedoArray, vec3(hitUV, float(layer))).rgb;
+        // If texture is missing (black), keep flat
+        if (dot(texAlbedo, texAlbedo) > 0.01) albedo = texAlbedo;
+        else if (hitKind == 1) albedo = vec3(0.20, 0.42, 0.72);
+
         vec3 L = normalize(-ubo.lightDir.xyz);
         float ndl = max(dot(hitN, L), 0.0);
         bool shadowed = false;
@@ -167,8 +182,8 @@ void main() {
                     v1 = vertsWater[c.baseVertex + idx1].position;
                     v2 = vertsWater[c.baseVertex + idx2].position;
                 }
-                float t; vec3 n;
-                if (rayTriangleIntersect(shadowOrig, L, v0, v1, v2, t, n)) {
+                float t, u, v;
+                if (rayTriangleIntersect(shadowOrig, L, v0, v1, v2, t, u, v)) {
                     if (t > 0.001 && t < 10000.0) { shadowed = true; break; }
                 }
             }
@@ -180,7 +195,7 @@ void main() {
         vec3 reflDir = reflect(dir, hitN);
         vec3 env = environmentColor(reflDir);
         float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(hitN, -dir), 0.0), 5.0);
-        color = mix(color, env, fresnel * 0.15);
+        color = mix(color, env, fresnel * 0.12);
     } else {
         color = environmentColor(dir);
     }
