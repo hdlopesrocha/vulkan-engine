@@ -1,8 +1,11 @@
 #version 460
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_GOOGLE_include_directive : enable
+#extension GL_NV_compute_shader_derivatives : enable
 #include "ubo.glsl"
 #include "textures.glsl"
+#include "tbn.glsl"
+#include "triplanar.glsl"
 
 struct Vertex {
     vec3 position;
@@ -92,11 +95,9 @@ void main() {
     float closestT = 1e30;
     vec3 hitN = vec3(0,1,0);
     vec3 hitPos = vec3(0);
-    vec2 hitUV = vec2(0);
     vec3 hitBary = vec3(0);
+    Vertex hitV0, hitV1, hitV2;
     uint hitKind = 0;
-    int hitBrush = 0;
-    vec3 hitV0 = vec3(0), hitV1 = vec3(0), hitV2 = vec3(0);
     bool hit = false;
 
     for (uint ci = 0; ci < pc.chunkCount; ++ci) {
@@ -104,20 +105,19 @@ void main() {
         if (c.indexCount == 0) continue;
         if (!rayAABBIntersect(origin, invDir, c.aabbMin, c.aabbMax, closestT)) continue;
         for (uint i = 0; i < c.indexCount; i += 3) {
-            uint idx0, idx1, idx2;
             Vertex vv0, vv1, vv2;
             vec3 v0, v1, v2;
             if (c.kind == 0) {
-                idx0 = indicesSolid[c.firstIndex + i + 0];
-                idx1 = indicesSolid[c.firstIndex + i + 1];
-                idx2 = indicesSolid[c.firstIndex + i + 2];
+                uint idx0 = indicesSolid[c.firstIndex + i + 0];
+                uint idx1 = indicesSolid[c.firstIndex + i + 1];
+                uint idx2 = indicesSolid[c.firstIndex + i + 2];
                 vv0 = vertsSolid[c.baseVertex + idx0];
                 vv1 = vertsSolid[c.baseVertex + idx1];
                 vv2 = vertsSolid[c.baseVertex + idx2];
             } else {
-                idx0 = indicesWater[c.firstIndex + i + 0];
-                idx1 = indicesWater[c.firstIndex + i + 1];
-                idx2 = indicesWater[c.firstIndex + i + 2];
+                uint idx0 = indicesWater[c.firstIndex + i + 0];
+                uint idx1 = indicesWater[c.firstIndex + i + 1];
+                uint idx2 = indicesWater[c.firstIndex + i + 2];
                 vv0 = vertsWater[c.baseVertex + idx0];
                 vv1 = vertsWater[c.baseVertex + idx1];
                 vv2 = vertsWater[c.baseVertex + idx2];
@@ -128,15 +128,16 @@ void main() {
                 if (t < closestT) {
                     closestT = t;
                     float w = 1.0 - u - v;
-                    hitN = normalize(vv0.normal * w + vv1.normal * u + vv2.normal * v);
-                    // fallback to face normal if interpolated is degenerate
-                    if (length(hitN) < 0.5) hitN = normalize(cross(v1 - v0, v2 - v0));
+                    // Interpolate normal
+                    vec3 n0 = vv0.normal, n1 = vv1.normal, n2 = vv2.normal;
+                    vec3 n = n0 * w + n1 * u + n2 * v;
+                    if (length(n) < 0.5) n = normalize(cross(v1 - v0, v2 - v0));
+                    else n = normalize(n);
+                    hitN = n;
                     hitPos = origin + dir * t;
-                    hitUV = vv0.texCoord * w + vv1.texCoord * u + vv2.texCoord * v;
                     hitBary = vec3(w, u, v);
-                    hitV0 = v0; hitV1 = v1; hitV2 = v2;
+                    hitV0 = vv0; hitV1 = vv1; hitV2 = vv2;
                     hitKind = c.kind;
-                    hitBrush = vv0.brushIndex;
                     hit = true;
                 }
             }
@@ -146,15 +147,65 @@ void main() {
     vec3 color;
     if (hit) {
         if (dot(hitN, -dir) < 0.0) hitN = -hitN;
-        vec3 albedo = vec3(0.7);
-        // Sample albedoArray with interpolated UV. Use hitBrush as layer if in range, else 0.
-        // The array has many layers; clamp layer to available range.
-        int layer = clamp(hitBrush, 0, 31);
-        // Use the interpolated UV directly; for terrain the UVs are already world-scaled
-        vec3 texAlbedo = texture(albedoArray, vec3(hitUV, float(layer))).rgb;
-        // If texture is missing (black), keep flat
-        if (dot(texAlbedo, texAlbedo) > 0.01) albedo = texAlbedo;
-        else if (hitKind == 1) albedo = vec3(0.20, 0.42, 0.72);
+        vec3 geomN = hitN;
+        // Triplanar weights
+        vec3 triW = abs(geomN);
+        float t = ubo.triplanarSettings.x;
+        vec3 wt = max(vec3(0.0), triW - vec3(t));
+        float e = max(1.0, ubo.triplanarSettings.y);
+        wt = pow(wt, vec3(e));
+        float triWSum = wt.x + wt.y + wt.z + 1e-6;
+        triW = wt / triWSum;
+
+        // Blend three materials per triangle using barycentrics
+        ivec3 texIndices = ivec3(hitV0.brushIndex, hitV1.brushIndex, hitV2.brushIndex);
+        vec3 w = hitBary;
+
+        // Sample albedo: triplanar if any material has triplanar enabled, else direct UV
+        vec3 albedo;
+        float triFlag = 0.0;
+        // Check if any of the three materials has triplanar enabled
+        for (int k=0;k<3;k++) {
+            int idx = (k==0? texIndices.x : (k==1? texIndices.y : texIndices.z));
+            if (idx >= 0 && idx < 512) triFlag += materials[idx].triplanarParams.z * w[k];
+        }
+        if (triFlag > 0.5) {
+            // Triplanar per-layer then blend
+            vec3 a0 = vec3(0), a1 = vec3(0), a2 = vec3(0);
+            if (w.x > 0.0) {
+                vec2 uvX, uvY, uvZ;
+                computeTriplanarUVs(hitPos, texIndices.x, geomN, uvX, uvY, uvZ);
+                a0 = computeTriplanarAlbedoUVs(triW, texIndices.x, uvX, uvY, uvZ);
+            }
+            if (w.y > 0.0) {
+                vec2 uvX, uvY, uvZ;
+                computeTriplanarUVs(hitPos, texIndices.y, geomN, uvX, uvY, uvZ);
+                a1 = computeTriplanarAlbedoUVs(triW, texIndices.y, uvX, uvY, uvZ);
+            }
+            if (w.z > 0.0) {
+                vec2 uvX, uvY, uvZ;
+                computeTriplanarUVs(hitPos, texIndices.z, geomN, uvX, uvY, uvZ);
+                a2 = computeTriplanarAlbedoUVs(triW, texIndices.z, uvX, uvY, uvZ);
+            }
+            albedo = a0 * w.x + a1 * w.y + a2 * w.z;
+            // If triplanar gave black (missing texture), fallback to flat
+            if (dot(albedo, albedo) < 0.001) {
+                albedo = vec3(0.7);
+                if (hitKind == 1) albedo = vec3(0.20, 0.42, 0.72);
+            }
+        } else {
+            // Direct UV sampling, blended
+            vec2 uv0 = hitV0.texCoord, uv1 = hitV1.texCoord, uv2 = hitV2.texCoord;
+            vec2 hitUV = uv0 * w.x + uv1 * w.y + uv2 * w.z;
+            vec3 a0 = texture(albedoArray, vec3(hitUV, float(texIndices.x))).rgb;
+            vec3 a1 = texture(albedoArray, vec3(hitUV, float(texIndices.y))).rgb;
+            vec3 a2 = texture(albedoArray, vec3(hitUV, float(texIndices.z))).rgb;
+            albedo = a0 * w.x + a1 * w.y + a2 * w.z;
+            if (dot(albedo, albedo) < 0.001) {
+                albedo = vec3(0.7);
+                if (hitKind == 1) albedo = vec3(0.20, 0.42, 0.72);
+            }
+        }
 
         vec3 L = normalize(-ubo.lightDir.xyz);
         float ndl = max(dot(hitN, L), 0.0);
