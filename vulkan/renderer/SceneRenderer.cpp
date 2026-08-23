@@ -1342,7 +1342,13 @@ void SceneRenderer::syncRayTracingScene(VulkanApp* app) {
             waterV = mainLiquidRenderer->getIndirectRenderer().getVertexBuffer();
             waterI = mainLiquidRenderer->getIndirectRenderer().getIndexBuffer();
         }
-        rayTracingRenderer->setSoftwareGeometryBuffers(solidV, solidI, waterV, waterI);
+        VkBuffer vegV = VK_NULL_HANDLE, vegI = VK_NULL_HANDLE;
+        if (vegetationRenderer) {
+            const auto& vbo = vegetationRenderer->getBillboardVBO();
+            vegV = vbo.vertexBuffer.buffer;
+            vegI = vbo.indexBuffer.buffer;
+        }
+        rayTracingRenderer->setSoftwareGeometryBuffers(solidV, solidI, waterV, waterI, vegV, vegI);
     }
 
     // Register vegetation billboards as alpha-tested instances in the unified

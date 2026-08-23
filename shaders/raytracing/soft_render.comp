@@ -33,11 +33,20 @@ layout(scalar, set = 0, binding = 16) readonly buffer IdxsSolid { uint indicesSo
 layout(scalar, set = 0, binding = 17) readonly buffer VertsWater { Vertex vertsWater[]; };
 layout(scalar, set = 0, binding = 18) readonly buffer IdxsWater { uint indicesWater[]; };
 layout(scalar, set = 0, binding = 19) readonly buffer ChunkInfos { ChunkInfo chunks[]; };
+layout(scalar, set = 0, binding = 20) readonly buffer VertsVeg { Vertex vertsVeg[]; };
+layout(scalar, set = 0, binding = 21) readonly buffer IdxsVeg { uint indicesVeg[]; };
+struct VegInstance {
+    // VkTransformMatrixKHR is row-major 3x4, stored as 3 vec4 in scalar layout
+    vec4 row0; vec4 row1; vec4 row2;
+    uint customIndex; uint sbtOffset; uint flags; uint _pad;
+};
+layout(scalar, set = 0, binding = 22) readonly buffer VegInstances { VegInstance vegInstances[]; };
 
 layout(set = 1, binding = 0, rgba32f) uniform image2D outImage;
 
 layout(push_constant) uniform PC {
     uint chunkCount;
+    uint vegCount;
 } pc;
 
 vec3 environmentColor(vec3 dir) {
@@ -165,6 +174,67 @@ void main() {
                     hitV0 = vv0; hitV1 = vv1; hitV2 = vv2;
                     hitKind = c.kind;
                     hit = true;
+                }
+            }
+        }
+    }
+    // Vegetation billboards (shared cross-quad, many instances)
+    if (!hit || closestT > 50.0) { // only check veg if no closer solid hit nearby, cheap cull
+        for (uint vi = 0; vi < pc.vegCount; ++vi) {
+            VegInstance inst = vegInstances[vi];
+            // Quick AABB via instance transform: approximate with a sphere at instance translation
+            vec3 instPos = vec3(inst.row0.w, inst.row1.w, inst.row2.w);
+            float dist = length(instPos - origin);
+            if (dist > closestT) continue;
+            if (dist > 800.0) continue; // distance cull
+            // Transform ray to local space (inverse of instance transform)
+            // For brute-force, just transform the 12 triangles to world and test
+            // Extract 3x4 matrix as mat4 (last row 0,0,0,1)
+            mat4 M = mat4(
+                vec4(inst.row0.x, inst.row1.x, inst.row2.x, 0),
+                vec4(inst.row0.y, inst.row1.y, inst.row2.y, 0),
+                vec4(inst.row0.z, inst.row1.z, inst.row2.z, 0),
+                vec4(inst.row0.w, inst.row1.w, inst.row2.w, 1));
+            // For each of the 6 quads (we have 24 verts, 36 indices, but local quad is at origin)
+            // Instead of transforming vertices, transform ray to local and test local quad
+            mat4 invM = inverse(M);
+            vec3 localOrig = (invM * vec4(origin, 1.0)).xyz;
+            vec3 localDir = normalize((invM * vec4(dir, 0.0)).xyz);
+            vec3 invLocalDir = 1.0 / localDir;
+            // Local billboard AABB is approx -0.5..0.5 in XZ and 0..1 in Y (cross-quad)
+            if (!rayAABBIntersect(localOrig, invLocalDir, vec3(-0.6), vec3(0.6), closestT)) continue;
+            for (uint i = 0; i < 36; i += 3) {
+                uint idx0 = indicesVeg[i + 0];
+                uint idx1 = indicesVeg[i + 1];
+                uint idx2 = indicesVeg[i + 2];
+                vec3 v0 = vertsVeg[idx0].position;
+                vec3 v1 = vertsVeg[idx1].position;
+                vec3 v2 = vertsVeg[idx2].position;
+                float t, u, v;
+                if (rayTriangleIntersect(localOrig, localDir, v0, v1, v2, t, u, v)) {
+                    if (t < closestT && t > 0.001) {
+                        closestT = t;
+                        float w = 1.0 - u - v;
+                        vec3 n = vertsVeg[idx0].normal * w + vertsVeg[idx1].normal * u + vertsVeg[idx2].normal * v;
+                        if (length(n) < 0.5) n = normalize(cross(v1 - v0, v2 - v0));
+                        // Transform normal to world
+                        mat3 normalMat = mat3(M);
+                        n = normalize(normalMat * n);
+                        if (dot(n, -dir) < 0.0) n = -n;
+                        hitN = n;
+                        hitPos = origin + dir * t;
+                        // For veg, use the instance's layer for texturing
+                        uint layer = (inst.customIndex >> 8) & 0xFFu;
+                        // Use first vertex's texCoord as representative, or interpolate
+                        vec2 uv = vertsVeg[idx0].texCoord * w + vertsVeg[idx1].texCoord * u + vertsVeg[idx2].texCoord * v;
+                        // Store for shading: use hitBary to carry layer and uv
+                        hitBary = vec3(w, u, v);
+                        hitV0 = vertsVeg[idx0]; hitV1 = vertsVeg[idx1]; hitV2 = vertsVeg[idx2];
+                        // Override brushIndex to carry layer for albedo sampling
+                        hitV0.brushIndex = int(layer);
+                        hitKind = 2;
+                        hit = true;
+                    }
                 }
             }
         }

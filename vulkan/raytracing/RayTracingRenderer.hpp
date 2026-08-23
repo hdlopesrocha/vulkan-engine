@@ -112,7 +112,8 @@ public:
 
     // Software fallback: provide the geometry buffers for brute-force compute.
     void setSoftwareGeometryBuffers(VkBuffer solidVertex, VkBuffer solidIndex,
-                                    VkBuffer waterVertex, VkBuffer waterIndex);
+                                    VkBuffer waterVertex, VkBuffer waterIndex,
+                                    VkBuffer vegVertex = VK_NULL_HANDLE, VkBuffer vegIndex = VK_NULL_HANDLE);
 
     // Rebuild only the TLAS (call after adding/removing chunks). The unified
     // TLAS is NOT rebuilt every frame — only when the instance set changes.
@@ -207,7 +208,11 @@ private:
     VkBuffer softSolidIndex_ = VK_NULL_HANDLE;
     VkBuffer softWaterVertex_ = VK_NULL_HANDLE;
     VkBuffer softWaterIndex_ = VK_NULL_HANDLE;
+    VkBuffer softVegVertex_ = VK_NULL_HANDLE;
+    VkBuffer softVegIndex_ = VK_NULL_HANDLE;
+    Buffer softVegInstancesBuffer_;
     bool softChunkInfoDirty_ = true;
+    bool softVegDirty_ = true;
 
     // Helpers
     void createRtDescriptorSetLayout(VulkanApp* app);

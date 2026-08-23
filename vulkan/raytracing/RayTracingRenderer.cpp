@@ -25,12 +25,16 @@ void RayTracingRenderer::init(VulkanApp* app, VkImageView shadowOutputView) {
         shadowOutputView_ = shadowOutputView;
         createSoftDescriptorSetLayout(app);
         createSoftPipelines(app);
-        // 64KB chunk info buffer (enough for 4096 chunks)
+        // Chunk info buffer (enough for 4096 chunks, 48B each)
         softChunkInfoBuffer_ = ctx_.createRtBuffer(4096 * sizeof(SoftChunkInfo),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        // Veg instances buffer (8192 instances)
+        softVegInstancesBuffer_ = ctx_.createRtBuffer(8192 * sizeof(VegInstance),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         inited_ = true;
         tlasDirty_ = true;
         softChunkInfoDirty_ = true;
+        softVegDirty_ = true;
         printf("[RayTracingRenderer] software fallback initialized (brute-force compute)\n");
         return;
     }
@@ -57,6 +61,7 @@ void RayTracingRenderer::cleanup(VulkanApp* app) {
         if (softOutputLayout_ != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(app->getDevice(), softOutputLayout_, nullptr); app->resources.removeDescriptorSetLayout(softOutputLayout_); }
         if (softPool_ != VK_NULL_HANDLE) { vkDestroyDescriptorPool(app->getDevice(), softPool_, nullptr); app->resources.removeDescriptorPool(softPool_); }
         if (softChunkInfoBuffer_.buffer != VK_NULL_HANDLE) ctx_.destroyRtBuffer(softChunkInfoBuffer_);
+        if (softVegInstancesBuffer_.buffer != VK_NULL_HANDLE) ctx_.destroyRtBuffer(softVegInstancesBuffer_);
         useSoftware_ = false;
     }
     for (auto& w : workloads_) {
@@ -334,6 +339,9 @@ void RayTracingRenderer::createSoftDescriptorSetLayout(VulkanApp* app) {
     bindings.push_back(mk(17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
     bindings.push_back(mk(18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
     bindings.push_back(mk(19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
+    bindings.push_back(mk(20, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
+    bindings.push_back(mk(21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
+    bindings.push_back(mk(22, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
     std::vector<VkDescriptorBindingFlags> bflags(bindings.size(), VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT);
     VkDescriptorSetLayoutBindingFlagsCreateInfo bflagsInfo{};
     bflagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
@@ -367,7 +375,7 @@ void RayTracingRenderer::createSoftDescriptorSetLayout(VulkanApp* app) {
 
     std::array<VkDescriptorPoolSize, 4> poolSizes = {
         VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8 },
-        VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16 },
+        VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 24 },
         VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 20 },
         VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4 },
     };
@@ -451,6 +459,9 @@ void RayTracingRenderer::updateSoftDescriptors(VulkanApp* app) {
     bindBuf(17, softWaterVertex_);
     bindBuf(18, softWaterIndex_);
     if (softChunkInfoBuffer_.buffer != VK_NULL_HANDLE) bindBuf(19, softChunkInfoBuffer_.buffer);
+    bindBuf(20, softVegVertex_);
+    bindBuf(21, softVegIndex_);
+    if (softVegInstancesBuffer_.buffer != VK_NULL_HANDLE) bindBuf(22, softVegInstancesBuffer_.buffer);
 }
 
 void RayTracingRenderer::traceSoftWorkload(VkCommandBuffer cmd, RtWorkload w, VkImageView outputView) {
@@ -470,9 +481,13 @@ void RayTracingRenderer::traceSoftWorkload(VkCommandBuffer cmd, RtWorkload w, Vk
     VkDescriptorSet sets[2] = { softDescSet_, outSet };
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, softPipelineLayout_, 0, 2, sets, 0, nullptr);
-    uint32_t chunkCount = 0;
-    { std::lock_guard<std::mutex> lk(chunksMutex_); chunkCount = (uint32_t)chunks_.size(); }
-    vkCmdPushConstants(cmd, softPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &chunkCount);
+    struct { uint32_t chunkCount; uint32_t vegCount; } pc{};
+    {
+        std::lock_guard<std::mutex> lk(chunksMutex_);
+        pc.chunkCount = (uint32_t)chunks_.size();
+        pc.vegCount = (uint32_t)vegInstances_.size();
+    }
+    vkCmdPushConstants(cmd, softPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     uint32_t wgX = (ctx_.app->getWidth() + 7) / 8;
     uint32_t wgY = (ctx_.app->getHeight() + 7) / 8;
     vkCmdDispatch(cmd, wgX, wgY, 1);
@@ -551,6 +566,13 @@ void RayTracingRenderer::registerVegetation(VulkanApp* app, const VegetationRend
             vegLastVertexAddress_ = vaddr;
             vegLastIndexAddress_ = iaddr;
         }
+        if (useSoftware_) {
+            if (softVegVertex_ != vbo.vertexBuffer.buffer || softVegIndex_ != vbo.indexBuffer.buffer) {
+                softVegVertex_ = vbo.vertexBuffer.buffer;
+                softVegIndex_ = vbo.indexBuffer.buffer;
+                softVegDirty_ = true;
+            }
+        }
     }
 
     const uint64_t generation = veg->getVegetationGeneration();
@@ -618,6 +640,7 @@ void RayTracingRenderer::registerVegetation(VulkanApp* app, const VegetationRend
         }
     }
     tlasDirty_ = true;
+    if (useSoftware_) softVegDirty_ = true;
 }
 
 void RayTracingRenderer::setVegetationOpacity(VulkanApp* app, VkImageView view, VkSampler sampler) {
@@ -639,14 +662,18 @@ void RayTracingRenderer::setVegetationOpacity(VulkanApp* app, VkImageView view, 
 }
 
 void RayTracingRenderer::setSoftwareGeometryBuffers(VkBuffer solidVertex, VkBuffer solidIndex,
-                                                    VkBuffer waterVertex, VkBuffer waterIndex) {
+                                                    VkBuffer waterVertex, VkBuffer waterIndex,
+                                                    VkBuffer vegVertex, VkBuffer vegIndex) {
     if (!useSoftware_) return;
     bool changed = (softSolidVertex_ != solidVertex || softSolidIndex_ != solidIndex ||
-                    softWaterVertex_ != waterVertex || softWaterIndex_ != waterIndex);
+                    softWaterVertex_ != waterVertex || softWaterIndex_ != waterIndex ||
+                    softVegVertex_ != vegVertex || softVegIndex_ != vegIndex);
     softSolidVertex_ = solidVertex;
     softSolidIndex_ = solidIndex;
     softWaterVertex_ = waterVertex;
     softWaterIndex_ = waterIndex;
+    softVegVertex_ = vegVertex;
+    softVegIndex_ = vegIndex;
     if (changed && inited_) {
         // Defer descriptor update to next update() call
     }
@@ -707,6 +734,20 @@ void RayTracingRenderer::update(VulkanApp* app) {
                 // Also update the descriptor if buffer changed (handle same, no need)
             }
             softChunkInfoDirty_ = false;
+        }
+        if (softVegDirty_) {
+            if (!vegInstances_.empty()) {
+                VkDeviceSize size = vegInstances_.size() * sizeof(VegInstance);
+                Buffer staging = app->createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                memcpy(staging.mappedData, vegInstances_.data(), (size_t)size);
+                app->runSingleTimeCommands([&](VkCommandBuffer cmd){
+                    VkBufferCopy r{0,0,size};
+                    vkCmdCopyBuffer(cmd, staging.buffer, softVegInstancesBuffer_.buffer, 1, &r);
+                });
+                app->destroyBuffer(staging);
+            }
+            softVegDirty_ = false;
         }
         updateSoftDescriptors(app);
         return;
