@@ -412,8 +412,11 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
             b.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
             b.srcAccessMask = 0;
-            VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+            VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
             VkAccessFlags2 dstAccess = VK_ACCESS_2_SHADER_WRITE_BIT;
+            if (app->rtSupport.any()) {
+                dstStage |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+            }
             b.dstStageMask = dstStage;
             b.dstAccessMask = dstAccess;
             VkDependencyInfo di{};
@@ -1322,7 +1325,8 @@ void SceneRenderer::syncRayTracingScene(VulkanApp* app) {
             VkDeviceAddress ia = ibase + (VkDeviceSize)m.level_.firstIndex * sizeof(uint32_t);
             rayTracingRenderer->registerChunk(cid, kind, va, vertexCount, ia,
                                               m.level_.indexCount, VK_GEOMETRY_OPAQUE_BIT_KHR,
-                                              m.level_.baseVertex, m.level_.firstIndex);
+                                              m.level_.baseVertex, m.level_.firstIndex,
+                                              glm::vec3(m.boundsMin), glm::vec3(m.boundsMax));
             rtRegisteredChunks.insert(cid);
         });
     };
@@ -1463,6 +1467,16 @@ void SceneRenderer::compositeRayTracedScene(VkCommandBuffer cmd, uint32_t frameI
     // rtSceneImage is GENERAL (tracked); dst is COLOR_ATTACHMENT_OPTIMAL (set by
     // the transition just before the solid colour pass). Move both into transfer
     // layouts for the blit.
+    bool isSW = rayTracingRenderer && rayTracingRenderer->isSoftware();
+    VkPipelineStageFlags2 rtStage = isSW
+        ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+        : VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    // When hardware RT is unavailable but not in software mode (rtEnabled false
+    // would have early-returned), fall back to COMPUTE to keep validation clean.
+    if (!rayTracingRenderer || (!isSW && !rayTracingRenderer->supported())) {
+        rtStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    }
+
     VkImageMemoryBarrier2 b[2]{};
     b[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     b[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1471,7 +1485,7 @@ void SceneRenderer::compositeRayTracedScene(VkCommandBuffer cmd, uint32_t frameI
     b[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b[0].image = rtSceneImage;
     b[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    b[0].srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    b[0].srcStageMask = rtStage;
     b[0].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
     b[0].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     b[0].dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
@@ -1510,7 +1524,7 @@ void SceneRenderer::compositeRayTracedScene(VkCommandBuffer cmd, uint32_t frameI
     b[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
     b[0].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     b[0].srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-    b[0].dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    b[0].dstStageMask = rtStage;
     b[0].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
 
     b[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -1518,6 +1532,6 @@ void SceneRenderer::compositeRayTracedScene(VkCommandBuffer cmd, uint32_t frameI
     b[1].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     b[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     b[1].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    b[1].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    b[1].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     vkCmdPipelineBarrier2(cmd, &di);
 }

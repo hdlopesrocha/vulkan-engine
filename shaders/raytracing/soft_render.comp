@@ -3,7 +3,6 @@
 #extension GL_GOOGLE_include_directive : enable
 #include "ubo.glsl"
 
-// Vertex tightly packed to match C++ struct (64 bytes) via scalar layout
 struct Vertex {
     vec3 position;
     vec3 color;
@@ -19,6 +18,10 @@ struct ChunkInfo {
     uint firstIndex;
     uint indexCount;
     uint kind;
+    vec3 aabbMin;
+    float _pad0;
+    vec3 aabbMax;
+    float _pad1;
 };
 
 layout(scalar, set = 0, binding = 15) readonly buffer VertsSolid { Vertex vertsSolid[]; };
@@ -61,6 +64,16 @@ bool rayTriangleIntersect(vec3 orig, vec3 dir, vec3 v0, vec3 v1, vec3 v2, out fl
     return true;
 }
 
+bool rayAABBIntersect(vec3 orig, vec3 invDir, vec3 bmin, vec3 bmax, float tMax) {
+    vec3 t0 = (bmin - orig) * invDir;
+    vec3 t1 = (bmax - orig) * invDir;
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+    float tNear = max(max(tmin.x, tmin.y), tmin.z);
+    float tFar = min(min(tmax.x, tmax.y), tmax.z);
+    return tNear <= tFar && tFar >= 0.0 && tNear <= tMax;
+}
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
@@ -74,6 +87,7 @@ void main() {
     vec3 farP  = farH.xyz / farH.w;
     vec3 origin = ubo.viewPos.xyz;
     vec3 dir = normalize(farP - nearP);
+    vec3 invDir = 1.0 / dir;
 
     float closestT = 1e30;
     vec3 hitN = vec3(0,1,0);
@@ -84,6 +98,7 @@ void main() {
     for (uint ci = 0; ci < pc.chunkCount; ++ci) {
         ChunkInfo c = chunks[ci];
         if (c.indexCount == 0) continue;
+        if (!rayAABBIntersect(origin, invDir, c.aabbMin, c.aabbMax, closestT)) continue;
         for (uint i = 0; i < c.indexCount; i += 3) {
             uint idx0, idx1, idx2;
             vec3 v0, v1, v2;
@@ -91,7 +106,6 @@ void main() {
                 idx0 = indicesSolid[c.firstIndex + i + 0];
                 idx1 = indicesSolid[c.firstIndex + i + 1];
                 idx2 = indicesSolid[c.firstIndex + i + 2];
-                // indices are relative to chunk baseVertex? add base
                 v0 = vertsSolid[c.baseVertex + idx0].position;
                 v1 = vertsSolid[c.baseVertex + idx1].position;
                 v2 = vertsSolid[c.baseVertex + idx2].position;
@@ -121,29 +135,28 @@ void main() {
         if (dot(hitN, -dir) < 0.0) hitN = -hitN;
         vec3 albedo = vec3(0.7);
         if (hitKind == 1) albedo = vec3(0.20, 0.42, 0.72);
-        // simple shading
         vec3 L = normalize(-ubo.lightDir.xyz);
         float ndl = max(dot(hitN, L), 0.0);
-        // shadow ray
         bool shadowed = false;
-        vec3 shadowOrig = hitPos + hitN * 0.01;
+        vec3 shadowOrig = hitPos + hitN * 0.05;
+        vec3 invL = 1.0 / L;
         for (uint ci = 0; ci < pc.chunkCount && !shadowed; ++ci) {
             ChunkInfo c = chunks[ci];
             if (c.indexCount == 0) continue;
+            if (!rayAABBIntersect(shadowOrig, invL, c.aabbMin, c.aabbMax, 10000.0)) continue;
             for (uint i = 0; i < c.indexCount; i += 3) {
-                uint idx0, idx1, idx2;
                 vec3 v0, v1, v2;
                 if (c.kind == 0) {
-                    idx0 = indicesSolid[c.firstIndex + i + 0];
-                    idx1 = indicesSolid[c.firstIndex + i + 1];
-                    idx2 = indicesSolid[c.firstIndex + i + 2];
+                    uint idx0 = indicesSolid[c.firstIndex + i + 0];
+                    uint idx1 = indicesSolid[c.firstIndex + i + 1];
+                    uint idx2 = indicesSolid[c.firstIndex + i + 2];
                     v0 = vertsSolid[c.baseVertex + idx0].position;
                     v1 = vertsSolid[c.baseVertex + idx1].position;
                     v2 = vertsSolid[c.baseVertex + idx2].position;
                 } else {
-                    idx0 = indicesWater[c.firstIndex + i + 0];
-                    idx1 = indicesWater[c.firstIndex + i + 1];
-                    idx2 = indicesWater[c.firstIndex + i + 2];
+                    uint idx0 = indicesWater[c.firstIndex + i + 0];
+                    uint idx1 = indicesWater[c.firstIndex + i + 1];
+                    uint idx2 = indicesWater[c.firstIndex + i + 2];
                     v0 = vertsWater[c.baseVertex + idx0].position;
                     v1 = vertsWater[c.baseVertex + idx1].position;
                     v2 = vertsWater[c.baseVertex + idx2].position;
@@ -158,7 +171,6 @@ void main() {
         vec3 direct = albedo * (0.15 + 0.85 * ndl * (1.0 - shadow)) * ubo.lightColor.rgb;
         vec3 ambient = albedo * 0.18 * mix(sky.skyHorizon.rgb, sky.skyZenith.rgb, 0.5);
         color = direct + ambient;
-        // simple reflection
         vec3 reflDir = reflect(dir, hitN);
         vec3 env = environmentColor(reflDir);
         float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(hitN, -dir), 0.0), 5.0);

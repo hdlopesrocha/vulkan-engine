@@ -18,6 +18,10 @@ struct ChunkInfo {
     uint firstIndex;
     uint indexCount;
     uint kind;
+    vec3 aabbMin;
+    float _pad0;
+    vec3 aabbMax;
+    float _pad1;
 };
 
 layout(scalar, set = 0, binding = 15) readonly buffer VertsSolid { Vertex vertsSolid[]; };
@@ -50,6 +54,16 @@ bool rayTriangleIntersect(vec3 orig, vec3 dir, vec3 v0, vec3 v1, vec3 v2, out fl
     return true;
 }
 
+bool rayAABBIntersect(vec3 orig, vec3 invDir, vec3 bmin, vec3 bmax, float tMax) {
+    vec3 t0 = (bmin - orig) * invDir;
+    vec3 t1 = (bmax - orig) * invDir;
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+    float tNear = max(max(tmin.x, tmin.y), tmin.z);
+    float tFar = min(min(tmax.x, tmax.y), tmax.z);
+    return tNear <= tFar && tFar >= 0.0 && tNear <= tMax;
+}
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
@@ -62,12 +76,13 @@ void main() {
     vec3 farP  = farH.xyz / farH.w;
     vec3 origin = ubo.viewPos.xyz;
     vec3 dir = normalize(farP - nearP);
+    vec3 invDir = 1.0 / dir;
 
     bool hit = false;
-    float closest = 1e30;
     for (uint ci = 0; ci < pc.chunkCount && !hit; ++ci) {
         ChunkInfo c = chunks[ci];
         if (c.indexCount == 0) continue;
+        if (!rayAABBIntersect(origin, invDir, c.aabbMin, c.aabbMax, 1e30)) continue;
         for (uint i = 0; i < c.indexCount; i += 3) {
             vec3 v0, v1, v2;
             if (c.kind == 0) {
@@ -87,15 +102,11 @@ void main() {
             }
             float t;
             if (rayTriangleIntersect(origin, dir, v0, v1, v2, t)) {
-                if (t < closest) {
-                    hit = true;
-                    break;
-                }
+                hit = true;
+                break;
             }
         }
-        if (hit) break;
     }
     float lit = hit ? 0.0 : 1.0;
-    // shadow mask: 1 = lit, 0 = shadowed (matches shadow.rgen)
     imageStore(outImage, coord, vec4(vec3(lit), 1.0));
 }

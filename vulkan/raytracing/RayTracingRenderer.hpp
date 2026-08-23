@@ -52,6 +52,10 @@ struct VegInstance {
         uint32_t firstIndex = 0;
         uint32_t indexCount = 0;
         uint32_t kind = 0;
+        glm::vec3 aabbMin = glm::vec3(0);
+        float _pad0 = 0;
+        glm::vec3 aabbMax = glm::vec3(0);
+        float _pad1 = 0;
     };
 
     // Owns the ray-tracing scene representation:
@@ -90,7 +94,8 @@ public:
                        VkDeviceAddress vertexAddress, uint32_t vertexCount,
                        VkDeviceAddress indexAddress, uint32_t indexCount,
                        VkGeometryFlagsKHR geometryFlags = VK_GEOMETRY_OPAQUE_BIT_KHR,
-                       uint32_t baseVertex = 0, uint32_t firstIndex = 0);
+                       uint32_t baseVertex = 0, uint32_t firstIndex = 0,
+                       glm::vec3 aabbMin = glm::vec3(0), glm::vec3 aabbMax = glm::vec3(0));
 
     // Remove a chunk's BLAS (deferred until GPU idle relative to it).
     void unregisterChunk(uint64_t chunkId);
@@ -142,6 +147,8 @@ private:
         BlasGeometryInput geom{};
         uint32_t baseVertex = 0;
         uint32_t firstIndex = 0;
+        glm::vec3 aabbMin = glm::vec3(0);
+        glm::vec3 aabbMax = glm::vec3(0);
     };
 
     struct PipelineWorkload {

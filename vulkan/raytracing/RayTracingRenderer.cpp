@@ -319,8 +319,15 @@ void RayTracingRenderer::createSoftDescriptorSetLayout(VulkanApp* app) {
     bindings.push_back(make(17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
     bindings.push_back(make(18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
     bindings.push_back(make(19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
+    std::vector<VkDescriptorBindingFlags> bflags(bindings.size(), VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT);
+    VkDescriptorSetLayoutBindingFlagsCreateInfo bflagsInfo{};
+    bflagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    bflagsInfo.bindingCount = (uint32_t)bflags.size();
+    bflagsInfo.pBindingFlags = bflags.data();
     VkDescriptorSetLayoutCreateInfo li{};
     li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    li.pNext = &bflagsInfo;
+    li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     li.bindingCount = (uint32_t)bindings.size();
     li.pBindings = bindings.data();
     if (vkCreateDescriptorSetLayout(app->getDevice(), &li, nullptr, &softDescLayout_) != VK_SUCCESS)
@@ -330,8 +337,15 @@ void RayTracingRenderer::createSoftDescriptorSetLayout(VulkanApp* app) {
     VkDescriptorSetLayoutBinding outB{};
     outB.binding = 0; outB.descriptorCount = 1; outB.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     outB.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorBindingFlags outFlag = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+    VkDescriptorSetLayoutBindingFlagsCreateInfo outFlagsInfo{};
+    outFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    outFlagsInfo.bindingCount = 1;
+    outFlagsInfo.pBindingFlags = &outFlag;
     VkDescriptorSetLayoutCreateInfo oli{};
     oli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    oli.pNext = &outFlagsInfo;
+    oli.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     oli.bindingCount = 1; oli.pBindings = &outB;
     if (vkCreateDescriptorSetLayout(app->getDevice(), &oli, nullptr, &softOutputLayout_) != VK_SUCCESS)
         throw std::runtime_error("RayTracingRenderer: failed to create soft output layout");
@@ -343,6 +357,7 @@ void RayTracingRenderer::createSoftDescriptorSetLayout(VulkanApp* app) {
     };
     VkDescriptorPoolCreateInfo pi{};
     pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pi.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     pi.maxSets = 8;
     pi.poolSizeCount = (uint32_t)poolSizes.size();
     pi.pPoolSizes = poolSizes.data();
@@ -450,7 +465,8 @@ void RayTracingRenderer::registerChunk(uint64_t chunkId, GeometryKind kind,
                                       VkDeviceAddress vertexAddress, uint32_t vertexCount,
                                       VkDeviceAddress indexAddress, uint32_t indexCount,
                                       VkGeometryFlagsKHR geometryFlags,
-                                      uint32_t baseVertex, uint32_t firstIndex) {
+                                      uint32_t baseVertex, uint32_t firstIndex,
+                                      glm::vec3 aabbMin, glm::vec3 aabbMax) {
     if (!inited_) return;
     std::lock_guard<std::mutex> lk(chunksMutex_);
     ChunkEntry e;
@@ -465,6 +481,8 @@ void RayTracingRenderer::registerChunk(uint64_t chunkId, GeometryKind kind,
     e.geom.geometryFlags = geometryFlags;
     e.baseVertex = baseVertex;
     e.firstIndex = firstIndex;
+    e.aabbMin = aabbMin;
+    e.aabbMax = aabbMax;
     // Replace any existing entry; the old BLAS is destroyed when the new one is
     // submitted (see update()).
     chunks_[chunkId] = std::move(e);
@@ -587,6 +605,7 @@ void RayTracingRenderer::registerVegetation(VulkanApp* app, const VegetationRend
 
 void RayTracingRenderer::setVegetationOpacity(VulkanApp* app, VkImageView view, VkSampler sampler) {
     if (!inited_ || view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
+    if (useSoftware_ || rtDescriptorSet_ == VK_NULL_HANDLE) return;
     vegOpacityBound_ = true;
     VkDescriptorImageInfo ii{};
     ii.imageView = view;
@@ -652,6 +671,8 @@ void RayTracingRenderer::update(VulkanApp* app) {
                     info.firstIndex = kv.second.firstIndex;
                     info.indexCount = kv.second.geom.indexCount;
                     info.kind = (uint32_t)kv.second.kind;
+                    info.aabbMin = kv.second.aabbMin;
+                    info.aabbMax = kv.second.aabbMax;
                     infos.push_back(info);
                 }
             }
