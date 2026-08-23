@@ -47,7 +47,7 @@ IMGUI_CORE_OBJS := $(patsubst third_party/imgui/%.cpp,$(OBJ_DIR)/imgui/%.o,$(IMG
 IMGUI_BACKEND_OBJS := $(patsubst third_party/imgui/backends/%.cpp,$(OBJ_DIR)/imgui/backends/%.o,$(IMGUI_BACKEND_SRCS))
 IMGUI_OBJS := $(IMGUI_CORE_OBJS) $(IMGUI_BACKEND_OBJS)
 # shader sources and generated SPIR-V
-SRCS := $(wildcard main.cpp world/*.cpp utils/*.cpp vulkan/*.cpp vulkan/renderer/*.cpp vulkan/streaming/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp space/*.cpp services/*.cpp) third_party/miniaudio/miniaudio_impl.cpp
+SRCS := $(wildcard main.cpp world/*.cpp utils/*.cpp vulkan/*.cpp vulkan/raytracing/*.cpp vulkan/renderer/*.cpp vulkan/streaming/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp space/*.cpp services/*.cpp) third_party/miniaudio/miniaudio_impl.cpp
 # Exclude legacy utils Camera implementation (migrated to math/Camera)
 SRCS := $(filter-out utils/Camera.cpp,$(SRCS))
 OBJ_DIR := $(OUT_DIR)/obj
@@ -77,18 +77,9 @@ OUT_SPVS = \
 	$(patsubst shaders/%.geom, $(OUT_DIR)/shaders/%.geom.spv, $(wildcard shaders/*.geom)) \
 	$(patsubst shaders/%.comp, $(OUT_DIR)/shaders/%.comp.spv, $(wildcard shaders/*.comp)) \
 	$(patsubst shaders/%.tesc, $(OUT_DIR)/shaders/%.tesc.spv, $(wildcard shaders/*.tesc)) \
-	$(patsubst shaders/%.tese, $(OUT_DIR)/shaders/%.tese.spv, $(wildcard shaders/*.tese)) \
-	$(OUT_DIR)/shaders/main_brush.frag.spv
+	$(patsubst shaders/%.tese, $(OUT_DIR)/shaders/%.tese.spv, $(wildcard shaders/*.tese))
 
-# Compile main.frag with -DBRUSH_PASS for brush rendering (no PAINT mode, no set=1)
-$(OUT_DIR)/shaders/main_brush.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (BRUSH_PASS)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes -DBRUSH_PASS $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D BRUSH_PASS $< -o $@; \
-	fi
+
 
 
 # Recursively create all object directories needed for all sources
@@ -102,7 +93,7 @@ define make-obj-dirs
 	done
 endef
 
-all: imgui shaders $(OUT) server
+all: imgui shaders rt-shaders $(OUT) server
 	$(call make-obj-dirs)
 	@mkdir -p $(OBJ_DIR)/imgui
 
@@ -159,6 +150,8 @@ shaders: $(OUT_SPVS)
 	@cp -u $(OUT_DIR)/shaders/*.spv shaders/ 2>/dev/null || true
 	@rm shaders/*.spv 2>/dev/null || true
 
+.PHONY: rt-shaders
+
 
 # Generic pattern rule for all shader extensions in $(SHADER_EXTS)
 define SHADER_COMPILE_RULE
@@ -173,6 +166,35 @@ $(OUT_DIR)/shaders/%.$(1).spv: shaders/%.$(1) $(SHADER_INCLUDES)
 endef
 
 $(foreach ext,$(SHADER_EXTS),$(eval $(call SHADER_COMPILE_RULE,$(ext))))
+
+# ── Ray-tracing shaders (live in shaders/raytracing/, compiled with glslc) ──
+RT_EXTS = rgen rmiss rchit rahit rcall
+RT_SHADERS = $(foreach ext,$(RT_EXTS),$(wildcard shaders/raytracing/*.$(ext)))
+RT_SPVS = $(patsubst shaders/raytracing/%.rgen,$(OUT_DIR)/shaders/raytracing/%.rgen.spv,$(wildcard shaders/raytracing/*.rgen)) \
+          $(patsubst shaders/raytracing/%.rmiss,$(OUT_DIR)/shaders/raytracing/%.rmiss.spv,$(wildcard shaders/raytracing/*.rmiss)) \
+          $(patsubst shaders/raytracing/%.rchit,$(OUT_DIR)/shaders/raytracing/%.rchit.spv,$(wildcard shaders/raytracing/*.rchit)) \
+          $(patsubst shaders/raytracing/%.rahit,$(OUT_DIR)/shaders/raytracing/%.rahit.spv,$(wildcard shaders/raytracing/*.rahit)) \
+          $(patsubst shaders/raytracing/%.rcall,$(OUT_DIR)/shaders/raytracing/%.rcall.spv,$(wildcard shaders/raytracing/*.rcall))
+
+define RT_SHADER_COMPILE_RULE
+$(OUT_DIR)/shaders/raytracing/%.$(1).spv: shaders/raytracing/%.$(1) shaders/raytracing/rt_common.glsl shaders/includes/ubo.glsl
+	@echo "Compiling RT shader: $$< -> $$@"
+	@mkdir -p $$(dir $$@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes $$< -o $$@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 $$< -o $$@; \
+	fi
+endef
+$(foreach ext,$(RT_EXTS),$(eval $(call RT_SHADER_COMPILE_RULE,$(ext))))
+
+# Augment the shaders target to also build ray-tracing SPV.
+SHADERS_RT = $(RT_SPVS)
+
+# Define the rt-shaders target AFTER RT_SPVS so its prerequisites expand correctly.
+rt-shaders: $(RT_SPVS)
+	@# Ray-tracing SPV lives under bin/shaders/raytracing; the runtime loads it
+	@# relative to CWD (bin/), so no copy back to source is needed.
 
 .PHONY: debug release
 
