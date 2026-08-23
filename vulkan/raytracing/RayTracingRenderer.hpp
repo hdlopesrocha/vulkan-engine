@@ -47,18 +47,25 @@ struct VegInstance {
     VkGeometryInstanceFlagsKHR flags = 0;
 };
 
-// Owns the ray-tracing scene representation:
-//   chunk geometry → per-chunk BLAS (rebuilt only when that chunk changes)
-//                 → unified TLAS (rebuilt only when chunks are added/removed)
-//                 → ray-tracing workloads (shadow / reflection / refraction)
-//
-// Reuses the project's existing abstractions: chunk lifecycle is driven by the
-// SceneRenderer (which already knows each chunk's solid/water/vegetation kind and
-// its geometry addresses from the slotted IndirectRenderer); GPU resource
-// lifetime is managed through VulkanApp::deferDestroyUntilFence /
-// deferDestroyUntilAllPending; buffers are allocated via VmaContext through
-// RayTracingContext; synchronization reuses the app's async submit helpers.
-class RayTracingRenderer : public Renderer {
+    struct SoftChunkInfo {
+        uint32_t baseVertex = 0;
+        uint32_t firstIndex = 0;
+        uint32_t indexCount = 0;
+        uint32_t kind = 0;
+    };
+
+    // Owns the ray-tracing scene representation:
+ //   chunk geometry → per-chunk BLAS (rebuilt only when that chunk changes)
+ //                 → unified TLAS (rebuilt only when chunks are added/removed)
+ //                 → ray-tracing workloads (shadow / reflection / refraction)
+ //
+ // Reuses the project's existing abstractions: chunk lifecycle is driven by the
+ // SceneRenderer (which already knows each chunk's solid/water/vegetation kind and
+ // its geometry addresses from the slotted IndirectRenderer); GPU resource
+ // lifetime is managed through VulkanApp::deferDestroyUntilFence /
+ // deferDestroyUntilAllPending; buffers are allocated via VmaContext through
+ // RayTracingContext; synchronization reuses the app's async submit helpers.
+ class RayTracingRenderer : public Renderer {
 public:
     RayTracingRenderer() = default;
     ~RayTracingRenderer() override = default;
@@ -69,7 +76,8 @@ public:
 
     void cleanup(VulkanApp* app) override;
 
-    bool supported() const { return ctx_.supported(); }
+    bool supported() const { return ctx_.supported() || useSoftware_; }
+    bool isSoftware() const { return useSoftware_; }
 
     // ── Chunk registration (called by SceneRenderer on chunk swap) ──
     // Registers (or replaces) the BLAS for a single chunk. `vertexAddress` /
@@ -77,10 +85,12 @@ public:
     // vertex/index (computed from the slotted pool base + per-chunk offset).
     // The BLAS build is deferred to the next update() and sequenced after the
     // chunk's geometry upload via the app's async submit + extra-wait semaphore.
+    // `baseVertex`/`firstIndex` are also stored for the software fallback path.
     void registerChunk(uint64_t chunkId, GeometryKind kind,
                        VkDeviceAddress vertexAddress, uint32_t vertexCount,
                        VkDeviceAddress indexAddress, uint32_t indexCount,
-                       VkGeometryFlagsKHR geometryFlags = VK_GEOMETRY_OPAQUE_BIT_KHR);
+                       VkGeometryFlagsKHR geometryFlags = VK_GEOMETRY_OPAQUE_BIT_KHR,
+                       uint32_t baseVertex = 0, uint32_t firstIndex = 0);
 
     // Remove a chunk's BLAS (deferred until GPU idle relative to it).
     void unregisterChunk(uint64_t chunkId);
@@ -94,6 +104,10 @@ public:
     // Bind the vegetation leaf-opacity texture (sampler2DArray) used by the
     // any-hit alpha test into the RT descriptor set (binding 14).
     void setVegetationOpacity(VulkanApp* app, VkImageView view, VkSampler sampler);
+
+    // Software fallback: provide the geometry buffers for brute-force compute.
+    void setSoftwareGeometryBuffers(VkBuffer solidVertex, VkBuffer solidIndex,
+                                    VkBuffer waterVertex, VkBuffer waterIndex);
 
     // Rebuild only the TLAS (call after adding/removing chunks). The unified
     // TLAS is NOT rebuilt every frame — only when the instance set changes.
@@ -126,6 +140,8 @@ private:
         bool pending = true; // BLAS build queued, not yet submitted
         // geometry inputs captured at registration time
         BlasGeometryInput geom{};
+        uint32_t baseVertex = 0;
+        uint32_t firstIndex = 0;
     };
 
     struct PipelineWorkload {
@@ -169,9 +185,30 @@ private:
 
     bool tlasDirty_ = true;
 
+    // ── Software fallback (compute brute-force, no AS/SBT) ──
+    bool useSoftware_ = false;
+    VkDescriptorSetLayout softDescLayout_ = VK_NULL_HANDLE; // set 0: UBO + geometry SSBOs
+    VkDescriptorSetLayout softOutputLayout_ = VK_NULL_HANDLE; // set 1: output image
+    VkDescriptorPool softPool_ = VK_NULL_HANDLE;
+    VkDescriptorSet softDescSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet softOutputSets_[static_cast<uint32_t>(RtWorkload::Count)] = {};
+    VkPipelineLayout softPipelineLayout_ = VK_NULL_HANDLE;
+    VkPipeline softRenderPipeline_ = VK_NULL_HANDLE;
+    VkPipeline softShadowPipeline_ = VK_NULL_HANDLE;
+    Buffer softChunkInfoBuffer_;
+    VkBuffer softSolidVertex_ = VK_NULL_HANDLE;
+    VkBuffer softSolidIndex_ = VK_NULL_HANDLE;
+    VkBuffer softWaterVertex_ = VK_NULL_HANDLE;
+    VkBuffer softWaterIndex_ = VK_NULL_HANDLE;
+    bool softChunkInfoDirty_ = true;
+
     // Helpers
     void createRtDescriptorSetLayout(VulkanApp* app);
     void createPipelines(VulkanApp* app);
     void buildTlas(VulkanApp* app, VkCommandBuffer cmd);
     void traceWorkload(VkCommandBuffer cmd, RtWorkload w, uint32_t rayGenIndex, VkImageView outputView);
+    void createSoftDescriptorSetLayout(VulkanApp* app);
+    void createSoftPipelines(VulkanApp* app);
+    void updateSoftDescriptors(VulkanApp* app);
+    void traceSoftWorkload(VkCommandBuffer cmd, RtWorkload w, VkImageView outputView);
 };

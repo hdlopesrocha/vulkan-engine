@@ -887,7 +887,7 @@ void VegetationRenderer::init(VulkanApp* app) {
         {
             VkDeviceSize sz = sizeof(Vertex) * verts.size();
             VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT
-                | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+                | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
                 | rtBufferUsage;
             Buffer staging = app->createBuffer(sz, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);

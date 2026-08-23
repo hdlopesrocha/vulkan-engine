@@ -2109,18 +2109,19 @@ void IndirectRenderer::initSlots(VulkanApp* app,
            | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR)
         : 0;
 
-    // Vertex buffer (device-local)
+    // Vertex buffer (device-local) — STORAGE is always added for software RT fallback
     VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
     vertexBuffer = app->createBuffer(vertexBufferSize,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-            | rtBufferUsage,
+            | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | rtBufferUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    // Index buffer (device-local)
+    // Index buffer (device-local) — STORAGE for software fallback
+
     VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
     indexBuffer = app->createBuffer(indexBufferSize,
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-            | rtBufferUsage,
+            | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | rtBufferUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // Indirect buffer (host-visible, persistently mapped for per-slot writes).

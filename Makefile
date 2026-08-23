@@ -168,13 +168,14 @@ endef
 $(foreach ext,$(SHADER_EXTS),$(eval $(call SHADER_COMPILE_RULE,$(ext))))
 
 # ── Ray-tracing shaders (live in shaders/raytracing/, compiled with glslc) ──
-RT_EXTS = rgen rmiss rchit rahit rcall
+RT_EXTS = rgen rmiss rchit rahit rcall comp
 RT_SHADERS = $(foreach ext,$(RT_EXTS),$(wildcard shaders/raytracing/*.$(ext)))
 RT_SPVS = $(patsubst shaders/raytracing/%.rgen,$(OUT_DIR)/shaders/raytracing/%.rgen.spv,$(wildcard shaders/raytracing/*.rgen)) \
           $(patsubst shaders/raytracing/%.rmiss,$(OUT_DIR)/shaders/raytracing/%.rmiss.spv,$(wildcard shaders/raytracing/*.rmiss)) \
           $(patsubst shaders/raytracing/%.rchit,$(OUT_DIR)/shaders/raytracing/%.rchit.spv,$(wildcard shaders/raytracing/*.rchit)) \
           $(patsubst shaders/raytracing/%.rahit,$(OUT_DIR)/shaders/raytracing/%.rahit.spv,$(wildcard shaders/raytracing/*.rahit)) \
-          $(patsubst shaders/raytracing/%.rcall,$(OUT_DIR)/shaders/raytracing/%.rcall.spv,$(wildcard shaders/raytracing/*.rcall))
+          $(patsubst shaders/raytracing/%.rcall,$(OUT_DIR)/shaders/raytracing/%.rcall.spv,$(wildcard shaders/raytracing/*.rcall)) \
+          $(patsubst shaders/raytracing/%.comp,$(OUT_DIR)/shaders/raytracing/%.comp.spv,$(wildcard shaders/raytracing/*.comp))
 
 define RT_SHADER_COMPILE_RULE
 $(OUT_DIR)/shaders/raytracing/%.$(1).spv: shaders/raytracing/%.$(1) shaders/raytracing/rt_common.glsl shaders/includes/ubo.glsl

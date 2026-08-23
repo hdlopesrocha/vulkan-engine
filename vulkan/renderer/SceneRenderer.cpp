@@ -1282,10 +1282,6 @@ constexpr uint64_t RT_WATER_OFFSET = 1ULL << 40;
 } // namespace
 
 void SceneRenderer::initRayTracing(VulkanApp* app) {
-    if (!app->rtSupport.any()) {
-        printf("[SceneRenderer] ray tracing unsupported — RayTracingRenderer disabled\n");
-        return;
-    }
     rtShadowWidth = std::max(1u, (uint32_t)app->getWidth());
     rtShadowHeight = std::max(1u, (uint32_t)app->getHeight());
 
@@ -1294,10 +1290,16 @@ void SceneRenderer::initRayTracing(VulkanApp* app) {
     // dedicated rt shadow descriptor set via setRtShadowImageView.
     rayTracingRenderer = std::make_unique<RayTracingRenderer>();
     rayTracingRenderer->init(app, rtShadowImageView);
+    if (!rayTracingRenderer->supported()) {
+        printf("[SceneRenderer] ray tracing unsupported — no HW or SW fallback\n");
+        rayTracingRenderer.reset();
+        return;
+    }
     rtEnabled = true;
     rtShadowEnabled = true;
-    printf("[SceneRenderer] ray tracing enabled (shadow output %ux%u, shadow trace %s, primary render ON)\n",
-        rtShadowWidth, rtShadowHeight, rtShadowEnabled ? "ON" : "OFF");
+    const char* mode = rayTracingRenderer->isSoftware() ? "software" : "hardware";
+    printf("[SceneRenderer] ray tracing enabled (%s, shadow output %ux%u, primary render ON)\n",
+        mode, rtShadowWidth, rtShadowHeight);
 }
 
 void SceneRenderer::syncRayTracingScene(VulkanApp* app) {
@@ -1319,13 +1321,25 @@ void SceneRenderer::syncRayTracingScene(VulkanApp* app) {
             VkDeviceAddress va = vbase + (VkDeviceSize)m.level_.baseVertex * sizeof(Vertex);
             VkDeviceAddress ia = ibase + (VkDeviceSize)m.level_.firstIndex * sizeof(uint32_t);
             rayTracingRenderer->registerChunk(cid, kind, va, vertexCount, ia,
-                                              m.level_.indexCount, VK_GEOMETRY_OPAQUE_BIT_KHR);
+                                              m.level_.indexCount, VK_GEOMETRY_OPAQUE_BIT_KHR,
+                                              m.level_.baseVertex, m.level_.firstIndex);
             rtRegisteredChunks.insert(cid);
         });
     };
 
     walk(solidIndirectRenderer, GeometryKind::Solid, 0);
     walk(mainLiquidRenderer->getIndirectRenderer(), GeometryKind::Water, RT_WATER_OFFSET);
+
+    if (rayTracingRenderer->isSoftware()) {
+        VkBuffer solidV = solidIndirectRenderer.getVertexBuffer();
+        VkBuffer solidI = solidIndirectRenderer.getIndexBuffer();
+        VkBuffer waterV = VK_NULL_HANDLE, waterI = VK_NULL_HANDLE;
+        if (mainLiquidRenderer) {
+            waterV = mainLiquidRenderer->getIndirectRenderer().getVertexBuffer();
+            waterI = mainLiquidRenderer->getIndirectRenderer().getIndexBuffer();
+        }
+        rayTracingRenderer->setSoftwareGeometryBuffers(solidV, solidI, waterV, waterI);
+    }
 
     // Register vegetation billboards as alpha-tested instances in the unified
     // TLAS (shared cross-quad BLAS + one transformed instance per billboard), and
@@ -1371,7 +1385,8 @@ void SceneRenderer::recordRayTracingShadow(VkCommandBuffer cmd) {
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = rtShadowImage;
     b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    b.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    bool isSW = rayTracingRenderer && rayTracingRenderer->isSoftware();
+    b.srcStageMask = isSW ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
     b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
     b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
@@ -1390,8 +1405,7 @@ void SceneRenderer::recordRayTracingReflection(VkCommandBuffer cmd) {
 
     // Ensure the ray-traced write is visible to the lit fragment shaders that
     // sample this image later in the same command buffer (the offscreen phase
-    // precedes the main render pass). Layout stays GENERAL. RAY_TRACING_SHADER
-    // stage mask is valid because rtEnabled implies rtSupport.any().
+    // precedes the main render pass). Layout stays GENERAL.
     VkImageMemoryBarrier2 b{};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1400,7 +1414,8 @@ void SceneRenderer::recordRayTracingReflection(VkCommandBuffer cmd) {
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = rtReflectImage;
     b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    b.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    bool isSW = rayTracingRenderer && rayTracingRenderer->isSoftware();
+    b.srcStageMask = isSW ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
     b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
     b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
@@ -1419,8 +1434,7 @@ void SceneRenderer::recordRayTracingRender(VkCommandBuffer cmd) {
 
     // Ensure the ray-traced write is visible to the compositing blit that copies
     // this image into the solid offscreen colour target later in the same command
-    // buffer. Layout stays GENERAL. RAY_TRACING_SHADER stage mask is valid
-    // because rtEnabled implies rtSupport.any().
+    // buffer. Layout stays GENERAL.
     VkImageMemoryBarrier2 b{};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1429,7 +1443,8 @@ void SceneRenderer::recordRayTracingRender(VkCommandBuffer cmd) {
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = rtSceneImage;
     b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    b.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    bool isSW = rayTracingRenderer && rayTracingRenderer->isSoftware();
+    b.srcStageMask = isSW ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
     b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
     b.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;

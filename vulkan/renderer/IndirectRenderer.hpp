@@ -268,6 +268,9 @@ public:
     // Query mesh info (copy) for use in the app (bounds, offsets, flags).
     MeshInfo getMeshInfo(uint32_t meshId) const;
 
+    VkBuffer getVertexBuffer() const { return vertexBuffer.buffer; }
+    VkBuffer getIndexBuffer() const { return indexBuffer.buffer; }
+
     // Ray-tracing support: device addresses of the shared slotted geometry pools.
     // The per-chunk vertex/index addresses are this base + level_.baseVertex *
     // sizeof(Vertex) / level_.firstIndex * sizeof(uint32_t) (see
