@@ -67,7 +67,6 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
 
             const uint8_t chunkLod = params.node->getChunkLod();
             if(chunkLod > 0 && params.level >= data.level) {
-                const uint8_t lod = chunkLod;  // decode the +1-shifted storage
                 const uintptr_t nodeId = reinterpret_cast<uintptr_t>(params.node);
                 bool skip = false;
                 {
@@ -78,12 +77,25 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                 if (!skip) {
                     long trianglesCount = 0;
                     Tesselator nodeTesselator(&trianglesCount);
-                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, lod);
+                    // Tessellation targetLod uses the chunk-relative ladder level
+                    // (chunkLod) so each rung is emitted at its own resolution.
+                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod);
                     {
                         std::lock_guard<std::mutex> lock(emittedMutex_);
                         emittedVersion_[nodeId] = params.node->version;
                     }
                     if(!nodeTesselator.geometry.indices.empty()) {
+                        // The published band must be the 0-based chunk-relative
+                        // level: decode the +1-shifted storage (chunkLod - 1).
+                        // indirect.comp keeps exactly one rung per location by
+                        // testing entryLevel == selectedLevel, and selectedLevel
+                        // is clamped to maxLevel (0-based). Using chunkLod here
+                        // shifts the whole band range by one: entryLevel 0 never
+                        // exists (closest band becomes a hole the chunk vanishes
+                        // from, letting a neighbor's coarser rung bleed over) and
+                        // the farthest rung is never selected — i.e. overlapping
+                        // LOD rungs. chunkLod-1 lines the bands up with maxLevel.
+                        const uint8_t lod = static_cast<uint8_t>(chunkLod - 1);
                         callback(nodeTesselator.geometry, lod, params.node->version,
                                  reinterpret_cast<uintptr_t>(params.node), params.cube);
                     }
