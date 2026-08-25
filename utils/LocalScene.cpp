@@ -49,19 +49,26 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
     ThreadContext context = ThreadContext(data.cube);
 
+
     tree->iterateMultiThreaded(
         [this, tree,&data,&context,&callback](const Octree &treeRef, OctreeNodeData &params) {
+            // Walk the ENTIRE subtree of the chunk being added (all branches), not
+            // just the center column, so every ladder level is fully covered.
+            // Visit ancestors on the path to the chunk (so we can reach it) and
+            // every descendant inside the chunk.
+            const bool ancestor = params.cube.getLengthX() > data.cube.getLengthX();
+            bool inSubtree = ancestor ? params.cube.contains(data.cube.getCenter())
+                                      : data.cube.contains(params.cube);
+            if(!inSubtree) return false;
+
             if(params.node->getType() != SpaceType::Surface) {
-                return false;
+                return true;  // descend through non-surface cells toward the chunk
             }
 
-            if(!params.cube.contains(data.cube.getCenter())) {
-                return false;
-            }
-
-            uint8_t chunkLodStored = params.node->getChunkLod();
-
-            if(chunkLodStored > 0) {
+            const uint8_t cellLod = params.node->getLod();
+            // Only the chunk node and its finer descendants are rungs of THIS
+            // chunk's ladder; world ancestors above it belong to coarser chunks.
+            if(cellLod > 0 && params.level >= data.level) {
                 const uintptr_t nodeId = reinterpret_cast<uintptr_t>(params.node);
                 // Skip cells already tessellated at their current version: the
                 // walk emits the whole root path for every added node, so
@@ -78,22 +85,26 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                 if (!skip) {
                     long trianglesCount = 0;
                     Tesselator nodeTesselator(&trianglesCount);
-                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLodStored);
+                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, cellLod);
                     {
                         std::lock_guard<std::mutex> lock(emittedMutex_);
                         emittedVersion_[nodeId] = params.node->version;
                     }
                     if(!nodeTesselator.geometry.indices.empty()) {
-                        const int lod = static_cast<int>(chunkLodStored) - 1;
-                        callback(nodeTesselator.geometry, static_cast<uint8_t>(lod), params.node->version,
+                        const uint8_t lod = static_cast<uint8_t>(cellLod - 1);
+                        // getLod() is the size-based ladder level (1 = frontier).
+                        // Each cell is one rung; (getLod-1) is a unique, monotonic
+                        // band level per cell size so the GPU selects exactly one
+                        // rung per location (no overlap) and every level is fully
+                        // covered (no holes). targetLod == getLod emits exactly
+                        // this cell's resolution.
+                        callback(nodeTesselator.geometry, lod, params.node->version,
                                  reinterpret_cast<uintptr_t>(params.node), params.cube);
                     }
                 }
             }
-            // Keep descending along the root path: the children hold the finer ladder
-            // levels. Cells without a chunkLod (stored 0) never tessellate and end the
-            // walk — their parent links are already propagated for neighbor lookups.
-            return chunkLodStored > 1;
+            // Keep descending to cover the whole chunk subtree.
+            return true;
         },
         [](const Octree &treeRef, OctreeNodeData &params, uint8_t order[8]) {
             for(int i = 0 ; i < 8 ; ++i) {
