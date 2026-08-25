@@ -402,8 +402,8 @@ public:
     VkDescriptorSet cube360GfxDs = VK_NULL_HANDLE;
     VkDescriptorSet cube360ComputeDs = VK_NULL_HANDLE;
     VkDescriptorSet cube360WaterComputeDs = VK_NULL_HANDLE;
-    std::array<VkBuffer, 5> cube360ComputeBuffers = {};
-    std::array<VkBuffer, 5> cube360WaterComputeBuffers = {};
+    std::array<VkBuffer, 10> cube360ComputeBuffers = {};
+    std::array<VkBuffer, 10> cube360WaterComputeBuffers = {};
     uint32_t cube360TexVersion = 0;
 
     ~MyApp() {}
@@ -1271,12 +1271,16 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
         sceneRenderer->mainSolidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-        sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
-        sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(commandBuffer);
-        sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+        // Vegetation cull is MERGED into the solid IndirectRenderer's single
+        // indirect.comp dispatch: run vegetation prepareCull (consolidation +
+        // per-frame buffer/metadata registration) BEFORE the solid prepareCull so
+        // the merged dispatch knows about the veg outputs.
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
             sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
         }
+        sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+        sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(commandBuffer);
+        sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
         // GPU frustum cull water meshes BEFORE the shadow pass so the water
         // shadow cascade reads the fresh (current-frame) LoD selection from the
         // shared visibleLods buffer. prepareCull acquires the water buffers
@@ -1685,7 +1689,7 @@ public:
                     auto& s = ring[idx++ % ASYNC_RING_SIZE];
                     if (s.pool != VK_NULL_HANDLE) return s;
                     if (layout == VK_NULL_HANDLE) return s;
-                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 };
+                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 };
                     VkDescriptorPoolCreateInfo pci{};
                     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
                     pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -1720,6 +1724,16 @@ public:
                                      slot.visible.buffer, 0, VK_WHOLE_SIZE)
                         .writeBuffer(computeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                      ind.getVisibleLodsScratchBuffer(), 0, VK_WHOLE_SIZE)
+                        .writeBuffer(computeDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                     ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                        .writeBuffer(computeDs, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                     ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                        .writeBuffer(computeDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                     ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                        .writeBuffer(computeDs, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                     ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                        .writeBuffer(computeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                     ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
                         .flush();
                 }
 
@@ -2518,7 +2532,7 @@ void MyApp::preAllocateAsyncDescriptorPools() {
 
     auto allocateComputeRing = [&](PoolSetPair* ring, VkDescriptorSetLayout dsLayout, const char* label) {
         if (dsLayout == VK_NULL_HANDLE) return;
-        VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 };
+        VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 };
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = 1;
@@ -2722,6 +2736,10 @@ static void applyBrushWithEffect(const BrushEntry& entry, SignedDistanceFunction
 // Implementation: rebuild the brush scene from Brush3dWidget entries
 void MyApp::rebuildBrushScene() {
     if (!world || !world->brushScene() || !sceneRenderer || !brush3dWidget) return;
+    if (getenv("SKIP_BRUSH")) {
+        std::cerr << "[MyApp::rebuildBrushScene] SKIPPED (SKIP_BRUSH set)" << std::endl;
+        return;
+    }
 
     // No device-wide stall here. The brush flow uses the stable-slot indirect
     // pipeline: clearBrushMeshes() frees old slots, handleEvents() queues geometry,
@@ -3201,7 +3219,7 @@ void MyApp::ensureCubemapResources() {
     {
         VkDescriptorSetLayout dsLayout = solidInd.getComputeDescriptorSetLayout();
         if (dsLayout != VK_NULL_HANDLE && cube360ComputeDs == VK_NULL_HANDLE) {
-            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 };
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 };
             VkDescriptorPoolCreateInfo pci{};
             pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
             pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -3217,12 +3235,17 @@ void MyApp::ensureCubemapResources() {
             }
         }
         if (cube360ComputeDs != VK_NULL_HANDLE) {
-            std::array<VkBuffer, 5> bufs = {
+            std::array<VkBuffer, 10> bufs = {
                 solidInd.getIndirectBuffer().buffer,
                 cube360Compact.buffer,
                 solidInd.getBoundsBuffer().buffer,
                 cube360Visible.buffer,
                 solidInd.getVisibleLodsScratchBuffer(),
+                solidInd.getVegDummyBuffer(), // 5: veg impostor cmds (unused here)
+                solidInd.getVegDummyBuffer(), // 6: veg impostor count
+                solidInd.getVegDummyBuffer(), // 7: veg billboard cmds
+                solidInd.getVegDummyBuffer(), // 8: veg billboard count
+                solidInd.getVegDummyBuffer(), // 9: veg chunk info
             };
             if (bufs != cube360ComputeBuffers) {
                 cube360ComputeBuffers = bufs;
@@ -3237,6 +3260,16 @@ void MyApp::ensureCubemapResources() {
                                  bufs[3], 0, VK_WHOLE_SIZE)
                     .writeBuffer(cube360ComputeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                  bufs[4], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360ComputeDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[5], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360ComputeDs, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[6], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360ComputeDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[7], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360ComputeDs, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[8], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360ComputeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[9], 0, VK_WHOLE_SIZE)
                     .flush();
             }
         }
@@ -3246,7 +3279,7 @@ void MyApp::ensureCubemapResources() {
     {
         VkDescriptorSetLayout wDsLayout = waterInd.getComputeDescriptorSetLayout();
         if (wDsLayout != VK_NULL_HANDLE && cube360WaterComputeDs == VK_NULL_HANDLE) {
-            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 };
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 };
             VkDescriptorPoolCreateInfo pci{};
             pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
             pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -3262,12 +3295,17 @@ void MyApp::ensureCubemapResources() {
             }
         }
         if (cube360WaterComputeDs != VK_NULL_HANDLE) {
-            std::array<VkBuffer, 5> bufs = {
+             std::array<VkBuffer, 10> bufs = {
                 waterInd.getIndirectBuffer().buffer,
                 cube360WaterCompact.buffer,
                 waterInd.getBoundsBuffer().buffer,
                 cube360WaterVisible.buffer,
                 waterInd.getVisibleLodsScratchBuffer(),
+                waterInd.getVegDummyBuffer(), // 5
+                waterInd.getVegDummyBuffer(), // 6
+                waterInd.getVegDummyBuffer(), // 7
+                waterInd.getVegDummyBuffer(), // 8
+                waterInd.getVegDummyBuffer(), // 9
             };
             if (bufs != cube360WaterComputeBuffers) {
                 cube360WaterComputeBuffers = bufs;
@@ -3282,6 +3320,16 @@ void MyApp::ensureCubemapResources() {
                                  bufs[3], 0, VK_WHOLE_SIZE)
                     .writeBuffer(cube360WaterComputeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                  bufs[4], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360WaterComputeDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[5], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360WaterComputeDs, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[6], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360WaterComputeDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[7], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360WaterComputeDs, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[8], 0, VK_WHOLE_SIZE)
+                    .writeBuffer(cube360WaterComputeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bufs[9], 0, VK_WHOLE_SIZE)
                     .flush();
             }
         }
