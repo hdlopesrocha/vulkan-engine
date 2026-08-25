@@ -151,6 +151,20 @@ public:
                             int level = 0);
     void removeMeshSlotted(uint32_t slotIndex);
 
+    // Maximum LoD ladder level present in the tree. Written into each entry's
+    // bounds meta as `lodMeta.z` and used by the GPU distance-band test to clamp
+    // the selected level. MUST equal the tree's real ladder depth
+    // (LocalScene::maxChunkLod) — hardcoding it (e.g. 4) permanently culls every
+    // chunk whose level exceeds it, leaving holes across the terrain.
+    void setMaxLodLevel(int l) { maxLodLevel_ = l; }
+
+    // Global base chunk size (Octree::chunkSize). Written into each entry's
+    // bounds meta as `lodMeta.x`. This MUST be a single constant for the whole
+    // scene — NOT each chunk's own cube length. The shader derives the band
+    // anchor/rootSide from it; if it varies per chunk the distance bands no
+    // longer align across chunks and most rungs get culled (holes).
+    void setChunkCellSize(float s) { chunkCellSize_ = s; }
+
     // Upload a single mesh's vertex/index data to the GPU, and write its
     // indirect command + bounds into the host-visible metadata buffers.
     // This is the per-chunk equivalent of a full rebuild — but only touches
@@ -216,8 +230,46 @@ public:
                      glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16);
     // Run GPU culling into caller-provided output buffers using a provided compute descriptor set.
     void prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
-                                   VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
-                                   glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16);
+                                    VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
+                                    glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16);
+
+    // ── Vegetation cull integration ──
+    // The solid IndirectRenderer owns the merged indirect.comp dispatch, which
+    // emits BOTH the solid terrain commands AND (for every visible solid chunk
+    // that carries vegetation) the billboard/impostor commands. The four
+    // compact/count output buffers are OWNED by VegetationRenderer and simply
+    // (re)bound here each frame; its existing draw paths then read the merged
+    // dispatch's output. Per-frame registration:
+    //   setVegetationCullData(bbCompact, bbCount, impCompact, impCount)
+    // The per-solid-draw vegetation table (binding 9) is built internally by the
+    // IndirectRenderer from a {nid -> {instanceCount, firstInstance}} map supplied
+    // by VegetationRenderer via setVegetationChunkInfo().
+    void setVegetationCullData(const std::array<Buffer, MAX_CULL_FRAMES>& bbCompact,
+                               const std::array<Buffer, MAX_CULL_FRAMES>& bbCount,
+                               const std::array<Buffer, MAX_CULL_FRAMES>& impCompact,
+                               const std::array<Buffer, MAX_CULL_FRAMES>& impCount);
+    // Per-solid-chunk vegetation metadata, keyed by the solid mesh id (== the
+    // uint32 meshId used as the draw entry index). value = vec4(instanceCount,
+    // firstInstance, 0, 0).
+    void setVegetationChunkInfo(const std::unordered_map<uint32_t, glm::vec4>& info);
+    // Rebuild the per-draw vegetation table (binding 9) from vegChunkInfoMap.
+    // Called each frame from prepareCull so it tracks the slotted renderer's
+    // incremental draw-index updates.
+    void updateVegTable();
+    // Output buffers produced by the merged dispatch (billboards / impostors),
+    // consumed by VegetationRenderer::draw. Valid after prepareCull for `frame`.
+    VkBuffer getVegBbCompact(uint32_t frame) const { return vegBbCompactBuf[frame]; }
+    VkBuffer getVegBbCount(uint32_t frame) const  { return vegBbCountBuf[frame]; }
+    VkBuffer getVegImpCompact(uint32_t frame) const { return vegImpCompactBuf[frame]; }
+    VkBuffer getVegImpCount(uint32_t frame) const  { return vegImpCountBuf[frame]; }
+    VkBuffer getVegTableBuffer() const { return vegTableBuffer.buffer; }
+    bool isVegetationCullEnabled() const { return vegCullEnabled; }
+    // Dummy buffer bound to the vegetation bindings (5..9) on dispatches that do
+    // not run vegetation culling, so the layout is always complete.
+    VkBuffer getVegDummyBuffer() const { return vegDummyBuffer.buffer; }
+    // Current cull frame index (so callers can align their draw frame with the one
+    // the merged dispatch wrote into).
+    uint32_t getCurrentCullFrame() const { return currentCullFrame; }
     // Issue indirect draw using the compacted indirect buffer (call inside render pass).
     void drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws = 0);
     void drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer compactBuffer, VkBuffer visibleCountBuffer, uint32_t maxDraws = 0);
@@ -279,6 +331,13 @@ public:
     }
 
 private:
+    // Real ladder depth of the tree (set via setMaxLodLevel from
+    // LocalScene::maxChunkLod). Used as lodMeta.z in the GPU band test.
+    int maxLodLevel_ = 16;
+    // Global base chunk size (Octree::chunkSize) used as lodMeta.x for the band
+    // test. Must be constant across all entries (see setChunkCellSize).
+    float chunkCellSize_ = 0.0f;
+
     struct PendingTransfer {
         VkFence fence = VK_NULL_HANDLE;
         // Staging region suballocated from the app's persistent StagingRingBuffer
@@ -367,6 +426,30 @@ private:
     Buffer visibleLodsScratch;
     // GPU-side culling resources
     Buffer boundsBuffer; // vec4 per draw entry: min, max, meta{cellSize, level, maxLevel, unused}
+    // ── Vegetation cull integration (merged single dispatch) ──
+    // The merged indirect.comp dispatch writes the vegetation billboard/impostor
+    // commands into the buffers OWNED by VegetationRenderer (so its existing draw
+    // paths are unchanged). We only hold the bound VkBuffer handles here, supplied
+    // via setVegetationCullData each frame. Billboards use indexCount=36,
+    // impostors indexCount=6.
+    std::array<VkBuffer, MAX_CULL_FRAMES> vegBbCompactBuf = {};  // binding 7
+    std::array<VkBuffer, MAX_CULL_FRAMES> vegBbCountBuf   = {};  // binding 8
+    std::array<VkBuffer, MAX_CULL_FRAMES> vegImpCompactBuf = {}; // binding 5
+    std::array<VkBuffer, MAX_CULL_FRAMES> vegImpCountBuf  = {};  // binding 6
+    // Per-solid-draw vegetation table (binding 9 input): vec4{instanceCount,
+    // firstInstance, 0, 0} indexed by the solid draw entry index s. Built by the
+    // IndirectRenderer from a {nid -> vec4} map supplied via setVegetationChunkInfo
+    // (VegetationRenderer owns the per-chunk instance counts/offsets). The AABB used
+    // for veg is the solid chunk's AABB (the shader reuses boundsBuf[s]).
+    Buffer vegTableBuffer;
+    void* vegTableMapped = nullptr;
+    uint32_t vegTableCapacity = 0;
+    std::unordered_map<uint32_t, glm::vec4> vegChunkInfoMap;
+    bool vegCullEnabled = false;
+    // Dummy bound to the veg bindings (5..9) on the solid-only dispatch — the
+    // indirect.comp shader statically references them so they must always be
+    // valid, even when vegetation isn't being culled.
+    Buffer vegDummyBuffer;
     // Per-frame visible count buffers
     std::array<Buffer, MAX_CULL_FRAMES> visibleCountBuffers;
     // Persistent host mapping for zeroing visible counts (avoids vkCmdFillBuffer + barrier on RADV)

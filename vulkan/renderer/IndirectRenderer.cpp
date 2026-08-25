@@ -28,7 +28,8 @@ struct CullPushConstants {
     glm::vec3 camPos;     // offset 80
     float lodBias;        // offset 92
     uint32_t maxTargetLod; // offset 96
-}; // 100 bytes
+    uint32_t numCmdsVeg;   // offset 100 (vegetation entry count; 0 for solid-only dispatch)
+}; // 104 bytes
 
 struct CascadeCullPushConstants {
     uint32_t numChunks;   // offset 0
@@ -1238,6 +1239,47 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         boundsBuffer.unmap(); // VMA persistent mapping
     }
 
+    // ── Vegetation per-draw table (binding 9 of indirect.comp) ──
+    // Indexed by the solid draw entry index s (== MeshInfo::drawIndex). For each
+    // active solid chunk that carries vegetation, store {instanceCount,
+    // firstInstance, 0, 0}; entries without vegetation stay zeroed. The merged
+    // dispatch reads this table inside processVegetation(s).
+    {
+        VkDeviceSize vegTableSize = sizeof(glm::vec4) * meshCapacity;
+        bool needNewVegTable = (vegTableBuffer.buffer == VK_NULL_HANDLE) || (meshCapacity > vegTableCapacity);
+        if (needNewVegTable) {
+            if (vegTableBuffer.buffer != VK_NULL_HANDLE) {
+                if (vegTableMapped) { vegTableBuffer.unmap(); vegTableMapped = nullptr; }
+                scheduleDestroyBuffer(vegTableBuffer);
+                vegTableBuffer = {};
+            }
+            if (meshCapacity > 0) {
+                vegTableBuffer = app->createBuffer(vegTableSize,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                vegTableMapped = vegTableBuffer.map(0);
+            }
+            vegTableCapacity = meshCapacity;
+        }
+        if (vegTableBuffer.buffer != VK_NULL_HANDLE) {
+            std::vector<glm::vec4> vt(meshCapacity, glm::vec4(0.0f));
+            for (const auto& kv : meshes) {
+                const MeshInfo& info = kv.second;
+                if (!info.active) continue;
+                auto it = vegChunkInfoMap.find(kv.first);
+                if (it != vegChunkInfoMap.end() && info.drawIndex < meshCapacity)
+                    vt[info.drawIndex] = it->second;
+            }
+            if (vegTableMapped) {
+                memcpy(vegTableMapped, vt.data(), (size_t)vegTableSize);
+            } else {
+                void* data = vegTableBuffer.map(0);
+                memcpy(data, vt.data(), (size_t)vegTableSize);
+                vegTableBuffer.unmap();
+            }
+        }
+    }
+
     // Create/resize compact indirect buffer (storage + indirect usage)
     // Written by compute shader every frame, read by indirect draw — DEVICE_LOCAL
     // for optimal GPU performance on discrete GPUs.
@@ -1325,7 +1367,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
     // Create compute pipeline + descriptor sets for GPU culling if not present
     if (computePipeline == VK_NULL_HANDLE) {
-        VkDescriptorSetLayoutBinding bindings[5] = {};
+        VkDescriptorSetLayoutBinding bindings[10] = {};
         bindings[0].binding = 0;
         bindings[0].descriptorCount = 1;
         bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1346,8 +1388,38 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         bindings[4].descriptorCount = 1;
         bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        // 5,6: vegetation impostor command + count streams.
+        // 7,8: vegetation billboard command + count streams.
+        // 9: vegetation chunk-info table (input). When vegetation culling is
+        // disabled these are bound to a dummy buffer (the shader statically
+        // references them, so they must always be valid).
+        bindings[5].binding = 5;
+        bindings[5].descriptorCount = 1;
+        bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[6].binding = 6;
+        bindings[6].descriptorCount = 1;
+        bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[7].binding = 7;
+        bindings[7].descriptorCount = 1;
+        bindings[7].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[8].binding = 8;
+        bindings[8].descriptorCount = 1;
+        bindings[8].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[9].binding = 9;
+        bindings[9].descriptorCount = 1;
+        bindings[9].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
-        VkDescriptorBindingFlags bindingFlags[5] = {
+        VkDescriptorBindingFlags bindingFlags[10] = {
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -1357,7 +1429,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
         DescriptorAllocator descAlloc{app->getDevice(), app};
         computeDescriptorSetLayout = descAlloc.createLayout(
-            bindings, 5,
+            bindings, 10,
             VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
             bindingFlags,
             "IndirectRenderer: computeDescriptorSetLayout");
@@ -1365,7 +1437,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.offset = 0;
-        pc.size = sizeof(CullPushConstants); // 96 bytes: mat4 + 2*uint + pad + vec3 + float
+        pc.size = sizeof(CullPushConstants); // 104 bytes: mat4 + 2*uint + pad + vec3 + float + uint
 
         VkPipelineLayoutCreateInfo plinfo{};
         plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1409,6 +1481,15 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         descAlloc.allocateSets(computeDescriptorPool, computeDescriptorSetLayout,
                                MAX_CULL_FRAMES, reinterpret_cast<VkDescriptorSet*>(computeDescriptorSets.data()),
                                "IndirectRenderer: computeDescriptorSet");
+
+        // Tiny dummy bound to the vegetation bindings (5..9) on the solid-only
+        // dispatch so the layout's statically-referenced bindings are always valid.
+        // prepareCull re-points these to the real veg buffers when vegetation is enabled.
+        if (vegDummyBuffer.buffer == VK_NULL_HANDLE) {
+            vegDummyBuffer = app->createBuffer(16,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
     }
 
     // Update per-frame compute descriptor sets with buffer infos
@@ -1454,9 +1535,19 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
                              boundsBufInfo.buffer, boundsBufInfo.offset, boundsBufInfo.range)
                 .writeBuffer(computeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                              countBuf.buffer, countBuf.offset, countBuf.range)
-                .writeBuffer(computeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             lodBuf.buffer, lodBuf.offset, lodBuf.range)
-                .flush();
+                 .writeBuffer(computeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                              lodBuf.buffer, lodBuf.offset, lodBuf.range)
+                 .writeBuffer(computeDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+                 .writeBuffer(computeDs, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+                 .writeBuffer(computeDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+                 .writeBuffer(computeDs, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+                 .writeBuffer(computeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+                 .flush();
         }
     }
 
@@ -1485,6 +1576,67 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
 void IndirectRenderer::setCullFrame(uint32_t frame) {
     currentCullFrame = frame % MAX_CULL_FRAMES;
+}
+
+void IndirectRenderer::setVegetationCullData(const std::array<Buffer, MAX_CULL_FRAMES>& bbCompact,
+                                             const std::array<Buffer, MAX_CULL_FRAMES>& bbCount,
+                                             const std::array<Buffer, MAX_CULL_FRAMES>& impCompact,
+                                             const std::array<Buffer, MAX_CULL_FRAMES>& impCount) {
+    for (uint32_t i = 0; i < MAX_CULL_FRAMES; i++) {
+        vegBbCompactBuf[i] = bbCompact[i].buffer;
+        vegBbCountBuf[i]   = bbCount[i].buffer;
+        vegImpCompactBuf[i] = impCompact[i].buffer;
+        vegImpCountBuf[i]  = impCount[i].buffer;
+    }
+    vegCullEnabled = (vegBbCompactBuf[0] != VK_NULL_HANDLE && vegBbCountBuf[0] != VK_NULL_HANDLE &&
+                      vegImpCompactBuf[0] != VK_NULL_HANDLE && vegImpCountBuf[0] != VK_NULL_HANDLE);
+}
+
+void IndirectRenderer::setVegetationChunkInfo(const std::unordered_map<uint32_t, glm::vec4>& info) {
+    vegChunkInfoMap = info;
+    // The veg table is rebuilt during the next buildDrawList (which knows the
+    // solid draw entry indices). Force a rebuild so the map is reflected.
+    setDirty(true);
+}
+
+void IndirectRenderer::updateVegTable() {
+    if (meshCapacity == 0) return;
+    VkDeviceSize vegTableSize = sizeof(glm::vec4) * meshCapacity;
+    bool needNew = (vegTableBuffer.buffer == VK_NULL_HANDLE) || (meshCapacity > vegTableCapacity);
+    if (needNew) {
+        if (vegTableBuffer.buffer != VK_NULL_HANDLE) {
+            if (vegTableMapped) { vegTableBuffer.unmap(); vegTableMapped = nullptr; }
+            Buffer oldVegTable = vegTableBuffer;
+            vegTableBuffer = {};
+            app_->deferDestroyUntilAllPending([app_ = app_, oldVegTable]() {
+                if (oldVegTable.buffer != VK_NULL_HANDLE)
+                    app_->resources.removeBufferVma(oldVegTable.buffer, oldVegTable.allocation);
+            });
+        }
+        if (meshCapacity > 0) {
+            vegTableBuffer = app_->createBuffer(vegTableSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            vegTableMapped = vegTableBuffer.map(0);
+        }
+        vegTableCapacity = meshCapacity;
+    }
+    if (vegTableBuffer.buffer == VK_NULL_HANDLE) return;
+    std::vector<glm::vec4> vt(meshCapacity, glm::vec4(0.0f));
+    for (const auto& kv : meshes) {
+        const MeshInfo& info = kv.second;
+        if (!info.active) continue;
+        auto it = vegChunkInfoMap.find(kv.first);
+        if (it != vegChunkInfoMap.end() && info.drawIndex < meshCapacity)
+            vt[info.drawIndex] = it->second;
+    }
+    if (vegTableMapped) {
+        memcpy(vegTableMapped, vt.data(), (size_t)vegTableSize);
+    } else {
+        void* data = vegTableBuffer.map(0);
+        memcpy(data, vt.data(), (size_t)vegTableSize);
+        vegTableBuffer.unmap();
+    }
 }
 
 void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
@@ -1576,11 +1728,46 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // dispatch range can never be misread as a stale (chunk, level) pair.
     vkCmdFillBuffer(cmd, visibleLods.buffer, 0, VK_WHOLE_SIZE, 0);
 
+    // ── Vegetation merged-cull outputs ──
+    // When vegetation culling is enabled the same dispatch also emits billboard
+    // (binding 7/8) and impostor (binding 5/6) commands, reading the per-solid-
+    // drawIndex vegetation table (binding 9). The output buffers are OWNED by
+    // VegetationRenderer and simply (re)bound here; we zero their count buffers
+    // so the atomic-adds start from a clean state, then re-point the descriptor
+    // set's veg bindings to the real buffers.
+    bool vegActive = vegCullEnabled && vegTableBuffer.buffer != VK_NULL_HANDLE
+                     && vegBbCountBuf[currentCullFrame] != VK_NULL_HANDLE
+                     && vegImpCountBuf[currentCullFrame] != VK_NULL_HANDLE;
+    if (vegActive) {
+        // Refresh the per-draw vegetation table (binding 9) from the latest
+        // vegChunkInfoMap. The slotted renderer updates draw indices incrementally,
+        // so this is rebuilt every frame (cheap memcpy) rather than only in rebuild().
+        updateVegTable();
+        // Zero the veg output buffers so any slot the merged dispatch does NOT write
+        // (or the atomic count limits) stays a clean zeroed DrawCmd (indexCount=0).
+        vkCmdFillBuffer(cmd, vegBbCompactBuf[currentCullFrame], 0, VK_WHOLE_SIZE, 0);
+        vkCmdFillBuffer(cmd, vegImpCompactBuf[currentCullFrame], 0, VK_WHOLE_SIZE, 0);
+        vkCmdFillBuffer(cmd, vegBbCountBuf[currentCullFrame], 0, sizeof(uint32_t), 0);
+        vkCmdFillBuffer(cmd, vegImpCountBuf[currentCullFrame], 0, sizeof(uint32_t), 0);
+        DescriptorWriter(app_->getDevice())
+            .writeBuffer(computeDescriptorSets[currentCullFrame], 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         vegImpCompactBuf[currentCullFrame], 0, VK_WHOLE_SIZE)
+            .writeBuffer(computeDescriptorSets[currentCullFrame], 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         vegImpCountBuf[currentCullFrame], 0, VK_WHOLE_SIZE)
+            .writeBuffer(computeDescriptorSets[currentCullFrame], 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         vegBbCompactBuf[currentCullFrame], 0, VK_WHOLE_SIZE)
+            .writeBuffer(computeDescriptorSets[currentCullFrame], 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         vegBbCountBuf[currentCullFrame], 0, VK_WHOLE_SIZE)
+            .writeBuffer(computeDescriptorSets[currentCullFrame], 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         vegTableBuffer.buffer, 0, VK_WHOLE_SIZE)
+            .flush();
+    }
+
     // Barrier B: ensure the transfer write (zeroCount) and any prior
     // indirect-draw reads of compactBuf are complete before the compute
     // shader writes to both buffers.
     {
-        VkBufferMemoryBarrier2 preBarriers[3] = {};
+        VkBufferMemoryBarrier2 preBarriers[7] = {};
         preBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
         preBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
         preBarriers[0].srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -1601,9 +1788,33 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         preBarriers[2].buffer = visibleLods.buffer;
         preBarriers[2].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
 
+        uint32_t barrierCount = 3;
+        if (vegActive) {
+            preBarriers[3] = preBarriers[0];
+            preBarriers[3].buffer = vegBbCountBuf[currentCullFrame];
+            preBarriers[3].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            preBarriers[3].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+            preBarriers[4] = preBarriers[0];
+            preBarriers[4].buffer = vegImpCountBuf[currentCullFrame];
+            preBarriers[4].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            preBarriers[4].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+            // The veg compact output buffers were just zero-filled (TRANSFER_WRITE)
+            // and are about to be written by the dispatch (COMPUTE SHADER_WRITE),
+            // so they need a transfer→compute barrier too.
+            preBarriers[5] = preBarriers[0];
+            preBarriers[5].buffer = vegBbCompactBuf[currentCullFrame];
+            preBarriers[5].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            preBarriers[5].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            preBarriers[6] = preBarriers[0];
+            preBarriers[6].buffer = vegImpCompactBuf[currentCullFrame];
+            preBarriers[6].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            preBarriers[6].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            barrierCount = 7;
+        }
+
         VkDependencyInfo depInfo{};
         depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 3;
+        depInfo.bufferMemoryBarrierCount = barrierCount;
         depInfo.pBufferMemoryBarriers = preBarriers;
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
@@ -1654,6 +1865,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     pc.viewProj     = viewProj;
     pc.targetLayer  = 0;
     pc.numCmds      = numCmds;
+    pc.numCmdsVeg   = 0; // solid-only dispatch: no vegetation entries consumed
     pc.camPos       = camPos;
     pc.lodBias      = lodBias;
     pc.maxTargetLod = static_cast<uint32_t>(maxTargetLod);
@@ -1664,7 +1876,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);
 
     // Barrier to make shader writes to the compact indirect buffer and visible count visible to indirect draw
-    VkBufferMemoryBarrier2 barriers[3] = {};
+    VkBufferMemoryBarrier2 barriers[7] = {};
     barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     barriers[0].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
@@ -1692,9 +1904,26 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     barriers[2].buffer = visibleLods.buffer;
     barriers[2].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 
+    uint32_t barrierCount = 3;
+    if (vegActive) {
+        barriers[3] = barriers[0];
+        barriers[3].buffer = vegBbCompactBuf[currentCullFrame];
+        barriers[3].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        barriers[4] = barriers[0];
+        barriers[4].buffer = vegImpCompactBuf[currentCullFrame];
+        barriers[4].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        barriers[5] = barriers[0];
+        barriers[5].buffer = vegBbCountBuf[currentCullFrame];
+        barriers[5].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        barriers[6] = barriers[0];
+        barriers[6].buffer = vegImpCountBuf[currentCullFrame];
+        barriers[6].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        barrierCount = 7;
+    }
+
     VkDependencyInfo depInfo{};
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    depInfo.bufferMemoryBarrierCount = 3;
+    depInfo.bufferMemoryBarrierCount = barrierCount;
     depInfo.pBufferMemoryBarriers = barriers;
     vkCmdPipelineBarrier2(cmd, &depInfo);
 }
@@ -1853,6 +2082,7 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     pc2.viewProj     = viewProj;
     pc2.targetLayer  = 0;
     pc2.numCmds      = numCmds;
+    pc2.numCmdsVeg   = 0; // solid-only dispatch: no vegetation entries consumed
     pc2.camPos       = camPos;
     pc2.lodBias      = lodBias;
     pc2.maxTargetLod = static_cast<uint32_t>(maxTargetLod);
@@ -2202,10 +2432,10 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     // ── Create compute pipeline + descriptor sets for GPU culling ────────────
     // (Same as in rebuild() — factored out to share)
     {
-        // Five bindings (0..4): input commands, count, bounds, output commands,
-        // chosen-LoD output. Was sized 4 with an out-of-bounds write to
-        // bindings[4] (stack smash) — must match the 5-entry createLayout.
-        VkDescriptorSetLayoutBinding bindings[5] = {};
+        // Bindings (0..9): 0 input commands, 1 output commands, 2 bounds,
+        // 3 count, 4 chosen-LoD output, 5/6 vegetation impostor cmd + count,
+        // 7/8 vegetation billboard cmd + count, 9 vegetation chunk-info (input).
+        VkDescriptorSetLayoutBinding bindings[10] = {};
         bindings[0].binding = 0;
         bindings[0].descriptorCount = 1;
         bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -2226,8 +2456,33 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         bindings[4].descriptorCount = 1;
         bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[5].binding = 5;
+        bindings[5].descriptorCount = 1;
+        bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[6].binding = 6;
+        bindings[6].descriptorCount = 1;
+        bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[7].binding = 7;
+        bindings[7].descriptorCount = 1;
+        bindings[7].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[8].binding = 8;
+        bindings[8].descriptorCount = 1;
+        bindings[8].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[9].binding = 9;
+        bindings[9].descriptorCount = 1;
+        bindings[9].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
-        VkDescriptorBindingFlags bindingFlags[5] = {
+        VkDescriptorBindingFlags bindingFlags[10] = {
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -2237,7 +2492,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
 
         DescriptorAllocator descAlloc{app->getDevice(), app};
         computeDescriptorSetLayout = descAlloc.createLayout(
-            bindings, 5,
+            bindings, 10,
             VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
             bindingFlags,
             "IndirectRenderer: computeDescriptorSetLayout");
@@ -2245,7 +2500,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.offset = 0;
-        pc.size = sizeof(CullPushConstants); // 96 bytes: mat4 + 2*uint + pad + vec3 + float
+        pc.size = sizeof(CullPushConstants); // 104 bytes: mat4 + 2*uint + pad + vec3 + float + uint
 
         VkPipelineLayoutCreateInfo plinfo{};
         plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -2286,6 +2541,15 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         descAlloc.allocateSets(computeDescriptorPool, computeDescriptorSetLayout,
                                MAX_CULL_FRAMES, reinterpret_cast<VkDescriptorSet*>(computeDescriptorSets.data()),
                                "IndirectRenderer: computeDescriptorSet");
+
+        // Tiny dummy bound to the vegetation bindings (5..9) on the solid-only
+        // dispatch so the layout's statically-referenced bindings are always valid.
+        // prepareCull re-points these to the real veg buffers when vegetation is enabled.
+        if (vegDummyBuffer.buffer == VK_NULL_HANDLE) {
+            vegDummyBuffer = app->createBuffer(16,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
     }
 
     // Update per-frame compute descriptor sets with buffer info
@@ -2322,9 +2586,19 @@ void IndirectRenderer::initSlots(VulkanApp* app,
                          boundsBufInfo.buffer, boundsBufInfo.offset, boundsBufInfo.range)
             .writeBuffer(computeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                          countBuf.buffer, countBuf.offset, countBuf.range)
-            .writeBuffer(computeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                         lodBuf.buffer, lodBuf.offset, lodBuf.range)
-            .flush();
+             .writeBuffer(computeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           lodBuf.buffer, lodBuf.offset, lodBuf.range)
+             .writeBuffer(computeDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+             .writeBuffer(computeDs, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+             .writeBuffer(computeDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+             .writeBuffer(computeDs, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+             .writeBuffer(computeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+             .flush();
     }
 
     // Load indirect-count draw function
@@ -2738,11 +3012,14 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
                 // Third vec4 (meta): {cellSize, level, maxLevel, unused} —
                 // cellSize is the chunk's OWN cube length (the shader derives
                 // the frontier base as cellSize / 2^level); level is the
-                // 0-based LoD level; maxLevel is the coarsest published
-                // level (stored chunkLod 5 → level 4), so the cascade cull
-                // applies the same keep rule as the main pass.
-                const float cellSize = capBoundsMax.x - capBoundsMin.x;
-                const glm::vec4 lodMeta = glm::vec4(cellSize, static_cast<float>(capLevel), 4.0f, 0.0f);
+                // 0-based LoD level; maxLevel is the tree's real ladder depth
+                // (set via setMaxLodLevel from LocalScene::maxChunkLod) — NOT a
+                // hard-coded constant, or every chunk above that level is culled.
+                const float cellSize = chunkCellSize_ > 0.0f
+                                            ? chunkCellSize_
+                                            : (capBoundsMax.x - capBoundsMin.x);
+                const glm::vec4 lodMeta = glm::vec4(cellSize, static_cast<float>(capLevel),
+                                                   static_cast<float>(maxLodLevel_), 0.0f);
                 glm::vec4 bounds[3] = { capBoundsMin, capBoundsMax, lodMeta };
                 std::memcpy(bndData, bounds, sizeof(bounds));
                 boundsBuffer.unmap();
