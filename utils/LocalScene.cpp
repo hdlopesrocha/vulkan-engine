@@ -85,20 +85,13 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                 if (!skip) {
                     long trianglesCount = 0;
                     Tesselator nodeTesselator(&trianglesCount);
-                    // iterateTriangles' targetLod is compared against the
-                    // SIZE-BASED getLod() (Octree.cpp:271), NOT the chunk-relative
-                    // chunkLod. Use the rung's own getLod() so each cell emits its
-                    // true resolution instead of descending to a mismatched level
-                    // (passing chunkLod collapses every rung to frontier detail and
-                    // breaks the GPU distance-band / vegetation sampling).
-                    const uint8_t rungLod = params.node->getLod();
-                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, rungLod);
+                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod);
                     {
                         std::lock_guard<std::mutex> lock(emittedMutex_);
                         emittedVersion_[nodeId] = params.node->version;
                     }
                     if(!nodeTesselator.geometry.indices.empty()) {
-                        const uint8_t lod = static_cast<uint8_t>(rungLod - 1);
+                        const uint8_t lod = static_cast<uint8_t>(chunkLod - 1);
                         // getLod() is the size-based ladder level (1 = frontier).
                         // Each cell is one rung; (getLod-1) is a unique, monotonic
                         // band level per cell size so the GPU selects exactly one
