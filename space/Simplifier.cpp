@@ -33,8 +33,8 @@ SimplificationResult Simplifier::simplify(
                            && child->brushIndex != brushIndex) {
                     return res;   // material boundary: preserve full detail
                 }
-                if(child->node && child->node->getLod() == 0u) {
-                    return res;   // unsimplified child: cannot collapse parent
+                if(child->node && !child->node->isLeaf()) {
+                    return res;   // unsimplified (non-collapsed) child: cannot collapse parent
                 }
             }
         }

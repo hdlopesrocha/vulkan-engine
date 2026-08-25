@@ -819,26 +819,28 @@ void Octree::iterateTriangles(
         if(node == NULL) return;
         // Stored (+1-shifted → uint8) lod: 0 = unset, 1 = frontier, k+1 = parent.
         const uint8_t lod = node->getLod();
-        if(lod == targetLod) {
-            scanCell(node, cube);
-            // Its children are one level finer and belong to other LOD levels,
-            // so stop here rather than scanning them too (avoids overlap).
-            return;
-        }
-        ChildBlock *block = node->getBlock(*allocator);
-        if(block == NULL) {
-            // Finest available cell in this subregion and it is NOT at the
-            // requested level: emit it as a fallback so the level-k mesh has no
-            // hole where the ladder never produced a lod==targetLod cell (a coarse
-            // surface leaf that was never subdivided, or a node whose child block
-            // was dropped). A descendant at lod==targetLod would have been scanned
-            // and stopped the descent above, so this only fires for bare regions.
-            if(node->getType() == SpaceType::Surface) {
+        // A leaf is part of the level-k mesh ONLY when its stored lod IS k.
+        // Coarse leaves carry their true interpolated lod (60^3→2, 120^3→3…),
+        // so they never leak into finer levels (mixed-resolution L0 meshes,
+        // duplicate triangles across levels) and their own level still
+        // tessellates them.
+        if(node->isLeaf()) {
+            if(lod == targetLod) {
                 scanCell(node, cube);
             }
             return;
         }
-        // Descend to find target-level cells (or finer fallback leaves).
+        if(lod == targetLod) {
+            scanCell(node, cube);
+            return;
+        }
+        if(lod < targetLod) {
+            return;
+        }
+        ChildBlock *block = node->getBlock(*allocator);
+        if(block == NULL) {
+            return;
+        }
         for(uint i = 0; i < 8; ++i) {
             OctreeNode *child = block->get(i, *allocator);
             if(child != NULL) {
@@ -1437,20 +1439,18 @@ void Octree::shape(
                 r.node->setChunkLod(r.selectedChunkLod == 0 ? 0 : r.selectedChunkLod + 1);
             }
             
-            if(r.node->isLeaf()) {
-                // A leaf's stored lod is its TRUE ladder level, derived from
-                // its size (lodForCellSize): frontier leaves are 1, coarse
-                // leaves left by coarser passes (e.g. the minSize=120 demo
-                // box) carry their own level (2, 3, …) instead of claiming
-                // the frontier. This propagates the true interpolated lod so
-                // the walk emits each cell at exactly its ladder level.
-                const uint8_t sizeLod = lodForCellSize(nodeLength, chunkSize);
-                r.node->setLod(sizeLod);
-                r.selectedLod = sizeLod;
-            }
-            else {
-                r.node->setLod(r.selectedLod == 0 ? 0 : r.selectedLod + 1);
-            }
+            // Every node's stored lod is its TRUE ladder level, derived from its
+            // size (lodForCellSize): frontier leaves are 1, coarse cells carry
+            // their own level (2, 3, …). This must hold for internal nodes too —
+            // not just leaves — otherwise an interpolated/simplified surface that
+            // collapses every internal cell to selectedLod+1 (0 or 2) leaves no
+            // node at the intermediate ladder levels, so iterateTriangles'
+            // `lod == targetLod` match finds nothing there and the mesh has holes
+            // at every coarse distance band. Derived (interpolated) surfaces rely
+            // on this being size-based for all cells, not just the frontier.
+            const uint8_t sizeLod = lodForCellSize(nodeLength, chunkSize);
+            r.node->setLod(sizeLod);
+            r.selectedLod = sizeLod;
             // Dispatch a mesh event for every cell with a chunkLod (stored
             // 1..5). Each cell publishes exactly ONE mesh tagged with its own
             // level; the GPU cull keeps only the cell level matching the
