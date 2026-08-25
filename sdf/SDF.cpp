@@ -603,6 +603,21 @@ float SDF::opSmoothIntersection(float d1, float d2, float k) {
     return glm::mix( d1, d2, h ) + k*h*(1.0-h);
 }
 
+// Safe trilinear lerp for SDF fields that may carry INFINITY sentinels (corners
+// with no data / outside the known domain). glm::mix(a, b, t) evaluates
+// a*(1-t) + b*t, which is NaN when one operand is INFINITY and the other factor
+// is exactly 0 (e.g. t==0 with b==INFINITY: 0*INFINITY == NaN). That NaN
+// silently defeats the Simplifier's re-interpolation error check and corrupts
+// vertex placement / cell-to-cell mesh stitching. We guard the boundary t values
+// and let an infinite endpoint dominate for any interior t — correct for a union
+// SDF, whose field grows without bound toward the unknown region.
+static inline float lerpSDF(float a, float b, float t) {
+    if (t <= 0.0f) return a;
+    if (t >= 1.0f) return b;
+    if (a == INFINITY || b == INFINITY) return INFINITY;
+    return a + (b - a) * t;
+}
+
 float SDF::interpolate(const float sdf[8], const glm::vec3 &position, const BoundingCube &cube) {
     glm::vec3 local = (position - cube.getMin()) / cube.getLength(); // [0,1]^3
     float x = local.x, y = local.y, z = local.z;
@@ -627,28 +642,27 @@ float SDF::interpolate(const float sdf[8], const glm::vec3 &position, const Boun
         }
     }
     // Interpolate along z for each (x, y) pair
-    float v000 = glm::mix(sdf[0], sdf[1], z); // (0,0,0)-(0,0,1)
-    float v010 = glm::mix(sdf[2], sdf[3], z); // (0,1,0)-(0,1,1)
-    float v100 = glm::mix(sdf[4], sdf[5], z); // (1,0,0)-(1,0,1)
-    float v110 = glm::mix(sdf[6], sdf[7], z); // (1,1,0)-(1,1,1)
+    float v000 = lerpSDF(sdf[0], sdf[1], z); // (0,0,0)-(0,0,1)
+    float v010 = lerpSDF(sdf[2], sdf[3], z); // (0,1,0)-(0,1,1)
+    float v100 = lerpSDF(sdf[4], sdf[5], z); // (1,0,0)-(1,0,1)
+    float v110 = lerpSDF(sdf[6], sdf[7], z); // (1,1,0)-(1,1,1)
 
     // Interpolate along y
-    float v00 = glm::mix(v000, v010, y); // (0,*,*)
-    float v10 = glm::mix(v100, v110, y); // (1,*,*)
+    float v00 = lerpSDF(v000, v010, y); // (0,*,*)
+    float v10 = lerpSDF(v100, v110, y); // (1,*,*)
 
     // Interpolate along x
-    return glm::mix(v00, v10, x);
+    return lerpSDF(v00, v10, x);
 }
 
 void SDF::getChildSDF(const float sdf[8], uint i , float result[8]) {
     BoundingCube canonicalCube = BoundingCube(glm::vec3(0.0f), 1.0f);
     BoundingCube cube = canonicalCube.getChild(i);
-    for (uint j = 0; j < 8; ++j) {
-        if(sdf[j] == INFINITY) {
-            for (uint k = 0; k < 8; ++k) result[k] = INFINITY;
-            return;
-        }
-    }
+    // Interpolate each child corner from the parent field instead of flood-filling
+    // the whole child to INFINITY when any parent corner is a sentinel. A single
+    // unknown corner must only poison the child corners that actually depend on it;
+    // the rest of the child keeps the correctly interpolated (finite) field, so
+    // shape() can descend and materialize real geometry instead of dropping it.
     for (uint j = 0; j < 8; ++j) {
         glm::vec3 corner = cube.getCorner(j);
         result[j] = interpolate(sdf, corner, canonicalCube);
