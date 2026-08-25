@@ -110,7 +110,12 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 	// carries a chunkLod (max != 0); leaves and cells below chunks stay 0.
 	// All stored values are uint8_t (+1 from the ladder level, 0 = unset).
 	if(isLeaf) {
-		node->setLod(node->getLod());
+		// Stored lod must be size-based (1 = frontier) so it matches the encoding
+		// used by Octree::shape and consumed by iterateTriangles' `getLod() ==
+		// targetLod` match. The previous no-op (setLod(getLod())) left leaves at
+		// 0, so the finest frontier cells were never scanned and the surface was
+		// missing its detail (holes).
+		node->setLod(Octree::lodForCellSize(cube.getLengthX(), chunkSize));
 		node->setChunkLod(node->getChunkLod());
 	} else {
 		OctreeNode * childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };

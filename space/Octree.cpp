@@ -56,7 +56,7 @@ private:
 // anchors at 32, i.e. the heightmap's 30^3 minSize frontier; the log2
 // rounding below maps every 30*2^k ladder cell to its level exactly
 // (30^3→1, 60^3→2, 120^3→3, 240^3→4, 480^3→5, ...).
-static uint8_t lodForCellSize(float nodeLength, float chunkSize) {
+uint8_t Octree::lodForCellSize(float nodeLength, float chunkSize) {
     const float frontierSize = chunkSize / static_cast<float>(1u << (5u - 1u));
     const int levelsAboveFrontier = std::lround(std::log2(nodeLength / frontierSize));
     return static_cast<uint8_t>(std::max(1, levelsAboveFrontier + 1));

@@ -119,6 +119,10 @@ class Octree: public BoundingCube {
 
     bool isChunkNode(float nodeLength) const;
     bool isThreadNode(float nodeLength, float minSize, int threadSize) const;
+    // Ladder level (stored lod) derived from a cell's size: 1 = frontier
+    // (minSize), increasing with coarseness (chunk = 5). Shared by Octree::shape
+    // and OctreeFile so loaded and in-memory trees agree on the encoding.
+    static uint8_t lodForCellSize(float nodeLength, float chunkSize);
     void exportOctreeSerialization(OctreeSerialized * octree);
     void exportNodesSerialization(std::vector<OctreeNodeCubeSerialized> * nodes);
     void exportToJson(const std::string &filename) const;
