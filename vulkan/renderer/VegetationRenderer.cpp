@@ -1,4 +1,5 @@
 #include "VegetationRenderer.hpp"
+#include "IndirectRenderer.hpp"
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
 
@@ -79,12 +80,21 @@ void VegetationRenderer::destroyCulling() {
             appPtr->destroyBuffer(visibleCountBuffers[f]);
             visibleCountBuffers[f] = {};
         }
+        if (impostorCompactBuffers[f].buffer != VK_NULL_HANDLE) {
+            appPtr->destroyBuffer(impostorCompactBuffers[f]);
+            impostorCompactBuffers[f] = {};
+        }
+        if (impostorCountBuffers[f].buffer != VK_NULL_HANDLE) {
+            appPtr->destroyBuffer(impostorCountBuffers[f]);
+            impostorCountBuffers[f] = {};
+        }
     }
     if (consolidationFence != VK_NULL_HANDLE) {
         VulkanApp::waitFence(device, consolidationFence);
     }
     consolidationPending = false;
     vegNumChunks = 0;
+    vegMainCompactCapacity = 0;
     vegConsolidationDirty = true;
 }
 
@@ -162,6 +172,14 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             visibleCountMapped[f] = static_cast<uint32_t*>(visibleCountBuffers[f].map(0));
             *visibleCountMapped[f] = 0;
         }
+        if (impostorCountBuffers[f].buffer == VK_NULL_HANDLE) {
+            impostorCountBuffers[f] = app->createBuffer(sizeof(uint32_t),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            void* impMapped = impostorCountBuffers[f].map(0);
+            if (impMapped) *static_cast<uint32_t*>(impMapped) = 0;
+            impostorCountBuffers[f].unmap();
+        }
     }
 
     // Count chunks with valid geometry (GPU metadata buffer removed — the CPU
@@ -215,48 +233,108 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
 }
 
 void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj) {
-    vegCullCurrentSlot = vegCullFrameIndex % VEG_CULL_FRAMES;
-    vegCullFrameIndex++;
-    uint32_t f = vegCullCurrentSlot;
+    bool consolidatedThisFrame = false;
     // Consolidate if chunks have changed since last consolidation
     if (vegConsolidationDirty && !chunkBuffers.empty()) {
         consolidateChunks(appPtr);
         if (vegConsolidationDirty) return; // fence still in flight, skip cull
+        consolidatedThisFrame = true;
     }
     if (vegNumChunks == 0) return;
-    if (compactedCmdBuffers[f].buffer == VK_NULL_HANDLE || visibleCountBuffers[f].buffer == VK_NULL_HANDLE) return;
 
-    // Upload every chunk as a visible draw command directly into the
-    // persistently mapped host-visible buffer (avoids vkCmdUpdateBuffer's
-    // implicit full queue barrier that stalls the entire graphics pipeline).
-    // Written in place, bounded by vegNumChunks (<= buffer capacity): a
-    // previous fixed-size stack array overflowed once vegetation exceeded 256
-    // chunks, corrupting the caller's stack frame (GPU hang on RADV / 680M).
-    uint32_t count = 0;
-    {
-        VkDrawIndexedIndirectCommand* dst =
-            static_cast<VkDrawIndexedIndirectCommand*>(compactedCmdMapped[f]);
-        uint32_t instanceOff = 0;
-        for (auto& [cid, buf] : chunkBuffers) {
-            (void)cid;
-            if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            dst[count].indexCount    = 36;
-            dst[count].instanceCount = buf.count;
-            dst[count].firstIndex    = 0;
-            dst[count].vertexOffset  = 0;
-            dst[count].firstInstance = instanceOff;
-            instanceOff += buf.count;
-            count++;
-            if (count >= vegNumChunks) break;
+    // Ensure the shared GPU chunk-info table exists (created lazily so the main
+    // cull works even when shadows/cascade-cull are disabled) and grow it if the
+    // scene has more chunks than its current capacity (overflow would corrupt
+    // adjacent GPU-visible memory).
+    ensureChunkInfo(appPtr);
+
+    // Grow the per-frame compact buffers if the chunk count outgrew them
+    // (vegNumChunks is the worst-case number of draw commands). The billboard
+    // compact/count buffers already exist (created in consolidateChunks).
+    if (vegNumChunks > vegMainCompactCapacity) {
+        uint32_t newCap = vegNumChunks;
+        VkDeviceSize newCompactSize = sizeof(VkDrawIndexedIndirectCommand) * newCap;
+        VulkanApp* app = appPtr;
+        for (uint32_t ff = 0; ff < VEG_CULL_FRAMES; ff++) {
+            Buffer oldBb = compactedCmdBuffers[ff];
+            compactedCmdBuffers[ff] = app->createBuffer(newCompactSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            compactedCmdMapped[ff] = static_cast<VkDrawIndexedIndirectCommand*>(compactedCmdBuffers[ff].map(0));
+            if (oldBb.buffer != VK_NULL_HANDLE) {
+                app->deferDestroyUntilAllPending([app, oldBb]() {
+                    if (oldBb.buffer != VK_NULL_HANDLE)
+                        app->resources.removeBufferVma(oldBb.buffer, oldBb.allocation);
+                });
+            }
+
+            Buffer oldImp = impostorCompactBuffers[ff];
+            impostorCompactBuffers[ff] = app->createBuffer(newCompactSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            void* impData = impostorCompactBuffers[ff].map(0);
+            if (impData) { std::memset(impData, 0, (size_t)newCompactSize); impostorCompactBuffers[ff].unmap(); }
+            if (oldImp.buffer != VK_NULL_HANDLE) {
+                app->deferDestroyUntilAllPending([app, oldImp]() {
+                    if (oldImp.buffer != VK_NULL_HANDLE)
+                        app->resources.removeBufferVma(oldImp.buffer, oldImp.allocation);
+                });
+            }
+        }
+        vegMainCompactCapacity = newCap;
+    }
+
+    // Upload the GPU chunk table (AABBs + instance counts + firstInstance
+    // offsets) into the host-visible chunk-info buffer. Iteration order MUST
+    // match consolidateChunks' concatenated-instance copy order. Also (re)builds
+    // vegChunkInfoMap (keyed by the solid mesh id) for the merged cull.
+    writeVegChunkInfo();
+
+    // The vegetation cull is now MERGED into the SOLID IndirectRenderer's single
+    // indirect.comp dispatch. We only hand it our per-frame output buffers (so its
+    // merged dispatch writes billboard/impostor commands in place) plus the
+    // per-chunk veg metadata (so it can build the binding-9 table keyed by solid
+    // draw entry). The actual GPU dispatch happens inside solidIR->prepareCull,
+    // which runs AFTER this call in the frame (see main.cpp ordering).
+    if (solidIR) {
+        solidIR->setVegetationCullData(compactedCmdBuffers, visibleCountBuffers,
+                                       impostorCompactBuffers, impostorCountBuffers);
+        // Only push the (potentially large) metadata map when it actually changed
+        // (i.e. after a consolidation), to avoid forcing a solid draw-list rebuild
+        // every frame.
+        if (consolidatedThisFrame) {
+            solidIR->setVegetationChunkInfo(vegChunkInfoMap);
         }
     }
+}
 
-    // Write visible count to persistently mapped host-coherent buffer
-    if (visibleCountMapped[f]) {
-        *visibleCountMapped[f] = count;
+void VegetationRenderer::ensureChunkInfo(VulkanApp* app) {
+    if (vegChunkInfoBuffer.buffer == VK_NULL_HANDLE) {
+        constexpr uint32_t kChunkInfoCap = 4096;
+        vegChunkInfoCapacity = kChunkInfoCap;
+        vegChunkInfoBuffer = app->createBuffer(sizeof(glm::vec4) * 3 * kChunkInfoCap,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vegChunkInfoMapped = vegChunkInfoBuffer.map(0);
     }
-    // No barrier needed: host-coherent writes complete before vkQueueSubmit,
-    // so the GPU sees the latest data when it processes the indirect draw.
+    if (vegNumChunks > vegChunkInfoCapacity) {
+        VkDeviceSize newInfoSize = sizeof(glm::vec4) * 3 * vegNumChunks;
+        Buffer oldInfo = vegChunkInfoBuffer;
+        vegChunkInfoBuffer = app->createBuffer(newInfoSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vegChunkInfoMapped = vegChunkInfoBuffer.map(0);
+        if (oldInfo.buffer != VK_NULL_HANDLE) {
+            app->deferDestroyUntilAllPending([app, oldInfo]() {
+                if (oldInfo.buffer != VK_NULL_HANDLE)
+                    app->resources.removeBufferVma(oldInfo.buffer, oldInfo.allocation);
+            });
+        }
+        vegChunkInfoCapacity = vegNumChunks;
+        if (vegCascadeCullInited)
+            for (uint32_t ff = 0; ff < VEG_CULL_FRAMES; ff++)
+                updateVegCascadeDescriptor(app, ff);
+    }
 }
 
 // ── Cascade-aware culling for vegetation shadows ──────────────────────────────
@@ -419,6 +497,10 @@ void VegetationRenderer::writeVegChunkInfo() {
     if (!vegChunkInfoMapped) return;
     glm::vec4* dst = static_cast<glm::vec4*>(vegChunkInfoMapped);
     uint32_t idx = 0;
+    // Record (solid mesh id, instance count) per consolidated chunk so we can also
+    // build vegChunkInfoMap (fed to the solid IndirectRenderer's merged cull).
+    std::vector<std::pair<uint32_t, uint32_t>> order;
+    order.reserve(chunkBuffers.size());
     for (const auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
         if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
@@ -431,14 +513,20 @@ void VegetationRenderer::writeVegChunkInfo() {
         dst[idx * 3 + 0] = glm::vec4(buf.aabbMin, 0.0f);
         dst[idx * 3 + 1] = glm::vec4(buf.aabbMax, 0.0f);
         dst[idx * 3 + 2] = glm::vec4(static_cast<float>(buf.count), 0.0f, 0.0f, 0.0f);
+        order.push_back({(uint32_t)chunkId, (uint32_t)buf.count});
         ++idx;
     }
     // firstInstance per chunk = cumulative instance count (matches the
     // concatenated instance buffer order built in consolidateChunks).
     uint32_t instOff = 0;
+    vegChunkInfoMap.clear();
     for (uint32_t i = 0; i < idx; ++i) {
         dst[i * 3 + 2].y = static_cast<float>(instOff);
-        instOff += static_cast<uint32_t>(dst[i * 3 + 2].x);
+        // Key by the SOLID mesh id (== uint32 chunk NodeID) so the IndirectRenderer
+        // can index the binding-9 table by its own solid draw entry index.
+        vegChunkInfoMap[order[i].first] = glm::vec4(static_cast<float>(order[i].second),
+                                                    static_cast<float>(instOff), 0.0f, 0.0f);
+        instOff += order[i].second;
     }
 }
 
@@ -503,27 +591,10 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
     // Grow the GPU chunk table if the scene exceeds the current capacity.
     // This must NEVER overflow: writeVegChunkInfo and the compute dispatch
     // both index up to vegNumChunks — writing/reading past the buffer would
-    // corrupt adjacent GPU-visible memory (a GPU-hang candidate).
-    if (vegNumChunks > vegChunkInfoCapacity) {
-        VkDeviceSize newInfoSize = sizeof(glm::vec4) * 3 * vegNumChunks;
-        VulkanApp* app = appPtr;
-        Buffer oldInfo = vegChunkInfoBuffer;
-        vegChunkInfoBuffer = app->createBuffer(newInfoSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vegChunkInfoMapped = vegChunkInfoBuffer.map(0);
-        if (oldInfo.buffer != VK_NULL_HANDLE) {
-            app->deferDestroyUntilAllPending([app, oldInfo]() {
-                if (oldInfo.buffer != VK_NULL_HANDLE)
-                    app->resources.removeBufferVma(oldInfo.buffer, oldInfo.allocation);
-            });
-        }
-        vegChunkInfoCapacity = vegNumChunks;
-        // Binding 0 (chunk info) changed for every frame's descriptor set.
-        for (uint32_t ff = 0; ff < VEG_CULL_FRAMES; ff++)
-            updateVegCascadeDescriptor(appPtr, ff);
-        std::cerr << "[veg] chunk-info table grew to " << vegNumChunks << " chunks (" << newInfoSize << " bytes)\n";
-    }
+    // corrupt adjacent GPU-visible memory (a GPU-hang candidate). ensureChunkInfo
+    // re-points BOTH the cascade and main-cull descriptor sets so a growth
+    // triggered from either path keeps the other in sync.
+    ensureChunkInfo(appPtr);
 
     static bool vegCullStatsLogged = false;
     if (!vegCullStatsLogged) {
@@ -1243,7 +1314,7 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
     std::vector<VkBufferMemoryBarrier2>& readBarriers = readBarrierScratch;
     for (const auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
-        if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
+        if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
 
         // Instance buffers are filled by the CPU (processPendingChunks writes
         // via mapped HOST_VISIBLE memory).  Without this barrier the GPU may
@@ -1261,19 +1332,6 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
         instanceBarrier.offset = 0;
         instanceBarrier.size = VK_WHOLE_SIZE;
         readBarriers.push_back(instanceBarrier);
-
-        VkBufferMemoryBarrier2 indirectBarrier{};
-        indirectBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        indirectBarrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-        indirectBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
-        indirectBarrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-        indirectBarrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-        indirectBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        indirectBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        indirectBarrier.buffer = buf.indirectBuffer;
-        indirectBarrier.offset = 0;
-        indirectBarrier.size = VK_WHOLE_SIZE;
-        readBarriers.push_back(indirectBarrier);
     }
     if (readBarriers.empty()) return;
 
@@ -1712,8 +1770,15 @@ void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
     std::memcpy(windParamsMapped, &params, sizeof(params));
 }
 
+uint32_t VegetationRenderer::vegFrame() const {
+    // The MAIN-pass veg draws read the buffers written by the SOLID IndirectRenderer's
+    // merged dispatch, which writes into its currentCullFrame slot. Mirror that so the
+    // draw and the dispatch agree on the frame.
+    return solidIR ? solidIR->getCurrentCullFrame() : vegCullCurrentSlot;
+}
+
 void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc) {
-    uint32_t f = vegCullCurrentSlot;
+    uint32_t f = vegFrame();
     vkCmdPushConstants(cmd, activeLayout, pushConstantStages, 0, sizeof(WindPushConstants), &pc);
     if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE || billboardVBO.indexBuffer.buffer == VK_NULL_HANDLE) return;
     VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
@@ -1736,15 +1801,19 @@ void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayou
     VkBuffer vbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
     VkDeviceSize offsets[2] = { 0, 0 };
     vkCmdBindIndexBuffer(cmd, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+    uint32_t f = vegFrame();
+    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
+        impostorCompactBuffers[f].buffer != VK_NULL_HANDLE && impostorCountBuffers[f].buffer != VK_NULL_HANDLE) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
         vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
-        uint32_t instOff = 0;
-        for (auto& [chunkId, buf] : chunkBuffers) {
-            (void)chunkId;
-            if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            vkCmdDrawIndexed(cmd, 6, static_cast<uint32_t>(buf.count), 0, 0, instOff);
-            instOff += buf.count;
+        // Indirect draw consuming the impostor stream compacted by the merged
+        // GPU vegetation cull (solid IndirectRenderer's indirect.comp dispatch).
+        uint32_t vegMaxImpostorDraws = std::min(vegNumChunks, vegMainCompactCapacity);
+        if (cmdDrawIndexedIndirectCount) {
+            cmdDrawIndexedIndirectCount(cmd,
+                impostorCompactBuffers[f].buffer, 0,
+                impostorCountBuffers[f].buffer, 0,
+                vegMaxImpostorDraws, sizeof(VkDrawIndexedIndirectCommand));
         }
     }
 }
@@ -2000,27 +2069,7 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
 
-        // Indirect buffer: device-local, avoids same TCP-read issue.
-        Buffer indirect = app->createBuffer(sizeof(VkDrawIndexedIndirectCommand),
-            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
-
-        // Staging for indirect draw command.
-        Buffer stagingIndirect = app->createBuffer(sizeof(VkDrawIndexedIndirectCommand),
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        VkDrawIndexedIndirectCommand drawCmd{};
-        drawCmd.indexCount    = 36;
-        drawCmd.instanceCount = validCount;
-        drawCmd.firstIndex    = 0;
-        drawCmd.vertexOffset  = 0;
-        drawCmd.firstInstance = 0;
-        void* idata = nullptr;
-        idata = stagingIndirect.map(0);
-        std::memcpy(idata, &drawCmd, sizeof(VkDrawIndexedIndirectCommand));
-        stagingIndirect.unmap(); // VMA persistent mapping
-
-        pendingBatch.push_back({ stagingInst, instBuf, stagingIndirect, indirect,
+        pendingBatch.push_back({ stagingInst, instBuf,
                                  bufSize, pc.chunkId, validCount,
                                  aabbMin, aabbMax, pc.chunkCenter });
     }
@@ -2034,30 +2083,23 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 VkBufferCopy cr{};
                 cr.size = c.bufSize;
                 vkCmdCopyBuffer(cmd, c.stagingInst.buffer, c.instBuf.buffer, 1, &cr);
-                VkBufferCopy icr{};
-                icr.size = sizeof(VkDrawIndexedIndirectCommand);
-                vkCmdCopyBuffer(cmd, c.stagingIndirect.buffer, c.indirect.buffer, 1, &icr);
             }
         });
         app->deferDestroyUntilFence(fence, [this, app,
                                              batch = std::move(batch)]() mutable {
             for (auto& c : batch) {
                 app->destroyBuffer(c.stagingInst);
-                app->destroyBuffer(c.stagingIndirect);
 
                 destroyInstanceBuffer(c.chunkId, app);
 
                 InstanceBuffer ibuf;
-                ibuf.buffer         = c.instBuf.buffer;
-                ibuf.memory         = c.instBuf.memory;
-                ibuf.allocation     = c.instBuf.allocation;
-                ibuf.indirectBuffer = c.indirect.buffer;
-                ibuf.indirectMemory = c.indirect.memory;
-                ibuf.indirectAllocation = c.indirect.allocation;
-                ibuf.center         = c.center;
-                ibuf.aabbMin        = c.aabbMin;
-                ibuf.aabbMax        = c.aabbMax;
-                ibuf.count          = c.instanceCount;
+                ibuf.buffer     = c.instBuf.buffer;
+                ibuf.memory     = c.instBuf.memory;
+                ibuf.allocation = c.instBuf.allocation;
+                ibuf.center     = c.center;
+                ibuf.aabbMin    = c.aabbMin;
+                ibuf.aabbMax    = c.aabbMax;
+                ibuf.count      = c.instanceCount;
                 chunkBuffers[c.chunkId] = ibuf;
                 chunkInstanceCounts[c.chunkId] = c.instanceCount;
                 vegConsolidationDirty = true;
@@ -2074,8 +2116,6 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
     InstanceBuffer old = it->second;
     it->second.buffer = VK_NULL_HANDLE;
     it->second.memory = VK_NULL_HANDLE;
-    it->second.indirectBuffer = VK_NULL_HANDLE;
-    it->second.indirectMemory = VK_NULL_HANDLE;
     chunkBuffers.erase(it);
     chunkInstanceCounts.erase(chunkId);
 
@@ -2087,20 +2127,11 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
     // buffers on the graphics queue — waiting only on the compute/copy
     // dispatch fence is insufficient.
     app->deferDestroyUntilFence(completionFence, [app, old]() {
-        {
-            Buffer tmpBuf{};
-            tmpBuf.buffer = old.buffer;
-            tmpBuf.memory = old.memory;
-            tmpBuf.allocation = old.allocation;
-            app->destroyBuffer(tmpBuf);
-        }
-        {
-            Buffer tmpBuf{};
-            tmpBuf.buffer = old.indirectBuffer;
-            tmpBuf.memory = old.indirectMemory;
-            tmpBuf.allocation = old.indirectAllocation;
-            app->destroyBuffer(tmpBuf);
-        }
+        Buffer tmpBuf{};
+        tmpBuf.buffer = old.buffer;
+        tmpBuf.memory = old.memory;
+        tmpBuf.allocation = old.allocation;
+        app->destroyBuffer(tmpBuf);
     });
 }
 

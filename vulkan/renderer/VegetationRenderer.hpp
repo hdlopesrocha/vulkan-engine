@@ -20,6 +20,8 @@
 #include <glm/gtc/round.hpp>
 #include "CommandBufferState.hpp"
 
+class IndirectRenderer; // merged-cull integration (forward decl)
+
 // Per-chunk vegetation instance buffer and renderer
 class VegetationRenderer : public Renderer {
 public:
@@ -60,6 +62,10 @@ public:
 
     void setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app);
     void setBillboardArrayTextures(VkImageView albedoView, VkImageView normalView, VkImageView opacityView, VkSampler sampler, VulkanApp* app);
+    // Register the SOLID IndirectRenderer whose merged indirect.comp dispatch now
+    // also emits the billboard/impostor commands. VegetationRenderer supplies its
+    // per-frame output buffers + per-chunk veg metadata to that renderer.
+    void setSolidIndirectRenderer(IndirectRenderer* ir) { solidIR = ir; }
     void onTextureArraysReallocated(VulkanApp* app);
     void init();
     void cleanup(VulkanApp* app) override;
@@ -129,8 +135,7 @@ public:
     // (3 billboard types × 20 Fibonacci views).
     // depthArray60 is the captured device Z array (R32_SFLOAT, 60 layers) for depth reprojection.
     // captureInvVPBuf is a storage buffer containing per-layer inverse VP matrices.
-    void setImpostorData(VulkanApp* app,
-                         VkImageView albedoArray60,
+    void setImpostorData(VulkanApp* app,                         VkImageView albedoArray60,
                          VkImageView normalArray60,
                          VkSampler sampler,
                          VkImageView depthArray60 = VK_NULL_HANDLE,
@@ -198,9 +203,6 @@ private:
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
-        VkBuffer indirectBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory indirectMemory = VK_NULL_HANDLE;
-        VmaAllocation indirectAllocation = VK_NULL_HANDLE;
         glm::vec3 center = glm::vec3(0.0f);
         glm::vec3 aabbMin = glm::vec3(0.0f);
         glm::vec3 aabbMax = glm::vec3(0.0f);
@@ -276,6 +278,17 @@ private:
     mutable std::array<uint32_t*, VEG_CULL_FRAMES> visibleCountMapped = {nullptr, nullptr, nullptr};
     mutable std::array<VkDrawIndexedIndirectCommand*, VEG_CULL_FRAMES> compactedCmdMapped = {nullptr, nullptr, nullptr};
 
+    // ── Merged main-camera vegetation cull outputs ──
+    // Per-frame GPU-compacted indirect command streams (billboards +
+    // impostors) written in place by the solid IndirectRenderer's merged
+    // indirect.comp dispatch (see prepareCull / solidIR->setVegetationCullData).
+    std::array<Buffer, VEG_CULL_FRAMES> impostorCompactBuffers;
+    std::array<Buffer, VEG_CULL_FRAMES> impostorCountBuffers;
+    uint32_t vegMainCompactCapacity = 0;
+    // Creates (lazily) and grows the shared GPU chunk-info table used by the
+    // merged cull and the cascade cull. Re-points descriptors on growth.
+    void ensureChunkInfo(VulkanApp* app);
+
     // ── Cascade-aware culling for vegetation shadows ──
     // GPU-side cull (veg_cascade_cull.comp): per-cascade compact + count
     // buffers for billboards (indexCount=36) and impostors (indexCount=6).
@@ -312,6 +325,21 @@ private:
     uint32_t vegCullCurrentSlot = 0;       // slot selected for current frame's cull + draws
     bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata
 
+    // ── Merged-cull integration ──
+    // The SOLID IndirectRenderer whose indirect.comp dispatch also emits veg
+    // billboard/impostor commands. VegetationRenderer owns the output buffers and
+    // the per-chunk veg metadata; it hands both to solidIR each frame and mirrors
+    // its cull frame so the draw reads the slot the merged dispatch wrote.
+    IndirectRenderer* solidIR = nullptr;
+    // Per-solid-mesh vegetation metadata, keyed by the solid mesh id
+    // (static_cast<uint32_t>(chunk NodeID)). value = vec4(instanceCount,
+    // firstInstance, 0, 0). Fed to solidIR via setVegetationChunkInfo().
+    std::unordered_map<uint32_t, glm::vec4> vegChunkInfoMap;
+    // Cull frame to use for the MAIN-pass veg draws (mirrors solidIR's frame so
+    // the draw reads the slot the merged dispatch wrote). Falls back to the local
+    // counter for the shadow cascade path (which keeps its own dispatch).
+    uint32_t vegFrame() const;
+
     // Per-frame scratch for read-barrier recording (recordReadBarriers). Runs
     // on the main frame thread only (SceneRenderer::shadowPass / preRenderPass)
     // — plain members are safe; clear() + reserve() reuse capacity across frames.
@@ -323,7 +351,7 @@ private:
 
     // Batched async chunk upload: one fence, deferred publish
     struct PendingBatchCopy {
-        Buffer stagingInst, instBuf, stagingIndirect, indirect;
+        Buffer stagingInst, instBuf;
         VkDeviceSize bufSize;
         NodeID chunkId;
         uint32_t instanceCount;
