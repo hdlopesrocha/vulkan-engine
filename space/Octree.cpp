@@ -626,7 +626,7 @@ void Octree::iterateTriangles(
         func.handle(*a, *b, *c);
     };
 
-    auto emitSegment = [&](const EdgeSpan &edge, float start, float end) {
+    auto emitSegment = [&](const EdgeSpan &edge, float start, float end, bool sign0, bool sign1) {
         float mid = start + (end - start) * 0.5f;
         EdgeCell cells[4];
         for(int q = 0; q < 4; ++q) {
@@ -669,7 +669,17 @@ void Octree::iterateTriangles(
         glm::vec3 p1 = edgePoint(edge, end);
         float d0 = SDF::interpolate(owner.node->sdf, p0, owner.cube);
         float d1 = SDF::interpolate(owner.node->sdf, p1, owner.cube);
-        if((d0 < 0.0f) == (d1 < 0.0f)) {
+        // The owner's field may carry INFINITY sentinels (an interpolated surface
+        // from an ancestor, or a node whose corners were never materialized), so
+        // trilinear interpolation returns INFINITY at the endpoints. INFINITY < 0.0f
+        // is false for both ends, which made the test below report "no sign change"
+        // and drop the segment — a mesh hole right at the boundary of an edited or
+        // interpolated surface. Fall back to the authoritative crossing signs from
+        // the producing cell (scanCell only emits edges whose own corners differ in
+        // sign), which are always finite.
+        bool s0 = (d0 == INFINITY) ? sign0 : (d0 < 0.0f);
+        bool s1 = (d1 == INFINITY) ? sign1 : (d1 < 0.0f);
+        if(s0 == s1) {
             return;
         }
 
@@ -728,7 +738,7 @@ void Octree::iterateTriangles(
         // d0 < 0: solid at the lower-axis end → surface faces the positive axis → emit as-is.
         // d0 > 0: empty at the lower-axis end → surface faces the negative axis → reverse.
         // Reversal keeps plist[0] (= `from`) as the pivot so Tesselator UV is consistent.
-        const bool solidAtStart = (d0 < 0.0f);
+        const bool solidAtStart = s0;
         if(pcount == 3) {
             if(solidAtStart)
                 emitTriangle(&plist[0].node->vertex, &plist[1].node->vertex, &plist[2].node->vertex, edge.eps);
@@ -785,7 +795,7 @@ void Octree::iterateTriangles(
 
             for(size_t i = 1; i < breaks.size(); ++i) {
                 if(breaks[i] - breaks[i - 1] > edge.eps * 2.0f) {
-                    emitSegment(edge, breaks[i - 1], breaks[i]);
+                    emitSegment(edge, breaks[i - 1], breaks[i], sign0, sign1);
                 }
             }
         }
@@ -809,28 +819,26 @@ void Octree::iterateTriangles(
         if(node == NULL) return;
         // Stored (+1-shifted → uint8) lod: 0 = unset, 1 = frontier, k+1 = parent.
         const uint8_t lod = node->getLod();
-        // A leaf is part of the level-k mesh ONLY when its stored lod IS k.
-        // Coarse leaves carry their true interpolated lod (60^3→2, 120^3→3…),
-        // so they never leak into finer levels (mixed-resolution L0 meshes,
-        // duplicate triangles across levels) and their own level still
-        // tessellates them.
-        if(node->isLeaf()) {
-            if(lod == targetLod) {
-                scanCell(node, cube);
-            }
-            return;
-        }
         if(lod == targetLod) {
             scanCell(node, cube);
-            return;
-        }
-        if(lod < targetLod) {
+            // Its children are one level finer and belong to other LOD levels,
+            // so stop here rather than scanning them too (avoids overlap).
             return;
         }
         ChildBlock *block = node->getBlock(*allocator);
         if(block == NULL) {
+            // Finest available cell in this subregion and it is NOT at the
+            // requested level: emit it as a fallback so the level-k mesh has no
+            // hole where the ladder never produced a lod==targetLod cell (a coarse
+            // surface leaf that was never subdivided, or a node whose child block
+            // was dropped). A descendant at lod==targetLod would have been scanned
+            // and stopped the descent above, so this only fires for bare regions.
+            if(node->getType() == SpaceType::Surface) {
+                scanCell(node, cube);
+            }
             return;
         }
+        // Descend to find target-level cells (or finer fallback leaves).
         for(uint i = 0; i < 8; ++i) {
             OctreeNode *child = block->get(i, *allocator);
             if(child != NULL) {
