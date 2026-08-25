@@ -58,8 +58,17 @@ namespace {
 // True runtime growth would require reallocating the buffers, which the design
 // deliberately avoids.
 constexpr uint32_t kMaxSolidChunkSlots = 1536;   // main solid (opaque) pool
-constexpr uint32_t kMaxWaterChunkSlots = 192;   // main water (transparent) pool
+constexpr uint32_t kMaxWaterChunkSlots = 192;    // main water (transparent) pool
 constexpr uint32_t kMaxBrushChunkSlots = 64;     // brush preview pool
+
+// Per-chunk (per-slot) geometry ceilings used to size the TOTAL packed pools
+// (total = chunkCount * perChunk). Allocation is packed/variable-size, so a chunk
+// only consumes what its mesh needs; this is the worst-case footprint ceiling.
+// Smaller = less VRAM, but a chunk whose mesh exceeds the per-chunk ceiling can
+// only fit if a large enough free span exists in the shared pool.
+constexpr uint32_t kVertexBytesPerChunk = 1u << 19;  // 512 KB per chunk
+constexpr uint32_t kIndexBytesPerChunk  = 1u << 17;  // 128 KB per chunk
+
 } // namespace
 
 void SceneRenderer::cleanup(VulkanApp* app) {
@@ -639,12 +648,12 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // initSlottedMode (per-chunk budgets x chunk count — the packed model's
     // ceiling, actual usage is data-driven).
     // Must be called after all sub-renderers are initialized, before scene loading.
-    initSlottedMode(app, 
+    initSlottedMode(app,
         kMaxSolidChunkSlots,
         kMaxWaterChunkSlots,
-        1u << 20,  // 1 MB vertex budget per chunk (total = chunks x this)
-        1u << 18
-    ); // 256 KB index budget per chunk (total = chunks x this)
+        kVertexBytesPerChunk,  // per-chunk vertex ceiling (total = chunks x this)
+        kIndexBytesPerChunk    // per-chunk index ceiling (total = chunks x this)
+    );
 
     // Initialize brush solid/liquid IndirectRenderers with their own packed
     // element pools (smaller — brush preview rarely exceeds a few dozen
