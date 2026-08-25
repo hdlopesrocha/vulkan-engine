@@ -11,7 +11,7 @@ public:
     // Toggle rendering of the main solid scene (terrain/meshes)
     bool renderSolid = true;
     bool waterEnabled = false;
-    bool vegetationEnabled = false;
+    bool vegetationEnabled = true;
     bool wireframeMode = false;
     bool waterWireframeMode = false;
     bool normalMappingEnabled = true;
