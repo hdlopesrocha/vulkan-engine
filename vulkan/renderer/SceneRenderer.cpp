@@ -229,7 +229,10 @@ SceneRenderer::SceneRenderer() :
     waterWireframe(std::make_unique<WireframeRenderer>()),
     skySettings(std::make_unique<SkySettings>())
 {
-
+    // Vegetation cull is MERGED into the solid IndirectRenderer's single
+    // indirect.comp dispatch, so the vegetation renderer must share the solid
+    // IndirectRenderer (it supplies the per-frame veg output buffers + metadata).
+    vegetationRenderer->setSolidIndirectRenderer(&mainSolidRenderer->getIndirectRenderer());
 }
 
 SceneRenderer::~SceneRenderer() {
@@ -810,11 +813,22 @@ size_t SceneRenderer::publishPendingMeshes(
     // the old slot and frees it after ITS upload completes (old geometry
     // stays resident until the new data is valid on GPU).
     size_t slotsPublished = 0;
+    static std::atomic<int> lvlHist[8] = {};
+    static std::atomic<int> pubTotal{0};
     for (auto& item : batch) {
         const Layer layer = item.layer;
         const NodeID nid = item.nid;
         const Octree::LoDMesh& lod = item.lodMesh;
         const bool isBrush = item.isBrush;
+
+        if (lod.lod >= 0 && lod.lod < 8) lvlHist[lod.lod]++;
+        int t = ++pubTotal;
+        if (t == 1 || t % 3000 == 0) {
+            fprintf(stderr, "[PUBLISH-DIAG] total=%d levels(lod):", t);
+            for (int i = 0; i < 8; ++i) fprintf(stderr, " %d:%d", i, lvlHist[i].load());
+            fprintf(stderr, "  cubeMin-sample=(%.1f,%.1f,%.1f)\n",
+                lod.boundsMin.x, lod.boundsMin.y, lod.boundsMin.z);
+        }
 
         // Per-entry routing: solid main → opaqueIR, solid brush → brushOpaqueIR,
         // transparent main → waterIR, transparent brush → brushWaterIR. This is
@@ -913,6 +927,29 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     mainSolidRenderer->getIndirectRenderer().pollPendingTransfers(app);
     mainLiquidRenderer->getIndirectRenderer().pollPendingTransfers(app);
     if (brushRenderer) brushRenderer->pollPendingTransfers(app);
+
+    // Keep the GPU LoD band meta in sync with the tree (self-correcting once the
+    // scene is loaded). chunkCellSize must be the GLOBAL Octree::chunkSize so the
+    // band anchors align across all chunks; maxLodLevel the tree's real ladder
+    // depth. Per-chunk values here would mis-align the distance bands and cull
+    // most rungs (holes across the terrain).
+    if (world_) {
+        const float cs = world_->scene().opaqueOctree.chunkSize;
+        const float ms = 30.0f;
+        mainSolidRenderer->getIndirectRenderer().setChunkCellSize(cs);
+        mainLiquidRenderer->getIndirectRenderer().setChunkCellSize(cs);
+        mainSolidRenderer->getIndirectRenderer().setMaxLodLevel(world_->scene().maxChunkLod(LAYER_OPAQUE, ms));
+        mainLiquidRenderer->getIndirectRenderer().setMaxLodLevel(world_->scene().maxChunkLod(LAYER_TRANSPARENT, ms));
+        if (brushRenderer) {
+            const float bcs = world_->brushScene() ? world_->brushScene()->opaqueOctree.chunkSize : cs;
+            brushRenderer->getSolidIR().setChunkCellSize(bcs);
+            brushRenderer->getLiquidIR().setChunkCellSize(bcs);
+            if (world_->brushScene()) {
+                brushRenderer->getSolidIR().setMaxLodLevel(world_->brushScene()->maxChunkLod(LAYER_OPAQUE, ms));
+                brushRenderer->getLiquidIR().setMaxLodLevel(world_->brushScene()->maxChunkLod(LAYER_TRANSPARENT, ms));
+            }
+        }
+    }
 
     if (batch.empty()) {
         // No new geometry yet (brush tessellation may still be running). Keep
@@ -1128,11 +1165,20 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     // cube — the band center and the meta cellSize must come from it, never
     // from nodeData (the added node), or every ancestor would publish the
     // frontier cell's size.
-    scene.requestModel3D(layer, nodeData, [&layer,&onGeometry](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId, const BoundingCube& cube) {
+    scene.requestModel3D(layer, nodeData, [&layer,&onGeometry,&nodeData](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId, const BoundingCube& cube) {
         Octree::LoDMesh lm;
         lm.geom = geo;
         lm.lod = lod;
         lm.version = version;
+        // cellSize/lod describe THIS rung's own resolution (emitting cell), and
+        // the bounds (AABB + LoD-band anchor) must use the EMITTING CELL cube
+        // (not the added chunk cube). The shader anchors the distance band at the
+        // cell's own pyramid-root min (indirect.comp's pyramid-root note); with a
+        // shared chunk-min anchor every rung of a chunk derives the SAME band and
+        // the gate would keep only one level per chunk — discarding the finer
+        // sub-cell rungs and leaving holes. Per-cell anchors let each rung select
+        // its own level independently, so the clipmap tiles correctly (every
+        // location is covered by exactly the rung at the band-selected level).
         lm.cellSize = cube.getLength().x;
         lm.boundsMin = cube.getMin();
         lm.boundsMax = cube.getMax();

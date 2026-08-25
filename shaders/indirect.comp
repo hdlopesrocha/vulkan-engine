@@ -10,37 +10,70 @@ struct DrawCmd {
     uint firstInstance;
 };
 
+// Solid input draw commands (one per terrain chunk entry, indexed 0..numCmds-1).
 layout(std430, binding = 0) readonly buffer InCmds {
     DrawCmd cmds[];
 } inCmds;
 
+// Compacted SOLID output draw commands (frustum + LoD culled).
 layout(std430, binding = 1) writeonly buffer OutCmds {
     DrawCmd cmds[];
 } outCmds;
 
+// Solid per-entry bounds + LoD meta (vec4 triples, indexed 0..numCmds-1):
+//   min, max, lodMeta{cellSize, level, maxLevel, unused}.
+// cellSize <= 0 marks an entry with no LoD data (always kept).
 layout(std430, binding = 2) readonly buffer Bounds {
-    // vec4 triples per draw entry: min, max, lod meta {cellSize, level, maxLevel, unused}.
-    // cellSize <= 0 marks an entry with no LoD data (always kept, legacy behavior).
     vec4 data[];
 } boundsBuf;
 
+// Solid visible (compacted) count.
 layout(std430, binding = 3) buffer VisibleCount {
     uint count;
 };
 
-// Chosen-LoD output, one uvec2 per draw entry: {drawIndex, selectedLevel}.
+// Chosen-LoD output, one uvec2 per SOLID draw entry: {drawIndex, selectedLevel}.
 // selectedLevel == 0xFFFFFFFF marks an entry with no LoD data.
 layout(std430, binding = 4) writeonly buffer VisibleLods {
     uvec2 data[];
 } visibleLods;
 
+// ── Vegetation outputs ───────────────────────────────────────────────────────
+// Emitted by processVegetation() for every VISIBLE solid chunk that carries
+// vegetation. We reuse the solid chunk's AABB (boundsBuf[s]), so vegetation is
+// implicitly culled by the same frustum test as its terrain chunk (step 4: the
+// vegetation bounding box IS the solid terrain chunk AABB). Billboards use
+// indexCount=36, impostors indexCount=6 — each into its own compact stream.
+layout(std430, binding = 5) writeonly buffer OutVegImpCmds {
+    DrawCmd cmds[];
+} outVegImp;
+layout(std430, binding = 6) buffer VegImpCount {
+    uint count;
+} vegImpCount;
+
+// Vegetation billboard output stream (indexCount=36) + its count.
+layout(std430, binding = 7) writeonly buffer OutVegBbCmds {
+    DrawCmd cmds[];
+} outVegBb;
+layout(std430, binding = 8) buffer VegBbCount {
+    uint count;
+} vegBbCount;
+
+// Per-solid-chunk vegetation table (indexed by the SAME draw index s as the
+// solid entry): {instanceCount, firstInstance, pad, pad}. instanceCount < 1
+// means the chunk has no vegetation. Binding 9.
+layout(std430, binding = 9) readonly buffer VegChunkInfo {
+    vec4 data[];
+} vegChunkInfo;
+
 layout(push_constant) uniform PC {
     mat4 viewProj;
-    uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now - all meshes in renderer are same layer)
-    uint numCmds;     // actual number of draw commands (guards against uninitialized buffer tail)
+    uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now)
+    uint numCmds;     // number of SOLID draw commands
     vec3 camPos;      // camera position driving the per-chunk LoD band selection
     float lodBias;    // band scale: larger = coarser levels kick in farther away
     uint maxTargetLod; // clamp: never select a coarser LoD level than this
+    uint numCmdsVeg;   // legacy/unused in the merged dispatch (kept for layout compatibility)
 } pc;
 
 // Shared, per-workgroup cache of the six frustum planes. The viewProj matrix is
@@ -80,50 +113,48 @@ bool aabbVisible(vec4 planes[6], vec3 minp, vec3 maxp) {
     return true;
 }
 
-void main() {
-    uint idx = gl_GlobalInvocationID.x;
+// Emit the billboard (indexCount=36) and impostor (indexCount=6) draw commands
+// for a solid chunk that survived culling. Called from processChunk once the
+// chunk is known visible, so no extra AABB test is needed — vegetation shares
+// the terrain chunk's bounding box.
+void processVegetation(uint s) {
+    if (s >= vegChunkInfo.data.length()) return;
+    vec4 meta = vegChunkInfo.data[s];
+    if (meta.x < 1.0) return; // no vegetation in this chunk
 
-    // Extract and normalize the frustum planes once per workgroup from the
-    // viewProj push constant. All threads must reach the barrier, so this runs
-    // before any early return below.
-    if (gl_LocalInvocationIndex < 6u) {
-        mat4 mvp = pc.viewProj; // models are identity in this pipeline
-        // Extract rows: GLSL `mat4` is column-major, so mvp[i] returns a column.
-        vec4 row0 = vec4(mvp[0][0], mvp[1][0], mvp[2][0], mvp[3][0]);
-        vec4 row1 = vec4(mvp[0][1], mvp[1][1], mvp[2][1], mvp[3][1]);
-        vec4 row2 = vec4(mvp[0][2], mvp[1][2], mvp[2][2], mvp[3][2]);
-        vec4 row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3]);
+    uint instanceCount = uint(meta.x);
+    uint firstInstance  = uint(meta.y);
 
-        // Planes: left, right, bottom, top, near, far
-        vec4 p;
-        if (gl_LocalInvocationIndex == 0u)      p = normalizePlane(row3 + row0); // left
-        else if (gl_LocalInvocationIndex == 1u) p = normalizePlane(row3 - row0); // right
-        else if (gl_LocalInvocationIndex == 2u) p = normalizePlane(row3 + row1); // bottom
-        else if (gl_LocalInvocationIndex == 3u) p = normalizePlane(row3 - row1); // top
-        else if (gl_LocalInvocationIndex == 4u) p = normalizePlane(row2);        // near (Vulkan NDC z in [0,w])
-        else                                   p = normalizePlane(row3 - row2);  // far
-        gPlanes[gl_LocalInvocationIndex] = p;
-    }
-    barrier();
+    DrawCmd bbCmd;
+    bbCmd.indexCount    = 36u;
+    bbCmd.instanceCount = instanceCount;
+    bbCmd.firstIndex    = 0u;
+    bbCmd.vertexOffset  = 0;
+    bbCmd.firstInstance = firstInstance;
+    uint dstB = atomicAdd(vegBbCount.count, 1u);
+    if (dstB < outVegBb.cmds.length()) outVegBb.cmds[dstB] = bbCmd;
 
-    // Belt-and-suspenders: guard against uninitialized buffer slots.
-    // The dispatch covers up to the next multiple of 64, and the buffer may
-    // have capacity beyond the valid command count. Check BOTH the push
-    // constant (exact count) and the SSBO length (buffer capacity).
-    if (idx >= pc.numCmds || idx >= inCmds.cmds.length()) return;
+    DrawCmd impCmd = bbCmd;
+    impCmd.indexCount = 6u;
+    uint dstI = atomicAdd(vegImpCount.count, 1u);
+    if (dstI < outVegImp.cmds.length()) outVegImp.cmds[dstI] = impCmd;
+}
 
-    // Empty entries (no mesh data) never draw and never count.
-    if (inCmds.cmds[idx].indexCount == 0u) return;
+// Cull one solid terrain chunk (frustum + per-chunk LoD band) and emit its
+// compacted solid command. If the chunk is kept, its vegetation is emitted too
+// via processVegetation (so vegetation is drawn exactly for the visible chunks).
+void processChunk(uint s) {
+    if (s >= inCmds.cmds.length() || s >= pc.numCmds) return;
 
-    // Note: All meshes in this renderer are from the same layer (targetLayer in push constants)
-    // so no per-mesh layer filtering needed - separate IndirectRenderers handle opaque vs transparent
+    // Empty entries (no mesh data) never draw, never count, and carry no vegetation.
+    if (inCmds.cmds[s].indexCount == 0u) return;
 
     // bounds stored as min, max, meta triples in `boundsBuf.data`
     // meta = {cellSize, level, maxLevel, unused}: cellSize is the chunk's
     // OWN cube length (frontier base = cellSize / 2^level), level is the
     // 0-based LoD level. cellSize <= 0 marks an entry with no LoD data
     // (always kept, legacy behavior).
-    uint bIndex = idx * 3u;
+    uint bIndex = s * 3u;
     bool hasBounds = (bIndex + 2u) < boundsBuf.data.length();
     vec3 minp = vec3(0.0);
     vec3 maxp = vec3(0.0);
@@ -178,23 +209,27 @@ void main() {
         // the user-configured ceiling (settings.maxTargetLod). 0xFFFFFFFF stays
         // untouched for entries with no LoD data.
         selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
-        // Only the entry whose level matches the effective selection survives
-        // to the compacted draw list. Entries without LoD meta (cellSize <= 0)
-        // are legacy meshes: always kept.
-        if (int(selectedLevel) != entryLevel) return;
     }
 
     // Publish the chosen level for this draw entry so external consumers
     // (shadow cascade cull, cubemap capture, backface pass) read the exact
-    // same selection. Written for every non-empty entry.
-    if (idx < visibleLods.data.length()) {
-        visibleLods.data[idx] = uvec2(inCmds.cmds[idx].firstInstance, selectedLevel);
+    // same selection. Written for EVERY non-empty entry — including ones the
+    // LoD band below rejects — so the shadow cascade cull can mirror the exact
+    // keep/reject decision via (visibleLods.y == entryLevel). Without this, a
+    // rejected level-0 entry keeps the per-frame fill value 0, which the
+    // cascade shader cannot tell apart from a *kept* level-0 entry (also 0),
+    // causing far chunks to cast finest-mesh shadows the main pass never draws.
+    if (s < visibleLods.data.length()) {
+        visibleLods.data[s] = uvec2(inCmds.cmds[s].firstInstance, selectedLevel);
     }
 
-    // If bounds missing, conservatively mark visible (legacy path).
-    if (!hasBounds) {
-        uint dst = atomicAdd(count, 1);
-        if (dst < outCmds.cmds.length()) outCmds.cmds[dst] = inCmds.cmds[idx];
+    // ── LoD band gate ────────────────────────────────────────────────────────
+    // "The chunk is kept iff its level matches the band" (see note above). The
+    // band selects exactly one level per location; without this gate EVERY rung
+    // of the clipmap ladder is drawn simultaneously, so coarse rungs smear over
+    // the fine detail and the surface looks blobby. Entries carrying no LoD data
+    // (cellSize <= 0) are always kept (legacy behavior).
+    if (cellSize > 0.0 && uint(entryLevel) != selectedLevel) {
         return;
     }
 
@@ -202,10 +237,46 @@ void main() {
     if (!aabbVisible(gPlanes, minp, maxp)) return;
 
     uint dst = atomicAdd(count, 1);
-    // Keep the original firstInstance (idx) for identification (models are identity)
+    // Keep the original solid draw index (s) for identification (models are identity)
     if (dst < outCmds.cmds.length()) {
-        DrawCmd cmd = inCmds.cmds[idx];
-        cmd.firstInstance = idx;
+        DrawCmd cmd = inCmds.cmds[s];
+        cmd.firstInstance = s;
         outCmds.cmds[dst] = cmd;
     }
+
+    // Chunk is visible — also emit its vegetation (same AABB, step 4).
+    processVegetation(s);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+
+    // Extract and normalize the frustum planes once per workgroup from the
+    // viewProj push constant. All threads must reach the barrier, so this runs
+    // before any early return below.
+    if (gl_LocalInvocationIndex < 6u) {
+        mat4 mvp = pc.viewProj; // models are identity in this pipeline
+        // Extract rows: GLSL `mat4` is column-major, so mvp[i] returns a column.
+        vec4 row0 = vec4(mvp[0][0], mvp[1][0], mvp[2][0], mvp[3][0]);
+        vec4 row1 = vec4(mvp[0][1], mvp[1][1], mvp[2][1], mvp[3][1]);
+        vec4 row2 = vec4(mvp[0][2], mvp[1][2], mvp[2][2], mvp[3][2]);
+        vec4 row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3]);
+
+        // Planes: left, right, bottom, top, near, far
+        vec4 p;
+        if (gl_LocalInvocationIndex == 0u)      p = normalizePlane(row3 + row0); // left
+        else if (gl_LocalInvocationIndex == 1u) p = normalizePlane(row3 - row0); // right
+        else if (gl_LocalInvocationIndex == 2u) p = normalizePlane(row3 + row1); // bottom
+        else if (gl_LocalInvocationIndex == 3u) p = normalizePlane(row3 - row1); // top
+        else if (gl_LocalInvocationIndex == 4u) p = normalizePlane(row2);        // near (Vulkan NDC z in [0,w])
+        else                                   p = normalizePlane(row3 - row2);  // far
+        gPlanes[gl_LocalInvocationIndex] = p;
+    }
+    barrier();
+
+    // One invocation per solid chunk entry; vegetation is handled inside
+    // processChunk once the chunk is known visible.
+    uint s = idx;
+    if (s >= pc.numCmds) return;
+    processChunk(s);
 }
