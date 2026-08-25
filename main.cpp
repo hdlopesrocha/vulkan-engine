@@ -157,7 +157,7 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
                 if (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty()) {
                     return; // no surface: nothing to publish
                 }
-                if (target.chunkManaged && lodMesh.lod == 0) {
+                if (target.chunkManaged && lodMesh.lod >= 1) {
                     // Phase 3: tessellation complete on a worker thread. The
                     // chunk mesh is complete; only the octree version is
                     // tracked here — GPU data goes through slots.
