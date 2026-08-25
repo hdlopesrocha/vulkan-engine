@@ -259,16 +259,15 @@ void Octree::iterateTriangles(
         BoundingCube cube;
         int level = 0;
 
-        // A cell is "surface at the walk's resolution": either a frontier
-        // simplified cell (targetLod == 0 — legacy full-walk mode) or a ladder
-        // cell exactly at targetLod. With targetLod >= 1 the descent already
-        // stops at cells with lod == targetLod, so requiring lod equality here
-        // keeps coarse ladder levels (internal, non-simplified nodes) emitting
-        // their own cells while neighbors one level finer/coarser stay out.
-        // lod and targetLod are both in the +1-shifted STORED space.
+        // A cell is "surface at the walk's resolution": a ladder cell exactly
+        // at targetLod. With targetLod >= 1 the descent already stops at cells
+        // with lod == targetLod, so requiring lod equality here keeps coarse
+        // ladder levels (internal, non-simplified nodes) emitting their own
+        // cells while neighbors one level finer/coarser stay out. lod and
+        // targetLod are both in the +1-shifted STORED space.
         bool isSurface(int targetLod) const {
             return node != NULL && node->getType() == SpaceType::Surface &&
-                (targetLod == 0 ? node->getLod() == 1u : node->getLod() == targetLod);
+                node->getLod() == targetLod;
         }
     };
 
@@ -412,7 +411,7 @@ void Octree::iterateTriangles(
         BoundingCube cube = startCube;
 
         while(node != NULL && !node->isLeaf() &&
-              ((targetLod == 0) ? (node->getLod() == 0u) : (node->getLod() > targetLod))) {
+              (node->getLod() > targetLod)) {
             ChildBlock *block = node->getBlock(*allocator);
             if(block == NULL) {
                 node = NULL;
@@ -653,13 +652,9 @@ void Octree::iterateTriangles(
         }
 
         // Attribute the segment to the walk root `from`: it is emitted iff
-        // its owner cell lies inside from's cube. For per-leaf walks (legacy
-        // targetLod < 0 mode) this is exactly the old `owner == from` test —
-        // adjacent cells' centers are never inside from's cube — so behavior
-        // is unchanged. For per-node ladder walks (from = a chunk or ladder
-        // ancestor, targetLod >= 0) the owner is a finer lod cell inside
-        // from's cube, so the WHOLE node tessellates in ONE call instead of
-        // one call per frontier leaf, and boundary segments are emitted by
+        // its owner cell lies inside from's cube. The owner is a finer lod cell
+        // inside from's cube, so the WHOLE node tessellates in ONE call instead
+        // of one call per frontier leaf, and boundary segments are emitted by
         // exactly the node that contains their owner.
         if(owner.node != from && !fromCube.contains(owner.cube.getCenter())) {
             return;
@@ -801,12 +796,6 @@ void Octree::iterateTriangles(
         }
     };
 
-    if(targetLod == 0) {
-        // Legacy mode: `from` IS the frontier cell.
-        scanCell(from, fromCube);
-        return;
-    }
-
     // Ladder mode: the level-k mesh is the AGGREGATE of the cells at lod k
     // inside the anchor (each cell's own stored corner samples, which are
     // correct). A single Surface-Nets cell over the whole anchor would miss
@@ -814,22 +803,10 @@ void Octree::iterateTriangles(
     // crossing when the surface is inside it — so every level emits its own
     // cell resolution (cell size frontierCell*2^k), which is what the
     // distance bands consume.
-    std::function<void(OctreeNode*, const BoundingCube&)> walkLadder;
-    walkLadder = [&](OctreeNode *node, const BoundingCube &cube) {
+    std::function<void(OctreeNode*, const BoundingCube&)> walkLadder = [&](OctreeNode *node, const BoundingCube &cube) {
         if(node == NULL) return;
         // Stored (+1-shifted → uint8) lod: 0 = unset, 1 = frontier, k+1 = parent.
         const uint8_t lod = node->getLod();
-        // A leaf is part of the level-k mesh ONLY when its stored lod IS k.
-        // Coarse leaves carry their true interpolated lod (60^3→2, 120^3→3…),
-        // so they never leak into finer levels (mixed-resolution L0 meshes,
-        // duplicate triangles across levels) and their own level still
-        // tessellates them.
-        if(node->isLeaf()) {
-            if(lod == targetLod) {
-                scanCell(node, cube);
-            }
-            return;
-        }
         if(lod == targetLod) {
             scanCell(node, cube);
             return;
@@ -840,12 +817,6 @@ void Octree::iterateTriangles(
         ChildBlock *block = node->getBlock(*allocator);
         if(block == NULL) {
             return;
-        }
-        for(uint i = 0; i < 8; ++i) {
-            OctreeNode *child = block->get(i, *allocator);
-            if(child != NULL) {
-                walkLadder(child, cube.getChild(i));
-            }
         }
     };
     walkLadder(from, fromCube);
