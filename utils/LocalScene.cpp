@@ -84,7 +84,8 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                         emittedVersion_[nodeId] = params.node->version;
                     }
                     if(!nodeTesselator.geometry.indices.empty()) {
-                        callback(nodeTesselator.geometry, chunkLodStored - 1, params.node->version,
+                        const int lod = static_cast<int>(chunkLodStored) - 1;
+                        callback(nodeTesselator.geometry, static_cast<uint8_t>(lod), params.node->version,
                                  reinterpret_cast<uintptr_t>(params.node), params.cube);
                     }
                 }
