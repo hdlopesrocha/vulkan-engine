@@ -35,7 +35,7 @@ public:
         vf.vkCmdCopyBuffer = &vkCmdCopyBuffer;
 
         VmaAllocatorCreateInfo ci{};
-        ci.vulkanApiVersion = VK_API_VERSION_1_3;
+        ci.vulkanApiVersion = VK_API_VERSION_1_4;
         ci.physicalDevice = physDev;
         ci.device = dev;
         ci.instance = instance;

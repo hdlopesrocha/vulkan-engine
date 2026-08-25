@@ -29,6 +29,16 @@ namespace {
 #define VK_KHR_MAINTENANCE5_EXTENSION_NAME "VK_KHR_maintenance5"
 #endif
 
+// Vulkan 1.4 features exposed here via their KHR extension structs so the same
+// code path works on both 1.3 and 1.4 runtimes (the 1.3 loader/validation
+// layers do not recognize the monolithic VkPhysicalDeviceVulkan14Features).
+#ifndef VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME
+#define VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME "VK_KHR_dynamic_rendering_local_read"
+#endif
+#ifndef VK_KHR_MAINTENANCE6_EXTENSION_NAME
+#define VK_KHR_MAINTENANCE6_EXTENSION_NAME "VK_KHR_maintenance6"
+#endif
+
 
 
 
@@ -5202,7 +5212,7 @@ void VulkanApp::createInstance() {
     appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.pEngineName = "No Engine";
     appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_3;
+    appInfo.apiVersion = VK_API_VERSION_1_4;
 
     VkInstanceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -5540,9 +5550,28 @@ void VulkanApp::createLogicalDevice() {
     vulkan12Features.descriptorBindingUniformTexelBufferUpdateAfterBind = VK_TRUE;
     vulkan12Features.descriptorBindingStorageTexelBufferUpdateAfterBind = VK_TRUE;
 
+    // Query the physical device's actual API version so we can opt into Vulkan 1.4
+    // features only when the GPU truly supports them (keeps 1.3 fallback intact).
+    VkPhysicalDeviceProperties physDevProps{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &physDevProps);
+    const bool deviceSupports14 =
+        (VK_VERSION_MAJOR(physDevProps.apiVersion) == 1 && VK_VERSION_MINOR(physDevProps.apiVersion) >= 4);
+
+    // Vulkan 1.4 features, enabled through their KHR extension feature structs.
+    // We deliberately avoid VkPhysicalDeviceVulkan14Features: the 1.3 loader and
+    // validation layers do not recognize its VkStructureType (55) and abort, so we
+    // opt into each 1.4 capability via the KHR struct that both 1.3 and 1.4
+    // runtimes understand. VK_KHR_dynamic_rendering / synchronization2 /
+    // shaderDemoteToHelperInvocation are already enabled above via their KHR structs.
+    VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR dynLocalReadFeatures{};
+    dynLocalReadFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR;
+    VkPhysicalDeviceMaintenance6FeaturesKHR maintenance6Features{};
+    maintenance6Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES_KHR;
+
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pNext = &vulkan12Features;  // Chain Vulkan 1.2 + 1.1 + dynamic rendering + demote + sync2
+    // Chain Vulkan 1.2 + 1.1 + dynamic rendering + demote + sync2 (1.4 structs appended below).
+    createInfo.pNext = &vulkan12Features;
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
     createInfo.pEnabledFeatures = &deviceFeatures;
@@ -5557,8 +5586,12 @@ void VulkanApp::createLogicalDevice() {
 
     // Query available device extensions so we can conditionally enable optional
     // extensions like VK_KHR_pipeline_binary (Vulkan 1.4) for granular cache invalidation.
+    // On a Vulkan 1.4 device these are core, so we must NOT request them as extensions
+    // (the loader/validation would warn); their KHR feature structs are still valid to chain.
     bool maintenance5Supported = false;
-    pipelineBinarySupported = false;
+    pipelineBinarySupported = deviceSupports14; // core in 1.4
+    bool dynRenderLocalReadSupported = deviceSupports14; // core in 1.4
+    bool maintenance6Supported = deviceSupports14;       // core in 1.4
     uint32_t availExtCount = 0;
     vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &availExtCount, nullptr);
     if (availExtCount > 0) {
@@ -5571,15 +5604,44 @@ void VulkanApp::createLogicalDevice() {
             if (strcmp(ext.extensionName, VK_KHR_PIPELINE_BINARY_EXTENSION_NAME) == 0) {
                 pipelineBinarySupported = true;
             }
+            if (strcmp(ext.extensionName, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME) == 0) {
+                dynRenderLocalReadSupported = true;
+            }
+            if (strcmp(ext.extensionName, VK_KHR_MAINTENANCE6_EXTENSION_NAME) == 0) {
+                maintenance6Supported = true;
+            }
         }
     }
-    if (maintenance5Supported) {
+    if (maintenance5Supported && !deviceSupports14) {
         extensions.push_back(VK_KHR_MAINTENANCE5_EXTENSION_NAME);
     }
-    if (pipelineBinarySupported) {
+    if (pipelineBinarySupported && !deviceSupports14) {
         extensions.push_back(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
         printf("[VulkanApp] VK_KHR_pipeline_binary supported — enabling for granular pipeline cache invalidation\n");
+    } else if (deviceSupports14) {
+        printf("[VulkanApp] Vulkan 1.4 — pipeline binary is core, VK_KHR_pipeline_binary not explicitly enabled\n");
     }
+    if (dynRenderLocalReadSupported && !deviceSupports14) {
+        extensions.push_back(VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
+    }
+    if (maintenance6Supported && !deviceSupports14) {
+        extensions.push_back(VK_KHR_MAINTENANCE6_EXTENSION_NAME);
+    }
+
+    // Append the optional Vulkan 1.4 KHR feature structs to the pNext chain. They
+    // are valid on both 1.3 and 1.4 runtimes and only chained when actually supported.
+    const void* chainHead = createInfo.pNext;
+    if (dynRenderLocalReadSupported) {
+        dynLocalReadFeatures.dynamicRenderingLocalRead = VK_TRUE;
+        dynLocalReadFeatures.pNext = const_cast<void*>(chainHead);
+        chainHead = &dynLocalReadFeatures;
+    }
+    if (maintenance6Supported) {
+        maintenance6Features.maintenance6 = VK_TRUE;
+        maintenance6Features.pNext = const_cast<void*>(chainHead);
+        chainHead = &maintenance6Features;
+    }
+    createInfo.pNext = chainHead;
 
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.ppEnabledExtensionNames = extensions.data();

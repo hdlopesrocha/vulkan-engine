@@ -16,8 +16,11 @@ else
 	CFLAGS = -std=c++23 -O3 -march=native -DNDEBUG -pthread -DUSE_IMGUI -Wall -Wshadow -Ithird_party/imgui
 endif
 
-# Use pkg-config for GLFW and Vulkan includes; also add common ImGui/stb include paths
-INCLUDES = `pkg-config --cflags glfw3 vulkan` -I. -Ithird_party/imgui -Ithird_party/imgui/backends -I/usr/include/stb
+# Use vendored Vulkan 1.4 SDK headers (LunarG SDK include/), then pkg-config for
+# GLFW and the Vulkan loader. The vulkan headers are listed first so they shadow
+# the system 1.3 headers from libvulkan-dev. Also add common ImGui/stb includes.
+VK_SDK_INCLUDE = -Ithird_party/Vulkan-Headers/include
+INCLUDES = $(VK_SDK_INCLUDE) `pkg-config --cflags glfw3 vulkan` -I. -Ithird_party/imgui -Ithird_party/imgui/backends -I/usr/include/stb
 LIBS = `pkg-config --libs glfw3 vulkan` -lstb -ljpeg -lgdal -lz
 
 # Wii Remote support via vendored wiiuse (third_party/wiiuse).
@@ -221,7 +224,8 @@ install:
 						libshaderc-dev \
 						libstb-dev \
 						libgdal-dev \
-						libbluetooth-dev
+						libbluetooth-dev \
+						vulkan-tools
 	# Wiimote support uses the vendored wiiuse library (third_party/wiiuse)
 	# 2. Clone Dear ImGui
 	mkdir -p third_party
@@ -230,6 +234,16 @@ install:
 	git clone https://github.com/ocornut/imgui.git
 	git clone https://github.com/mackron/miniaudio.git
 	git clone https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+
+	# Vulkan 1.4 SDK headers (the build uses third_party/Vulkan-Headers/include).
+	# Pinned to the same SDK tag used by the vendored headers so the API version
+	# matches VK_API_VERSION_1_4 targeted by the engine. Re-clone if missing or
+	# not a real git repo (e.g. a plain vendored checkout).
+	if [ ! -d Vulkan-Headers/.git ]; then \
+		rm -rf Vulkan-Headers; \
+		git clone https://github.com/KhronosGroup/Vulkan-Headers.git; \
+	fi
+	cd Vulkan-Headers && git checkout vulkan-sdk-1.4.357.0 && cd ..
 
 	@if [ ! -f third_party/miniaudio/miniaudio_impl.cpp ]; then \
 		printf '#define MINIAUDIO_IMPLEMENTATION\n#include "miniaudio.h"\n' > third_party/miniaudio/miniaudio_impl.cpp; \
@@ -249,6 +263,15 @@ install:
 	sudo cp *.h /usr/local/include/imgui/
 	sudo cp backends/*.h /usr/local/include/imgui/backends/
 	sudo cp libimgui.a /usr/local/lib/
+	sudo ldconfig
+
+	# 6. Install Vulkan 1.4 SDK headers system-wide. The project targets Vulkan 1.4
+	# but the distro libvulkan-dev ships 1.3 headers, so we install the vendored
+	# 1.4 headers (third_party/Vulkan-Headers) into /usr/local/include/vulkan.
+	# /usr/local/include is searched before /usr/include, so this shadows the
+	# older 1.3 headers for any build that resolves Vulkan via the system path.
+	sudo mkdir -p /usr/local/include/vulkan
+	sudo cp -r third_party/Vulkan-Headers/include/vulkan/* /usr/local/include/vulkan/
 	sudo ldconfig
 
 	@echo "Optionally, for profiling and code analysis tools, run:"
