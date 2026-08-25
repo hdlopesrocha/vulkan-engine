@@ -93,7 +93,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
             // Keep descending along the root path: the children hold the finer ladder
             // levels. Cells without a chunkLod (stored 0) never tessellate and end the
             // walk — their parent links are already propagated for neighbor lookups.
-            return chunkLodStored > 0;
+            return chunkLodStored > 1;
         },
         [](const Octree &treeRef, OctreeNodeData &params, uint8_t order[8]) {
             for(int i = 0 ; i < 8 ; ++i) {
