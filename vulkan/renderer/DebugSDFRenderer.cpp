@@ -8,7 +8,19 @@
 #include <iostream>
 #include <cmath>
 #include <utility>
+#include <algorithm>
+#include <vulkan/vulkan_core.h>
 #include "../includes/locations.hpp"
+
+// A storage buffer binding may not exceed VkPhysicalDeviceLimits::maxStorageBufferRange
+// (typically 128 MiB). Cap the SDF-cube instance count so the buffer we expose to the
+// shader stays within that hard limit, otherwise vkUpdateDescriptorSets aborts.
+static uint32_t maxSDFInstanceCount(VulkanApp* app) {
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(app->getPhysicalDevice(), &props);
+    const VkDeviceSize stride = sizeof(glm::mat4) + sizeof(glm::vec4) * 3;
+    return static_cast<uint32_t>(props.limits.maxStorageBufferRange / stride);
+}
 
 DebugSDFRenderer::DebugSDFRenderer() {}
 
@@ -110,7 +122,8 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
 
     descriptorSet = descAlloc.allocateSet(descriptorPool, descriptorSetLayout, "DebugSDFRenderer: descriptorSet");
 
-    instanceBufferCapacity = 128;
+    const uint32_t maxInstances = maxSDFInstanceCount(app);
+    instanceBufferCapacity = std::min<uint32_t>(128, maxInstances);
     instanceBuffer = app->createBuffer(
         instanceBufferCapacity * (sizeof(glm::mat4) + sizeof(glm::vec4) * 3),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -135,7 +148,9 @@ void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
 
     if (activeCubes.size() > instanceBufferCapacity) {
         instanceBuffer = {};
+        const uint32_t maxInstances = maxSDFInstanceCount(app);
         instanceBufferCapacity = static_cast<uint32_t>(activeCubes.size() * 2);
+        instanceBufferCapacity = std::min(instanceBufferCapacity, maxInstances);
         instanceBuffer = app->createBuffer(
             instanceBufferCapacity * (sizeof(glm::mat4) + sizeof(glm::vec4) * 3),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -148,9 +163,12 @@ void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
             .flush();
     }
 
+    const uint32_t drawCount = std::min<uint32_t>(static_cast<uint32_t>(activeCubes.size()),
+                                                  instanceBufferCapacity);
     std::vector<InstanceData> instanceData;
-    instanceData.reserve(activeCubes.size());
-    for (const CubeSDF& cube : activeCubes) {
+    instanceData.reserve(drawCount);
+    for (uint32_t i = 0; i < drawCount; ++i) {
+        const CubeSDF& cube = activeCubes[i];
         InstanceData inst{};
         inst.model = glm::translate(glm::mat4(1.0f), cube.cube.getMin())
                    * glm::scale(glm::mat4(1.0f), cube.cube.getLength());
@@ -202,7 +220,9 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
     const VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, indexCount, static_cast<uint32_t>(activeCubes.size()), 0, 0, 0);
+    const uint32_t drawCount = std::min<uint32_t>(static_cast<uint32_t>(activeCubes.size()),
+                                                  instanceBufferCapacity);
+    vkCmdDrawIndexed(cmd, indexCount, drawCount, 0, 0, 0);
 }
 
 void DebugSDFRenderer::cleanup(VulkanApp* app) {
