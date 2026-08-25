@@ -1271,9 +1271,9 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
         sceneRenderer->mainSolidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-        sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+        sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
         sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(commandBuffer);
-        sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+        sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
             sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
         }
@@ -1282,13 +1282,13 @@ public:
         // shared visibleLods buffer. prepareCull acquires the water buffers
         // internally and must run outside a render pass.
         if (settings.waterEnabled && sceneRenderer->mainLiquidRenderer) {
-            sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+            sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
         }
         // Brush liquid (painted water) is drawn inside the water geometry pass
         // with the water pipeline, so it needs a current-frame cull of its own
         // (its compact/visibleCount buffers are otherwise stale from the last
         // prepareCull or uninitialized, which would draw garbage).
-        sceneRenderer->brushRenderer->getLiquidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias);
+            sceneRenderer->brushRenderer->getLiquidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
 
@@ -1296,7 +1296,7 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
         if (sceneRenderer) {
-            sceneRenderer->shadowMapper->render(this, commandBuffer, frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled, settings.lodBias, camera.getPosition());
+            sceneRenderer->shadowMapper->render(this, commandBuffer, frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled, settings.lodBias, camera.getPosition(), settings.maxTargetLod);
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 1);
@@ -1726,7 +1726,7 @@ public:
                 // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
                 if (computeDs != VK_NULL_HANDLE) {
                     ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, slot.compact.buffer, slot.visible.buffer,
-                                                  camera.getPosition());
+                                                  camera.getPosition(), settings.lodBias, settings.maxTargetLod);
                 }
 
                 // Water-depth descriptor set for THIS task: pre-allocated per ring slot

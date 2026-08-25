@@ -580,7 +580,7 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint3
                                       Buffer& mainUniformBuffer, const UniformObject& uboStatic,
                                       bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
                                       bool shadowTessellationEnabled, float lodBias,
-                                      const glm::vec3& cameraPos) {
+                                      const glm::vec3& cameraPos, int maxTargetLod) {
     if (commandBuffer == VK_NULL_HANDLE) return;
     if (!shadowsEnabled) return;
 
@@ -735,9 +735,9 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint3
     // per-cascade prepareCull calls above) so drawPrepared in the main pass
     // uses the correct visible set.
     if (solidRenderer_)
-        solidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias);
+        solidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
     if (brushRenderer_) {
-        brushRenderer_->getSolidIR().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias);
+        brushRenderer_->getSolidIR().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
     }
 
     // Restore the main UBO so subsequent passes see the original data.

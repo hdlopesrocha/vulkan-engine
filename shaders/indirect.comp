@@ -40,6 +40,7 @@ layout(push_constant) uniform PC {
     uint numCmds;     // actual number of draw commands (guards against uninitialized buffer tail)
     vec3 camPos;      // camera position driving the per-chunk LoD band selection
     float lodBias;    // band scale: larger = coarser levels kick in farther away
+    uint maxTargetLod; // clamp: never select a coarser LoD level than this
 } pc;
 
 // Shared, per-workgroup cache of the six frustum planes. The viewProj matrix is
@@ -173,6 +174,10 @@ void main() {
         vec3 anchor = rootMin + 0.5 * rootSide;
         float band = distance(pc.camPos, anchor) / (baseCell * pc.lodBias);
         selectedLevel = uint(min(floor(band), float(maxLevel)));
+        // Clamp the chosen level so the renderer never picks a coarser LoD than
+        // the user-configured ceiling (settings.maxTargetLod). 0xFFFFFFFF stays
+        // untouched for entries with no LoD data.
+        selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
         // Only the entry whose level matches the effective selection survives
         // to the compacted draw list. Entries without LoD meta (cellSize <= 0)
         // are legacy meshes: always kept.

@@ -49,7 +49,7 @@ public:
                           Buffer& mainUniformBuffer, const UniformObject& uboStatic,
                           bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
                           bool shadowTessellationEnabled, float lodBias,
-                          const glm::vec3& cameraPos);
+                          const glm::vec3& cameraPos, int maxTargetLod = 16);
     // Render shadow pass for a single cascade
     void beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex, const glm::mat4& lightSpaceMatrix);
     void endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex);

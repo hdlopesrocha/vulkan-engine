@@ -144,6 +144,14 @@ void SettingsWidget::render() {
             "closer (fewer triangles). 0 = always coarsest, 64+ = full detail "
             "everywhere.");
 
+        if (ImGui::SliderInt("Max Target LoD", &settings.maxTargetLod, 0, 24, "%d")) {
+            // live: the per-frame GPU band test reads settings.maxTargetLod directly
+        }
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Caps the coarsest LoD level the renderer may select for a chunk. "
+            "Lower = only finer (more detailed) chunk levels are drawn; 16+ = "
+            "unlimited (chunk ladders rarely exceed ~5 levels).");
+
         if (ImGui::Button("Reset to Defaults")) {
             resetToDefaults();
         }

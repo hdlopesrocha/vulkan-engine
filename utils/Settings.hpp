@@ -7,11 +7,11 @@ public:
     }
 
     // Global toggles
-    bool enableShadows = true;
+    bool enableShadows = false;
     // Toggle rendering of the main solid scene (terrain/meshes)
     bool renderSolid = true;
-    bool waterEnabled = true;
-    bool vegetationEnabled = true;
+    bool waterEnabled = false;
+    bool vegetationEnabled = false;
     bool wireframeMode = false;
     bool waterWireframeMode = false;
     bool normalMappingEnabled = true;
@@ -43,6 +43,13 @@ public:
     // and smaller values switch to coarse meshes sooner (fewer triangles).
     // 0 = always coarsest, 64+ = effectively full detail everywhere.
     float lodBias = 8.0f;
+
+    // LoD rendering: maximum target LoD level the GPU band test may select for a
+    // chunk. Clamps the coarsest level chosen, so geometry never renders coarser
+    // than this level. 16 = effectively unlimited (chunk ladders rarely exceed
+    // ~5 levels); lower values force only the finer chunk levels to be drawn
+    // (more triangles, fewer coarse ancestors).
+    int maxTargetLod = 16;
 
     // Tessellation
     bool tessellationEnabled = false;
