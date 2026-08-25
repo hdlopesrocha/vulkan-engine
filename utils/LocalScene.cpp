@@ -65,10 +65,10 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                 return true;  // descend through non-surface cells toward the chunk
             }
 
-            const uint8_t cellLod = params.node->getLod();
+            const uint8_t chunkLod = params.node->getChunkLod();
             // Only the chunk node and its finer descendants are rungs of THIS
             // chunk's ladder; world ancestors above it belong to coarser chunks.
-            if(cellLod > 0 && params.level >= data.level) {
+            if(chunkLod > 0 && params.level >= data.level) {
                 const uintptr_t nodeId = reinterpret_cast<uintptr_t>(params.node);
                 // Skip cells already tessellated at their current version: the
                 // walk emits the whole root path for every added node, so
@@ -85,13 +85,13 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                 if (!skip) {
                     long trianglesCount = 0;
                     Tesselator nodeTesselator(&trianglesCount);
-                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, cellLod);
+                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod);
                     {
                         std::lock_guard<std::mutex> lock(emittedMutex_);
                         emittedVersion_[nodeId] = params.node->version;
                     }
                     if(!nodeTesselator.geometry.indices.empty()) {
-                        const uint8_t lod = static_cast<uint8_t>(cellLod - 1);
+                        const uint8_t lod = static_cast<uint8_t>(chunkLod - 1);
                         // getLod() is the size-based ladder level (1 = frontier).
                         // Each cell is one rung; (getLod-1) is a unique, monotonic
                         // band level per cell size so the GPU selects exactly one
