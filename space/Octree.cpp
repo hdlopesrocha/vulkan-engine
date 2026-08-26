@@ -818,6 +818,12 @@ void Octree::iterateTriangles(
         if(block == NULL) {
             return;
         }
+        for(uint i = 0; i < 8; ++i) {
+            OctreeNode *child = block->get(i, *allocator);
+            if(child != NULL) {
+                walkLadder(child, cube.getChild(i));
+            }
+        }
     };
     walkLadder(from, fromCube);
 }

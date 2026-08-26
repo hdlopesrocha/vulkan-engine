@@ -86,7 +86,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                     // emit only at the chunk's own resolution, so each ladder rung
                     // carries exactly one level of detail. chunkLod is still used
                     // for the selection gate and the published band (chunkLod-1).
-                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, params.node->getLod());
+                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod);
                     {
                         std::lock_guard<std::mutex> lock(emittedMutex_);
                         emittedVersion_[nodeId] = params.node->version;
