@@ -26,6 +26,14 @@ OctreeNode * OctreeNodeFile::loadRecursive(OctreeNode * workingNode, int i, cons
 		workingNode->bits = serialized.bits;
 	}
 
+	// lod is not serialized; init() leaves it 0 ("unset"), which makes every
+	// chunk-interior cell fail iterateTriangles' `getLod() == targetLod` match
+	// — a loaded scene then tessellates nothing. Assign the same SIZE-BASED
+	// lod Octree::shape/lodForCellSize use (1 = frontier, +1 per doubling) so
+	// loaded and in-memory trees encode levels identically. chunkLod stays 0
+	// below chunk level; the chunk node itself is handled by OctreeFile.
+	workingNode->setLod(Octree::lodForCellSize(cube.getLengthX(), tree->chunkSize));
+
 	
 	bool isLeaf = true;
 	for(int j=0; j < 8; ++j) {

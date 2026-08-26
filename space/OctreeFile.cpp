@@ -99,37 +99,29 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 		delete file;
 	}
 
-	// LoD propagation on return order (leafs → root): loadRecursive unwinds
-	// bottom-up, so every child's lod is final when this node's is computed —
-	// the same rule as the compression phase of Octree::shape(). Leaf: stored
-	// LoD 1 at the simplification frontier (the last simplification possible
-	// was achieved), 0 otherwise. Parent: min(child lod stored)+1, with the
-	// most common brushIndex among children (excluding DISCARD_BRUSH_INDEX)
-	// climbing up. chunkLod: stored 1 when the node is a chunk (first chunk
-	// level), else climb max(children.chunkLod stored)+1 while any child
-	// carries a chunkLod (max != 0); leaves and cells below chunks stay 0.
-	// All stored values are uint8_t (+1 from the ladder level, 0 = unset).
-	if(isLeaf) {
-		// Stored lod must be size-based (1 = frontier) so it matches the encoding
-		// used by Octree::shape and consumed by iterateTriangles' `getLod() ==
-		// targetLod` match. The previous no-op (setLod(getLod())) left leaves at
-		// 0, so the finest frontier cells were never scanned and the surface was
-		// missing its detail (holes).
-		node->setLod(Octree::lodForCellSize(cube.getLengthX(), chunkSize));
-		node->setChunkLod(node->getChunkLod());
-	} else {
+	// LoD assignment on load. lod is SIZE-BASED (lodForCellSize: 1 = frontier,
+	// +1 per doubling) for EVERY node — leaf or internal — exactly the rule
+	// Octree::shape applies, so a loaded tree encodes levels identically to an
+	// in-memory one and iterateTriangles' `getLod() == targetLod` match works.
+	// (The previous max(child lod)+1 rule agreed only for complete chains, and
+	// the isLeaf branch mislabeled chunk-level "leaves".)
+	node->setLod(Octree::lodForCellSize(cube.getLengthX(), chunkSize));
+
+	// chunkLod: 1 when the node is a chunk (first chunk level), else climb
+	// max(children.chunkLod)+1 while any child carries one. Chunk nodes carry
+	// the isChunk bit in `bits`, so they get 1 even when they are leaves of the
+	// coarse serialization (their interior lives in the per-chunk file).
+	if(node->isChunk()) {
+		node->setChunkLod(1);
+	} else if(!isLeaf) {
 		OctreeNode * childNodes[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 		node->getChildren(*tree->allocator, childNodes);
-		uint8_t maxLod = 0;
 		uint8_t maxChunkLod = 0;
 		std::unordered_map<int, int> brushCounts;
 		int bestBrush = DISCARD_BRUSH_INDEX;
 		int bestCount = 0;
 		for(int j = 0; j < 8; ++j) {
 			if(childNodes[j] != NULL) {
-				if(childNodes[j]->getLod() > maxLod) {
-					maxLod = childNodes[j]->getLod();
-				}
 				if(childNodes[j]->getChunkLod() > maxChunkLod) {
 					maxChunkLod = childNodes[j]->getChunkLod();
 				}
@@ -143,12 +135,7 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 				}
 			}
 		}
-		node->setLod(maxLod > 0 ? static_cast<uint8_t>(maxLod + 1) : 0);
-		if(node->isChunk()) {
-			node->setChunkLod(1);
-		} else {
-			node->setChunkLod(maxChunkLod > 0 ? static_cast<uint8_t>(maxChunkLod + 1) : 0);
-		}
+		node->setChunkLod(maxChunkLod > 0 ? static_cast<uint8_t>(maxChunkLod + 1) : 0);
 		if(bestBrush != DISCARD_BRUSH_INDEX) {
 			node->setBrush(bestBrush);
 		}
