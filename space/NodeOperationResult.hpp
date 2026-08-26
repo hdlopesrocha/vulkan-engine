@@ -14,8 +14,6 @@ struct NodeOperationResult {
     SpaceType resultType;
     float resultSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
     float shapeSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
-    bool isLeaf;
-    bool isChunk;
     int brushIndex;
     glm::vec3 brushHsv;
 
@@ -29,8 +27,6 @@ struct NodeOperationResult {
         const float * shapeSDF, 
         SpaceType resultType, 
         const float * resultSDF, 
-        bool isLeaf,
-        bool isChunk,
         int brushIndex,
         uint8_t selectedLod,
         uint8_t selectedChunkLod);

@@ -866,12 +866,12 @@ float Octree::evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float
     return d;
 }
 
-void Octree::buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext, bool force) const {
+void Octree::buildShapeSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext, bool force) const {
     const glm::vec3 cubeMin = frame.cube.getMin();
     const glm::vec3 cubeLength = frame.cube.getLength();
     tsl::robin_map<glm::vec3, float> * shapeSdfCache = &threadContext->shapeSdfCache;
 
-    if(r.isLeaf || force) {
+    if(isLeaf || force) {
         for (uint i = 0; i < 8; ++i) {
             r.shapeSDF[i] = evaluateSDF(args, shapeSdfCache, cubeMin + cubeLength * Octree::getShift(i));
         }
@@ -889,8 +889,8 @@ void Octree::buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOp
     }
 }
 
-void Octree::buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext) const {
-    if(r.isLeaf) {
+void Octree::buildResultSDF(const bool isLeaf, const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext) const {
+    if(isLeaf) {
         for (uint i = 0; i < 8; ++i) {
             r.resultSDF[i] = args.operation->combine(frame.sdf[i], r.shapeSDF[i]);
         }
@@ -1043,10 +1043,10 @@ void Octree::shape(
     const bool isNodeLeaf = r.node == NULL || r.node->isLeaf();
     r.brushIndex = r.node ? r.node->vertex.brushIndex : frame.brushIndex;
     r.brushHsv = r.node ? r.node->vertex.hsv : frame.hsv;
-    r.isChunk = isChunkNode(nodeLength);
-    r.isLeaf = isShapeLeaf && isNodeLeaf;
-    r.selectedLod = r.isLeaf ? 1u : 0u;
-    r.selectedChunkLod = r.isChunk ? 1u : 0u;
+    bool isChunk = isChunkNode(nodeLength);
+    bool isLeaf = isShapeLeaf && isNodeLeaf;
+    r.selectedLod = isLeaf ? 1u : 0u;
+    r.selectedChunkLod = isChunk ? 1u : 0u;
 
     NodeOperationResult children[8] = { 
         NodeOperationResult(), NodeOperationResult(), 
@@ -1055,14 +1055,14 @@ void Octree::shape(
         NodeOperationResult(), NodeOperationResult() 
     };
 
-    buildShapeSDF(args, frame, r, children, threadContext, true);
+    buildShapeSDF(isLeaf, args, frame, r, children, threadContext, true);
 
     const glm::vec3 center = frame.cube.getCenter();
     float shapeSdfCenter = evaluateSDF(args, &threadContext->shapeSdfCache, center);
 
     bool process = true;
     bool processed = false;
-    if(!r.isLeaf) {
+    if(!isLeaf) {
         const float halfDiagonal = nodeLength * 0.866025403784439f;
 
         // No existing SDF data (all INFINITY) — result is purely the shape.
@@ -1246,9 +1246,9 @@ void Octree::shape(
     // Leaf: combine shape with the existing field; non-leaf with computed
     // children: aggregate upward. Pruned/disjoint cells were fully resolved
     // above and must NOT be re-aggregated from default (Empty) children.
-    if(r.isLeaf || (process && !processed && !r.isLeaf)) {
-        buildShapeSDF(args, frame, r, children, threadContext, false);
-        buildResultSDF(args, frame, r, children, threadContext);
+    if(isLeaf || (process && !processed && !isLeaf)) {
+        buildShapeSDF(isLeaf, args, frame, r, children, threadContext, false);
+        buildResultSDF(isLeaf, args, frame, r, children, threadContext);
     }
 
     bool interpolatedSurface = (frame.node == NULL)
@@ -1273,7 +1273,7 @@ void Octree::shape(
                 r.node->vertex.position = SDF::getPosition(r.resultSDF, frame.cube);
                 r.node->vertex.normal = SDF::getNormalFromPosition(r.resultSDF, frame.cube, r.node->vertex.position);
                 // Simplification & Painting
-                if(r.isLeaf) {
+                if(isLeaf) {
                     if(r.shapeType != SpaceType::Empty) {
                         r.brushIndex = args.painter.paint(r.node->vertex);
                         r.node->vertex.hsv = args.painter.paintHSV(r.node->vertex);
@@ -1284,7 +1284,7 @@ void Octree::shape(
                 } else  {
                 
                     if(process) {
-                        if (!r.isChunk) {
+                        if (!isChunk) {
                             // Pass frame.chunkCube so the simplifier can guard chunk borders.
                             SimplificationResult simplificationResult = args.simplifier.simplify(frame.cube, r.resultSDF, children, frame.chunkCube);
                             if(simplificationResult.isSimplified) {
@@ -1296,7 +1296,7 @@ void Octree::shape(
                             NodeOperationResult &child = children[i];
                             OctreeNode * childNode = child.node;
 
-                            if(child.resultType != SpaceType::Surface || childNode == NULL) {
+                            if(child.resultType != SpaceType::Surface) {
                                 // A Surface result normally owns its node (created
                                 // by its own shape() run). Degenerate cells — e.g.
                                 // a delete rim exactly touching a corner, whose
@@ -1310,10 +1310,10 @@ void Octree::shape(
                                 }
                                 childNode->setType(child.resultType);
                                 childNode->setSDF(child.resultSDF);
-                                childNode->setChunk(child.isChunk);
+                                childNode->setChunk(false);
                                 childNode->setBrush(r.brushIndex);
-                                childNode->setChunkLod(child.selectedChunkLod);
-                                childNode->setLod(child.selectedLod);
+                                childNode->setLod(r.selectedLod);
+                                childNode->setChunkLod(r.selectedChunkLod);
                                 childNode->vertex.hsv = child.brushHsv;
                             }
 
@@ -1324,54 +1324,53 @@ void Octree::shape(
                         }
                         r.node->setChildren(*allocator, childNodes);
                     }
-
-                
-
-                    uint8_t selectedLod = 0;
-                    uint8_t selectedChunkLod = 0;
-
-                    for(uint i =0 ; i < 8 ; ++i) {
-                        NodeOperationResult &child = children[i];
-                        OctreeNode * childNode = child.node;
-                        std::unordered_map<int, int> brushCounts;
-                        int bestCount = 0;
-                        if(childNode != NULL && childNode->getType() == SpaceType::Surface) {
-                            const uint8_t childLod = childNode->getLod();
-                            const uint8_t childChunkLod = childNode->getChunkLod();
-                            if(childLod > 0u) {
-                                selectedLod = selectedLod == 0u ?
-                                    childLod : glm::min(selectedLod, childLod);
-                            }
-                            if(childChunkLod > 0u) {
-                                selectedChunkLod = selectedChunkLod == 0u ?
-                                    childChunkLod : glm::min(selectedChunkLod, childChunkLod);
-                            }
-                            const int childBrush = childNode->getBrush();
-                            if(childBrush > DISCARD_BRUSH_INDEX) {
-                                const int count = ++brushCounts[childBrush];
-                                if(count > bestCount) {
-                                    bestCount = count;
-                                    r.brushIndex = childBrush;
-                                    r.brushHsv = childNode->vertex.hsv;
-                                }
-                            }
-                        }    
-                    }
-                    if(selectedLod > 0u) {
-                        r.selectedLod = selectedLod + 1u;
-                    }
-                    if(selectedChunkLod > 0u) {
-                        r.selectedChunkLod = selectedChunkLod + 1u;
-                    }
                 }
             }
         }
     }
 
     if(r.node != NULL) {
+        if(!isLeaf && r.resultType == SpaceType::Surface) {
+            uint8_t candidateLod = 0u;
+            uint8_t candidateChunkLod = 0u;
+            for(uint i =0 ; i < 8 ; ++i) {
+                NodeOperationResult &child = children[i];
+                std::unordered_map<int, int> brushCounts;
+                int bestCount = 0;
+                    
+                if(child.resultType == SpaceType::Surface) {
+                    const uint8_t childLod = child.selectedLod;
+                    const uint8_t childChunkLod = child.selectedChunkLod;
+                    if(childLod > 0u) {
+                        candidateLod = candidateLod == 0u ?
+                            childLod : glm::min(candidateLod, childLod);
+                    }
+                    if(childChunkLod > 0u) {
+                        candidateChunkLod = candidateChunkLod == 0u ?
+                            childChunkLod : glm::min(candidateChunkLod, childChunkLod);
+                    }
+                }
+                const int childBrush = child.brushIndex;
+                if(childBrush > DISCARD_BRUSH_INDEX) {
+                    const int count = ++brushCounts[childBrush];
+                    if(count > bestCount) {
+                        bestCount = count;
+                        r.brushIndex = childBrush;
+                        r.brushHsv = child.brushHsv;
+                    }
+                }
+            }
+            r.selectedLod = candidateLod > 0u ? ++candidateLod : r.selectedLod;    
+            r.selectedChunkLod = candidateChunkLod > 0u ? ++candidateChunkLod : r.selectedChunkLod;
+        }
+
         r.node->setType(r.resultType);
         r.node->setSDF(r.resultSDF);
-        r.node->setChunk(r.isChunk);
+        r.node->setChunk(isChunk);
+        r.node->setLod(r.selectedLod);
+        r.node->setChunkLod(r.selectedChunkLod);
+        r.node->setBrush(r.brushIndex);
+        r.node->vertex.hsv = r.brushHsv;
 
         if(process && r.resultType != Surface) {
             // Compression: a fully Solid/Empty subtree collapses to a leaf
@@ -1382,11 +1381,6 @@ void Octree::shape(
             // children were never re-evaluated and must be preserved.
             r.node->clear(*allocator, NULL);
         }
-
-        r.node->setBrush(r.brushIndex);
-        r.node->vertex.hsv = r.brushHsv;
-        r.node->setChunkLod(r.selectedChunkLod);
-        r.node->setLod(r.selectedLod);
 
         if(r.node->getChunkLod() > 0 && r.resultType == SpaceType::Surface) {
             ++r.node->version;
