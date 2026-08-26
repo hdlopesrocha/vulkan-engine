@@ -66,7 +66,17 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
             }
 
             const uint8_t chunkLod = params.node->getChunkLod();
-            if(chunkLod > 0 && params.level >= data.level) {
+            // Emit EVERY chunkLod>0 node this walk reaches — the chunk being
+            // published AND all its ancestors on the path to the root. A single
+            // chunk event thus publishes the whole LoD pyramid for that column:
+            // band 0 (chunk, chunkLod 1) down to the farthest ancestor band. This
+            // is what the procedural path already does (shape() fires an event
+            // per chunkLod>0 node); without it a LOADED scene — whose only events
+            // are the chunk nodes (notifyChunkNodes) — would publish band 0 alone
+            // and every medium/far distance band would stay empty (terrain
+            // vanishing away from the camera). The emittedVersion_ dedup keeps a
+            // shared ancestor from being tessellated once per chunk.
+            if(chunkLod > 0) {
                 const uintptr_t nodeId = reinterpret_cast<uintptr_t>(params.node);
                 bool skip = false;
                 {
@@ -77,15 +87,12 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                 if (!skip) {
                     long trianglesCount = 0;
                     Tesselator nodeTesselator(&trianglesCount);
-                    // Tessellation targetLod is compared against getLod() inside
-                    // iterateTriangles (Octree.cpp:271), so it must be the cell's
-                    // OWN size-based ladder level, not the chunk-relative chunkLod.
-                    // Passing chunkLod (1..R+1) descends to getLod==chunkLod cells
-                    // — for the chunk node that is the frontier (getLod==1), i.e.
-                    // the whole chunk at max detail. Using getLod() makes this rung
-                    // emit only at the chunk's own resolution, so each ladder rung
-                    // carries exactly one level of detail. chunkLod is still used
-                    // for the selection gate and the published band (chunkLod-1).
+                    // targetLod = chunkLod drives the band pyramid: band k
+                    // (chunkLod k+1) tessellates cells at getLod()==k+1, i.e. one
+                    // level of detail coarser per band. The published cellSize is
+                    // the node's own cube, so indirect.comp's baseCell =
+                    // cellSize/2^level stays constant (480) across all bands and
+                    // the distance bands tile without gaps or overlaps.
                     tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod);
                     {
                         std::lock_guard<std::mutex> lock(emittedMutex_);
