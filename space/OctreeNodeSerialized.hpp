@@ -12,5 +12,7 @@ struct OctreeNodeSerialized {
     int brushIndex;
     glm::vec3 hsv;
     uint8_t bits;
+    uint8_t lod = 0;
+    uint8_t chunkLod = 0;
 };
 #pragma pack()

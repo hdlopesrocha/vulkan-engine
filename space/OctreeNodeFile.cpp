@@ -24,16 +24,10 @@ OctreeNode * OctreeNodeFile::loadRecursive(OctreeNode * workingNode, int i, cons
 		workingNode = tree->allocator->allocate()->init(vertex);
 		workingNode->setSDF(serialized.sdf);
 		workingNode->bits = serialized.bits;
+		workingNode->setLod(serialized.lod);
+		workingNode->setChunkLod(serialized.chunkLod);
+		workingNode->setBrush(serialized.brushIndex);
 	}
-
-	// lod is not serialized; init() leaves it 0 ("unset"), which makes every
-	// chunk-interior cell fail iterateTriangles' `getLod() == targetLod` match
-	// — a loaded scene then tessellates nothing. Assign the same SIZE-BASED
-	// lod Octree::shape/lodForCellSize use (1 = frontier, +1 per doubling) so
-	// loaded and in-memory trees encode levels identically. chunkLod stays 0
-	// below chunk level; the chunk node itself is handled by OctreeFile.
-	workingNode->setLod(Octree::lodForCellSize(cube.getLengthX(), tree->chunkSize));
-
 	
 	bool isLeaf = true;
 	for(int j=0; j < 8; ++j) {
@@ -84,6 +78,8 @@ uint OctreeNodeFile::saveRecursive(OctreeNode * inNode, std::vector<OctreeNodeSe
 		n.hsv = inNode->vertex.hsv;
 		n.bits = inNode->bits;
 		SDF::copySDF(inNode->sdf, n.sdf);
+		n.lod = inNode->getLod();
+		n.chunkLod = inNode->getChunkLod();
 
 		uint index = nodes->size(); 
 		nodes->push_back(n);
