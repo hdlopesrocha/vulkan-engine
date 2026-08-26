@@ -3009,18 +3009,17 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
             VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capEntryIndex) * 3 * sizeof(glm::vec4);
             void* bndData = boundsBuffer.map(boundsOffset);
             if (bndData) {
-                // Third vec4 (meta): {chunkLod, lod, maxLevel, unused} —
-                // chunkLod is the band's ladder rung (1 = finest published rung),
-                // lod is the node's stored getLod (chunkLod + 1), maxLevel is the
-                // tree's real ladder depth (set via setMaxLodLevel from
-                // LocalScene::maxChunkLod). The shader keeps an entry iff its
-                // chunkLod matches the distance-selected rung; the band is chosen
-                // purely by distance to the chunk, so no per-entry geometric size
-                // is involved.
-                const int chunkLod = capLevel + 1;
-                const int lod = chunkLod + 1;
-                const glm::vec4 lodMeta = glm::vec4(static_cast<float>(chunkLod),
-                                                    static_cast<float>(lod),
+                // Third vec4 (meta): {cellSize, level, maxLevel, unused} —
+                // cellSize is the chunk's own cube length; level is the 0-based
+                // rung (capLevel = chunkLod - 1); maxLevel is the tree's real
+                // ladder depth. The shader uses cellSize to scale the rung width
+                // per level (baseCell = cellSize/2^level) and to snap every rung
+                // of a column to one shared anchor (rootSide), which is what makes
+                // the distance bands tile without overlap. This is the clipmap
+                // ladder alignment — not optional size arithmetic.
+                const float cellSize = capBoundsMax.x - capBoundsMin.x;
+                const glm::vec4 lodMeta = glm::vec4(cellSize,
+                                                    static_cast<float>(capLevel),
                                                     static_cast<float>(maxLodLevel_), 0.0f);
                 glm::vec4 bounds[3] = { capBoundsMin, capBoundsMax, lodMeta };
                 std::memcpy(bndData, bounds, sizeof(bounds));

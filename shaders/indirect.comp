@@ -182,18 +182,25 @@ void processChunk(uint s) {
     // Per-entry LoD rung: chunkLod is the band's ladder level (1 = finest
     // published rung). Distance alone selects the rung to draw; no geometric
     // sizes are involved.
-    int chunkLod   = int(lodMeta.x + 0.5);
+    // Per-chunk LoD band selection (frustum-independent). Each published entry is
+    // one chunk (node) at a single rung; distance selects which rung to draw and
+    // the gate keeps exactly the one whose rung matches. This is a clipmap ladder:
+    // chunk levels double in size per rung, so the rung width must scale per level
+    // (baseCell) and every rung of a column must share ONE anchor (rootSide) or
+    // nested rungs pick different rungs and overlap. That per-level scaling is the
+    // reason cellSize is needed — it is the chunk's own cube length, not "crap".
+    float cellSize = lodMeta.x;
+    int entryLevel = int(lodMeta.y + 0.5);
     int maxLevel   = int(lodMeta.z + 0.5);
-    int entryLevel = chunkLod - 1;
 
     uint selectedLevel = 0xFFFFFFFFu;
-    if (chunkLod > 0) {
-        // Distance picks the rung: floor(dist / lodBias) is the band index, and
-        // the gate below keeps the entry whose chunkLod matches it. lodBias is
-        // the world distance per rung (a settings value).
-        vec3 center = 0.5f * (minp + maxp);
-        float dist = distance(pc.camPos, center);
-        selectedLevel = uint(min(floor(dist / pc.lodBias), float(maxLevel)));
+    if (cellSize > 0.0) {
+        float baseCell = cellSize / exp2(float(max(entryLevel, 0)));
+        float rootSide = cellSize * exp2(float(maxLevel - entryLevel));
+        vec3 rootMin = floor(minp / rootSide) * rootSide;
+        vec3 anchor = rootMin + 0.5f * rootSide;
+        float band = distance(pc.camPos, anchor) / (baseCell * pc.lodBias);
+        selectedLevel = uint(min(floor(band), float(maxLevel)));
         selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
     }
 
@@ -210,14 +217,13 @@ void processChunk(uint s) {
     }
 
     // ── LoD band gate ────────────────────────────────────────────────────────
-    // Keep a band iff its chunkLod matches the distance-selected rung
-    // (entryLevel == selectedLevel). The band grid is shared by all rungs, so this
-    // selects exactly one rung per region; without it every rung of the clipmap
-    // ladder is drawn at once and coarse rungs smear over the fine detail. A rung
-    // outside the configured ladder (entryLevel > maxLevel) can never tile and is
-    // rejected so it cannot overlap finer rungs. Entries with chunkLod == 0 (no
-    // LoD data) fall through and are kept (legacy behavior).
-    if (chunkLod > 0 && (entryLevel != int(selectedLevel) || entryLevel > maxLevel)) {
+    // Keep a band iff its rung matches the distance-selected rung
+    // (entryLevel == selectedLevel). The shared rootSide anchor makes every rung
+    // of a column derive the same selectedLevel, so exactly one rung is drawn per
+    // region; without this gate every rung of the ladder is drawn at once and
+    // coarse rungs smear over the fine detail. Entries with no LoD data
+    // (cellSize <= 0) fall through and are kept (legacy behavior).
+    if (cellSize > 0.0 && uint(entryLevel) != selectedLevel) {
         return;
     }
 
