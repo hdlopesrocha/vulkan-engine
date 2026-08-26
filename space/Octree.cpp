@@ -1267,38 +1267,45 @@ void Octree::shape(
     }
 
     if(r.node != NULL && process) {
+        if(r.resultType != SpaceType::Surface) {
+            r.selectedLod = 0u;
+            r.node->clear(*allocator, NULL);
+        }
+
         if(!isLeaf && r.resultType == SpaceType::Surface) {
-            uint8_t candidateLod = 0u;
-            uint8_t candidateChunkLod = 0u;
-            for(uint i =0 ; i < 8 ; ++i) {
+            uint8_t candidateLod = 255u;
+            uint8_t candidateChunkLod = 255u;
+            bool hasLod = false;
+            bool hasChunkLod = false;
+            std::unordered_map<int, int> brushCounts;
+            int bestCount = 0;
+            for(uint i = 0; i < 8; ++i) {
                 NodeOperationResult &child = children[i];
-                std::unordered_map<int, int> brushCounts;
-                int bestCount = 0;
-                    
                 if(child.resultType == SpaceType::Surface) {
-                    const uint8_t childLod = child.selectedLod;
-                    const uint8_t childChunkLod = child.selectedChunkLod;
-                    if(childLod > 0u) {
-                        candidateLod = candidateLod == 0u ?
-                            childLod : glm::min(candidateLod, childLod);
+                    if(child.selectedLod > 0u) {
+                        candidateLod = glm::min(candidateLod, child.selectedLod);
+                        hasLod = true;
                     }
-                    if(childChunkLod > 0u) {
-                        candidateChunkLod = candidateChunkLod == 0u ?
-                            childChunkLod : glm::min(candidateChunkLod, childChunkLod);
+                    if(child.selectedChunkLod > 0u) {
+                        candidateChunkLod = glm::min(candidateChunkLod, child.selectedChunkLod);
+                        hasChunkLod = true;
                     }
-                }
-                const int childBrush = child.brushIndex;
-                if(childBrush > DISCARD_BRUSH_INDEX) {
-                    const int count = ++brushCounts[childBrush];
-                    if(count > bestCount) {
-                        bestCount = count;
-                        r.brushIndex = childBrush;
-                        r.brushHsv = child.brushHsv;
+
+                    const int childBrush = child.brushIndex;
+                    if(childBrush > DISCARD_BRUSH_INDEX) {
+                        const int count = ++brushCounts[childBrush];
+                        if(count > bestCount) {
+                            bestCount = count;
+                            r.brushIndex = childBrush;
+                            r.brushHsv = child.brushHsv;
+                        }
                     }
                 }
             }
-            r.selectedLod = candidateLod > 0u ? ++candidateLod : r.selectedLod;    
-            r.selectedChunkLod = candidateChunkLod > 0u ? ++candidateChunkLod : r.selectedChunkLod;
+            if(hasLod)
+                r.selectedLod = static_cast<uint8_t>(candidateLod + 1u);
+            if(hasChunkLod) 
+                r.selectedChunkLod = static_cast<uint8_t>(candidateChunkLod + 1u);
         }
 
         r.node->setType(r.resultType);
@@ -1308,10 +1315,6 @@ void Octree::shape(
         r.node->setChunkLod(r.selectedChunkLod);
         r.node->setBrush(r.brushIndex);
         r.node->vertex.hsv = r.brushHsv;
-
-        if(r.resultType != SpaceType::Surface) {
-            r.node->clear(*allocator, NULL);
-        }
 
         if(r.node->getChunkLod() > 0 && r.resultType == SpaceType::Surface) {
             ++r.node->version;
