@@ -10,12 +10,12 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 void main() {
     float rng = 10.0;
 
-    if (abs(fragSdf) > rng) {
+    if (fragSdf > rng) {
         discard;
     }
 
     float normalizedMagnitude = clamp(abs(fragSdf) / rng, 0.0, 1.0);
-    vec3 negativeColor = vec3(0.0, 0.0, 0.0);
+    vec3 negativeColor = vec3(0.2, 0.2, 0.2);
 
     // Palette copied from main.frag debug palette (16 colors)
     const int PALETTE_SIZE = 16;

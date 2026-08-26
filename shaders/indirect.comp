@@ -264,12 +264,18 @@ void main() {
 
         // Planes: left, right, bottom, top, near, far
         vec4 p;
-        if (gl_LocalInvocationIndex == 0u)      p = normalizePlane(row3 + row0); // left
-        else if (gl_LocalInvocationIndex == 1u) p = normalizePlane(row3 - row0); // right
-        else if (gl_LocalInvocationIndex == 2u) p = normalizePlane(row3 + row1); // bottom
-        else if (gl_LocalInvocationIndex == 3u) p = normalizePlane(row3 - row1); // top
-        else if (gl_LocalInvocationIndex == 4u) p = normalizePlane(row2);        // near (Vulkan NDC z in [0,w])
-        else                                   p = normalizePlane(row3 - row2);  // far
+        if (gl_LocalInvocationIndex == 0u)      
+            p = normalizePlane(row3 + row0); // left
+        else if (gl_LocalInvocationIndex == 1u) 
+            p = normalizePlane(row3 - row0); // right
+        else if (gl_LocalInvocationIndex == 2u) 
+            p = normalizePlane(row3 + row1); // bottom
+        else if (gl_LocalInvocationIndex == 3u) 
+            p = normalizePlane(row3 - row1); // top
+        else if (gl_LocalInvocationIndex == 4u) 
+            p = normalizePlane(row2);        // near (Vulkan NDC z in [0,w])
+        else                                   
+            p = normalizePlane(row3 - row2);  // far
         gPlanes[gl_LocalInvocationIndex] = p;
     }
     barrier();
