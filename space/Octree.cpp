@@ -339,9 +339,9 @@ void Octree::iterateTriangles(
             // Rebuild root-consistent cubes without any heap allocation: the
             // parent chain is a single path from root, so we store it in fixed
             // stack arrays and pick the deepest ancestor whose cube still
-            // contains pos. (Depth is bounded; MAX_CHAIN matches the
-            // collectBreaks recursion cap. If exceeded we simply fall through to
-            // the default root descent below — correct, just less optimal.)
+            // contains pos. (Depth is bounded; MAX_CHAIN is a generous upper
+            // bound. If exceeded we simply fall through to the default root
+            // descent below — correct, just less optimal.)
             // The chain is cached in cachedChain* and only rebuilt when the
             // anchor (hint.node) changes; it is independent of pos.
             if(hint.node != cachedChainNode) {
@@ -505,7 +505,7 @@ void Octree::iterateTriangles(
 
     std::function<void(const EdgeSpan&, float, float, std::vector<float>&, int)> collectBreaks;
     collectBreaks = [&](const EdgeSpan &edge, float start, float end, std::vector<float> &breaks, int depth) {
-        if(depth > 64 || end - start <= edge.eps * 2.0f) {
+        if(end - start <= edge.eps * 2.0f) {
             return;
         }
 

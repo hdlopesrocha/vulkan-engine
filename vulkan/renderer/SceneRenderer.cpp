@@ -934,16 +934,10 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // depth. Per-chunk values here would mis-align the distance bands and cull
     // most rungs (holes across the terrain).
     if (world_) {
-        const float cs = world_->scene().opaqueOctree.chunkSize;
         const float ms = 30.0f;
-        mainSolidRenderer->getIndirectRenderer().setChunkCellSize(cs);
-        mainLiquidRenderer->getIndirectRenderer().setChunkCellSize(cs);
         mainSolidRenderer->getIndirectRenderer().setMaxLodLevel(world_->scene().maxChunkLod(LAYER_OPAQUE, ms));
         mainLiquidRenderer->getIndirectRenderer().setMaxLodLevel(world_->scene().maxChunkLod(LAYER_TRANSPARENT, ms));
         if (brushRenderer) {
-            const float bcs = world_->brushScene() ? world_->brushScene()->opaqueOctree.chunkSize : cs;
-            brushRenderer->getSolidIR().setChunkCellSize(bcs);
-            brushRenderer->getLiquidIR().setChunkCellSize(bcs);
             if (world_->brushScene()) {
                 brushRenderer->getSolidIR().setMaxLodLevel(world_->brushScene()->maxChunkLod(LAYER_OPAQUE, ms));
                 brushRenderer->getLiquidIR().setMaxLodLevel(world_->brushScene()->maxChunkLod(LAYER_TRANSPARENT, ms));

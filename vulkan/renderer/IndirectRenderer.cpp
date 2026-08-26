@@ -28,7 +28,7 @@ struct CullPushConstants {
     glm::vec3 camPos;     // offset 80
     float lodBias;        // offset 92
     uint32_t maxTargetLod; // offset 96
-    uint32_t numCmdsVeg;   // offset 100 (vegetation entry count; 0 for solid-only dispatch)
+    uint32_t numCmdsVeg;   // offset 100 (legacy/unused; kept for layout compatibility)
 }; // 104 bytes
 
 struct CascadeCullPushConstants {
@@ -1865,10 +1865,10 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     pc.viewProj     = viewProj;
     pc.targetLayer  = 0;
     pc.numCmds      = numCmds;
-    pc.numCmdsVeg   = 0; // solid-only dispatch: no vegetation entries consumed
     pc.camPos       = camPos;
     pc.lodBias      = lodBias;
     pc.maxTargetLod = static_cast<uint32_t>(maxTargetLod);
+    pc.numCmdsVeg   = 0; // solid-only dispatch: no vegetation entries consumed
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc);
 
     uint32_t groupSize = 64;
@@ -2082,10 +2082,10 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     pc2.viewProj     = viewProj;
     pc2.targetLayer  = 0;
     pc2.numCmds      = numCmds;
-    pc2.numCmdsVeg   = 0; // solid-only dispatch: no vegetation entries consumed
     pc2.camPos       = camPos;
     pc2.lodBias      = lodBias;
     pc2.maxTargetLod = static_cast<uint32_t>(maxTargetLod);
+    pc2.numCmdsVeg   = 0; // solid-only dispatch: no vegetation entries consumed
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc2);
 
     uint32_t groupSize = 64;
@@ -3009,31 +3009,18 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
             VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capEntryIndex) * 3 * sizeof(glm::vec4);
             void* bndData = boundsBuffer.map(boundsOffset);
             if (bndData) {
-                // Third vec4 (meta): {cellSize, level, maxLevel, unused} —
-                // level is the 0-based band rung (0 = frontier chunk, ...
-                // maxLevel = root); maxLevel is the tree's real ladder depth
-                // (set via setMaxLodLevel from LocalScene::maxChunkLod).
-                //
-                // The shader derives
-                //   baseCell = cellSize / 2^level
-                //   rootSide = cellSize * 2^(maxLevel-level)
-                //   anchor   = floor(minp / rootSide) * rootSide
-                //   band     = dist(cam, anchor) / (baseCell * lodBias)
-                // and keeps the rung iff its level == floor(band). For the rungs
-                // of one chunk-chain to tile distance — exactly one rung drawn
-                // per region, no overlap, no missing chunks — baseCell must be
-                // the SAME for every entry and rootSide constant. Both hold iff
-                // cellSize ∝ 2^level. A rung's mesh AABB side already scales as
-                // chunkSize * 2^level (each ancestor rung doubles), so the AABB
-                // side itself is exactly the required form. A global
-                // chunkCellSize_ breaks both invariants (baseCell halves per
-                // level and rootSide shifts per rung), so it is only a fallback
-                // for degenerate bounds.
-                const float meshSide = (capBoundsMax.x - capBoundsMin.x);
-                const float cellSize = meshSide > 0.0f
-                                            ? meshSide
-                                            : (chunkCellSize_ > 0.0f ? chunkCellSize_ : meshSide);
-                const glm::vec4 lodMeta = glm::vec4(cellSize, static_cast<float>(capLevel),
+                // Third vec4 (meta): {chunkLod, lod, maxLevel, unused} —
+                // chunkLod is the band's ladder rung (1 = finest published rung),
+                // lod is the node's stored getLod (chunkLod + 1), maxLevel is the
+                // tree's real ladder depth (set via setMaxLodLevel from
+                // LocalScene::maxChunkLod). The shader keeps an entry iff its
+                // chunkLod matches the distance-selected rung; the band is chosen
+                // purely by distance to the chunk, so no per-entry geometric size
+                // is involved.
+                const int chunkLod = capLevel + 1;
+                const int lod = chunkLod + 1;
+                const glm::vec4 lodMeta = glm::vec4(static_cast<float>(chunkLod),
+                                                    static_cast<float>(lod),
                                                     static_cast<float>(maxLodLevel_), 0.0f);
                 glm::vec4 bounds[3] = { capBoundsMin, capBoundsMax, lodMeta };
                 std::memcpy(bndData, bounds, sizeof(bounds));

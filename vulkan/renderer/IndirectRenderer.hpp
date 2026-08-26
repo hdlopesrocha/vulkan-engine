@@ -158,13 +158,6 @@ public:
     // chunk whose level exceeds it, leaving holes across the terrain.
     void setMaxLodLevel(int l) { maxLodLevel_ = l; }
 
-    // Global base chunk size (Octree::chunkSize). Written into each entry's
-    // bounds meta as `lodMeta.x`. This MUST be a single constant for the whole
-    // scene — NOT each chunk's own cube length. The shader derives the band
-    // anchor/rootSide from it; if it varies per chunk the distance bands no
-    // longer align across chunks and most rungs get culled (holes).
-    void setChunkCellSize(float s) { chunkCellSize_ = s; }
-
     // Upload a single mesh's vertex/index data to the GPU, and write its
     // indirect command + bounds into the host-visible metadata buffers.
     // This is the per-chunk equivalent of a full rebuild — but only touches
@@ -334,9 +327,6 @@ private:
     // Real ladder depth of the tree (set via setMaxLodLevel from
     // LocalScene::maxChunkLod). Used as lodMeta.z in the GPU band test.
     int maxLodLevel_ = 16;
-    // Global base chunk size (Octree::chunkSize) used as lodMeta.x for the band
-    // test. Must be constant across all entries (see setChunkCellSize).
-    float chunkCellSize_ = 0.0f;
 
     struct PendingTransfer {
         VkFence fence = VK_NULL_HANDLE;

@@ -71,7 +71,7 @@ layout(push_constant) uniform PC {
     uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now)
     uint numCmds;     // number of SOLID draw commands
     vec3 camPos;      // camera position driving the per-chunk LoD band selection
-    float lodBias;    // band scale: larger = coarser levels kick in farther away
+    float lodBias;    // world distance per LoD rung: larger = coarser levels kick in farther away
     uint maxTargetLod; // clamp: never select a coarser LoD level than this
     uint numCmdsVeg;   // legacy/unused in the merged dispatch (kept for layout compatibility)
 } pc;
@@ -150,10 +150,9 @@ void processChunk(uint s) {
     if (inCmds.cmds[s].indexCount == 0u) return;
 
     // bounds stored as min, max, meta triples in `boundsBuf.data`
-    // meta = {cellSize, level, maxLevel, unused}: cellSize is the chunk's
-    // OWN cube length (frontier base = cellSize / 2^level), level is the
-    // 0-based LoD level. cellSize <= 0 marks an entry with no LoD data
-    // (always kept, legacy behavior).
+    // meta = {chunkLod, lod, maxLevel, unused}: chunkLod is the band's ladder
+    // rung (1 = finest published rung), lod is the node's stored getLod
+    // (chunkLod + 1), maxLevel is the tree's real ladder depth.
     uint bIndex = s * 3u;
     bool hasBounds = (bIndex + 2u) < boundsBuf.data.length();
     vec3 minp = vec3(0.0);
@@ -166,48 +165,35 @@ void processChunk(uint s) {
     }
 
     // ── Per-chunk LoD band selection (frustum-independent) ──────────────────
-    // Chunks arrive one by one, each a single mesh tagged with its own
-    // chunkLod level. Every chunk covers a band of distance:
-    //   band = dist(camPos, anchor) / (baseCell * lodBias)
-    // with baseCell = cellSize / 2^level (the frontier cell size) and anchor
-    // the center of the chunk's LoD-PYRAMID root cube, so the bands of the
-    // pyramid TILE distance: level k covers band [k, k+1), and the coarsest
-    // level (== meta.z) covers everything beyond. The chunk is kept iff its
-    // level matches the band — close chunks draw the fine frontier meshes,
-    // far chunks the coarse ancestor meshes.
-    //
-    // The band must be anchored at the pyramid root cube (shared by every
-    // level of the pyramid), NOT at the chunk's own center: each level's
-    // cube center is offset along the pyramid diagonal (a level-k center is
-    // a corner of its level-(k-1) children), so distance-to-center gives each
-    // level a slightly different band and the bands stop tiling — gap shells
-    // where no level of the pyramid matches (chunks missing from view) and
-    // overlaps where two levels match. The root cube side is
-    // cellSize * 2^(maxLevel - entryLevel), and its min corner is the
-    // grid-aligned floor of the chunk's AABB min, which is shared by every
-    // level of the pyramid — so all levels derive the exact same anchor and
-    // floor(band) selects exactly one level per region.
-    //
+    // Each chunk publishes one band per chunkLod rung. Distance alone picks the
+    // rung to draw: floor(dist(camPos, chunkCenter) / lodBias) is the band
+    // index, and the gate below keeps the entry whose chunkLod matches it.
+    // lodBias is the world distance per rung (a settings value). The selection
+    // is computed for EVERY non-empty entry — even ones outside the camera
+    // frustum — and stamped into visibleLods, so the shadow cascade cull reads
+    // the exact same level instead of re-deriving the band with a stale camera
+    // position. (The band depends only on distance to the camera,
+
     // The selection is computed for EVERY non-empty entry — even ones outside
     // the camera frustum — and stamped into visibleLods, so the shadow cascade
     // cull reads the exact same level instead of re-deriving the band with a
     // stale camera position. (The band depends only on distance to the camera,
     // not on the frustum.)
-    float cellSize = lodMeta.x;
-    int entryLevel = int(lodMeta.y + 0.5);
+    // Per-entry LoD rung: chunkLod is the band's ladder level (1 = finest
+    // published rung). Distance alone selects the rung to draw; no geometric
+    // sizes are involved.
+    int chunkLod   = int(lodMeta.x + 0.5);
     int maxLevel   = int(lodMeta.z + 0.5);
+    int entryLevel = chunkLod - 1;
 
     uint selectedLevel = 0xFFFFFFFFu;
-    if (cellSize > 0.0) {
-        float baseCell = cellSize / exp2(float(max(entryLevel, 0)));
-        float rootSide = cellSize * exp2(float(maxLevel - entryLevel));
-        vec3 rootMin = floor(minp / rootSide) * rootSide;
-        vec3 anchor = rootMin + 0.5 * rootSide;
-        float band = distance(pc.camPos, anchor) / (baseCell * pc.lodBias);
-        selectedLevel = uint(min(floor(band), float(maxLevel)));
-        // Clamp the chosen level so the renderer never picks a coarser LoD than
-        // the user-configured ceiling (settings.maxTargetLod). 0xFFFFFFFF stays
-        // untouched for entries with no LoD data.
+    if (chunkLod > 0) {
+        // Distance picks the rung: floor(dist / lodBias) is the band index, and
+        // the gate below keeps the entry whose chunkLod matches it. lodBias is
+        // the world distance per rung (a settings value).
+        vec3 center = 0.5f * (minp + maxp);
+        float dist = distance(pc.camPos, center);
+        selectedLevel = uint(min(floor(dist / pc.lodBias), float(maxLevel)));
         selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
     }
 
@@ -224,12 +210,14 @@ void processChunk(uint s) {
     }
 
     // ── LoD band gate ────────────────────────────────────────────────────────
-    // "The chunk is kept iff its level matches the band" (see note above). The
-    // band selects exactly one level per location; without this gate EVERY rung
-    // of the clipmap ladder is drawn simultaneously, so coarse rungs smear over
-    // the fine detail and the surface looks blobby. Entries carrying no LoD data
-    // (cellSize <= 0) are always kept (legacy behavior).
-    if (cellSize > 0.0 && uint(entryLevel) != selectedLevel) {
+    // Keep a band iff its chunkLod matches the distance-selected rung
+    // (entryLevel == selectedLevel). The band grid is shared by all rungs, so this
+    // selects exactly one rung per region; without it every rung of the clipmap
+    // ladder is drawn at once and coarse rungs smear over the fine detail. A rung
+    // outside the configured ladder (entryLevel > maxLevel) can never tile and is
+    // rejected so it cannot overlap finer rungs. Entries with chunkLod == 0 (no
+    // LoD data) fall through and are kept (legacy behavior).
+    if (chunkLod > 0 && (entryLevel != int(selectedLevel) || entryLevel > maxLevel)) {
         return;
     }
 
