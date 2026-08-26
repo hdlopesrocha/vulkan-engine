@@ -1065,13 +1065,6 @@ void Octree::shape(
     if(!isLeaf) {
         const float halfDiagonal = nodeLength * 0.866025403784439f;
 
-        // No existing SDF data (all INFINITY) — result is purely the shape.
-        // Operations that propagate from infinity: need the Lipschitz center
-        // check for safety. Others: result is INFINITY = Empty.
-        // The allInfinity guard is mandatory: a cell that ALREADY has SDF
-        // data (e.g. an interpolated surface from a parent, or a previous
-        // shape op) must NOT be pruned by this new shape's center alone —
-        // pruning it would wipe the existing field.
         if(!processed && isNodeLeaf) {
             bool allInfinity = true;
             for(int i = 0; i < 8; ++i)
@@ -1094,10 +1087,6 @@ void Octree::shape(
                         processed = true;
                     }
                 } else {
-                    // Non-propagating (Paint, Delete): INFINITY op anything is
-                    // INFINITY = Empty, so the result stays the default
-                    // (all-INFINITY). The shape's own values must NOT leak
-                    // into the parent aggregation — there is no geometry here.
                     r.shapeType = SDF::eval(r.shapeSDF);
                     r.resultType = SpaceType::Empty;
                     r.selectedLod = 1;
@@ -1108,10 +1097,6 @@ void Octree::shape(
             
         }
 
-        // Operations that preserve Solid — existing Solid → always Solid everywhere
-        // The allFinite guard: only prune when the existing field is fully
-        // resolved (no INFINITY corners). An interpolated/partial field must
-        // descend so its corners get real values.
         if(!processed && frame.type == SpaceType::Solid &&
            args.operation->preservesSolid()) {
             bool allFinite = true;
@@ -1119,9 +1104,6 @@ void Octree::shape(
                 if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
             if(allFinite) {
 
-            // Painting prunes the whole subtree here (no descent to leaves
-            // where the painter normally runs), so apply the painter at the
-            // node center to keep the paint stroke visible in solid regions.
             if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
                 if(r.node != NULL) {
                     r.brushIndex = args.painter.paint(r.node->vertex);
@@ -1132,11 +1114,6 @@ void Octree::shape(
                     r.node->setBrush(r.brushIndex);
                 }
             }
-            // The parent aggregates its corners from this child's resultSDF,
-            // so an unresolved default (all INFINITY, Empty) here would poison
-            // every ancestor's SDF while returning. Combine the existing field
-            // with the shape so the propagated values match the true result
-            // (Add keeps the min; Paint's opPaint is the identity on the SDF).
             for(uint i = 0; i < 8; ++i) {
                 r.resultSDF[i] = args.operation->combine(frame.sdf[i], r.shapeSDF[i]);
             }
@@ -1146,8 +1123,6 @@ void Octree::shape(
             }
         }
 
-        // Operations that preserve Empty — existing Empty → always Empty everywhere
-        // allFinite guard: an unresolved (INFINITY-corner) field must descend.
         if(!processed && frame.type == SpaceType::Empty && args.operation->preservesEmpty()) {
             bool allFinite = true;
             for(int i = 0; i < 8; ++i)
@@ -1165,10 +1140,6 @@ void Octree::shape(
             }
         }
 
-        // For remaining operations (or types): check if the shape center is far enough
-        // that the entire cube is definitely Solid/Empty.
-        // allFinite guard: interpolating an unresolved field (INFINITY corners)
-        // would compare garbage — the cell must descend instead.
         if(!processed && frame.type == SpaceType::Solid) {
             bool allFinite = true;
             for(int i = 0; i < 8; ++i)
@@ -1183,9 +1154,6 @@ void Octree::shape(
                 }
                 r.shapeType = SDF::eval(r.shapeSDF);
                 r.resultType = SpaceType::Solid;
-                // Same painting concern as the preserves-Solid prune above:
-                // apply the painter at the node center so painted operations
-                // pruned here still leave a visible stroke.
                 if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
                     if(r.node != NULL) {
                         r.brushIndex = args.painter.paint(r.node->vertex);
@@ -1210,29 +1178,12 @@ void Octree::shape(
                 const ContainmentType check = args.function.check(frame.cube);
                 process = check != ContainmentType::Disjoint;
             }
-
-            // A node-less cell whose frame carries a Surface type holds a field
-            // interpolated from an ancestor (or a stale inherited type). It must
-            // descend to the shape frontier so the field is materialized as real
-            // nodes at every level: the leaf combine is exact at the actual
-            // corners for every operation, and resolved children prune cheaply.
-            // Stopping here would instead keep a single coarse simplified node
-            // tessellated directly from the trilinear field — the shape would
-            // never iterate down to the leaves of interpolated surfaces.
             if(!process && frame.node == NULL && frame.type == SpaceType::Surface) {
                 process = true;
             }
             if(process) {    
                 shapeChildren(frame, args, threadContext, children, updateHandler, deleteHandler);
             } else {
-                // Shape does not reach this cell (center beyond half-diagonal,
-                // so the shape is positive at every corner) — but it may still
-                // be NEARER than the existing field (e.g. a sphere surface just
-                // outside an existing box: min(existing, shape) < existing).
-                // The result is the exact combined field at the corners; the
-                // pre-existing field alone would poison the parent aggregation
-                // with stale values (and the parent's setChildren copies them
-                // into nodes).
                 r.shapeType = SDF::eval(r.shapeSDF);
                 r.resultType = frame.type;
                 if(frame.type == SpaceType::Empty) ++prunedEmptyNodes;
@@ -1243,9 +1194,6 @@ void Octree::shape(
         }
     }
 
-    // Leaf: combine shape with the existing field; non-leaf with computed
-    // children: aggregate upward. Pruned/disjoint cells were fully resolved
-    // above and must NOT be re-aggregated from default (Empty) children.
     if(isLeaf || (process && !processed && !isLeaf)) {
         buildShapeSDF(isLeaf, args, frame, r, children, threadContext, false);
         buildResultSDF(isLeaf, args, frame, r, children, threadContext);
@@ -1256,12 +1204,7 @@ void Octree::shape(
                                 && frame.type == SpaceType::Surface
                                 ;
 
-    // Gate: write/refresh the node when the result has geometry (non-Empty
-    // shape or interpolated surface) OR when a node already exists. The last
-    // clause is essential: a node whose corners the shape alone sees as Empty
-    // (e.g. a tiny sphere inside a large box cell — all sphere corners
-    // positive, so shapeType==Empty) still needs its combined resultSDF
-    // written back, otherwise it keeps stale pre-combine corners.
+
     if(r.shapeType != SpaceType::Empty || interpolatedSurface || r.node != NULL) {
         if(r.resultType == SpaceType::Surface) {
             // Create nodes for surface results if they don't exist
@@ -1279,7 +1222,7 @@ void Octree::shape(
                         r.node->vertex.hsv = args.painter.paintHSV(r.node->vertex);
                         r.node->vertex.brushIndex = r.brushIndex;
                         r.brushHsv = r.node->vertex.hsv;
-                        r.selectedLod = r.shapeType == SpaceType::Solid ? 1u : 0u;
+                        r.selectedLod = r.shapeType != SpaceType::Empty ? 1u : 0u;
                     }  
                 } else  {
                 
@@ -1297,12 +1240,6 @@ void Octree::shape(
                             OctreeNode * childNode = child.node;
 
                             if(child.resultType != SpaceType::Surface) {
-                                // A Surface result normally owns its node (created
-                                // by its own shape() run). Degenerate cells — e.g.
-                                // a delete rim exactly touching a corner, whose
-                                // -0.0 corner classifies the cell as Surface with
-                                // all-zero-or-negative corners — may return without
-                                // one; never store a NULL slot for them.
                                 if(childNode == NULL) {
                                     BoundingCube childCube = frame.cube.getChild(i);
                                     childNode = allocator->allocate()->init(Vertex(childCube.getCenter()));
@@ -1312,8 +1249,8 @@ void Octree::shape(
                                 childNode->setSDF(child.resultSDF);
                                 childNode->setChunk(false);
                                 childNode->setBrush(r.brushIndex);
-                                childNode->setLod(r.selectedLod);
-                                childNode->setChunkLod(r.selectedChunkLod);
+                                childNode->setLod(child.selectedLod);
+                                childNode->setChunkLod(child.selectedChunkLod);
                                 childNode->vertex.hsv = child.brushHsv;
                             }
 
@@ -1329,7 +1266,7 @@ void Octree::shape(
         }
     }
 
-    if(r.node != NULL) {
+    if(r.node != NULL && process) {
         if(!isLeaf && r.resultType == SpaceType::Surface) {
             uint8_t candidateLod = 0u;
             uint8_t candidateChunkLod = 0u;
@@ -1372,13 +1309,7 @@ void Octree::shape(
         r.node->setBrush(r.brushIndex);
         r.node->vertex.hsv = r.brushHsv;
 
-        if(process && r.resultType != Surface) {
-            // Compression: a fully Solid/Empty subtree collapses to a leaf
-            // (children are released) before the lod rule runs, so the
-            // collapsed node follows the leaf rule, not max(child)+1.
-            // Only when the cell descended (process=true) do the children
-            // represent this subtree's real state; a process=false cell's
-            // children were never re-evaluated and must be preserved.
+        if(r.resultType != SpaceType::Surface) {
             r.node->clear(*allocator, NULL);
         }
 
