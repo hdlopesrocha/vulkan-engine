@@ -1170,15 +1170,6 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
         lm.geom = geo;
         lm.lod = lod;
         lm.version = version;
-        // cellSize/lod describe THIS rung's own resolution (emitting cell), and
-        // the bounds (AABB + LoD-band anchor) must use the EMITTING CELL cube
-        // (not the added chunk cube). The shader anchors the distance band at the
-        // cell's own pyramid-root min (indirect.comp's pyramid-root note); with a
-        // shared chunk-min anchor every rung of a chunk derives the SAME band and
-        // the gate would keep only one level per chunk — discarding the finer
-        // sub-cell rungs and leaving holes. Per-cell anchors let each rung select
-        // its own level independently, so the clipmap tiles correctly (every
-        // location is covered by exactly the rung at the band-selected level).
         lm.cellSize = cube.getLength().x;
         lm.boundsMin = cube.getMin();
         lm.boundsMax = cube.getMax();

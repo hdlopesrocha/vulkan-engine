@@ -3010,16 +3010,41 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
             void* bndData = boundsBuffer.map(boundsOffset);
             if (bndData) {
                 // Third vec4 (meta): {cellSize, level, maxLevel, unused} —
-                // cellSize is the chunk's OWN cube length (the shader derives
-                // the frontier base as cellSize / 2^level); level is the
-                // 0-based LoD level; maxLevel is the tree's real ladder depth
-                // (set via setMaxLodLevel from LocalScene::maxChunkLod) — NOT a
-                // hard-coded constant, or every chunk above that level is culled.
-                const float cellSize = chunkCellSize_ > 0.0f
-                                            ? chunkCellSize_
-                                            : (capBoundsMax.x - capBoundsMin.x);
+                // level is the 1-based chunkLod rung; maxLevel is the tree's
+                // real ladder depth (set via setMaxLodLevel).
+                //
+                // The shader derives
+                //   baseCell = cellSize / 2^level
+                //   rootSide = cellSize * 2^(maxLevel-level)
+                //   anchor   = floor(minp / rootSide) * rootSide
+                //   band     = dist(cam, anchor) / (baseCell * lodBias)
+                // and keeps the rung iff its level == floor(band). For the rungs
+                // of ONE chunk to tile distance — exactly one rung drawn per
+                // chunk, no overlap, no missing chunks — two things must hold:
+                //   (a) baseCell is the SAME for every entry (so selectedLevel
+                //       is a uniform function of distance), and
+                //   (b) rootSide is constant within a chunk (so every rung
+                //       anchors to the same chunk grid).
+                // Both hold iff cellSize ∝ 2^level. The mesh AABB side of the
+                // level-1 (finest) rung of a chunk is the chunk's base size
+                // cellSize0, and each rung up doubles it, so store
+                //   cellSize = cellSize0 * 2^level.
+                // Then baseCell = cellSize0 (constant for ALL entries) and
+                // rootSide = cellSize0 * 2^maxLevel (constant per chunk → all of
+                // its rungs share one anchor). A global chunkCellSize_ breaks
+                // (a)/(b) across chunks of differing sizes, and the raw AABB
+                // size breaks (a) (quadruples baseCell per level), so neither is
+                // used here. chunkCellSize_ remains only a safety fallback.
+                const float meshSide = (capBoundsMax.x - capBoundsMin.x);
+                float cellSize;
+                if (maxLodLevel_ >= capLevel && capLevel > 0 && meshSide > 0.0f) {
+                    const float cellSize0 = meshSide * std::exp2(-static_cast<float>(capLevel - 1));
+                    cellSize = cellSize0 * std::exp2(static_cast<float>(capLevel));
+                } else {
+                    cellSize = chunkCellSize_ > 0.0f ? chunkCellSize_ : meshSide;
+                }
                 const glm::vec4 lodMeta = glm::vec4(cellSize, static_cast<float>(capLevel),
-                                                   static_cast<float>(maxLodLevel_), 0.0f);
+                                                    static_cast<float>(maxLodLevel_), 0.0f);
                 glm::vec4 bounds[3] = { capBoundsMin, capBoundsMax, lodMeta };
                 std::memcpy(bndData, bounds, sizeof(bounds));
                 boundsBuffer.unmap();
