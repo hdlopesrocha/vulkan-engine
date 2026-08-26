@@ -92,7 +92,14 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                         emittedVersion_[nodeId] = params.node->version;
                     }
                     if(!nodeTesselator.geometry.indices.empty()) {
-                        callback(nodeTesselator.geometry, chunkLod, params.node->version,
+                        // Publish the 0-based band level: decode the +1-shifted
+                        // storage (chunkLod - 1). The renderer gates vegetation
+                        // and ChunkManager tracking on lod == 0 (the frontier
+                        // chunk rung), and indirect.comp clamps selectedLevel to
+                        // maxLevel = maxChunkLod() (0-based) — a 1-based value
+                        // makes lod 0 never exist (no vegetation, closest band
+                        // empty) and the coarsest rung unselectable.
+                        callback(nodeTesselator.geometry, chunkLod - 1, params.node->version,
                                  reinterpret_cast<uintptr_t>(params.node), params.cube);
                     }
                 }

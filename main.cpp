@@ -157,7 +157,10 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
                 if (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty()) {
                     return; // no surface: nothing to publish
                 }
-                if (target.chunkManaged && nodeCopy.node->getChunkLod() == lodMesh.lod) {
+                // lodMesh.lod is the 0-based band level (chunkLod - 1); the
+                // stored chunkLod is 1-based. finishBuild only when the mesh is
+                // the added node's own rung.
+                if (target.chunkManaged && nodeCopy.node->getChunkLod() == lodMesh.lod + 1) {
                     // Phase 3: tessellation complete on a worker thread. The
                     // chunk mesh is complete; only the octree version is
                     // tracked here — GPU data goes through slots.
