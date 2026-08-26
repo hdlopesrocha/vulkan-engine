@@ -1045,8 +1045,17 @@ void Octree::shape(
     r.brushHsv = r.node ? r.node->vertex.hsv : frame.hsv;
     bool isChunk = isChunkNode(nodeLength);
     bool isLeaf = isShapeLeaf && isNodeLeaf;
-    r.selectedLod = isLeaf ? 1u : 0u;
-    r.selectedChunkLod = isChunk ? 1u : 0u;
+    // LoD levels are SIZE-BASED: one +1 per cell-size doubling, identical to the
+    // rule OctreeFile applies on load. This keeps every node exactly one ladder
+    // step above its children regardless of how deep any subtree is subdivided,
+    // so iterateTriangles' `getLod() == targetLod` band match stays consistent
+    // (a child at lod N always has its parent at N+1, even in adaptive trees).
+    // `min(children)+1` aggregation breaks this for mixed-depth subtrees and
+    // drops geometry.
+    r.selectedLod = Octree::lodForCellSize(nodeLength, chunkSize);
+    const int chunkRootLod = Octree::lodForCellSize(chunkSize, chunkSize);
+    const int chunkLodSigned = static_cast<int>(r.selectedLod) - chunkRootLod + 1;
+    r.selectedChunkLod = static_cast<uint8_t>(std::max(0, chunkLodSigned));
 
     NodeOperationResult children[8] = { 
         NodeOperationResult(), NodeOperationResult(), 
@@ -1075,21 +1084,21 @@ void Octree::shape(
                         SDF::copySDF(r.shapeSDF, r.resultSDF);
                         r.shapeType = SpaceType::Solid;
                         r.resultType = SpaceType::Solid;
-                        r.selectedLod = 1;
+                        r.selectedLod = 0;
                         ++prunedSolidNodes;
                         processed = true;
                     } else if(shapeSdfCenter > halfDiagonal) {
                         SDF::copySDF(r.shapeSDF, r.resultSDF);
                         r.shapeType = SpaceType::Empty;
                         r.resultType = SpaceType::Empty;
-                        r.selectedLod = 1;
+                        r.selectedLod = 0;
                         ++prunedEmptyNodes;
                         processed = true;
                     }
                 } else {
                     r.shapeType = SDF::eval(r.shapeSDF);
                     r.resultType = SpaceType::Empty;
-                    r.selectedLod = 1;
+                    r.selectedLod = 0;
                     ++prunedEmptyNodes;
                     processed = true;
                 }
@@ -1222,17 +1231,13 @@ void Octree::shape(
                         r.node->vertex.hsv = args.painter.paintHSV(r.node->vertex);
                         r.node->vertex.brushIndex = r.brushIndex;
                         r.brushHsv = r.node->vertex.hsv;
-                        r.selectedLod = r.shapeType != SpaceType::Empty ? 1u : 0u;
                     }  
                 } else  {
                 
                     if(process) {
                         if (!isChunk) {
                             // Pass frame.chunkCube so the simplifier can guard chunk borders.
-                            SimplificationResult simplificationResult = args.simplifier.simplify(frame.cube, r.resultSDF, children, frame.chunkCube);
-                            if(simplificationResult.isSimplified) {
-                                r.selectedLod = 1u;
-                            }
+                            args.simplifier.simplify(frame.cube, r.resultSDF, children, frame.chunkCube);
                         }
                         OctreeNode * childNodes[8] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
                         for(uint i =0 ; i < 8 ; ++i) {
@@ -1266,48 +1271,31 @@ void Octree::shape(
         }
     }
 
-    if(r.node != NULL && process) {
-        if(r.resultType != SpaceType::Surface) {
-            r.selectedLod = 0u;
-            r.node->clear(*allocator, NULL);
-        }
-
-        if(!isLeaf && r.resultType == SpaceType::Surface) {
-            uint8_t candidateLod = 255u;
-            uint8_t candidateChunkLod = 255u;
-            bool hasLod = false;
-            bool hasChunkLod = false;
-            std::unordered_map<int, int> brushCounts;
-            int bestCount = 0;
-            for(uint i = 0; i < 8; ++i) {
-                NodeOperationResult &child = children[i];
-                if(child.resultType == SpaceType::Surface) {
-                    if(child.selectedLod > 0u) {
-                        candidateLod = glm::min(candidateLod, child.selectedLod);
-                        hasLod = true;
-                    }
-                    if(child.selectedChunkLod > 0u) {
-                        candidateChunkLod = glm::min(candidateChunkLod, child.selectedChunkLod);
-                        hasChunkLod = true;
-                    }
-
-                    const int childBrush = child.brushIndex;
-                    if(childBrush > DISCARD_BRUSH_INDEX) {
-                        const int count = ++brushCounts[childBrush];
-                        if(count > bestCount) {
-                            bestCount = count;
-                            r.brushIndex = childBrush;
-                            r.brushHsv = child.brushHsv;
-                        }
-                    }
+    // Propagate the dominant brush from surface-bearing children up to this node.
+    // lod/chunkLod are already size-based (set above from the node's cell size),
+    // so they need no child aggregation -- that is what kept the ladder
+    // sequential across adaptive subdivision and matched OctreeFile on load.
+    if(!isLeaf && r.resultType == SpaceType::Surface) {
+        std::unordered_map<int, int> brushCounts;
+        int bestCount = 0;
+        for(uint i = 0; i < 8; ++i) {
+            NodeOperationResult &child = children[i];
+            if(child.resultType == SpaceType::Surface && child.brushIndex > DISCARD_BRUSH_INDEX) {
+                const int count = ++brushCounts[child.brushIndex];
+                if(count > bestCount) {
+                    bestCount = count;
+                    r.brushIndex = child.brushIndex;
+                    r.brushHsv = child.brushHsv;
                 }
             }
-            if(hasLod)
-                r.selectedLod = static_cast<uint8_t>(candidateLod + 1u);
-            if(hasChunkLod) 
-                r.selectedChunkLod = static_cast<uint8_t>(candidateChunkLod + 1u);
         }
+    }
 
+    // Materialize this node's properties for both subdivided and terminal nodes.
+    if(r.node != NULL) {
+        if(r.resultType != SpaceType::Surface) {
+            r.node->clear(*allocator, NULL);
+        }
         r.node->setType(r.resultType);
         r.node->setSDF(r.resultSDF);
         r.node->setChunk(isChunk);
@@ -1315,13 +1303,17 @@ void Octree::shape(
         r.node->setChunkLod(r.selectedChunkLod);
         r.node->setBrush(r.brushIndex);
         r.node->vertex.hsv = r.brushHsv;
+    }
 
-        if(r.node->getChunkLod() > 0 && r.resultType == SpaceType::Surface) {
+    // Only terminal (!process) nodes are published; subdivided nodes are
+    // represented by their (already published) descendants.
+    if(r.node != NULL && !process) {
+        if(r.node->getChunkLod() > 0) {
             ++r.node->version;
             OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube, nullptr);
             (r.resultType == SpaceType::Surface) ? updateHandler(data) : deleteHandler(data);
         }
-    }    
+    }
 }
 
 void Octree::iterate(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
