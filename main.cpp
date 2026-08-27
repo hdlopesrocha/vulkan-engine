@@ -1149,6 +1149,12 @@ public:
             // the SDF debug renderer at it to draw from its SDF output buffers.
             sceneRenderer->debugSDFRenderer->setIndirectRenderer(&sceneRenderer->mainSolidRenderer->getIndirectRenderer());
         }
+        if (sceneRenderer->boundingBoxRenderer) {
+            sceneRenderer->boundingBoxRenderer->setCullFrame(frameIdx);
+            // Bounding-box frustum cull is folded into the solid IndirectRenderer's
+            // indirect.comp dispatch, so draw from its bbox output buffers.
+            sceneRenderer->boundingBoxRenderer->setIndirectRenderer(&sceneRenderer->mainSolidRenderer->getIndirectRenderer());
+        }
 
         // Profiling: read previous frame's query results (with availability flag to
         // avoid even partial driver stalls), then reset for this frame.
@@ -1286,12 +1292,19 @@ public:
         // Fold SDF debug-cube culling into the solid IndirectRenderer's single
         // indirect.comp dispatch: register the cube AABBs BEFORE prepareCull so the
         // terrain cull writes the surviving SDF cubes into a dedicated SDF stream.
+        // The cached per-chunk cubes are read internally by the renderer.
         if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
-            auto sdfCubes = sceneRenderer->debugSDFRenderer->getCubes();
-            std::vector<IndirectRenderer::SdfCube> sdf;
-            sdf.reserve(sdfCubes.size());
-            for (auto& c : sdfCubes) sdf.push_back({c.cube.getMin(), c.cube.getMax()});
-            sceneRenderer->mainSolidRenderer->getIndirectRenderer().setSdfCubes(sdf);
+            sceneRenderer->debugSDFRenderer->registerToIndirect();
+        }
+        // Fold mesh bounding-box culling into the solid IndirectRenderer's single
+        // indirect.comp dispatch: register the box AABBs BEFORE prepareCull so the
+        // terrain cull writes the surviving boxes into a dedicated bbox stream. The
+        // box list and the AABB list are built in lockstep (internal to the renderer)
+        // so the cull's firstInstance (local index) matches the instance buffer.
+        if (settings.showBoundingBoxes && sceneRenderer && sceneRenderer->boundingBoxRenderer) {
+            sceneRenderer->boundingBoxRenderer->registerBoundingBoxesToIndirect();
+        } else if (sceneRenderer && sceneRenderer->boundingBoxRenderer) {
+            sceneRenderer->boundingBoxRenderer->clearBoundingBoxesToIndirect();
         }
         sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
         sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(commandBuffer);
@@ -1308,13 +1321,12 @@ public:
         // (its compact/visibleCount buffers are otherwise stale from the last
         // prepareCull or uninitialized, which would draw garbage).
             sceneRenderer->brushRenderer->getLiquidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
-        // GPU frustum-cull SDF debug cubes via indirect.comp (same culling as
-        // solid). Must run outside the render pass, before the debug draw.
-        // prepareCull safely no-ops (clears the visible flag) when there are no cubes.
+        // Upload SDF debug-cube instance payload (frustum cull happens in the
+        // solid IndirectRenderer's indirect.comp dispatch, folded into the terrain
+        // cull). Must run outside the render pass, before the debug draw.
         if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
-            auto sdfCubes = sceneRenderer->debugSDFRenderer->getCubes();
-            sceneRenderer->debugSDFRenderer->setCubes(sdfCubes);
-            sceneRenderer->debugSDFRenderer->prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+            // Refreshes the instance payload from the per-chunk cache internally.
+            sceneRenderer->debugSDFRenderer->prepareCull(commandBuffer);
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
@@ -1556,37 +1568,22 @@ public:
             // Debug renders on top
             const bool showOctreeDebug = octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes();
             if (showOctreeDebug) {
-                std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
-                if (showOctreeDebug && octreeExplorerWidget->isVisible()) {
-                    const auto& widgetCubes = octreeExplorerWidget->getExpandedCubes();
-                    debugCubes.reserve(widgetCubes.size());
-                    for (const auto& wc : widgetCubes)
-                        debugCubes.push_back({BoundingBox(wc.cube.getMin(), wc.cube.getMax()), wc.color});
+                std::vector<DebugCubeRenderer::CubeWithColor> widgetCubes;
+                if (octreeExplorerWidget->isVisible()) {
+                    const auto& wc = octreeExplorerWidget->getExpandedCubes();
+                    widgetCubes.reserve(wc.size());
+                    for (const auto& c : wc)
+                        widgetCubes.push_back({BoundingBox(c.cube.getMin(), c.cube.getMax()), c.color});
                 }
-                if (showOctreeDebug) {
-                    auto nodeCubes = sceneRenderer->debugCubeRenderer->getCubes();
-                    debugCubes.reserve(debugCubes.size() + nodeCubes.size());
-                    for (auto &nc : nodeCubes) debugCubes.push_back(nc);
-                }
-                if (!debugCubes.empty()) {
-                    sceneRenderer->debugCubeRenderer->setCubes(debugCubes);
-                    sceneRenderer->debugCubeRenderer->render(this, commandBuffer, getMainDescriptorSet());
-                }
+                // renderOverlay merges the per-node cache internally (no getCubes).
+                sceneRenderer->debugCubeRenderer->renderOverlay(this, commandBuffer, getMainDescriptorSet(), widgetCubes);
             }
 
             if (settings.showBoundingBoxes && sceneRenderer && sceneRenderer->boundingBoxRenderer) {
-                std::vector<DebugCubeRenderer::CubeWithColor> boxes;
-                auto gatherBoxesFrom = [&](const IndirectRenderer &ir, const glm::vec3 &color){
-                    ir.visitActiveMeshInfos([&](const IndirectRenderer::MeshInfo &mi){
-                        boxes.push_back({BoundingBox(glm::vec3(mi.boundsMin), glm::vec3(mi.boundsMax)), color});
-                    });
-                };
-                gatherBoxesFrom(sceneRenderer->mainSolidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 1.0f, 0.0f));
-                gatherBoxesFrom(sceneRenderer->mainLiquidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 0.5f, 1.0f));
-                if (!boxes.empty()) {
-                    sceneRenderer->boundingBoxRenderer->setCubes(boxes);
-                    sceneRenderer->boundingBoxRenderer->render(this, commandBuffer, getMainDescriptorSet());
-                }
+                // Boxes + AABBs were gathered and registered with the solid IR before
+                // its prepareCull (folded into the terrain cull). Draw the surviving
+                // boxes from the IR's bbox stream.
+                sceneRenderer->boundingBoxRenderer->render(this, commandBuffer, getMainDescriptorSet());
             }
 
             if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {

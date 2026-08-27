@@ -1,4 +1,5 @@
 #include "DebugCubeRenderer.hpp"
+#include "IndirectRenderer.hpp"
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
 #include "../VertexBufferObjectBuilder.hpp"
@@ -66,6 +67,11 @@ void DebugCubeRenderer::init(VulkanApp* app) {
     if (pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE) {
         std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create pipeline!" << std::endl;
     }
+
+    // Load the indirect-count draw function pointer (required for GPU-culled draws).
+    cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCountKHR");
+    if (!cmdDrawIndexedIndirectCount)
+        cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCount");
 }
 
 void DebugCubeRenderer::createCubeVBO(VulkanApp* app) {
@@ -316,7 +322,45 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
     // Line width is specified statically in the pipeline (1.0). Do not call vkCmdSetLineWidth
     // unless the pipeline is created with VK_DYNAMIC_STATE_LINE_WIDTH and the device enables wideLines.
     
-    // Single instanced draw call for all cubes (capped to what fits in the buffer)
+    // Indirect-count draw: only the bounding boxes that survived the GPU frustum
+    // cull (written into the terrain IR's bbox stream by indirect.comp, count in
+    // bboxCountBuf) are drawn. maxDrawCount bounds the bbox command buffer capacity
+    // (MAX_BBOX_CUBES), not the instance buffer. When the IR stream is unavailable we
+    // fall back to drawing every box unculled so the debug overlay still works.
+    if (cmdDrawIndexedIndirectCount && terrainIR_ && cubeVBO.indexCount > 0) {
+        VkBuffer bboxCompact = terrainIR_->getBboxCompactBuffer(currentCullFrame);
+        VkBuffer bboxCount   = terrainIR_->getBboxCountBuffer(currentCullFrame);
+        if (bboxCompact != VK_NULL_HANDLE && bboxCount != VK_NULL_HANDLE) {
+            const uint32_t maxDrawCount = std::min(drawInstanceCount, terrainIR_->getMaxBboxCommands());
+
+            // Compute-shader writes (bbox command/count) → indirect draw + vertex read.
+            // Without this barrier the draw can race the dispatch and read pre-dispatch
+            // (zero/garbage) state, causing the boxes to flicker or vanish.
+            VkBufferMemoryBarrier2 bb[2] = {};
+            auto setupBarrier = [&](VkBufferMemoryBarrier2& b, VkBuffer buf) {
+                b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                b.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+                b.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+                b.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+                b.buffer = buf;
+                b.offset = 0;
+                b.size = VK_WHOLE_SIZE;
+            };
+            setupBarrier(bb[0], bboxCompact);
+            setupBarrier(bb[1], bboxCount);
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.bufferMemoryBarrierCount = 2;
+            dep.pBufferMemoryBarriers = bb;
+            vkCmdPipelineBarrier2(cmd, &dep);
+
+            cmdDrawIndexedIndirectCount(cmd, bboxCompact, 0, bboxCount, 0,
+                                        maxDrawCount, sizeof(VkDrawIndexedIndirectCommand));
+            return;
+        }
+    }
+    // Fallback: draw all boxes (unculled) when the IR stream is unavailable.
     vkCmdDrawIndexed(cmd, cubeVBO.indexCount, drawInstanceCount, 0, 0, 0);
 }
 
@@ -345,10 +389,46 @@ void DebugCubeRenderer::clearCubes() {
     nodeDebugCubes.clear();
 }
 
-std::vector<DebugCubeRenderer::CubeWithColor> DebugCubeRenderer::getCubes() const {
+void DebugCubeRenderer::renderOverlay(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet ds,
+                                      const std::vector<CubeWithColor>& widgetCubes) {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
-    std::vector<CubeWithColor> out;
-    out.reserve(nodeDebugCubes.size());
-    for (const auto& p : nodeDebugCubes) out.push_back(p.second);
-    return out;
+    std::vector<CubeWithColor> all = widgetCubes;
+    all.reserve(all.size() + nodeDebugCubes.size());
+    for (const auto& p : nodeDebugCubes) all.push_back(p.second);
+    setCubes(all);
+    render(app, cmd, ds);
+}
+
+void DebugCubeRenderer::setBoundingBoxesForChunk(NodeID id, const std::vector<CubeWithColor>& cubes) {
+    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    chunkBBoxCubes[id] = cubes;
+}
+
+void DebugCubeRenderer::clearBoundingBoxes() {
+    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    chunkBBoxCubes.clear();
+}
+
+void DebugCubeRenderer::registerBoundingBoxesToIndirect() {
+    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    std::vector<CubeWithColor> all;
+    size_t total = 0;
+    for (const auto& p : chunkBBoxCubes) total += p.second.size();
+    all.reserve(total);
+    for (const auto& p : chunkBBoxCubes) {
+        for (const auto& c : p.second) all.push_back(c);
+    }
+    setCubes(all);
+    if (terrainIR_) {
+        std::vector<IndirectRenderer::BBox> aabb;
+        aabb.reserve(all.size());
+        for (const auto& c : all)
+            aabb.push_back({glm::vec3(c.cube.getMin()), glm::vec3(c.cube.getMax())});
+        terrainIR_->setBoundingBoxes(aabb);
+    }
+}
+
+void DebugCubeRenderer::clearBoundingBoxesToIndirect() {
+    setCubes({});
+    if (terrainIR_) terrainIR_->setBoundingBoxes({});
 }

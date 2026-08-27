@@ -1193,6 +1193,28 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
         debugSDFRenderer->updateCubesForChunk(nid, sdfCubes);
     }
 
+    // Mesh bounding boxes: collected through the SAME node walk as the solid
+    // meshes (requestBoundingBoxes walks the chunk subtree and emits every
+    // surface node whose ladder level equals its chunk LoD, so the debug overlay
+    // shows all node boxes at the chunk's current resolution, not one chunk-sized
+    // box). Accumulate them per chunk and publish to the bounding-box renderer,
+    // which renders them via the terrain IndirectRenderer's folded bbox stream.
+    if (boundingBoxRenderer) {
+        std::vector<DebugCubeRenderer::CubeWithColor> bbCubes;
+        std::mutex bbMtx;
+        scene.requestBoundingBoxes(layer, nodeData,
+            [&bbCubes, &bbMtx, layer](const BoundingCube& cube) {
+                DebugCubeRenderer::CubeWithColor c;
+                c.cube = BoundingBox(cube.getMin(), cube.getMax());
+                c.color = (layer == LAYER_OPAQUE)
+                    ? glm::vec3(0.0f, 1.0f, 0.0f)
+                    : glm::vec3(0.0f, 0.5f, 1.0f);
+                std::lock_guard<std::mutex> lk(bbMtx);
+                bbCubes.push_back(std::move(c));
+            }, poolOverride);
+        boundingBoxRenderer->setBoundingBoxesForChunk(nid, bbCubes);
+    }
+
 }
 
 size_t SceneRenderer::getTransparentModelCount() {

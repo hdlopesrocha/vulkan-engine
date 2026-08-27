@@ -112,31 +112,6 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
     );
 }
 
-namespace {
-// Mirrors DebugSDFRenderer's drawable-face test: a cube is shown iff at least one
-// corner is within the clip band, or an edge crosses the SDF zero level.
-constexpr float kSdfDebugClip = 10.0f;
-bool sdfCubeDrawable(const std::array<float, 8>& sdf) {
-    for (int i = 0; i < 8; ++i) {
-        float v = sdf[i];
-        if (std::isfinite(v) && std::abs(v) <= kSdfDebugClip) return true;
-    }
-    static const int kFaces[6][4] = {
-        {0, 1, 3, 2}, {4, 6, 7, 5}, {0, 4, 5, 1}, {2, 3, 7, 6}, {0, 2, 6, 4}, {1, 5, 7, 3}
-    };
-    for (int f = 0; f < 6; ++f) {
-        for (int e = 0; e < 4; ++e) {
-            float a = sdf[kFaces[f][e]];
-            float b = sdf[kFaces[f][(e + 1) % 4]];
-            if (std::isfinite(a) && std::isfinite(b) &&
-                ((a <= 0.0f && b >= 0.0f) || (a >= 0.0f && b <= 0.0f)))
-                return true;
-        }
-    }
-    return false;
-}
-} // namespace
-
 void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride) {
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
     ThreadContext context = ThreadContext(data.cube);
@@ -167,6 +142,40 @@ void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCub
             // Keep descending so finer SDF nodes (also at lod==1 in deeper chunks)
             // are visited; the lod==1 filter above selects exactly the right cells.
             return params.node->getLod() > 1u;
+        },
+        [](const Octree &treeRef, OctreeNodeData &params, uint8_t order[8]) {
+            for (int i = 0; i < 8; ++i) order[i] = i;
+        },
+        [tree, &data, &context](const Octree &treeRef, OctreeNodeData &params) {
+            return params.node ? params.node->chunkLod > 0 : false;
+        }
+    );
+}
+
+void LocalScene::requestBoundingBoxes(Layer layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride) {
+    Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
+    ThreadContext context = ThreadContext(data.cube);
+
+    tree->iterateMultiThreaded(
+        [tree, &data, &context, &callback](const Octree &treeRef, OctreeNodeData &params) {
+            const bool ancestor = params.cube.getLengthX() > data.cube.getLengthX();
+            bool inSubtree = ancestor ? params.cube.contains(data.cube.getCenter())
+                                      : data.cube.contains(params.cube);
+            if (!inSubtree) return false;
+
+            if (params.node->getType() != SpaceType::Surface) {
+                return true;  // descend through non-surface cells toward the chunk
+            }
+
+            // Emit every surface node whose ladder level matches the CHUNK's LoD
+            // (node.lod == chunk.chunkLod), so the overlay shows all node boxes at
+            // the chunk's current resolution instead of a single chunk-sized box.
+            if (params.node->getLod() == data.node->getChunkLod()) {
+                callback(params.cube);
+            }
+            // Keep descending so finer nodes (also at lod==chunkLod deeper in) are
+            // visited; the equality filter above selects exactly the right cells.
+            return true;
         },
         [](const Octree &treeRef, OctreeNodeData &params, uint8_t order[8]) {
             for (int i = 0; i < 8; ++i) order[i] = i;

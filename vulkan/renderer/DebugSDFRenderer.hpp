@@ -35,11 +35,12 @@ public:
     // its OWN indirect.comp dispatch (folded into the terrain cull). Point this
     // renderer at it so render() can draw from the terrain IR's SDF output buffers.
     void setIndirectRenderer(IndirectRenderer* ir) { terrainIR_ = ir; }
-    // GPU frustum-cull the SDF cubes via indirect.comp (same culling the solid
-    // pass uses). Call OUTSIDE a render pass, before the draw. `frame` must
-    // match the value passed to setCullFrame so cull + draw share one slot.
-    void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
-                     glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16);
+    // Upload the per-cube SDF instance payload for this frame. The frustum cull
+    // itself is performed by the solid IndirectRenderer's indirect.comp dispatch
+    // (folded into the terrain cull); render() draws from the terrain IR's SDF
+    // output buffers. Call OUTSIDE a render pass, before the draw. `frame` must
+    // match setCullFrame so upload + draw share one slot.
+    void prepareCull(VkCommandBuffer cmd);
     void render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet);
     void setCullFrame(uint32_t frame) { currentCullFrame = frame % SDF_CULL_FRAMES; }
     void cleanup(VulkanApp* app) override;
@@ -50,7 +51,11 @@ public:
     void updateCubesForChunk(NodeID nid, const std::vector<CubeSDF>& cubes);
     void removeCubesForNode(NodeID id);
     void clearCubes();
-    std::vector<CubeSDF> getCubes() const;
+    // Register the cached per-chunk SDF cubes with the solid IndirectRenderer's
+    // merged cull dispatch (folds SDF AABBs into the terrain frustum cull). Reads
+    // the cache internally — call OUTSIDE a render pass, before the solid IR's
+    // prepareCull. Requires setIndirectRenderer to have been called.
+    void registerToIndirect();
 
 private:
     // Per-node SDF face cubes keyed by octree node id

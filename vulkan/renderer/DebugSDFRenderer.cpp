@@ -181,14 +181,29 @@ void DebugSDFRenderer::writeCullFrameData(uint32_t frame, uint32_t cubeCount) {
     }
 }
 
-void DebugSDFRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
-                                    glm::vec3 camPos, float lodBias, int maxTargetLod) {
+void DebugSDFRenderer::prepareCull(VkCommandBuffer cmd) {
     // NOTE: the SDF cube frustum cull + compaction is performed by the SOLID
     // IndirectRenderer's prepareCull (indirect.comp) in the SAME dispatch as the
     // terrain. Here we only upload the per-cube instance payload (model + sdf
     // values) so the SDF vertex shader can read instances[localIdx]; the visible
     // DrawCmd stream + count live in the terrain IR's SDF output buffers.
     if (pipeline == VK_NULL_HANDLE) return;
+
+    // Refresh the active payload from the per-chunk cache. The cache is the single
+    // source of truth (populated in SceneRenderer::processNodeLayer), so no
+    // external getter is needed.
+    {
+        std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+        std::vector<CubeSDF> all;
+        size_t total = 0;
+        for (const auto& entry : nodeDebugSDFCubes) total += entry.second.size();
+        all.reserve(total);
+        for (const auto& entry : nodeDebugSDFCubes) {
+            for (const auto& c : entry.second) all.push_back(c);
+        }
+        activeCubes = std::move(all);
+    }
+
     if (activeCubes.empty()) {
         hasCubes_ = false;
         return;
@@ -331,14 +346,6 @@ void DebugSDFRenderer::cleanup(VulkanApp* app) {
     hasCubes_ = false;
 }
 
-namespace {
-
-// SDF face drawability is now decided in LocalScene::requestSDFCubes (sdfCubeDrawable),
-// which walks the octree the same way requestModel3D does and only emits lod==1 nodes
-// that carry a drawable SDF face. DebugSDFRenderer just renders whatever cubes arrive.
-
-} // namespace
-
 void DebugSDFRenderer::updateCubesForChunk(NodeID nid, const std::vector<CubeSDF>& cubes) {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
     if (cubes.empty()) {
@@ -358,16 +365,16 @@ void DebugSDFRenderer::clearCubes() {
     nodeDebugSDFCubes.clear();
 }
 
-std::vector<DebugSDFRenderer::CubeSDF> DebugSDFRenderer::getCubes() const {
+void DebugSDFRenderer::registerToIndirect() {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
-    std::vector<CubeSDF> out;
+    std::vector<IndirectRenderer::SdfCube> sdf;
     size_t total = 0;
+    for (const auto& entry : nodeDebugSDFCubes) total += entry.second.size();
+    sdf.reserve(total);
     for (const auto& entry : nodeDebugSDFCubes) {
-        total += entry.second.size();
+        for (const auto& c : entry.second) {
+            sdf.push_back({glm::vec3(c.cube.getMin()), glm::vec3(c.cube.getMax())});
+        }
     }
-    out.reserve(total);
-    for (const auto& entry : nodeDebugSDFCubes) {
-        out.insert(out.end(), entry.second.begin(), entry.second.end());
-    }
-    return out;
+    if (terrainIR_) terrainIR_->setSdfCubes(sdf);
 }

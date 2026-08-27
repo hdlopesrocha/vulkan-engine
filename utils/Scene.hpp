@@ -75,6 +75,12 @@ public:
         uint32_t brushIndex
     )>;
     virtual void requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride = nullptr) {}
+    // Collect mesh bounding-box debug cubes: walk the octree (subtree rooted at
+    // `data`) and emit one callback per surface node whose ladder level equals
+    // its chunk LoD (node.lod == node.chunkLod), so the debug overlay shows every
+    // node box at the chunk's current resolution instead of a single chunk-sized box.
+    using BBoxCallback = std::function<void(const BoundingCube& cube)>;
+    virtual void requestBoundingBoxes(Layer layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride = nullptr) {}
     virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
 
     // Maximum LoD level a chunk can publish for the given layer (>= 0). The
