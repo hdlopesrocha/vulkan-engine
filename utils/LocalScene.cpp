@@ -52,18 +52,6 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
 
     tree->iterateMultiThreaded(
         [this, tree,&data,&context,&callback](const Octree &treeRef, OctreeNodeData &params) {
-            // Publish ONE band per node: the chunk itself (data) and every ancestor
-            // on the path from the chunk up to the root. Each band is that node
-            // tessellated at its OWN rung (getLod) — a single whole-chunk rung — so
-            // the gate in indirect.comp (keep iff rung == distance-selected rung)
-            // draws exactly one rung per chunk and never overlaps. We deliberately
-            // do NOT descend into the chunk's subtree: those sub-nodes would be
-            // extra finer bands that smear over the chunk (the overlap bug).
-            // The rung that drives BOTH the tessellation and the ladder math is
-            // getLod() — NOT getChunkLod(): walkLadder scans cells where
-            // node->getLod() == targetLod, and baseCell = cellSize/2^level must
-            // line up with the actual geometry lod, so the same getter powers
-            // targetLod and the published level.
             const bool ancestor = params.cube.getLengthX() > data.cube.getLengthX();
             const bool isChunk  = (params.node == data.node);
             bool inSubtree = ancestor ? params.cube.contains(data.cube.getCenter())
@@ -75,7 +63,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
             }
 
             const uint8_t chunkLod = params.node->getChunkLod();
-            if (chunkLod > 0) {
+            if (chunkLod > 0 && data.node == params.node) {
                 const uintptr_t nodeId = reinterpret_cast<uintptr_t>(params.node);
                 bool skip = false;
                 {
