@@ -1807,6 +1807,17 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // VegetationRenderer and simply (re)bound here; we zero their count buffers
     // so the atomic-adds start from a clean state, then re-point the descriptor
     // set's veg bindings to the real buffers.
+    // The per-draw veg table (binding 9) must exist before the merged dispatch
+    // can read per-chunk veg data. It is created lazily inside updateVegTable(),
+    // which was previously only invoked from within the vegActive block below —
+    // but that block itself required vegTableBuffer to already be non-null. That
+    // deadlock left the table null forever, so the dispatch always read an empty
+    // table and emitted zero vegetation commands (vegetation never rendered).
+    // Create it whenever veg culling is enabled and meshes exist, independent of
+    // vegActive.
+    if (vegCullEnabled && meshCapacity > 0) {
+        updateVegTable();
+    }
     bool vegActive = vegCullEnabled && vegTableBuffer.buffer != VK_NULL_HANDLE
                      && vegBbCountBuf[currentCullFrame] != VK_NULL_HANDLE
                      && vegImpCountBuf[currentCullFrame] != VK_NULL_HANDLE;

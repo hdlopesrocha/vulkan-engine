@@ -1784,13 +1784,13 @@ void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLay
     VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
     VkDeviceSize offsets[2] = { 0, 0 };
     vkCmdBindIndexBuffer(cmd, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
-        compactedCmdBuffers[f].buffer != VK_NULL_HANDLE && visibleCountBuffers[f].buffer != VK_NULL_HANDLE) {
+    if (!vegConsolidationDirty && solidIR && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
+        solidIR->getVegBbCompact(f) != VK_NULL_HANDLE && solidIR->getVegBbCount(f) != VK_NULL_HANDLE) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
         vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
         if (cmdDrawIndexedIndirectCount) {
-            cmdDrawIndexedIndirectCount(cmd, compactedCmdBuffers[f].buffer, 0,
-                visibleCountBuffers[f].buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
+            cmdDrawIndexedIndirectCount(cmd, solidIR->getVegBbCompact(f), 0,
+                solidIR->getVegBbCount(f), 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
         }
     }
 }
@@ -1802,8 +1802,8 @@ void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayou
     VkDeviceSize offsets[2] = { 0, 0 };
     vkCmdBindIndexBuffer(cmd, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
     uint32_t f = vegFrame();
-    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
-        impostorCompactBuffers[f].buffer != VK_NULL_HANDLE && impostorCountBuffers[f].buffer != VK_NULL_HANDLE) {
+    if (!vegConsolidationDirty && solidIR && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
+        solidIR->getVegImpCompact(f) != VK_NULL_HANDLE && solidIR->getVegImpCount(f) != VK_NULL_HANDLE) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
         vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
         // Indirect draw consuming the impostor stream compacted by the merged
@@ -1811,8 +1811,8 @@ void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayou
         uint32_t vegMaxImpostorDraws = std::min(vegNumChunks, vegMainCompactCapacity);
         if (cmdDrawIndexedIndirectCount) {
             cmdDrawIndexedIndirectCount(cmd,
-                impostorCompactBuffers[f].buffer, 0,
-                impostorCountBuffers[f].buffer, 0,
+                solidIR->getVegImpCompact(f), 0,
+                solidIR->getVegImpCount(f), 0,
                 vegMaxImpostorDraws, sizeof(VkDrawIndexedIndirectCommand));
         }
     }

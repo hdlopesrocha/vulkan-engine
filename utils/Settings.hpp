@@ -10,7 +10,7 @@ public:
     bool enableShadows = false;
     // Toggle rendering of the main solid scene (terrain/meshes)
     bool renderSolid = true;
-    bool waterEnabled = false;
+    bool waterEnabled = true;
     bool vegetationEnabled = true;
     bool wireframeMode = false;
     bool waterWireframeMode = false;
