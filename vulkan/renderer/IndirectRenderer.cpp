@@ -35,8 +35,9 @@ struct CullPushConstants {
     uint32_t numCmdsVeg;   // offset 104 (legacy/unused; kept for layout compatibility)
     uint32_t terrainCount; // offset 108 (number of solid commands)
     uint32_t sdfCount;     // offset 112 (number of SDF cube entries)
-}; // 116 bytes
-static_assert(sizeof(CullPushConstants) == 116, "CullPushConstants must be 116 bytes to match indirect.comp PC block");
+    uint32_t bboxCount;    // offset 116 (number of bounding-box entries)
+}; // 120 bytes
+static_assert(sizeof(CullPushConstants) == 120, "CullPushConstants must be 120 bytes to match indirect.comp PC block");
 
 struct CascadeCullPushConstants {
     uint32_t numChunks;   // offset 0
@@ -1375,7 +1376,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
     // Create compute pipeline + descriptor sets for GPU culling if not present
     if (computePipeline == VK_NULL_HANDLE) {
-        VkDescriptorSetLayoutBinding bindings[14] = {};
+        VkDescriptorSetLayoutBinding bindings[17] = {};
         bindings[0].binding = 0;
         bindings[0].descriptorCount = 1;
         bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1441,8 +1442,25 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         bindings[13].descriptorCount = 1;
         bindings[13].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[13].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        // 14: mesh bounding-box input bounds (folded into the SAME solid dispatch).
+        // 15,16: mesh bounding-box compacted output (DrawCmd stream + count).
+        bindings[14].binding = 14;
+        bindings[14].descriptorCount = 1;
+        bindings[14].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[14].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[15].binding = 15;
+        bindings[15].descriptorCount = 1;
+        bindings[15].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[15].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[16].binding = 16;
+        bindings[16].descriptorCount = 1;
+        bindings[16].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
-        VkDescriptorBindingFlags bindingFlags[14] = {
+        VkDescriptorBindingFlags bindingFlags[17] = {
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -1461,7 +1479,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
         DescriptorAllocator descAlloc{app->getDevice(), app};
         computeDescriptorSetLayout = descAlloc.createLayout(
-            bindings, 14,
+            bindings, 17,
             VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
             bindingFlags,
             "IndirectRenderer: computeDescriptorSetLayout");
@@ -1585,9 +1603,15 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
                             sdfCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
               .writeBuffer(computeDs, 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                             sdfInCmdsBuf[f].buffer, 0, VK_WHOLE_SIZE)
-              .writeBuffer(computeDs, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            sdfBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
-              .flush();
+               .writeBuffer(computeDs, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             sdfBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+               .writeBuffer(computeDs, 14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             bboxBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+               .writeBuffer(computeDs, 15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             bboxCompactBuf[f].buffer, 0, VK_WHOLE_SIZE)
+               .writeBuffer(computeDs, 16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             bboxCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
+               .flush();
         }
     }
 
@@ -1681,6 +1705,10 @@ void IndirectRenderer::updateVegTable() {
 
 void IndirectRenderer::setSdfCubes(const std::vector<SdfCube>& cubes) {
     sdfCubes_ = cubes;
+}
+
+void IndirectRenderer::setBoundingBoxes(const std::vector<BBox>& boxes) {
+    bboxCubes_ = boxes;
 }
 
 void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
@@ -1866,6 +1894,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // ── SDF debug cubes: upload AABBs + DrawCmds, then zero the SDF outputs so
     // they are culled in the SAME indirect.comp dispatch as the solid terrain. ──
     uint32_t sdfCount = std::min(static_cast<uint32_t>(sdfCubes_.size()), MAX_SDF_CUBES);
+    uint32_t bboxCount = std::min(static_cast<uint32_t>(bboxCubes_.size()), MAX_BBOX_CUBES);
     if (sdfCount > 0) {
         const uint32_t f = currentCullFrame;
         auto* inCmds = static_cast<VkDrawIndexedIndirectCommand*>(sdfInCmdsBuf[f].map(0));
@@ -1934,6 +1963,60 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         vkCmdPipelineBarrier2(cmd, &depFill);
     }
 
+    // ── Mesh bounding boxes: upload AABBs, then zero the bbox outputs so they are
+    // culled in the SAME indirect.comp dispatch as the solid terrain. ──
+    if (bboxCount > 0) {
+        const uint32_t f = currentCullFrame;
+        auto* bounds = static_cast<glm::vec4*>(bboxBoundsBuf[f].map(0));
+        for (uint32_t i = 0; i < bboxCount; i++) {
+            // Stride matches indirect.comp: 2 vec4 per box (min, max).
+            bounds[i * 2 + 0] = glm::vec4(bboxCubes_[i].minp, 0.0f);
+            bounds[i * 2 + 1] = glm::vec4(bboxCubes_[i].maxp, 0.0f);
+        }
+        bboxBoundsBuf[f].unmap();
+
+        // HOST writes (bbox input) → COMPUTE reads.
+        VkBufferMemoryBarrier2 hb{};
+        hb.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        hb.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        hb.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+        hb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        hb.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        hb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hb.buffer = bboxBoundsBuf[f].buffer;
+        hb.offset = 0;
+        hb.size = VK_WHOLE_SIZE;
+        VkDependencyInfo depHost{};
+        depHost.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depHost.bufferMemoryBarrierCount = 1;
+        depHost.pBufferMemoryBarriers = &hb;
+        vkCmdPipelineBarrier2(cmd, &depHost);
+
+        // Zero bbox outputs before dispatch.
+        vkCmdFillBuffer(cmd, bboxCompactBuf[f].buffer, 0, VK_WHOLE_SIZE, 0);
+        vkCmdFillBuffer(cmd, bboxCountBuf[f].buffer, 0, sizeof(uint32_t), 0);
+        VkBufferMemoryBarrier2 fb2[2] = {};
+        for (int i = 0; i < 2; i++) {
+            fb2[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            fb2[i].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            fb2[i].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            fb2[i].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            fb2[i].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+            fb2[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            fb2[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            fb2[i].offset = 0;
+            fb2[i].size = VK_WHOLE_SIZE;
+        }
+        fb2[0].buffer = bboxCompactBuf[f].buffer;
+        fb2[1].buffer = bboxCountBuf[f].buffer;
+        VkDependencyInfo depFill{};
+        depFill.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depFill.bufferMemoryBarrierCount = 2;
+        depFill.pBufferMemoryBarriers = fb2;
+        vkCmdPipelineBarrier2(cmd, &depFill);
+    }
+
     // Bind and dispatch compute cull
     if (cmdState) cmdState->bindComputePipeline(cmd, computePipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
@@ -1962,7 +2045,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 #endif
     }
     // Fast return if nothing to cull — avoids touching the pipeline at all
-    if ((numCmds + sdfCount) == 0) {
+    if ((numCmds + sdfCount + bboxCount) == 0) {
         // Count active meshes only on this rare path (used by the warn-once
         // printf below); avoids a full-map scan on every frame in the common
         // cull path. Same value as a scan: memoized under the same mutex.
@@ -1979,21 +2062,22 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     CullPushConstants pc{};
     pc.viewProj     = viewProj;
     pc.targetLayer  = 0;
-    pc.numCmds      = numCmds + sdfCount; // total: solid + SDF
+    pc.numCmds      = numCmds + sdfCount + bboxCount; // total: solid + SDF + bbox
     pc.camPos       = camPos;
     pc.lodBias      = lodBias;
     pc.maxTargetLod = static_cast<uint32_t>(maxTargetLod);
     pc.numCmdsVeg   = 0; // solid-only dispatch: no vegetation entries consumed
     pc.terrainCount = numCmds; // solid entries occupy input indices [0, numCmds)
     pc.sdfCount     = sdfCount; // SDF entries appended at [numCmds, numCmds+sdfCount)
+    pc.bboxCount    = bboxCount; // bbox entries appended at [numCmds+sdfCount, numCmds+sdfCount+bboxCount)
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc);
 
     uint32_t groupSize = 64;
-    uint32_t groups = (numCmds + sdfCount + groupSize - 1) / groupSize;
+    uint32_t groups = (numCmds + sdfCount + bboxCount + groupSize - 1) / groupSize;
     if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);
 
     // Barrier to make shader writes to the compact indirect buffer and visible count visible to indirect draw
-    VkBufferMemoryBarrier2 barriers[9] = {};
+    VkBufferMemoryBarrier2 barriers[11] = {};
     barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     barriers[0].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
@@ -2045,6 +2129,18 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         barriers[8].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
         barrierCount = 9;
     }
+
+    // Bounding-box outputs (bindings 15/16) are consumed by the bbox indirect draw.
+    // They follow the SDF outputs in the same dispatch, so they share the post-dispatch
+    // visibility barrier (compute write → indirect-draw + vertex read).
+    uint32_t bboxBase = vegActive ? 9u : 5u;
+    barriers[bboxBase] = barriers[0];
+    barriers[bboxBase].buffer = bboxCompactBuf[currentCullFrame].buffer;
+    barriers[bboxBase].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+    barriers[bboxBase + 1] = barriers[0];
+    barriers[bboxBase + 1].buffer = bboxCountBuf[currentCullFrame].buffer;
+    barriers[bboxBase + 1].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+    barrierCount = bboxBase + 2;
 
     VkDependencyInfo depInfo{};
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -2584,13 +2680,34 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         }
     }
 
+    // ── Mesh bounding-box culling buffers (folded into the solid indirect.comp dispatch) ──
+    // Input (bboxBoundsBuf) host-written each frame from mesh AABBs; outputs
+    // (bboxCompact/bboxCount) GPU-written and consumed by the bbox indirect draw.
+    // Fixed capacity bounds the worst case (one box per uploaded mesh).
+    {
+        const VkDeviceSize bboxBoundsSize = MAX_BBOX_CUBES * 2 * sizeof(glm::vec4);
+        const VkDeviceSize bboxOutCmdSize  = MAX_BBOX_CUBES * sizeof(VkDrawIndexedIndirectCommand);
+        const VkDeviceSize bboxCountSize   = sizeof(uint32_t);
+        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+            bboxBoundsBuf[f] = app->createBuffer(bboxBoundsSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            bboxCompactBuf[f] = app->createBuffer(bboxOutCmdSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            bboxCountBuf[f] = app->createBuffer(bboxCountSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
+    }
+
     // ── Create compute pipeline + descriptor sets for GPU culling ────────────
     // (Same as in rebuild() — factored out to share)
     {
         // Bindings (0..9): 0 input commands, 1 output commands, 2 bounds,
         // 3 count, 4 chosen-LoD output, 5/6 vegetation impostor cmd + count,
         // 7/8 vegetation billboard cmd + count, 9 vegetation chunk-info (input).
-        VkDescriptorSetLayoutBinding bindings[14] = {};
+        VkDescriptorSetLayoutBinding bindings[17] = {};
         bindings[0].binding = 0;
         bindings[0].descriptorCount = 1;
         bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -2651,8 +2768,25 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         bindings[13].descriptorCount = 1;
         bindings[13].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[13].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        // 14: mesh bounding-box input bounds (folded into the SAME solid dispatch).
+        // 15,16: mesh bounding-box compacted output (DrawCmd stream + count).
+        bindings[14].binding = 14;
+        bindings[14].descriptorCount = 1;
+        bindings[14].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[14].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[15].binding = 15;
+        bindings[15].descriptorCount = 1;
+        bindings[15].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[15].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[16].binding = 16;
+        bindings[16].descriptorCount = 1;
+        bindings[16].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
-        VkDescriptorBindingFlags bindingFlags[14] = {
+        VkDescriptorBindingFlags bindingFlags[17] = {
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -2671,7 +2805,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
 
         DescriptorAllocator descAlloc{app->getDevice(), app};
         computeDescriptorSetLayout = descAlloc.createLayout(
-            bindings, 14,
+            bindings, 17,
             VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
             bindingFlags,
             "IndirectRenderer: computeDescriptorSetLayout");
@@ -2783,9 +2917,15 @@ void IndirectRenderer::initSlots(VulkanApp* app,
                             sdfCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
                .writeBuffer(computeDs, 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                             sdfInCmdsBuf[f].buffer, 0, VK_WHOLE_SIZE)
-               .writeBuffer(computeDs, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            sdfBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
-               .flush();
+                .writeBuffer(computeDs, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             sdfBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                .writeBuffer(computeDs, 14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             bboxBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                .writeBuffer(computeDs, 15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             bboxCompactBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                .writeBuffer(computeDs, 16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             bboxCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                .flush();
     }
 
     // Load indirect-count draw function

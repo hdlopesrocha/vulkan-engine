@@ -250,6 +250,27 @@ public:
         return frame < MAX_CULL_FRAMES ? sdfCountBuf[frame].buffer : VK_NULL_HANDLE;
     }
 
+    // ── Mesh bounding-box culling (merged into the solid indirect.comp dispatch) ──
+    // Supplies the AABBs of the meshes currently uploaded to the GPU. prepareCull
+    // appends them after the solid + SDF entries and frustum-culls them in the SAME
+    // indirect.comp dispatch, writing survivors to a dedicated bbox output stream.
+    // The bounding-box debug renderer then draws from those buffers (see
+    // getBboxCompactBuffer / getBboxCountBuffer).
+    struct BBox {
+        glm::vec3 minp;
+        glm::vec3 maxp;
+    };
+    void setBoundingBoxes(const std::vector<BBox>& boxes);
+    // Capacity of the folded bounding-box command stream (bboxCompactBuf): the max
+    // number of bbox DrawCmds indirect.comp can emit per frame. Used to bound maxDrawCount.
+    uint32_t getMaxBboxCommands() const { return MAX_BBOX_CUBES; }
+    VkBuffer getBboxCompactBuffer(uint32_t frame) const {
+        return frame < MAX_CULL_FRAMES ? bboxCompactBuf[frame].buffer : VK_NULL_HANDLE;
+    }
+    VkBuffer getBboxCountBuffer(uint32_t frame) const {
+        return frame < MAX_CULL_FRAMES ? bboxCountBuf[frame].buffer : VK_NULL_HANDLE;
+    }
+
     // ── Vegetation cull integration ──
     // The solid IndirectRenderer owns the merged indirect.comp dispatch, which
     // emits BOTH the solid terrain commands AND (for every visible solid chunk
@@ -473,6 +494,17 @@ private:
     std::array<Buffer, MAX_CULL_FRAMES> sdfInCmdsBuf;
     std::array<Buffer, MAX_CULL_FRAMES> sdfBoundsBuf;
     std::vector<SdfCube> sdfCubes_;
+
+    // ── Mesh bounding-box culling (folded into the solid indirect.comp dispatch) ──
+    // Inputs (bboxBoundsBuf) are host-written each frame from the mesh AABBs and
+    // read by the cull; outputs (bboxCompactBuf/bboxCountBuf) are GPU-written and
+    // consumed by the bounding-box indirect draw. Capacity bounds the worst case
+    // (one box per uploaded mesh).
+    static constexpr uint32_t MAX_BBOX_CUBES = 500000;
+    std::array<Buffer, MAX_CULL_FRAMES> bboxCompactBuf;
+    std::array<Buffer, MAX_CULL_FRAMES> bboxCountBuf;
+    std::array<Buffer, MAX_CULL_FRAMES> bboxBoundsBuf;
+    std::vector<BBox> bboxCubes_;
     std::unordered_map<uint32_t, glm::vec4> vegChunkInfoMap;
     bool vegCullEnabled = false;
     // Dummy bound to the veg bindings (5..9) on the solid-only dispatch — the

@@ -84,6 +84,22 @@ layout(std430, binding = 11) buffer OutSdfCount {
     uint count;
 } sdfCount;
 
+// ── Mesh bounding-box culling (folded into the SAME solid dispatch) ──────────
+// Bounding boxes are appended AFTER the solid + SDF entries (input index s in
+// [terrainCount + sdfCount, terrainCount + sdfCount + bboxCount)). They carry no
+// LoD data, so they are frustum-culled only and written to a dedicated stream so
+// the solid indirect draw (different vertex buffer + line topology) is never
+// polluted by them.
+layout(std430, binding = 14) readonly buffer BoundsBbox {
+    vec4 data[];
+} boundsBbox;
+layout(std430, binding = 15) writeonly buffer OutBboxCmds {
+    DrawCmd cmds[];
+} outBboxCmds;
+layout(std430, binding = 16) buffer OutBboxCount {
+    uint count;
+} bboxCount;
+
 layout(push_constant) uniform PC {
     layout(offset = 0)   mat4 viewProj;
     layout(offset = 64)  uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now)
@@ -94,6 +110,7 @@ layout(push_constant) uniform PC {
     layout(offset = 104) uint numCmdsVeg;   // legacy/unused in the merged dispatch (kept for layout compatibility)
     layout(offset = 108) uint terrainCount; // number of SOLID draw commands (s < terrainCount)
     layout(offset = 112) uint sdfCount;     // number of SDF cube entries (appended after solid)
+    layout(offset = 116) uint bboxCount;    // number of mesh bounding-box entries (appended after solid + sdf)
 } pc;
 
 // Shared, per-workgroup cache of the six frustum planes. The viewProj matrix is
@@ -174,6 +191,35 @@ void processChunk(uint s) {
     // instances[gl_InstanceIndex] for exactly the right AABB. Written to a dedicated
     // SDF output stream so the solid indirect draw (different vertex buffer) is never
     // polluted by SDF draw commands.
+    // ── Mesh bounding boxes (appended after solid + SDF) ──
+    // One dispatch entry per collected AABB. They carry no LoD data, so they are
+    // frustum-culled only and written to a dedicated bbox output stream so the
+    // solid indirect draw (different vertex buffer + line topology) is never
+    // polluted by them. firstInstance = the bbox-local index so the bounding-box
+    // vertex shader reads instances[gl_InstanceIndex] for exactly the right AABB.
+    if (s >= pc.terrainCount + pc.sdfCount) {
+        uint local = s - (pc.terrainCount + pc.sdfCount);
+        if (local >= pc.bboxCount) return;
+
+        // boundsBbox stride is 2 vec4 per box: {min, max}.
+        vec3 bmin = boundsBbox.data[local * 2u + 0u].xyz;
+        vec3 bmax = boundsBbox.data[local * 2u + 1u].xyz;
+
+        if (!aabbVisible(gPlanes, bmin, bmax)) return;
+
+        uint dst = atomicAdd(bboxCount.count, 1u);
+        if (dst < outBboxCmds.cmds.length()) {
+            DrawCmd cmd;
+            cmd.indexCount    = 24u; // line-cube (12 edges)
+            cmd.instanceCount = 1u;
+            cmd.firstIndex    = 0u;
+            cmd.vertexOffset  = 0;
+            cmd.firstInstance = local;
+            outBboxCmds.cmds[dst] = cmd;
+        }
+        return;
+    }
+
     if (s >= pc.terrainCount) {
         uint local = s - pc.terrainCount;
         if (local >= pc.sdfCount) return;
