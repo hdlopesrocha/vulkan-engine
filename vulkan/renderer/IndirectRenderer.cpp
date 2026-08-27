@@ -3355,10 +3355,11 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
                 // Four vec4 (per entry): min, max, lodMeta, boundsBase.
                 // lodMeta = {cellSize, level, maxLevel, unused}; cellSize is the
                 // band's own cube length; level is the 0-based rung; maxLevel is
-                // the tree's real ladder depth. boundsBase is the FINEST chunk's
-                // min corner, shared by every rung of a column so the clipmap
-                // anchor (rootSide) is identical for all rungs — which is what
-                // makes exactly one rung be selected per region (no overlap).
+                // the tree's real ladder depth. boundsBase is the emitting chunk's
+                // own min corner; the in-shader gate selects by distance from the
+                // camera to the chunk centre (base + 0.5*cellSize), so nested rungs
+                // of a column derive different bands and exactly one rung survives
+                // per region (no overlap, no holes).
                 const float cellSize = capBoundsMax.x - capBoundsMin.x;
                 const glm::vec4 lodMeta = glm::vec4(cellSize,
                                                     static_cast<float>(capLevel),

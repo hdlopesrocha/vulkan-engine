@@ -208,21 +208,24 @@ void processChunk(uint s) {
         vec4 lodMeta = boundsBbox.data[local * 4u + 2u];
         vec3 base = boundsBbox.data[local * 4u + 3u].xyz;
 
-        // ── LoD band gate (mirrors the solid chunk gate above) ──
-        // Each chunk publishes one band per rung; distance selects the rung to
-        // draw and the gate keeps exactly the one whose rung matches, so parent
-        // and child chunk boxes never overlap. Entries with no LoD data
-        // (cellSize <= 0) fall through and are kept (frustum-only, legacy).
+        // ── LoD band gate (mirrors the solid chunk gate) ──
+        // Draw a chunk box only if its rung matches the rung selected by distance
+        // from the camera to the chunk's own centre. Because the band uses the chunk
+        // centre (not a column-shared anchor snapped to rootSide), parent and child
+        // boxes in a column derive different bands and exactly one rung survives per
+        // region — so boxes never overlap across LoD (no overdraw) and no chunk is
+        // dropped (no holes). Entries with no LoD data (cellSize <= 0) fall through
+        // and are kept (frustum-only, legacy).
         float cellSize = lodMeta.x;
         int entryLevel = int(lodMeta.y + 0.5);
         int maxLevel   = int(lodMeta.z + 0.5);
         if (cellSize > 0.0) {
-            float baseCell  = cellSize / exp2(float(max(entryLevel, 0)));
-            float rootSide  = cellSize * exp2(float(maxLevel - entryLevel));
-            vec3 rootMin    = floor(base / rootSide) * rootSide;
-            vec3 anchor     = rootMin + 0.5f * rootSide;
-            float band = distance(pc.camPos, anchor) / (baseCell * pc.lodBias);
-            uint selectedLevel = uint(min(floor(band), float(maxLevel)));
+            float baseCell = cellSize / exp2(float(max(entryLevel, 0))); // == G/2, invariant
+            vec3  center   = base + 0.5f * cellSize;                     // this chunk's centre
+            float band = distance(pc.camPos, center) / (baseCell * pc.lodBias);
+            uint selectedLevel = uint(floor(band));
+            selectedLevel = uint(min(float(selectedLevel), float(maxLevel)));
+            selectedLevel = uint(max(float(selectedLevel), 1.0f));        // no rung-0 hole (1 = finest)
             selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
             if (uint(entryLevel) != selectedLevel) return;
         }
@@ -258,19 +261,20 @@ void processChunk(uint s) {
 
         // ── LoD band gate (mirrors the solid chunk gate) ──
         // SDF cubes are emitted at the chunk's finest surface rung, but the gate
-        // selects the rung by the CHUNK's LoD so parent/child chunk SDF cubes never
-        // overlap with the finer terrain. Entries with no LoD data (cellSize <= 0)
-        // fall through and are kept (frustum-only, legacy).
+        // selects the rung by the CHUNK's LoD (distance from camera to the chunk
+        // centre) so parent/child chunk SDF cubes never overlap with the finer
+        // terrain. Entries with no LoD data (cellSize <= 0) fall through and are
+        // kept (frustum-only, legacy).
         float cellSize = lodMeta.x;
         int entryLevel = int(lodMeta.y + 0.5);
         int maxLevel   = int(lodMeta.z + 0.5);
         if (cellSize > 0.0) {
-            float baseCell  = cellSize / exp2(float(max(entryLevel, 0)));
-            float rootSide  = cellSize * exp2(float(maxLevel - entryLevel));
-            vec3 rootMin    = floor(base / rootSide) * rootSide;
-            vec3 anchor     = rootMin + 0.5f * rootSide;
-            float band = distance(pc.camPos, anchor) / (baseCell * pc.lodBias);
-            uint selectedLevel = uint(min(floor(band), float(maxLevel)));
+            float baseCell = cellSize / exp2(float(max(entryLevel, 0))); // == G/2, invariant
+            vec3  center   = base + 0.5f * cellSize;                     // this chunk's centre
+            float band = distance(pc.camPos, center) / (baseCell * pc.lodBias);
+            uint selectedLevel = uint(floor(band));
+            selectedLevel = uint(min(float(selectedLevel), float(maxLevel)));
+            selectedLevel = uint(max(float(selectedLevel), 1.0f));        // no rung-0 hole (1 = finest)
             selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
             if (uint(entryLevel) != selectedLevel) return;
         }
@@ -334,25 +338,29 @@ void processChunk(uint s) {
     // Per-chunk LoD band selection (frustum-independent). Each published entry is
     // one chunk (node) at a single rung; distance selects which rung to draw and
     // the gate keeps exactly the one whose rung matches. This is a clipmap ladder:
-    // chunk levels double in size per rung, so the rung width must scale per level
-    // (baseCell) and every rung of a column must share ONE anchor (rootSide) or
-    // nested rungs pick different rungs and overlap. That per-level scaling is the
-    // reason cellSize is needed — it is the chunk's own cube length, not "crap".
+    // chunk levels double in size per rung, so baseCell == G/2 is invariant and the
+    // band is a pure function of distance from the camera to the chunk's centre;
+    // nested rungs in a column derive different bands so exactly one rung survives
+    // per region. That is why cellSize is needed — it is the chunk's own cube
+    // length, not "crap".
     float cellSize = lodMeta.x;
     int entryLevel = int(lodMeta.y + 0.5);
     int maxLevel   = int(lodMeta.z + 0.5);
 
     uint selectedLevel = 0xFFFFFFFFu;
     if (cellSize > 0.0) {
-        // Clipmap anchor: every rung of a column shares the FINEST chunk's min
-        // corner (`base`), so rootSide nests identically for all rungs and
-        // exactly one rung is selected per region (no overlap; no holes).
+        // Clipmap selection: keep a chunk only if its rung matches the rung chosen
+        // by distance from the camera to the chunk's own centre. baseCell == G/2 is
+        // invariant across rungs, so the band is a pure function of distance; nested
+        // rungs in a column derive different bands and exactly one survives per
+        // region (no overlap, no holes). Clamping keeps the finest rung near the
+        // camera (no rung-0 hole) and the coarsest rung far away.
         float baseCell = cellSize / exp2(float(max(entryLevel, 0)));
-        float rootSide = cellSize * exp2(float(maxLevel - entryLevel));
-        vec3 rootMin = floor(base / rootSide) * rootSide;
-        vec3 anchor = rootMin + 0.5f * rootSide;
-        float band = distance(pc.camPos, anchor) / (baseCell * pc.lodBias);
-        selectedLevel = uint(min(floor(band), float(maxLevel)));
+        vec3  center   = base + 0.5f * cellSize;
+        float band = distance(pc.camPos, center) / (baseCell * pc.lodBias);
+        selectedLevel = uint(floor(band));
+        selectedLevel = uint(min(float(selectedLevel), float(maxLevel)));
+        selectedLevel = uint(max(float(selectedLevel), 1.0f));
         selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
     }
 
@@ -369,12 +377,11 @@ void processChunk(uint s) {
     }
 
     // ── LoD band gate ────────────────────────────────────────────────────────
-    // Keep a band iff its rung matches the distance-selected rung
-    // (entryLevel == selectedLevel). The shared rootSide anchor makes every rung
-    // of a column derive the same selectedLevel, so exactly one rung is drawn per
-    // region; without this gate every rung of the ladder is drawn at once and
-    // coarse rungs smear over the fine detail. Entries with no LoD data
-    // (cellSize <= 0) fall through and are kept (legacy behavior).
+    // Keep a chunk iff its rung matches the distance-selected rung
+    // (entryLevel == selectedLevel). Because selection uses the chunk's own centre,
+    // exactly one rung is drawn per region; without this gate every rung of the
+    // ladder is drawn at once and coarse rungs smear over the fine detail. Entries
+    // with no LoD data (cellSize <= 0) fall through and are kept (legacy behavior).
     if (cellSize > 0.0 && uint(entryLevel) != selectedLevel) {
         return;
     }

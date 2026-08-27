@@ -36,7 +36,7 @@ class Octree: public BoundingCube {
         float    cellSize = 0;  // the chunk's own cell size
         glm::vec3 boundsMin = glm::vec3(0.0f); // emitting cell's world bounds (band center + meta)
         glm::vec3 boundsMax = glm::vec3(0.0f);
-        glm::vec3 boundsBase = glm::vec3(0.0f); // finest chunk's min corner (shared column anchor)
+        glm::vec3 boundsBase = glm::vec3(0.0f); // emitting chunk's own min corner (LoD-selection origin)
     };
 
 

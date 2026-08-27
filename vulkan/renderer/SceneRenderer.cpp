@@ -1116,6 +1116,13 @@ bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
                                          const OctreeNodeData& nd,
                                          const Geometry& geom, uint32_t version)
 {
+
+    // Queue the geometry for main-thread GPU upload.
+    // NOTE: markDirty + beginBuild were already called in the change handler
+    // BEFORE tessellation was dispatched. The chunk state is already
+    // UploadingGPU (from finishBuild). processPendingMeshes will call
+    // addMeshSlotted + uploadSlot, then the upload completion callback calls
+    // finishUpload → ReadyToSwap → processChunkSwapQueue atomically swaps.
     {
         // All streams share ONE pending queue (main solid/water + brush
         // solid/water); entries are tagged isBrush=false here since this path
@@ -1148,25 +1155,12 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     const uint8_t chunkLod = nodeData.node ? nodeData.node->getChunkLod() : 0;
     if (chunkLod < 1) return;
 
-    // Shared clipmap column anchor: every rung (chunk) of a column must use the
-    // SAME base so the clipmap anchor (rootSide) nests and exactly one rung is
-    // selected per region (no overdraw across LODs). The base is the FINEST
-    // chunk's min corner of the column, i.e. the chunk center snapped to the
-    // finest-chunk grid. (cellSize / 2^(chunkLod-1) is the finest chunk size,
-    // since chunkLod==1 is the finest published rung; rootSide is invariant in
-    // the gate, so only base needs to be column-consistent.)
-    const float chunkCell = nodeData.cube.getLengthX();
-    const float finestChunkSize = chunkCell / glm::exp2(static_cast<float>(chunkLod) - 1.0f);
-    const glm::vec3 colCenter = nodeData.cube.getCenter();
-    const glm::vec3 columnBase = glm::floor(colCenter / finestChunkSize) * finestChunkSize;
-
     // NOTE: the walk emits one callback per cell on the root path (each
     // ancestor at its own level); the cube passed is the EMITTING cell's own
-    // cube — the band center (boundsMin/Max) and the meta cellSize must come
-    // from it. The clipmap column anchor (boundsBase) is the shared finest-chunk
-    // min of the column, computed once above, never the emitting cell's own min
-    // (otherwise parent/child rungs would compute different anchors and overlap).
-    scene.requestModel3D(layer, nodeData, [&layer,&onGeometry,&nodeData,&columnBase](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId, const BoundingCube& cube, const BoundingCube& /*baseCube*/) {
+    // cube — the band center and the meta cellSize must come from it, never
+    // from nodeData (the added node), or every ancestor would publish the
+    // frontier cell's size.
+    scene.requestModel3D(layer, nodeData, [&layer,&onGeometry,&nodeData](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId, const BoundingCube& cube, const BoundingCube& baseCube) {
         Octree::LoDMesh lm;
         lm.geom = geo;
         lm.lod = lod;
@@ -1174,7 +1168,7 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
         lm.cellSize = cube.getLength().x;
         lm.boundsMin = cube.getMin();
         lm.boundsMax = cube.getMax();
-        lm.boundsBase = columnBase;
+        lm.boundsBase = baseCube.getMin();
         onGeometry(layer, reinterpret_cast<NodeID>(emittingNodeId), lm);
     }, poolOverride);
 
@@ -1187,7 +1181,7 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
         std::vector<DebugSDFRenderer::CubeSDF> sdfCubes;
         std::mutex sdfMtx;
         scene.requestSDFCubes(layer, nodeData,
-            [&sdfCubes, &sdfMtx, &nodeData, &columnBase](const BoundingCube& cube, const std::array<float, 8>& sdf,
+            [&sdfCubes, &sdfMtx, &nodeData](const BoundingCube& cube, const std::array<float, 8>& sdf,
                                  uint8_t /*lod*/, uint /*version*/, uintptr_t /*emittingNodeId*/, uint32_t brushIndex) {
                 DebugSDFRenderer::CubeSDF c;
                 c.cube = cube;
@@ -1200,7 +1194,7 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
                 // parent/child chunk SDF cubes never overlap.
                 c.cellSize = nodeData.cube.getLengthX();
                 c.level    = static_cast<int>(nodeData.node->getChunkLod());
-                c.base     = columnBase;
+                c.base     = nodeData.cube.getMin();
                 std::lock_guard<std::mutex> lk(sdfMtx);
                 sdfCubes.push_back(std::move(c));
             }, poolOverride);
@@ -1217,7 +1211,7 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
         std::vector<DebugCubeRenderer::CubeWithColor> bbCubes;
         std::mutex bbMtx;
         scene.requestBoundingBoxes(layer, nodeData,
-            [&bbCubes, &bbMtx, layer, &nodeData, &columnBase](const BoundingCube& cube) {
+            [&bbCubes, &bbMtx, layer, &nodeData](const BoundingCube& cube) {
                 DebugCubeRenderer::CubeWithColor c;
                 c.cube = BoundingBox(cube.getMin(), cube.getMax());
                 c.color = (layer == LAYER_OPAQUE)
@@ -1225,10 +1219,10 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
                     : glm::vec3(0.0f, 0.5f, 1.0f);
                 // LoD meta for the bbox cull's clipmap band gate (mirrors the solid
                 // chunk entry): cellSize = node cube side, level = chunkLod rung,
-                // base = column finest-chunk min (shared column anchor).
+                // base = chunk min corner (shared column anchor).
                 c.cellSize = cube.getLengthX();
                 c.level    = static_cast<int>(nodeData.node->getChunkLod());
-                c.base     = columnBase;
+                c.base     = nodeData.cube.getMin();
                 std::lock_guard<std::mutex> lk(bbMtx);
                 bbCubes.push_back(std::move(c));
             }, poolOverride);
