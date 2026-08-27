@@ -373,7 +373,8 @@ void DebugSDFRenderer::registerToIndirect() {
     sdf.reserve(total);
     for (const auto& entry : nodeDebugSDFCubes) {
         for (const auto& c : entry.second) {
-            sdf.push_back({glm::vec3(c.cube.getMin()), glm::vec3(c.cube.getMax())});
+            sdf.push_back({glm::vec3(c.cube.getMin()), glm::vec3(c.cube.getMax()),
+                           c.cellSize, c.level, c.base});
         }
     }
     if (terrainIR_) terrainIR_->setSdfCubes(sdf);

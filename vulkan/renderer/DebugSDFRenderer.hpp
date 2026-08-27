@@ -24,6 +24,10 @@ public:
         BoundingCube cube;
         std::array<float, 8> sdf;
         int brushIndex;
+        // LoD meta (cellSize/level/base) for the SDF cull's clipmap band gate.
+        float cellSize = 0.0f;
+        int level = 0;
+        glm::vec3 base = glm::vec3(0.0f);
     };
 
     DebugSDFRenderer();

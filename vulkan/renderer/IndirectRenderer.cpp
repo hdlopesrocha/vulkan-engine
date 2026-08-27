@@ -1910,10 +1910,14 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
             const glm::vec3& mn = sdfCubes_[i].minp;
             const glm::vec3& mx = sdfCubes_[i].maxp;
             // Stride matches indirect.comp: 4 vec4 per entry (min, max, lodMeta, base).
+            // lodMeta = {cellSize, level, maxLevel, unused}; maxLevel comes from the
+            // renderer's tree depth so the SDF band gate mirrors the solid gate.
             bounds[i * 4 + 0] = glm::vec4(mn, 0.0f);
             bounds[i * 4 + 1] = glm::vec4(mx, 0.0f);
-            bounds[i * 4 + 2] = glm::vec4(0.0f); // meta: cellSize=0 → frustum-only (no LoD gate)
-            bounds[i * 4 + 3] = glm::vec4(mn, 0.0f); // base: unused for SDF (no LoD column)
+            bounds[i * 4 + 2] = glm::vec4(sdfCubes_[i].cellSize,
+                                          static_cast<float>(sdfCubes_[i].level),
+                                          static_cast<float>(maxLodLevel_), 0.0f);
+            bounds[i * 4 + 3] = glm::vec4(sdfCubes_[i].base, 0.0f);
         }
         sdfInCmdsBuf[f].unmap();
         sdfBoundsBuf[f].unmap();

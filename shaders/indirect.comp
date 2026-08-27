@@ -253,6 +253,27 @@ void processChunk(uint s) {
         // boundsSdf stride is 4 vec4 per cube: {min, max, lodMeta, base}.
         vec3 bmin = boundsSdf.data[local * 4u + 0u].xyz;
         vec3 bmax = boundsSdf.data[local * 4u + 1u].xyz;
+        vec4 lodMeta = boundsSdf.data[local * 4u + 2u];
+        vec3 base = boundsSdf.data[local * 4u + 3u].xyz;
+
+        // ── LoD band gate (mirrors the solid chunk gate) ──
+        // SDF cubes are emitted at the chunk's finest surface rung, but the gate
+        // selects the rung by the CHUNK's LoD so parent/child chunk SDF cubes never
+        // overlap with the finer terrain. Entries with no LoD data (cellSize <= 0)
+        // fall through and are kept (frustum-only, legacy).
+        float cellSize = lodMeta.x;
+        int entryLevel = int(lodMeta.y + 0.5);
+        int maxLevel   = int(lodMeta.z + 0.5);
+        if (cellSize > 0.0) {
+            float baseCell  = cellSize / exp2(float(max(entryLevel, 0)));
+            float rootSide  = cellSize * exp2(float(maxLevel - entryLevel));
+            vec3 rootMin    = floor(base / rootSide) * rootSide;
+            vec3 anchor     = rootMin + 0.5f * rootSide;
+            float band = distance(pc.camPos, anchor) / (baseCell * pc.lodBias);
+            uint selectedLevel = uint(min(floor(band), float(maxLevel)));
+            selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
+            if (uint(entryLevel) != selectedLevel) return;
+        }
 
         // frustum visibility
         if (!aabbVisible(gPlanes, bmin, bmax)) return;

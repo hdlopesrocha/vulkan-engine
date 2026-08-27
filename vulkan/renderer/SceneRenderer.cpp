@@ -1177,16 +1177,24 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     // drawable SDF face). Accumulate them for this chunk and publish to the
     // DebugSDFRenderer, which renders them via the terrain IndirectRenderer's
     // folded SDF draw stream.
-    if (debugSDFRenderer && nodeData.node->getChunkLod() == 1u) {
+    if (debugSDFRenderer) {
         std::vector<DebugSDFRenderer::CubeSDF> sdfCubes;
         std::mutex sdfMtx;
         scene.requestSDFCubes(layer, nodeData,
-            [&sdfCubes, &sdfMtx](const BoundingCube& cube, const std::array<float, 8>& sdf,
+            [&sdfCubes, &sdfMtx, &nodeData](const BoundingCube& cube, const std::array<float, 8>& sdf,
                                  uint8_t /*lod*/, uint /*version*/, uintptr_t /*emittingNodeId*/, uint32_t brushIndex) {
                 DebugSDFRenderer::CubeSDF c;
                 c.cube = cube;
                 c.sdf = sdf;
                 c.brushIndex = static_cast<int>(brushIndex);
+                // LoD meta for the SDF cull's clipmap band gate (mirrors the solid chunk
+                // entry): cellSize = chunk cube side, level = chunkLod rung, base = chunk min
+                // corner (shared column anchor). The SDF cubes are emitted at the chunk's
+                // finest surface rung, but the gate selects the rung by the CHUNK's LoD so
+                // parent/child chunk SDF cubes never overlap.
+                c.cellSize = nodeData.cube.getLengthX();
+                c.level    = static_cast<int>(nodeData.node->getChunkLod());
+                c.base     = nodeData.cube.getMin();
                 std::lock_guard<std::mutex> lk(sdfMtx);
                 sdfCubes.push_back(std::move(c));
             }, poolOverride);
