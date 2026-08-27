@@ -20,6 +20,12 @@ public:
     struct CubeWithColor {
         BoundingBox cube;
         glm::vec3 color;
+        // LoD meta carried so registerBoundingBoxesToIndirect can build the
+        // IndirectRenderer::BBox (with cellSize/level/base) and the shader's
+        // clipmap band gate keeps exactly one rung per region.
+        float cellSize = 0.0f;
+        int level = 0;
+        glm::vec3 base = glm::vec3(0.0f);
     };
 
     explicit DebugCubeRenderer();

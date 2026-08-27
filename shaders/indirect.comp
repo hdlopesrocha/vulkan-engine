@@ -192,18 +192,40 @@ void processChunk(uint s) {
     // SDF output stream so the solid indirect draw (different vertex buffer) is never
     // polluted by SDF draw commands.
     // ── Mesh bounding boxes (appended after solid + SDF) ──
-    // One dispatch entry per collected AABB. They carry no LoD data, so they are
-    // frustum-culled only and written to a dedicated bbox output stream so the
-    // solid indirect draw (different vertex buffer + line topology) is never
-    // polluted by them. firstInstance = the bbox-local index so the bounding-box
-    // vertex shader reads instances[gl_InstanceIndex] for exactly the right AABB.
+    // One dispatch entry per collected AABB. They carry the LoD meta (cellSize, level,
+    // base) so the same clipmap band gate as the solid terrain keeps exactly one rung
+    // per region. They are written to a dedicated bbox output stream so the solid
+    // indirect draw (different vertex buffer + line topology) is never polluted by
+    // them. firstInstance = the bbox-local index so the bounding-box vertex shader
+    // reads instances[gl_InstanceIndex] for exactly the right AABB.
     if (s >= pc.terrainCount + pc.sdfCount) {
         uint local = s - (pc.terrainCount + pc.sdfCount);
         if (local >= pc.bboxCount) return;
 
-        // boundsBbox stride is 2 vec4 per box: {min, max}.
-        vec3 bmin = boundsBbox.data[local * 2u + 0u].xyz;
-        vec3 bmax = boundsBbox.data[local * 2u + 1u].xyz;
+        // boundsBbox stride is 4 vec4 per box: {min, max, lodMeta, base}.
+        vec3 bmin = boundsBbox.data[local * 4u + 0u].xyz;
+        vec3 bmax = boundsBbox.data[local * 4u + 1u].xyz;
+        vec4 lodMeta = boundsBbox.data[local * 4u + 2u];
+        vec3 base = boundsBbox.data[local * 4u + 3u].xyz;
+
+        // ── LoD band gate (mirrors the solid chunk gate above) ──
+        // Each chunk publishes one band per rung; distance selects the rung to
+        // draw and the gate keeps exactly the one whose rung matches, so parent
+        // and child chunk boxes never overlap. Entries with no LoD data
+        // (cellSize <= 0) fall through and are kept (frustum-only, legacy).
+        float cellSize = lodMeta.x;
+        int entryLevel = int(lodMeta.y + 0.5);
+        int maxLevel   = int(lodMeta.z + 0.5);
+        if (cellSize > 0.0) {
+            float baseCell  = cellSize / exp2(float(max(entryLevel, 0)));
+            float rootSide  = cellSize * exp2(float(maxLevel - entryLevel));
+            vec3 rootMin    = floor(base / rootSide) * rootSide;
+            vec3 anchor     = rootMin + 0.5f * rootSide;
+            float band = distance(pc.camPos, anchor) / (baseCell * pc.lodBias);
+            uint selectedLevel = uint(min(floor(band), float(maxLevel)));
+            selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
+            if (uint(entryLevel) != selectedLevel) return;
+        }
 
         if (!aabbVisible(gPlanes, bmin, bmax)) return;
 

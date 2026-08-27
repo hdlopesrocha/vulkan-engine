@@ -423,7 +423,8 @@ void DebugCubeRenderer::registerBoundingBoxesToIndirect() {
         std::vector<IndirectRenderer::BBox> aabb;
         aabb.reserve(all.size());
         for (const auto& c : all)
-            aabb.push_back({glm::vec3(c.cube.getMin()), glm::vec3(c.cube.getMax())});
+            aabb.push_back({glm::vec3(c.cube.getMin()), glm::vec3(c.cube.getMax()),
+                            c.cellSize, c.level, c.base});
         terrainIR_->setBoundingBoxes(aabb);
     }
 }

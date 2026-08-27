@@ -1203,12 +1203,18 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
         std::vector<DebugCubeRenderer::CubeWithColor> bbCubes;
         std::mutex bbMtx;
         scene.requestBoundingBoxes(layer, nodeData,
-            [&bbCubes, &bbMtx, layer](const BoundingCube& cube) {
+            [&bbCubes, &bbMtx, layer, &nodeData](const BoundingCube& cube) {
                 DebugCubeRenderer::CubeWithColor c;
                 c.cube = BoundingBox(cube.getMin(), cube.getMax());
                 c.color = (layer == LAYER_OPAQUE)
                     ? glm::vec3(0.0f, 1.0f, 0.0f)
                     : glm::vec3(0.0f, 0.5f, 1.0f);
+                // LoD meta for the bbox cull's clipmap band gate (mirrors the solid
+                // chunk entry): cellSize = node cube side, level = chunkLod rung,
+                // base = chunk min corner (shared column anchor).
+                c.cellSize = cube.getLengthX();
+                c.level    = static_cast<int>(nodeData.node->getChunkLod());
+                c.base     = nodeData.cube.getMin();
                 std::lock_guard<std::mutex> lk(bbMtx);
                 bbCubes.push_back(std::move(c));
             }, poolOverride);

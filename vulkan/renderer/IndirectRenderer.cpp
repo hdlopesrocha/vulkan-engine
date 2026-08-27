@@ -1969,9 +1969,16 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         const uint32_t f = currentCullFrame;
         auto* bounds = static_cast<glm::vec4*>(bboxBoundsBuf[f].map(0));
         for (uint32_t i = 0; i < bboxCount; i++) {
-            // Stride matches indirect.comp: 2 vec4 per box (min, max).
-            bounds[i * 2 + 0] = glm::vec4(bboxCubes_[i].minp, 0.0f);
-            bounds[i * 2 + 1] = glm::vec4(bboxCubes_[i].maxp, 0.0f);
+            // Stride matches indirect.comp: 4 vec4 per box (min, max, lodMeta, base).
+            // lodMeta = {cellSize, level, maxLevel, unused}; maxLevel comes from the
+            // renderer's tree depth so the bbox band gate mirrors the solid gate.
+            const BBox& b = bboxCubes_[i];
+            bounds[i * 4 + 0] = glm::vec4(b.minp, 0.0f);
+            bounds[i * 4 + 1] = glm::vec4(b.maxp, 0.0f);
+            bounds[i * 4 + 2] = glm::vec4(b.cellSize,
+                                          static_cast<float>(b.level),
+                                          static_cast<float>(maxLodLevel_), 0.0f);
+            bounds[i * 4 + 3] = glm::vec4(b.base, 0.0f);
         }
         bboxBoundsBuf[f].unmap();
 
@@ -2685,7 +2692,8 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     // (bboxCompact/bboxCount) GPU-written and consumed by the bbox indirect draw.
     // Fixed capacity bounds the worst case (one box per uploaded mesh).
     {
-        const VkDeviceSize bboxBoundsSize = MAX_BBOX_CUBES * 2 * sizeof(glm::vec4);
+        // Stride is 4 vec4 per box (min, max, lodMeta, base) to carry the LoD meta.
+        const VkDeviceSize bboxBoundsSize = MAX_BBOX_CUBES * 4 * sizeof(glm::vec4);
         const VkDeviceSize bboxOutCmdSize  = MAX_BBOX_CUBES * sizeof(VkDrawIndexedIndirectCommand);
         const VkDeviceSize bboxCountSize   = sizeof(uint32_t);
         for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
