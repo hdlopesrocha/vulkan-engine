@@ -229,50 +229,61 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
 
 void DebugCubeRenderer::updateInstanceBuffer(VulkanApp* app) {
     if (activeCubes.empty()) return;
-    
+
+    const size_t stride = sizeof(glm::mat4) + sizeof(glm::vec4);
+    // A storage buffer bound with VK_WHOLE_SIZE may not exceed maxStorageBufferRange.
+    // Cap the allocation (and therefore the number of cubes we can draw) to that.
+    const size_t maxFit = static_cast<size_t>(app->getMaxStorageBufferRange()) / stride;
+    const size_t needed = activeCubes.size();
+
     // Resize buffer if needed
-    if (activeCubes.size() > instanceBufferCapacity) {
+    if (needed > instanceBufferCapacity) {
         if (instanceBuffer.buffer != VK_NULL_HANDLE) {
                 // Defer destruction to VulkanResourceManager; clear local handles
                 instanceBuffer = {};
             }
-        
-        instanceBufferCapacity = activeCubes.size() * 2;  // Allocate extra
+
+        size_t newCap = std::min(needed * 2, maxFit);
+        if (newCap == 0) newCap = 1;
+        instanceBufferCapacity = static_cast<uint32_t>(newCap);
         instanceBuffer = app->createBuffer(
-            instanceBufferCapacity * (sizeof(glm::mat4) + sizeof(glm::vec4)),
+            instanceBufferCapacity * stride,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         );
-        
+
         DescriptorWriter(app->getDevice())
             .writeBuffer(gridDescriptorSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                          instanceBuffer.buffer, 0, VK_WHOLE_SIZE)
             .flush();
     }
-    
+
     // Upload instance data
     struct InstanceData {
         glm::mat4 model;
         glm::vec4 color;  // vec4 for alignment
     };
-    
+
     if (activeCubes.empty()) return;
-    
+
+    const size_t uploadCount = std::min(needed, static_cast<size_t>(instanceBufferCapacity));
     std::vector<InstanceData> instanceData;
-    instanceData.reserve(activeCubes.size());
-    for (const auto& cube : activeCubes) {
+    instanceData.reserve(uploadCount);
+    for (size_t i = 0; i < uploadCount; i++) {
+        const auto& cube = activeCubes[i];
         InstanceData inst;
         // Build transformation matrix from cube min/max and per-axis size
         // The unit cube goes from (0,0,0) to (1,1,1), so we need to scale by per-axis lengths
         glm::vec3 min = cube.cube.getMin();
         glm::vec3 sizes = cube.cube.getLength();
         inst.model = glm::translate(glm::mat4(1.0f), min)
-                   * glm::scale(glm::mat4(1.0f), sizes);
+                    * glm::scale(glm::mat4(1.0f), sizes);
         inst.color = glm::vec4(cube.color, 1.0f);
         instanceData.push_back(inst);
     }
-    
+
     memcpy(instanceBuffer.mappedData, instanceData.data(), instanceData.size() * sizeof(InstanceData));
+    drawInstanceCount = static_cast<uint32_t>(uploadCount);
 }
 
 void DebugCubeRenderer::setCubes(const std::vector<CubeWithColor>& cubes) {
@@ -305,8 +316,8 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
     // Line width is specified statically in the pipeline (1.0). Do not call vkCmdSetLineWidth
     // unless the pipeline is created with VK_DYNAMIC_STATE_LINE_WIDTH and the device enables wideLines.
     
-    // Single instanced draw call for all cubes
-    vkCmdDrawIndexed(cmd, cubeVBO.indexCount, static_cast<uint32_t>(activeCubes.size()), 0, 0, 0);
+    // Single instanced draw call for all cubes (capped to what fits in the buffer)
+    vkCmdDrawIndexed(cmd, cubeVBO.indexCount, drawInstanceCount, 0, 0, 0);
 }
 
 void DebugCubeRenderer::cleanup(VulkanApp* app) {

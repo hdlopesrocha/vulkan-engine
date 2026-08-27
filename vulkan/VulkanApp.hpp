@@ -492,6 +492,13 @@ public:
         // Public getters for runtime inspection (used by widgets)
         VkInstance getInstance() const { return instance; }
         VkPhysicalDevice getPhysicalDevice() const { return physicalDevice; }
+        // Storage buffers bound with VK_WHOLE_SIZE must not exceed this limit; query
+        // the active physical device's properties (cheap struct copy).
+        VkDeviceSize getMaxStorageBufferRange() const {
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(physicalDevice, &props);
+            return props.limits.maxStorageBufferRange;
+        }
         VmaAllocator getVmaAllocator() const { return vma.allocator; }
         VkQueue getGraphicsQueue() const { return graphicsQueue; }
         VkQueue getPresentQueue() const { return presentQueue; }

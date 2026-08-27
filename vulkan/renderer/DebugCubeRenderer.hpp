@@ -69,7 +69,10 @@ private:
     // Instance data buffer (model matrix + color per cube)
     Buffer instanceBuffer;
     uint32_t instanceBufferCapacity = 0;
-    
+    // Number of instances actually uploaded/drawn this frame (capped to the
+    // device's maxStorageBufferRange so the storage buffer binding stays valid).
+    uint32_t drawInstanceCount = 0;
+
     // Cubes to render this frame
     std::vector<CubeWithColor> activeCubes;
 private:
