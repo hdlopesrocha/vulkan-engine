@@ -1708,7 +1708,7 @@ public:
                     auto& s = ring[idx++ % ASYNC_RING_SIZE];
                     if (s.pool != VK_NULL_HANDLE) return s;
                     if (layout == VK_NULL_HANDLE) return s;
-                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 14 };
+                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64 };
                     VkDescriptorPoolCreateInfo pci{};
                     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
                     pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -2551,7 +2551,7 @@ void MyApp::preAllocateAsyncDescriptorPools() {
 
     auto allocateComputeRing = [&](PoolSetPair* ring, VkDescriptorSetLayout dsLayout, const char* label) {
         if (dsLayout == VK_NULL_HANDLE) return;
-        VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 14 };
+        VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64 };
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = 1;
@@ -3238,7 +3238,7 @@ void MyApp::ensureCubemapResources() {
     {
         VkDescriptorSetLayout dsLayout = solidInd.getComputeDescriptorSetLayout();
         if (dsLayout != VK_NULL_HANDLE && cube360ComputeDs == VK_NULL_HANDLE) {
-            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 14 };
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64 };
             VkDescriptorPoolCreateInfo pci{};
             pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
             pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -3298,7 +3298,7 @@ void MyApp::ensureCubemapResources() {
     {
         VkDescriptorSetLayout wDsLayout = waterInd.getComputeDescriptorSetLayout();
         if (wDsLayout != VK_NULL_HANDLE && cube360WaterComputeDs == VK_NULL_HANDLE) {
-            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 14 };
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64 };
             VkDescriptorPoolCreateInfo pci{};
             pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
             pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
