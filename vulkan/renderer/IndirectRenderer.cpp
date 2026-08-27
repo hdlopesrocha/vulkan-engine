@@ -19,17 +19,24 @@ static std::chrono::steady_clock::time_point g_lastNoSlotLog = std::chrono::stea
 
 namespace {
 // Push constant blocks are std430: vec3 members align to 16 bytes, so the
-// C++ mirrors carry explicit padding to match the shader layout exactly.
+// C++ mirror of indirect.comp's push_constant block. Offsets are pinned to the
+// shader's explicit layout(offset=...) qualifiers, so a vec3 (camPos, 80..92) is
+// followed by 4 bytes of padding before lodBias at 96 — regardless of how the
+// driver would otherwise pack vec3+scalar. sdfCount lands at offset 112.
 struct CullPushConstants {
     glm::mat4 viewProj;   // offset 0
     uint32_t targetLayer; // offset 64
-    uint32_t numCmds;     // offset 68
+    uint32_t numCmds;     // offset 68 (total: solid + sdf)
     float pad0[2];        // offset 72
     glm::vec3 camPos;     // offset 80
-    float lodBias;        // offset 92
-    uint32_t maxTargetLod; // offset 96
-    uint32_t numCmdsVeg;   // offset 100 (legacy/unused; kept for layout compatibility)
-}; // 104 bytes
+    float camPosPad;      // offset 92 (padding to align lodBias to 96)
+    float lodBias;        // offset 96
+    uint32_t maxTargetLod; // offset 100
+    uint32_t numCmdsVeg;   // offset 104 (legacy/unused; kept for layout compatibility)
+    uint32_t terrainCount; // offset 108 (number of solid commands)
+    uint32_t sdfCount;     // offset 112 (number of SDF cube entries)
+}; // 116 bytes
+static_assert(sizeof(CullPushConstants) == 116, "CullPushConstants must be 116 bytes to match indirect.comp PC block");
 
 struct CascadeCullPushConstants {
     uint32_t numChunks;   // offset 0
@@ -332,7 +339,7 @@ void IndirectRenderer::removeAllMeshes() {
         if (boundsBuffer.buffer != VK_NULL_HANDLE) {
             void* ptr = boundsBuffer.map(0);
             if (ptr) {
-                std::memset(ptr, 0, slotAlloc.capacity() * 3 * sizeof(glm::vec4));
+                std::memset(ptr, 0, slotAlloc.capacity() * 4 * sizeof(glm::vec4));
                 boundsBuffer.unmap();
             }
         }
@@ -739,7 +746,7 @@ void IndirectRenderer::doUploadMeshMetaBuffers(VulkanApp* app) {
             if (boundsBuffer.buffer != VK_NULL_HANDLE) {
                 // Per draw entry the bounds buffer holds min, max and an
                 // unused meta vec4 (zeroed — chunks carry no LoD band meta).
-                VkDeviceSize boundsOffset = i * 3 * sizeof(glm::vec4);
+                VkDeviceSize boundsOffset = i * 4 * sizeof(glm::vec4);
                 glm::vec4 bounds[3] = { info->boundsMin, info->boundsMax, glm::vec4(0.0f) };
                 data = boundsBuffer.map(boundsOffset);
                 memcpy(data, bounds, sizeof(bounds));
@@ -1208,17 +1215,18 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
     // Models SSBO removed: shaders use identity model matrices, no modelsBuffer
 
-    // Upload bounds SSBO (three vec4s per active mesh: min, max, lod meta)
+    // Upload bounds SSBO (four vec4s per active mesh: min, max, lod meta, base)
     std::vector<glm::vec4> boundsData;
-    boundsData.reserve(meshes.size() * 3);
+    boundsData.reserve(meshes.size() * 4);
     for (const auto& kv : meshes) {
         const MeshInfo& info = kv.second;
         if (!info.active) continue;
         boundsData.push_back(info.boundsMin);
         boundsData.push_back(info.boundsMax);
         boundsData.push_back(glm::vec4(0.0f)); // meta: unused (no LoD bands)
+        boundsData.push_back(info.boundsBase); // shared column base (0 for legacy)
     }
-    VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 3;
+    VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 4;
     VkDeviceSize boundsDataSize = sizeof(glm::vec4) * boundsData.size();
     bool needNewBoundsBuffer = (boundsBuffer.buffer == VK_NULL_HANDLE) || (meshCapacity > oldMeshCapacity);
     if (needNewBoundsBuffer) {
@@ -1367,7 +1375,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
     // Create compute pipeline + descriptor sets for GPU culling if not present
     if (computePipeline == VK_NULL_HANDLE) {
-        VkDescriptorSetLayoutBinding bindings[10] = {};
+        VkDescriptorSetLayoutBinding bindings[14] = {};
         bindings[0].binding = 0;
         bindings[0].descriptorCount = 1;
         bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1413,8 +1421,32 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         bindings[9].descriptorCount = 1;
         bindings[9].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        // 10,11: SDF debug-cube compacted output (DrawCmd stream + count).
+        // 12,13: SDF debug-cube input (DrawCmd stream + bounds). SDF cubes are
+        // frustum-culled in the SAME solid dispatch and written to a dedicated
+        // stream so the solid indirect draw is never polluted by them.
+        bindings[10].binding = 10;
+        bindings[10].descriptorCount = 1;
+        bindings[10].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[11].binding = 11;
+        bindings[11].descriptorCount = 1;
+        bindings[11].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[12].binding = 12;
+        bindings[12].descriptorCount = 1;
+        bindings[12].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[12].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[13].binding = 13;
+        bindings[13].descriptorCount = 1;
+        bindings[13].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[13].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
-        VkDescriptorBindingFlags bindingFlags[10] = {
+        VkDescriptorBindingFlags bindingFlags[14] = {
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -1429,7 +1461,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
         DescriptorAllocator descAlloc{app->getDevice(), app};
         computeDescriptorSetLayout = descAlloc.createLayout(
-            bindings, 10,
+            bindings, 14,
             VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
             bindingFlags,
             "IndirectRenderer: computeDescriptorSetLayout");
@@ -1472,7 +1504,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         // track compute pipeline
         app->resources.addPipeline(computePipeline, "IndirectRenderer: computePipeline");
 
-        VkDescriptorPoolSize irPoolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 256};
+        VkDescriptorPoolSize irPoolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2048};
         computeDescriptorPool = descAlloc.createPool(
             &irPoolSize, 1, 64,
             VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
@@ -1545,9 +1577,17 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
                               vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
                  .writeBuffer(computeDs, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                               vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                 .writeBuffer(computeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                 .flush();
+              .writeBuffer(computeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+              .writeBuffer(computeDs, 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            sdfCompactBuf[f].buffer, 0, VK_WHOLE_SIZE)
+              .writeBuffer(computeDs, 11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            sdfCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
+              .writeBuffer(computeDs, 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            sdfInCmdsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+              .writeBuffer(computeDs, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            sdfBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+              .flush();
         }
     }
 
@@ -1637,6 +1677,10 @@ void IndirectRenderer::updateVegTable() {
         memcpy(data, vt.data(), (size_t)vegTableSize);
         vegTableBuffer.unmap();
     }
+}
+
+void IndirectRenderer::setSdfCubes(const std::vector<SdfCube>& cubes) {
+    sdfCubes_ = cubes;
 }
 
 void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
@@ -1819,6 +1863,77 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
 
+    // ── SDF debug cubes: upload AABBs + DrawCmds, then zero the SDF outputs so
+    // they are culled in the SAME indirect.comp dispatch as the solid terrain. ──
+    uint32_t sdfCount = std::min(static_cast<uint32_t>(sdfCubes_.size()), MAX_SDF_CUBES);
+    if (sdfCount > 0) {
+        const uint32_t f = currentCullFrame;
+        auto* inCmds = static_cast<VkDrawIndexedIndirectCommand*>(sdfInCmdsBuf[f].map(0));
+        auto* bounds = static_cast<glm::vec4*>(sdfBoundsBuf[f].map(0));
+        for (uint32_t i = 0; i < sdfCount; i++) {
+            VkDrawIndexedIndirectCommand drawCmd{};
+            drawCmd.indexCount = 36;       // unit cube (12 triangles)
+            drawCmd.instanceCount = 1;
+            drawCmd.firstIndex = 0;
+            drawCmd.vertexOffset = 0;
+            drawCmd.firstInstance = i;     // overwritten by the shader with the SDF-local index
+            inCmds[i] = drawCmd;
+            const glm::vec3& mn = sdfCubes_[i].minp;
+            const glm::vec3& mx = sdfCubes_[i].maxp;
+            // Stride matches indirect.comp: 4 vec4 per entry (min, max, lodMeta, base).
+            bounds[i * 4 + 0] = glm::vec4(mn, 0.0f);
+            bounds[i * 4 + 1] = glm::vec4(mx, 0.0f);
+            bounds[i * 4 + 2] = glm::vec4(0.0f); // meta: cellSize=0 → frustum-only (no LoD gate)
+            bounds[i * 4 + 3] = glm::vec4(mn, 0.0f); // base: unused for SDF (no LoD column)
+        }
+        sdfInCmdsBuf[f].unmap();
+        sdfBoundsBuf[f].unmap();
+
+        // HOST writes (SDF input) → COMPUTE reads.
+        VkBufferMemoryBarrier2 hb[2] = {};
+        for (int i = 0; i < 2; i++) {
+            hb[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            hb[i].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+            hb[i].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+            hb[i].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            hb[i].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            hb[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            hb[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            hb[i].offset = 0;
+            hb[i].size = VK_WHOLE_SIZE;
+        }
+        hb[0].buffer = sdfInCmdsBuf[f].buffer;
+        hb[1].buffer = sdfBoundsBuf[f].buffer;
+        VkDependencyInfo depHost{};
+        depHost.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depHost.bufferMemoryBarrierCount = 2;
+        depHost.pBufferMemoryBarriers = hb;
+        vkCmdPipelineBarrier2(cmd, &depHost);
+
+        // Zero SDF outputs before dispatch.
+        vkCmdFillBuffer(cmd, sdfCompactBuf[f].buffer, 0, VK_WHOLE_SIZE, 0);
+        vkCmdFillBuffer(cmd, sdfCountBuf[f].buffer, 0, sizeof(uint32_t), 0);
+        VkBufferMemoryBarrier2 fb[2] = {};
+        for (int i = 0; i < 2; i++) {
+            fb[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            fb[i].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            fb[i].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            fb[i].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            fb[i].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+            fb[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            fb[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            fb[i].offset = 0;
+            fb[i].size = VK_WHOLE_SIZE;
+        }
+        fb[0].buffer = sdfCompactBuf[f].buffer;
+        fb[1].buffer = sdfCountBuf[f].buffer;
+        VkDependencyInfo depFill{};
+        depFill.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depFill.bufferMemoryBarrierCount = 2;
+        depFill.pBufferMemoryBarriers = fb;
+        vkCmdPipelineBarrier2(cmd, &depFill);
+    }
+
     // Bind and dispatch compute cull
     if (cmdState) cmdState->bindComputePipeline(cmd, computePipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
@@ -1847,7 +1962,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 #endif
     }
     // Fast return if nothing to cull — avoids touching the pipeline at all
-    if (numCmds == 0) {
+    if ((numCmds + sdfCount) == 0) {
         // Count active meshes only on this rare path (used by the warn-once
         // printf below); avoids a full-map scan on every frame in the common
         // cull path. Same value as a scan: memoized under the same mutex.
@@ -1864,19 +1979,21 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     CullPushConstants pc{};
     pc.viewProj     = viewProj;
     pc.targetLayer  = 0;
-    pc.numCmds      = numCmds;
+    pc.numCmds      = numCmds + sdfCount; // total: solid + SDF
     pc.camPos       = camPos;
     pc.lodBias      = lodBias;
     pc.maxTargetLod = static_cast<uint32_t>(maxTargetLod);
     pc.numCmdsVeg   = 0; // solid-only dispatch: no vegetation entries consumed
+    pc.terrainCount = numCmds; // solid entries occupy input indices [0, numCmds)
+    pc.sdfCount     = sdfCount; // SDF entries appended at [numCmds, numCmds+sdfCount)
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc);
 
     uint32_t groupSize = 64;
-    uint32_t groups = (numCmds + groupSize - 1) / groupSize;
+    uint32_t groups = (numCmds + sdfCount + groupSize - 1) / groupSize;
     if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);
 
     // Barrier to make shader writes to the compact indirect buffer and visible count visible to indirect draw
-    VkBufferMemoryBarrier2 barriers[7] = {};
+    VkBufferMemoryBarrier2 barriers[9] = {};
     barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     barriers[0].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
@@ -1904,21 +2021,29 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     barriers[2].buffer = visibleLods.buffer;
     barriers[2].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 
-    uint32_t barrierCount = 3;
+    // SDF cube outputs (binding 10/11) are consumed by the SDF indirect draw.
+    barriers[3] = barriers[0];
+    barriers[3].buffer = sdfCompactBuf[currentCullFrame].buffer;
+    barriers[3].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+    barriers[4] = barriers[0];
+    barriers[4].buffer = sdfCountBuf[currentCullFrame].buffer;
+    barriers[4].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+
+    uint32_t barrierCount = 5;
     if (vegActive) {
-        barriers[3] = barriers[0];
-        barriers[3].buffer = vegBbCompactBuf[currentCullFrame];
-        barriers[3].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-        barriers[4] = barriers[0];
-        barriers[4].buffer = vegImpCompactBuf[currentCullFrame];
-        barriers[4].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
         barriers[5] = barriers[0];
-        barriers[5].buffer = vegBbCountBuf[currentCullFrame];
-        barriers[5].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        barriers[5].buffer = vegBbCompactBuf[currentCullFrame];
+        barriers[5].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
         barriers[6] = barriers[0];
-        barriers[6].buffer = vegImpCountBuf[currentCullFrame];
-        barriers[6].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-        barrierCount = 7;
+        barriers[6].buffer = vegImpCompactBuf[currentCullFrame];
+        barriers[6].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        barriers[7] = barriers[0];
+        barriers[7].buffer = vegBbCountBuf[currentCullFrame];
+        barriers[7].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        barriers[8] = barriers[0];
+        barriers[8].buffer = vegImpCountBuf[currentCullFrame];
+        barriers[8].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        barrierCount = 9;
     }
 
     VkDependencyInfo depInfo{};
@@ -2086,6 +2211,11 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     pc2.lodBias      = lodBias;
     pc2.maxTargetLod = static_cast<uint32_t>(maxTargetLod);
     pc2.numCmdsVeg   = 0; // solid-only dispatch: no vegetation entries consumed
+    // Non-terrain passes (cubemap faces, async backface) never carry SDF cubes:
+    // declare the full solid range and 0 SDF entries so the shader's SDF branch
+    // is never taken and bindings 10..13 stay unused (they are PARTIALLY_BOUND).
+    pc2.terrainCount = numCmds;
+    pc2.sdfCount     = 0;
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc2);
 
     uint32_t groupSize = 64;
@@ -2362,10 +2492,10 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     }
 
     // Bounds buffer (host-visible, persistently mapped). Same zeroing rationale.
-    // Three vec4s per entry: min, max, meta (unused, kept zeroed for layout
-    // compatibility with cascade culling).
+    // Four vec4s per entry: min, max, meta (unused, kept zeroed for layout
+    // compatibility with cascade culling), base (shared column anchor).
     // TRANSFER_DST: staged bounds land here via vkCmdCopyBuffer.
-    VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 3;
+    VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 4;
     boundsBuffer = app->createBuffer(boundsBufferSize,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -2429,13 +2559,38 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         *visibleCountMapped[f] = 0;
     }
 
+    // ── SDF debug-cube culling buffers (folded into the solid indirect.comp dispatch) ──
+    // Inputs (sdfInCmds/sdfBounds) are host-written each frame from the SDF cube
+    // AABBs and read by the cull; outputs (sdfCompact/sdfCount) are GPU-written and
+    // consumed by the SDF indirect draw. Fixed capacity bounds the worst case.
+    {
+        const VkDeviceSize sdfInCmdSize  = MAX_SDF_CUBES * sizeof(VkDrawIndexedIndirectCommand);
+        const VkDeviceSize sdfBoundsSize = MAX_SDF_CUBES * 4 * sizeof(glm::vec4);
+        const VkDeviceSize sdfOutCmdSize  = MAX_SDF_CUBES * sizeof(VkDrawIndexedIndirectCommand);
+        const VkDeviceSize sdfCountSize   = sizeof(uint32_t);
+        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+            sdfInCmdsBuf[f] = app->createBuffer(sdfInCmdSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            sdfBoundsBuf[f] = app->createBuffer(sdfBoundsSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            sdfCompactBuf[f] = app->createBuffer(sdfOutCmdSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            sdfCountBuf[f] = app->createBuffer(sdfCountSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
+    }
+
     // ── Create compute pipeline + descriptor sets for GPU culling ────────────
     // (Same as in rebuild() — factored out to share)
     {
         // Bindings (0..9): 0 input commands, 1 output commands, 2 bounds,
         // 3 count, 4 chosen-LoD output, 5/6 vegetation impostor cmd + count,
         // 7/8 vegetation billboard cmd + count, 9 vegetation chunk-info (input).
-        VkDescriptorSetLayoutBinding bindings[10] = {};
+        VkDescriptorSetLayoutBinding bindings[14] = {};
         bindings[0].binding = 0;
         bindings[0].descriptorCount = 1;
         bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -2476,8 +2631,32 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         bindings[9].descriptorCount = 1;
         bindings[9].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        // 10,11: SDF debug-cube compacted output (DrawCmd stream + count).
+        // 12,13: SDF debug-cube input (DrawCmd stream + bounds). SDF cubes are
+        // frustum-culled in the SAME solid dispatch and written to a dedicated
+        // stream so the solid indirect draw is never polluted by them.
+        bindings[10].binding = 10;
+        bindings[10].descriptorCount = 1;
+        bindings[10].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[11].binding = 11;
+        bindings[11].descriptorCount = 1;
+        bindings[11].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[12].binding = 12;
+        bindings[12].descriptorCount = 1;
+        bindings[12].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[12].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[13].binding = 13;
+        bindings[13].descriptorCount = 1;
+        bindings[13].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[13].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
-        VkDescriptorBindingFlags bindingFlags[10] = {
+        VkDescriptorBindingFlags bindingFlags[14] = {
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -2492,7 +2671,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
 
         DescriptorAllocator descAlloc{app->getDevice(), app};
         computeDescriptorSetLayout = descAlloc.createLayout(
-            bindings, 10,
+            bindings, 14,
             VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
             bindingFlags,
             "IndirectRenderer: computeDescriptorSetLayout");
@@ -2532,7 +2711,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         }
         app->resources.addPipeline(computePipeline, "IndirectRenderer: computePipeline");
 
-        VkDescriptorPoolSize irPoolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 256};
+        VkDescriptorPoolSize irPoolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2048};
         computeDescriptorPool = descAlloc.createPool(
             &irPoolSize, 1, 64,
             VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
@@ -2596,9 +2775,17 @@ void IndirectRenderer::initSlots(VulkanApp* app,
                            vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
              .writeBuffer(computeDs, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                            vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-             .writeBuffer(computeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                           vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-             .flush();
+               .writeBuffer(computeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+               .writeBuffer(computeDs, 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            sdfCompactBuf[f].buffer, 0, VK_WHOLE_SIZE)
+               .writeBuffer(computeDs, 11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            sdfCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
+               .writeBuffer(computeDs, 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            sdfInCmdsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+               .writeBuffer(computeDs, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            sdfBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+               .flush();
     }
 
     // Load indirect-count draw function
@@ -2643,7 +2830,7 @@ void IndirectRenderer::copyGeometryToLevel(const Geometry& mesh, MeshInfo::Level
 
 uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId,
                                           const glm::vec3* cubeMin, const glm::vec3* cubeMax,
-                                          int level)
+                                          int level, const glm::vec3* boundsBase)
 {
     if (!slottedMode) return UINT32_MAX;
 
@@ -2745,6 +2932,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
             m.id         = chunkId;
             m.slotIndex  = slotIdx;
             m.active     = true;
+            m.boundsBase = boundsBase ? glm::vec4(*boundsBase, 0.0f) : glm::vec4(0.0f);
             meshes[chunkId] = m;
             chunk = &meshes[chunkId];
         }
@@ -2807,6 +2995,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
             m.id        = chunkId;
             m.slotIndex = slotIdx;
             m.active    = true;
+            m.boundsBase = boundsBase ? glm::vec4(*boundsBase, 0.0f) : glm::vec4(0.0f);
             meshes[chunkId] = m;
         }
         if (entryIndex < indirectCommands.size())
@@ -2929,6 +3118,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     int32_t  capVertexOffset       = static_cast<int32_t>(ld.baseVertex);
     glm::vec4 capBoundsMin         = ld.boundsMin;
     glm::vec4 capBoundsMax         = ld.boundsMax;
+    glm::vec4 capBoundsBase        = info->boundsBase;
     int      capLevel              = ld.level;
     uint32_t capOldVertexBase      = ld.oldVertexBase;
     uint32_t capOldVertexCount     = ld.oldVertexCount;
@@ -2985,6 +3175,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     // so the old data can no longer be referenced.
     auto deferredWriteMeta = [this, capEntryIndex, capIndexCount, capFirstIndex,
                               capVertexOffset, capBoundsMin, capBoundsMax, capLevel,
+                              capBoundsBase,
                               capOldVertexBase, capOldVertexCount,
                               capOldIndexBase, capOldIndexCount]()
     {
@@ -3006,22 +3197,21 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
         }
 
         if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capEntryIndex) * 3 * sizeof(glm::vec4);
+            VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capEntryIndex) * 4 * sizeof(glm::vec4);
             void* bndData = boundsBuffer.map(boundsOffset);
             if (bndData) {
-                // Third vec4 (meta): {cellSize, level, maxLevel, unused} —
-                // cellSize is the chunk's own cube length; level is the 0-based
-                // rung (capLevel = chunkLod - 1); maxLevel is the tree's real
-                // ladder depth. The shader uses cellSize to scale the rung width
-                // per level (baseCell = cellSize/2^level) and to snap every rung
-                // of a column to one shared anchor (rootSide), which is what makes
-                // the distance bands tile without overlap. This is the clipmap
-                // ladder alignment — not optional size arithmetic.
+                // Four vec4 (per entry): min, max, lodMeta, boundsBase.
+                // lodMeta = {cellSize, level, maxLevel, unused}; cellSize is the
+                // band's own cube length; level is the 0-based rung; maxLevel is
+                // the tree's real ladder depth. boundsBase is the FINEST chunk's
+                // min corner, shared by every rung of a column so the clipmap
+                // anchor (rootSide) is identical for all rungs — which is what
+                // makes exactly one rung be selected per region (no overlap).
                 const float cellSize = capBoundsMax.x - capBoundsMin.x;
                 const glm::vec4 lodMeta = glm::vec4(cellSize,
                                                     static_cast<float>(capLevel),
                                                     static_cast<float>(maxLodLevel_), 0.0f);
-                glm::vec4 bounds[3] = { capBoundsMin, capBoundsMax, lodMeta };
+                glm::vec4 bounds[4] = { capBoundsMin, capBoundsMax, lodMeta, capBoundsBase };
                 std::memcpy(bndData, bounds, sizeof(bounds));
                 boundsBuffer.unmap();
             }

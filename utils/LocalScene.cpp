@@ -93,7 +93,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                     }
                     if(!nodeTesselator.geometry.indices.empty()) {
                         callback(nodeTesselator.geometry, chunkLod, params.node->version,
-                                 reinterpret_cast<uintptr_t>(params.node), params.cube);
+                                 reinterpret_cast<uintptr_t>(params.node), params.cube, data.cube);
                     }
                 }
             }
@@ -107,6 +107,71 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
             }   
         },
         [tree,&data,&context](const Octree &treeRef, OctreeNodeData &params) {
+            return params.node ? params.node->chunkLod > 0 : false;
+        }
+    );
+}
+
+namespace {
+// Mirrors DebugSDFRenderer's drawable-face test: a cube is shown iff at least one
+// corner is within the clip band, or an edge crosses the SDF zero level.
+constexpr float kSdfDebugClip = 10.0f;
+bool sdfCubeDrawable(const std::array<float, 8>& sdf) {
+    for (int i = 0; i < 8; ++i) {
+        float v = sdf[i];
+        if (std::isfinite(v) && std::abs(v) <= kSdfDebugClip) return true;
+    }
+    static const int kFaces[6][4] = {
+        {0, 1, 3, 2}, {4, 6, 7, 5}, {0, 4, 5, 1}, {2, 3, 7, 6}, {0, 2, 6, 4}, {1, 5, 7, 3}
+    };
+    for (int f = 0; f < 6; ++f) {
+        for (int e = 0; e < 4; ++e) {
+            float a = sdf[kFaces[f][e]];
+            float b = sdf[kFaces[f][(e + 1) % 4]];
+            if (std::isfinite(a) && std::isfinite(b) &&
+                ((a <= 0.0f && b >= 0.0f) || (a >= 0.0f && b <= 0.0f)))
+                return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
+void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride) {
+    Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
+    ThreadContext context = ThreadContext(data.cube);
+
+    tree->iterateMultiThreaded(
+        [tree, &data, &context, &callback](const Octree &treeRef, OctreeNodeData &params) {
+            const bool ancestor = params.cube.getLengthX() > data.cube.getLengthX();
+            bool inSubtree = ancestor ? params.cube.contains(data.cube.getCenter())
+                                      : data.cube.contains(params.cube);
+            if (!inSubtree) return false;
+
+            if (params.node->getType() != SpaceType::Surface) {
+                return true;  // descend through non-surface cells toward the chunk
+            }
+
+            // SDF debug cubes live at lod==1 (the same rung the solid ladder uses).
+            // Emit every lod==1 surface node: the chunkLod==1 gate (in
+            // SceneRenderer::processNodeLayer) already restricts collection to the
+            // finest published rung, so a drawable-face clip here would wrongly drop
+            // whole chunks whose corner SDFs sit outside the debug clip band.
+            if (params.node->getLod() == 1u) {
+                std::array<float, 8> sdf;
+                for (size_t i = 0; i < 8; ++i) sdf[i] = params.node->sdf[i];
+                callback(params.cube, sdf, 1u, params.node->version,
+                         reinterpret_cast<uintptr_t>(params.node),
+                         static_cast<uint32_t>(params.node->vertex.brushIndex));
+            }
+            // Keep descending so finer SDF nodes (also at lod==1 in deeper chunks)
+            // are visited; the lod==1 filter above selects exactly the right cells.
+            return params.node->getLod() > 1u;
+        },
+        [](const Octree &treeRef, OctreeNodeData &params, uint8_t order[8]) {
+            for (int i = 0; i < 8; ++i) order[i] = i;
+        },
+        [tree, &data, &context](const Octree &treeRef, OctreeNodeData &params) {
             return params.node ? params.node->chunkLod > 0 : false;
         }
     );

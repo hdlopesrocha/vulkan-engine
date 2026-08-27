@@ -129,7 +129,7 @@ void main() {
     // Empty entries (no mesh data) never draw and never count.
     if (inCmds.cmds[idx].indexCount == 0u) return;
 
-    uint bIndex = idx * 3u;
+    uint bIndex = idx * 4u;
     vec3 minp = vec3(0.0);
     vec3 maxp = vec3(0.0);
     if ((bIndex + 2u) < boundsBuf.data.length()) {

@@ -131,17 +131,12 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
         ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
 
         if (target.chunkManaged) {
-            // Debug markers for the main scene only (no SDF cubes for brush).
-            if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
-                const Octree& debugTree = (layer == LAYER_OPAQUE)
-                    ? localScene->getOpaqueOctree()
-                    : localScene->transparentOctree;
-                if (renderer->debugSDFRenderer)
-                    renderer->debugSDFRenderer->updateCubesForChunk(nid, nd, debugTree);
-            }
+            // SDF debug cubes are collected inside SceneRenderer::processNodeLayer
+            // via scene.requestSDFCubes (mirrors the solid mesh walk) — no separate
+            // marker pass needed here.
             // Phase 1: mark dirty and begin build IMMEDIATELY when the octree
             // change is detected (before tessellation is dispatched to the
-            // worker pool). This transitions Clean → Queued → BuildingCPU.
+            // worker pool). This transitions Clean → Queed → BuildingCPU.
             if (renderer->world()) {
                 renderer->world()->chunkManager().markDirty(cid, nd.node->version);
                 renderer->world()->chunkManager().beginBuild(cid);
@@ -160,7 +155,7 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
                 // lodMesh.lod is the 0-based band level (chunkLod - 1); the
                 // stored chunkLod is 1-based. finishBuild only when the mesh is
                 // the added node's own rung.
-                if (target.chunkManaged && nodeCopy.node->getChunkLod() == lodMesh.lod + 1) {
+                if (target.chunkManaged && nodeCopy.node->getChunkLod() == lodMesh.lod) {
                     // Phase 3: tessellation complete on a worker thread. The
                     // chunk mesh is complete; only the octree version is
                     // tracked here — GPU data goes through slots.
@@ -1147,6 +1142,13 @@ public:
         sceneRenderer->mainSolidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
         sceneRenderer->brushRenderer->getSolidIR().setCullFrame(frameIdx);
         sceneRenderer->mainLiquidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
+        if (sceneRenderer->debugSDFRenderer) {
+            sceneRenderer->debugSDFRenderer->setCullFrame(frameIdx);
+            // The solid IndirectRenderer performs the SDF cube cull + compaction in
+            // its OWN indirect.comp dispatch (folded into the terrain cull), so point
+            // the SDF debug renderer at it to draw from its SDF output buffers.
+            sceneRenderer->debugSDFRenderer->setIndirectRenderer(&sceneRenderer->mainSolidRenderer->getIndirectRenderer());
+        }
 
         // Profiling: read previous frame's query results (with availability flag to
         // avoid even partial driver stalls), then reset for this frame.
@@ -1281,6 +1283,16 @@ public:
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
             sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
         }
+        // Fold SDF debug-cube culling into the solid IndirectRenderer's single
+        // indirect.comp dispatch: register the cube AABBs BEFORE prepareCull so the
+        // terrain cull writes the surviving SDF cubes into a dedicated SDF stream.
+        if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
+            auto sdfCubes = sceneRenderer->debugSDFRenderer->getCubes();
+            std::vector<IndirectRenderer::SdfCube> sdf;
+            sdf.reserve(sdfCubes.size());
+            for (auto& c : sdfCubes) sdf.push_back({c.cube.getMin(), c.cube.getMax()});
+            sceneRenderer->mainSolidRenderer->getIndirectRenderer().setSdfCubes(sdf);
+        }
         sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
         sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(commandBuffer);
         sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
@@ -1296,6 +1308,14 @@ public:
         // (its compact/visibleCount buffers are otherwise stale from the last
         // prepareCull or uninitialized, which would draw garbage).
             sceneRenderer->brushRenderer->getLiquidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+        // GPU frustum-cull SDF debug cubes via indirect.comp (same culling as
+        // solid). Must run outside the render pass, before the debug draw.
+        // prepareCull safely no-ops (clears the visible flag) when there are no cubes.
+        if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
+            auto sdfCubes = sceneRenderer->debugSDFRenderer->getCubes();
+            sceneRenderer->debugSDFRenderer->setCubes(sdfCubes);
+            sceneRenderer->debugSDFRenderer->prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+        }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
 
@@ -1570,11 +1590,7 @@ public:
             }
 
             if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
-                auto sdfCubes = sceneRenderer->debugSDFRenderer->getCubes();
-                if (!sdfCubes.empty()) {
-                    sceneRenderer->debugSDFRenderer->setCubes(sdfCubes);
-                    sceneRenderer->debugSDFRenderer->render(this, commandBuffer, getMainDescriptorSet());
-                }
+                sceneRenderer->debugSDFRenderer->render(this, commandBuffer, getMainDescriptorSet());
             }
 
             if (settings.renderSolid && settings.wireframeMode && sceneRenderer) {
@@ -1692,7 +1708,7 @@ public:
                     auto& s = ring[idx++ % ASYNC_RING_SIZE];
                     if (s.pool != VK_NULL_HANDLE) return s;
                     if (layout == VK_NULL_HANDLE) return s;
-                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 };
+                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 14 };
                     VkDescriptorPoolCreateInfo pci{};
                     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
                     pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -2535,7 +2551,7 @@ void MyApp::preAllocateAsyncDescriptorPools() {
 
     auto allocateComputeRing = [&](PoolSetPair* ring, VkDescriptorSetLayout dsLayout, const char* label) {
         if (dsLayout == VK_NULL_HANDLE) return;
-        VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 };
+        VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 14 };
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = 1;
@@ -3222,7 +3238,7 @@ void MyApp::ensureCubemapResources() {
     {
         VkDescriptorSetLayout dsLayout = solidInd.getComputeDescriptorSetLayout();
         if (dsLayout != VK_NULL_HANDLE && cube360ComputeDs == VK_NULL_HANDLE) {
-            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 };
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 14 };
             VkDescriptorPoolCreateInfo pci{};
             pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
             pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -3282,7 +3298,7 @@ void MyApp::ensureCubemapResources() {
     {
         VkDescriptorSetLayout wDsLayout = waterInd.getComputeDescriptorSetLayout();
         if (wDsLayout != VK_NULL_HANDLE && cube360WaterComputeDs == VK_NULL_HANDLE) {
-            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 };
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 14 };
             VkDescriptorPoolCreateInfo pci{};
             pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
             pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;

@@ -66,14 +66,34 @@ layout(std430, binding = 9) readonly buffer VegChunkInfo {
     vec4 data[];
 } vegChunkInfo;
 
+// ── SDF debug-cube culling (folded into the SAME solid dispatch) ──────────────
+// SDF cubes are appended AFTER the solid/veg entries in the dispatch (input index
+// s in [terrainCount, terrainCount+sdfCount)). They carry no LoD data, so they are
+// frustum-culled only and written to a dedicated SDF output stream so the solid
+// indirect draw (which uses a different vertex buffer) is never polluted by them.
+layout(std430, binding = 12) readonly buffer InSdfCmds {
+    DrawCmd cmds[];
+} inSdfCmds;
+layout(std430, binding = 13) readonly buffer BoundsSdf {
+    vec4 data[];
+} boundsSdf;
+layout(std430, binding = 10) writeonly buffer OutSdfCmds {
+    DrawCmd cmds[];
+} outSdfCmds;
+layout(std430, binding = 11) buffer OutSdfCount {
+    uint count;
+} sdfCount;
+
 layout(push_constant) uniform PC {
-    mat4 viewProj;
-    uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now)
-    uint numCmds;     // number of SOLID draw commands
-    vec3 camPos;      // camera position driving the per-chunk LoD band selection
-    float lodBias;    // world distance per LoD rung: larger = coarser levels kick in farther away
-    uint maxTargetLod; // clamp: never select a coarser LoD level than this
-    uint numCmdsVeg;   // legacy/unused in the merged dispatch (kept for layout compatibility)
+    layout(offset = 0)   mat4 viewProj;
+    layout(offset = 64)  uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now)
+    layout(offset = 68)  uint numCmds;     // number of TOTAL draw commands (solid + sdf)
+    layout(offset = 80)  vec3 camPos;      // camera position driving the per-chunk LoD band selection
+    layout(offset = 96)  float lodBias;    // world distance per LoD rung: larger = coarser levels kick in farther away
+    layout(offset = 100) uint maxTargetLod; // clamp: never select a coarser LoD level than this
+    layout(offset = 104) uint numCmdsVeg;   // legacy/unused in the merged dispatch (kept for layout compatibility)
+    layout(offset = 108) uint terrainCount; // number of SOLID draw commands (s < terrainCount)
+    layout(offset = 112) uint sdfCount;     // number of SDF cube entries (appended after solid)
 } pc;
 
 // Shared, per-workgroup cache of the six frustum planes. The viewProj matrix is
@@ -144,7 +164,45 @@ void processVegetation(uint s) {
 // compacted solid command. If the chunk is kept, its vegetation is emitted too
 // via processVegetation (so vegetation is drawn exactly for the visible chunks).
 void processChunk(uint s) {
-    if (s >= inCmds.cmds.length() || s >= pc.numCmds) return;
+    if (s >= pc.numCmds) return;
+
+    // ── SDF debug cubes (appended after the solid entries) ───────────────────
+    // SDF debug cubes: one dispatch entry per collected cube. requestSDFCubes only
+    // emits lod==1 surface nodes, so every entry here already satisfies the
+    // chunkLod == 1 gate. Emit a frustum-culled draw command PER cube, with
+    // firstInstance = the cube's SDF-local index so the SDF vertex shader reads
+    // instances[gl_InstanceIndex] for exactly the right AABB. Written to a dedicated
+    // SDF output stream so the solid indirect draw (different vertex buffer) is never
+    // polluted by SDF draw commands.
+    if (s >= pc.terrainCount) {
+        uint local = s - pc.terrainCount;
+        if (local >= pc.sdfCount) return;
+
+        // chunkLod == 1 gate (restated in-shader for clarity): all collected cubes
+        // carry chunkLod == 1, so this is always satisfied here.
+        if (inSdfCmds.cmds[local].instanceCount == 0u) return; // not a valid cube slot
+
+        // boundsSdf stride is 4 vec4 per cube: {min, max, lodMeta, base}.
+        vec3 bmin = boundsSdf.data[local * 4u + 0u].xyz;
+        vec3 bmax = boundsSdf.data[local * 4u + 1u].xyz;
+
+        // frustum visibility
+        if (!aabbVisible(gPlanes, bmin, bmax)) return;
+
+        uint dst = atomicAdd(sdfCount.count, 1u);
+        if (dst < outSdfCmds.cmds.length()) {
+            DrawCmd cmd;
+            cmd.indexCount    = 36u;
+            cmd.instanceCount = 1u;
+            cmd.firstIndex    = 0u;
+            cmd.vertexOffset  = 0;
+            cmd.firstInstance = local;
+            outSdfCmds.cmds[dst] = cmd;
+        }
+        return;
+    }
+
+    if (s >= inCmds.cmds.length()) return;
 
     // Empty entries (no mesh data) never draw, never count, and carry no vegetation.
     if (inCmds.cmds[s].indexCount == 0u) return;
@@ -153,15 +211,17 @@ void processChunk(uint s) {
     // meta = {chunkLod, lod, maxLevel, unused}: chunkLod is the band's ladder
     // rung (1 = finest published rung), lod is the node's stored getLod
     // (chunkLod + 1), maxLevel is the tree's real ladder depth.
-    uint bIndex = s * 3u;
-    bool hasBounds = (bIndex + 2u) < boundsBuf.data.length();
+    uint bIndex = s * 4u;
+    bool hasBounds = (bIndex + 3u) < boundsBuf.data.length();
     vec3 minp = vec3(0.0);
     vec3 maxp = vec3(0.0);
     vec4 lodMeta = vec4(0.0);
+    vec3 base = vec3(0.0);
     if (hasBounds) {
         minp = boundsBuf.data[bIndex].xyz;
         maxp = boundsBuf.data[bIndex + 1u].xyz;
         lodMeta = boundsBuf.data[bIndex + 2u];
+        base = boundsBuf.data[bIndex + 3u].xyz;
     }
 
     // ── Per-chunk LoD band selection (frustum-independent) ──────────────────
@@ -195,9 +255,12 @@ void processChunk(uint s) {
 
     uint selectedLevel = 0xFFFFFFFFu;
     if (cellSize > 0.0) {
+        // Clipmap anchor: every rung of a column shares the FINEST chunk's min
+        // corner (`base`), so rootSide nests identically for all rungs and
+        // exactly one rung is selected per region (no overlap; no holes).
         float baseCell = cellSize / exp2(float(max(entryLevel, 0)));
         float rootSide = cellSize * exp2(float(maxLevel - entryLevel));
-        vec3 rootMin = floor(minp / rootSide) * rootSide;
+        vec3 rootMin = floor(base / rootSide) * rootSide;
         vec3 anchor = rootMin + 0.5f * rootSide;
         float band = distance(pc.camPos, anchor) / (baseCell * pc.lodBias);
         selectedLevel = uint(min(floor(band), float(maxLevel)));

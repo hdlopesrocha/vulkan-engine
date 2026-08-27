@@ -76,6 +76,10 @@ public:
         uint32_t drawIndex = UINT32_MAX; // position in indirectCommands list
         uint32_t slotIndex = UINT32_MAX; // stable slot (if using slotted mode)
         bool active = false;
+        // Shared column anchor for the LoD band gate: the FINEST chunk's min
+        // corner. All rungs of a column share this so the clipmap anchor nests
+        // and exactly one rung is selected per region (no overlap).
+        glm::vec4 boundsBase = glm::vec4(0.0f);
         // Single chunk mesh (slotted mode): one packed span in the shared
         // vertex/index element pools, one draw entry per chunk. Chunks arrive
         // one by one — each chunk publishes exactly one mesh.
@@ -148,7 +152,7 @@ public:
     // the camera distance band.
     uint32_t addMeshSlotted(const Geometry& mesh, uint32_t chunkId,
                             const glm::vec3* cubeMin = nullptr, const glm::vec3* cubeMax = nullptr,
-                            int level = 0);
+                            int level = 0, const glm::vec3* boundsBase = nullptr);
     void removeMeshSlotted(uint32_t slotIndex);
 
     // Maximum LoD ladder level present in the tree. Written into each entry's
@@ -225,6 +229,26 @@ public:
     void prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
                                     VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
                                     glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16);
+
+    // ── SDF debug-cube culling (merged into the solid indirect.comp dispatch) ──
+    // Supplies the AABBs of the SDF debug cubes. prepareCull appends them after
+    // the solid entries and frustum-culls them in the SAME indirect.comp dispatch,
+    // writing survivors to a dedicated SDF output stream. The SDF debug renderer
+    // then draws from those buffers (see getSdfCompactBuffer / getSdfCountBuffer).
+    struct SdfCube {
+        glm::vec3 minp;
+        glm::vec3 maxp;
+    };
+    void setSdfCubes(const std::vector<SdfCube>& cubes);
+    // Capacity of the folded SDF command stream (sdfCompactBuf): the maximum number
+    // of SDF DrawCmds indirect.comp can emit per frame. Used to bound maxDrawCount.
+    uint32_t getMaxSdfCommands() const { return MAX_SDF_CUBES; }
+    VkBuffer getSdfCompactBuffer(uint32_t frame) const {
+        return frame < MAX_CULL_FRAMES ? sdfCompactBuf[frame].buffer : VK_NULL_HANDLE;
+    }
+    VkBuffer getSdfCountBuffer(uint32_t frame) const {
+        return frame < MAX_CULL_FRAMES ? sdfCountBuf[frame].buffer : VK_NULL_HANDLE;
+    }
 
     // ── Vegetation cull integration ──
     // The solid IndirectRenderer owns the merged indirect.comp dispatch, which
@@ -434,6 +458,21 @@ private:
     Buffer vegTableBuffer;
     void* vegTableMapped = nullptr;
     uint32_t vegTableCapacity = 0;
+
+    // ── SDF debug-cube culling (folded into the solid indirect.comp dispatch) ──
+    // Per cull-frame buffers for the SDF stream. SDF cubes are appended after the
+    // solid entries in the dispatch and written to sdfCompactBuf (binding 10) with
+    // their count in sdfCountBuf (binding 11). Inputs are sdfInCmdsBuf (binding 12)
+    // and sdfBoundsBuf (binding 13). Capacity must hold every chunkLod==1 surface
+    // cube emitted by LocalScene::requestSDFCubes (can be hundreds of thousands for a
+    // large terrain), so it is sized generously; the per-instance data lives in the
+    // DebugSDFRenderer instance buffers (grown by ensureCullCapacity to maxStorageBufferRange).
+    static constexpr uint32_t MAX_SDF_CUBES = 500000;
+    std::array<Buffer, MAX_CULL_FRAMES> sdfCompactBuf;
+    std::array<Buffer, MAX_CULL_FRAMES> sdfCountBuf;
+    std::array<Buffer, MAX_CULL_FRAMES> sdfInCmdsBuf;
+    std::array<Buffer, MAX_CULL_FRAMES> sdfBoundsBuf;
+    std::vector<SdfCube> sdfCubes_;
     std::unordered_map<uint32_t, glm::vec4> vegChunkInfoMap;
     bool vegCullEnabled = false;
     // Dummy bound to the veg bindings (5..9) on the solid-only dispatch — the

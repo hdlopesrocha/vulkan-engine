@@ -857,7 +857,8 @@ size_t SceneRenderer::publishPendingMeshes(
         const uint32_t slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(base),
                                                     &cubeMin,
                                                     &cubeMax,
-                                                    lod.lod);
+                                                    lod.lod,
+                                                    &lod.boundsBase);
         if (slotIdx == UINT32_MAX) continue; // no free block / element pool exhausted
 
         // addMeshSlotted re-publishes the existing chunk slot in place when
@@ -1159,7 +1160,7 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     // cube — the band center and the meta cellSize must come from it, never
     // from nodeData (the added node), or every ancestor would publish the
     // frontier cell's size.
-    scene.requestModel3D(layer, nodeData, [&layer,&onGeometry,&nodeData](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId, const BoundingCube& cube) {
+    scene.requestModel3D(layer, nodeData, [&layer,&onGeometry,&nodeData](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId, const BoundingCube& cube, const BoundingCube& baseCube) {
         Octree::LoDMesh lm;
         lm.geom = geo;
         lm.lod = lod;
@@ -1167,9 +1168,30 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
         lm.cellSize = cube.getLength().x;
         lm.boundsMin = cube.getMin();
         lm.boundsMax = cube.getMax();
+        lm.boundsBase = baseCube.getMin();
         onGeometry(layer, reinterpret_cast<NodeID>(emittingNodeId), lm);
     }, poolOverride);
 
+    // SDF debug cubes: collected through the SAME node walk as the solid meshes
+    // (requestSDFCubes walks the chunk subtree and emits lod==1 nodes that carry a
+    // drawable SDF face). Accumulate them for this chunk and publish to the
+    // DebugSDFRenderer, which renders them via the terrain IndirectRenderer's
+    // folded SDF draw stream.
+    if (debugSDFRenderer && nodeData.node->getChunkLod() == 1u) {
+        std::vector<DebugSDFRenderer::CubeSDF> sdfCubes;
+        std::mutex sdfMtx;
+        scene.requestSDFCubes(layer, nodeData,
+            [&sdfCubes, &sdfMtx](const BoundingCube& cube, const std::array<float, 8>& sdf,
+                                 uint8_t /*lod*/, uint /*version*/, uintptr_t /*emittingNodeId*/, uint32_t brushIndex) {
+                DebugSDFRenderer::CubeSDF c;
+                c.cube = cube;
+                c.sdf = sdf;
+                c.brushIndex = static_cast<int>(brushIndex);
+                std::lock_guard<std::mutex> lk(sdfMtx);
+                sdfCubes.push_back(std::move(c));
+            }, poolOverride);
+        debugSDFRenderer->updateCubesForChunk(nid, sdfCubes);
+    }
 
 }
 

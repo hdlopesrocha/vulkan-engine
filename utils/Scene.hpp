@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
+#include <array>
 #include <functional>
 #include "../math/Geometry.hpp"
 #include "../space/Octree.hpp"
@@ -61,6 +62,19 @@ public:
     virtual void action(SceneLoaderCallback& callback, const Octree::OctreeNodeDataHandler opaqueUpdateHandler, const Octree::OctreeNodeDataHandler opaqueDeleteHandler, const Octree::OctreeNodeDataHandler transparentUpdateHandler, const Octree::OctreeNodeDataHandler transparentDeleteHandler) = 0;
     virtual void loadScene(SceneLoaderCallback& callback, const Octree::OctreeNodeDataHandler opaqueUpdateHandler, const Octree::OctreeNodeDataHandler opaqueDeleteHandler, const Octree::OctreeNodeDataHandler transparentUpdateHandler, const Octree::OctreeNodeDataHandler transparentDeleteHandler) = 0;
     virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride = nullptr) = 0;
+    // Collect SDF debug cubes the same way requestModel3D collects meshes: the
+    // walk emits one callback per node that carries a drawable SDF face, with the
+    // node's own cube (band box) so the caller can place a debug cube. Boxes are
+    // emitted for nodes at lod==1 (the same level the solid ladder uses).
+    using SdfCubeCallback = std::function<void(
+        const BoundingCube& cube,
+        const std::array<float, 8>& sdf,
+        uint8_t lod,
+        uint version,
+        uintptr_t emittingNodeId,
+        uint32_t brushIndex
+    )>;
+    virtual void requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride = nullptr) {}
     virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
 
     // Maximum LoD level a chunk can publish for the given layer (>= 0). The

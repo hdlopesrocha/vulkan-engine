@@ -1,4 +1,5 @@
 #include "DebugSDFRenderer.hpp"
+#include "IndirectRenderer.hpp"
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
 #include "../ShaderStage.hpp"
@@ -13,15 +14,6 @@
 #include "../includes/locations.hpp"
 
 // A storage buffer binding may not exceed VkPhysicalDeviceLimits::maxStorageBufferRange
-// (typically 128 MiB). Cap the SDF-cube instance count so the buffer we expose to the
-// shader stays within that hard limit, otherwise vkUpdateDescriptorSets aborts.
-static uint32_t maxSDFInstanceCount(VulkanApp* app) {
-    VkPhysicalDeviceProperties props{};
-    vkGetPhysicalDeviceProperties(app->getPhysicalDevice(), &props);
-    const VkDeviceSize stride = sizeof(glm::mat4) + sizeof(glm::vec4) * 3;
-    return static_cast<uint32_t>(props.limits.maxStorageBufferRange / stride);
-}
-
 DebugSDFRenderer::DebugSDFRenderer() {}
 
 DebugSDFRenderer::~DebugSDFRenderer() { cleanup(nullptr); }
@@ -32,6 +24,8 @@ void DebugSDFRenderer::init(VulkanApp* app) {
 
     vertModule = app->getOrCreateShaderModule("shaders/debug_sdf.vert.spv");
     fragModule = app->getOrCreateShaderModule("shaders/debug_sdf.frag.spv");
+
+    createCullResources(app);
 
     ShaderStage vertStage(vertModule, VK_SHADER_STAGE_VERTEX_BIT);
     ShaderStage fragStage(fragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -121,64 +115,110 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
         "DebugSDFRenderer: descriptorPool");
 
     descriptorSet = descAlloc.allocateSet(descriptorPool, descriptorSetLayout, "DebugSDFRenderer: descriptorSet");
-
-    const uint32_t maxInstances = maxSDFInstanceCount(app);
-    instanceBufferCapacity = std::min<uint32_t>(128, maxInstances);
-    instanceBuffer = app->createBuffer(
-        instanceBufferCapacity * (sizeof(glm::mat4) + sizeof(glm::vec4) * 3),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-    );
-
-    DescriptorWriter(app->getDevice())
-        .writeBuffer(descriptorSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                     instanceBuffer.buffer, 0, VK_WHOLE_SIZE)
-        .flush();
+    // Binding 0 (per-cube instance payload) is written each frame in render()
+    // from the current cull frame's instance buffer (cf.instance), so no static
+    // buffer is needed here.
 }
 
-void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
-    if (activeCubes.empty()) return;
+void DebugSDFRenderer::createCullResources(VulkanApp* app) {
+    cullApp_ = app;
 
-    struct InstanceData {
-        glm::mat4 model;
-        glm::vec4 sdf0;
-        glm::vec4 sdf1;
-        glm::vec4 meta; // meta.x = brushIndex
+    cmdDrawIndexedIndirectCount =
+        (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCountKHR");
+    if (!cmdDrawIndexedIndirectCount)
+        cmdDrawIndexedIndirectCount =
+            (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCount");
+    if (!cmdDrawIndexedIndirectCount)
+        throw std::runtime_error("DebugSDFRenderer: vkCmdDrawIndexedIndirectCountKHR not available");
+}
+
+void DebugSDFRenderer::ensureCullCapacity(uint32_t frame, uint32_t cubeCount) {
+    CullFrame& cf = cullFrames[frame];
+    if (cubeCount <= cf.capacity) return;
+
+    // Grow with headroom; destroy old buffers (deferred to frame fence by app).
+    uint32_t newCap = cubeCount + cubeCount / 4 + 64;
+    // The instance buffer is bound with VK_WHOLE_SIZE, which must not exceed
+    // maxStorageBufferRange. Clamp so the descriptor write stays valid.
+    const size_t maxFit = static_cast<size_t>(cullApp_->getMaxStorageBufferRange()) / sizeof(InstanceData);
+    if (newCap > maxFit) newCap = static_cast<uint32_t>(maxFit);
+    VulkanApp* app = nullptr; // not needed; use stored device via resources
+    (void)app;
+
+    auto makeBuf = [&](VkDeviceSize bytes, VkBufferUsageFlags usage) -> Buffer {
+        // app pointer is captured lazily; ensureCullCapacity is only called from
+        // prepareCull which has the command buffer but not the app. We stash the
+        // app in createCullResources via a member.
+        return cullApp_->createBuffer(bytes, usage,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     };
 
-    if (activeCubes.size() > instanceBufferCapacity) {
-        instanceBuffer = {};
-        const uint32_t maxInstances = maxSDFInstanceCount(app);
-        instanceBufferCapacity = static_cast<uint32_t>(activeCubes.size() * 2);
-        instanceBufferCapacity = std::min(instanceBufferCapacity, maxInstances);
-        instanceBuffer = app->createBuffer(
-            instanceBufferCapacity * (sizeof(glm::mat4) + sizeof(glm::vec4) * 3),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-        );
+    if (cf.instance.buffer != VK_NULL_HANDLE) cullApp_->resources.removeBufferVma(cf.instance.buffer, cf.instance.allocation);
 
-        DescriptorWriter(app->getDevice())
-            .writeBuffer(descriptorSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                         instanceBuffer.buffer, 0, VK_WHOLE_SIZE)
-            .flush();
-    }
+    cf.instance = makeBuf(newCap * sizeof(InstanceData),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    cf.capacity = newCap;
+}
 
-    const uint32_t drawCount = std::min<uint32_t>(static_cast<uint32_t>(activeCubes.size()),
-                                                  instanceBufferCapacity);
-    std::vector<InstanceData> instanceData;
-    instanceData.reserve(drawCount);
-    for (uint32_t i = 0; i < drawCount; ++i) {
+void DebugSDFRenderer::writeCullFrameData(uint32_t frame, uint32_t cubeCount) {
+    CullFrame& cf = cullFrames[frame];
+    if (cf.capacity == 0 || cf.instance.mappedData == nullptr)
+        return;
+
+    auto* inst = static_cast<InstanceData*>(cf.instance.mappedData);
+
+    const uint32_t n = std::min(cubeCount, cf.capacity);
+    for (uint32_t i = 0; i < n; i++) {
         const CubeSDF& cube = activeCubes[i];
-        InstanceData inst{};
-        inst.model = glm::translate(glm::mat4(1.0f), cube.cube.getMin())
-                   * glm::scale(glm::mat4(1.0f), cube.cube.getLength());
-        inst.sdf0 = glm::vec4(cube.sdf[0], cube.sdf[1], cube.sdf[2], cube.sdf[3]);
-        inst.sdf1 = glm::vec4(cube.sdf[4], cube.sdf[5], cube.sdf[6], cube.sdf[7]);
-        inst.meta = glm::vec4(static_cast<float>(cube.brushIndex), 0.0f, 0.0f, 0.0f);
-        instanceData.push_back(inst);
-    }
 
-    std::memcpy(instanceBuffer.mappedData, instanceData.data(), instanceData.size() * sizeof(InstanceData));
+        glm::vec3 minp = cube.cube.getMin();
+        glm::vec3 len = cube.cube.getLength();
+
+        inst[i].model = glm::translate(glm::mat4(1.0f), minp) * glm::scale(glm::mat4(1.0f), len);
+        inst[i].sdf0 = glm::vec4(cube.sdf[0], cube.sdf[1], cube.sdf[2], cube.sdf[3]);
+        inst[i].sdf1 = glm::vec4(cube.sdf[4], cube.sdf[5], cube.sdf[6], cube.sdf[7]);
+        inst[i].meta = glm::vec4(static_cast<float>(cube.brushIndex), 0.0f, 0.0f, 0.0f);
+    }
+}
+
+void DebugSDFRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
+                                    glm::vec3 camPos, float lodBias, int maxTargetLod) {
+    // NOTE: the SDF cube frustum cull + compaction is performed by the SOLID
+    // IndirectRenderer's prepareCull (indirect.comp) in the SAME dispatch as the
+    // terrain. Here we only upload the per-cube instance payload (model + sdf
+    // values) so the SDF vertex shader can read instances[localIdx]; the visible
+    // DrawCmd stream + count live in the terrain IR's SDF output buffers.
+    if (pipeline == VK_NULL_HANDLE) return;
+    if (activeCubes.empty()) {
+        hasCubes_ = false;
+        return;
+    }
+    hasCubes_ = true;
+
+    const uint32_t f = currentCullFrame % SDF_CULL_FRAMES;
+    const uint32_t count = static_cast<uint32_t>(activeCubes.size());
+    ensureCullCapacity(f, count);
+    writeCullFrameData(f, count); // writes cf.instance (indexed by cube order == SDF-local index)
+
+    CullFrame& cf = cullFrames[f];
+
+    // HOST writes (instance payload) → VERTEX reads.
+    VkBufferMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    b.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    b.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.buffer = cf.instance.buffer;
+    b.offset = 0;
+    b.size = VK_WHOLE_SIZE;
+    VkDependencyInfo dep{};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.bufferMemoryBarrierCount = 1;
+    dep.pBufferMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &dep);
 }
 
 void DebugSDFRenderer::setCubes(const std::vector<CubeSDF>& cubes) {
@@ -187,12 +227,30 @@ void DebugSDFRenderer::setCubes(const std::vector<CubeSDF>& cubes) {
 
 void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet mainDescriptorSet) {
     if (pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE ||
-        activeCubes.empty() || vertexBuffer.buffer == VK_NULL_HANDLE ||
+        !hasCubes_ || vertexBuffer.buffer == VK_NULL_HANDLE ||
         indexBuffer.buffer == VK_NULL_HANDLE || indexCount == 0) {
         return;
     }
 
-    updateInstanceBuffer(app);
+    const uint32_t f = currentCullFrame % SDF_CULL_FRAMES;
+    CullFrame& cf = cullFrames[f];
+    // The visible SDF DrawCmd stream + count are produced by the solid
+    // IndirectRenderer's merged indirect.comp dispatch (folded into the terrain cull).
+    VkBuffer sdfCompact = VK_NULL_HANDLE;
+    VkBuffer sdfCount = VK_NULL_HANDLE;
+    if (terrainIR_) {
+        sdfCompact = terrainIR_->getSdfCompactBuffer(f);
+        sdfCount = terrainIR_->getSdfCountBuffer(f);
+    }
+    if (sdfCompact == VK_NULL_HANDLE || sdfCount == VK_NULL_HANDLE ||
+        cf.instance.buffer == VK_NULL_HANDLE)
+        return;
+
+    // Point the instance descriptor set at this frame's instance buffer.
+    DescriptorWriter(app->getDevice())
+        .writeBuffer(descriptorSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     cf.instance.buffer, 0, VK_WHOLE_SIZE)
+        .flush();
 
     VkViewport viewport{};
     viewport.x = 0.0f;
@@ -220,99 +278,73 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
     const VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    const uint32_t drawCount = std::min<uint32_t>(static_cast<uint32_t>(activeCubes.size()),
-                                                  instanceBufferCapacity);
-    vkCmdDrawIndexed(cmd, indexCount, drawCount, 0, 0, 0);
+
+    // Indirect-count draw: only the cubes that survived the GPU frustum cull
+    // (written into the terrain IR's SDF stream by indirect.comp, count in sdfCount) are drawn.
+    // maxDrawCount must bound the SDF *command* buffer (sdfCompactBuf, capacity MAX_SDF_CUBES),
+    // NOT the instance buffer capacity (cf.capacity, which holds every AABB and can be larger).
+    if (!cmdDrawIndexedIndirectCount) return;
+    // maxDrawCount bounds the SDF *command* buffer (capacity MAX_SDF_CUBES), not the
+    // instance buffer (cf.capacity, which holds every AABB and may be larger).
+    const uint32_t maxSdfDraws = terrainIR_ ? terrainIR_->getMaxSdfCommands() : 8192u;
+    const uint32_t maxDrawCount = std::min(cf.capacity, maxSdfDraws);
+
+    // The SDF command + count buffers were written by the terrain IndirectRenderer's
+    // indirect.comp dispatch in the (separate) cull command buffer for THIS frame's
+    // cull slot. Make those compute-shader writes visible to the indirect draw and to
+    // the vertex shader (which reads the per-instance AABBs) before consuming them —
+    // without this barrier the draw can race the dispatch and intermittently read
+    // pre-dispatch (zero/garbage) state, causing the cubes to flicker.
+    VkBufferMemoryBarrier2 sdfBarriers[2] = {};
+    auto setupBarrier = [&](VkBufferMemoryBarrier2& b, VkBuffer buf) {
+        b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        b.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+        b.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+        b.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        b.buffer = buf;
+        b.offset = 0;
+        b.size = VK_WHOLE_SIZE;
+    };
+    setupBarrier(sdfBarriers[0], sdfCompact);
+    setupBarrier(sdfBarriers[1], sdfCount);
+    VkDependencyInfo dep{};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.bufferMemoryBarrierCount = 2;
+    dep.pBufferMemoryBarriers = sdfBarriers;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    cmdDrawIndexedIndirectCount(cmd, sdfCompact, 0, sdfCount, 0,
+                                maxDrawCount, sizeof(VkDrawIndexedIndirectCommand));
 }
 
 void DebugSDFRenderer::cleanup(VulkanApp* app) {
     (void)app;
     vertexBuffer = {};
     indexBuffer = {};
-    instanceBuffer = {};
     indexCount = 0;
-    instanceBufferCapacity = 0;
     activeCubes.clear();
+    for (auto& cf : cullFrames) {
+        cf.instance = {};
+        cf.capacity = 0;
+    }
+    hasCubes_ = false;
 }
 
 namespace {
 
-constexpr float kDebugSDFClip = 10.0f;
-
-const uint32_t kDebugSDFFaces[6][4] = {
-    {0, 1, 3, 2},
-    {4, 6, 7, 5},
-    {0, 4, 5, 1},
-    {2, 3, 7, 6},
-    {0, 2, 6, 4},
-    {1, 5, 7, 3}
-};
-
-bool isDrawableSDF(float v) {
-    return std::isfinite(v) && std::abs(v) <= kDebugSDFClip;
-}
-
-bool hasDrawableSDFFace(const std::array<float, 8>& sdf) {
-    for (const auto& face : kDebugSDFFaces) {
-        for (uint32_t corner : face) {
-            if (isDrawableSDF(sdf[corner])) {
-                return true;
-            }
-        }
-
-        for (uint32_t edge = 0; edge < 4; ++edge) {
-            const float a = sdf[face[edge]];
-            const float b = sdf[face[(edge + 1) % 4]];
-            if (std::isfinite(a) && std::isfinite(b) && ((a <= 0.0f && b >= 0.0f) || (a >= 0.0f && b <= 0.0f))) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-void collectLeafSDFCubes(OctreeNode* node, const BoundingCube& cube, OctreeAllocator& allocator,
-                         std::vector<DebugSDFRenderer::CubeSDF>& out) {
-    if (!node) return;
-
-    if (node->getLod() == 1u) {
-        DebugSDFRenderer::CubeSDF debugCube{};
-        debugCube.cube = cube;
-        for (size_t i = 0; i < debugCube.sdf.size(); ++i) {
-            debugCube.sdf[i] = node->sdf[i];
-        }
-        debugCube.brushIndex = node->vertex.brushIndex;
-        if (hasDrawableSDFFace(debugCube.sdf)) {
-            out.push_back(debugCube);
-            return;  // Parent covers this subtree — children are redundant
-        }
-        // Parent is simplified but has no drawable faces; traverse children
-        // in case individual child leaves still have visible SDF faces.
-    }
-
-    ChildBlock* block = node->getBlock(allocator);
-    if (!block) return;
-    for (uint32_t i = 0; i < 8; ++i) {
-        OctreeNode* child = block->get(i, allocator);
-        if (child && child != node) {
-            collectLeafSDFCubes(child, cube.getChild(i), allocator, out);
-        }
-    }
-}
+// SDF face drawability is now decided in LocalScene::requestSDFCubes (sdfCubeDrawable),
+// which walks the octree the same way requestModel3D does and only emits lod==1 nodes
+// that carry a drawable SDF face. DebugSDFRenderer just renders whatever cubes arrive.
 
 } // namespace
 
-void DebugSDFRenderer::updateCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree) {
-    if (!nd.node || !tree.allocator) return;
-
-    std::vector<CubeSDF> cubes;
-    collectLeafSDFCubes(nd.node, nd.cube, *tree.allocator, cubes);
-
+void DebugSDFRenderer::updateCubesForChunk(NodeID nid, const std::vector<CubeSDF>& cubes) {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
     if (cubes.empty()) {
         nodeDebugSDFCubes.erase(nid);
     } else {
-        nodeDebugSDFCubes[nid] = std::move(cubes);
+        nodeDebugSDFCubes[nid] = cubes;
     }
 }
 

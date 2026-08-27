@@ -160,6 +160,13 @@ public:
         Octree::LoDMesh lodMesh;
         OctreeNodeData nodeData;   // world cube of the source node (stable band center)
         bool           isBrush = false; // brush-scene entry (own IR + slot bookkeeping)
+        // Pad to a multiple of 8 bytes. An odd-sized value type makes the
+        // std::unordered_map hash node's in-place value slot 1 byte smaller than
+        // sizeof(PendingMeshData) used by the (compiler-generated) move/copy
+        // constructor, so moving a PendingMeshData out of the map reads 1 byte
+        // past the node and corrupts the adjacent heap chunk header (app aborts
+        // on free with "corrupted size vs. prev_size").
+        uint8_t        _pad[7] = {};
     };
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
