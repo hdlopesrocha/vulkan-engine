@@ -15,6 +15,23 @@ Geometry::Geometry() {
     this->center = glm::vec3(0);
 }
 
+Geometry::Geometry(const Geometry& other)
+    : vertices(other.vertices), indices(other.indices), center(other.center)
+{
+    // compactMap is dropped: it is only used transiently during build (addVertex)
+    // and is not required once the geometry is complete.
+}
+
+Geometry& Geometry::operator=(const Geometry& other) {
+    if (this != &other) {
+        vertices = other.vertices;
+        indices = other.indices;
+        center = other.center;
+        compactMap.reset();
+    }
+    return *this;
+}
+
 Geometry::~Geometry() {
 }
 
@@ -48,9 +65,12 @@ void Geometry::addTriangle(const Vertex &v0, const Vertex &v1, const Vertex &v2)
 }
 
 void Geometry::addVertex(const Vertex &vertex) {
-    auto [it, inserted] = compactMap.try_emplace(vertex, compactMap.size());
+    if (!compactMap) {
+        compactMap = std::make_unique<tsl::robin_map<Vertex, size_t, VertexHasher>>();
+    }
+    auto [it, inserted] = compactMap->try_emplace(vertex, compactMap->size());
     size_t idx = it->second;
-    
+
     if (inserted) {
         vertices.push_back(vertex);
     }
