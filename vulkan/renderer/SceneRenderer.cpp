@@ -852,8 +852,8 @@ size_t SceneRenderer::publishPendingMeshes(
 
         // Publish the mesh into its single draw entry slot. The slot index is
         // the chunk's stable slot (one draw entry per chunk); `lod.lod` is the
-        // chunk's 0-based LoD level (0 = frontier), published in the bounds
-        // meta for the GPU's per-chunk distance band test.
+        // chunk's 1-based chunkLod (1 = finest published rung), published in the
+        // bounds meta for the GPU's per-chunk distance band test (entryLevel).
         const uint32_t slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(base),
                                                     &cubeMin,
                                                     &cubeMax,
@@ -884,11 +884,15 @@ size_t SceneRenderer::publishPendingMeshes(
 
         onChunkPublished(layer, nid, slotIdx, lod.version, isBrush);
 
-        // Generate vegetation instances for grass chunks using the frontier
-        // (finest) geometry only. Coarse ancestor cells (level > 0) never
-        // drive vegetation.
-        if (layer == LAYER_OPAQUE && vegetationRenderer && frontier &&
-            !lod.geom.vertices.empty()) {
+        // Generate vegetation for every published grass chunk (lod.lod is the
+        // 1-based chunkLod, so the old "frontier (lod.lod == 0)" test could never
+        // fire and vegetation was never generated). The LoD band gate in
+        // indirect.comp keeps exactly one rung per region visible, so only the
+        // selected rung's grass is drawn — generating per rung (not just the
+        // finest) lets grass appear across the whole visible terrain instead of
+        // only in the thinnest high-detail disc around the camera, with no
+        // overdraw because overlapping rungs are never simultaneously visible.
+        if (layer == LAYER_OPAQUE && vegetationRenderer && !lod.geom.vertices.empty()) {
             onFinestPublished(nid, lod.geom, isBrush);
         }
 
