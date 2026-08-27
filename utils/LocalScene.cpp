@@ -2,6 +2,7 @@
 #include "../space/OctreeFile.hpp"
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeAllocator.hpp"
+#include "../space/IteratorHandler.hpp"
 #include "../sdf/SDF.hpp"
 #include "../math/Math.hpp"
 #include <iostream>
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstring>
+#include <shared_mutex>
 #include <algorithm>
 #include <cmath>
 #include <cfloat>
@@ -50,20 +52,22 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
     ThreadContext context = ThreadContext(data.cube);
 
 
-    tree->iterateMultiThreaded(
+    // Walk starts AT the chunk node (not the whole tree): processNodeLayer already
+    // passes the correct chunk with its chunkLod, so only this chunk's subtree is
+    // ever visited. Hold the tree shared lock for the traversal, exactly as the
+    // prior Octree::iterateMultiThreaded did (iterateTriangles re-locks shared).
+    {
+        std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
+        IteratorHandler handler;
+        ThreadPool& pool = (poolOverride != nullptr) ? *poolOverride : tree->threadPool;
+        handler.iterateMultiThreaded(*tree, data, pool,
         [this, tree,&data,&context,&callback](const Octree &treeRef, OctreeNodeData &params) {
-            const bool ancestor = params.cube.getLengthX() > data.cube.getLengthX();
-            const bool isChunk  = (params.node == data.node);
-            bool inSubtree = ancestor ? params.cube.contains(data.cube.getCenter())
-                                      : data.cube.contains(params.cube);
-            if(!inSubtree) return false;
-
             if(params.node->getType() != SpaceType::Surface) {
                 return true;  // descend through non-surface cells toward the chunk
             }
 
             const uint8_t chunkLod = params.node->getChunkLod();
-            if (chunkLod > 0 && data.node == params.node) {
+            if (chunkLod > 0) {
                 const uintptr_t nodeId = reinterpret_cast<uintptr_t>(params.node);
                 bool skip = false;
                 {
@@ -85,9 +89,8 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                     }
                 }
             }
-            // Stop descending once we reach the chunk; its descendants are not
-            // published as separate bands (they would overlap the chunk).
-            return !isChunk;
+            // Only the chunk node (the traversal root) is processed; stop descent.
+            return false;
         },
         [](const Octree &treeRef, OctreeNodeData &params, uint8_t order[8]) {
             for(int i = 0 ; i < 8 ; ++i) {
@@ -97,29 +100,29 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
         [tree,&data,&context](const Octree &treeRef, OctreeNodeData &params) {
             return params.node ? params.node->chunkLod > 0 : false;
         }
-    );
+        );
+    }
 }
 
 void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride) {
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
     ThreadContext context = ThreadContext(data.cube);
 
-    tree->iterateMultiThreaded(
+    // Walk starts AT the chunk node (not the whole tree): only this chunk's
+    // subtree is visited, so the whole-tree inSubtree filter is no longer needed.
+    {
+        std::shared_lock<std::shared_mutex> lock(tree->treeMutex);
+        IteratorHandler handler;
+        ThreadPool& pool = (poolOverride != nullptr) ? *poolOverride : tree->threadPool;
+        handler.iterateMultiThreaded(*tree, data, pool,
         [tree, &data, &context, &callback](const Octree &treeRef, OctreeNodeData &params) {
-            const bool ancestor = params.cube.getLengthX() > data.cube.getLengthX();
-            bool inSubtree = ancestor ? params.cube.contains(data.cube.getCenter())
-                                      : data.cube.contains(params.cube);
-            if (!inSubtree) return false;
-
             if (params.node->getType() != SpaceType::Surface) {
                 return true;  // descend through non-surface cells toward the chunk
             }
 
             // SDF debug cubes live at lod==1 (the same rung the solid ladder uses).
-            // Emit every lod==1 surface node: the chunkLod==1 gate (in
-            // SceneRenderer::processNodeLayer) already restricts collection to the
-            // finest published rung, so a drawable-face clip here would wrongly drop
-            // whole chunks whose corner SDFs sit outside the debug clip band.
+            // Emit every lod==1 surface node; the lod==1 filter above selects exactly
+            // the right cells within this chunk's subtree.
             if (params.node->getLod() == 1u) {
                 std::array<float, 8> sdf;
                 for (size_t i = 0; i < 8; ++i) sdf[i] = params.node->sdf[i];
@@ -137,20 +140,22 @@ void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCub
         [tree, &data, &context](const Octree &treeRef, OctreeNodeData &params) {
             return params.node ? params.node->chunkLod > 0 : false;
         }
-    );
+        );
+    }
 }
 
 void LocalScene::requestBoundingBoxes(Layer layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride) {
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
     ThreadContext context = ThreadContext(data.cube);
 
-    tree->iterateMultiThreaded(
+    // Walk starts AT the chunk node (not the whole tree): only this chunk's
+    // subtree is visited, so the whole-tree inSubtree filter is no longer needed.
+    {
+        std::shared_lock<std::shared_mutex> lock(tree->treeMutex);
+        IteratorHandler handler;
+        ThreadPool& pool = (poolOverride != nullptr) ? *poolOverride : tree->threadPool;
+        handler.iterateMultiThreaded(*tree, data, pool,
         [tree, &data, &context, &callback](const Octree &treeRef, OctreeNodeData &params) {
-            const bool ancestor = params.cube.getLengthX() > data.cube.getLengthX();
-            bool inSubtree = ancestor ? params.cube.contains(data.cube.getCenter())
-                                      : data.cube.contains(params.cube);
-            if (!inSubtree) return false;
-
             if (params.node->getType() != SpaceType::Surface) {
                 return true;  // descend through non-surface cells toward the chunk
             }
@@ -171,7 +176,8 @@ void LocalScene::requestBoundingBoxes(Layer layer, OctreeNodeData &data, const B
         [tree, &data, &context](const Octree &treeRef, OctreeNodeData &params) {
             return params.node ? params.node->chunkLod > 0 : false;
         }
-    );
+        );
+    }
 }
 
 bool LocalScene::isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) {
