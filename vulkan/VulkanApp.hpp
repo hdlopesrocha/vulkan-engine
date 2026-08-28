@@ -84,6 +84,14 @@ class VulkanApp {
     // main graphics queue so the passes still run (degraded, no HW parallelism).
     VkQueue solidQueue = VK_NULL_HANDLE;
     VkQueue waterQueue = VK_NULL_HANDLE;
+    // Distinct graphics-family queue handles available for parallel work. Built in
+    // createLogicalDevice from all acquired graphics-family queues (deduplicated so
+    // aliased queues are not listed twice). The solid360 cubemap renders each of its
+    // 6 faces on a separate primary command buffer submitted to a different entry of
+    // this vector (round-robin) to overlap the 6x scene rasterization across queues.
+    // Its size is 1 when the device exposes only a single graphics queue (no HW
+    // parallelism — the faces then run serially on the one queue, still correct).
+    std::vector<VkQueue> parallelGraphicsQueues;
     // Optional dedicated transfer queue (if available)
     VkQueue transferQueue = VK_NULL_HANDLE;
 
@@ -519,8 +527,19 @@ public:
         VkQueue getVegetationQueue() const { return vegetationQueue; }
     VkQueue getSdfQueue() const { return sdfQueue; }
     VkQueue getBoundingBoxQueue() const { return bboxQueue; }
-    VkQueue getSolidQueue() const { return solidQueue; }
-    VkQueue getWaterQueue() const { return waterQueue; }
+        VkQueue getSolidQueue() const { return solidQueue; }
+        VkQueue getWaterQueue() const { return waterQueue; }
+        // Return a graphics-family queue for parallel face work (round-robin index).
+        // When only one graphics queue exists (all dedicated queues aliased), every
+        // index maps to that same queue — the caller's submissions are simply
+        // serialized by the single queue, which is still correct.
+        VkQueue getCubeQueue(uint32_t index) const {
+            if (parallelGraphicsQueues.empty()) return graphicsQueue;
+            return parallelGraphicsQueues[index % parallelGraphicsQueues.size()];
+        }
+        // Number of distinct graphics-family queues available for parallel work
+        // (1 == no HW parallelism available).
+        size_t getCubeQueueCount() const { return parallelGraphicsQueues.empty() ? 1 : parallelGraphicsQueues.size(); }
         VkQueue getPresentQueue() const { return presentQueue; }
         VkQueue getTransferQueue() const { return transferQueue; }
         // Per-queue activity snapshots for the Vulkan Resources "Queue Activity" chart.

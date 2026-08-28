@@ -5783,6 +5783,25 @@ void VulkanApp::createLogicalDevice() {
     if (gfxRequested > 4) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 4, &geometryQueue); else geometryQueue = graphicsQueue;
     if (gfxRequested > 5) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 5, &solidQueue); else solidQueue = graphicsQueue;
     if (gfxRequested > 6) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 6, &waterQueue); else waterQueue = graphicsQueue;
+    // Collect every acquired graphics-family queue handle (deduplicated) into
+    // parallelGraphicsQueues so the solid360 cubemap can submit each of its 6 faces
+    // to a different queue for HW-parallel rasterization. Aliased queues (those that
+    // fell back to graphicsQueue) appear only once, so the vector's size reflects the
+    // true number of distinct queues and the faces degrade to serial execution when
+    // the device exposes just one graphics queue.
+    parallelGraphicsQueues.clear();
+    auto addParallelQueue = [&](VkQueue q) {
+        if (q == VK_NULL_HANDLE) return;
+        for (VkQueue e : parallelGraphicsQueues) if (e == q) return;
+        parallelGraphicsQueues.push_back(q);
+    };
+    addParallelQueue(graphicsQueue);
+    addParallelQueue(vegetationQueue);
+    addParallelQueue(sdfQueue);
+    addParallelQueue(bboxQueue);
+    addParallelQueue(geometryQueue);
+    addParallelQueue(solidQueue);
+    addParallelQueue(waterQueue);
     if (indices.presentFamily.value() == indices.graphicsFamily.value()) {
         // present uses the same family; reuse the main graphics queue
         presentQueue = graphicsQueue;
