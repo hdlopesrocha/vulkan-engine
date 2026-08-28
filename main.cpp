@@ -1496,20 +1496,14 @@ public:
                     for (const auto& c : wc)
                         widgetCubes.push_back({BoundingBox(c.cube.getMin(), c.cube.getMax()), c.color});
                 }
-                // renderOverlay merges the per-node cache internally (no getCubes).
-                sceneRenderer->debugCubeRenderer->renderOverlay(this, commandBuffer, getMainDescriptorSet(), widgetCubes);
+            // renderOverlay merges the per-node cache internally (no getCubes).
+            sceneRenderer->debugCubeRenderer->renderOverlay(this, commandBuffer, getMainDescriptorSet(), widgetCubes);
             }
 
-            if (settings.showBoundingBoxes && sceneRenderer && sceneRenderer->boundingBoxRenderer) {
-                // Boxes + AABBs were gathered and registered with the solid IR before
-                // its prepareCull (folded into the terrain cull). Draw the surviving
-                // boxes from the IR's bbox stream.
-                sceneRenderer->boundingBoxRenderer->render(this, commandBuffer, getMainDescriptorSet());
-            }
-
-            if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
-                sceneRenderer->debugSDFRenderer->render(this, commandBuffer, getMainDescriptorSet());
-            }
+            // Mesh bounding boxes and SDF debug cubes are no longer drawn here: each
+            // renders to its own offscreen framebuffer on its own async command buffer
+            // (see the asyncSdfFuture / asyncBboxFuture tasks below) and is composited
+            // in postprocess.frag against the solid scene depth.
 
             if (settings.renderSolid && settings.wireframeMode && sceneRenderer) {
                 sceneRenderer->mainSolidRenderer->drawWireframeOverlay(commandBuffer, this, getMainDescriptorSet());
@@ -1583,28 +1577,35 @@ public:
         //                    (waits semMainCull + semSolid360) -> signals semWater
         //   vegetation task: own offscreen color+depth (runs after shadow on the
         //                    worker, so the shadow map is current) -> signals semVeg
+        //   sdf task       : own offscreen color+depth (debug SDF cubes) -> signals semSdf
+        //   bbox task       : own offscreen color+depth (mesh bounding boxes) -> signals semBbox
         // The main command buffer waits on semMainCull (brush depth / visibleLods),
         // semShadow (shadow map + restored UBO / visibleLods), semWater (water
-        // offscreen) and semVeg (vegetation offscreen) via m_extraWaitSemaphores,
-        // which the tasks register their signal semaphores into.
+        // offscreen), semVeg (vegetation offscreen), semSdf (SDF cubes offscreen) and
+        // semBbox (bounding boxes offscreen) via m_extraWaitSemaphores, which the
+        // tasks register their signal semaphores into.
         VkSemaphore semMainCull = VK_NULL_HANDLE;
         VkSemaphore semSolid360 = VK_NULL_HANDLE;
         VkSemaphore semWater = VK_NULL_HANDLE;
         VkSemaphore semShadow = VK_NULL_HANDLE;
         VkSemaphore semVeg = VK_NULL_HANDLE;
+        VkSemaphore semSdf = VK_NULL_HANDLE;
+        VkSemaphore semBbox = VK_NULL_HANDLE;
         // Per-consumer signal semaphores. A binary semaphore can satisfy only ONE
         // wait, so each command buffer that must synchronize on the cull/shadow
         // results needs its own distinct signal (the main CB consumes semMainCull
-        // and semShadow; the async shadow/veg tasks consume the ones below).
+        // and semShadow; the async shadow/veg/sdf/bbox tasks consume the ones below).
         VkSemaphore semCullShadow = VK_NULL_HANDLE;
         VkSemaphore semCullVeg = VK_NULL_HANDLE;
+        VkSemaphore semCullSdf = VK_NULL_HANDLE;
+        VkSemaphore semCullBbox = VK_NULL_HANDLE;
         VkSemaphore semShadowVeg = VK_NULL_HANDLE;
         std::future<void> asyncCullFuture, asyncSolid360Future, asyncBackFaceFuture;
-        std::future<void> asyncShadowFuture, asyncVegFuture;
+        std::future<void> asyncShadowFuture, asyncVegFuture, asyncSdfFuture, asyncBboxFuture;
 
         // --- Cull + early brush pass on its own command buffer (signals semMainCull) ---
         if (sceneRenderer) {
-            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semMainCull, &semCullShadow, &semCullVeg]() {
+            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semMainCull, &semCullShadow, &semCullVeg, &semCullSdf, &semCullBbox]() {
                 VulkanApp* app = this;
                 VkCommandBuffer cullCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1627,6 +1628,8 @@ public:
                 };
                 makeSem(semCullShadow);
                 makeSem(semCullVeg);
+                makeSem(semCullSdf);
+                makeSem(semCullBbox);
                 // Use a dedicated command-buffer state for this async command buffer.
                 // Sharing frameCmdState with the main CB would let the cached
                 // "last bound pipeline" from a different command buffer suppress the
@@ -1653,9 +1656,10 @@ public:
                     this->sceneRenderer->debugSDFRenderer->prepareCull(cullCmd);
                 if (this->sceneRenderer->brushRenderer)
                     this->sceneRenderer->brushRenderer->recordEarlyPass(this, cullCmd, frameIdx, *this->sceneRenderer->mainSolidRenderer, getMainDescriptorSet());
-                // Signal semMainCull (main CB) plus semCullShadow (shadow task) and
-                // semCullVeg (veg task); each is waited by exactly one command buffer.
-                app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &semMainCull, {}, true, {semCullShadow, semCullVeg});
+                // Signal semMainCull (main CB) plus semCullShadow (shadow task),
+                // semCullVeg (veg task), semCullSdf (sdf task) and semCullBbox (bbox
+                // task); each is waited by exactly one command buffer.
+                app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &semMainCull, {}, true, {semCullShadow, semCullVeg, semCullSdf, semCullBbox});
             });
             asyncCullFuture.get();
             // Restore the per-frame state for the main CB's continued recording.
@@ -1893,6 +1897,70 @@ public:
                 // (graphics→vegetation) memory dependency, and being the same queue family
                 // no ownership transfer is required.
                 app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &semVeg, {semCullVeg, semShadowVeg});
+            });
+        }
+
+        // --- SDF debug cubes on its own command buffer (signals semSdf) ---
+        // Renders to its own offscreen color+depth framebuffer (decoupled from the
+        // solid pass) so it runs in parallel with the solid/vegetation shading on the
+        // dedicated sdfQueue. Depends on the cull task's SDF compact/count buffers
+        // (written by the terrain IR's indirect.comp), so it waits on its own
+        // cull-result semaphore (semCullSdf). When the overlay is disabled it only
+        // clears the offscreen so the composite shows no SDF cubes.
+        {
+            const bool sdfEnabled = settings.showSDFDebug;
+            asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, &semSdf, &semCullSdf]() {
+                VulkanApp* app = this;
+                VkCommandBuffer sdfCmd = app->allocatePrimaryCommandBuffer();
+                VkCommandBufferBeginInfo cbegin{};
+                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                if (vkBeginCommandBuffer(sdfCmd, &cbegin) != VK_SUCCESS) {
+                    std::cerr << "[Async] vkBeginCommandBuffer failed for sdf" << std::endl;
+                    app->freeCommandBuffer(sdfCmd);
+                    return;
+                }
+                CommandBufferState taskState;
+                this->sceneRenderer->setCmdState(&taskState);
+                if (this->sceneRenderer->debugSDFRenderer) {
+                    this->sceneRenderer->debugSDFRenderer->render(this, sdfCmd, app->getMainDescriptorSet(), frameIdx, sdfEnabled);
+                }
+                // Wait on semCullSdf (own binary semaphore, distinct from the main
+                // CB's semMainCull) so the cull task's GPU-written SDF buffers are
+                // visible before the SDF pass reads them; signal semSdf for the composite.
+                app->submitCommandBufferAsyncToQueue(sdfCmd, app->getSdfQueue(), &semSdf, {semCullSdf});
+            });
+        }
+
+        // --- Mesh bounding boxes on its own command buffer (signals semBbox) ---
+        // Renders to its own offscreen color+depth framebuffer (decoupled from the
+        // solid pass) so it runs in parallel with the solid/vegetation shading on the
+        // dedicated bboxQueue. Depends on the cull task's bbox compact/count buffers
+        // (written by the terrain IR's indirect.comp), so it waits on its own
+        // cull-result semaphore (semCullBbox). When the overlay is disabled it only
+        // clears the offscreen so the composite shows no bounding boxes.
+        {
+            const bool bboxEnabled = settings.showBoundingBoxes;
+            asyncBboxFuture = asyncThreadPool.enqueue([this, frameIdx, bboxEnabled, &semBbox, &semCullBbox]() {
+                VulkanApp* app = this;
+                VkCommandBuffer bboxCmd = app->allocatePrimaryCommandBuffer();
+                VkCommandBufferBeginInfo cbegin{};
+                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                if (vkBeginCommandBuffer(bboxCmd, &cbegin) != VK_SUCCESS) {
+                    std::cerr << "[Async] vkBeginCommandBuffer failed for bbox" << std::endl;
+                    app->freeCommandBuffer(bboxCmd);
+                    return;
+                }
+                CommandBufferState taskState;
+                this->sceneRenderer->setCmdState(&taskState);
+                if (this->sceneRenderer->boundingBoxRenderer) {
+                    this->sceneRenderer->boundingBoxRenderer->renderToOffscreen(this, bboxCmd, app->getMainDescriptorSet(), frameIdx, bboxEnabled);
+                }
+                // Wait on semCullBbox (own binary semaphore, distinct from the main
+                // CB's semMainCull) so the cull task's GPU-written bbox buffers are
+                // visible before the bbox pass reads them; signal semBbox for the composite.
+                app->submitCommandBufferAsyncToQueue(bboxCmd, app->getBoundingBoxQueue(), &semBbox, {semCullBbox});
             });
         }
 
@@ -2176,6 +2244,24 @@ public:
                 std::cerr << "[Async] vegetation task failed with unknown error, skipping vegetation pass this frame" << std::endl;
             }
         }
+        if (asyncSdfFuture.valid()) {
+            try {
+                asyncSdfFuture.get();
+            } catch (const std::exception &e) {
+                std::cerr << "[Async] sdf task failed, skipping SDF pass this frame: " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "[Async] sdf task failed with unknown error, skipping SDF pass this frame" << std::endl;
+            }
+        }
+        if (asyncBboxFuture.valid()) {
+            try {
+                asyncBboxFuture.get();
+            } catch (const std::exception &e) {
+                std::cerr << "[Async] bbox task failed, skipping bounding-box pass this frame: " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "[Async] bbox task failed with unknown error, skipping bounding-box pass this frame" << std::endl;
+            }
+        }
         // Restore the per-frame state for the main CB's continued recording.
         this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
 
@@ -2419,6 +2505,18 @@ public:
                 vegColorView = sceneRenderer->vegetationRenderer->getVegColorView(frameIdx);
                 vegDepthView = sceneRenderer->vegetationRenderer->getVegDepthView(frameIdx);
             }
+            VkImageView sdfColorView = VK_NULL_HANDLE;
+            VkImageView sdfDepthView = VK_NULL_HANDLE;
+            if (sceneRenderer->debugSDFRenderer) {
+                sdfColorView = sceneRenderer->debugSDFRenderer->getSdfColorView(frameIdx);
+                sdfDepthView = sceneRenderer->debugSDFRenderer->getSdfDepthView(frameIdx);
+            }
+            VkImageView bboxColorView = VK_NULL_HANDLE;
+            VkImageView bboxDepthView = VK_NULL_HANDLE;
+            if (sceneRenderer->boundingBoxRenderer) {
+                bboxColorView = sceneRenderer->boundingBoxRenderer->getBboxColorView(frameIdx);
+                bboxDepthView = sceneRenderer->boundingBoxRenderer->getBboxDepthView(frameIdx);
+            }
             float brushAlpha = 0.5f;
             float brushMode = 0.0f;
             const BrushEntry* brushEntry = brushManager.getSelectedEntry();
@@ -2440,6 +2538,10 @@ public:
                 waterGeomDepthView,
                 vegColorView,
                 vegDepthView,
+                sdfColorView,
+                sdfDepthView,
+                bboxColorView,
+                bboxDepthView,
                 brushAlpha,
                 brushMode,
                 viewProj,
