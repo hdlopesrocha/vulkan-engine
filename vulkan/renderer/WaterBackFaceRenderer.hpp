@@ -42,7 +42,7 @@ public:
 
     // Patch binding #3 of a descriptor set (set 2) to point to `newView`.
     // Used to swap between the dummy and the real back-face depth.
-    void patchBinding3(VkDescriptorSet ds, VkImageView newView);
+    void patchBinding0(VkDescriptorSet ds, VkImageView newView);
 
 private:
     TrackedHandle<VkPipeline> backFacePipeline;

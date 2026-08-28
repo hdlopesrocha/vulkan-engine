@@ -320,56 +320,34 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     initializeWaterParamsBuffer(waterParams);
     std::cout << "[WaterRenderer] Initialized water params buffer from provided layer state" << std::endl;
     
-    // Create descriptor set layout for scene textures (set 2)
-    // Binding 0: Scene color texture
-    // Binding 1: Scene depth texture
-    // Binding 2: Sky color texture
-    // Binding 3: Water back-face depth texture (for volume thickness)
-    // Binding 4: Optional cubemap
-    // Binding 5: Scene position/world-position texture (g-buffer)
-    std::array<VkDescriptorSetLayoutBinding, 5> sceneBindings{};
-    
-    // Scene color (binding 0)
+    // Create descriptor set layout for scene textures (set 2).
+    // The water pass is fully decoupled from the solid pass: it samples only its
+    // own back-face depth (for volume thickness) and the solid 360 cubemap (for
+    // reflection/refraction). It no longer reads the solid color or depth targets,
+    // so it has no dependency on the solid pass and can be recorded/rendered on its
+    // own command buffer in parallel with the solid pass. Occlusion against solids
+    // is resolved at the composite stage (postprocess.frag).
+    // Binding 0: Water back-face depth texture (for volume thickness)
+    // Binding 1: Optional cubemap (solid 360)
+    std::array<VkDescriptorSetLayoutBinding, 2> sceneBindings{};
+
+    // Water back-face depth (binding 0) — for water volume thickness.
+    // Also sampled by the tessellation evaluation shader (VUID 07988).
     sceneBindings[0].binding = 0;
     sceneBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sceneBindings[0].descriptorCount = 1;
-    sceneBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
     sceneBindings[0].pImmutableSamplers = nullptr;
-    
-    // Scene depth (binding 1) — also accessed by TES for depth-based wave attenuation
+
+    // Optional cubemap sampler (binding 1) — used by water shader when solid 360 is available
     sceneBindings[1].binding = 1;
     sceneBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sceneBindings[1].descriptorCount = 1;
-    sceneBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    sceneBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     sceneBindings[1].pImmutableSamplers = nullptr;
 
-    // Sky color (binding 2)
-    sceneBindings[2].binding = 2;
-    sceneBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sceneBindings[2].descriptorCount = 1;
-    sceneBindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    sceneBindings[2].pImmutableSamplers = nullptr;
-
-    // Water back-face depth (binding 3) — for water volume thickness
-    // Also sampled by the tessellation evaluation shader (VUID 07988).
-    sceneBindings[3].binding = 3;
-    sceneBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sceneBindings[3].descriptorCount = 1;
-    sceneBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-    sceneBindings[3].pImmutableSamplers = nullptr;
-
-    // Optional cubemap sampler (binding 4) — used by water shader when solid 360 is available
-    sceneBindings[4].binding = 4;
-    sceneBindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sceneBindings[4].descriptorCount = 1;
-    sceneBindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    sceneBindings[4].pImmutableSamplers = nullptr;
-
-    // Scene position/world-position (binding 5) — g-buffer world-space position
-    // Removed binding for Scene position/world-position texture (g-buffer)
-
-    VkDescriptorBindingFlags bindingFlags[5] = {
-        0, 0, 0, 0, 0
+    VkDescriptorBindingFlags bindingFlags[2] = {
+        0, 0
     };
 
     DescriptorAllocator descAlloc{device, app};
@@ -665,15 +643,23 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
 
 // Back-face pass is owned and executed by SceneRenderer via its WaterBackFaceRenderer.
 
-void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView, VkImageView backFaceDepthView, VkImageView cube360View) {
+void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, uint32_t frameIndex, VkImageView backFaceDepthView, VkImageView cube360View) {
     if (ds == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return;
+    }
+
+    // Guarantee the dummy 1x1 depth/cube views exist so the descriptor set can
+    // always be populated, even before the solid 360 cubemap (or the back-face
+    // depth) is available on the very first frames. ensureCubemapResources is
+    // idempotent.
+    if (cubemapDummyCubeView == VK_NULL_HANDLE || cubemapDummyDepthView == VK_NULL_HANDLE) {
+        ensureCubemapResources(app, app->getSwapchainImageFormat());
     }
 
     // Determine the effective cubemap to bind:
     // - If a new explicit `cube360View` is provided, use it and remember it.
     // - If `cube360View` is VK_NULL_HANDLE, prefer the previously remembered view
-    //   (so callers that update only color/depth won't accidentally clear the cube).
+    //   (so callers that update only color won't accidentally clear the cube).
     VkImageView finalCubeView = cube360View;
     if (finalCubeView == VK_NULL_HANDLE) finalCubeView = currentCube360View;
 
@@ -688,50 +674,25 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
         // whose state should change when cubemap availability toggles.
     }
 
-    // Use the provided image views directly
-    VkImageView colorView = colorImageView;
-    VkImageView depthView = depthImageView;
+    std::array<VkDescriptorImageInfo, 2> imageInfos{};
 
-    std::array<VkDescriptorImageInfo, 5> imageInfos{};
-
-    // Scene color (binding 0)
-    imageInfos[0].sampler = linearSampler;
-    imageInfos[0].imageView = colorView;
+    // Water back-face depth (binding 0) — prefer explicit `backFaceDepthView` if provided.
+    // Use nearest filtering so depth values are not interpolated across geometry edges.
+    // Fall back to the dummy depth view when none is available (e.g. before the first
+    // back-face pass) so the descriptor set stays valid and bound.
+    imageInfos[0].sampler = nearestSampler;
+    if (backFaceDepthView == VK_NULL_HANDLE) backFaceDepthView = cubemapDummyDepthView;
+    imageInfos[0].imageView = backFaceDepthView;
     imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Scene depth (binding 1) - sample depth with nearest filtering to avoid invalid interpolated depths
-    imageInfos[1].sampler = nearestSampler;
-    imageInfos[1].imageView = depthView;
+    // Cubemap (binding 1) — prefer `finalCubeView` if available, otherwise fall back to the
+    // dummy cubemap so the descriptor set stays valid even before the solid 360 is ready.
+    imageInfos[1].sampler = linearSampler;
+    if (finalCubeView == VK_NULL_HANDLE && cubemapDummyCubeView != VK_NULL_HANDLE) {
+        finalCubeView = cubemapDummyCubeView;
+    }
+    imageInfos[1].imageView = finalCubeView;
     imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    // Sky color (binding 2)
-    imageInfos[2].sampler = linearSampler;
-    if (skyImageView == VK_NULL_HANDLE) {
-        imageInfos[2].imageView = colorImageView; // fallback to scene color
-    } else {
-        imageInfos[2].imageView = skyImageView;
-    }
-    imageInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    // Water back-face depth (binding 3) — prefer explicit `backFaceDepthView` if provided.
-    // Use nearest filtering so depth values are not interpolated across geometry edges.
-    imageInfos[3].sampler = nearestSampler;
-    if (backFaceDepthView == VK_NULL_HANDLE) {
-        throw std::runtime_error("WaterRenderer requires a valid backFaceDepthView (no fallback allowed)");
-    }
-    imageInfos[3].imageView = backFaceDepthView;
-    imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    // Cubemap (binding 4) — prefer `finalCubeView` if available, otherwise fall back to scene color
-    imageInfos[4].sampler = linearSampler;
-    if (finalCubeView == VK_NULL_HANDLE) {
-        throw std::runtime_error("WaterRenderer requires a valid finalCubeView for reflections (no fallback allowed)");
-    }
-    imageInfos[4].imageView = finalCubeView;
-    imageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    // Scene position (binding 5) — g-buffer world position. If not available, fall back to scene color view.
-    // Removed image info for Scene position/world-position texture (g-buffer)
 
     // Descriptor write cache: skip the vkUpdateDescriptorSets calls when this
     // set already holds identical bindings. The signature is keyed by the
@@ -739,11 +700,11 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
     // and the async per-task sets (main.cpp) never interfere; if the async path
     // feeds different views into the same set, the signature changes and the
     // writes still happen. A fresh set has no cache entry, so its first update
-    // always writes. Note: in the async path main.cpp re-patches binding 3
-    // (patchBinding3) right after this call with the same dummy view every task,
-    // so skipping here cannot leave that binding stale either way.
+    // always writes. Note: in the async path main.cpp re-patches binding 0
+    // (patchBinding0? no — back-face) right after this call with the same dummy view
+    // every task, so skipping here cannot leave that binding stale either way.
     SceneTextureBindingSignature sig;
-    for (uint32_t i = 0; i < 5; ++i) {
+    for (uint32_t i = 0; i < 2; ++i) {
         sig.samplers[i] = imageInfos[i].sampler;
         sig.views[i] = imageInfos[i].imageView;
         sig.layouts[i] = imageInfos[i].imageLayout;
@@ -754,7 +715,7 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
     }
 
     DescriptorWriter writer(app->getDevice());
-    for (uint32_t i = 0; i < 5; ++i) {
+    for (uint32_t i = 0; i < 2; ++i) {
         writer.writeImage(ds, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                           imageInfos[i].sampler, imageInfos[i].imageView,
                           imageInfos[i].imageLayout);
@@ -764,9 +725,8 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
 }
 
 VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint32_t frameIndex,
-                                                             VkImageView colorImageView, VkImageView depthImageView,
-                                                             VkImageView skyImageView, VkImageView backFaceDepthView,
-                                                             VkImageView cube360View) {
+                                                              VkImageView backFaceDepthView,
+                                                              VkImageView cube360View) {
     if (app == nullptr || waterDepthDescriptorPool == VK_NULL_HANDLE ||
         waterDepthDescriptorSetLayout == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return VK_NULL_HANDLE;
@@ -785,8 +745,8 @@ VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint
         if (waterDepthDescriptorSets[frameIndex] == VK_NULL_HANDLE) return VK_NULL_HANDLE;
     }
 
-    updateSceneTexturesBinding(app, waterDepthDescriptorSets[frameIndex], colorImageView, depthImageView, frameIndex,
-                               skyImageView, backFaceDepthView, cube360View);
+    updateSceneTexturesBinding(app, waterDepthDescriptorSets[frameIndex], frameIndex,
+                                backFaceDepthView, cube360View);
     return waterDepthDescriptorSets[frameIndex];
 }
 
@@ -825,7 +785,7 @@ void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& 
 // The caller must ensure that the solid pass has already ended on this same
 // command buffer so that the scene color/depth images are available.
 
-void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, VkImageView skyView) {
+void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView skyView) {
     if (!app || cmd == VK_NULL_HANDLE) return;
 
     // Dynamic parameter updates are performed explicitly from the upper level
@@ -839,7 +799,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     // explicit endPass barriers, but we need an execution + memory dependency
     // between the two command sequences on the same command buffer. The
     // tessellation evaluation shader also samples the back-face depth (set 2
-    // binding 3) for volume bump modulation, so it must be included in the
+    // binding 2) for volume bump modulation, so it must be included in the
     // destination stage mask alongside the fragment shader.
     VkMemoryBarrier2 memBarrier{};
     memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -858,10 +818,10 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 }
 
 // Back-face pass implementation moved to WaterBackFaceRenderer
-void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, VkImageView skyView, IndirectRenderer* secondaryIR) {
+void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView skyView, IndirectRenderer* secondaryIR) {
     if (!app || cmd == VK_NULL_HANDLE) return;
 
-    prepareRender(app, cmd, frameIndex, sceneColorView, sceneDepthView, skyView);
+    prepareRender(app, cmd, frameIndex, sceneColorView, skyView);
 
     // Back-face pre-pass is executed by SceneRenderer's WaterBackFaceRenderer
     // before calling WaterRenderer::render. No-op here.
@@ -1094,14 +1054,6 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
                 continue;
             }
             // Write the immutable dummy bindings once at allocation time.
-            VkDescriptorImageInfo dDepth{};
-            dDepth.sampler = linearSampler;
-            dDepth.imageView = cubemapDummyDepthView;
-            dDepth.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            VkDescriptorImageInfo dColor{};
-            dColor.sampler = linearSampler;
-            dColor.imageView = cubemapDummyDepthView;
-            dColor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             VkDescriptorImageInfo dBack{};
             dBack.sampler = (nearestSampler != VK_NULL_HANDLE) ? nearestSampler : linearSampler;
             dBack.imageView = cubemapDummyDepthView;
@@ -1111,11 +1063,8 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
             dCube.imageView = cubemapDummyCubeView;
             dCube.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             DescriptorWriter w(device);
-            w.writeImage(cubemapWaterDepthDS[i], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dColor.sampler, dColor.imageView, dColor.imageLayout);
-            w.writeImage(cubemapWaterDepthDS[i], 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dDepth.sampler, dDepth.imageView, dDepth.imageLayout);
-            w.writeImage(cubemapWaterDepthDS[i], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dColor.sampler, dColor.imageView, dColor.imageLayout);
-            w.writeImage(cubemapWaterDepthDS[i], 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dBack.sampler, dBack.imageView, dBack.imageLayout);
-            w.writeImage(cubemapWaterDepthDS[i], 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dCube.sampler, dCube.imageView, dCube.imageLayout);
+            w.writeImage(cubemapWaterDepthDS[i], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dBack.sampler, dBack.imageView, dBack.imageLayout);
+            w.writeImage(cubemapWaterDepthDS[i], 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dCube.sampler, dCube.imageView, dCube.imageLayout);
             w.flush();
         }
     }
@@ -1184,7 +1133,8 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
 // Solid 360° cubemap reflection is owned and executed by SceneRenderer.
 
 void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
-                               bool waterWireframeEnabled, float waterTime, VkImageView skyView) {
+                               bool waterWireframeEnabled, float waterTime, VkImageView skyView,
+                               VkDescriptorSet overrideWaterDs) {
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[WaterRenderer::renderPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;
@@ -1203,19 +1153,19 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
     // Record the water offscreen work on the same command buffer so the solid
     // pass outputs are available for sampling.
     VkImageView sceneColorView = solidRenderer_ ? solidRenderer_->getColorView(frameIdx) : VK_NULL_HANDLE;
-    VkImageView sceneDepthView = solidRenderer_ ? solidRenderer_->getDepthView(frameIdx) : VK_NULL_HANDLE;
-    // (Re)allocate and update this slot's scene-texture descriptor set (set 2,
-    // binding 1 = sceneDepthTex) here on the main command buffer, immediately
-    // before any draw that binds it. The async back-face task uses its OWN
-    // per-task set, so this slot's set is only ever referenced by the main
-    // command buffer and is freed/reallocated once its in-flight fence signals
-    // (no VUID-03047, and GPU-assisted validation sees it populated — no
-    // UPDATE_AFTER_BIND needed).
-    {
+    // NOTE: Water no longer samples the solid depth image. Occlusion against
+    // solids is resolved at the composite stage (postprocess.frag), so the water
+    // pass has no dependency on the solid depth target and can be recorded
+    // independently (e.g. on its own command buffer / queue) in parallel with
+    // the solid pass.
+    // When `overrideWaterDs` is provided (async path), the caller owns the set
+    // and has already populated it on the host before submitting; we must NOT call
+    // prepareSceneTexturesForFrame here (that would update a different, possibly
+    // in-flight, descriptor set — VUID-vkUpdateDescriptorSets-None-03047).
+    if (overrideWaterDs == VK_NULL_HANDLE) {
         VkImageView wBack = (backFaceRenderer_) ? backFaceRenderer_->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
         VkImageView wCube = (solid360Renderer_) ? solid360Renderer_->getSolid360View() : VK_NULL_HANDLE;
-        prepareSceneTexturesForFrame(app, frameIdx, sceneColorView, sceneDepthView,
-                                     skyView, wBack, wCube);
+        prepareSceneTexturesForFrame(app, frameIdx, wBack, wCube);
     }
 
     bool _wg_env_skip = envDisableWaterGeom_;
@@ -1231,7 +1181,7 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
         // Wireframe path: use WaterRenderer for setup/pass management,
         // but bind the wireframe pipeline instead of the normal one.
         if (!_wg_env_skip) {
-            prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
+            prepareRender(app, commandBuffer, frameIdx, sceneColorView, skyView);
             beginWaterGeometryPass(commandBuffer, frameIdx);
 
             // First render filled water geometry to populate the water depth
@@ -1246,7 +1196,7 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
                     if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, waterLayout, 0, 1, &mainDs, 0, nullptr);
                 }
 
-                VkDescriptorSet sceneDs = getWaterDepthDescriptorSet(frameIdx);
+                VkDescriptorSet sceneDs = (overrideWaterDs != VK_NULL_HANDLE) ? overrideWaterDs : getWaterDepthDescriptorSet(frameIdx);
                 if (sceneDs != VK_NULL_HANDLE) {
                     if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, waterLayout, 2, 1, &sceneDs, 0, nullptr);
                 }
@@ -1269,7 +1219,7 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
                 if (wfMainDs != VK_NULL_HANDLE)
                     if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, wfLayout, 0, 1, &wfMainDs, 0, nullptr);
 
-                VkDescriptorSet wfDepthDs = getWaterDepthDescriptorSet(frameIdx);
+                VkDescriptorSet wfDepthDs = (overrideWaterDs != VK_NULL_HANDLE) ? overrideWaterDs : getWaterDepthDescriptorSet(frameIdx);
                 if (wfDepthDs != VK_NULL_HANDLE)
                     if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, wfLayout, 2, 1, &wfDepthDs, 0, nullptr);
 
@@ -1283,7 +1233,7 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
         }
     } else {
         if (!_wg_env_skip) {
-            render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView,
+            render(app, commandBuffer, frameIdx, sceneColorView, skyView,
                    brushRenderer_ ? &brushRenderer_->getLiquidIR() : nullptr);
         } else {
             // Skipping waterRenderer::render due to VULKAN_DISABLE_WATERGEOM

@@ -322,11 +322,12 @@ public:
             Transformation model = Transformation();
             std::cout << "\ttransparentLayer.add(water)"<< std::endl;
             BoundingBox waterBox = mapBox;
-            waterBox.setMax(mapBox.getMax() - glm::vec3(minSize*2.0f));
-            waterBox.setMin(mapBox.getMin() + glm::vec3(minSize*2.0f));
+            float bias = minSize*2.0;
+            waterBox.setMax(mapBox.getMax() - glm::vec3(bias));
+            waterBox.setMin(mapBox.getMin() + glm::vec3(bias));
             waterBox.setMaxY(0);
             waterBox.setMinY(mapBox.getMinY()*0.5f);
-            OctreeDifferenceFunction function(&opaqueLayer, waterBox, minSize*2.0f);
+            OctreeDifferenceFunction function(&opaqueLayer, waterBox, bias);
             transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
     

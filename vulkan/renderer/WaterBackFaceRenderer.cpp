@@ -90,12 +90,12 @@ void WaterBackFaceRenderer::destroyDummyDepthView(VulkanApp* app) {
     dummyDepthMemory = VK_NULL_HANDLE;
 }
 
-void WaterBackFaceRenderer::patchBinding3(VkDescriptorSet ds, VkImageView newView) {
+void WaterBackFaceRenderer::patchBinding0(VkDescriptorSet ds, VkImageView newView) {
     if (!appPtr || ds == VK_NULL_HANDLE || newView == VK_NULL_HANDLE || nearestSampler == VK_NULL_HANDLE) {
         return;
     }
     DescriptorWriter(appPtr->getDevice())
-        .writeImage(ds, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .writeImage(ds, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                     nearestSampler, newView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
         .flush();
 }

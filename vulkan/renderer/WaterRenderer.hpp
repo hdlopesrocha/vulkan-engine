@@ -47,7 +47,8 @@ public:
     // overlay, or skipped via VULKAN_DISABLE_WATERGEOM) on the same command
     // buffer so the solid pass outputs are available for sampling.
     void renderPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
-                    bool waterWireframeEnabled, float waterTime, VkImageView skyView);
+                    bool waterWireframeEnabled, float waterTime, VkImageView skyView,
+                    VkDescriptorSet overrideWaterDs = VK_NULL_HANDLE);
 
     // Water render time UBO (binding 10) — created and updated here, but
     // bound into the scene descriptor sets by SceneRenderer.
@@ -75,7 +76,7 @@ public:
     // water IR, inside the same geometry pass (used for brush liquid geometry —
     // brush water renders like main water but lives in its own IndirectRenderer).
     void render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
-                VkImageView sceneColorView, VkImageView sceneDepthView,
+                VkImageView sceneColorView,
                 VkImageView skyView = VK_NULL_HANDLE,
                 IndirectRenderer* secondaryIR = nullptr);
 
@@ -126,7 +127,7 @@ public:
     // Prepare render state (UBO upload, descriptor update, pre-barrier).
     // Call this before beginWaterGeometryPass when manually recording commands.
     void prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
-                       VkImageView sceneColorView, VkImageView sceneDepthView,
+                       VkImageView sceneColorView,
                        VkImageView skyView = VK_NULL_HANDLE);
 
     // Get water depth descriptor set (for binding scene depth texture)
@@ -144,7 +145,7 @@ public:
     // never shared between the async back-face task and the main command buffer).
     // `backFaceDepthView` and `cube360View` may be VK_NULL_HANDLE if those targets
     // are not present; SceneRenderer should pass them when available.
-    void updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView = VK_NULL_HANDLE, VkImageView backFaceDepthView = VK_NULL_HANDLE, VkImageView cube360View = VK_NULL_HANDLE);
+    void updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, uint32_t frameIndex, VkImageView backFaceDepthView = VK_NULL_HANDLE, VkImageView cube360View = VK_NULL_HANDLE);
 
     // Allocate a fresh per-frame scene-texture descriptor set, free the previous
     // one, and update it with the given views. Returns the new set (or
@@ -153,8 +154,6 @@ public:
     // runs after the per-slot in-flight fence wait), so the set is never reused
     // while pending and never needs UPDATE_AFTER_BIND.
     VkDescriptorSet prepareSceneTexturesForFrame(VulkanApp* app, uint32_t frameIndex,
-                                                 VkImageView colorImageView, VkImageView depthImageView,
-                                                 VkImageView skyImageView = VK_NULL_HANDLE,
                                                  VkImageView backFaceDepthView = VK_NULL_HANDLE,
                                                  VkImageView cube360View = VK_NULL_HANDLE);
 
@@ -225,9 +224,9 @@ private:
     // and the writes still happen. Cleared when the pool is reset so a reused
     // handle is never skipped against a stale entry.
     struct SceneTextureBindingSignature {
-        std::array<VkSampler, 5> samplers{};
-        std::array<VkImageView, 5> views{};
-        std::array<VkImageLayout, 5> layouts{};
+        std::array<VkSampler, 4> samplers{};
+        std::array<VkImageView, 4> views{};
+        std::array<VkImageLayout, 4> layouts{};
         bool operator==(const SceneTextureBindingSignature& o) const {
             return samplers == o.samplers && views == o.views && layouts == o.layouts;
         }

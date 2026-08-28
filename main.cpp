@@ -384,8 +384,10 @@ public:
         Buffer compact{};                          // cull output: VkDrawIndexedIndirectCommand[]
         Buffer visible{};                          // cull output: draw count (uint32_t)
         uint32_t compactCapacity = 0;              // elements `compact` can hold
-        VkDescriptorPool pool = VK_NULL_HANDLE;    // per-slot pool (maxSets=1)
-        VkDescriptorSet waterDs = VK_NULL_HANDLE;  // water-depth set, rewritten per task
+        VkDescriptorPool pool = VK_NULL_HANDLE;    // per-slot pool (maxSets=1) for back-face set 2
+        VkDescriptorSet waterDs = VK_NULL_HANDLE;  // back-face water-depth set (binding 0 = dummy)
+        VkDescriptorPool poolW = VK_NULL_HANDLE;   // per-slot pool for the parallel water geometry set 2
+        VkDescriptorSet waterDs2 = VK_NULL_HANDLE; // water geometry pass set 2 (binding 0 = real backface depth)
     };
     BackfaceSlot cachedBackfaceRing[ASYNC_RING_SIZE]{};
     uint32_t ringBackface = 0;
@@ -1277,59 +1279,13 @@ public:
         sceneRenderer->frameCmdState.reset();
         sceneRenderer->setCmdState(&sceneRenderer->frameCmdState);
 
-        // ── GPU culling: must run BEFORE shadow pass so drawPrepared has
-        // current-frame compact/visibleCount buffers populated. ──
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
-        sceneRenderer->mainSolidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-        // Vegetation cull is MERGED into the solid IndirectRenderer's single
-        // indirect.comp dispatch: run vegetation prepareCull (consolidation +
-        // per-frame buffer/metadata registration) BEFORE the solid prepareCull so
-        // the merged dispatch knows about the veg outputs.
-        if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
-            sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
-        }
-        // Fold SDF debug-cube culling into the solid IndirectRenderer's single
-        // indirect.comp dispatch: register the cube AABBs BEFORE prepareCull so the
-        // terrain cull writes the surviving SDF cubes into a dedicated SDF stream.
-        // The cached per-chunk cubes are read internally by the renderer.
-        if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
-            sceneRenderer->debugSDFRenderer->registerToIndirect();
-        }
-        // Fold mesh bounding-box culling into the solid IndirectRenderer's single
-        // indirect.comp dispatch: register the box AABBs BEFORE prepareCull so the
-        // terrain cull writes the surviving boxes into a dedicated bbox stream. The
-        // box list and the AABB list are built in lockstep (internal to the renderer)
-        // so the cull's firstInstance (local index) matches the instance buffer.
-        if (settings.showBoundingBoxes && sceneRenderer && sceneRenderer->boundingBoxRenderer) {
-            sceneRenderer->boundingBoxRenderer->registerBoundingBoxesToIndirect();
-        } else if (sceneRenderer && sceneRenderer->boundingBoxRenderer) {
-            sceneRenderer->boundingBoxRenderer->clearBoundingBoxesToIndirect();
-        }
-        sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
-        sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(commandBuffer);
-        sceneRenderer->brushRenderer->getSolidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
-        // GPU frustum cull water meshes BEFORE the shadow pass so the water
-        // shadow cascade reads the fresh (current-frame) LoD selection from the
-        // shared visibleLods buffer. prepareCull acquires the water buffers
-        // internally and must run outside a render pass.
-        if (settings.waterEnabled && sceneRenderer->mainLiquidRenderer) {
-            sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
-        }
-        // Brush liquid (painted water) is drawn inside the water geometry pass
-        // with the water pipeline, so it needs a current-frame cull of its own
-        // (its compact/visibleCount buffers are otherwise stale from the last
-        // prepareCull or uninitialized, which would draw garbage).
-            sceneRenderer->brushRenderer->getLiquidIR().prepareCull(commandBuffer, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
-        // Upload SDF debug-cube instance payload (frustum cull happens in the
-        // solid IndirectRenderer's indirect.comp dispatch, folded into the terrain
-        // cull). Must run outside the render pass, before the debug draw.
-        if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
-            // Refreshes the instance payload from the per-chunk cache internally.
-            sceneRenderer->debugSDFRenderer->prepareCull(commandBuffer);
-        }
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
+        // ── GPU culling (solid / vegetation / brush / water) and the early brush
+        // pass now run on a SEPARATE async command buffer (the "cull" task) that
+        // signals semMainCull. This keeps the heavy solid/vegetation shading on
+        // this main command buffer free to overlap the cull + solid360 + water
+        // offscreen work. The shadow pass below (and the water geometry pass on
+        // its own async command buffer) wait on semMainCull so the shared
+        // visibleLods / brush-depth buffers are current before they read them.
 
         // Shadow pass: renders solid geometry into shadow map from light's perspective
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -1386,51 +1342,12 @@ public:
             }
         }
 
-        // ── Early brush pass: render brush to its own buffers before solid/water ──
-        // Brush front depth (LESS test, writes depth), backface depth (GREATER test),
-        // and brush color are all written here before solid geometry touches the
-        // scene depth buffer. A later overlay pass renders brush with opacity on top
-        // of solid/water using the scene depth buffer for occlusion culling.
-        // Recording lives in BrushRenderer::recordEarlyPass.
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 4);
-        if (sceneRenderer->brushRenderer) {
-            sceneRenderer->brushRenderer->recordEarlyPass(
-                this, commandBuffer, frameIdx,
-                *sceneRenderer->mainSolidRenderer,
-                getMainDescriptorSet());
-        }
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
-
-        // ── Cubemap render on main CB (after brush pass, reads brush depth textures) ──
-        const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
-        const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
-        if (renderCubemap) {
-            ensureCubemapResources();
-
-            UniformObject ubo360 = uboStatic;
-            ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
-
-            auto tCubemap = std::chrono::high_resolution_clock::now();
-            this->sceneRenderer->solid360Renderer->render(
-                this, commandBuffer,
-                this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
-                this->sceneRenderer->mainSolidRenderer.get(),
-                cube360GfxDs,
-                this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx),
-                cube360UBO, ubo360,
-                settings.renderSolid, waterEnabled,
-                cube360ComputeDs,
-                cube360Compact.buffer,
-                cube360Visible.buffer,
-                cube360WaterComputeDs,
-                cube360WaterCompact.buffer,
-                cube360WaterVisible.buffer,
-                frameIdx);
-            this->profileSolid360 = std::chrono::duration<float, std::milli>(
-                std::chrono::high_resolution_clock::now() - tCubemap).count();
-        }
+        // ── Early brush pass and the solid360 cubemap render have been moved to
+        // their own async command buffers (see the "cull"/"solid360" tasks launched
+        // later in draw()). The brush pass writes brush depth and signals
+        // semMainCull; the solid360 render waits on semMainCull (it samples the
+        // brush depth) and signals semSolid360 (water samples the cube). Both run
+        // in parallel with the solid/vegetation shading below.
 
         // ── Instance 1: Deferred depth pre-pass (no color attachment) ──
         // Solid + vegetation write depth; impostors use single-pass (depth+color in Instance 2).
@@ -1652,12 +1569,120 @@ public:
 
         // Launch asynchronous recording+submit for independent offscreen passes
         // using a persistent thread pool to avoid per-frame std::thread creation overhead.
-        VkSemaphore semBackFace = VK_NULL_HANDLE;
-        std::future<void> asyncBackFaceFuture;
+        // Dependency graph (all on the graphics queue, running in parallel with the
+        // solid/vegetation shading recorded on the main command buffer below):
+        //   cull task      : brush early pass + all GPU culls  -> signals semMainCull
+        //   solid360 task  : renders the 360 cubemap (waits semMainCull) -> signals semSolid360
+        //   backface+water : back-face depth pass + water geometry pass
+        //                    (waits semMainCull + semSolid360) -> signals semWater
+        // The main command buffer waits on semMainCull (for shadow/brush reads) and
+        // semWater (for the composite) via m_extraWaitSemaphores, which the tasks
+        // register their signal semaphores into.
+        VkSemaphore semMainCull = VK_NULL_HANDLE;
+        VkSemaphore semSolid360 = VK_NULL_HANDLE;
+        VkSemaphore semWater = VK_NULL_HANDLE;
+        std::future<void> asyncCullFuture, asyncSolid360Future, asyncBackFaceFuture;
 
-        // Back-face depth for water
-        if (waterEnabled && sceneRenderer && sceneRenderer->backFaceRenderer) {
-            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semBackFace]() {
+        // --- Cull + early brush pass on its own command buffer (signals semMainCull) ---
+        if (sceneRenderer) {
+            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semMainCull]() {
+                VulkanApp* app = this;
+                VkCommandBuffer cullCmd = app->allocatePrimaryCommandBuffer();
+                VkCommandBufferBeginInfo cbegin{};
+                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                if (vkBeginCommandBuffer(cullCmd, &cbegin) != VK_SUCCESS) {
+                    std::cerr << "[Async] vkBeginCommandBuffer failed for cull" << std::endl;
+                    app->freeCommandBuffer(cullCmd);
+                    return;
+                }
+                // Use a dedicated command-buffer state for this async command buffer.
+                // Sharing frameCmdState with the main CB would let the cached
+                // "last bound pipeline" from a different command buffer suppress the
+                // vkCmdBindPipeline before a dispatch (the validation error we hit).
+                CommandBufferState taskState;
+                this->sceneRenderer->setCmdState(&taskState);
+                this->sceneRenderer->mainSolidRenderer->getIndirectRenderer().acquireBuffers(cullCmd);
+                if (this->sceneRenderer->vegetationRenderer && settings.vegetationEnabled)
+                    this->sceneRenderer->vegetationRenderer->prepareCull(cullCmd, viewProj);
+                if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
+                    this->sceneRenderer->debugSDFRenderer->registerToIndirect();
+                if (settings.showBoundingBoxes && this->sceneRenderer && this->sceneRenderer->boundingBoxRenderer)
+                    this->sceneRenderer->boundingBoxRenderer->registerBoundingBoxesToIndirect();
+                else if (this->sceneRenderer && this->sceneRenderer->boundingBoxRenderer)
+                    this->sceneRenderer->boundingBoxRenderer->clearBoundingBoxesToIndirect();
+                this->sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+                this->sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(cullCmd);
+                this->sceneRenderer->brushRenderer->getSolidIR().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+                if (settings.waterEnabled && this->sceneRenderer->mainLiquidRenderer)
+                    this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+                if (this->sceneRenderer->brushRenderer)
+                    this->sceneRenderer->brushRenderer->getLiquidIR().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+                if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
+                    this->sceneRenderer->debugSDFRenderer->prepareCull(cullCmd);
+                if (this->sceneRenderer->brushRenderer)
+                    this->sceneRenderer->brushRenderer->recordEarlyPass(this, cullCmd, frameIdx, *this->sceneRenderer->mainSolidRenderer, getMainDescriptorSet());
+                app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &semMainCull);
+            });
+            asyncCullFuture.get();
+            // Restore the per-frame state for the main CB's continued recording.
+            this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
+        }
+
+        // --- Solid360 cubemap on its own command buffer (waits semMainCull, signals semSolid360) ---
+        {
+            const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
+            const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
+            if (renderCubemap) {
+                asyncSolid360Future = asyncThreadPool.enqueue([this, frameIdx, &semMainCull, &semSolid360, waterEnabled]() {
+                    VulkanApp* app = this;
+                    VkCommandBuffer cubeCmd = app->allocatePrimaryCommandBuffer();
+                    VkCommandBufferBeginInfo cbegin{};
+                    cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                    cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    if (vkBeginCommandBuffer(cubeCmd, &cbegin) != VK_SUCCESS) {
+                        std::cerr << "[Async] vkBeginCommandBuffer failed for solid360" << std::endl;
+                        app->freeCommandBuffer(cubeCmd);
+                        return;
+                    }
+                    this->ensureCubemapResources();
+                    CommandBufferState taskState;
+                    this->sceneRenderer->setCmdState(&taskState);
+                    UniformObject ubo360 = uboStatic;
+                    ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
+                    this->sceneRenderer->solid360Renderer->render(
+                        this, cubeCmd,
+                        this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
+                        this->sceneRenderer->mainSolidRenderer.get(),
+                        cube360GfxDs,
+                        this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx),
+                        cube360UBO, ubo360,
+                        settings.renderSolid, waterEnabled,
+                        cube360ComputeDs,
+                        cube360Compact.buffer, cube360Visible.buffer,
+                        cube360WaterComputeDs, cube360WaterCompact.buffer, cube360WaterVisible.buffer,
+                        frameIdx);
+                    // Do NOT register semSolid360 in m_extraWaitSemaphores: the main CB
+                    // does not sample the cube (only the async water pass does, which
+                    // waits on it explicitly), so registering would needlessly serialize
+                    // the main CB behind the solid360 render.
+                    // NOTE: cull, solid360, back-face/water all submit to the SAME
+                    // graphics queue, so queue submission order already guarantees
+                    // execution + memory ordering. An explicit binary-semaphore wait
+                    // here would deadlock: semMainCull is a single binary semaphore
+                    // also waited on by the back-face task and the main CB, and a
+                    // binary semaphore can satisfy only one waiter.
+                    app->submitCommandBufferAsyncToQueue(cubeCmd, app->getGraphicsQueue(), &semSolid360, {}, false);
+                });
+                asyncSolid360Future.get();
+                this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
+            }
+        }
+
+        // Back-face depth + water geometry pass on a shared command buffer.
+        // (waits semMainCull + semSolid360; signals semWater at the end of the task)
+        if (waterEnabled && sceneRenderer) {
+            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, semMainCull, semSolid360, &semWater]() {
                 VulkanApp* app = this;
                 VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo beginInfo{};
@@ -1668,6 +1693,9 @@ public:
                     app->freeCommandBuffer(cmd);
                     return;
                 }
+                // Dedicated command-buffer state for this async command buffer (see cull task).
+                CommandBufferState taskState;
+                this->sceneRenderer->setCmdState(&taskState);
                 // Reuse a ring of pre-allocated per-task resources (cull output buffers)
                 // instead of creating host-visible buffers every frame. Slot safety:
                 // see the cachedBackfaceRing comment above -- the previous submission
@@ -1772,7 +1800,7 @@ public:
                     VkImageView bfBack = (this->sceneRenderer->backFaceRenderer) ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
                     VkImageView bfCube = (this->sceneRenderer->solid360Renderer) ? this->sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
                     VkDescriptorSetLayout wdsLayout = this->sceneRenderer->mainLiquidRenderer->getWaterDepthDescriptorSetLayout();
-                    if (wdsLayout != VK_NULL_HANDLE && bfBack != VK_NULL_HANDLE && bfCube != VK_NULL_HANDLE) {
+                    if (wdsLayout != VK_NULL_HANDLE) {
                         if (slot.pool == VK_NULL_HANDLE) {
                             // Per-slot pool (maxSets=1) so the set is allocated once and
                             // rewritten every task; flags mirror the renderer's async
@@ -1796,57 +1824,111 @@ public:
                             }
                         }
                         if (slot.waterDs != VK_NULL_HANDLE) {
-                            VkImageView bfColor = this->sceneRenderer->mainSolidRenderer->getColorView(frameIdx);
-                            VkImageView bfDepth = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
-                            VkImageView bfSky   = (this->sceneRenderer->skyRenderer) ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs, bfColor, bfDepth, frameIdx, bfSky, bfBack, bfCube);
+                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs, frameIdx, bfBack, bfCube);
                             asyncWaterDs = slot.waterDs;
                         }
                     }
                 }
 
-                // Patch binding #3 to the dummy depth to avoid the back-face
-                // pass reading-from the same image it writes-to as depth
-                // attachment (SYNC-HAZARD READ_AFTER_WRITE).
+                // Patch binding #0 (back-face depth) to the dummy depth to avoid
+                // the back-face pass reading-from the same image it writes-to as
+                // depth attachment (SYNC-HAZARD READ_AFTER_WRITE).
                 if (asyncWaterDs != VK_NULL_HANDLE) {
                     WaterBackFaceRenderer* bfr = this->sceneRenderer->backFaceRenderer.get();
                     if (bfr && bfr->getDummyDepthView() != VK_NULL_HANDLE) {
-                        bfr->patchBinding3(asyncWaterDs, bfr->getDummyDepthView());
+                        bfr->patchBinding0(asyncWaterDs, bfr->getDummyDepthView());
                     }
                 }
 
                 // Render back-face pass using this slot's (ring-reused) compact/visible
                 // buffers so draws consume the cull results
                 auto tBackface = std::chrono::high_resolution_clock::now();
-                this->sceneRenderer->backFaceRenderer->render(app, cmd, frameIdx,
-                                            ind,
-                                            this->sceneRenderer->mainLiquidRenderer->getWaterGeometryPipelineLayout(),
-                                            app->getMainDescriptorSet(),
-                                            asyncWaterDs,
-                                            (computeDs != VK_NULL_HANDLE) ? slot.compact.buffer : VK_NULL_HANDLE,
-                                            (computeDs != VK_NULL_HANDLE) ? slot.visible.buffer : VK_NULL_HANDLE);
+                if (this->sceneRenderer->backFaceRenderer) {
+                    this->sceneRenderer->backFaceRenderer->render(app, cmd, frameIdx,
+                                                ind,
+                                                this->sceneRenderer->mainLiquidRenderer->getWaterGeometryPipelineLayout(),
+                                                app->getMainDescriptorSet(),
+                                                asyncWaterDs,
+                                                (computeDs != VK_NULL_HANDLE) ? slot.compact.buffer : VK_NULL_HANDLE,
+                                                (computeDs != VK_NULL_HANDLE) ? slot.visible.buffer : VK_NULL_HANDLE);
+                }
 
                 this->profileBackface = std::chrono::duration<float, std::milli>(
                     std::chrono::high_resolution_clock::now() - tBackface).count();
+
+                // ── Water geometry pass (same command buffer as the back-face pass) ──
+                // The back-face depth (binding 0 of the water set) was produced earlier
+                // in THIS command buffer and is already in SHADER_READ_ONLY_OPTIMAL (the
+                // back-face pass transitions it after writing). We wait on semMainCull
+                // (current-frame visibleLods from the cull task) and semSolid360 (the
+                // solid360 cubemap) at submit time, so the water pass runs fully in
+                // parallel with the solid/vegetation shading on the main command buffer.
+                if (this->sceneRenderer->mainLiquidRenderer) {
+                    auto& waterIR = this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
+                    waterIR.acquireBuffers(cmd);
+                    VkImageView wBack = (this->sceneRenderer->backFaceRenderer)
+                        ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
+                    VkImageView wCube = (this->sceneRenderer->solid360Renderer)
+                        ? this->sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
+                    // Dedicated per-slot set for the water geometry pass so the REAL
+                    // back-face depth can be bound at binding 0 (the back-face pass used
+                    // a different set with binding 0 patched to the dummy depth).
+                    if (slot.waterDs2 == VK_NULL_HANDLE && slot.poolW == VK_NULL_HANDLE) {
+                        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 };
+                        VkDescriptorPoolCreateInfo pci{};
+                        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                        pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
+                        pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+                        if (vkCreateDescriptorPool(dev, &pci, nullptr, &slot.poolW) == VK_SUCCESS) {
+                            app->resources.addDescriptorPool(slot.poolW, "cachedBackfaceWaterGeom pool");
+                            VkDescriptorSetLayout wdsLayout = this->sceneRenderer->mainLiquidRenderer->getWaterDepthDescriptorSetLayout();
+                            if (wdsLayout != VK_NULL_HANDLE) {
+                                VkDescriptorSetAllocateInfo ai{};
+                                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                                ai.descriptorPool = slot.poolW; ai.descriptorSetCount = 1; ai.pSetLayouts = &wdsLayout;
+                                if (vkAllocateDescriptorSets(dev, &ai, &slot.waterDs2) != VK_SUCCESS)
+                                    slot.waterDs2 = VK_NULL_HANDLE;
+                                else app->resources.addDescriptorSet(slot.waterDs2, "cachedBackfaceWaterGeom DS");
+                            }
+                        }
+                    }
+                    if (slot.waterDs2 != VK_NULL_HANDLE) {
+                        this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, frameIdx, wBack, wCube);
+                        VkImageView wsky = (this->sceneRenderer->skyRenderer)
+                            ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
+                        this->sceneRenderer->mainLiquidRenderer->renderPass(this, cmd, frameIdx,
+                            settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2);
+                        // Transition water geometry depth to SRO for the compositor.
+                        VkImage wgdImg = this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(frameIdx);
+                        if (wgdImg != VK_NULL_HANDLE) {
+                            app->recordTransitionImageLayoutLayer(cmd, wgdImg, VK_FORMAT_D32_SFLOAT,
+                                this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthLayout(frameIdx),
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+                            this->sceneRenderer->mainLiquidRenderer->setWaterGeomDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                        }
+                    }
+                }
+
                 // Submit. The ring slot's buffers/set are NOT defer-destroyed: they are
                 // reused ASYNC_RING_SIZE tasks later, by which time this submission has
                 // completed (guaranteed by the frame-fence chain described on
-                // cachedBackfaceRing). Use submitCommandBufferAsyncToQueue on the
-                // graphics queue so the completion semaphore (semBackFace) is
-                // registered in m_extraWaitSemaphores and drawFrame waits on it before
-                // the main command buffer reads the back-face depth (e.g. in the water
-                // tessellation evaluation shader). A plain submitCommandBufferAsync
-                // would signal the semaphore but never register it, leaving the
-                // cross-command-buffer write->read dependency unsynchronized.
-                app->submitCommandBufferAsyncToQueue(cmd, app->getGraphicsQueue(), &semBackFace);
+                // cachedBackfaceRing). Signal semWater, which is registered in
+                // m_extraWaitSemaphores so drawFrame's main command buffer waits on it
+                // before compositing.
+                // We do NOT wait on semMainCull/semSolid360 here: like the solid360
+                // task, this command buffer is submitted to the same graphics queue
+                // as the cull and solid360 tasks, so queue ordering already guarantees
+                // the visibleLods / cube are ready. An explicit binary-semaphore wait
+                // would deadlock (single binary semaphore, multiple waiters).
+                app->submitCommandBufferAsyncToQueue(cmd, app->getGraphicsQueue(), &semWater, {}, true);
+
             });
         }
 
-        // Wait for the async back-face task to complete before water pass so no two
-        // threads call vkCmdBindDescriptorSets with the same descriptor set concurrently
-        // and to ensure semBackFace is signaled before waterPass uses it. get() rethrows
-        // task exceptions (wait() would swallow them, silently leaving semBackFace
-        // unsignaled and dropping the back-face pass for the frame).
+        // Wait for the async back-face+water task to finish recording/submitting so
+        // its local semaphores stay valid and no two threads bind the same descriptor
+        // set concurrently. get() rethrows task exceptions (wait() would swallow them,
+        // silently leaving semWater unsignaled and dropping the water pass for the frame).
         if (asyncBackFaceFuture.valid()) {
             try {
                 asyncBackFaceFuture.get();
@@ -1856,34 +1938,17 @@ public:
                 std::cerr << "[Async] back-face task failed with unknown error, skipping back-face pass this frame" << std::endl;
             }
         }
+        // Restore the per-frame state for the main CB's continued recording.
+        this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
 
-        // Run water geometry pass offscreen and bind scene textures for post-process
-        if (waterEnabled) {
-            // Water frustum cull already ran before the shadow pass; re-assert
-            // buffer visibility for the water geometry draw (no re-cull needed —
-            // the shadow cascade cull uses separate buffers and did not disturb
-            // the main water compact buffer).
-            sceneRenderer->mainLiquidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-            // Use 360° solid+sky reflection instead of the sky-only equirect view
-            VkImageView skyView = (sceneRenderer && sceneRenderer->skyRenderer) ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
-            sceneRenderer->mainLiquidRenderer->renderPass(this, commandBuffer, frameIdx, settings.waterWireframeMode,
-                mainTime, skyView);
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
-
-            // Transition water geometry depth to SRO for the PostProcess compositor
-            VkImage wgdImg = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(frameIdx);
-            if (wgdImg != VK_NULL_HANDLE) {
-                recordTransitionImageLayoutLayer(commandBuffer, wgdImg,
-                    VK_FORMAT_D32_SFLOAT,
-                    sceneRenderer->mainLiquidRenderer->getWaterGeomDepthLayout(frameIdx),
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    1, 0, 1);
-                sceneRenderer->mainLiquidRenderer->setWaterGeomDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }
-        }
+        // ── Water geometry pass ──
+        // Now recorded on its OWN async command buffer (combined with the back-face
+        // pass in the "backface/water" task) so it runs in parallel with the solid
+        // and vegetation shading above. It waits on semMainCull (current-frame
+        // visibleLods from the cull task), semSolid360 (solid360 cubemap), and the
+        // back-face depth it consumes is produced earlier in the SAME command buffer,
+        // avoiding any cross-CB layout hazard. It signals semWater, which
+        // m_extraWaitSemaphores makes the composite (below) wait on.
 
         profileCpuRecord = std::chrono::duration<float, std::milli>(
             std::chrono::high_resolution_clock::now() - cpuRecordT0).count();
