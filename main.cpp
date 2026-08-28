@@ -1288,23 +1288,29 @@ public:
         // ── GPU culling (solid / vegetation / brush / water) and the early brush
         // pass now run on a SEPARATE async command buffer (the "cull" task) that
         // signals semMainCull. This keeps the heavy solid/vegetation shading on
-        // this main command buffer free to overlap the cull + solid360 + water
-        // offscreen work. The shadow pass below (and the water geometry pass on
-        // its own async command buffer) wait on semMainCull so the shared
+        // this main command buffer free to overlap the cull + solid360 + shadow +
+        // water + vegetation offscreen work. The shadow pass, the water geometry
+        // pass, and the vegetation pass each run on their own async command buffer
+        // and wait on semMainCull (directly or via queue ordering) so the shared
         // visibleLods / brush-depth buffers are current before they read them.
 
-        // Shadow pass: renders solid geometry into shadow map from light's perspective
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
-        if (sceneRenderer) {
-            sceneRenderer->shadowMapper->render(this, commandBuffer, frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.renderSolid, settings.vegetationEnabled, settings.shadowTessellationEnabled, settings.lodBias, camera.getPosition(), settings.maxTargetLod);
-        }
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 1);
+        // NOTE: the shadow pass has been moved to its own async command buffer
+        // (see the "shadow" task launched later in draw()). It signals semShadow,
+        // which the main command buffer waits on below so the shadow map and the
+        // restored UBO / visibleLods are ready before the solid shading samples
+        // them.
 
         // Upload UBO to GPU (VMA persistently mapped — no map/unmap needed)
+        // Upload UBO to GPU (VMA persistently mapped — no map/unmap needed).
+        // When shadows are ENABLED the shadow pass (now its own async command
+        // buffer) restores this buffer to uboStatic at the end of its render, so
+        // we must NOT also write it here (that would be a concurrent host/GPU
+        // write on the same buffer). When shadows are DISABLED the shadow task
+        // early-returns without restoring, so the main CB must upload uboStatic.
         if (sceneRenderer) {
-            memcpy(sceneRenderer->mainUniformBuffers[frameIdx].mappedData, &uboStatic, sizeof(UniformObject));
+            if (!settings.enableShadows) {
+                memcpy(sceneRenderer->mainUniformBuffers[frameIdx].mappedData, &uboStatic, sizeof(UniformObject));
+            }
         } else {
             std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n";
         }
@@ -1326,11 +1332,9 @@ public:
         VkClearValue depthClear{};
         depthClear.depthStencil = {1.0f, 0};
 
-            // Acquire vegetation instance/indirect buffers before
-            // vkCmdBeginRendering (barriers illegal inside dynamic rendering).
-            if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
-                sceneRenderer->vegetationRenderer->recordReadBarriers(commandBuffer);
-            }
+            // Vegetation read barriers are now recorded in the vegetation async
+            // task (its own command buffer), since vegetation is rendered to its
+            // own offscreen framebuffer there.
 
         // Transition depth to DEPTH_STENCIL_ATTACHMENT_OPTIMAL for Instance 1 below.
         // (The previous frame left it in SHADER_READ_ONLY after the water pass.)
@@ -1389,11 +1393,6 @@ public:
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
             if (settings.renderSolid) {
                 sceneRenderer->mainSolidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
-            }
-
-            // Vegetation depth (impostors render depth+color in Instance 2)
-            if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
-                sceneRenderer->vegetationRenderer->drawDepth(this, commandBuffer, viewProj, camera.getPosition());
             }
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -1480,10 +1479,9 @@ public:
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 12);
 
-            // Vegetation color + impostor color+depth (single-pass depth write)
-            if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
-                sceneRenderer->vegetationRenderer->drawColor(this, commandBuffer, viewProj, camera.getPosition());
-            }
+            // Vegetation color + impostor color+depth are now rendered to their
+            // own offscreen framebuffer in the vegetation async task and composited
+            // in postprocess.frag (so vegetation no longer shares the solid depth).
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 13);
@@ -1576,22 +1574,37 @@ public:
         // Launch asynchronous recording+submit for independent offscreen passes
         // using a persistent thread pool to avoid per-frame std::thread creation overhead.
         // Dependency graph (all on the graphics queue, running in parallel with the
-        // solid/vegetation shading recorded on the main command buffer below):
+        // solid shading recorded on the main command buffer below):
         //   cull task      : brush early pass + all GPU culls  -> signals semMainCull
         //   solid360 task  : renders the 360 cubemap (waits semMainCull) -> signals semSolid360
+        //   shadow task    : shadow map + cascade cull + blur, restores visibleLods/UBO
+        //                    (runs after cull on the worker) -> signals semShadow
         //   backface+water : back-face depth pass + water geometry pass
         //                    (waits semMainCull + semSolid360) -> signals semWater
-        // The main command buffer waits on semMainCull (for shadow/brush reads) and
-        // semWater (for the composite) via m_extraWaitSemaphores, which the tasks
-        // register their signal semaphores into.
+        //   vegetation task: own offscreen color+depth (runs after shadow on the
+        //                    worker, so the shadow map is current) -> signals semVeg
+        // The main command buffer waits on semMainCull (brush depth / visibleLods),
+        // semShadow (shadow map + restored UBO / visibleLods), semWater (water
+        // offscreen) and semVeg (vegetation offscreen) via m_extraWaitSemaphores,
+        // which the tasks register their signal semaphores into.
         VkSemaphore semMainCull = VK_NULL_HANDLE;
         VkSemaphore semSolid360 = VK_NULL_HANDLE;
         VkSemaphore semWater = VK_NULL_HANDLE;
+        VkSemaphore semShadow = VK_NULL_HANDLE;
+        VkSemaphore semVeg = VK_NULL_HANDLE;
+        // Per-consumer signal semaphores. A binary semaphore can satisfy only ONE
+        // wait, so each command buffer that must synchronize on the cull/shadow
+        // results needs its own distinct signal (the main CB consumes semMainCull
+        // and semShadow; the async shadow/veg tasks consume the ones below).
+        VkSemaphore semCullShadow = VK_NULL_HANDLE;
+        VkSemaphore semCullVeg = VK_NULL_HANDLE;
+        VkSemaphore semShadowVeg = VK_NULL_HANDLE;
         std::future<void> asyncCullFuture, asyncSolid360Future, asyncBackFaceFuture;
+        std::future<void> asyncShadowFuture, asyncVegFuture;
 
         // --- Cull + early brush pass on its own command buffer (signals semMainCull) ---
         if (sceneRenderer) {
-            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semMainCull]() {
+            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semMainCull, &semCullShadow, &semCullVeg]() {
                 VulkanApp* app = this;
                 VkCommandBuffer cullCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1602,6 +1615,18 @@ public:
                     app->freeCommandBuffer(cullCmd);
                     return;
                 }
+                // One signal semaphore per consumer of the cull results (binary
+                // semaphores are one-signal/one-wait): semMainCull -> main CB,
+                // semCullShadow -> shadow task, semCullVeg -> veg task.
+                auto makeSem = [&](VkSemaphore& out) {
+                    VkSemaphoreCreateInfo sci{};
+                    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+                    if (vkCreateSemaphore(app->getDevice(), &sci, nullptr, &out) != VK_SUCCESS)
+                        throw std::runtime_error("failed to create cull signal semaphore");
+                    app->resources.addSemaphore(out, "MyApp::cullSignalSemaphore");
+                };
+                makeSem(semCullShadow);
+                makeSem(semCullVeg);
                 // Use a dedicated command-buffer state for this async command buffer.
                 // Sharing frameCmdState with the main CB would let the cached
                 // "last bound pipeline" from a different command buffer suppress the
@@ -1628,7 +1653,9 @@ public:
                     this->sceneRenderer->debugSDFRenderer->prepareCull(cullCmd);
                 if (this->sceneRenderer->brushRenderer)
                     this->sceneRenderer->brushRenderer->recordEarlyPass(this, cullCmd, frameIdx, *this->sceneRenderer->mainSolidRenderer, getMainDescriptorSet());
-                app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &semMainCull);
+                // Signal semMainCull (main CB) plus semCullShadow (shadow task) and
+                // semCullVeg (veg task); each is waited by exactly one command buffer.
+                app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &semMainCull, {}, true, {semCullShadow, semCullVeg});
             });
             asyncCullFuture.get();
             // Restore the per-frame state for the main CB's continued recording.
@@ -1683,6 +1710,190 @@ public:
                 asyncSolid360Future.get();
                 this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
             }
+        }
+
+        // --- Shadow pass on its own command buffer (signals semShadow) ---
+        // The shadow pass does its own cascade culling, blurs the cascades, and at
+        // the end restores the shared visibleLods + main UBO (so the main command
+        // buffer's solid shading reads the correct state). It depends on the cull
+        // task's visibleLods (run earlier on the worker) and restores them, so the
+        // main CB must wait on semShadow before sampling the shadow map / restored
+        // UBO / visibleLods. It runs on the same graphics queue, after the cull
+        // task (worker ordering), so the visibleLods are current when it reads them.
+        {
+            const bool shEnableShadows = settings.enableShadows;
+            const bool shRenderSolid = settings.renderSolid;
+            const bool shVegEnabled = vegetationEnabled;
+            const bool shShadowTess = settings.shadowTessellationEnabled;
+            const float shLodBias = settings.lodBias;
+            const float shMaxTargetLod = settings.maxTargetLod;
+            const glm::vec3 shCamPos = camera.getPosition();
+            asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, &semShadow, &semCullShadow, &semShadowVeg]() {
+                VulkanApp* app = this;
+                VkCommandBuffer shCmd = app->allocatePrimaryCommandBuffer();
+                VkCommandBufferBeginInfo cbegin{};
+                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                if (vkBeginCommandBuffer(shCmd, &cbegin) != VK_SUCCESS) {
+                    std::cerr << "[Async] vkBeginCommandBuffer failed for shadow" << std::endl;
+                    app->freeCommandBuffer(shCmd);
+                    return;
+                }
+                // One signal semaphore per consumer of the shadow map: semShadow ->
+                // main CB, semShadowVeg -> veg task. The shadow task waits on its own
+                // cull-result semaphore (semCullShadow); it must not wait on the main
+                // CB's semMainCull (binary semaphores can't be waited twice).
+                VkSemaphoreCreateInfo sci{};
+                sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+                if (vkCreateSemaphore(app->getDevice(), &sci, nullptr, &semShadowVeg) != VK_SUCCESS)
+                    throw std::runtime_error("failed to create shadow signal semaphore");
+                app->resources.addSemaphore(semShadowVeg, "MyApp::shadowSignalSemaphore");
+                // Dedicated command-buffer state (see cull task).
+                CommandBufferState taskState;
+                this->sceneRenderer->setCmdState(&taskState);
+                this->sceneRenderer->shadowMapper->render(this, shCmd, frameIdx,
+                    sceneRenderer->mainUniformBuffers[frameIdx], uboStatic,
+                    shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shCamPos, shMaxTargetLod);
+                // Register semShadow so the main command buffer waits on it before
+                // sampling the shadow map / restored UBO / visibleLods. Wait on
+                // semCullShadow (the shadow task's own cull-result semaphore) so the
+                // cull task's GPU-written buffers are visible before the shadow pass
+                // reads them. Signal semShadowVeg for the veg task (separate binary
+                // semaphore — semShadow itself is consumed by the main CB).
+                app->submitCommandBufferAsyncToQueue(shCmd, app->getGraphicsQueue(), &semShadow, {semCullShadow}, true, {semShadowVeg});
+            });
+        }
+
+        // --- Vegetation pass on its own command buffer (signals semVeg) ---
+        // Rendered to its own offscreen color+depth framebuffer (decoupled from
+        // the solid pass). Runs after the shadow task on the worker, so the shadow
+        // map it samples is current. Occlusion against solid geometry is resolved
+        // at composite time (postprocess.frag). Like the other async passes, it
+        // uses a dedicated CommandBufferState and signals semVeg (registered so the
+        // composite waits on it).
+        {
+            const glm::vec3 vegCamPos = camera.getPosition();
+            asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, vegCamPos, &semVeg, &semCullVeg, &semShadowVeg]() {
+                VulkanApp* app = this;
+                VkCommandBuffer vegCmd = app->allocatePrimaryCommandBuffer();
+                VkCommandBufferBeginInfo cbegin{};
+                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                if (vkBeginCommandBuffer(vegCmd, &cbegin) != VK_SUCCESS) {
+                    std::cerr << "[Async] vkBeginCommandBuffer failed for vegetation" << std::endl;
+                    app->freeCommandBuffer(vegCmd);
+                    return;
+                }
+                CommandBufferState taskState;
+                this->sceneRenderer->setCmdState(&taskState);
+                VkImageView vegColorView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegColorView(frameIdx) : VK_NULL_HANDLE;
+                VkImageView vegDepthView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegDepthView(frameIdx) : VK_NULL_HANDLE;
+                if (vegColorView == VK_NULL_HANDLE || vegDepthView == VK_NULL_HANDLE) {
+                    app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &semVeg, {semCullVeg, semShadowVeg});
+                    return;
+                }
+                const uint32_t w = static_cast<uint32_t>(getWidth());
+                const uint32_t h = static_cast<uint32_t>(getHeight());
+                VkImage vegColorImg = sceneRenderer->vegetationRenderer->getVegColorImage(frameIdx);
+                VkImage vegDepthImg = sceneRenderer->vegetationRenderer->getVegDepthImage(frameIdx);
+                VkImageLayout vegColorOld = sceneRenderer->vegetationRenderer->getVegColorLayout(frameIdx);
+                VkImageLayout vegDepthOld = sceneRenderer->vegetationRenderer->getVegDepthLayout(frameIdx);
+                app->recordTransitionImageLayoutLayer(vegCmd, vegColorImg, app->getSwapchainImageFormat(), vegColorOld, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
+                app->recordTransitionImageLayoutLayer(vegCmd, vegDepthImg, VK_FORMAT_D32_SFLOAT, vegDepthOld, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+                sceneRenderer->vegetationRenderer->setVegColorLayout(frameIdx, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+                sceneRenderer->vegetationRenderer->setVegDepthLayout(frameIdx, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+                auto beginVegInstance = [&](VkRenderingAttachmentInfo* colorAtt, VkRenderingAttachmentInfo* depthAtt, uint32_t colorCount) {
+                    VkRenderingInfo ri{};
+                    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                    ri.renderArea.offset = {0, 0};
+                    ri.renderArea.extent = {w, h};
+                    ri.layerCount = 1;
+                    ri.colorAttachmentCount = colorCount;
+                    ri.pColorAttachments = (colorCount > 0) ? colorAtt : nullptr;
+                    ri.pDepthAttachment = depthAtt;
+                    vkCmdBeginRendering(vegCmd, &ri);
+                    VkViewport vp{0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f};
+                    vkCmdSetViewport(vegCmd, 0, 1, &vp);
+                    VkRect2D sc{{0, 0}, {w, h}};
+                    vkCmdSetScissor(vegCmd, 0, 1, &sc);
+                };
+
+                if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
+                    sceneRenderer->vegetationRenderer->recordReadBarriers(vegCmd);
+                    // Instance 1: depth prepass (no color attachment)
+                    {
+                        VkClearValue vegDepthClear{}; vegDepthClear.depthStencil = {1.0f, 0};
+                        VkRenderingAttachmentInfo depthAtt{};
+                        depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                        depthAtt.imageView = vegDepthView;
+                        depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                        depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                        depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                        depthAtt.clearValue = vegDepthClear;
+                        beginVegInstance(nullptr, &depthAtt, 0);
+                        sceneRenderer->vegetationRenderer->drawDepth(this, vegCmd, viewProj, vegCamPos);
+                        vkCmdEndRendering(vegCmd);
+                    }
+                    // Instance 2: color + depth (depth loaded from prepass)
+                    {
+                        VkClearValue vegColorClear{}; vegColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+                        VkRenderingAttachmentInfo colorAtt{};
+                        colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                        colorAtt.imageView = vegColorView;
+                        colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                        colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                        colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                        colorAtt.clearValue = vegColorClear;
+                        VkRenderingAttachmentInfo depthAtt{};
+                        depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                        depthAtt.imageView = vegDepthView;
+                        depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                        depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                        depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                        beginVegInstance(&colorAtt, &depthAtt, 1);
+                        sceneRenderer->vegetationRenderer->drawColor(this, vegCmd, viewProj, vegCamPos);
+                        vkCmdEndRendering(vegCmd);
+                    }
+                } else {
+                    // Clear the offscreen so the composite sees empty vegetation.
+                    VkClearValue vegColorClear{}; vegColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+                    VkClearValue vegDepthClear{}; vegDepthClear.depthStencil = {1.0f, 0};
+                    VkRenderingAttachmentInfo colorAtt{};
+                    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                    colorAtt.imageView = vegColorView;
+                    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                    colorAtt.clearValue = vegColorClear;
+                    VkRenderingAttachmentInfo depthAtt{};
+                    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                    depthAtt.imageView = vegDepthView;
+                    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                    depthAtt.clearValue = vegDepthClear;
+                    beginVegInstance(&colorAtt, &depthAtt, 1);
+                    vkCmdEndRendering(vegCmd);
+                }
+
+                // Transition back to SHADER_READ_ONLY for the composite.
+                app->recordTransitionImageLayoutLayer(vegCmd, vegColorImg, app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+                app->recordTransitionImageLayoutLayer(vegCmd, vegDepthImg, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+                sceneRenderer->vegetationRenderer->setVegColorLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                sceneRenderer->vegetationRenderer->setVegDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+                // Run on the dedicated vegetation queue (separate from graphicsQueue) so it
+                // parallelizes with the solid/shadow passes. Wait on semCullVeg so the cull
+                // task's GPU-written vegetation instance/indirect buffers are visible before
+                // the veg pass reads them, and on semShadowVeg so the shadow map written by
+                // the shadow task (on graphicsQueue) is visible before the veg pass samples
+                // it. These are the veg task's OWN binary semaphores (the main CB consumes
+                // semMainCull/semShadow); the semaphores provide the cross-queue
+                // (graphics→vegetation) memory dependency, and being the same queue family
+                // no ownership transfer is required.
+                app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &semVeg, {semCullVeg, semShadowVeg});
+            });
         }
 
         // Back-face depth + water geometry pass on a shared command buffer.
@@ -1944,6 +2155,27 @@ public:
                 std::cerr << "[Async] back-face task failed with unknown error, skipping back-face pass this frame" << std::endl;
             }
         }
+        // Wait for the shadow + vegetation async tasks (same rationale as above:
+        // keeps their signal semaphores valid and avoids concurrent descriptor-set
+        // binds on the shared renderers).
+        if (asyncShadowFuture.valid()) {
+            try {
+                asyncShadowFuture.get();
+            } catch (const std::exception &e) {
+                std::cerr << "[Async] shadow task failed, skipping shadow pass this frame: " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "[Async] shadow task failed with unknown error, skipping shadow pass this frame" << std::endl;
+            }
+        }
+        if (asyncVegFuture.valid()) {
+            try {
+                asyncVegFuture.get();
+            } catch (const std::exception &e) {
+                std::cerr << "[Async] vegetation task failed, skipping vegetation pass this frame: " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "[Async] vegetation task failed with unknown error, skipping vegetation pass this frame" << std::endl;
+            }
+        }
         // Restore the per-frame state for the main CB's continued recording.
         this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
 
@@ -2181,6 +2413,12 @@ public:
             if (sceneRenderer->mainLiquidRenderer) {
                 waterGeomDepthView = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthView(frameIdx);
             }
+            VkImageView vegColorView = VK_NULL_HANDLE;
+            VkImageView vegDepthView = VK_NULL_HANDLE;
+            if (sceneRenderer->vegetationRenderer) {
+                vegColorView = sceneRenderer->vegetationRenderer->getVegColorView(frameIdx);
+                vegDepthView = sceneRenderer->vegetationRenderer->getVegDepthView(frameIdx);
+            }
             float brushAlpha = 0.5f;
             float brushMode = 0.0f;
             const BrushEntry* brushEntry = brushManager.getSelectedEntry();
@@ -2200,6 +2438,8 @@ public:
                 brushDepthView,
                 brushBackFaceDepthView,
                 waterGeomDepthView,
+                vegColorView,
+                vegDepthView,
                 brushAlpha,
                 brushMode,
                 viewProj,
