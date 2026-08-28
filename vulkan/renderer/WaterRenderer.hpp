@@ -105,25 +105,6 @@ public:
     // Get the descriptor set layout for scene textures (set 2)
     VkDescriptorSetLayout getWaterDepthDescriptorSetLayout() const { return waterDepthDescriptorSetLayout; }
 
-    // Cubemap-compatible water pipeline (uses swapchain color format)
-    VkPipeline getCubemapWaterPipeline() const { return cubemapWaterPipeline; }
-
-    // Render water into a given color+depth attachment pair (used by Solid360Renderer).
-    // The caller must ensure the attachments are in COLOR_ATTACHMENT_OPTIMAL /
-    // DEPTH_STENCIL_ATTACHMENT_OPTIMAL layout before calling, and transition them
-    // back after. descriptorSet0 must contain at least bindings 0, 5, 7, 10.
-    // `frameIndex` selects the per-frame cubemap descriptor set so it is never
-    // updated while a previous frame's command buffer is still pending (no UAB needed).
-    void bindCubemapWaterPipeline(VkCommandBuffer cmd,
-                                  VkDescriptorSet descriptorSet0,
-                                  uint32_t frameIndex);
-
-    void renderWaterIntoCubemap(VkCommandBuffer cmd,
-                                VkImageView colorView, VkImageView depthView,
-                                uint32_t faceSize,
-                                VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer,
-                                uint32_t frameIndex);
-
     // Prepare render state (UBO upload, descriptor update, pre-barrier).
     // Call this before beginWaterGeometryPass when manually recording commands.
     void prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
@@ -133,8 +114,10 @@ public:
     // Get water depth descriptor set (for binding scene depth texture)
     VkDescriptorSet getWaterDepthDescriptorSet(uint32_t frameIndex) const { return (frameIndex < FRAMES) ? waterDepthDescriptorSets[frameIndex] : VK_NULL_HANDLE; }
 
-    // Ensure cubemap water rendering resources exist (pipeline, dummy textures, descriptor set).
-    // Called lazily from renderWaterIntoCubemap.
+    // Ensure cubemap reflection resources exist (dummy textures used by the solid 360
+    // pass). There is exactly one water geometry pipeline (waterGeometryPipeline); the
+    // cubemap renders solid + sky only and samples the water pipeline's output for
+    // reflections, so no cubemap-specific water pipeline is created here.
     void ensureCubemapResources(VulkanApp* app, VkFormat colorFormat);
 
     // Get sampler for ImGui texture display
@@ -198,8 +181,7 @@ private:
 
     // Pipelines
     TrackedHandle<VkPipeline> waterGeometryPipeline;
-    TrackedHandle<VkPipeline> cubemapWaterPipeline;
-    
+
     // Water geometry pipeline layout (includes depth texture binding)
     TrackedHandle<VkPipelineLayout> waterGeometryPipelineLayout;
 
@@ -235,7 +217,6 @@ private:
 
     // Cubemap water pass resources (per-frame to avoid updating a set that a
     // previous frame's command buffer still has pending)
-    std::array<TrackedHandle<VkDescriptorSet>, FRAMES> cubemapWaterDepthDS{};
     VkImage cubemapDummyDepthImage = VK_NULL_HANDLE;
     VmaAllocation cubemapDummyDepthAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cubemapDummyDepthMemory = VK_NULL_HANDLE;
