@@ -61,6 +61,16 @@ void main() {
     // 3. Water on top
     vec4 waterColor = texture(waterColorTex, uv);
     float waterAlpha = waterColor.a;
+    // Occlusion against solids: the water pass no longer samples the solid depth
+    // texture (so it can be recorded/rendered independently of the solid pass),
+    // so the depth test against solid geometry is resolved here instead. If a
+    // solid surface is in front of the water surface, hide the water fragment.
+    {
+        float waterGeomDepth = texture(waterGeomDepthTex, uv).r;
+        if (waterGeomDepth < 1.0 && sceneDepth < waterGeomDepth) {
+            waterAlpha = 0.0;
+        }
+    }
     vec3 afterWater = mix(baseColor, waterColor.rgb, waterAlpha);
 
     vec3 finalColor = afterWater;

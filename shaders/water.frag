@@ -25,12 +25,15 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 #include "includes/shadows.glsl"
 
 
-// Scene color and depth textures for refraction and edge foam (set 2)
-layout(set = 2, binding = 0) uniform sampler2D sceneColorTex;
-layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
-layout(set = 2, binding = 3) uniform sampler2D waterBackDepthTex;  // back-face depth for volume thickness
-layout(set = 2, binding = 4) uniform samplerCube sceneSkyCube;    // solid 360 cubemap (used directly)
-// `scenePositionTex` removed: world-position is reconstructed from depth when needed
+// Water offscreen pass inputs (set 2).
+// The water pass is now fully decoupled from the solid pass: it samples only its
+// own back-face depth (for volume thickness) and the solid 360 cubemap (for
+// reflection/refraction). It no longer reads the solid color or depth targets,
+// so it has no dependency on the solid pass and can be recorded/rendered on its
+// own command buffer in parallel with the solid pass. Occlusion against solids is
+// resolved at the composite stage (postprocess.frag).
+layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex; // back-face depth for volume thickness
+layout(set = 2, binding = 1) uniform samplerCube sceneSkyCube;   // solid 360 cubemap (reflection + refraction)
 
 // Near/far planes for linearizing depth – read from UBO passParams (z = near, w = far)
 // so they always match the glm::perspective call on the CPU side.
@@ -85,43 +88,35 @@ void main() {
     float animTime = time * noiseTimeSpeed;
 
     // Compute the clip → screen UV once and reuse it everywhere (the conversion
-    // is identical for every use below). Sample scene depth once at this UV and
-    // reuse the raw value to avoid redundant texture fetches.
+    // is identical for every use below).
     vec2 screenUV = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
-    float sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
 
-    // Early depth-based discard: if solid geometry is in front of the water
-    // surface, this fragment is fully occluded and contributes nothing. Testing
-    // here (instead of after the expensive noise/refraction/caustic work below)
-    // skips all of that computation for hidden water pixels at zero visual cost.
-    // Uses the same raw-depth comparison as the original test to stay exact.
-    if (sceneDepthRaw + 1e-6 < gl_FragCoord.z) {
-        discard;
-    }
+    // NOTE: solid-occlusion discard (was: if solid depth < fragment depth,
+    // discard) has been REMOVED from this shader. The water pass no longer reads
+    // the solid depth texture; occlusion against solid geometry is now resolved
+    // at the composite stage (postprocess.frag) where both the solid depth and
+    // the water geometry depth are available.
 
     // === WATER VOLUME THICKNESS ===
     // Compute volume thickness from back-face depth (rendered with reversed winding)
     // before the normal computation, so we can modulate bump amplitude.
+    // The solid scene depth is no longer available here; thickness is therefore
+    // measured entirely from the water front/back faces. This means a flat
+    // height-field surface (back-face ≈ front-face) reports ~0 thickness, which
+    // is the expected "thin water" case; genuinely thick water bodies (where the
+    // back-face pass renders a distant bottom) keep their measured thickness.
     float backFaceDepthRaw = texture(waterBackDepthTex, screenUV).r;
     float frontFaceLinear  = linearizeDepth(gl_FragCoord.z);
     float backFaceLinear   = linearizeDepth(backFaceDepthRaw);
-    float sceneDepthEarly  = linearizeDepth(sceneDepthRaw);
-
-    // Clamp to scene depth so thickness doesn't extend beyond solid ground.
-    // Use the nearer surface along the view ray, not the farther one.
-    float effectiveBack    = min(backFaceLinear, sceneDepthEarly);
 
     // Reconstruct world-space positions for a true view-ray thickness measurement.
     mat4 invViewProj = ubo.invViewProjection;
     vec4 backFaceWorldH = invViewProj * vec4(screenUV * 2.0 - 1.0, backFaceDepthRaw, 1.0);
     vec3 backFaceWorld = backFaceWorldH.xyz / backFaceWorldH.w;
-    vec4 sceneWorldH = invViewProj * vec4(screenUV * 2.0 - 1.0, sceneDepthRaw, 1.0);
-    vec3 sceneWorldPos = sceneWorldH.xyz / sceneWorldH.w;
 
     vec3 worldFrontPos = fragPosWorld;
     vec3 worldRayDir = normalize(worldFrontPos - ubo.viewPos.xyz);
     float backFaceThickness = max(dot(backFaceWorld - worldFrontPos, worldRayDir), 0.0);
-    float sceneThickness    = max(dot(sceneWorldPos - worldFrontPos, worldRayDir), 0.0);
     // A single-layer height-field surface (flat plane or tessellated waves) has
     // backFaceThickness ≈ 0 because the back-face geometry is co-planar with the
     // front face.  Comparing raw depth values with a fixed epsilon is unreliable
@@ -131,7 +126,7 @@ void main() {
     const float kMinVolumeThickness = 0.05; // 5 cm world-space
     // Also reject backFaceDepthRaw == 1.0 (depth-clear value = no geometry rendered).
     bool hasValidBackFace = (backFaceDepthRaw < 0.9999) && (backFaceThickness > kMinVolumeThickness);
-    float waterThickness  = hasValidBackFace ? min(backFaceThickness, sceneThickness) : sceneThickness;
+    float waterThickness  = hasValidBackFace ? backFaceThickness : 0.0;
 
     // Depth-based modulation factors (exponential ramp)
         float volumeBlurFactor = (volumeBlurRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBlurRate)) : 1.0;
@@ -202,9 +197,11 @@ void main() {
                      smoothstep(0.0, 0.1, screenUV.y) * smoothstep(1.0, 0.9, screenUV.y);
     refractionOffset *= edgeFade;
     
-    // Sample refraction: prefer a solid 360 cubemap for environment refraction.
-    // Keep a small contribution from screen-space sampling so nearby geometry
-    // still contributes to the refracted appearance.
+    // Sample refraction from the environment cubemap only. Water no longer reads
+    // the solid color texture, so it is fully decoupled from the solid pass and
+    // can be recorded/rendered on its own command buffer in parallel. The solid
+    // 360 cubemap already contains the captured solid environment, so refraction
+    // still shows nearby solids via the cubemap.
     vec3 sceneColor = vec3(0.0);
     if (enableRefraction) {
         // Approximate air->water refraction. `refract` expects the incident
@@ -217,54 +214,22 @@ void main() {
         }
 
         vec3 cubeColor = texture(sceneSkyCube, refractDir).rgb;
-
-        // Also sample screen-space scene (with the existing refraction offset)
-        // so close geometry still appears correctly refracted. Blend by
-        // `refractionStrength` to preserve existing per-material control.
-        vec2 refractedUV = clamp(screenUV + refractionOffset, 0.001, 0.999);
-        vec3 screenSample;
-        if (enableBlur && blurSamples > 1) {
-            vec2 texelSize = 1.0 / textureSize(sceneColorTex, 0);
-            vec3 colorAccum = vec3(0.0);
-            int halfK = blurSamples / 2;
-            float totalWeight = 0.0;
-            for (int bx = -halfK; bx <= halfK; ++bx) {
-                for (int by = -halfK; by <= halfK; ++by) {
-                    vec2 offset = vec2(float(bx), float(by)) * texelSize * blurRadius;
-                    vec2 sampleUV = clamp(refractedUV + offset, 0.001, 0.999);
-                    colorAccum += texture(sceneColorTex, sampleUV).rgb;
-                    totalWeight += 1.0;
-                }
-            }
-            screenSample = colorAccum / totalWeight;
-        } else {
-            screenSample = texture(sceneColorTex, refractedUV).rgb;
-        }
-
-        sceneColor = mix(screenSample, cubeColor, clamp(refractionStrength, 0.0, 1.0));
-    } 
+        sceneColor = cubeColor;
+    }
 
     // sceneDepthRaw already sampled once at the top of main() and reused.
     // Sample g-buffer attachments produced by the main pass (if available)
 
     // === DEPTH-BASED EFFECTS ===
     float waterDepthRaw = gl_FragCoord.z;
-    // Occluded fragments are already discarded early (see depth test near the
-    // top of main()), so no second discard is needed here.
 
-    float sceneDepthLinear = linearizeDepth(sceneDepthRaw);
-    float waterDepthLinear = linearizeDepth(waterDepthRaw);
-
-    // Depth difference: use the smaller of
-    //  - back-face distance to the front water face, and
-    //  - solid scene depth distance to the water fragment depth.
-    // This prevents the depth-based fades from exceeding the actual
-    // available water column determined by either the back-face or
-    // occluding solid geometry.
+    // Depth difference between the water back face and the water front face. The
+    // solid scene depth is no longer available here (occlusion is handled at
+    // composite time), so the "water column" is measured purely from the water
+    // volume. For flat water (no valid back face) this collapses to 0, i.e. the
+    // thinnest possible water, which is the correct degenerate case.
     float backFaceDiff = max(backFaceLinear - frontFaceLinear, 0.0);
-    float solidDiff = max(sceneDepthLinear - waterDepthLinear, 0.0);
-    // Same validity check as waterThickness: for flat-plane water backFaceDiff ≈ 0.
-    float depthDiff = hasValidBackFace ? min(backFaceDiff, solidDiff) : solidDiff;
+    float depthDiff = hasValidBackFace ? backFaceDiff : 0.0;
     
     // Depth-based color fade (deeper = more tinted)
     float depthFalloff = wp.waveParams.w;
@@ -537,10 +502,10 @@ void main() {
         outColor = vec4(debugCol, 1.0);
     }
 
-    // Debug mode 33: raw scene color — verifies whether the solid pass
-    // output actually reaches the water fragment shader.
+    // Debug mode 33: raw environment cubemap (reflection of view dir) — verifies
+    // the water pass reaches the cubemap it now depends on (no solid color).
     if (dbgMode == 33) {
-        vec3 sc = texture(sceneColorTex, screenUV).rgb*0.9;
+        vec3 sc = texture(sceneSkyCube, reflect(viewDir, normal)).rgb * 0.9;
         outColor = vec4(sc, 1.0);
     }
 
@@ -609,22 +574,10 @@ void main() {
         float v = clamp((backFaceLinear - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
         outColor = vec4(vec3(v), 1.0);
     }
-    // 46: Scene depth at early-screen UV (linearized, normalized)
+    // 46: Water thickness (normalized by per-layer caustic depth scale or 1.0)
+    // (Former debug modes 46/47 showed solid scene depth, which water no longer
+    // samples; they have been removed.)
     if (dbgMode == 46) {
-        float nearP = ubo.passParams.z;
-        float farP = ubo.passParams.w;
-        float v = clamp((sceneDepthEarly - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
-        outColor = vec4(vec3(v), 1.0);
-    }
-    // 47: Effective back depth (min(backFaceLinear, sceneDepthEarly))
-    if (dbgMode == 47) {
-        float nearP = ubo.passParams.z;
-        float farP = ubo.passParams.w;
-        float v = clamp((effectiveBack - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
-        outColor = vec4(vec3(v), 1.0);
-    }
-    // 48: Water thickness (normalized by per-layer caustic depth scale or 1.0)
-    if (dbgMode == 48) {
         float denom = max(wp.causticParams.w, 1.0);
         float v = clamp(waterThickness / denom, 0.0, 1.0);
         outColor = vec4(vec3(v), 1.0);

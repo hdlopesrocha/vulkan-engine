@@ -29,10 +29,10 @@ layout(location = VARY_HSV) out vec3 fragHSV;
 
 #include "includes/ubo.glsl"
 
-// Scene depth texture for depth-dependent wave attenuation (set 2)
-layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
-// Water back-face depth texture for volume-based bump modulation (set 2)
-layout(set = 2, binding = 3) uniform sampler2D waterBackDepthTex;
+// Water back-face depth texture for depth-dependent wave attenuation and
+// volume-based bump modulation (set 2). The solid scene depth is no longer
+// sampled here so the water pass has no dependency on the solid depth target.
+layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex;
 
 #include "includes/perlin.glsl"
 #include "includes/water_noise.glsl"
@@ -126,39 +126,36 @@ void main() {
     }
 
     // --- Depth-based wave attenuation (shallow: suppress waves) ---
-    // Where the water surface is close to solid geometry (shallow), waves are
-    // suppressed.  waveDepthTransition controls the ramp distance.
+    // Without the solid scene depth, "shallow" is approximated by the water
+    // volume thickness (front-to-back-face distance): thin water is calm, thick
+    // water keeps its waves.  waveDepthTransition controls the ramp distance.
     float waveDepthTransition = wp.shallowColor.w;
     if (waveDepthTransition > 0.0 && haveScreen) {
-        float solidDepthRaw = texture(sceneDepthTex, screenUV).r;
-        float solidDepthLin = linearizeDepth(solidDepthRaw);
+        float backFaceDepthRaw = texture(waterBackDepthTex, screenUV).r;
+        float backFaceLin = linearizeDepth(backFaceDepthRaw);
         float waterDepthLin = linearizeDepth(baseClipDepth);
-        float depthDiff = max(solidDepthLin - waterDepthLin, 0.0);
-        bumpAmp *= smoothstep(0.0, waveDepthTransition, depthDiff);
+        float thickness = max(backFaceLin - waterDepthLin, 0.0);
+        bumpAmp *= smoothstep(0.0, waveDepthTransition, thickness);
     }
 
     // --- Volume-based bump amplitude (deep water: amplify waves) ---
-    // Reconstruct water thickness the same way the fragment stage does, so the
-    // amplitude that drives the displaced geometry matches the one used for the
-    // per-fragment shading normal.
+    // Reconstruct water thickness from the back-face depth the same way the
+    // fragment stage does, so the amplitude that drives the displaced geometry
+    // matches the one used for the per-fragment shading normal.
     float volumeBumpRate = wp.reserved2.z;
     if (volumeBumpRate > 0.0 && haveScreen) {
         float backFaceDepthRaw = texture(waterBackDepthTex, screenUV).r;
-        float sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
 
         mat4 invVP = ubo.invViewProjection;
         vec4 backFaceWorldH = invVP * vec4(screenUV * 2.0 - 1.0, backFaceDepthRaw, 1.0);
         vec3 backFaceWorld = backFaceWorldH.xyz / backFaceWorldH.w;
-        vec4 sceneWorldH = invVP * vec4(screenUV * 2.0 - 1.0, sceneDepthRaw, 1.0);
-        vec3 sceneWorldPos = sceneWorldH.xyz / sceneWorldH.w;
 
         vec3 worldFrontPos = pos;
         vec3 worldRayDir = normalize(worldFrontPos - ubo.viewPos.xyz);
         float backFaceThickness = max(dot(backFaceWorld - worldFrontPos, worldRayDir), 0.0);
-        float sceneThickness    = max(dot(sceneWorldPos - worldFrontPos, worldRayDir), 0.0);
         const float kMinVolumeThickness = 0.05;
         bool hasValidBackFace = (backFaceDepthRaw < 0.9999) && (backFaceThickness > kMinVolumeThickness);
-        float waterThickness = hasValidBackFace ? min(backFaceThickness, sceneThickness) : sceneThickness;
+        float waterThickness = hasValidBackFace ? backFaceThickness : 0.0;
 
         bumpAmp *= (1.0 - exp(-waterThickness * volumeBumpRate));
     }
