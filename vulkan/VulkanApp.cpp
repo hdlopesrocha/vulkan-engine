@@ -443,6 +443,23 @@ void VulkanApp::cleanup() {
         return;
     }
 
+    // Drain pending command buffers and run all deferred destroys BEFORE tearing
+    // down the renderers. Deferred lambdas (e.g. VegetationRenderer::
+    // destroyInstanceBuffer, registered via deferDestroyUntilFence) capture
+    // `this` and access renderer-owned containers (e.g. chunkBuffers). If we ran
+    // them AFTER clean() destroyed the renderers, the lambdas would read already
+    // freed state -> use-after-free / heap corruption ("malloc(): invalid size").
+    // deviceWaitIdle() above guarantees every registered fence has signalled, so
+    // processPendingCommandBuffers() will actually execute the callbacks here.
+    processPendingCommandBuffers();
+    {
+        std::lock_guard<std::recursive_mutex> dd(m_submissionMutex);
+        for (auto &p : m_deferredDestroys) {
+            p.second();
+        }
+        m_deferredDestroys.clear();
+    }
+
     // Allow the derived app to release manager-owned Vulkan resources now while
     // the device, descriptor pools and command pool are still valid. This
     // ensures per-manager destructors can call Vulkan destroy functions (or
