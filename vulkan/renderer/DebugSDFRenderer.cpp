@@ -2,6 +2,7 @@
 #include "IndirectRenderer.hpp"
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
+#include "RendererUtils.hpp"
 #include "../ShaderStage.hpp"
 #include "../../utils/FileReader.hpp"
 #include <glm/gtc/matrix_transform.hpp>
@@ -102,22 +103,27 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
     instanceBinding.pImmutableSamplers = nullptr;
     instanceBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
+    // Binding 0 carries UPDATE_AFTER_BIND_BIT so a set can be (re)written when its
+    // instance buffer is (re)allocated without tripping the "in use by pending CB"
+    // rule. In practice each set is written only on (re)allocation, not per-frame.
+    VkDescriptorBindingFlags instanceBindingFlags[] = {VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT};
+
     descriptorSetLayout = descAlloc.createLayout(
         &instanceBinding, 1,
         VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-        nullptr,
+        instanceBindingFlags,
         "DebugSDFRenderer: descriptorSetLayout");
 
-    VkDescriptorPoolSize poolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolSize poolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, SDF_CULL_FRAMES};
     descriptorPool = descAlloc.createPool(
-        &poolSize, 1, 1,
+        &poolSize, 1, SDF_CULL_FRAMES,
         VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
         "DebugSDFRenderer: descriptorPool");
 
-    descriptorSet = descAlloc.allocateSet(descriptorPool, descriptorSetLayout, "DebugSDFRenderer: descriptorSet");
-    // Binding 0 (per-cube instance payload) is written each frame in render()
-    // from the current cull frame's instance buffer (cf.instance), so no static
-    // buffer is needed here.
+    // One set per cull frame; each is written in ensureCullCapacity() to point at
+    // that cull frame's instance buffer.
+    descAlloc.allocateSets(descriptorPool, descriptorSetLayout, SDF_CULL_FRAMES, sdfInstanceSets.data(),
+        "DebugSDFRenderer: sdfInstanceSet");
 }
 
 void DebugSDFRenderer::createCullResources(VulkanApp* app) {
@@ -158,6 +164,14 @@ void DebugSDFRenderer::ensureCullCapacity(uint32_t frame, uint32_t cubeCount) {
     cf.instance = makeBuf(newCap * sizeof(InstanceData),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     cf.capacity = newCap;
+
+    // Point this cull frame's dedicated instance descriptor set at the new buffer.
+    // Done only on (re)allocation, never per-frame, so it can't race with an
+    // in-flight command buffer that references a different cull frame's set.
+    DescriptorWriter writer(cullApp_->getDevice());
+    writer.writeBuffer(sdfInstanceSets[frame], 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                       cf.instance.buffer, 0, VK_WHOLE_SIZE);
+    writer.flush();
 }
 
 void DebugSDFRenderer::writeCullFrameData(uint32_t frame, uint32_t cubeCount) {
@@ -240,10 +254,69 @@ void DebugSDFRenderer::setCubes(const std::vector<CubeSDF>& cubes) {
     activeCubes = cubes;
 }
 
-void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet mainDescriptorSet) {
-    if (pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE ||
-        !hasCubes_ || vertexBuffer.buffer == VK_NULL_HANDLE ||
+void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet mainDescriptorSet, uint32_t frameIdx, bool enabled) {
+    if (pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE) return;
+
+    VkImageView colorView = getSdfColorView(frameIdx);
+    VkImageView depthView = getSdfDepthView(frameIdx);
+    if (colorView == VK_NULL_HANDLE || depthView == VK_NULL_HANDLE) return;
+
+    VkImage colorImg = getSdfColorImage(frameIdx);
+    VkImage depthImg = getSdfDepthImage(frameIdx);
+    VkImageLayout colorOld = getSdfColorLayout(frameIdx);
+    VkImageLayout depthOld = getSdfDepthLayout(frameIdx);
+    app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), colorOld, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
+    app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, depthOld, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+    setSdfColorLayout(frameIdx, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    setSdfDepthLayout(frameIdx, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+    const uint32_t w = static_cast<uint32_t>(app->getWidth());
+    const uint32_t h = static_cast<uint32_t>(app->getHeight());
+
+    VkClearValue sdfColorClear{}; sdfColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+    VkClearValue sdfDepthClear{}; sdfDepthClear.depthStencil = {1.0f, 0};
+
+    VkRenderingAttachmentInfo colorAtt{};
+    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAtt.imageView = colorView;
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.clearValue = sdfColorClear;
+    VkRenderingAttachmentInfo depthAtt{};
+    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAtt.imageView = depthView;
+    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAtt.clearValue = sdfDepthClear;
+
+    VkRenderingInfo ri{};
+    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    ri.renderArea.offset = {0, 0};
+    ri.renderArea.extent = {w, h};
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &colorAtt;
+    ri.pDepthAttachment = &depthAtt;
+    vkCmdBeginRendering(cmd, &ri);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f; viewport.y = 0.0f; viewport.width = static_cast<float>(w); viewport.height = static_cast<float>(h);
+    viewport.minDepth = 0.0f; viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.offset = {0, 0}; scissor.extent = {w, h};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    // Nothing to draw (disabled, no cubes, or missing buffers): clear only, then resolve to SRO.
+    if (!enabled || !hasCubes_ || vertexBuffer.buffer == VK_NULL_HANDLE ||
         indexBuffer.buffer == VK_NULL_HANDLE || indexCount == 0) {
+        vkCmdEndRendering(cmd);
+        app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        setSdfColorLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        setSdfDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         return;
     }
 
@@ -258,33 +331,21 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
         sdfCount = terrainIR_->getSdfCountBuffer(f);
     }
     if (sdfCompact == VK_NULL_HANDLE || sdfCount == VK_NULL_HANDLE ||
-        cf.instance.buffer == VK_NULL_HANDLE)
+        cf.instance.buffer == VK_NULL_HANDLE) {
+        vkCmdEndRendering(cmd);
+        app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        setSdfColorLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        setSdfDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         return;
-
-    // Point the instance descriptor set at this frame's instance buffer.
-    DescriptorWriter(app->getDevice())
-        .writeBuffer(descriptorSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                     cf.instance.buffer, 0, VK_WHOLE_SIZE)
-        .flush();
-
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(app->getWidth());
-    viewport.height = static_cast<float>(app->getHeight());
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = {static_cast<uint32_t>(app->getWidth()), static_cast<uint32_t>(app->getHeight())};
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    }
 
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-    VkDescriptorSet descriptorSets[] = {mainDescriptorSet, descriptorSet};
+    // Bind this cull frame's dedicated instance descriptor set (written once in
+    // ensureCullCapacity when its instance buffer was allocated).
+    VkDescriptorSet descriptorSets[] = {mainDescriptorSet, sdfInstanceSets[f]};
     if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 2, descriptorSets, 0, nullptr);
     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
         0, 2, descriptorSets, 0, nullptr);
@@ -294,11 +355,33 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
     vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
+    // HOST writes (instance payload, uploaded in prepareCull on the cull command
+    // buffer) -> VERTEX reads in this command buffer. prepareCull records its own
+    // host barrier but that lives on the cull CB; make the writes visible here too
+    // since this CB may be on a different queue and starts after the cull CB via
+    // semaphore. Without it the draw can read pre-upload (garbage) instance state.
+    VkBufferMemoryBarrier2 hostBarrier{};
+    hostBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    hostBarrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    hostBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+    hostBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    hostBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    hostBarrier.buffer = cf.instance.buffer;
+    hostBarrier.offset = 0;
+    hostBarrier.size = VK_WHOLE_SIZE;
+
     // Indirect-count draw: only the cubes that survived the GPU frustum cull
     // (written into the terrain IR's SDF stream by indirect.comp, count in sdfCount) are drawn.
     // maxDrawCount must bound the SDF *command* buffer (sdfCompactBuf, capacity MAX_SDF_CUBES),
     // NOT the instance buffer capacity (cf.capacity, which holds every AABB and can be larger).
-    if (!cmdDrawIndexedIndirectCount) return;
+    if (!cmdDrawIndexedIndirectCount) {
+        vkCmdEndRendering(cmd);
+        app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        setSdfColorLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        setSdfDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        return;
+    }
     // maxDrawCount bounds the SDF *command* buffer (capacity MAX_SDF_CUBES), not the
     // instance buffer (cf.capacity, which holds every AABB and may be larger).
     const uint32_t maxSdfDraws = terrainIR_ ? terrainIR_->getMaxSdfCommands() : 8192u;
@@ -327,10 +410,23 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
     dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     dep.bufferMemoryBarrierCount = 2;
     dep.pBufferMemoryBarriers = sdfBarriers;
+    // The instance host->vertex barrier is folded into the same dependency info.
+    std::array<VkBufferMemoryBarrier2, 3> allBarriers{};
+    allBarriers[0] = sdfBarriers[0];
+    allBarriers[1] = sdfBarriers[1];
+    allBarriers[2] = hostBarrier;
+    dep.bufferMemoryBarrierCount = 3;
+    dep.pBufferMemoryBarriers = allBarriers.data();
     vkCmdPipelineBarrier2(cmd, &dep);
 
     cmdDrawIndexedIndirectCount(cmd, sdfCompact, 0, sdfCount, 0,
                                 maxDrawCount, sizeof(VkDrawIndexedIndirectCommand));
+
+    vkCmdEndRendering(cmd);
+    app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+    app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+    setSdfColorLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    setSdfDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
 void DebugSDFRenderer::cleanup(VulkanApp* app) {
@@ -344,6 +440,65 @@ void DebugSDFRenderer::cleanup(VulkanApp* app) {
         cf.capacity = 0;
     }
     hasCubes_ = false;
+}
+
+void DebugSDFRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
+    if (sdfRenderWidth == width && sdfRenderHeight == height && sdfColorImages[0] != VK_NULL_HANDLE) {
+        return; // Already created at this size
+    }
+
+    destroyRenderTargets(app);
+
+    sdfRenderWidth = width;
+    sdfRenderHeight = height;
+
+    VkDevice device = app->getDevice();
+
+    auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                           VkImage& image, VmaAllocation& allocation, VkDeviceMemory& memory, VkImageView& view) {
+        RendererUtils::createImage2DWithVma(device, app, width, height, format, usage, aspect,
+                                            "DebugSDFRenderer: offscreen", image, allocation, memory, view);
+    };
+
+    for (uint32_t i = 0; i < SDF_FRAMES; ++i) {
+        createImage(app->getSwapchainImageFormat(),
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    sdfColorImages[i], sdfColorAllocations[i], sdfColorMemories[i], sdfColorImageViews[i]);
+        if (sdfColorImages[i] != VK_NULL_HANDLE && app) {
+            app->transitionImageLayoutLayer(sdfColorImages[i], app->getSwapchainImageFormat(),
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(sdfColorImages[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            sdfColorImageLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+
+        createImage(VK_FORMAT_D32_SFLOAT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT,
+                    sdfDepthImages[i], sdfDepthAllocations[i], sdfDepthMemories[i], sdfDepthImageViews[i]);
+        if (sdfDepthImages[i] != VK_NULL_HANDLE && app) {
+            app->transitionImageLayoutLayer(sdfDepthImages[i], VK_FORMAT_D32_SFLOAT,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(sdfDepthImages[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+            sdfDepthImageLayouts[i] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        }
+    }
+
+    std::cout << "[DebugSDFRenderer] Created offscreen render targets " << width << "x" << height << std::endl;
+}
+
+void DebugSDFRenderer::destroyRenderTargets(VulkanApp* app) {
+    (void)app;
+    for (uint32_t i = 0; i < SDF_FRAMES; ++i) {
+        sdfColorImages[i] = VK_NULL_HANDLE;
+        sdfColorAllocations[i] = VK_NULL_HANDLE;
+        sdfColorMemories[i] = VK_NULL_HANDLE;
+        sdfColorImageViews[i] = VK_NULL_HANDLE;
+        sdfDepthImages[i] = VK_NULL_HANDLE;
+        sdfDepthAllocations[i] = VK_NULL_HANDLE;
+        sdfDepthMemories[i] = VK_NULL_HANDLE;
+        sdfDepthImageViews[i] = VK_NULL_HANDLE;
+    }
 }
 
 void DebugSDFRenderer::updateCubesForChunk(NodeID nid, const std::vector<CubeSDF>& cubes) {

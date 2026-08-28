@@ -45,9 +45,25 @@ public:
     // output buffers. Call OUTSIDE a render pass, before the draw. `frame` must
     // match setCullFrame so upload + draw share one slot.
     void prepareCull(VkCommandBuffer cmd);
-    void render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet);
+    void render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet, uint32_t frameIdx, bool enabled = true);
     void setCullFrame(uint32_t frame) { currentCullFrame = frame % SDF_CULL_FRAMES; }
     void cleanup(VulkanApp* app) override;
+
+    // ── Decoupled offscreen framebuffer ──
+    // The SDF debug pass renders to its own color+depth offscreen (one per frame
+    // in flight) so it can run on its own async command buffer / queue; the
+    // composite (postprocess.frag) blends it over the solid scene by depth.
+    static constexpr uint32_t SDF_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    void createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
+    void destroyRenderTargets(VulkanApp* app);
+    VkImageView getSdfColorView(uint32_t frameIndex) const { return (frameIndex < SDF_FRAMES) ? sdfColorImageViews[frameIndex] : VK_NULL_HANDLE; }
+    VkImageView getSdfDepthView(uint32_t frameIndex) const { return (frameIndex < SDF_FRAMES) ? sdfDepthImageViews[frameIndex] : VK_NULL_HANDLE; }
+    VkImage getSdfColorImage(uint32_t frameIndex) const { return (frameIndex < SDF_FRAMES) ? sdfColorImages[frameIndex] : VK_NULL_HANDLE; }
+    VkImage getSdfDepthImage(uint32_t frameIndex) const { return (frameIndex < SDF_FRAMES) ? sdfDepthImages[frameIndex] : VK_NULL_HANDLE; }
+    VkImageLayout getSdfColorLayout(uint32_t frameIndex) const { return (frameIndex < SDF_FRAMES) ? sdfColorImageLayouts[frameIndex] : VK_IMAGE_LAYOUT_UNDEFINED; }
+    VkImageLayout getSdfDepthLayout(uint32_t frameIndex) const { return (frameIndex < SDF_FRAMES) ? sdfDepthImageLayouts[frameIndex] : VK_IMAGE_LAYOUT_UNDEFINED; }
+    void setSdfColorLayout(uint32_t frameIndex, VkImageLayout l) { if (frameIndex < SDF_FRAMES) sdfColorImageLayouts[frameIndex] = l; }
+    void setSdfDepthLayout(uint32_t frameIndex, VkImageLayout l) { if (frameIndex < SDF_FRAMES) sdfDepthImageLayouts[frameIndex] = l; }
 
     // ── Per-chunk SDF cube tracking (moved from SceneRenderer) ──
     // Populated by processNodeLayer via scene.requestSDFCubes (worker thread)
@@ -92,7 +108,13 @@ private:
 
     TrackedHandle<VkDescriptorSetLayout> descriptorSetLayout;
     TrackedHandle<VkDescriptorPool> descriptorPool;
-    TrackedHandle<VkDescriptorSet> descriptorSet;
+    // One instance descriptor set per cull frame (matches the per-cull-frame
+    // instance buffers in cullFrames[]). Each set points to its cull frame's
+    // instance buffer and is written only when that buffer is (re)allocated, never
+    // per-frame — so a set is never updated while a command buffer using it is
+    // pending (the root cause of the vkUpdateDescriptorSets "in use by pending CB"
+    // validation error). The binding carries UPDATE_AFTER_BIND_BIT as a safety net.
+    std::array<VkDescriptorSet, SDF_CULL_FRAMES> sdfInstanceSets{};
 
     std::vector<CubeSDF> activeCubes;
 
@@ -113,6 +135,20 @@ private:
     PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
     VulkanApp* cullApp_ = nullptr; // stashed for buffer (re)allocation
     IndirectRenderer* terrainIR_ = nullptr; // owns the merged SDF cull dispatch
+
+    // Offscreen color+depth targets (one per frame in flight).
+    std::array<VkImage, SDF_FRAMES> sdfColorImages{};
+    std::array<VmaAllocation, SDF_FRAMES> sdfColorAllocations{};
+    std::array<VkDeviceMemory, SDF_FRAMES> sdfColorMemories{};
+    std::array<VkImageView, SDF_FRAMES> sdfColorImageViews{};
+    std::array<VkImageLayout, SDF_FRAMES> sdfColorImageLayouts{};
+    std::array<VkImage, SDF_FRAMES> sdfDepthImages{};
+    std::array<VmaAllocation, SDF_FRAMES> sdfDepthAllocations{};
+    std::array<VkDeviceMemory, SDF_FRAMES> sdfDepthMemories{};
+    std::array<VkImageView, SDF_FRAMES> sdfDepthImageViews{};
+    std::array<VkImageLayout, SDF_FRAMES> sdfDepthImageLayouts{};
+    uint32_t sdfRenderWidth = 0;
+    uint32_t sdfRenderHeight = 0;
 
 private:
     void createCubeBuffers(VulkanApp* app);
