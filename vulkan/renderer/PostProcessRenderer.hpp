@@ -30,6 +30,7 @@ public:
                 VkImageView brushColorView, VkImageView brushDepthView,
                 VkImageView brushBackFaceDepthView,
                 VkImageView waterGeomDepthView,
+                VkImageView vegColorView, VkImageView vegDepthView,
                 float brushAlpha, float brushMode,
                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
                 const glm::vec3& viewPos,
@@ -60,9 +61,9 @@ private:
     // (sampler/view/layout per binding + UBO) is unchanged. `valid` starts
     // false, guaranteeing the first frame always writes.
     struct FrameDescriptorSignature {
-        std::array<VkSampler, 9> samplers{};
-        std::array<VkImageView, 9> views{};
-        std::array<VkImageLayout, 9> layouts{};
+        std::array<VkSampler, 11> samplers{};
+        std::array<VkImageView, 11> views{};
+        std::array<VkImageLayout, 11> layouts{};
         VkBuffer uboBuffer = VK_NULL_HANDLE;
         VkDeviceSize uboOffset = 0;
         VkDeviceSize uboRange = 0;

@@ -46,8 +46,8 @@ void PostProcessRenderer::createSampler(VulkanApp* app) {
 void PostProcessRenderer::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    // Descriptor set layout – 9 bindings (8 image samplers + 1 UBO)
-    std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
+    // Descriptor set layout – 11 bindings (10 image samplers + 1 UBO)
+    std::array<VkDescriptorSetLayoutBinding, 11> bindings{};
 
     for (int i = 0; i < 6; ++i) {
         bindings[i].binding = i;
@@ -75,6 +75,17 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[8].descriptorCount = 1;
     bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Vegetation offscreen color + depth (decoupled from the solid pass)
+    bindings[9].binding = 9;
+    bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[9].descriptorCount = 1;
+    bindings[9].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[10].binding = 10;
+    bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[10].descriptorCount = 1;
+    bindings[10].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     DescriptorAllocator descAlloc{device, app};
     descriptorSetLayout = descAlloc.createLayout(
@@ -121,7 +132,7 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
     VkDescriptorPoolSize poolSizesDesc[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 * FRAMES_IN_FLIGHT},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10 * FRAMES_IN_FLIGHT},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * FRAMES_IN_FLIGHT}
     };
     descriptorPool = descAlloc.createPool(
@@ -137,16 +148,17 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
 // ─── Render ───────────────────────────────────────────────────────────────────
 
 void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
-                                  VkImageView sceneColorView, VkImageView sceneDepthView,
-                                  VkImageView waterColorView,
-                                  VkImageView brushColorView, VkImageView brushDepthView,
-                                  VkImageView brushBackFaceDepthView,
-                                  VkImageView waterGeomDepthView,
-                                  float brushAlpha, float brushMode,
-                                  const glm::mat4& viewProj, const glm::mat4& invViewProj,
-                                  const glm::vec3& viewPos,
-                                  uint32_t frameIdx,
-                                  VkImageView skyView) {
+                                   VkImageView sceneColorView, VkImageView sceneDepthView,
+                                   VkImageView waterColorView,
+                                   VkImageView brushColorView, VkImageView brushDepthView,
+                                   VkImageView brushBackFaceDepthView,
+                                   VkImageView waterGeomDepthView,
+                                   VkImageView vegColorView, VkImageView vegDepthView,
+                                   float brushAlpha, float brushMode,
+                                   const glm::mat4& viewProj, const glm::mat4& invViewProj,
+                                   const glm::vec3& viewPos,
+                                   uint32_t frameIdx,
+                                   VkImageView skyView) {
     if (pipeline == VK_NULL_HANDLE) {
         std::cerr << "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping." << std::endl;
         return;
@@ -172,7 +184,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     uniformBuffer.unmap(); // VMA persistent mapping
 
     // Prepare image infos and only write descriptors for valid image views
-    std::array<VkDescriptorImageInfo, 9> imageInfos{};
+    std::array<VkDescriptorImageInfo, 11> imageInfos{};
     imageInfos[0] = {linearSampler, sceneColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[1] = {linearSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[2] = {linearSampler, waterColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -183,6 +195,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     imageInfos[7] = {linearSampler, waterGeomDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     // Brush back-face depth for PAINT mode volume test
     imageInfos[8] = {linearSampler, brushBackFaceDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Vegetation offscreen color + depth (decoupled from the solid pass)
+    imageInfos[9] = {linearSampler, vegColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    imageInfos[10] = {linearSampler, vegDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
 
@@ -208,7 +223,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // descriptor behind. `valid` starts false, so the first frame always
     // writes.
     FrameDescriptorSignature sig;
-    for (int i = 0; i < 9; ++i) {
+    for (int i = 0; i < 11; ++i) {
         if (i == 5) continue; // binding 5 is the UBO, stored separately below
         sig.samplers[i] = imageInfos[i].sampler;
         sig.views[i] = imageInfos[i].imageView;
@@ -262,6 +277,18 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
             writer.writeImage(currentDs, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                               imageInfos[8].sampler, imageInfos[8].imageView,
                               imageInfos[8].imageLayout);
+        }
+
+        // Vegetation offscreen color (binding 9) + depth (binding 10)
+        if (imageInfos[9].imageView != VK_NULL_HANDLE && imageInfos[9].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[9].sampler, imageInfos[9].imageView,
+                              imageInfos[9].imageLayout);
+        }
+        if (imageInfos[10].imageView != VK_NULL_HANDLE && imageInfos[10].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[10].sampler, imageInfos[10].imageView,
+                              imageInfos[10].imageLayout);
         }
 
         writer.flush();

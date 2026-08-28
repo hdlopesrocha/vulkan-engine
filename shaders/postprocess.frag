@@ -26,6 +26,11 @@ layout(set = 0, binding = 5) uniform WaterUBO {
 layout(set = 0, binding = 6) uniform sampler2D sceneSkyTex;
 layout(set = 0, binding = 7) uniform sampler2D waterGeomDepthTex;
 layout(set = 0, binding = 8) uniform sampler2D brushBackFaceDepthTex;
+// Vegetation offscreen color + depth (decoupled from the solid pass so it can be
+// rendered on a parallel async command buffer). Occlusion against solid geometry
+// is resolved here by testing vegetation depth against the solid scene depth.
+layout(set = 0, binding = 9) uniform sampler2D vegColorTex;
+layout(set = 0, binding = 10) uniform sampler2D vegDepthTex;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -58,16 +63,32 @@ void main() {
     // 2. Solid geometry (alpha > 0)
     float isSolid = sceneColor.a;
     baseColor = mix(baseColor, sceneColor.rgb, isSolid);
+
+    // 2.5 Vegetation offscreen (decoupled from the solid pass). Composite it over
+    // the solid, but hide fragments the solid geometry occludes (a solid surface
+    // in front of the vegetation). The vegetation depth is also tracked as an
+    // obstacle for the water/brush occlusion tests below.
+    float vegDepth = texture(vegDepthTex, uv).r;
+    bool vegPresent = (vegDepth < 1.0);
+    float obstacleDepth = sceneDepth;
+    if (vegPresent) {
+        obstacleDepth = min(obstacleDepth, vegDepth);
+        vec4 vegColor = texture(vegColorTex, uv);
+        if (vegColor.a > 0.0 && !(sceneDepth < vegDepth)) {
+            baseColor = mix(baseColor, vegColor.rgb, vegColor.a);
+        }
+    }
     // 3. Water on top
     vec4 waterColor = texture(waterColorTex, uv);
     float waterAlpha = waterColor.a;
-    // Occlusion against solids: the water pass no longer samples the solid depth
-    // texture (so it can be recorded/rendered independently of the solid pass),
-    // so the depth test against solid geometry is resolved here instead. If a
-    // solid surface is in front of the water surface, hide the water fragment.
+    // Occlusion against solids (and vegetation): the water pass no longer samples
+    // the solid depth texture (so it can be recorded/rendered independently of the
+    // solid pass), so the depth test against solid geometry is resolved here
+    // instead. If a solid surface (or vegetation) is in front of the water
+    // surface, hide the water fragment.
     {
         float waterGeomDepth = texture(waterGeomDepthTex, uv).r;
-        if (waterGeomDepth < 1.0 && sceneDepth < waterGeomDepth) {
+        if (waterGeomDepth < 1.0 && obstacleDepth < waterGeomDepth) {
             waterAlpha = 0.0;
         }
     }
@@ -80,15 +101,8 @@ void main() {
     if (brushColor.a > 0.0) {
         float brushDepth = texture(brushDepthTex, uv).r;
 
-        // Brush geometry overlay: depth-test brush against scene + water, same for all modes
+        // Brush geometry overlay: depth-test brush against scene + water + veg, same for all modes
         {
-            float obstacleDepth = sceneDepth;
-
-            float waterGeomDepth = texture(waterGeomDepthTex, uv).r;
-            if (waterGeomDepth < 1.0) {
-                obstacleDepth = min(obstacleDepth, waterGeomDepth);
-            }
-
             if (brushDepth < obstacleDepth) {
                 finalColor = mix(finalColor, brushColor.rgb, ubo.brushAlpha);
             }
