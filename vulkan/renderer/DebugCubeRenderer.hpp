@@ -46,6 +46,27 @@ public:
     // Render all registered cubes
     void render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet);
 
+    // Decoupled offscreen framebuffer for the per-chunk mesh bounding boxes. Mirrors
+    // the SDF debug pass: the bounding boxes render to their own color+depth so they
+    // can run on their own async command buffer / queue; the composite blends them
+    // over the solid scene by depth. The widget-overlay path (renderOverlay) stays
+    // inline in the main command buffer.
+    static constexpr uint32_t BBOX_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    void createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
+    void destroyRenderTargets(VulkanApp* app);
+    VkImageView getBboxColorView(uint32_t frameIndex) const { return (frameIndex < BBOX_FRAMES) ? bboxColorImageViews[frameIndex] : VK_NULL_HANDLE; }
+    VkImageView getBboxDepthView(uint32_t frameIndex) const { return (frameIndex < BBOX_FRAMES) ? bboxDepthImageViews[frameIndex] : VK_NULL_HANDLE; }
+    VkImage getBboxColorImage(uint32_t frameIndex) const { return (frameIndex < BBOX_FRAMES) ? bboxColorImages[frameIndex] : VK_NULL_HANDLE; }
+    VkImage getBboxDepthImage(uint32_t frameIndex) const { return (frameIndex < BBOX_FRAMES) ? bboxDepthImages[frameIndex] : VK_NULL_HANDLE; }
+    VkImageLayout getBboxColorLayout(uint32_t frameIndex) const { return (frameIndex < BBOX_FRAMES) ? bboxColorImageLayouts[frameIndex] : VK_IMAGE_LAYOUT_UNDEFINED; }
+    VkImageLayout getBboxDepthLayout(uint32_t frameIndex) const { return (frameIndex < BBOX_FRAMES) ? bboxDepthImageLayouts[frameIndex] : VK_IMAGE_LAYOUT_UNDEFINED; }
+    void setBboxColorLayout(uint32_t frameIndex, VkImageLayout l) { if (frameIndex < BBOX_FRAMES) bboxColorImageLayouts[frameIndex] = l; }
+    void setBboxDepthLayout(uint32_t frameIndex, VkImageLayout l) { if (frameIndex < BBOX_FRAMES) bboxDepthImageLayouts[frameIndex] = l; }
+    // Render the bounding boxes into the offscreen framebuffer (used by the async
+    // bounding-box task). `enabled` gates the actual draw; when false (overlay
+    // toggled off) the offscreen is cleared so the composite shows no boxes.
+    void renderToOffscreen(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet, uint32_t frameIdx, bool enabled);
+
     void cleanup(VulkanApp* app) override;
 
     // ── Per-node debug cube tracking (moved from SceneRenderer) ──
@@ -117,6 +138,20 @@ private:
     IndirectRenderer* terrainIR_ = nullptr;
     uint32_t currentCullFrame = 0;
     PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
+
+    // Offscreen color+depth targets (one per frame in flight) for bounding boxes.
+    std::array<VkImage, BBOX_FRAMES> bboxColorImages{};
+    std::array<VmaAllocation, BBOX_FRAMES> bboxColorAllocations{};
+    std::array<VkDeviceMemory, BBOX_FRAMES> bboxColorMemories{};
+    std::array<VkImageView, BBOX_FRAMES> bboxColorImageViews{};
+    std::array<VkImageLayout, BBOX_FRAMES> bboxColorImageLayouts{};
+    std::array<VkImage, BBOX_FRAMES> bboxDepthImages{};
+    std::array<VmaAllocation, BBOX_FRAMES> bboxDepthAllocations{};
+    std::array<VkDeviceMemory, BBOX_FRAMES> bboxDepthMemories{};
+    std::array<VkImageView, BBOX_FRAMES> bboxDepthImageViews{};
+    std::array<VkImageLayout, BBOX_FRAMES> bboxDepthImageLayouts{};
+    uint32_t bboxRenderWidth = 0;
+    uint32_t bboxRenderHeight = 0;
 private:
     void createCubeVBO(VulkanApp* app);
     void loadGridTexture(VulkanApp* app);

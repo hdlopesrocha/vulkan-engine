@@ -2,6 +2,7 @@
 #include "IndirectRenderer.hpp"
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
+#include "RendererUtils.hpp"
 #include "../VertexBufferObjectBuilder.hpp"
 #include "../ShaderStage.hpp"
 #include "../../utils/FileReader.hpp"
@@ -196,10 +197,19 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
 
     VkDescriptorSetLayoutBinding bindings[] = { samplerLayoutBinding, instanceBufferBinding };
 
+    // Both bindings carry UPDATE_AFTER_BIND_BIT: binding 2 (instance buffer) is
+    // rewritten if the instance buffer is resized, and the set is shared between
+    // the main command buffer (renderOverlay) and the async bounding-box command
+    // buffer (renderToOffscreen). Update-while-pending must be allowed.
+    VkDescriptorBindingFlags gridBindingFlags[2] = {
+        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+    };
+
     gridDescriptorSetLayout = descAlloc.createLayout(
         bindings, 2,
         VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-        nullptr,
+        gridBindingFlags,
         "DebugCubeRenderer: gridDescriptorSetLayout");
 
     VkDescriptorPoolSize poolSizes[] = {
@@ -362,6 +372,210 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
     }
     // Fallback: draw all boxes (unculled) when the IR stream is unavailable.
     vkCmdDrawIndexed(cmd, cubeVBO.indexCount, drawInstanceCount, 0, 0, 0);
+}
+
+void DebugCubeRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
+    if (bboxRenderWidth == width && bboxRenderHeight == height && bboxColorImages[0] != VK_NULL_HANDLE) {
+        return; // Already created at this size
+    }
+
+    destroyRenderTargets(app);
+
+    bboxRenderWidth = width;
+    bboxRenderHeight = height;
+
+    VkDevice device = app->getDevice();
+
+    auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                           VkImage& image, VmaAllocation& allocation, VkDeviceMemory& memory, VkImageView& view) {
+        RendererUtils::createImage2DWithVma(device, app, width, height, format, usage, aspect,
+                                            "DebugCubeRenderer: offscreen", image, allocation, memory, view);
+    };
+
+    for (uint32_t i = 0; i < BBOX_FRAMES; ++i) {
+        createImage(app->getSwapchainImageFormat(),
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    bboxColorImages[i], bboxColorAllocations[i], bboxColorMemories[i], bboxColorImageViews[i]);
+        if (bboxColorImages[i] != VK_NULL_HANDLE && app) {
+            app->transitionImageLayoutLayer(bboxColorImages[i], app->getSwapchainImageFormat(),
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(bboxColorImages[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            bboxColorImageLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+
+        createImage(VK_FORMAT_D32_SFLOAT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT,
+                    bboxDepthImages[i], bboxDepthAllocations[i], bboxDepthMemories[i], bboxDepthImageViews[i]);
+        if (bboxDepthImages[i] != VK_NULL_HANDLE && app) {
+            app->transitionImageLayoutLayer(bboxDepthImages[i], VK_FORMAT_D32_SFLOAT,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(bboxDepthImages[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+            bboxDepthImageLayouts[i] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        }
+    }
+
+    std::cout << "[DebugCubeRenderer] Created offscreen render targets " << width << "x" << height << std::endl;
+}
+
+void DebugCubeRenderer::destroyRenderTargets(VulkanApp* app) {
+    (void)app;
+    for (uint32_t i = 0; i < BBOX_FRAMES; ++i) {
+        bboxColorImages[i] = VK_NULL_HANDLE;
+        bboxColorAllocations[i] = VK_NULL_HANDLE;
+        bboxColorMemories[i] = VK_NULL_HANDLE;
+        bboxColorImageViews[i] = VK_NULL_HANDLE;
+        bboxDepthImages[i] = VK_NULL_HANDLE;
+        bboxDepthAllocations[i] = VK_NULL_HANDLE;
+        bboxDepthMemories[i] = VK_NULL_HANDLE;
+        bboxDepthImageViews[i] = VK_NULL_HANDLE;
+    }
+}
+
+void DebugCubeRenderer::renderToOffscreen(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet, uint32_t frameIdx, bool enabled) {
+    if (pipeline == VK_NULL_HANDLE) return;
+
+    VkImageView colorView = getBboxColorView(frameIdx);
+    VkImageView depthView = getBboxDepthView(frameIdx);
+    if (colorView == VK_NULL_HANDLE || depthView == VK_NULL_HANDLE) return;
+
+    VkImage colorImg = getBboxColorImage(frameIdx);
+    VkImage depthImg = getBboxDepthImage(frameIdx);
+    VkImageLayout colorOld = getBboxColorLayout(frameIdx);
+    VkImageLayout depthOld = getBboxDepthLayout(frameIdx);
+    app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), colorOld, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
+    app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, depthOld, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+    setBboxColorLayout(frameIdx, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    setBboxDepthLayout(frameIdx, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+    const uint32_t w = static_cast<uint32_t>(app->getWidth());
+    const uint32_t h = static_cast<uint32_t>(app->getHeight());
+
+    VkClearValue bboxColorClear{}; bboxColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+    VkClearValue bboxDepthClear{}; bboxDepthClear.depthStencil = {1.0f, 0};
+
+    VkRenderingAttachmentInfo colorAtt{};
+    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAtt.imageView = colorView;
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.clearValue = bboxColorClear;
+    VkRenderingAttachmentInfo depthAtt{};
+    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAtt.imageView = depthView;
+    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAtt.clearValue = bboxDepthClear;
+
+    VkRenderingInfo ri{};
+    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    ri.renderArea.offset = {0, 0};
+    ri.renderArea.extent = {w, h};
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &colorAtt;
+    ri.pDepthAttachment = &depthAtt;
+    vkCmdBeginRendering(cmd, &ri);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f; viewport.y = 0.0f; viewport.width = static_cast<float>(w); viewport.height = static_cast<float>(h);
+    viewport.minDepth = 0.0f; viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.offset = {0, 0}; scissor.extent = {w, h};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    if (enabled && !activeCubes.empty() && cubeVBO.vertexBuffer.buffer != VK_NULL_HANDLE && cubeVBO.indexCount > 0) {
+        // Upload instance data (host write) then make it visible to the vertex shader.
+        updateInstanceBuffer(app);
+        VkBufferMemoryBarrier2 hostBarrier{};
+        hostBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        hostBarrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        hostBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+        hostBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+        hostBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        hostBarrier.buffer = instanceBuffer.buffer;
+        hostBarrier.offset = 0;
+        hostBarrier.size = VK_WHOLE_SIZE;
+
+        if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline);
+        else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+        VkDescriptorSet descriptorSets[] = { descriptorSet, gridDescriptorSet };
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 2, descriptorSets, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+            0, 2, descriptorSets, 0, nullptr);
+
+        const VkBuffer vertexBuffers[] = { cubeVBO.vertexBuffer.buffer };
+        const VkDeviceSize offsets[] = { 0 };
+        vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
+        vkCmdBindIndexBuffer(cmd, cubeVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+        // Indirect-count draw: only the bounding boxes that survived the GPU frustum
+        // cull (written into the terrain IR's bbox stream by indirect.comp, count in
+        // bboxCount) are drawn. maxDrawCount bounds the bbox command buffer capacity
+        // (MAX_BBOX_CUBES), not the instance buffer. When the IR stream is unavailable we
+        // fall back to drawing every box unculled so the debug overlay still works.
+        if (cmdDrawIndexedIndirectCount && terrainIR_ && cubeVBO.indexCount > 0) {
+            VkBuffer bboxCompact = terrainIR_->getBboxCompactBuffer(currentCullFrame);
+            VkBuffer bboxCount   = terrainIR_->getBboxCountBuffer(currentCullFrame);
+            if (bboxCompact != VK_NULL_HANDLE && bboxCount != VK_NULL_HANDLE) {
+                const uint32_t maxDrawCount = std::min(drawInstanceCount, terrainIR_->getMaxBboxCommands());
+
+                // Compute-shader writes (bbox command/count) -> indirect draw + vertex read.
+                VkBufferMemoryBarrier2 bb[2] = {};
+                auto setupBarrier = [&](VkBufferMemoryBarrier2& b, VkBuffer buf) {
+                    b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                    b.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                    b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+                    b.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+                    b.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+                    b.buffer = buf;
+                    b.offset = 0;
+                    b.size = VK_WHOLE_SIZE;
+                };
+                setupBarrier(bb[0], bboxCompact);
+                setupBarrier(bb[1], bboxCount);
+
+                std::array<VkBufferMemoryBarrier2, 3> allBarriers{};
+                allBarriers[0] = bb[0];
+                allBarriers[1] = bb[1];
+                allBarriers[2] = hostBarrier;
+                VkDependencyInfo dep{};
+                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.bufferMemoryBarrierCount = 3;
+                dep.pBufferMemoryBarriers = allBarriers.data();
+                vkCmdPipelineBarrier2(cmd, &dep);
+
+                cmdDrawIndexedIndirectCount(cmd, bboxCompact, 0, bboxCount, 0,
+                                            maxDrawCount, sizeof(VkDrawIndexedIndirectCommand));
+            } else {
+                // Fall back to unculled draw; still need the host barrier.
+                VkDependencyInfo dep{};
+                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.bufferMemoryBarrierCount = 1;
+                dep.pBufferMemoryBarriers = &hostBarrier;
+                vkCmdPipelineBarrier2(cmd, &dep);
+                vkCmdDrawIndexed(cmd, cubeVBO.indexCount, drawInstanceCount, 0, 0, 0);
+            }
+        } else {
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.bufferMemoryBarrierCount = 1;
+            dep.pBufferMemoryBarriers = &hostBarrier;
+            vkCmdPipelineBarrier2(cmd, &dep);
+            vkCmdDrawIndexed(cmd, cubeVBO.indexCount, drawInstanceCount, 0, 0, 0);
+        }
+    }
+
+    vkCmdEndRendering(cmd);
+    app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+    app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+    setBboxColorLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    setBboxDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
 void DebugCubeRenderer::cleanup(VulkanApp* app) {
