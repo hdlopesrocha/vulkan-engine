@@ -262,7 +262,7 @@ public:
         // If outSemaphore is non-null, the submission will signal that semaphore when finished (useful to make frame submit wait on generation).
         VkFence submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore = nullptr);
         // Submit a pre-recorded command buffer asynchronously to a specific queue (e.g., vegetation/geometry) and return a fence.
-        VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore = nullptr, const std::vector<VkSemaphore>& waitSemaphores = {}, bool registerSignal = true);
+        VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore = nullptr, const std::vector<VkSemaphore>& waitSemaphores = {}, bool registerSignal = true, const std::vector<VkSemaphore>& extraSignalSemaphores = {});
         // Submit a pre-recorded command buffer and block until it completes.
         void submitCommandBufferAndWait(VkCommandBuffer commandBuffer);
         // Wait for the graphics queue to become idle (vkQueueWaitIdle) while holding
@@ -501,6 +501,7 @@ public:
         }
         VmaAllocator getVmaAllocator() const { return vma.allocator; }
         VkQueue getGraphicsQueue() const { return graphicsQueue; }
+        VkQueue getVegetationQueue() const { return vegetationQueue; }
         VkQueue getPresentQueue() const { return presentQueue; }
         VkSwapchainKHR getSwapchain() const { return swapchain; }
         VkFormat getSwapchainImageFormat() const { return swapchainImageFormat; }

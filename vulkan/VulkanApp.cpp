@@ -1878,7 +1878,7 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
 }
 
 // Submit a pre-recorded command buffer asynchronously to a specific queue and return a fence that will be signaled on completion.
-VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore, const std::vector<VkSemaphore>& waitSemaphores, bool registerSignal) {
+VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore, const std::vector<VkSemaphore>& waitSemaphores, bool registerSignal, const std::vector<VkSemaphore>& extraSignalSemaphores) {
     // Throttle excessive outstanding submissions which can cause driver hangs
     // on some implementations when resources are exhausted.
     throttleIfTooManyPending();
@@ -1919,12 +1919,29 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             ? VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_RESOLVE_BIT)
             : VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
 
-    VkSemaphoreSubmitInfo signalSemaphoreInfo{};
-    signalSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-    signalSemaphoreInfo.semaphore = semaphore;
-    signalSemaphoreInfo.value = 0;
-    signalSemaphoreInfo.stageMask = signalStageMask;
-    signalSemaphoreInfo.deviceIndex = 0;
+    std::vector<VkSemaphoreSubmitInfo> signalSemaphoreInfos;
+    signalSemaphoreInfos.reserve((semaphore != VK_NULL_HANDLE ? 1u : 0u) + extraSignalSemaphores.size());
+    if (semaphore != VK_NULL_HANDLE) {
+        VkSemaphoreSubmitInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        info.semaphore = semaphore;
+        info.value = 0;
+        info.stageMask = signalStageMask;
+        info.deviceIndex = 0;
+        signalSemaphoreInfos.push_back(info);
+    }
+    for (VkSemaphore es : extraSignalSemaphores) {
+        if (es == VK_NULL_HANDLE) continue;
+        VkSemaphoreSubmitInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        info.semaphore = es;
+        info.value = 0;
+        info.stageMask = signalStageMask;
+        info.deviceIndex = 0;
+        signalSemaphoreInfos.push_back(info);
+        // Track for shutdown cleanup (matches how the primary signal semaphore is tracked).
+        resources.addSemaphore(es, "VulkanApp::submitCommandBufferAsyncToQueue: extraSignalSemaphore");
+    }
 
     std::vector<VkSemaphoreSubmitInfo> waitSemaphoreInfos;
     waitSemaphoreInfos.reserve(waitSemaphores.size());
@@ -1945,8 +1962,8 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
     submitInfo.pCommandBufferInfos = &cmdBufInfo;
         submitInfo.waitSemaphoreInfoCount = static_cast<uint32_t>(waitSemaphoreInfos.size());
         submitInfo.pWaitSemaphoreInfos = waitSemaphoreInfos.empty() ? nullptr : waitSemaphoreInfos.data();
-        submitInfo.signalSemaphoreInfoCount = (semaphore != VK_NULL_HANDLE) ? 1u : 0u;
-        submitInfo.pSignalSemaphoreInfos = (semaphore != VK_NULL_HANDLE) ? &signalSemaphoreInfo : nullptr;
+        submitInfo.signalSemaphoreInfoCount = static_cast<uint32_t>(signalSemaphoreInfos.size());
+        submitInfo.pSignalSemaphoreInfos = signalSemaphoreInfos.empty() ? nullptr : signalSemaphoreInfos.data();
 
         {
         // Serialize for submit and maintain consistent ordering.
