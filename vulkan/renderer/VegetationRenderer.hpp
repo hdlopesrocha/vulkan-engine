@@ -110,6 +110,24 @@ public:
     // Deferred depth test: draw vegetation + impostor color only (LESS_OR_EQUAL, no depth write)
     void drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos);
     void recordReadBarriers(VkCommandBuffer& commandBuffer);
+
+    // ── Own offscreen framebuffer (decoupled from the solid pass) ──
+    // Vegetation is rendered to its own color+depth images so it can be drawn on a
+    // parallel async command buffer (mirrors the water offscreen targets). The
+    // solid pass no longer shares its depth with vegetation; occlusion against
+    // solid geometry is resolved at composite time (postprocess.frag) by testing
+    // the vegetation depth against the solid scene depth.
+    static constexpr uint32_t VEG_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    void createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
+    void destroyRenderTargets(VulkanApp* app);
+    VkImageView getVegColorView(uint32_t frameIndex) const { return (frameIndex < VEG_FRAMES) ? vegColorImageViews[frameIndex] : VK_NULL_HANDLE; }
+    VkImageView getVegDepthView(uint32_t frameIndex) const { return (frameIndex < VEG_FRAMES) ? vegDepthImageViews[frameIndex] : VK_NULL_HANDLE; }
+    VkImage getVegColorImage(uint32_t frameIndex) const { return (frameIndex < VEG_FRAMES) ? vegColorImages[frameIndex] : VK_NULL_HANDLE; }
+    VkImage getVegDepthImage(uint32_t frameIndex) const { return (frameIndex < VEG_FRAMES) ? vegDepthImages[frameIndex] : VK_NULL_HANDLE; }
+    VkImageLayout getVegColorLayout(uint32_t frameIndex) const { return (frameIndex < VEG_FRAMES) ? vegColorImageLayouts[frameIndex] : VK_IMAGE_LAYOUT_UNDEFINED; }
+    void setVegColorLayout(uint32_t frameIndex, VkImageLayout lay) { if (frameIndex < VEG_FRAMES) vegColorImageLayouts[frameIndex] = lay; }
+    VkImageLayout getVegDepthLayout(uint32_t frameIndex) const { return (frameIndex < VEG_FRAMES) ? vegDepthImageLayouts[frameIndex] : VK_IMAGE_LAYOUT_UNDEFINED; }
+    void setVegDepthLayout(uint32_t frameIndex, VkImageLayout lay) { if (frameIndex < VEG_FRAMES) vegDepthImageLayouts[frameIndex] = lay; }
     
     // Draw vegetation to shadow map using light-space matrix in the bound UBO.
     // Camera position is used for distance-based LOD; viewProj is the camera's
@@ -361,6 +379,19 @@ private:
     // Frame-thread scratch reused by processPendingChunks for per-chunk
     // instance data (clear + reserve avoids reallocating per chunk).
     std::vector<float> instanceGenScratch;
+
+    // ── Own offscreen color + depth targets (decoupled from solid pass) ──
+    std::array<VkImage, VEG_FRAMES> vegColorImages = {};
+    std::array<VmaAllocation, VEG_FRAMES> vegColorAllocations = {};
+    std::array<VkDeviceMemory, VEG_FRAMES> vegColorMemories = {};
+    std::array<VkImageView, VEG_FRAMES> vegColorImageViews = {};
+    std::array<VkImageLayout, VEG_FRAMES> vegColorImageLayouts = {};
+    std::array<VkImage, VEG_FRAMES> vegDepthImages = {};
+    std::array<VmaAllocation, VEG_FRAMES> vegDepthAllocations = {};
+    std::array<VkDeviceMemory, VEG_FRAMES> vegDepthMemories = {};
+    std::array<VkImageView, VEG_FRAMES> vegDepthImageViews = {};
+    std::array<VkImageLayout, VEG_FRAMES> vegDepthImageLayouts = {};
+    uint32_t vegRenderWidth = 0, vegRenderHeight = 0;
 
     void destroyCulling();
     void issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);

@@ -291,6 +291,12 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     skyRenderer->createOffscreenTargets(app, app->getWidth(), app->getHeight());
     shadowMapper->init(app);
     vegetationRenderer->init(app);
+    // Own offscreen framebuffer for vegetation (decoupled from the solid pass so
+    // it can be rendered on a parallel async command buffer).
+    if (vegetationRenderer) {
+        vegetationRenderer->destroyRenderTargets(app);
+        vegetationRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    }
 
     // Initialize debug cube renderer
     if (debugCubeRenderer) {

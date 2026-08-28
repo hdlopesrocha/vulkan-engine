@@ -2,6 +2,7 @@
 #include "IndirectRenderer.hpp"
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
+#include "RendererUtils.hpp"
 
 #include <vulkan/vulkan.h>
 #include <cstdint>
@@ -2234,5 +2235,76 @@ void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geom
     } catch (const std::exception &e) {
         std::cerr << "[VegetationRenderer] Vegetation generation failed for node " << (unsigned long long)nid
                   << ": " << e.what() << std::endl;
+    }
+}
+
+// ── Own offscreen framebuffer (decoupled from the solid pass) ──────────────────
+// Vegetation is rendered to its own color+depth images so it can be drawn on a
+// parallel async command buffer. The solid pass no longer shares its depth with
+// vegetation; occlusion against solid geometry is resolved at composite time
+// (postprocess.frag) by testing the vegetation depth against the solid scene
+// depth — mirroring how the water pass was decoupled.
+void VegetationRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
+    if (vegRenderWidth == width && vegRenderHeight == height && vegColorImages[0] != VK_NULL_HANDLE) {
+        return; // Already created at this size
+    }
+
+    destroyRenderTargets(app);
+
+    vegRenderWidth = width;
+    vegRenderHeight = height;
+
+    VkDevice device = app->getDevice();
+
+    auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                           VkImage& image, VmaAllocation& allocation, VkDeviceMemory& memory, VkImageView& view) {
+        RendererUtils::createImage2DWithVma(device, app, width, height, format, usage, aspect,
+                                            "VegetationRenderer: offscreen", image, allocation, memory, view);
+    };
+
+    for (uint32_t i = 0; i < VEG_FRAMES; ++i) {
+        createImage(app->getSwapchainImageFormat(),
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    vegColorImages[i], vegColorAllocations[i], vegColorMemories[i], vegColorImageViews[i]);
+        // Transition directly to final layout (SHADER_READ_ONLY for post-process sampling)
+        if (vegColorImages[i] != VK_NULL_HANDLE && app) {
+            app->transitionImageLayoutLayer(vegColorImages[i], app->getSwapchainImageFormat(),
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(vegColorImages[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            vegColorImageLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+
+        createImage(VK_FORMAT_D32_SFLOAT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT,
+                    vegDepthImages[i], vegDepthAllocations[i], vegDepthMemories[i], vegDepthImageViews[i]);
+        // Created in DEPTH_STENCIL_ATTACHMENT_OPTIMAL (the veg task renders depth into it)
+        if (vegDepthImages[i] != VK_NULL_HANDLE && app) {
+            app->transitionImageLayoutLayer(vegDepthImages[i], VK_FORMAT_D32_SFLOAT,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(vegDepthImages[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+            vegDepthImageLayouts[i] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        }
+    }
+
+    std::cout << "[VegetationRenderer] Created offscreen render targets " << width << "x" << height << std::endl;
+}
+
+void VegetationRenderer::destroyRenderTargets(VulkanApp* app) {
+    // Clear per-frame image handles; actual Vulkan destruction is performed by
+    // the VulkanResourceManager (mirrors WaterRenderer::destroyRenderTargets).
+    (void)app;
+    for (uint32_t i = 0; i < VEG_FRAMES; ++i) {
+        vegColorImages[i] = VK_NULL_HANDLE;
+        vegColorAllocations[i] = VK_NULL_HANDLE;
+        vegColorMemories[i] = VK_NULL_HANDLE;
+        vegColorImageViews[i] = VK_NULL_HANDLE;
+        vegDepthImages[i] = VK_NULL_HANDLE;
+        vegDepthAllocations[i] = VK_NULL_HANDLE;
+        vegDepthMemories[i] = VK_NULL_HANDLE;
+        vegDepthImageViews[i] = VK_NULL_HANDLE;
+        vegColorImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        vegDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 }
