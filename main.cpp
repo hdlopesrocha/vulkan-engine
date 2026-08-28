@@ -27,6 +27,7 @@
 #include "vulkan/ubo/SkyUniform.hpp"
 #include "vulkan/VulkanApp.hpp"
 #include "vulkan/renderer/SceneRenderer.hpp"
+#include "vulkan/renderer/Solid360Renderer.hpp"
 #include "vulkan/renderer/RendererUtils.hpp"
 #include "utils/LocalScene.hpp"
 #include "widgets/SettingsWidget.hpp"
@@ -405,6 +406,27 @@ public:
     std::array<VkBuffer, 10> cube360ComputeBuffers = {};
     std::array<VkBuffer, 10> cube360WaterComputeBuffers = {};
     uint32_t cube360TexVersion = 0;
+
+    // Per-face resources for parallel cubemap rendering (one CB + queue per face).
+    // Each face owns its compact/visible indirect buffers (so the parallel raster
+    // passes never race with the serial cull of the next face) and its own gfx +
+    // compute descriptor sets (gfx binding 0 points at a distinct slot of the
+    // 6-slot cube360UBO; compute binding 1/3 point at the per-face buffers).
+    Buffer cube360FaceCompact[6]{};
+    Buffer cube360FaceVisible[6]{};
+    Buffer cube360FaceWaterCompact[6]{};
+    Buffer cube360FaceWaterVisible[6]{};
+    VkDescriptorSet cube360FaceGfxDs[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDescriptorSet cube360FaceSolidComputeDs[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDescriptorSet cube360FaceWaterComputeDs[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDescriptorPool cube360FaceGfxPool = VK_NULL_HANDLE;
+    VkDescriptorPool cube360FaceSolidComputePool = VK_NULL_HANDLE;
+    VkDescriptorPool cube360FaceWaterComputePool = VK_NULL_HANDLE;
+    // Per-frame binary semaphores (created once, reused every frame).
+    VkSemaphore cube360SemCullFace[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkSemaphore cube360SemFaceDone[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    Cube360FaceResources cube360FaceRes{};
+    uint32_t cube360FaceTexVersion = 0;
 
     ~MyApp() {}
 
@@ -1403,6 +1425,7 @@ public:
         VkSemaphore semCullSolid360 = VK_NULL_HANDLE;
         VkSemaphore semShadowSolid = VK_NULL_HANDLE;
         VkSemaphore semShadowWater = VK_NULL_HANDLE;
+        VkSemaphore semShadowSolid360 = VK_NULL_HANDLE;
         std::future<void> asyncCullFuture, asyncSolid360Future, asyncBackFaceFuture;
         std::future<void> asyncShadowFuture, asyncVegFuture, asyncSdfFuture, asyncBboxFuture;
         std::future<void> asyncSolidFuture;
@@ -1426,6 +1449,7 @@ public:
         mkSem(semCullSolid360, "MyApp::cullSolid360SignalSemaphore");
         mkSem(semShadowSolid, "MyApp::shadowSolidSignalSemaphore");
         mkSem(semShadowWater, "MyApp::shadowWaterSignalSemaphore");
+        mkSem(semShadowSolid360, "MyApp::shadowSolid360SignalSemaphore");
 
         // --- Cull + early brush pass on its own command buffer (signals semMainCull) ---
         if (sceneRenderer) {
@@ -1507,7 +1531,7 @@ public:
             const float shLodBias = settings.lodBias;
             const float shMaxTargetLod = settings.maxTargetLod;
             const glm::vec3 shCamPos = camera.getPosition();
-            asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, &semShadow, &semCullShadow, &semShadowVeg, &semShadowSolid, &semShadowWater]() {
+            asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, &semShadow, &semCullShadow, &semShadowVeg, &semShadowSolid, &semShadowWater, &semShadowSolid360]() {
                 VulkanApp* app = this;
                 VkCommandBuffer shCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1539,7 +1563,7 @@ public:
                 // cull task's GPU-written buffers are visible before the shadow pass
                 // reads them. Signal semShadowVeg for the veg task (separate binary
                 // semaphore — semShadow itself is consumed by the main CB).
-                app->submitCommandBufferAsyncToQueue(shCmd, app->getGraphicsQueue(), &semShadow, {semCullShadow}, true, {semShadowVeg, semShadowSolid, semShadowWater});
+                app->submitCommandBufferAsyncToQueue(shCmd, app->getGraphicsQueue(), &semShadow, {semCullShadow}, true, {semShadowVeg, semShadowSolid, semShadowWater, semShadowSolid360});
             });
         }
 
@@ -1806,43 +1830,36 @@ public:
             const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
             const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
             if (renderCubemap) {
-                asyncSolid360Future = asyncThreadPool.enqueue([this, frameIdx, &semCullSolid360, &semSolidCube, &semSolid360, waterEnabled]() {
-                    VulkanApp* app = this;
-                    VkCommandBuffer cubeCmd = app->allocatePrimaryCommandBuffer();
-                    VkCommandBufferBeginInfo cbegin{};
-                    cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                    cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                    if (vkBeginCommandBuffer(cubeCmd, &cbegin) != VK_SUCCESS) {
-                        std::cerr << "[Async] vkBeginCommandBuffer failed for solid360" << std::endl;
-                        app->freeCommandBuffer(cubeCmd);
-                        return;
-                    }
+                asyncSolid360Future = asyncThreadPool.enqueue([this, frameIdx, &semCullSolid360, &semShadowSolid360, &semSolid360, waterEnabled]() {
                     this->ensureCubemapResources();
                     CommandBufferState taskState;
                     this->sceneRenderer->setCmdState(&taskState);
                     UniformObject ubo360 = uboStatic;
                     ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
+                    // render() allocates its own command buffers and submits them:
+                    //  - 6 serial cull CBs (one per face, each signaling a per-face
+                    //    semaphore) on the graphics queue;
+                    //  - 6 parallel raster CBs (one per face) on distinct graphics-family
+                    //    queues (getCubeQueue), each waiting its cull semaphore + semSolidCube
+                    //    and signaling a per-face "done" semaphore;
+                    //  - a join CB that waits all 6 "done" semaphores and signals
+                    //    semSolid360 for the downstream async water pass.
+                    // semSolid360 is signalled via extraSignalSemaphores (not registered
+                    // into m_extraWaitSemaphores) because the main CB does not sample the
+                    // cube — only the async water pass waits on it explicitly.
                     this->sceneRenderer->solid360Renderer->render(
-                        this, cubeCmd,
+                        this,
                         this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
                         this->sceneRenderer->mainSolidRenderer.get(),
-                        cube360GfxDs,
                         this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx),
-                        cube360UBO, ubo360,
+                        cube360UBO.buffer,
+                        this->cube360FaceRes,
+                        ubo360,
                         settings.renderSolid, waterEnabled,
-                        cube360ComputeDs,
-                        cube360Compact.buffer, cube360Visible.buffer,
-                        cube360WaterComputeDs, cube360WaterCompact.buffer, cube360WaterVisible.buffer,
+                        semCullSolid360, semShadowSolid360,
+                        cube360SemCullFace, cube360SemFaceDone,
+                        semSolid360,
                         frameIdx);
-                    // Do NOT register semSolid360 in m_extraWaitSemaphores: the main CB
-                    // does not sample the cube (only the async water pass does, which
-                    // waits on it explicitly), so registering would needlessly serialize
-                    // the main CB behind the solid360 render.
-                    // The solid360 cubemap samples the solid scene color/depth (now on
-                    // its own queue) and the cull results, so it waits on the dedicated
-                    // binary semaphores semCullSolid360 and semSolid (each waited by
-                    // exactly one command buffer — no multi-waiter hazard).
-                    app->submitCommandBufferAsyncToQueue(cubeCmd, app->getGraphicsQueue(), &semSolid360, {semCullSolid360, semSolidCube}, false);
                 });
                 asyncSolid360Future.get();
                 this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
@@ -3557,22 +3574,10 @@ void MyApp::loadSceneFromFile(const std::string& path) {
 void MyApp::ensureCubemapResources() {
     VkDevice dev = getDevice();
 
-    // Always write dummy cubemap to cube360GfxDs binding #11,
-    // even if the DS was already allocated (e.g. before this fix was compiled).
-    if (cube360GfxDs != VK_NULL_HANDLE && sceneRenderer && sceneRenderer->solid360Renderer) {
-        VkImageView dummyView = sceneRenderer->solid360Renderer->getDummyCubeView();
-        VkSampler cubeSamp = sceneRenderer->solid360Renderer->getSolid360Sampler();
-        if (dummyView != VK_NULL_HANDLE && cubeSamp != VK_NULL_HANDLE) {
-            DescriptorWriter(dev)
-                .writeImage(cube360GfxDs, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            cubeSamp, dummyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-                .flush();
-        }
-    }
-
-    // 1. UBO buffer
+    // 1. UBO buffer — 6 slots, one per cubemap face (faces are now rasterized on
+    //    separate command buffers/queues, so each face needs its own UBO slot).
     if (cube360UBO.buffer == VK_NULL_HANDLE) {
-        cube360UBO = createBuffer(sizeof(UniformObject),
+        cube360UBO = createBuffer(sizeof(UniformObject) * 6,
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
@@ -3857,8 +3862,219 @@ void MyApp::ensureCubemapResources() {
                     .writeBuffer(cube360WaterComputeDs, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                  bufs[8], 0, VK_WHOLE_SIZE)
                     .writeBuffer(cube360WaterComputeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                 bufs[9], 0, VK_WHOLE_SIZE)
-                    .flush();
+                                  bufs[9], 0, VK_WHOLE_SIZE)
+                     .flush();
+            }
+        }
+    }
+
+    // 7. Per-face parallel resources: each face gets its own compact/visible indirect
+    //    buffers and its own gfx + compute descriptor sets, so the 6 face
+    //    rasterizations can run concurrently on different queues without sharing any
+    //    writable resource. The 6 culls stay serial (they share a scratch buffer) but
+    //    each writes its OWN per-face compact/visible, so a raster reading face f's
+    //    buffers never races with the (serial) cull of face f+1.
+    {
+        VkBufferUsageFlags sUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VkBufferUsageFlags vUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+
+        // 7a. Per-face indirect buffers (reallocate if mesh counts grew)
+        for (uint32_t f = 0; f < 6; ++f) {
+            ensureBufferSize(cube360FaceCompact[f], compactSize, sUsage, "cube360FaceCompact");
+            ensureBufferSize(cube360FaceVisible[f], std::max(sizeof(uint32_t), VkDeviceSize(4)), vUsage, "cube360FaceVisible");
+            ensureBufferSize(cube360FaceWaterCompact[f], waterCompactSize, sUsage, "cube360FaceWaterCompact");
+            ensureBufferSize(cube360FaceWaterVisible[f], std::max(sizeof(uint32_t), VkDeviceSize(4)), vUsage, "cube360FaceWaterVisible");
+        }
+
+        // 7b. Per-face solid compute DS — allocate + copy from cube360ComputeDs (so
+        //     the shared bindings 0/2/4/5-9 carry over), then repoint binding 1
+        //     (compact out) and binding 3 (visible out) at the per-face buffers.
+        if (cube360FaceSolidComputeDs[0] == VK_NULL_HANDLE && cube360ComputeDs != VK_NULL_HANDLE) {
+            VkDescriptorSetLayout sLayout = solidInd.getComputeDescriptorSetLayout();
+            if (sLayout != VK_NULL_HANDLE) {
+                VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128 };
+                VkDescriptorPoolCreateInfo pci{};
+                pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 6;
+                pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+                if (vkCreateDescriptorPool(dev, &pci, nullptr, &cube360FaceSolidComputePool) == VK_SUCCESS) {
+                    resources.addDescriptorPool(cube360FaceSolidComputePool, "cubemap face solid compute pool");
+                    std::array<VkDescriptorSetLayout, 6> sl; sl.fill(sLayout);
+                    VkDescriptorSetAllocateInfo ai{};
+                    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    ai.descriptorPool = cube360FaceSolidComputePool; ai.descriptorSetCount = 6; ai.pSetLayouts = sl.data();
+                    if (vkAllocateDescriptorSets(dev, &ai, cube360FaceSolidComputeDs) == VK_SUCCESS) {
+                        for (uint32_t f = 0; f < 6; ++f) {
+                            resources.addDescriptorSet(cube360FaceSolidComputeDs[f], "cubemap face solid compute DS");
+                            // Copy each binding individually (one descriptor) so we never
+                            // overstep a binding's bounds across the contiguous range.
+                            for (uint32_t b = 0; b <= 9; ++b) {
+                                VkCopyDescriptorSet c{};
+                                c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+                                c.srcSet = cube360ComputeDs; c.dstSet = cube360FaceSolidComputeDs[f];
+                                c.srcBinding = b; c.dstBinding = b; c.descriptorCount = 1;
+                                vkUpdateDescriptorSets(dev, 0, nullptr, 1, &c);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Re-point per-face compact/visible bindings (also heals buffer reallocs)
+        for (uint32_t f = 0; f < 6; ++f) {
+            if (cube360FaceSolidComputeDs[f] == VK_NULL_HANDLE) continue;
+            DescriptorWriter(dev)
+                .writeBuffer(cube360FaceSolidComputeDs[f], 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             cube360FaceCompact[f].buffer, 0, VK_WHOLE_SIZE)
+                .writeBuffer(cube360FaceSolidComputeDs[f], 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             cube360FaceVisible[f].buffer, 0, VK_WHOLE_SIZE)
+                .flush();
+        }
+
+        // 7c. Per-face water compute DS — same approach as 7b.
+        if (cube360FaceWaterComputeDs[0] == VK_NULL_HANDLE && cube360WaterComputeDs != VK_NULL_HANDLE) {
+            VkDescriptorSetLayout wLayout = waterInd.getComputeDescriptorSetLayout();
+            if (wLayout != VK_NULL_HANDLE) {
+                VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128 };
+                VkDescriptorPoolCreateInfo pci{};
+                pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 6;
+                pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+                if (vkCreateDescriptorPool(dev, &pci, nullptr, &cube360FaceWaterComputePool) == VK_SUCCESS) {
+                    resources.addDescriptorPool(cube360FaceWaterComputePool, "cubemap face water compute pool");
+                    std::array<VkDescriptorSetLayout, 6> wl; wl.fill(wLayout);
+                    VkDescriptorSetAllocateInfo ai{};
+                    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    ai.descriptorPool = cube360FaceWaterComputePool; ai.descriptorSetCount = 6; ai.pSetLayouts = wl.data();
+                    if (vkAllocateDescriptorSets(dev, &ai, cube360FaceWaterComputeDs) == VK_SUCCESS) {
+                        for (uint32_t f = 0; f < 6; ++f) {
+                            resources.addDescriptorSet(cube360FaceWaterComputeDs[f], "cubemap face water compute DS");
+                            for (uint32_t b = 0; b <= 9; ++b) {
+                                VkCopyDescriptorSet c{};
+                                c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+                                c.srcSet = cube360WaterComputeDs; c.dstSet = cube360FaceWaterComputeDs[f];
+                                c.srcBinding = b; c.dstBinding = b; c.descriptorCount = 1;
+                                vkUpdateDescriptorSets(dev, 0, nullptr, 1, &c);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (uint32_t f = 0; f < 6; ++f) {
+            if (cube360FaceWaterComputeDs[f] == VK_NULL_HANDLE) continue;
+            DescriptorWriter(dev)
+                .writeBuffer(cube360FaceWaterComputeDs[f], 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             cube360FaceWaterCompact[f].buffer, 0, VK_WHOLE_SIZE)
+                .writeBuffer(cube360FaceWaterComputeDs[f], 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             cube360FaceWaterVisible[f].buffer, 0, VK_WHOLE_SIZE)
+                .flush();
+        }
+
+        // 7d. Per-face gfx DS — allocate + copy from cube360GfxDs, then override
+        //     binding 0 to point at this face's slot of the 6-slot cube360UBO. The
+        //     other (texture/sampler/UBO) bindings are copied verbatim; when the
+        //     texture version changes we re-copy so the face DS stays in sync.
+        if (cube360FaceGfxDs[0] == VK_NULL_HANDLE && cube360GfxDs != VK_NULL_HANDLE) {
+            VkDescriptorSetLayout gfxLayout = getDescriptorSetLayout();
+            // 6 sets: per set ≈ 3 UBO + 9 combined-image-sampler + 2 storage buffers.
+            VkDescriptorPoolSize gps{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 24 };
+            VkDescriptorPoolSize gps2{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 60 };
+            VkDescriptorPoolSize gps3{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16 };
+            VkDescriptorPoolSize gpools[] = { gps, gps2, gps3 };
+            VkDescriptorPoolCreateInfo gpi{};
+            gpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            gpi.poolSizeCount = 3; gpi.pPoolSizes = gpools; gpi.maxSets = 6;
+            gpi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+                if (vkCreateDescriptorPool(dev, &gpi, nullptr, &cube360FaceGfxPool) == VK_SUCCESS) {
+                    resources.addDescriptorPool(cube360FaceGfxPool, "cubemap face gfx pool");
+                    std::array<VkDescriptorSetLayout, 6> gl; gl.fill(gfxLayout);
+                    VkDescriptorSetAllocateInfo ai{};
+                    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    ai.descriptorPool = cube360FaceGfxPool; ai.descriptorSetCount = 6; ai.pSetLayouts = gl.data();
+                if (vkAllocateDescriptorSets(dev, &ai, cube360FaceGfxDs) == VK_SUCCESS) {
+                    for (uint32_t f = 0; f < 6; ++f)
+                        resources.addDescriptorSet(cube360FaceGfxDs[f], "cubemap face gfx DS");
+                    cube360FaceTexVersion = 0;
+                }
+            }
+        }
+        if (cube360FaceGfxDs[0] != VK_NULL_HANDLE && cube360GfxDs != VK_NULL_HANDLE) {
+                if (cube360FaceTexVersion != cube360TexVersion) {
+                for (uint32_t f = 0; f < 6; ++f) {
+                    // Copy each binding individually (one descriptor) to avoid
+                    // overstepping a binding's bounds across the contiguous range.
+                    for (uint32_t b = 0; b <= 13; ++b) {
+                        VkCopyDescriptorSet c{};
+                        c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+                        c.srcSet = cube360GfxDs; c.dstSet = cube360FaceGfxDs[f];
+                        c.srcBinding = b; c.dstBinding = b; c.descriptorCount = 1;
+                        vkUpdateDescriptorSets(dev, 0, nullptr, 1, &c);
+                    }
+                    // The copy above pulls binding 0 from the template (slot 0); the
+                    // per-face set must instead point at this face's own UBO slot.
+                    // Rewriting only on a version change keeps us from touching an
+                    // in-flight descriptor set every frame (VUID-03047).
+                    DescriptorWriter(dev)
+                        .writeBuffer(cube360FaceGfxDs[f], 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                     cube360UBO.buffer, f * sizeof(UniformObject), sizeof(UniformObject))
+                        .flush();
+                }
+                cube360FaceTexVersion = cube360TexVersion;
+            }
+        }
+
+        // 7f. Per-frame binary semaphores (created once, reused every frame).
+        //     semCullFace[f] is signaled by face f's cull CB and waited by its
+        //     raster CB; semFaceDone[f] is signaled by the raster CB and waited by
+        //     the join CB (which then signals semSolid360 for the water pass).
+        auto createSem = [&](VkSemaphore& s, const char* name) {
+            if (s != VK_NULL_HANDLE) return;
+            VkSemaphoreCreateInfo si{};
+            si.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            if (vkCreateSemaphore(dev, &si, nullptr, &s) == VK_SUCCESS)
+                resources.addSemaphore(s, name);
+        };
+        for (uint32_t f = 0; f < 6; ++f) {
+            createSem(cube360SemCullFace[f], "cubemap sem cull face");
+            createSem(cube360SemFaceDone[f], "cubemap sem face done");
+        }
+
+        // 7e. Pack into cube360FaceRes for the renderer.
+        for (uint32_t f = 0; f < 6; ++f) {
+            cube360FaceRes.gfxDs[f] = cube360FaceGfxDs[f];
+            cube360FaceRes.solidComputeDs[f] = cube360FaceSolidComputeDs[f];
+            cube360FaceRes.waterComputeDs[f] = cube360FaceWaterComputeDs[f];
+            cube360FaceRes.compact[f] = cube360FaceCompact[f].buffer;
+            cube360FaceRes.visible[f] = cube360FaceVisible[f].buffer;
+            cube360FaceRes.waterCompact[f] = cube360FaceWaterCompact[f].buffer;
+            cube360FaceRes.waterVisible[f] = cube360FaceWaterVisible[f].buffer;
+        }
+
+        // 7h. Fallback brush-depth DS for the solid pipeline's set 1 (brushDepthDescriptorSetLayout).
+        // The caller may pass a null brush depth DS; bind this dedicated DS so set 1 always
+        // carries the brush-depth layout (2 descriptors) and stays compatible with the solid
+        // pipeline layout. Write the brush front/back depth views if available; otherwise the
+        // DS is allocated with the correct layout (matching main-render behaviour when no brush
+        // is active) so binding it is validation-clean for the layout check.
+        if (cube360FaceRes.brushDepthDs == VK_NULL_HANDLE) {
+            VkDescriptorSetLayout bdl = getBrushDepthDescriptorSetLayout();
+            if (bdl != VK_NULL_HANDLE) {
+                VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 };
+                VkDescriptorPoolCreateInfo pci{};
+                pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
+                pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+                VkDescriptorPool pool = VK_NULL_HANDLE;
+                if (vkCreateDescriptorPool(dev, &pci, nullptr, &pool) == VK_SUCCESS) {
+                    resources.addDescriptorPool(pool, "cubemap brush depth pool");
+                    VkDescriptorSetAllocateInfo ai{};
+                    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    ai.descriptorPool = pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &bdl;
+                    if (vkAllocateDescriptorSets(dev, &ai, &cube360FaceRes.brushDepthDs) == VK_SUCCESS) {
+                        resources.addDescriptorSet(cube360FaceRes.brushDepthDs, "cubemap brush depth DS");
+                    }
+                }
             }
         }
     }
