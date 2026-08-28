@@ -1878,7 +1878,7 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
 }
 
 // Submit a pre-recorded command buffer asynchronously to a specific queue and return a fence that will be signaled on completion.
-VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore) {
+VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore, const std::vector<VkSemaphore>& waitSemaphores, bool registerSignal) {
     // Throttle excessive outstanding submissions which can cause driver hangs
     // on some implementations when resources are exhausted.
     throttleIfTooManyPending();
@@ -1926,14 +1926,29 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
     signalSemaphoreInfo.stageMask = signalStageMask;
     signalSemaphoreInfo.deviceIndex = 0;
 
+    std::vector<VkSemaphoreSubmitInfo> waitSemaphoreInfos;
+    waitSemaphoreInfos.reserve(waitSemaphores.size());
+    for (VkSemaphore ws : waitSemaphores) {
+        if (ws == VK_NULL_HANDLE) continue;
+        VkSemaphoreSubmitInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        info.semaphore = ws;
+        info.value = 0;
+        info.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+        info.deviceIndex = 0;
+        waitSemaphoreInfos.push_back(info);
+    }
+
     VkSubmitInfo2 submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
     submitInfo.commandBufferInfoCount = 1;
     submitInfo.pCommandBufferInfos = &cmdBufInfo;
-    submitInfo.signalSemaphoreInfoCount = (semaphore != VK_NULL_HANDLE) ? 1u : 0u;
-    submitInfo.pSignalSemaphoreInfos = (semaphore != VK_NULL_HANDLE) ? &signalSemaphoreInfo : nullptr;
+        submitInfo.waitSemaphoreInfoCount = static_cast<uint32_t>(waitSemaphoreInfos.size());
+        submitInfo.pWaitSemaphoreInfos = waitSemaphoreInfos.empty() ? nullptr : waitSemaphoreInfos.data();
+        submitInfo.signalSemaphoreInfoCount = (semaphore != VK_NULL_HANDLE) ? 1u : 0u;
+        submitInfo.pSignalSemaphoreInfos = (semaphore != VK_NULL_HANDLE) ? &signalSemaphoreInfo : nullptr;
 
-    {
+        {
         // Serialize for submit and maintain consistent ordering.
         // Select per-queue mutex to avoid serializing transfer/graphics/compute.
         // IMPORTANT: geometryQueue may alias graphicsQueue (same handle when only
@@ -2040,16 +2055,21 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
 
     if (semaphore != VK_NULL_HANDLE && outSemaphore) {
         *outSemaphore = semaphore;
-
-        std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
-        VkPipelineStageFlags2 waitStage = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
-            | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
-            | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT
-            | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT
-            | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT
-            | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
-            | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        m_extraWaitSemaphores.emplace_back(semaphore, waitStage);
+        // register the semaphore so drawFrame will wait on it and later clean it up.
+        // For passes the main command buffer does not directly consume (e.g. the
+        // solid360 cubemap, which only the async water pass samples), callers pass
+        // registerSignal=false to avoid needlessly serializing the main CB.
+        if (registerSignal) {
+            std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
+            VkPipelineStageFlags2 waitStage = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
+                | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+                | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT
+                | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT
+                | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT
+                | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+                | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            m_extraWaitSemaphores.emplace_back(semaphore, waitStage);
+        }
     }
 
     return fence;
