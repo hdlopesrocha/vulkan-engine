@@ -46,8 +46,8 @@ void PostProcessRenderer::createSampler(VulkanApp* app) {
 void PostProcessRenderer::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    // Descriptor set layout – 11 bindings (10 image samplers + 1 UBO)
-    std::array<VkDescriptorSetLayoutBinding, 11> bindings{};
+    // Descriptor set layout – 15 bindings (14 image samplers + 1 UBO)
+    std::array<VkDescriptorSetLayoutBinding, 15> bindings{};
 
     for (int i = 0; i < 6; ++i) {
         bindings[i].binding = i;
@@ -86,6 +86,28 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[10].descriptorCount = 1;
     bindings[10].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // SDF debug cubes offscreen color + depth (decoupled from the solid pass)
+    bindings[11].binding = 11;
+    bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[11].descriptorCount = 1;
+    bindings[11].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[12].binding = 12;
+    bindings[12].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[12].descriptorCount = 1;
+    bindings[12].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Mesh bounding boxes offscreen color + depth (decoupled from the solid pass)
+    bindings[13].binding = 13;
+    bindings[13].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[13].descriptorCount = 1;
+    bindings[13].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[14].binding = 14;
+    bindings[14].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[14].descriptorCount = 1;
+    bindings[14].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     DescriptorAllocator descAlloc{device, app};
     descriptorSetLayout = descAlloc.createLayout(
@@ -132,7 +154,7 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
     VkDescriptorPoolSize poolSizesDesc[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10 * FRAMES_IN_FLIGHT},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14 * FRAMES_IN_FLIGHT},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * FRAMES_IN_FLIGHT}
     };
     descriptorPool = descAlloc.createPool(
@@ -154,6 +176,8 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                    VkImageView brushBackFaceDepthView,
                                    VkImageView waterGeomDepthView,
                                    VkImageView vegColorView, VkImageView vegDepthView,
+                                   VkImageView sdfColorView, VkImageView sdfDepthView,
+                                   VkImageView bboxColorView, VkImageView bboxDepthView,
                                    float brushAlpha, float brushMode,
                                    const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                    const glm::vec3& viewPos,
@@ -184,7 +208,29 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     uniformBuffer.unmap(); // VMA persistent mapping
 
     // Prepare image infos and only write descriptors for valid image views
-    std::array<VkDescriptorImageInfo, 11> imageInfos{};
+    std::array<VkDescriptorImageInfo, 15> imageInfos{};
+    {
+        static bool diagPrinted = false;
+        if (!diagPrinted) {
+            diagPrinted = true;
+            std::cerr << "[PostProcess DIAG] views: "
+                << "0=" << (void*)sceneColorView
+                << " 1=" << (void*)sceneDepthView
+                << " 2=" << (void*)waterColorView
+                << " 3=" << (void*)brushColorView
+                << " 4=" << (void*)brushDepthView
+                << " 7=" << (void*)waterGeomDepthView
+                << " 8=" << (void*)brushBackFaceDepthView
+                << " 9=" << (void*)vegColorView
+                << " 10=" << (void*)vegDepthView
+                << " 11=" << (void*)sdfColorView
+                << " 12=" << (void*)sdfDepthView
+                << " 13=" << (void*)bboxColorView
+                << " 14=" << (void*)bboxDepthView
+                << " sampler=" << (void*)linearSampler
+                << std::endl;
+        }
+    }
     imageInfos[0] = {linearSampler, sceneColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[1] = {linearSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[2] = {linearSampler, waterColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -198,6 +244,12 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // Vegetation offscreen color + depth (decoupled from the solid pass)
     imageInfos[9] = {linearSampler, vegColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[10] = {linearSampler, vegDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // SDF debug cubes offscreen color + depth
+    imageInfos[11] = {linearSampler, sdfColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    imageInfos[12] = {linearSampler, sdfDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Mesh bounding boxes offscreen color + depth
+    imageInfos[13] = {linearSampler, bboxColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    imageInfos[14] = {linearSampler, bboxDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
 
@@ -223,7 +275,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // descriptor behind. `valid` starts false, so the first frame always
     // writes.
     FrameDescriptorSignature sig;
-    for (int i = 0; i < 11; ++i) {
+    for (int i = 0; i < 15; ++i) {
         if (i == 5) continue; // binding 5 is the UBO, stored separately below
         sig.samplers[i] = imageInfos[i].sampler;
         sig.views[i] = imageInfos[i].imageView;
@@ -289,6 +341,28 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
             writer.writeImage(currentDs, 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                               imageInfos[10].sampler, imageInfos[10].imageView,
                               imageInfos[10].imageLayout);
+        }
+        // SDF debug cubes offscreen color (binding 11) + depth (binding 12)
+        if (imageInfos[11].imageView != VK_NULL_HANDLE && imageInfos[11].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[11].sampler, imageInfos[11].imageView,
+                              imageInfos[11].imageLayout);
+        }
+        if (imageInfos[12].imageView != VK_NULL_HANDLE && imageInfos[12].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[12].sampler, imageInfos[12].imageView,
+                              imageInfos[12].imageLayout);
+        }
+        // Mesh bounding boxes offscreen color (binding 13) + depth (binding 14)
+        if (imageInfos[13].imageView != VK_NULL_HANDLE && imageInfos[13].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[13].sampler, imageInfos[13].imageView,
+                              imageInfos[13].imageLayout);
+        }
+        if (imageInfos[14].imageView != VK_NULL_HANDLE && imageInfos[14].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[14].sampler, imageInfos[14].imageView,
+                              imageInfos[14].imageLayout);
         }
 
         writer.flush();

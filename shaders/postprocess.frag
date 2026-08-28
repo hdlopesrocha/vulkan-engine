@@ -31,6 +31,12 @@ layout(set = 0, binding = 8) uniform sampler2D brushBackFaceDepthTex;
 // is resolved here by testing vegetation depth against the solid scene depth.
 layout(set = 0, binding = 9) uniform sampler2D vegColorTex;
 layout(set = 0, binding = 10) uniform sampler2D vegDepthTex;
+// SDF debug cubes offscreen color + depth (own async command buffer / queue).
+layout(set = 0, binding = 11) uniform sampler2D sdfColorTex;
+layout(set = 0, binding = 12) uniform sampler2D sdfDepthTex;
+// Mesh bounding boxes offscreen color + depth (own async command buffer / queue).
+layout(set = 0, binding = 13) uniform sampler2D bboxColorTex;
+layout(set = 0, binding = 14) uniform sampler2D bboxDepthTex;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -106,6 +112,25 @@ void main() {
             if (brushDepth < obstacleDepth) {
                 finalColor = mix(finalColor, brushColor.rgb, ubo.brushAlpha);
             }
+        }
+    }
+
+    // 5. Debug overlays (SDF cubes + mesh bounding boxes) — composited after the
+    // brush so they sit on top, but still occluded by solid + vegetation geometry.
+    // Both render to their own offscreen depth; we hide a debug fragment that is
+    // behind the current obstacle (solid or vegetation) surface.
+    float sdfDepth = texture(sdfDepthTex, uv).r;
+    if (sdfDepth < 1.0 && !(obstacleDepth < sdfDepth)) {
+        vec4 sdfColor = texture(sdfColorTex, uv);
+        if (sdfColor.a > 0.0) {
+            finalColor = mix(finalColor, sdfColor.rgb, sdfColor.a);
+        }
+    }
+    float bboxDepth = texture(bboxDepthTex, uv).r;
+    if (bboxDepth < 1.0 && !(obstacleDepth < bboxDepth)) {
+        vec4 bboxColor = texture(bboxColorTex, uv);
+        if (bboxColor.a > 0.0) {
+            finalColor = mix(finalColor, bboxColor.rgb, bboxColor.a);
         }
     }
 
