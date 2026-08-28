@@ -2025,6 +2025,8 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
                                 (targetQueue == sdfQueue && sdfQueue != graphicsQueue) ? sdfSubmitMutex :
                                 (targetQueue == bboxQueue && bboxQueue != graphicsQueue) ? bboxSubmitMutex :
                                 (targetQueue == geometryQueue && geometryQueue != graphicsQueue) ? geometrySubmitMutex :
+                                (targetQueue == solidQueue && solidQueue != graphicsQueue) ? solidSubmitMutex :
+                                (targetQueue == waterQueue && waterQueue != graphicsQueue) ? waterSubmitMutex :
                                 graphicsSubmitMutex;
         std::lock_guard<std::mutex> lock(submitMtx);
 
@@ -5555,10 +5557,13 @@ void VulkanApp::createLogicalDevice() {
         VkDeviceQueueCreateInfo queueCreateInfo{};
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queueCreateInfo.queueFamilyIndex = queueFamily;
-        // determine desired queue count: try to allocate up to 4 from graphics family
-        // (graphics + vegetation + sdf + bbox debug passes; see queue-acquire below).
+        // determine desired queue count: try to allocate up to 7 from graphics family
+        // (graphics + vegetation + sdf + bbox + geometry + solid + water passes; see
+        // the queue-acquire block below). Clamped to the family's reported queueCount,
+        // so on HW that exposes fewer (e.g. integrated GPUs) the extra handles alias
+        // the main graphics queue and the passes still run (no HW parallelism).
         uint32_t want = 1;
-        if (queueFamily == indices.graphicsFamily.value()) want = 4; // graphics + vegetation + sdf + bbox
+        if (queueFamily == indices.graphicsFamily.value()) want = 7; // graphics + vegetation + sdf + bbox + geometry + solid + water
         uint32_t available = 1;
         if (queueFamily < familyProps.size()) available = familyProps[queueFamily].queueCount;
         uint32_t take = std::min(available, want);
@@ -5776,6 +5781,8 @@ void VulkanApp::createLogicalDevice() {
     if (gfxRequested > 2) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 2, &sdfQueue); else sdfQueue = graphicsQueue;
     if (gfxRequested > 3) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 3, &bboxQueue); else bboxQueue = graphicsQueue;
     if (gfxRequested > 4) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 4, &geometryQueue); else geometryQueue = graphicsQueue;
+    if (gfxRequested > 5) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 5, &solidQueue); else solidQueue = graphicsQueue;
+    if (gfxRequested > 6) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 6, &waterQueue); else waterQueue = graphicsQueue;
     if (indices.presentFamily.value() == indices.graphicsFamily.value()) {
         // present uses the same family; reuse the main graphics queue
         presentQueue = graphicsQueue;
@@ -5801,6 +5808,8 @@ void VulkanApp::createLogicalDevice() {
               << " presentQueue handle: " << presentQueue
               << " transferQueue handle: " << transferQueue
               << " dedicatedTransfer=" << (transferQueue != graphicsQueue ? "yes" : "no")
+              << " solidQueue=" << (solidQueue != graphicsQueue ? "dedicated" : "aliased")
+              << " waterQueue=" << (waterQueue != graphicsQueue ? "dedicated" : "aliased")
               << "\n";
 
 }

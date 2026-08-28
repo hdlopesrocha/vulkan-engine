@@ -79,6 +79,11 @@ class VulkanApp {
     VkQueue sdfQueue = VK_NULL_HANDLE;
     VkQueue bboxQueue = VK_NULL_HANDLE;
     VkQueue geometryQueue = VK_NULL_HANDLE;
+    // Dedicated queues for the Solid and Water scene passes. Acquired from the
+    // graphics family when available (indices 5 and 6); otherwise they alias the
+    // main graphics queue so the passes still run (degraded, no HW parallelism).
+    VkQueue solidQueue = VK_NULL_HANDLE;
+    VkQueue waterQueue = VK_NULL_HANDLE;
     // Optional dedicated transfer queue (if available)
     VkQueue transferQueue = VK_NULL_HANDLE;
 
@@ -234,6 +239,12 @@ public:
     // submission does not contend with per-frame render submission on the main
     // graphics queue's mutex. Only used when a distinct geometry queue exists.
     std::mutex geometrySubmitMutex;
+    // Submit mutexes for the dedicated Solid / Water queues. Only used when the
+    // queue is genuinely distinct from graphicsQueue; when aliased they fall
+    // back to graphicsSubmitMutex via the selection chain in
+    // submitCommandBufferAsyncToQueue.
+    std::mutex solidSubmitMutex;
+    std::mutex waterSubmitMutex;
     // Mutex used to serialize command pool operations (alloc/free/reset) across threads
     std::mutex commandPoolMutex;
     // Mutex used to serialize vkAllocateDescriptorSets calls across threads
@@ -508,6 +519,8 @@ public:
         VkQueue getVegetationQueue() const { return vegetationQueue; }
     VkQueue getSdfQueue() const { return sdfQueue; }
     VkQueue getBoundingBoxQueue() const { return bboxQueue; }
+    VkQueue getSolidQueue() const { return solidQueue; }
+    VkQueue getWaterQueue() const { return waterQueue; }
         VkQueue getPresentQueue() const { return presentQueue; }
         VkQueue getTransferQueue() const { return transferQueue; }
         // Per-queue activity snapshots for the Vulkan Resources "Queue Activity" chart.

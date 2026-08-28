@@ -1221,7 +1221,13 @@ public:
                     }
                 }
             }
-            vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 0, QUERY_COUNT);
+            // Reset only the slots owned by THIS command buffer. The solid pass
+            // now records on its own command buffer (solidQueue) and resets its
+            // own slots 6-13 there; the water pass owns 14-15 (never written in
+            // practice) and the postprocess/ImGui passes own 16-19. Splitting the
+            // reset across command buffers avoids a cross-queue reset/write race.
+            vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 0, 6);   // 0-5:  shadow/cull/brush
+            vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 16, 4);  // 16-19: postprocess/imgui
             queryPoolReady[frameIdx] = true;
         }
 
@@ -1318,39 +1324,14 @@ public:
         const bool waterEnabled = settings.waterEnabled;
         const bool vegetationEnabled = settings.vegetationEnabled;
 
-        // Render sky + solids/vegetation into the solid offscreen framebuffer (one per frame)
-
-        if (sceneRenderer->skyRenderer) {
-            SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
-            sceneRenderer->skyRenderer->renderOffscreen(this, commandBuffer, frameIdx,
-                getMainDescriptorSet(), sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
-        }
-
-        VkClearValue colorClear{};
-        // Clear solid offscreen color to transparent so composite starts from empty scene
-        colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-        VkClearValue depthClear{};
-        depthClear.depthStencil = {1.0f, 0};
-
-            // Vegetation read barriers are now recorded in the vegetation async
-            // task (its own command buffer), since vegetation is rendered to its
-            // own offscreen framebuffer there.
-
-        // Transition depth to DEPTH_STENCIL_ATTACHMENT_OPTIMAL for Instance 1 below.
-        // (The previous frame left it in SHADER_READ_ONLY after the water pass.)
-        {
-            VkImage solidDepthImg = sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx);
-            if (solidDepthImg != VK_NULL_HANDLE) {
-                RendererUtils::transitionImageLayout(
-                    commandBuffer, solidDepthImg,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT);
-                setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-            }
-        }
+        // ── Solid scene pass (sky offscreen + depth prepass + color pass) ──
+        // Recorded on its OWN command buffer (solidCmd) and submitted to the
+        // dedicated solidQueue. It waits on the cull task's visibleLods/brush depth
+        // (semCullSolid) and the shadow map + restored UBO (semShadowSolid), then
+        // signals semSolid. The main command buffer (postprocess), the water task
+        // and the solid360 task each wait on their OWN binary semSolid-derived
+        // semaphore so no single binary semaphore has two waiters (illegal). The
+        // "solid" task is launched later in draw().
 
         // ── Early brush pass and the solid360 cubemap render have been moved to
         // their own async command buffers (see the "cull"/"solid360" tasks launched
@@ -1359,204 +1340,10 @@ public:
         // brush depth) and signals semSolid360 (water samples the cube). Both run
         // in parallel with the solid/vegetation shading below.
 
-        // ── Instance 1: Deferred depth pre-pass (no color attachment) ──
-        // Solid + vegetation write depth; impostors use single-pass (depth+color in Instance 2).
-        {
-            VkRenderingAttachmentInfo depthAtt{};
-            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depthAtt.imageView = sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
-            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            depthAtt.clearValue = depthClear;
+        // (Instance 1 depth pre-pass moved to the dedicated solid command buffer.)
 
-            VkRenderingInfo ri{};
-            ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-            ri.renderArea.offset = {0, 0};
-            ri.renderArea.extent = {sceneRenderer->mainSolidRenderer->getRenderWidth(), sceneRenderer->mainSolidRenderer->getRenderHeight()};
-            ri.layerCount = 1;
-            ri.colorAttachmentCount = 0;
-            ri.pColorAttachments = nullptr;
-            ri.pDepthAttachment = &depthAtt;
+        // (Instance 2 color pass moved to the dedicated solid command buffer.)
 
-            vkCmdBeginRendering(commandBuffer, &ri);
-
-            {
-                VkViewport vp{0.0f, 0.0f, (float)sceneRenderer->mainSolidRenderer->getRenderWidth(), (float)sceneRenderer->mainSolidRenderer->getRenderHeight(), 0.0f, 1.0f};
-                vkCmdSetViewport(commandBuffer, 0, 1, &vp);
-                VkRect2D sc{{0, 0}, {sceneRenderer->mainSolidRenderer->getRenderWidth(), sceneRenderer->mainSolidRenderer->getRenderHeight()}};
-                vkCmdSetScissor(commandBuffer, 0, 1, &sc);
-            }
-
-            // Solid geometry depth
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
-            if (settings.renderSolid) {
-                sceneRenderer->mainSolidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
-            }
-
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
-
-            vkCmdEndRendering(commandBuffer);
-        }
-
-        // Note: no barrier needed between instances — vkCmdEndRendering makes depth
-        // writes available; Instance 2's LOAD_OP_LOAD waits on them.
-
-        // Transition color to COLOR_ATTACHMENT_OPTIMAL for Instance 2 below.
-        {
-            VkImage solidColorImg = sceneRenderer->mainSolidRenderer->getColorImage(frameIdx);
-            if (solidColorImg != VK_NULL_HANDLE) {
-                RendererUtils::transitionImageLayout(
-                    commandBuffer, solidColorImg,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
-                setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
-            }
-        }
-
-        // ── Instance 2: Color pass (load depth from prepass, LESS compare for impostors) ──
-        {
-            VkRenderingAttachmentInfo colorAtt{};
-            colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            colorAtt.imageView = sceneRenderer->mainSolidRenderer->getColorView(frameIdx);
-            colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            colorAtt.clearValue = colorClear;
-
-            VkRenderingAttachmentInfo depthAtt{};
-            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depthAtt.imageView = sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
-            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            depthAtt.clearValue = depthClear;
-
-            VkRenderingInfo ri{};
-            ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-            ri.renderArea.offset = {0, 0};
-            ri.renderArea.extent = {sceneRenderer->mainSolidRenderer->getRenderWidth(), sceneRenderer->mainSolidRenderer->getRenderHeight()};
-            ri.layerCount = 1;
-            ri.colorAttachmentCount = 1;
-            ri.pColorAttachments = &colorAtt;
-            ri.pDepthAttachment = &depthAtt;
-
-            vkCmdBeginRendering(commandBuffer, &ri);
-
-            {
-                VkViewport vp{0.0f, 0.0f, (float)sceneRenderer->mainSolidRenderer->getRenderWidth(), (float)sceneRenderer->mainSolidRenderer->getRenderHeight(), 0.0f, 1.0f};
-                vkCmdSetViewport(commandBuffer, 0, 1, &vp);
-                VkRect2D sc{{0, 0}, {sceneRenderer->mainSolidRenderer->getRenderWidth(), sceneRenderer->mainSolidRenderer->getRenderHeight()}};
-                vkCmdSetScissor(commandBuffer, 0, 1, &sc);
-            }
-
-            // Sky first (background, no depth write)
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
-            if (sceneRenderer->skyRenderer) {
-                SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
-                sceneRenderer->skyRenderer->render(this, commandBuffer, getMainDescriptorSet(),
-                    sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
-            }
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 9);
-
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
-
-            // Solid geometry color (LESS_OR_EQUAL, no depth write)
-            if (settings.renderSolid) {
-                VkDescriptorSet brushDepthSet = sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx);
-                sceneRenderer->mainSolidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet(), brushDepthSet);
-            }
-
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 11);
-
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 12);
-
-            // Vegetation color + impostor color+depth are now rendered to their
-            // own offscreen framebuffer in the vegetation async task and composited
-            // in postprocess.frag (so vegetation no longer shares the solid depth).
-
-            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 13);
-
-            // Debug renders on top
-            const bool showOctreeDebug = octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes();
-            if (showOctreeDebug) {
-                std::vector<DebugCubeRenderer::CubeWithColor> widgetCubes;
-                if (octreeExplorerWidget->isVisible()) {
-                    const auto& wc = octreeExplorerWidget->getExpandedCubes();
-                    widgetCubes.reserve(wc.size());
-                    for (const auto& c : wc)
-                        widgetCubes.push_back({BoundingBox(c.cube.getMin(), c.cube.getMax()), c.color});
-                }
-            // renderOverlay merges the per-node cache internally (no getCubes).
-            sceneRenderer->debugCubeRenderer->renderOverlay(this, commandBuffer, getMainDescriptorSet(), widgetCubes);
-            }
-
-            // Mesh bounding boxes and SDF debug cubes are no longer drawn here: each
-            // renders to its own offscreen framebuffer on its own async command buffer
-            // (see the asyncSdfFuture / asyncBboxFuture tasks below) and is composited
-            // in postprocess.frag against the solid scene depth.
-
-            if (settings.renderSolid && settings.wireframeMode && sceneRenderer) {
-                sceneRenderer->mainSolidRenderer->drawWireframeOverlay(commandBuffer, this, getMainDescriptorSet());
-            }
-
-            vkCmdEndRendering(commandBuffer);
-        }
-
-        // Transition color+depth to SHADER_READ_ONLY for water pass compositing.
-        // The water pass's initializeGeomDepthFromSceneDepth expects the scene depth
-        // in SHADER_READ_ONLY_OPTIMAL (it transitions to TRANSFER_SRC internally).
-        {
-            VkImage solidColorImg = sceneRenderer->mainSolidRenderer->getColorImage(frameIdx);
-            VkImage solidDepthImg = sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx);
-            uint32_t bc = 0;
-            VkImageMemoryBarrier2 barriers[2]{};
-
-            if (solidColorImg != VK_NULL_HANDLE) {
-                barriers[bc].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                barriers[bc].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-                barriers[bc].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-                barriers[bc].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-                barriers[bc].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                barriers[bc].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                barriers[bc].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barriers[bc].image = solidColorImg;
-                barriers[bc].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-                ++bc;
-            }
-            if (solidDepthImg != VK_NULL_HANDLE) {
-                barriers[bc].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                barriers[bc].srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-                barriers[bc].srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                barriers[bc].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-                barriers[bc].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                barriers[bc].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                barriers[bc].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barriers[bc].image = solidDepthImg;
-                barriers[bc].subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-                ++bc;
-            }
-            if (bc > 0) {
-                VkDependencyInfo dep{};
-                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dep.imageMemoryBarrierCount = bc;
-                dep.pImageMemoryBarriers = barriers;
-                vkCmdPipelineBarrier2(commandBuffer, &dep);
-            }
-            if (solidColorImg != VK_NULL_HANDLE)
-                setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-            if (solidDepthImg != VK_NULL_HANDLE)
-                setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-        }
 
         // If water is disabled, clear its offscreen targets here (outside any active
         // dynamic rendering instance) so the post-process compositor won't sample
@@ -1600,12 +1387,49 @@ public:
         VkSemaphore semCullSdf = VK_NULL_HANDLE;
         VkSemaphore semCullBbox = VK_NULL_HANDLE;
         VkSemaphore semShadowVeg = VK_NULL_HANDLE;
+        // Solid pass signal semaphores. The solid scene pass records on its own
+        // command buffer (solidQueue) and signals one DISTINCT binary semaphore per
+        // consumer (a binary semaphore may be waited by exactly ONE command buffer):
+        //   semSolid      -> main (composite) command buffer
+        //   semSolidWater -> water task (samples solid color/depth for refraction)
+        //   semSolidCube  -> solid360 task (samples solid color/depth for the cubemap)
+        // The solid360 task in turn signals semSolid360 (its cubemap), waited only by
+        // the water task. Per-consumer cull/shadow signals keep the same invariant.
+        VkSemaphore semSolid = VK_NULL_HANDLE;
+        VkSemaphore semSolidWater = VK_NULL_HANDLE;
+        VkSemaphore semSolidCube = VK_NULL_HANDLE;
+        VkSemaphore semCullSolid = VK_NULL_HANDLE;
+        VkSemaphore semCullWater = VK_NULL_HANDLE;
+        VkSemaphore semCullSolid360 = VK_NULL_HANDLE;
+        VkSemaphore semShadowSolid = VK_NULL_HANDLE;
+        VkSemaphore semShadowWater = VK_NULL_HANDLE;
         std::future<void> asyncCullFuture, asyncSolid360Future, asyncBackFaceFuture;
         std::future<void> asyncShadowFuture, asyncVegFuture, asyncSdfFuture, asyncBboxFuture;
+        std::future<void> asyncSolidFuture;
+
+        // Scope-level semaphore factory (mirrors the one used inside the cull task).
+        auto mkSem = [&](VkSemaphore& out, const char* label) {
+            VkSemaphoreCreateInfo sci{};
+            sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            if (vkCreateSemaphore(getDevice(), &sci, nullptr, &out) != VK_SUCCESS)
+                throw std::runtime_error("failed to create async signal semaphore");
+            resources.addSemaphore(out, label);
+        };
+        // Pre-create the solid + water dependency semaphores so every async task can
+        // reference a valid handle regardless of launch/recording order (the tasks
+        // below capture these by reference and only signal/wait them).
+        mkSem(semSolid, "MyApp::solidSignalSemaphore");
+        mkSem(semSolidWater, "MyApp::solidWaterSignalSemaphore");
+        mkSem(semSolidCube, "MyApp::solidCubeSignalSemaphore");
+        mkSem(semCullSolid, "MyApp::cullSolidSignalSemaphore");
+        mkSem(semCullWater, "MyApp::cullWaterSignalSemaphore");
+        mkSem(semCullSolid360, "MyApp::cullSolid360SignalSemaphore");
+        mkSem(semShadowSolid, "MyApp::shadowSolidSignalSemaphore");
+        mkSem(semShadowWater, "MyApp::shadowWaterSignalSemaphore");
 
         // --- Cull + early brush pass on its own command buffer (signals semMainCull) ---
         if (sceneRenderer) {
-            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semMainCull, &semCullShadow, &semCullVeg, &semCullSdf, &semCullBbox]() {
+            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semMainCull, &semCullShadow, &semCullVeg, &semCullSdf, &semCullBbox, &semCullSolid, &semCullWater, &semCullSolid360]() {
                 VulkanApp* app = this;
                 VkCommandBuffer cullCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1659,62 +1483,13 @@ public:
                 // Signal semMainCull (main CB) plus semCullShadow (shadow task),
                 // semCullVeg (veg task), semCullSdf (sdf task) and semCullBbox (bbox
                 // task); each is waited by exactly one command buffer.
-                app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &semMainCull, {}, true, {semCullShadow, semCullVeg, semCullSdf, semCullBbox});
+                app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &semMainCull, {}, true, {semCullShadow, semCullVeg, semCullSdf, semCullBbox, semCullSolid, semCullWater, semCullSolid360});
             });
             asyncCullFuture.get();
             // Restore the per-frame state for the main CB's continued recording.
             this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
         }
 
-        // --- Solid360 cubemap on its own command buffer (waits semMainCull, signals semSolid360) ---
-        {
-            const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
-            const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
-            if (renderCubemap) {
-                asyncSolid360Future = asyncThreadPool.enqueue([this, frameIdx, &semMainCull, &semSolid360, waterEnabled]() {
-                    VulkanApp* app = this;
-                    VkCommandBuffer cubeCmd = app->allocatePrimaryCommandBuffer();
-                    VkCommandBufferBeginInfo cbegin{};
-                    cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                    cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                    if (vkBeginCommandBuffer(cubeCmd, &cbegin) != VK_SUCCESS) {
-                        std::cerr << "[Async] vkBeginCommandBuffer failed for solid360" << std::endl;
-                        app->freeCommandBuffer(cubeCmd);
-                        return;
-                    }
-                    this->ensureCubemapResources();
-                    CommandBufferState taskState;
-                    this->sceneRenderer->setCmdState(&taskState);
-                    UniformObject ubo360 = uboStatic;
-                    ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
-                    this->sceneRenderer->solid360Renderer->render(
-                        this, cubeCmd,
-                        this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
-                        this->sceneRenderer->mainSolidRenderer.get(),
-                        cube360GfxDs,
-                        this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx),
-                        cube360UBO, ubo360,
-                        settings.renderSolid, waterEnabled,
-                        cube360ComputeDs,
-                        cube360Compact.buffer, cube360Visible.buffer,
-                        cube360WaterComputeDs, cube360WaterCompact.buffer, cube360WaterVisible.buffer,
-                        frameIdx);
-                    // Do NOT register semSolid360 in m_extraWaitSemaphores: the main CB
-                    // does not sample the cube (only the async water pass does, which
-                    // waits on it explicitly), so registering would needlessly serialize
-                    // the main CB behind the solid360 render.
-                    // NOTE: cull, solid360, back-face/water all submit to the SAME
-                    // graphics queue, so queue submission order already guarantees
-                    // execution + memory ordering. An explicit binary-semaphore wait
-                    // here would deadlock: semMainCull is a single binary semaphore
-                    // also waited on by the back-face task and the main CB, and a
-                    // binary semaphore can satisfy only one waiter.
-                    app->submitCommandBufferAsyncToQueue(cubeCmd, app->getGraphicsQueue(), &semSolid360, {}, false);
-                });
-                asyncSolid360Future.get();
-                this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
-            }
-        }
 
         // --- Shadow pass on its own command buffer (signals semShadow) ---
         // The shadow pass does its own cascade culling, blurs the cascades, and at
@@ -1732,7 +1507,7 @@ public:
             const float shLodBias = settings.lodBias;
             const float shMaxTargetLod = settings.maxTargetLod;
             const glm::vec3 shCamPos = camera.getPosition();
-            asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, &semShadow, &semCullShadow, &semShadowVeg]() {
+            asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, &semShadow, &semCullShadow, &semShadowVeg, &semShadowSolid, &semShadowWater]() {
                 VulkanApp* app = this;
                 VkCommandBuffer shCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1764,8 +1539,314 @@ public:
                 // cull task's GPU-written buffers are visible before the shadow pass
                 // reads them. Signal semShadowVeg for the veg task (separate binary
                 // semaphore — semShadow itself is consumed by the main CB).
-                app->submitCommandBufferAsyncToQueue(shCmd, app->getGraphicsQueue(), &semShadow, {semCullShadow}, true, {semShadowVeg});
+                app->submitCommandBufferAsyncToQueue(shCmd, app->getGraphicsQueue(), &semShadow, {semCullShadow}, true, {semShadowVeg, semShadowSolid, semShadowWater});
             });
+        }
+
+        // --- Solid scene pass on its OWN command buffer (submitted to solidQueue) ---
+        // Records the sky offscreen + solid depth pre-pass + solid color pass and
+        // transitions the solid color/depth images to SHADER_READ_ONLY_OPTIMAL, all
+        // on a dedicated command buffer that runs on solidQueue. It waits on the cull
+        // task's visibleLods / brush depth (semCullSolid) and the shadow map + restored
+        // UBO (semShadowSolid), then signals semSolid (consumed by the main composite
+        // command buffer), semSolidWater (water task) and semSolid360 (solid360 task) —
+        // three DISTINCT binary semaphores so none is waited twice. Submitting to
+        // solidQueue (which may alias graphicsQueue on HW that exposes few graphics
+        // queues) keeps the solid shading decoupled from the composite/postprocess work.
+        // The solid task waits on semShadowSolid, signaled by the shadow task (on
+        // graphicsQueue). Join the shadow task first so its signal submit is guaranteed
+        // to precede the solid task's wait submit (binary semaphores can't be waited
+        // before their signal has been submitted for execution).
+        if (asyncShadowFuture.valid())
+            asyncShadowFuture.get();
+        if (sceneRenderer && sceneRenderer->mainSolidRenderer) {
+            asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semSolid, &semSolidWater, &semSolidCube, &semCullSolid, &semShadowSolid]() {
+                VulkanApp* app = this;
+                VkCommandBuffer solidCmd = app->allocatePrimaryCommandBuffer();
+                VkCommandBufferBeginInfo cbegin{};
+                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                if (vkBeginCommandBuffer(solidCmd, &cbegin) != VK_SUCCESS) {
+                    std::cerr << "[Async] vkBeginCommandBuffer failed for solid" << std::endl;
+                    app->freeCommandBuffer(solidCmd);
+                    return;
+                }
+                // Own command-buffer state (see cull task).
+                CommandBufferState taskState;
+                this->sceneRenderer->setCmdState(&taskState);
+
+                // Reset the query slots owned by this command buffer (depthPrepass,
+                // sky, solid draw, veg-impostor) so the GPU profiling timestamps below
+                // start from a clean state. (The main CB resets the other slots.)
+                if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                    vkCmdResetQueryPool(solidCmd, queryPools[frameIdx], 6, 8);
+
+                // ── Sky offscreen (writes the sky image sampled by the color pass) ──
+                if (this->sceneRenderer->skyRenderer) {
+                    SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
+                    this->sceneRenderer->skyRenderer->renderOffscreen(this, solidCmd, frameIdx,
+                        getMainDescriptorSet(), this->sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
+                }
+
+                VkClearValue colorClear{};
+                colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+                VkClearValue depthClear{};
+                depthClear.depthStencil = {1.0f, 0};
+
+                // Transition solid depth to DEPTH_STENCIL_ATTACHMENT_OPTIMAL for the pre-pass.
+                {
+                    VkImage solidDepthImg = this->sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx);
+                    if (solidDepthImg != VK_NULL_HANDLE) {
+                        RendererUtils::transitionImageLayout(
+                            solidCmd, solidDepthImg,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+                            VK_IMAGE_ASPECT_DEPTH_BIT);
+                        setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+                    }
+                }
+
+                // ── Instance 1: Deferred depth pre-pass (no color attachment) ──
+                {
+                    VkRenderingAttachmentInfo depthAtt{};
+                    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                    depthAtt.imageView = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
+                    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                    depthAtt.clearValue = depthClear;
+
+                    VkRenderingInfo ri{};
+                    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                    ri.renderArea.offset = {0, 0};
+                    ri.renderArea.extent = {this->sceneRenderer->mainSolidRenderer->getRenderWidth(), this->sceneRenderer->mainSolidRenderer->getRenderHeight()};
+                    ri.layerCount = 1;
+                    ri.colorAttachmentCount = 0;
+                    ri.pColorAttachments = nullptr;
+                    ri.pDepthAttachment = &depthAtt;
+
+                    vkCmdBeginRendering(solidCmd, &ri);
+
+                    {
+                        VkViewport vp{0.0f, 0.0f, (float)this->sceneRenderer->mainSolidRenderer->getRenderWidth(), (float)this->sceneRenderer->mainSolidRenderer->getRenderHeight(), 0.0f, 1.0f};
+                        vkCmdSetViewport(solidCmd, 0, 1, &vp);
+                        VkRect2D sc{{0, 0}, {this->sceneRenderer->mainSolidRenderer->getRenderWidth(), this->sceneRenderer->mainSolidRenderer->getRenderHeight()}};
+                        vkCmdSetScissor(solidCmd, 0, 1, &sc);
+                    }
+
+                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                        vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
+                    if (settings.renderSolid) {
+                        this->sceneRenderer->mainSolidRenderer->drawDepth(solidCmd, this, getMainDescriptorSet());
+                    }
+                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                        vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
+
+                    vkCmdEndRendering(solidCmd);
+                }
+
+                // Transition solid color to COLOR_ATTACHMENT_OPTIMAL for the color pass.
+                {
+                    VkImage solidColorImg = this->sceneRenderer->mainSolidRenderer->getColorImage(frameIdx);
+                    if (solidColorImg != VK_NULL_HANDLE) {
+                        RendererUtils::transitionImageLayout(
+                            solidCmd, solidColorImg,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
+                        setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+                    }
+                }
+
+                // ── Instance 2: Color pass (load depth from prepass) ──
+                {
+                    VkRenderingAttachmentInfo colorAtt{};
+                    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                    colorAtt.imageView = this->sceneRenderer->mainSolidRenderer->getColorView(frameIdx);
+                    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                    colorAtt.clearValue = colorClear;
+
+                    VkRenderingAttachmentInfo depthAtt{};
+                    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                    depthAtt.imageView = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
+                    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                    depthAtt.clearValue = depthClear;
+
+                    VkRenderingInfo ri{};
+                    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                    ri.renderArea.offset = {0, 0};
+                    ri.renderArea.extent = {this->sceneRenderer->mainSolidRenderer->getRenderWidth(), this->sceneRenderer->mainSolidRenderer->getRenderHeight()};
+                    ri.layerCount = 1;
+                    ri.colorAttachmentCount = 1;
+                    ri.pColorAttachments = &colorAtt;
+                    ri.pDepthAttachment = &depthAtt;
+
+                    vkCmdBeginRendering(solidCmd, &ri);
+
+                    {
+                        VkViewport vp{0.0f, 0.0f, (float)this->sceneRenderer->mainSolidRenderer->getRenderWidth(), (float)this->sceneRenderer->mainSolidRenderer->getRenderHeight(), 0.0f, 1.0f};
+                        vkCmdSetViewport(solidCmd, 0, 1, &vp);
+                        VkRect2D sc{{0, 0}, {this->sceneRenderer->mainSolidRenderer->getRenderWidth(), this->sceneRenderer->mainSolidRenderer->getRenderHeight()}};
+                        vkCmdSetScissor(solidCmd, 0, 1, &sc);
+                    }
+
+                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                        vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
+                    if (this->sceneRenderer->skyRenderer) {
+                        SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
+                        this->sceneRenderer->skyRenderer->render(this, solidCmd, getMainDescriptorSet(),
+                            this->sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
+                    }
+                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                        vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 9);
+
+                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                        vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
+
+                    if (settings.renderSolid) {
+                        VkDescriptorSet brushDepthSet = this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx);
+                        this->sceneRenderer->mainSolidRenderer->drawColor(solidCmd, this, getMainDescriptorSet(), brushDepthSet);
+                    }
+
+                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                        vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 11);
+
+                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                        vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 12);
+                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                        vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 13);
+
+                    // Debug overlays on top
+                    const bool showOctreeDebug = octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes();
+                    if (showOctreeDebug) {
+                        std::vector<DebugCubeRenderer::CubeWithColor> widgetCubes;
+                        if (octreeExplorerWidget->isVisible()) {
+                            const auto& wc = octreeExplorerWidget->getExpandedCubes();
+                            widgetCubes.reserve(wc.size());
+                            for (const auto& c : wc)
+                                widgetCubes.push_back({BoundingBox(c.cube.getMin(), c.cube.getMax()), c.color});
+                        }
+                        this->sceneRenderer->debugCubeRenderer->renderOverlay(this, solidCmd, getMainDescriptorSet(), widgetCubes);
+                    }
+
+                    if (settings.renderSolid && settings.wireframeMode && this->sceneRenderer) {
+                        this->sceneRenderer->mainSolidRenderer->drawWireframeOverlay(solidCmd, this, getMainDescriptorSet());
+                    }
+
+                    vkCmdEndRendering(solidCmd);
+                }
+
+                // Transition solid color+depth to SHADER_READ_ONLY_OPTIMAL so the
+                // composite (main CB), the water pass and the solid360 cubemap can
+                // sample them after semSolid is signaled.
+                {
+                    VkImage solidColorImg = this->sceneRenderer->mainSolidRenderer->getColorImage(frameIdx);
+                    VkImage solidDepthImg = this->sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx);
+                    uint32_t bc = 0;
+                    VkImageMemoryBarrier2 barriers[2]{};
+
+                    if (solidColorImg != VK_NULL_HANDLE) {
+                        barriers[bc].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                        barriers[bc].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                        barriers[bc].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                        barriers[bc].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                        barriers[bc].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                        barriers[bc].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                        barriers[bc].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        barriers[bc].image = solidColorImg;
+                        barriers[bc].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                        ++bc;
+                    }
+                    if (solidDepthImg != VK_NULL_HANDLE) {
+                        barriers[bc].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                        barriers[bc].srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+                        barriers[bc].srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                        barriers[bc].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                        barriers[bc].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                        barriers[bc].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                        barriers[bc].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        barriers[bc].image = solidDepthImg;
+                        barriers[bc].subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+                        ++bc;
+                    }
+                    if (bc > 0) {
+                        VkDependencyInfo dep{};
+                        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                        dep.imageMemoryBarrierCount = bc;
+                        dep.pImageMemoryBarriers = barriers;
+                        vkCmdPipelineBarrier2(solidCmd, &dep);
+                    }
+                    if (solidColorImg != VK_NULL_HANDLE)
+                        setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+                    if (solidDepthImg != VK_NULL_HANDLE)
+                        setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+                }
+
+                // Submit to the dedicated solid queue. Wait on the cull (visibleLods /
+                // brush depth) and shadow (shadow map + restored UBO) results, then
+                // signal semSolid (registered so the main composite CB waits on it),
+                // semSolidWater (water task) and semSolid360 (solid360 task).
+                app->submitCommandBufferAsyncToQueue(solidCmd, app->getSolidQueue(), &semSolid, {semCullSolid, semShadowSolid}, true, {semSolidWater, semSolidCube});
+                this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
+            });
+            // Join the solid task before the main (composite) command buffer is recorded
+            // and submitted, so semSolid is registered into m_extraWaitSemaphores and the
+            // main CB waits on it (mirrors the cull / solid360 sync-join pattern).
+            if (asyncSolidFuture.valid())
+                asyncSolidFuture.get();
+        }
+        // --- Solid360 cubemap on its own command buffer (waits semMainCull, signals semSolid360) ---
+        {
+            const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
+            const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
+            if (renderCubemap) {
+                asyncSolid360Future = asyncThreadPool.enqueue([this, frameIdx, &semCullSolid360, &semSolidCube, &semSolid360, waterEnabled]() {
+                    VulkanApp* app = this;
+                    VkCommandBuffer cubeCmd = app->allocatePrimaryCommandBuffer();
+                    VkCommandBufferBeginInfo cbegin{};
+                    cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                    cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    if (vkBeginCommandBuffer(cubeCmd, &cbegin) != VK_SUCCESS) {
+                        std::cerr << "[Async] vkBeginCommandBuffer failed for solid360" << std::endl;
+                        app->freeCommandBuffer(cubeCmd);
+                        return;
+                    }
+                    this->ensureCubemapResources();
+                    CommandBufferState taskState;
+                    this->sceneRenderer->setCmdState(&taskState);
+                    UniformObject ubo360 = uboStatic;
+                    ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
+                    this->sceneRenderer->solid360Renderer->render(
+                        this, cubeCmd,
+                        this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
+                        this->sceneRenderer->mainSolidRenderer.get(),
+                        cube360GfxDs,
+                        this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx),
+                        cube360UBO, ubo360,
+                        settings.renderSolid, waterEnabled,
+                        cube360ComputeDs,
+                        cube360Compact.buffer, cube360Visible.buffer,
+                        cube360WaterComputeDs, cube360WaterCompact.buffer, cube360WaterVisible.buffer,
+                        frameIdx);
+                    // Do NOT register semSolid360 in m_extraWaitSemaphores: the main CB
+                    // does not sample the cube (only the async water pass does, which
+                    // waits on it explicitly), so registering would needlessly serialize
+                    // the main CB behind the solid360 render.
+                    // The solid360 cubemap samples the solid scene color/depth (now on
+                    // its own queue) and the cull results, so it waits on the dedicated
+                    // binary semaphores semCullSolid360 and semSolid (each waited by
+                    // exactly one command buffer — no multi-waiter hazard).
+                    app->submitCommandBufferAsyncToQueue(cubeCmd, app->getGraphicsQueue(), &semSolid360, {semCullSolid360, semSolidCube}, false);
+                });
+                asyncSolid360Future.get();
+                this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
+            }
         }
 
         // --- Vegetation pass on its own command buffer (signals semVeg) ---
@@ -1971,7 +2052,7 @@ public:
         // Back-face depth + water geometry pass on a shared command buffer.
         // (waits semMainCull + semSolid360; signals semWater at the end of the task)
         if (waterEnabled && sceneRenderer) {
-            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, semMainCull, semSolid360, &semWater]() {
+            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semCullWater, &semShadowWater, &semSolid360, &semSolidWater, &semWater]() {
                 VulkanApp* app = this;
                 VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo beginInfo{};
@@ -1982,6 +2063,11 @@ public:
                     app->freeCommandBuffer(cmd);
                     return;
                 }
+                // Reset the query slots owned by the water pass (14-15) so the GPU
+                // profiling timestamps below start from a clean state. (The main CB
+                // resets the other slots; the solid CB resets 6-13.)
+                if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                    vkCmdResetQueryPool(cmd, queryPools[frameIdx], 14, 2);
                 // Dedicated command-buffer state for this async command buffer (see cull task).
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
@@ -2185,8 +2271,12 @@ public:
                         this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, frameIdx, wBack, wCube);
                         VkImageView wsky = (this->sceneRenderer->skyRenderer)
                             ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
+                        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
                         this->sceneRenderer->mainLiquidRenderer->renderPass(this, cmd, frameIdx,
                             settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2);
+                        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
                         // Transition water geometry depth to SRO for the compositor.
                         VkImage wgdImg = this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(frameIdx);
                         if (wgdImg != VK_NULL_HANDLE) {
@@ -2198,18 +2288,23 @@ public:
                     }
                 }
 
-                // Submit. The ring slot's buffers/set are NOT defer-destroyed: they are
-                // reused ASYNC_RING_SIZE tasks later, by which time this submission has
-                // completed (guaranteed by the frame-fence chain described on
-                // cachedBackfaceRing). Signal semWater, which is registered in
-                // m_extraWaitSemaphores so drawFrame's main command buffer waits on it
-                // before compositing.
-                // We do NOT wait on semMainCull/semSolid360 here: like the solid360
-                // task, this command buffer is submitted to the same graphics queue
-                // as the cull and solid360 tasks, so queue ordering already guarantees
-                // the visibleLods / cube are ready. An explicit binary-semaphore wait
-                // would deadlock (single binary semaphore, multiple waiters).
-                app->submitCommandBufferAsyncToQueue(cmd, app->getGraphicsQueue(), &semWater, {}, true);
+                // Submit to the dedicated water queue. The ring slot's buffers/set are
+                // NOT defer-destroyed: they are reused ASYNC_RING_SIZE tasks later, by
+                // which time this submission has completed (guaranteed by the frame-fence
+                // chain described on cachedBackfaceRing). Signal semWater, which is
+                // registered in m_extraWaitSemaphores so drawFrame's main command buffer
+                // waits on it before compositing.
+                // The water task waits on DISTINCT binary semaphores for each of its
+                // inputs (semCullWater for the cull results, semShadowWater for the shadow
+                // map + restored UBO, semSolid360 for the cubemap, semSolidWater for the
+                // solid color/depth). Each of these is signaled by exactly one command
+                // buffer, so the one-waiter invariant holds and no deadlock occurs.
+                // Submit to the dedicated water queue. Wait on the cull results
+                // (visibleLods / indirect draw args), the shadow map + restored UBO
+                // (semShadowSolid), the solid360 cubemap (semSolid360) and the solid
+                // color/depth (semSolidWater) before shading/refraction. Signal semWater
+                // (registered so the main composite CB waits on it).
+                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &semWater, {semCullWater, semShadowWater, semSolid360, semSolidWater}, true);
 
             });
         }
