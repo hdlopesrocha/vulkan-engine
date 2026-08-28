@@ -46,6 +46,8 @@ public:
     VkImage getColorImage(uint32_t frameIndex) const { return solidColorImages[frameIndex % SOLID_FRAMES]; }
     VkImageView getDepthView(uint32_t frameIndex) const { return solidDepthImageViews[frameIndex % SOLID_FRAMES]; }
     VkImage getDepthImage(uint32_t frameIndex) const { return solidDepthImages[frameIndex % SOLID_FRAMES]; }
+    uint32_t getRenderWidth() const { return renderWidth; }
+    uint32_t getRenderHeight() const { return renderHeight; }
 
 public:
 

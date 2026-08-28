@@ -5136,6 +5136,14 @@ void VulkanApp::recreateSwapchain() {
     createImageViews();
     createCommandPool();
     createDepthResources();
+    // Resize all renderer offscreen targets (solid/liquid/water/back-face/SDF/bbox,
+    // vegetation, etc.) to the NEW swapchain extent. recreateSwapchain updates
+    // swapchainExtent + the swapchain image views + the main depth buffer, but the
+    // scene offscreen targets are owned by SceneRenderer and would otherwise stay at
+    // the OLD size while renderArea advances to the new extent — producing
+    // VUID-VkRenderingInfo-pNext-06079 (renderArea wider/taller than an attachment).
+    // onSwapchainResized is virtual (MyApp routes it to SceneRenderer::onSwapchainResized).
+    onSwapchainResized(swapchainExtent.width, swapchainExtent.height);
     commandBuffers = createCommandBuffers();
 
     // Ensure imagesInFlight matches the new swapchain image count

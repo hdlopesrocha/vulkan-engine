@@ -1373,7 +1373,7 @@ public:
             VkRenderingInfo ri{};
             ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
             ri.renderArea.offset = {0, 0};
-            ri.renderArea.extent = {static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())};
+            ri.renderArea.extent = {sceneRenderer->mainSolidRenderer->getRenderWidth(), sceneRenderer->mainSolidRenderer->getRenderHeight()};
             ri.layerCount = 1;
             ri.colorAttachmentCount = 0;
             ri.pColorAttachments = nullptr;
@@ -1382,9 +1382,9 @@ public:
             vkCmdBeginRendering(commandBuffer, &ri);
 
             {
-                VkViewport vp{0.0f, 0.0f, (float)getWidth(), (float)getHeight(), 0.0f, 1.0f};
+                VkViewport vp{0.0f, 0.0f, (float)sceneRenderer->mainSolidRenderer->getRenderWidth(), (float)sceneRenderer->mainSolidRenderer->getRenderHeight(), 0.0f, 1.0f};
                 vkCmdSetViewport(commandBuffer, 0, 1, &vp);
-                VkRect2D sc{{0, 0}, {(uint32_t)getWidth(), (uint32_t)getHeight()}};
+                VkRect2D sc{{0, 0}, {sceneRenderer->mainSolidRenderer->getRenderWidth(), sceneRenderer->mainSolidRenderer->getRenderHeight()}};
                 vkCmdSetScissor(commandBuffer, 0, 1, &sc);
             }
 
@@ -1438,7 +1438,7 @@ public:
             VkRenderingInfo ri{};
             ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
             ri.renderArea.offset = {0, 0};
-            ri.renderArea.extent = {static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())};
+            ri.renderArea.extent = {sceneRenderer->mainSolidRenderer->getRenderWidth(), sceneRenderer->mainSolidRenderer->getRenderHeight()};
             ri.layerCount = 1;
             ri.colorAttachmentCount = 1;
             ri.pColorAttachments = &colorAtt;
@@ -1447,9 +1447,9 @@ public:
             vkCmdBeginRendering(commandBuffer, &ri);
 
             {
-                VkViewport vp{0.0f, 0.0f, (float)getWidth(), (float)getHeight(), 0.0f, 1.0f};
+                VkViewport vp{0.0f, 0.0f, (float)sceneRenderer->mainSolidRenderer->getRenderWidth(), (float)sceneRenderer->mainSolidRenderer->getRenderHeight(), 0.0f, 1.0f};
                 vkCmdSetViewport(commandBuffer, 0, 1, &vp);
-                VkRect2D sc{{0, 0}, {(uint32_t)getWidth(), (uint32_t)getHeight()}};
+                VkRect2D sc{{0, 0}, {sceneRenderer->mainSolidRenderer->getRenderWidth(), sceneRenderer->mainSolidRenderer->getRenderHeight()}};
                 vkCmdSetScissor(commandBuffer, 0, 1, &sc);
             }
 
@@ -1796,8 +1796,12 @@ public:
                     app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &semVeg, {semCullVeg, semShadowVeg});
                     return;
                 }
-                const uint32_t w = static_cast<uint32_t>(getWidth());
-                const uint32_t h = static_cast<uint32_t>(getHeight());
+                // Render area must match the vegetation offscreen targets' backing size
+                // (which are resized to the swapchain extent in SceneRenderer::onSwapchainResized).
+                // Using getWidth()/getHeight() here caused VUID-VkRenderingInfo-pNext-06079 when the
+                // window size advanced past the (stale) vegetation offscreen extent.
+                const uint32_t w = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegWidth() : getSwapchainExtent().width;
+                const uint32_t h = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegHeight() : getSwapchainExtent().height;
                 VkImage vegColorImg = sceneRenderer->vegetationRenderer->getVegColorImage(frameIdx);
                 VkImage vegDepthImg = sceneRenderer->vegetationRenderer->getVegDepthImage(frameIdx);
                 VkImageLayout vegColorOld = sceneRenderer->vegetationRenderer->getVegColorLayout(frameIdx);

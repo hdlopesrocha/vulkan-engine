@@ -160,6 +160,9 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     if (mainSolidRenderer) {
         mainSolidRenderer->createRenderTargets(app, width, height);
     }
+    if (vegetationRenderer) {
+        vegetationRenderer->createRenderTargets(app, width, height);
+    }
     if (brushRenderer) {
         brushRenderer->onSwapchainResized(app, width, height);
     }
