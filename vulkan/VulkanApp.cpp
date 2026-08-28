@@ -978,6 +978,10 @@ void VulkanApp::createCommandPool() {
     // initialize async bookkeeping containers (m_submissionMutex guards all)
     m_pendingCommandBuffers.clear();
     m_pendingCommandBuffersSet.clear();
+    m_cmdQueueMap.clear();
+    m_queuePending.clear();
+    m_queueSubmitted.clear();
+    m_queueCompleted.clear();
     m_extraWaitSemaphores.clear();
 }
 
@@ -1567,6 +1571,16 @@ void VulkanApp::processPendingCommandBuffers() {
             if (signaledOrGone) {
                 toFree.emplace_back(cmd, fence);
                 m_pendingCommandBuffersSet.erase(cmd);
+                // Queue-activity accounting: this submission finished, so drop the
+                // in-flight counter and bump the cumulative-completed counter.
+                auto qit = m_cmdQueueMap.find(cmd);
+                if (qit != m_cmdQueueMap.end()) {
+                    VkQueue q = qit->second;
+                    auto pit = m_queuePending.find(q);
+                    if (pit != m_queuePending.end() && pit->second > 0) pit->second--;
+                    m_queueCompleted[q]++;
+                    m_cmdQueueMap.erase(qit);
+                }
                 it = m_pendingCommandBuffers.erase(it);
             } else {
                 ++it;
@@ -1828,6 +1842,12 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
             }
             m_pendingCommandBuffers.emplace_back(commandBuffer, fence);
             m_pendingCommandBuffersSet.insert(commandBuffer);
+            // Queue-activity accounting: record which queue owns this submission and
+            // bump the in-flight + cumulative-submitted counters. Keyed by handle, so
+            // aliased queues naturally share one counter (the real hardware queue).
+            m_cmdQueueMap[commandBuffer] = graphicsQueue;
+            m_queuePending[graphicsQueue]++;
+            m_queueSubmitted[graphicsQueue]++;
         }
 
         // Promote pending layout updates before submit so validation sees
@@ -1863,6 +1883,14 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
                     if (it->first == commandBuffer) { m_pendingCommandBuffers.erase(it); break; }
                 }
                 m_pendingCommandBuffersSet.erase(commandBuffer);
+                // Submission failed: this cmd never went in flight, undo the accounting.
+                auto qit = m_cmdQueueMap.find(commandBuffer);
+                if (qit != m_cmdQueueMap.end()) {
+                    VkQueue q = qit->second;
+                    auto pit = m_queuePending.find(q);
+                    if (pit != m_queuePending.end() && pit->second > 0) pit->second--;
+                    m_cmdQueueMap.erase(qit);
+                }
             }
             if (semaphore != VK_NULL_HANDLE) {
                 resources.removeSemaphore(semaphore);
@@ -2042,6 +2070,12 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             }
             m_pendingCommandBuffers.emplace_back(commandBuffer, fence);
             m_pendingCommandBuffersSet.insert(commandBuffer);
+            // Queue-activity accounting: record which queue owns this submission and
+            // bump the in-flight + cumulative-submitted counters. Keyed by handle, so
+            // aliased queues naturally share one counter (the real hardware queue).
+            m_cmdQueueMap[commandBuffer] = targetQueue;
+            m_queuePending[targetQueue]++;
+            m_queueSubmitted[targetQueue]++;
         }
 
         // Promote pending layout updates for this submission
@@ -2171,9 +2205,15 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
                     if (m_commandBufferPoolMap.find(commandBuffer) == m_commandBufferPoolMap.end()) {
                         m_commandBufferPoolMap[commandBuffer] = commandPool;
                     }
-                    m_pendingCommandBuffers.emplace_back(commandBuffer, fence);
-                    m_pendingCommandBuffersSet.insert(commandBuffer);
-                }
+                m_pendingCommandBuffers.emplace_back(commandBuffer, fence);
+                m_pendingCommandBuffersSet.insert(commandBuffer);
+                // Queue-activity accounting: record which queue owns this submission and
+                // bump the in-flight + cumulative-submitted counters. Keyed by handle, so
+                // aliased queues naturally share one counter (the real hardware queue).
+                m_cmdQueueMap[commandBuffer] = graphicsQueue;
+                m_queuePending[graphicsQueue]++;
+                m_queueSubmitted[graphicsQueue]++;
+        }
                 return;
             }
             vkDestroyFence(device, fence, nullptr);
@@ -5811,4 +5851,25 @@ void VulkanApp::run() {
         fprintf(stderr, "[VulkanApp] setup threw unknown exception (type=%s), proceeding with cleanup\n", ti ? ti->name() : "null");
     }
     cleanup();
+}
+
+int VulkanApp::getQueuePending(VkQueue q) const {
+    if (q == VK_NULL_HANDLE) return 0;
+    std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
+    auto it = m_queuePending.find(q);
+    return it != m_queuePending.end() ? it->second : 0;
+}
+
+uint64_t VulkanApp::getQueueSubmitted(VkQueue q) const {
+    if (q == VK_NULL_HANDLE) return 0;
+    std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
+    auto it = m_queueSubmitted.find(q);
+    return it != m_queueSubmitted.end() ? it->second : 0;
+}
+
+uint64_t VulkanApp::getQueueCompleted(VkQueue q) const {
+    if (q == VK_NULL_HANDLE) return 0;
+    std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
+    auto it = m_queueCompleted.find(q);
+    return it != m_queueCompleted.end() ? it->second : 0;
 }

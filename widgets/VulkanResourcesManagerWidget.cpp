@@ -24,6 +24,35 @@ void VulkanResourcesManagerWidget::updateWithApp(VulkanApp* app) {
     cachedDescriptorPool = app->getDescriptorPool();
     cachedImGuiDescriptorPool = app->getImGuiDescriptorPool();
     hasAppCache = true;
+
+    // Cache logical queue handles and sample the activity history (one slot per
+    // logical queue). The in-flight count is read from VulkanApp's per-queue
+    // counters; it advances once per frame so the chart shows queue load over time.
+    cachedQueue[Q_GRAPHICS]   = app->getGraphicsQueue();
+    cachedQueue[Q_PRESENT]    = app->getPresentQueue();
+    cachedQueue[Q_VEGETATION] = app->getVegetationQueue();
+    cachedQueue[Q_SDF]        = app->getSdfQueue();
+    cachedQueue[Q_BBOX]       = app->getBoundingBoxQueue();
+    cachedQueue[Q_GEOMETRY]   = app->geometryTransferQueue();
+    cachedQueue[Q_TRANSFER]   = app->getTransferQueue();
+
+    static const char* names[Q_COUNT] = {
+        "Graphics", "Present", "Vegetation", "SDF", "BoundingBox", "Geometry", "Transfer"
+    };
+    (void)names;
+
+    for (int i = 0; i < Q_COUNT; ++i) {
+        VkQueue q = cachedQueue[i];
+        queueActive[i] = (q != VK_NULL_HANDLE);
+        queuePendingNow[i]    = queueActive[i] ? app->getQueuePending(q)  : 0;
+        queueSubmittedTotal[i]  = queueActive[i] ? app->getQueueSubmitted(q) : 0;
+        queueCompletedTotal[i]  = queueActive[i] ? app->getQueueCompleted(q) : 0;
+
+        // Shift history left and append the newest sample at the end.
+        auto& h = queueHistory[i];
+        for (int s = 0; s < QUEUE_HISTORY - 1; ++s) h[s] = h[s + 1];
+        h[QUEUE_HISTORY - 1] = static_cast<float>(queuePendingNow[i]);
+    }
 }
 
 static std::string handleToString(uint64_t v, bool hex) {
@@ -68,6 +97,45 @@ void VulkanResourcesManagerWidget::render() {
             ImGui::Text("DescriptorPool: %s", handleToString(reinterpret_cast<uint64_t>(cachedDescriptorPool), showHex).c_str());
             ImGui::Text("ImGui DescriptorPool: %s", handleToString(reinterpret_cast<uint64_t>(cachedImGuiDescriptorPool), showHex).c_str());
 
+            ImGui::TreePop();
+        }
+
+        // Queue activity chart (one rolling line per logical queue). The y-axis is the
+        // number of in-flight command buffers on that queue; a flat zero means idle,
+        // a sustained high value means the queue is back-pressured (more work submitted
+        // than the GPU completes per frame).
+        if (ImGui::TreeNode("Queue Activity")) {
+            static const char* qnames[Q_COUNT] = {
+                "Graphics", "Present", "Vegetation", "SDF", "BoundingBox", "Geometry", "Transfer"
+            };
+            // Detect aliasing: group logical queues that share a VkQueue handle.
+            for (int i = 0; i < Q_COUNT; ++i) {
+                if (!queueActive[i]) continue;
+                ImGui::Separator();
+                ImGui::Text("%s queue", qnames[i]);
+                // Alias annotation
+                std::string aliases;
+                for (int j = 0; j < Q_COUNT; ++j) {
+                    if (j != i && queueActive[j] && cachedQueue[j] == cachedQueue[i])
+                        aliases += std::string(aliases.empty() ? "" : ", ") + qnames[j];
+                }
+                if (!aliases.empty())
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "shares hardware queue with: %s", aliases.c_str());
+
+                ImGui::Text("in-flight: %d   submitted: %llu   completed: %llu",
+                    queuePendingNow[i],
+                    (unsigned long long)queueSubmittedTotal[i],
+                    (unsigned long long)queueCompletedTotal[i]);
+
+                float vmin = 0.0f, vmax = 0.0f;
+                for (int s = 0; s < QUEUE_HISTORY; ++s) { vmin = std::min(vmin, queueHistory[i][s]); vmax = std::max(vmax, queueHistory[i][s]); }
+                if (vmax < 1.0f) vmax = 1.0f; // keep a stable 0..1 scale when idle
+                char pltId[64];
+                snprintf(pltId, sizeof(pltId), "##queuehist_%d", i);
+                ImGui::PlotLines(pltId, queueHistory[i].data(), QUEUE_HISTORY, 0, nullptr, vmin, vmax, ImVec2(0.0f, 40.0f));
+            }
+            if (!hasAppCache)
+                ImGui::TextUnformatted("(no app cache yet)");
             ImGui::TreePop();
         }
 

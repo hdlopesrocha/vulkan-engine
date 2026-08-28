@@ -3,6 +3,8 @@
 #include "Widget.hpp"
 #include "../vulkan/VulkanResourceManager.hpp"
 #include <memory>
+#include <array>
+#include <cstdint>
 
 class VulkanApp;
 
@@ -30,4 +32,18 @@ private:
     VkDescriptorPool cachedImGuiDescriptorPool = VK_NULL_HANDLE;
     bool hasAppCache = false;
     bool showHex = true;
+
+    // --- Per-queue activity chart ---
+    // One rolling history of in-flight (pending) command buffers per logical queue.
+    // Keyed by logical slot; if two slots alias the same VkQueue handle (e.g. only
+    // one graphics queue exposed), they share the same underlying hardware queue and
+    // will show identical values.
+    static constexpr int QUEUE_HISTORY = 240;
+    enum QueueId : int { Q_GRAPHICS = 0, Q_PRESENT, Q_VEGETATION, Q_SDF, Q_BBOX, Q_GEOMETRY, Q_TRANSFER, Q_COUNT };
+    VkQueue cachedQueue[Q_COUNT] = {};
+    std::array<float, QUEUE_HISTORY> queueHistory[Q_COUNT];
+    bool queueActive[Q_COUNT] = {};   // handle non-null this frame
+    int queuePendingNow[Q_COUNT] = {};
+    uint64_t queueSubmittedTotal[Q_COUNT] = {};
+    uint64_t queueCompletedTotal[Q_COUNT] = {};
 };

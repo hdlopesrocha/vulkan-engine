@@ -509,6 +509,12 @@ public:
     VkQueue getSdfQueue() const { return sdfQueue; }
     VkQueue getBoundingBoxQueue() const { return bboxQueue; }
         VkQueue getPresentQueue() const { return presentQueue; }
+        VkQueue getTransferQueue() const { return transferQueue; }
+        // Per-queue activity snapshots for the Vulkan Resources "Queue Activity" chart.
+        // Safe to call from the UI thread; reads are guarded by m_submissionMutex.
+        int      getQueuePending(VkQueue q) const;
+        uint64_t getQueueSubmitted(VkQueue q) const;
+        uint64_t getQueueCompleted(VkQueue q) const;
         VkSwapchainKHR getSwapchain() const { return swapchain; }
         VkFormat getSwapchainImageFormat() const { return swapchainImageFormat; }
         VkExtent2D getSwapchainExtent() const { return swapchainExtent; }
@@ -642,6 +648,15 @@ public:
         // handles) for the double-submission check in the async submit paths.
         // Kept in lockstep with m_pendingCommandBuffers under m_submissionMutex.
         std::unordered_set<VkCommandBuffer> m_pendingCommandBuffersSet;
+
+        // Per-queue activity tracking (drives the Vulkan Resources "Queue Activity"
+        // chart). Keyed by VkQueue handle, so aliased queues (e.g. vegetationQueue
+        // == graphicsQueue when only one graphics queue exists) collapse to one
+        // counter — which is exactly the real hardware queue.
+        std::unordered_map<VkQueue, int>      m_queuePending;   // in-flight command buffers
+        std::unordered_map<VkQueue, uint64_t> m_queueSubmitted; // cumulative submissions
+        std::unordered_map<VkQueue, uint64_t> m_queueCompleted; // cumulative completions
+        std::unordered_map<VkCommandBuffer, VkQueue> m_cmdQueueMap; // cmd -> owning queue
 
         mutable std::vector<MemoryHeapBudget> m_memoryBudgetScratch;
 
