@@ -634,6 +634,12 @@ RenderTargetsWidget::~RenderTargetsWidget() {
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     removeOwnedDesc(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
+    removeOwnedDesc(sdfColorDescriptor, sdfColorDescriptorOwned);
+    removeOwnedDesc(sdfDepthDescriptor, sdfDepthDescriptorOwned);
+    removeOwnedDesc(bboxColorDescriptor, bboxColorDescriptorOwned);
+    removeOwnedDesc(bboxDepthDescriptor, bboxDepthDescriptorOwned);
+    removeOwnedDesc(vegColorDescriptor, vegColorDescriptorOwned);
+    removeOwnedDesc(vegDepthDescriptor, vegDepthDescriptorOwned);
 }
 
 void RenderTargetsWidget::setFrameInfo(uint32_t frameIndex, int width, int height) {
@@ -671,6 +677,12 @@ void RenderTargetsWidget::destroyLinearTargets() {
     removeDescIfOwned(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
     removeDescIfOwned(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
     removeDescIfOwned(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
+    removeDescIfOwned(sdfColorDescriptor, sdfColorDescriptorOwned);
+    removeDescIfOwned(sdfDepthDescriptor, sdfDepthDescriptorOwned);
+    removeDescIfOwned(bboxColorDescriptor, bboxColorDescriptorOwned);
+    removeDescIfOwned(bboxDepthDescriptor, bboxDepthDescriptorOwned);
+    removeDescIfOwned(vegColorDescriptor, vegColorDescriptorOwned);
+    removeDescIfOwned(vegDepthDescriptor, vegDepthDescriptorOwned);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
         removeDescIfOwned(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
     }
@@ -746,6 +758,12 @@ void RenderTargetsWidget::cleanup() {
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     removeOwnedDesc(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
+    removeOwnedDesc(sdfColorDescriptor, sdfColorDescriptorOwned);
+    removeOwnedDesc(sdfDepthDescriptor, sdfDepthDescriptorOwned);
+    removeOwnedDesc(bboxColorDescriptor, bboxColorDescriptorOwned);
+    removeOwnedDesc(bboxDepthDescriptor, bboxDepthDescriptorOwned);
+    removeOwnedDesc(vegColorDescriptor, vegColorDescriptorOwned);
+    removeOwnedDesc(vegDepthDescriptor, vegDepthDescriptorOwned);
     removeOwnedDesc(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
     removeOwnedDesc(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
     removeOwnedDesc(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
@@ -923,6 +941,12 @@ void RenderTargetsWidget::invalidateImGuiDescriptors() {
     freeAndClear(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     freeAndClear(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
     freeAndClear(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
+    freeAndClear(sdfColorDescriptor, sdfColorDescriptorOwned);
+    freeAndClear(sdfDepthDescriptor, sdfDepthDescriptorOwned);
+    freeAndClear(bboxColorDescriptor, bboxColorDescriptorOwned);
+    freeAndClear(bboxDepthDescriptor, bboxDepthDescriptorOwned);
+    freeAndClear(vegColorDescriptor, vegColorDescriptorOwned);
+    freeAndClear(vegDepthDescriptor, vegDepthDescriptorOwned);
     freeAndClear(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
     freeAndClear(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
     freeAndClear(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
@@ -1007,6 +1031,54 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             if (waterView != VK_NULL_HANDLE && waterColorDescriptor == VK_NULL_HANDLE) {
                 waterColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 waterColorDescriptorOwned = true;
+            }
+        } break;
+
+        case PreviewTarget::SdfColor: {
+            VkImageView v = (sceneRenderer && sceneRenderer->debugSDFRenderer) ? sceneRenderer->debugSDFRenderer->getSdfColorView(frameIndex) : VK_NULL_HANDLE;
+            if (v != VK_NULL_HANDLE && sdfColorDescriptor == VK_NULL_HANDLE) {
+                sdfColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, v, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                sdfColorDescriptorOwned = true;
+            }
+        } break;
+
+        case PreviewTarget::SdfDepth: {
+            VkImageView v = (sceneRenderer && sceneRenderer->debugSDFRenderer) ? sceneRenderer->debugSDFRenderer->getSdfDepthView(frameIndex) : VK_NULL_HANDLE;
+            if (v != VK_NULL_HANDLE && sdfDepthDescriptor == VK_NULL_HANDLE) {
+                sdfDepthDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, v, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                sdfDepthDescriptorOwned = true;
+            }
+        } break;
+
+        case PreviewTarget::BboxColor: {
+            VkImageView v = (sceneRenderer && sceneRenderer->boundingBoxRenderer) ? sceneRenderer->boundingBoxRenderer->getBboxColorView(frameIndex) : VK_NULL_HANDLE;
+            if (v != VK_NULL_HANDLE && bboxColorDescriptor == VK_NULL_HANDLE) {
+                bboxColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, v, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                bboxColorDescriptorOwned = true;
+            }
+        } break;
+
+        case PreviewTarget::BboxDepth: {
+            VkImageView v = (sceneRenderer && sceneRenderer->boundingBoxRenderer) ? sceneRenderer->boundingBoxRenderer->getBboxDepthView(frameIndex) : VK_NULL_HANDLE;
+            if (v != VK_NULL_HANDLE && bboxDepthDescriptor == VK_NULL_HANDLE) {
+                bboxDepthDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, v, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                bboxDepthDescriptorOwned = true;
+            }
+        } break;
+
+        case PreviewTarget::VegColor: {
+            VkImageView v = (sceneRenderer && sceneRenderer->vegetationRenderer) ? sceneRenderer->vegetationRenderer->getVegColorView(frameIndex) : VK_NULL_HANDLE;
+            if (v != VK_NULL_HANDLE && vegColorDescriptor == VK_NULL_HANDLE) {
+                vegColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, v, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                vegColorDescriptorOwned = true;
+            }
+        } break;
+
+        case PreviewTarget::VegDepth: {
+            VkImageView v = (sceneRenderer && sceneRenderer->vegetationRenderer) ? sceneRenderer->vegetationRenderer->getVegDepthView(frameIndex) : VK_NULL_HANDLE;
+            if (v != VK_NULL_HANDLE && vegDepthDescriptor == VK_NULL_HANDLE) {
+                vegDepthDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, v, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                vegDepthDescriptorOwned = true;
             }
         } break;
 
@@ -1187,6 +1259,24 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         case PreviewTarget::WaterDepth: 
             previewDescriptor = waterDepthLinearDescriptor; 
             break;
+        case PreviewTarget::SdfColor:
+            previewDescriptor = sdfColorDescriptor;
+            break;
+        case PreviewTarget::SdfDepth:
+            previewDescriptor = sdfDepthDescriptor;
+            break;
+        case PreviewTarget::BboxColor:
+            previewDescriptor = bboxColorDescriptor;
+            break;
+        case PreviewTarget::BboxDepth:
+            previewDescriptor = bboxDepthDescriptor;
+            break;
+        case PreviewTarget::VegColor:
+            previewDescriptor = vegColorDescriptor;
+            break;
+        case PreviewTarget::VegDepth:
+            previewDescriptor = vegDepthDescriptor;
+            break;
         // Prefer the GPU-linearized back-face depth if available, otherwise fall back to raw back-face depth view
         case PreviewTarget::BackFaceColor:
             if (linearBackFaceDepthDescriptor != VK_NULL_HANDLE) previewDescriptor = linearBackFaceDepthDescriptor;
@@ -1284,6 +1374,12 @@ void RenderTargetsWidget::render() {
         "BrushBackFaceDepth",
         "WaterColor",
         "WaterDepth",
+        "SdfColor",
+        "SdfDepth",
+        "BboxColor",
+        "BboxDepth",
+        "VegColor",
+        "VegDepth",
         "LinearSceneDepth",
         "ShadowCascade"
     };

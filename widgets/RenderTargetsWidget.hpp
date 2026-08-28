@@ -55,6 +55,22 @@ private:
     bool brushBackFaceDepthDescriptorOwned = false;
     bool waterDepthLinearDescriptorOwned = false;
 
+    // Offscreen debug previews: SDF debug cubes and mesh bounding boxes
+    VkDescriptorSet sdfColorDescriptor = VK_NULL_HANDLE;
+    VkDescriptorSet sdfDepthDescriptor = VK_NULL_HANDLE;
+    VkDescriptorSet bboxColorDescriptor = VK_NULL_HANDLE;
+    VkDescriptorSet bboxDepthDescriptor = VK_NULL_HANDLE;
+    bool sdfColorDescriptorOwned = false;
+    bool sdfDepthDescriptorOwned = false;
+    bool bboxColorDescriptorOwned = false;
+    bool bboxDepthDescriptorOwned = false;
+
+    // Offscreen vegetation previews (color + depth)
+    VkDescriptorSet vegColorDescriptor = VK_NULL_HANDLE;
+    VkDescriptorSet vegDepthDescriptor = VK_NULL_HANDLE;
+    bool vegColorDescriptorOwned = false;
+    bool vegDepthDescriptorOwned = false;
+
     // Converted linear depth debug images (device local) and views
     VkImage linearSceneDepthImage = VK_NULL_HANDLE;
     VmaAllocation linearSceneDepthAllocation = VK_NULL_HANDLE;
@@ -149,6 +165,12 @@ private:
         BrushBackFaceDepth,
         WaterColor,
         WaterDepth,
+        SdfColor,
+        SdfDepth,
+        BboxColor,
+        BboxDepth,
+        VegColor,
+        VegDepth,
         LinearSceneDepth,
         ShadowCascade,
         Count
