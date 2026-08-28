@@ -1976,7 +1976,9 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         // distinct. Distinct queues need no shared mutex (GPU ordering is via
         // semaphores), so separate mutexes are safe there.
         std::mutex& submitMtx = (targetQueue == transferQueue) ? transferSubmitMutex :
-                                (targetQueue == vegetationQueue) ? vegetationSubmitMutex :
+                                (targetQueue == vegetationQueue && vegetationQueue != graphicsQueue) ? vegetationSubmitMutex :
+                                (targetQueue == sdfQueue && sdfQueue != graphicsQueue) ? sdfSubmitMutex :
+                                (targetQueue == bboxQueue && bboxQueue != graphicsQueue) ? bboxSubmitMutex :
                                 (targetQueue == geometryQueue && geometryQueue != graphicsQueue) ? geometrySubmitMutex :
                                 graphicsSubmitMutex;
         std::lock_guard<std::mutex> lock(submitMtx);
@@ -5488,9 +5490,10 @@ void VulkanApp::createLogicalDevice() {
         VkDeviceQueueCreateInfo queueCreateInfo{};
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queueCreateInfo.queueFamilyIndex = queueFamily;
-        // determine desired queue count: try to allocate 2 from graphics family
+        // determine desired queue count: try to allocate up to 4 from graphics family
+        // (graphics + vegetation + sdf + bbox debug passes; see queue-acquire below).
         uint32_t want = 1;
-        if (queueFamily == indices.graphicsFamily.value()) want = 2; // graphics + vegetation (no separate geometry queue: see comment above)
+        if (queueFamily == indices.graphicsFamily.value()) want = 4; // graphics + vegetation + sdf + bbox
         uint32_t available = 1;
         if (queueFamily < familyProps.size()) available = familyProps[queueFamily].queueCount;
         uint32_t take = std::min(available, want);
@@ -5705,7 +5708,9 @@ void VulkanApp::createLogicalDevice() {
     auto it = requestedQueueCount.find(indices.graphicsFamily.value());
     if (it != requestedQueueCount.end()) gfxRequested = it->second;
     if (gfxRequested > 1) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 1, &vegetationQueue); else vegetationQueue = graphicsQueue;
-    if (gfxRequested > 2) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 2, &geometryQueue); else geometryQueue = graphicsQueue;
+    if (gfxRequested > 2) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 2, &sdfQueue); else sdfQueue = graphicsQueue;
+    if (gfxRequested > 3) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 3, &bboxQueue); else bboxQueue = graphicsQueue;
+    if (gfxRequested > 4) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 4, &geometryQueue); else geometryQueue = graphicsQueue;
     if (indices.presentFamily.value() == indices.graphicsFamily.value()) {
         // present uses the same family; reuse the main graphics queue
         presentQueue = graphicsQueue;

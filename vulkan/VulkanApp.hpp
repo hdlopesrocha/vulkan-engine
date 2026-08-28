@@ -76,6 +76,8 @@ class VulkanApp {
     VkQueue presentQueue = VK_NULL_HANDLE;
     // Dedicated queues for async subsystems
     VkQueue vegetationQueue = VK_NULL_HANDLE;
+    VkQueue sdfQueue = VK_NULL_HANDLE;
+    VkQueue bboxQueue = VK_NULL_HANDLE;
     VkQueue geometryQueue = VK_NULL_HANDLE;
     // Optional dedicated transfer queue (if available)
     VkQueue transferQueue = VK_NULL_HANDLE;
@@ -226,6 +228,8 @@ public:
     std::mutex graphicsSubmitMutex;
     std::mutex transferSubmitMutex;
     std::mutex vegetationSubmitMutex;
+    std::mutex sdfSubmitMutex;
+    std::mutex bboxSubmitMutex;
     // Separate submit mutex for the graphics-family geometry queue so upload
     // submission does not contend with per-frame render submission on the main
     // graphics queue's mutex. Only used when a distinct geometry queue exists.
@@ -502,6 +506,8 @@ public:
         VmaAllocator getVmaAllocator() const { return vma.allocator; }
         VkQueue getGraphicsQueue() const { return graphicsQueue; }
         VkQueue getVegetationQueue() const { return vegetationQueue; }
+    VkQueue getSdfQueue() const { return sdfQueue; }
+    VkQueue getBoundingBoxQueue() const { return bboxQueue; }
         VkQueue getPresentQueue() const { return presentQueue; }
         VkSwapchainKHR getSwapchain() const { return swapchain; }
         VkFormat getSwapchainImageFormat() const { return swapchainImageFormat; }
