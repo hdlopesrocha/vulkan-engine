@@ -167,6 +167,8 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         mainLiquidRenderer->createRenderTargets(app, width, height);
         // Recreate back-face and 360 reflection targets owned by SceneRenderer
         if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, width, height);
+        if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, width, height);
+        if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, width, height);
         if (solid360Renderer) {
             solid360Renderer->destroySolid360Targets(app);
             solid360Renderer->createSolid360Targets(app, mainLiquidRenderer->getLinearSampler());
@@ -309,7 +311,13 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     if (debugSDFRenderer) {
         debugSDFRenderer->init(app);
     }
-    
+
+    // Own offscreen framebuffers for the debug SDF cubes and mesh bounding boxes so
+    // they can be rendered on their own parallel async command buffers (composited
+    // by postprocess.frag against the solid scene depth).
+    if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+
     // Create per-frame main uniform buffers (TRANSFER_DST for vkCmdCopyBuffer from staging)
     size_t dsCount = app->getMainDescriptorSetCount();
     if (dsCount == 0) dsCount = 1;
@@ -435,6 +443,8 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Create back-face render targets early so their image views are
     // available before the first frame's water pass attempts to bind them.
     if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (solid360Renderer) {
         solid360Renderer->init(app);
         solid360Renderer->setWaterRenderer(mainLiquidRenderer.get());
@@ -628,6 +638,8 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Ensure back-face render targets are created as well so the
     // `backFaceDepthView` is valid before the first frame's water pass.
     if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
 
     // Create the solid wireframe pipeline (owned by SolidRenderer) and the
     // water wireframe pipeline
