@@ -203,20 +203,11 @@ void DebugSDFRenderer::prepareCull(VkCommandBuffer cmd) {
     // DrawCmd stream + count live in the terrain IR's SDF output buffers.
     if (pipeline == VK_NULL_HANDLE) return;
 
-    // Refresh the active payload from the per-chunk cache. The cache is the single
-    // source of truth (populated in SceneRenderer::processNodeLayer), so no
-    // external getter is needed.
-    {
-        std::lock_guard<std::recursive_mutex> lock(cubesMutex);
-        std::vector<CubeSDF> all;
-        size_t total = 0;
-        for (const auto& entry : nodeDebugSDFCubes) total += entry.second.size();
-        all.reserve(total);
-        for (const auto& entry : nodeDebugSDFCubes) {
-            for (const auto& c : entry.second) all.push_back(c);
-        }
-        activeCubes = std::move(all);
-    }
+    // activeCubes was assembled in registerToIndirect() from the SAME snapshot that
+    // feeds the terrain IR's SDF cull dispatch this frame, so its order/count
+    // already exactly match the indirect draw's firstInstance indices. Do NOT
+    // re-snapshot nodeDebugSDFCubes here: a concurrent chunk update between the two
+    // calls would reshuffle the unordered_map and desync instance index -> cube.
 
     if (activeCubes.empty()) {
         hasCubes_ = false;
@@ -523,14 +514,23 @@ void DebugSDFRenderer::clearCubes() {
 void DebugSDFRenderer::registerToIndirect() {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
     std::vector<IndirectRenderer::SdfCube> sdf;
+    std::vector<CubeSDF> cubes;
     size_t total = 0;
     for (const auto& entry : nodeDebugSDFCubes) total += entry.second.size();
     sdf.reserve(total);
+    cubes.reserve(total);
     for (const auto& entry : nodeDebugSDFCubes) {
         for (const auto& c : entry.second) {
             sdf.push_back({glm::vec3(c.cube.getMin()), glm::vec3(c.cube.getMax()),
                            c.cellSize, c.level, c.base});
+            // Keep the SAME ordered snapshot as the cull input so the vertex
+            // shader's instances[local] (local = SDF input index from the dispatch)
+            // lines up with sdfCubes_. A second, later snapshot in prepareCull would
+            // let a concurrent chunk update reshuffle the unordered_map and desync
+            // instance index -> drawn cube (random flicker).
+            cubes.push_back(c);
         }
     }
+    activeCubes = std::move(cubes);
     if (terrainIR_) terrainIR_->setSdfCubes(sdf);
 }

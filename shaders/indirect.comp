@@ -254,30 +254,12 @@ void processChunk(uint s) {
         if (inSdfCmds.cmds[local].instanceCount == 0u) return; // not a valid cube slot
 
         // boundsSdf stride is 4 vec4 per cube: {min, max, lodMeta, base}.
+        // SDF debug cubes are a frustum-only overlay: they mark where SDF faces
+        // exist at every resolution, so we intentionally do NOT apply the clipmap
+        // LOD band gate (unlike the solid/bbox streams). Only the frustum test
+        // below can drop them, which is what lets all in-view SDF cubes render.
         vec3 bmin = boundsSdf.data[local * 4u + 0u].xyz;
         vec3 bmax = boundsSdf.data[local * 4u + 1u].xyz;
-        vec4 lodMeta = boundsSdf.data[local * 4u + 2u];
-        vec3 base = boundsSdf.data[local * 4u + 3u].xyz;
-
-        // ── LoD band gate (mirrors the solid chunk gate) ──
-        // SDF cubes are emitted at the chunk's finest surface rung, but the gate
-        // selects the rung by the CHUNK's LoD (distance from camera to the chunk
-        // centre) so parent/child chunk SDF cubes never overlap with the finer
-        // terrain. Entries with no LoD data (cellSize <= 0) fall through and are
-        // kept (frustum-only, legacy).
-        float cellSize = lodMeta.x;
-        int entryLevel = int(lodMeta.y + 0.5);
-        int maxLevel   = int(lodMeta.z + 0.5);
-        if (cellSize > 0.0) {
-            float baseCell = cellSize / exp2(float(max(entryLevel, 0))); // == G/2, invariant
-            vec3  center   = base + 0.5f * cellSize;                     // this chunk's centre
-            float band = distance(pc.camPos, center) / (baseCell * pc.lodBias);
-            uint selectedLevel = uint(floor(band));
-            selectedLevel = uint(min(float(selectedLevel), float(maxLevel)));
-            selectedLevel = uint(max(float(selectedLevel), 1.0f));        // no rung-0 hole (1 = finest)
-            selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
-            if (uint(entryLevel) != selectedLevel) return;
-        }
 
         // frustum visibility
         if (!aabbVisible(gPlanes, bmin, bmax)) return;
