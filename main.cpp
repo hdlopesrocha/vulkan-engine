@@ -936,18 +936,24 @@ public:
                 };
                 for (uint32_t f = 0; f < 3; ++f) {
                     if (queryPools[f] == VK_NULL_HANDLE) continue;
-                    std::array<uint64_t, QUERY_COUNT> ts{};
+                    // Timestamp query pools may NOT be read with VK_QUERY_RESULT_PARTIAL_BIT
+                    // (VUID-vkGetQueryPoolResults-queryType-09439). Use WITH_AVAILABILITY_BIT
+                    // instead: each query result is a (value, availability) pair, so the stride
+                    // is two uint64_t per query and we test availability to detect a stuck pass.
+                    std::array<uint64_t, QUERY_COUNT * 2> ts{};
                     if (vkGetQueryPoolResults(getDevice(), queryPools[f], 0, QUERY_COUNT,
-                            sizeof(ts[0]) * ts.size(), ts.data(), sizeof(ts[0]),
-                            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_PARTIAL_BIT) != VK_SUCCESS)
+                            sizeof(ts), ts.data(), sizeof(uint64_t) * 2,
+                            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS)
                         continue;
                     std::cerr << "[stall] pool " << f << " timestamps:\n";
                     for (uint32_t i = 0; i < 10; ++i) {
-                        const uint64_t start = ts[i * 2], end = ts[i * 2 + 1];
-                        const bool haveStart = start != 0, haveEnd = end != 0;
+                        const uint64_t startVal = ts[4 * i], startAvail = ts[4 * i + 1];
+                        const uint64_t endVal = ts[4 * i + 2], endAvail = ts[4 * i + 3];
+                        const bool haveStart = startAvail != 0 && startVal != 0;
+                        const bool haveEnd = endAvail != 0 && endVal != 0;
                         std::cerr << "[stall]   " << intervalNames[i]
                                   << (haveEnd ? " DONE " : (haveStart ? " STUCK " : "  idle "))
-                                  << " start=" << start << " end=" << end << "\n";
+                                  << " start=" << startVal << " end=" << endVal << "\n";
                     }
                 }
             };
