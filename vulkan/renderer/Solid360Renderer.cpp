@@ -6,6 +6,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <stdexcept>
 #include <iostream>
+#include <vector>
 
 Solid360Renderer::Solid360Renderer() {}
 Solid360Renderer::~Solid360Renderer() {}
@@ -305,19 +306,21 @@ void Solid360Renderer::createSolid360Pipelines(VulkanApp* app) {
     vertexShader.info.module = VK_NULL_HANDLE;
 }
 
-void Solid360Renderer::render(VulkanApp* app, VkCommandBuffer cmd,
-                                     SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
-                                     SolidRenderer* solidRenderer,
-                                     VkDescriptorSet mainDescriptorSet,
-                                     VkDescriptorSet brushDepthSet,
-                                     Buffer& uniformBuffer, const UniformObject& ubo,
-                                     bool renderSolid, bool renderWater,
-                                     VkDescriptorSet computeDs,
-                                     VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer,
-                                     VkDescriptorSet waterComputeDs,
-                                     VkBuffer waterCompactIndirectBuffer, VkBuffer waterVisibleCountBuffer,
-                                     uint32_t frameIndex) {
-    if (!app || cmd == VK_NULL_HANDLE) return;
+void Solid360Renderer::render(VulkanApp* app,
+                                      SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
+                                      SolidRenderer* solidRenderer,
+                                      VkDescriptorSet brushDepthSet,
+                                      VkBuffer faceUboBuffer,
+                                      const Cube360FaceResources& faceRes,
+                                      const UniformObject& ubo,
+                         bool renderSolid, bool renderWater,
+                         VkSemaphore waitCullSolid360,
+                         VkSemaphore waitShadowSolid360,
+                         const VkSemaphore (&semCullFace)[6],
+                                      const VkSemaphore (&semFaceDone)[6],
+                                      VkSemaphore signalSolid360,
+                                      uint32_t frameIndex) {
+    if (!app || faceUboBuffer == VK_NULL_HANDLE) return;
     if (cube360FaceViews[0] == VK_NULL_HANDLE) return;
 
     // Advance to next staging buffer slot for frame-in-flight isolation
@@ -347,81 +350,97 @@ void Solid360Renderer::render(VulkanApp* app, VkCommandBuffer cmd,
         waterRenderer->ensureCubemapResources(app, app->getSwapchainImageFormat());
     }
 
-    // Acquire water indirect buffers once (shared across all faces).
-    if (renderWater && waterRenderer && waterRenderer->getCubemapWaterPipeline() != VK_NULL_HANDLE) {
-        waterRenderer->getIndirectRenderer().acquireBuffers(cmd);
-    }
+    auto beginOne = [&](VkCommandBuffer& out) {
+        out = app->allocatePrimaryCommandBuffer();
+        VkCommandBufferBeginInfo bi{};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(out, &bi) != VK_SUCCESS)
+            throw std::runtime_error("[solid360] failed to begin command buffer");
+    };
 
-    for (uint32_t face = 0; face < 6; ++face) {
-        glm::mat4 faceView = glm::lookAt(camPos, camPos + faces[face].target, faces[face].up);
-        glm::mat4 faceVP = faceProj * faceView;
+    // ---- Phase A: serial per-face indirect cull (one CB, six face signals) -------
+    // prepareCullWithDescriptor shares a single visible-lods scratch buffer, so the
+    // 6 face culls MUST run serially (no HW parallelism). Each face writes its OWN
+    // compact/visible buffers (faceRes) so the (parallel) raster passes never race
+    // with the next face's cull. We keep all 6 culls in ONE command buffer (so the
+    // geometry upload inside acquireBuffers happens once, not six times) and signal
+    // one dedicated semaphore per face at the end; each raster waits only its own
+    // semaphore, so the 6 rasterizations still overlap fully with each other.
+    {
+        VkCommandBuffer cullCmd;
+        beginOne(cullCmd);
+        CommandBufferState cullState;
+        cmdState = &cullState;
 
-        UniformObject faceUBO = ubo;
-        faceUBO.viewProjection = faceVP;
-        faceUBO.invViewProjection = glm::inverse(faceVP);
-        faceUBO.materialFlags.x = 1.0f;
+        for (uint32_t face = 0; face < 6; ++face) {
+            glm::mat4 faceView = glm::lookAt(camPos, camPos + faces[face].target, faces[face].up);
+            glm::mat4 faceVP = faceProj * faceView;
 
-        // Wait for previous face's draws to finish reading the UBO before overwriting it
-        {
-            VkMemoryBarrier2 preBarrier{};
-            preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-            preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-            preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            VkDependencyInfo dep{};
-            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dep.memoryBarrierCount = 1;
-            dep.pMemoryBarriers = &preBarrier;
-            vkCmdPipelineBarrier2(cmd, &dep);
+            UniformObject faceUBO = ubo;
+            faceUBO.viewProjection = faceVP;
+            faceUBO.invViewProjection = glm::inverse(faceVP);
+            faceUBO.materialFlags.x = 1.0f;
+
+            // Upload face UBO into the per-face slot of the 6-slot cube UBO via a
+            // host-mapped staging copy (avoids vkCmdUpdateBuffer's FULL_QUEUE barrier).
+            VkDeviceSize off = static_cast<VkDeviceSize>(face) * sizeof(UniformObject);
+            memcpy(staging.map(off), &faceUBO, sizeof(UniformObject));
+            VkBufferCopy copy{ off, off, sizeof(UniformObject) };
+            vkCmdCopyBuffer(cullCmd, staging.buffer, faceUboBuffer, 1, &copy);
+
+            // Solid face cull → per-face compact/visible buffers
+            if (renderSolid && faceRes.solidComputeDs[face] != VK_NULL_HANDLE &&
+                faceRes.compact[face] != VK_NULL_HANDLE && faceRes.visible[face] != VK_NULL_HANDLE) {
+                solidRenderer->getIndirectRenderer().prepareCullWithDescriptor(
+                    cullCmd, faceVP, faceRes.solidComputeDs[face],
+                    faceRes.compact[face], faceRes.visible[face], camPos);
+            }
+            // Water face cull → per-face compact/visible buffers
+            if (renderWater && waterRenderer && faceRes.waterComputeDs[face] != VK_NULL_HANDLE &&
+                faceRes.waterCompact[face] != VK_NULL_HANDLE && faceRes.waterVisible[face] != VK_NULL_HANDLE) {
+                waterRenderer->getIndirectRenderer().prepareCullWithDescriptor(
+                    cullCmd, faceVP, faceRes.waterComputeDs[face],
+                    faceRes.waterCompact[face], faceRes.waterVisible[face], camPos);
+            }
         }
 
-        // Upload face UBO via vkCmdCopyBuffer from persistently mapped staging
-        // buffer (avoids vkCmdUpdateBuffer's implicit FULL_QUEUE barrier).
-        VkDeviceSize faceStagingOff = static_cast<VkDeviceSize>(face) * sizeof(UniformObject);
-        memcpy(staging.map(faceStagingOff), &faceUBO, sizeof(UniformObject));
-        VkBufferCopy copy{ faceStagingOff, 0, sizeof(UniformObject) };
-        vkCmdCopyBuffer(cmd, staging.buffer, uniformBuffer.buffer, 1, &copy);
+        // Signal all 6 per-face cull semaphores; each raster waits only its own.
+        // The cull must run after the main cull AND the shadow map are ready, so the
+        // rasterization (which samples the shadow map at set 2) never races it.
+        std::vector<VkSemaphore> cullSigns(semCullFace, semCullFace + 6);
+        app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), nullptr,
+            { waitCullSolid360, waitShadowSolid360 }, false, cullSigns);
+    }
 
-        VkMemoryBarrier2 memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT;
-        VkDependencyInfo dep{};
-        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.memoryBarrierCount = 1;
-        dep.pMemoryBarriers = &memBarrier;
-        vkCmdPipelineBarrier2(cmd, &dep);
+    // ---- Phase B: parallel per-face rasterization on distinct graphics queues ----
+    // Each face writes a distinct array layer of the cube (color + depth), binds its
+    // own gfx descriptor set (binding 0 = its own UBO slot) and its own compact/visible
+    // indirect buffers, so the 6 rasterizations have no shared writable resource and
+    // can overlap fully across the up-to-6 queues returned by getCubeQueue(face).
+    for (uint32_t face = 0; face < 6; ++face) {
+        VkCommandBuffer fcmd;
+        beginOne(fcmd);
+        CommandBufferState faceState;
+        cmdState = &faceState;
+        VkDescriptorSet gfxSet = faceRes.gfxDs[face];
 
         // Transition color layer: tracked layout → COLOR_ATTACHMENT_OPTIMAL
         {
             VkAccessFlags2 srcAccess = (cube360ColorLayouts[face] == VK_IMAGE_LAYOUT_UNDEFINED)
                 ? 0 : VK_ACCESS_2_SHADER_READ_BIT;
             RendererUtils::transitionImageLayout(
-                cmd, cube360ColorImage,
+                fcmd, cube360ColorImage,
                 cube360ColorLayouts[face], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 srcAccess, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, face, 1);
         }
-
         // Transition depth layer: tracked layout → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         if (app) {
-            app->recordTransitionImageLayoutLayer(cmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
-                                                 cube360DepthLayouts[face], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                                                 1, face, 1);
-        }
-
-        // Per-face frustum cull — must run OUTSIDE dynamic rendering
-        if (renderSolid && computeDs != VK_NULL_HANDLE && compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
-            auto &ind = solidRenderer->getIndirectRenderer();
-            ind.prepareCullWithDescriptor(cmd, faceVP, computeDs, compactIndirectBuffer, visibleCountBuffer, camPos);
-        }
-        // Per-face water cull with dedicated buffers (no race with main pass)
-        if (renderWater && waterRenderer && waterComputeDs != VK_NULL_HANDLE && waterCompactIndirectBuffer != VK_NULL_HANDLE && waterVisibleCountBuffer != VK_NULL_HANDLE) {
-            waterRenderer->getIndirectRenderer().prepareCullWithDescriptor(cmd, faceVP, waterComputeDs, waterCompactIndirectBuffer, waterVisibleCountBuffer, camPos);
+            app->recordTransitionImageLayoutLayer(fcmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
+                cube360DepthLayouts[face], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                1, face, 1);
         }
 
         // ── Instance 1: Depth pre-pass (no color, lightweight depth_only.frag) ──
@@ -446,26 +465,26 @@ void Solid360Renderer::render(VulkanApp* app, VkCommandBuffer cmd,
             ri.pColorAttachments = nullptr;
             ri.pDepthAttachment = &depthAtt;
 
-            vkCmdBeginRendering(cmd, &ri);
+            vkCmdBeginRendering(fcmd, &ri);
 
             VkViewport viewport{0.0f, 0.0f, (float)CUBE360_FACE_SIZE, (float)CUBE360_FACE_SIZE, 0.0f, 1.0f};
-            vkCmdSetViewport(cmd, 0, 1, &viewport);
+            vkCmdSetViewport(fcmd, 0, 1, &viewport);
             VkRect2D scissor{{0, 0}, {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE}};
-            vkCmdSetScissor(cmd, 0, 1, &scissor);
+            vkCmdSetScissor(fcmd, 0, 1, &scissor);
 
             if (renderSolid && solidRenderer && depthOnlyPipeline != VK_NULL_HANDLE) {
-                if (cmdState) cmdState->bindGraphicsPipeline(cmd, depthOnlyPipeline);
-                else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipeline);
-                if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, depthOnlyPipelineLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipelineLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
-                    solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
+                if (cmdState) cmdState->bindGraphicsPipeline(fcmd, depthOnlyPipeline);
+                else vkCmdBindPipeline(fcmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipeline);
+                if (cmdState) cmdState->bindGraphicsDescriptorSets(fcmd, depthOnlyPipelineLayout, 0, 1, &gfxSet, 0, nullptr);
+                else vkCmdBindDescriptorSets(fcmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipelineLayout, 0, 1, &gfxSet, 0, nullptr);
+                if (faceRes.compact[face] != VK_NULL_HANDLE && faceRes.visible[face] != VK_NULL_HANDLE) {
+                    solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(fcmd, faceRes.compact[face], faceRes.visible[face]);
                 } else {
-                    solidRenderer->getIndirectRenderer().drawPrepared(cmd, 0);
+                    solidRenderer->getIndirectRenderer().drawPrepared(fcmd, 0);
                 }
             }
 
-            vkCmdEndRendering(cmd);
+            vkCmdEndRendering(fcmd);
         }
 
         // ── Instance 2: Color pass (load prepass depth, use solid renderer's pipeline) ──
@@ -498,23 +517,23 @@ void Solid360Renderer::render(VulkanApp* app, VkCommandBuffer cmd,
             ri.pColorAttachments = &colorAtt;
             ri.pDepthAttachment = &depthAtt;
 
-            vkCmdBeginRendering(cmd, &ri);
+            vkCmdBeginRendering(fcmd, &ri);
 
             VkViewport viewport{0.0f, 0.0f, (float)CUBE360_FACE_SIZE, (float)CUBE360_FACE_SIZE, 0.0f, 1.0f};
-            vkCmdSetViewport(cmd, 0, 1, &viewport);
+            vkCmdSetViewport(fcmd, 0, 1, &viewport);
             VkRect2D scissor{{0, 0}, {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE}};
-            vkCmdSetScissor(cmd, 0, 1, &scissor);
+            vkCmdSetScissor(fcmd, 0, 1, &scissor);
 
             // Sky first (background, no depth)
             if (skyRenderer) {
                 VkPipeline skyPipe = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyFullscreenGridPipeline() : skyRenderer->getSkyFullscreenPipeline();
                 VkPipelineLayout skyLayout = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyFullscreenGridPipelineLayout() : skyRenderer->getSkyFullscreenPipelineLayout();
                 if (skyPipe != VK_NULL_HANDLE && skyLayout != VK_NULL_HANDLE) {
-                    if (cmdState) cmdState->bindGraphicsPipeline(cmd, skyPipe);
-                    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipe);
-                    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, skyLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                    vkCmdDraw(cmd, 3, 1, 0, 0);
+                    if (cmdState) cmdState->bindGraphicsPipeline(fcmd, skyPipe);
+                    else vkCmdBindPipeline(fcmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipe);
+                    if (cmdState) cmdState->bindGraphicsDescriptorSets(fcmd, skyLayout, 0, 1, &gfxSet, 0, nullptr);
+                    else vkCmdBindDescriptorSets(fcmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyLayout, 0, 1, &gfxSet, 0, nullptr);
+                    vkCmdDraw(fcmd, 3, 1, 0, 0);
                 }
             }
 
@@ -523,133 +542,67 @@ void Solid360Renderer::render(VulkanApp* app, VkCommandBuffer cmd,
                 VkPipeline gfxPipe = solidRenderer->getGraphicsPipeline();
                 VkPipelineLayout gfxLayout = solidRenderer->getGraphicsPipelineLayout();
                 if (gfxPipe != VK_NULL_HANDLE && gfxLayout != VK_NULL_HANDLE) {
-                    if (cmdState) cmdState->bindGraphicsPipeline(cmd, gfxPipe);
-                    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxPipe);
-                    // gfxPipe uses main.frag which references brush depth at set=1
-                    VkDescriptorSet bindSets[2] = { mainDescriptorSet, brushDepthSet };
-                    uint32_t bindCount = (brushDepthSet != VK_NULL_HANDLE) ? 2 : 1;
-                    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, gfxLayout, 0, bindCount, bindSets, 0, nullptr);
-                    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxLayout, 0, bindCount, bindSets, 0, nullptr);
-                    if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
-                        solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
+                    if (cmdState) cmdState->bindGraphicsPipeline(fcmd, gfxPipe);
+                    else vkCmdBindPipeline(fcmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxPipe);
+                    // gfxPipe uses main.frag which references brush depth at set=1. Bind a
+                    // DS with the brush-depth layout there; fall back to the dedicated
+                    // cube360 brush-depth DS when the caller passed a null set (otherwise
+                    // set 1 would be left bound to the water block's materials DS).
+                    VkDescriptorSet solidSet1 = (brushDepthSet != VK_NULL_HANDLE) ? brushDepthSet : faceRes.brushDepthDs;
+                    VkDescriptorSet bindSets[2] = { gfxSet, solidSet1 };
+                    uint32_t bindCount = (solidSet1 != VK_NULL_HANDLE) ? 2 : 1;
+                    if (cmdState) cmdState->bindGraphicsDescriptorSets(fcmd, gfxLayout, 0, bindCount, bindSets, 0, nullptr);
+                    else vkCmdBindDescriptorSets(fcmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxLayout, 0, bindCount, bindSets, 0, nullptr);
+                    if (faceRes.compact[face] != VK_NULL_HANDLE && faceRes.visible[face] != VK_NULL_HANDLE) {
+                        solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(fcmd, faceRes.compact[face], faceRes.visible[face]);
                     } else {
-                        solidRenderer->getIndirectRenderer().drawPrepared(cmd, 0);
+                        solidRenderer->getIndirectRenderer().drawPrepared(fcmd, 0);
                     }
                 }
             }
 
-            vkCmdEndRendering(cmd);
+            vkCmdEndRendering(fcmd);
         }
 
-        // Render water into the cubemap face (with reflection/refraction disabled via skipEnvMap flag in UBO).
-        // Rebind water pipeline + descriptors here because the solid pass above overwrote them.
-        // Depth stays in ATTACHMENT_OPTIMAL; renderWaterIntoCubemap uses the dummy depth for shader sampling
-        // so no layout transition is needed. Only when water rendering is enabled (settings.waterEnabled);
-        // otherwise the cubemap reflects solids only and the preview will not show stale water.
-        if (renderWater && waterRenderer && waterRenderer->getCubemapWaterPipeline() != VK_NULL_HANDLE) {
-            waterRenderer->bindCubemapWaterPipeline(cmd, mainDescriptorSet, frameIndex);
-            waterRenderer->renderWaterIntoCubemap(cmd,
-                cube360FaceViews[face], cube360DepthViews[face],
-                CUBE360_FACE_SIZE,
-                waterCompactIndirectBuffer, waterVisibleCountBuffer,
-                frameIndex);
-        }
+        // NOTE: Cubemap faces render solid + sky only. Water reflections are sampled
+        // from the main water pipeline's output, not re-rendered into the cube (the
+        // cube face uses the swapchain color format, which is incompatible with the
+        // single water geometry pipeline that targets R32G32B32A32_SFLOAT). Keeping
+        // exactly one water geometry pipeline avoids a second pipeline/layout and the
+        // descriptor-set-1 (materials vs brush-depth) layout clash it caused.
 
-        // Barrier: ensure previous face's draw finishes reading compact/visible
-        // buffers before next face's cull overwrites them (fill + dispatch)
-        {
-            VkBufferMemoryBarrier2 b[4]{};
-            uint32_t bc = 0;
-            auto addIndirectBarrier = [&](VkBuffer buf) {
-                if (buf == VK_NULL_HANDLE) return;
-                b[bc].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-                b[bc].srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-                b[bc].srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-                // TRANSFER stage too: the next face's cull now clears the whole
-                // compact buffer with vkCmdFillBuffer (garbage-indexCount
-                // hardening), so the draw's indirect reads must complete before
-                // the fill overwrites them (WRITE_AFTER_READ hazard otherwise).
-                b[bc].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-                b[bc].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                b[bc].buffer = buf;
-                b[bc].size = VK_WHOLE_SIZE; ++bc;
-            };
-            // Solid buffers
-            addIndirectBarrier(compactIndirectBuffer);
-            addIndirectBarrier(visibleCountBuffer);
-            // Water buffers: the water pass draws from them and the next face's
-            // water cull clears them, so they need the same ordering.
-            addIndirectBarrier(waterCompactIndirectBuffer);
-            addIndirectBarrier(waterVisibleCountBuffer);
-            if (bc > 0) {
-                VkDependencyInfo dep_{};
-                dep_.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dep_.bufferMemoryBarrierCount = bc;
-                dep_.pBufferMemoryBarriers = b;
-                vkCmdPipelineBarrier2(cmd, &dep_);
-            }
-        }
-
-        // Transition color: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+        // Transition per-face color/depth layers → SHADER_READ_ONLY_OPTIMAL so the
+        // downstream water/composite passes can sample this cubemap layer once the
+        // join semaphore fires. Each layer is a distinct image subresource, so the
+        // 6 transitions are safe to run concurrently on different queues.
         {
             RendererUtils::transitionImageLayout(
-                cmd, cube360ColorImage,
+                fcmd, cube360ColorImage,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, face, 1);
         }
         cube360ColorLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        // Transition depth: DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
-        if (app) app->recordTransitionImageLayoutLayer(cmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
+        if (app) app->recordTransitionImageLayoutLayer(fcmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
             VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, face, 1);
         cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        // Wait on this face's cull (which itself waited on the main cull + shadow map);
+        // signal done. Each face has its own cull semaphore, so the 6 rasterizations
+        // overlap fully across the cube queues without sharing a binary semaphore.
+        app->submitCommandBufferAsyncToQueue(fcmd, app->getCubeQueue(face), nullptr,
+            { semCullFace[face] }, false, { semFaceDone[face] });
     }
 
-    // Cubemap rendering complete; cubemap image view is available for sampling.
-    // Wait for all face draws to finish reading the UBO before restoring it
-    {
-        VkMemoryBarrier2 preBarrier{};
-        preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-        preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        VkDependencyInfo dep{};
-        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.memoryBarrierCount = 1;
-        dep.pMemoryBarriers = &preBarrier;
-        vkCmdPipelineBarrier2(cmd, &dep);
-    }
+    // ---- Join: wait all 6 faces, then signal semSolid360 for the water pass ------
+    // The cube image (all 6 layers) is now complete and in SHADER_READ_ONLY_OPTIMAL;
+    // the async water pass waits on semSolid360, so it samples a coherent cubemap.
+    VkCommandBuffer joinCmd;
+    beginOne(joinCmd);
+    std::vector<VkSemaphore> joinWaits(semFaceDone, semFaceDone + 6);
+    app->submitCommandBufferAsyncToQueue(joinCmd, app->getGraphicsQueue(), nullptr,
+        joinWaits, false, { signalSolid360 });
 
-    // Restore UBO via vkCmdCopyBuffer from persistently mapped staging buffer.
-    VkDeviceSize restoreStagingOff = 6 * sizeof(UniformObject);
-    memcpy(staging.map(restoreStagingOff), &ubo, sizeof(UniformObject));
-    VkBufferCopy copy{ restoreStagingOff, 0, sizeof(UniformObject) };
-    vkCmdCopyBuffer(cmd, staging.buffer, uniformBuffer.buffer, 1, &copy);
-    {
-        VkMemoryBarrier2 memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT;
-        VkDependencyInfo dep{};
-        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.memoryBarrierCount = 1;
-        dep.pMemoryBarriers = &memBarrier;
-        vkCmdPipelineBarrier2(cmd, &dep);
-    }
-
-    // Global same-layout barrier: make all per-face COLOR_ATTACHMENT_WRITEs
-    // visible to subsequent SHADER_SAMPLED_READs (e.g. in the main pass on the same queue).
-    {
-        RendererUtils::transitionImageLayout(
-            cmd, cube360ColorImage,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT, 0, 6);
-    }
+    cmdState = nullptr;
 }

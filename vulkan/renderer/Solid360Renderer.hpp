@@ -7,7 +7,32 @@
 #include "WaterRenderer.hpp"
 #include "../ubo/UniformObject.hpp"
 #include <array>
+#include <vector>
 #include "CommandBufferState.hpp"
+
+// Per-face resources for parallel cubemap rendering. Each of the 6 cubemap faces
+// gets its own graphics descriptor set (binding 0 = a distinct slot of the 6-slot
+// cube UBO), its own solid/water compute descriptor sets (compact/visible outputs
+// bound to per-face buffers) and its own compact/visible indirect buffers, so the
+// 6 face rasterizations can run concurrently on different queues without sharing
+// any writable resource (each face writes a distinct array layer of the cube image).
+struct Cube360FaceResources {
+    std::array<VkDescriptorSet, 6> gfxDs = {};
+    std::array<VkDescriptorSet, 6> solidComputeDs = {};
+    std::array<VkDescriptorSet, 6> waterComputeDs = {};
+    std::array<VkBuffer, 6> compact = {};
+    std::array<VkBuffer, 6> visible = {};
+    std::array<VkBuffer, 6> waterCompact = {};
+    std::array<VkBuffer, 6> waterVisible = {};
+    // Materials SSBO set for the water pipeline's set 1 (the cube360 solid pass
+    // binds brush depth at set 1, which is wrong for the water pipeline, so the
+    // water draw explicitly rebinds this materials DS at set 1).
+    VkDescriptorSet materialsDs = VK_NULL_HANDLE;
+    // Fallback brush-depth DS for the solid pipeline's set 1. The caller may pass a
+    // null brush depth DS (e.g. before the brush renderer's sets are allocated); bind
+    // this dedicated DS instead so set 1 always carries the brush-depth layout.
+    VkDescriptorSet brushDepthDs = VK_NULL_HANDLE;
+};
 
 class Solid360Renderer : public Renderer {
 public:
@@ -24,19 +49,29 @@ public:
     // Create depth-only and EQUAL-compare pipelines for deferred depth testing
     void createSolid360Pipelines(VulkanApp* app);
 
-    void render(VulkanApp* app, VkCommandBuffer cmd,
+    // Render the 6 cubemap faces of the solid360 reflections in parallel. The 6 face
+    // rasterizations are submitted as independent primary command buffers to distinct
+    // graphics-family queues (app->getCubeQueue, round-robin); the indirect cull must
+    // stay serial (it relies on a shared scratch buffer), so a single cull command
+    // buffer feeds each face its own compact/visible buffers, then signals one
+    // per-face semaphore (semCullFace[f]) that the raster CB waits on. A final join
+    // command buffer waits all semFaceDone[f] and signals signalSolid360 so downstream
+    // water/composite passes can sample the cubemap. The caller must pre-create
+    // semCullFace[6] and semFaceDone[6]; faceRes holds the per-face descriptors and
+    // indirect buffers (see Cube360FaceResources).
+    void render(VulkanApp* app,
                         SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                         SolidRenderer* solidRenderer,
-                        VkDescriptorSet mainDescriptorSet,
                         VkDescriptorSet brushDepthSet,
-                        Buffer& uniformBuffer, const UniformObject& ubo,
-                        bool renderSolid, bool renderWater,
-                        VkDescriptorSet computeDs = VK_NULL_HANDLE,
-                        VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,
-                        VkBuffer visibleCountBuffer = VK_NULL_HANDLE,
-                        VkDescriptorSet waterComputeDs = VK_NULL_HANDLE,
-                        VkBuffer waterCompactIndirectBuffer = VK_NULL_HANDLE,
-                        VkBuffer waterVisibleCountBuffer = VK_NULL_HANDLE,
+                        VkBuffer faceUboBuffer,
+                        const Cube360FaceResources& faceRes,
+                        const UniformObject& ubo,
+                         bool renderSolid, bool renderWater,
+                         VkSemaphore waitCullSolid360,
+                         VkSemaphore waitShadowSolid360,
+                         const VkSemaphore (&semCullFace)[6],
+                        const VkSemaphore (&semFaceDone)[6],
+                        VkSemaphore signalSolid360,
                         uint32_t frameIndex = 0);
 
     // Return the cubemap view for reflection sampling
