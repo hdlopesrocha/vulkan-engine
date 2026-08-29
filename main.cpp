@@ -1509,7 +1509,12 @@ public:
                 if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
                     this->sceneRenderer->debugSDFRenderer->prepareCull(cullCmd);
                 // Signal the single cull timeline semaphore; consumers wait on tlCull@v.
-                app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &tlCull, {}, true, {}, {}, v, {}, true);
+                // Cull is the root producer. The composite no longer waits tlCull
+                // directly (it is transitively implied by tlBrushLiquid via the
+                // Cull->Shadow->Solid->Solid360->Water->BrushLiquid chain), so it is
+                // not registered into the composite's wait list. Every consumer that
+                // needs cull results waits it explicitly or transitively.
+                app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &tlCull, {}, false, {}, {}, v, {}, false);
             });
             asyncCullFuture.get();
             // Restore the per-frame state for the main CB's continued recording.
@@ -1532,7 +1537,9 @@ public:
                     this->sceneRenderer->setCmdState(&brushState);
                     this->sceneRenderer->brushRenderer->recordEarlyPass(this, brushSolidCmd, frameIdx, *this->sceneRenderer->mainSolidRenderer, getMainDescriptorSet());
                     this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
-                    submitCommandBufferAsyncToQueue(brushSolidCmd, getBrushSolidQueue(), &tlBrushSolid, {tlCull}, true, {}, {v}, v, {}, true);
+                    // BrushSolid's signal is not registered for the composite: tlBrushSolid
+                    // is transitively implied by tlBrushLiquid (Water->BrushLiquid).
+                    submitCommandBufferAsyncToQueue(brushSolidCmd, getBrushSolidQueue(), &tlBrushSolid, {tlCull}, false, {}, {v}, v, {}, false);
                 } else {
                     std::cerr << "[MyApp] vkBeginCommandBuffer failed for brushSolid pass" << std::endl;
                     freeCommandBuffer(brushSolidCmd);
@@ -1858,7 +1865,11 @@ public:
                 // brush depth), shadow (shadow map + restored UBO) and brush-solid
                 // results, then signal tlSolid@v (registered so the main composite CB
                 // waits on it). tlSolid@v is also waited by the water and solid360 tasks.
-                app->submitCommandBufferAsyncToQueue(solidCmd, app->getSolidQueue(), &tlSolid, {tlCull, tlShadow, tlBrushSolid}, true, {}, {v, v, v}, v, {}, true);
+                // Solid waits on the shadow map (tlShadow) and brush-solid depth
+                // (tlBrushSolid); tlCull is transitively implied by both, so it is
+                // dropped. tlSolid is not registered for the composite (implied by
+                // tlBrushLiquid via Water).
+                app->submitCommandBufferAsyncToQueue(solidCmd, app->getSolidQueue(), &tlSolid, {tlShadow, tlBrushSolid}, false, {}, {v, v}, v, {}, false);
                 this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
             });
             // Join the solid task before the main (composite) command buffer is recorded
@@ -1902,7 +1913,7 @@ public:
                         this->cube360FaceRes,
                         ubo360,
                         settings.renderSolid, waterEnabled,
-                        tlCull, v, tlShadow, v, tlSolid, v,
+                        VK_NULL_HANDLE, 0, VK_NULL_HANDLE, 0, tlSolid, v,
                         cube360SemCullFace, cube360SemFaceDone,
                         tlSolid360, v,
                         frameIdx);
@@ -1937,7 +1948,7 @@ public:
                 VkImageView vegColorView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegColorView(frameIdx) : VK_NULL_HANDLE;
                 VkImageView vegDepthView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegDepthView(frameIdx) : VK_NULL_HANDLE;
                 if (vegColorView == VK_NULL_HANDLE || vegDepthView == VK_NULL_HANDLE) {
-                    app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg, {tlCull, tlShadow}, true, {}, {v, v}, v, {}, true);
+                app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg, {tlShadow}, true, {}, {v}, v, {}, true);
                     return;
                 }
                 // Render area must match the vegetation offscreen targets' backing size
@@ -2044,7 +2055,7 @@ public:
                 // semMainCull/semShadow); the semaphores provide the cross-queue
                 // (graphics→vegetation) memory dependency, and being the same queue family
                 // no ownership transfer is required.
-                app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg, {tlCull, tlShadow}, true, {}, {v, v}, v, {}, true);
+                app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg, {tlShadow}, true, {}, {v}, v, {}, true);
             });
         }
 
@@ -2362,14 +2373,14 @@ public:
                 // map + restored UBO, semSolid360 for the cubemap, semSolidWater for the
                 // solid color/depth). Each of these is signaled by exactly one command
                 // buffer, so the one-waiter invariant holds and no deadlock occurs.
-                // Submit to the dedicated water queue. Wait on the cull results
-                // (visibleLods / indirect draw args), the shadow map + restored UBO
-                // (tlShadow), the solid360 cubemap (tlSolid360) and the solid
-                // color/depth (tlSolid) + sky (tlSky) + brush-solid (tlBrushSolid)
-                // before shading/refraction. Signal tlWater@v (registered so the main
-                // composite CB waits on it; the brush-liquid pass also waits tlWater@v).
-                // A single timeline semaphore carries every consumer of the water pass.
-                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater, {tlCull, tlShadow, tlSolid360, tlSolid, tlSky, tlBrushSolid}, true, {}, {v, v, v, v, v, v}, v, {}, true);
+                // Submit to the dedicated water queue. Wait on the solid360 cubemap
+                // (tlSolid360) and sky (tlSky) for shading/refraction. The cull results
+                // (tlCull), shadow map (tlShadow), solid color/depth (tlSolid) and
+                // brush-solid depth (tlBrushSolid) are all transitively implied by
+                // tlSolid360 (which itself waits tlSolid -> tlShadow/tlBrushSolid ->
+                // tlCull), so they are dropped. Signal tlWater@v; tlWater is NOT
+                // registered for the composite (it is implied by tlBrushLiquid).
+                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater, {tlSolid360, tlSky}, false, {}, {v, v}, v, {}, false);
 
                 // Brush-liquid overlay: re-enter the water geometry pass on its own
                 // queue, AFTER the main water pass completes (semWater), and draw the
