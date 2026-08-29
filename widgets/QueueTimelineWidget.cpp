@@ -40,13 +40,13 @@ void QueueTimelineWidget::updateWithApp(VulkanApp* app) {
 
     // Build the queue row list once (handles are stable for the app lifetime).
     if (!rowsBuilt_) {
-        struct Cand { VkQueue h; const char* n; };
+        struct Cand { VkQueue h; std::string n; };
         const auto& pg = app->getParallelGraphicsQueues();
         auto qat = [&](size_t i) -> VkQueue {
             // On devices exposing fewer physical graphics queues, the later logical
             // queues alias graphicsQueue; fall back so each logical row still exists.
-            Queue* q = (i < pg.size()) ? pg[i] : &app->getGraphicsQueue();
-            return q->handle();
+            VkQueue q = (i < pg.size()) ? pg[i] : app->getGraphicsQueue();
+            return q;
         };
         std::vector<Cand> cands = {
             { app->getGraphicsQueue(),   "Graphics" },
@@ -62,7 +62,7 @@ void QueueTimelineWidget::updateWithApp(VulkanApp* app) {
             { qat(9), "BrushLiquid" },
         };
         for (size_t i = 0; i < app->parallelGraphicsQueues.size(); ++i) {
-            cands.push_back({ app->parallelGraphicsQueues[i]->handle(),
+            cands.push_back({ app->parallelGraphicsQueues[i],
                               ("Gfx" + std::to_string(i)).c_str() });
         }
         // List every logical queue as its own row (do NOT de-duplicate by

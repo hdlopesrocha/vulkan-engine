@@ -526,11 +526,11 @@ void VulkanApp::cleanup() {
                 si.sType                   = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
                 si.waitSemaphoreInfoCount  = (uint32_t)drainWaits.size();
                 si.pWaitSemaphoreInfos     = drainWaits.data();
-                if (vkQueueSubmit2(graphicsQueue->handle(), 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
+                if (vkQueueSubmit2(graphicsQueue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
                     std::cerr << "[VulkanApp] cleanup: drain submit on leftover extra semaphores failed; skipping destroys (degraded shutdown)" << std::endl;
                     drainOk = false;
                 } else {
-                    VkResult drainIdleRes = vkQueueWaitIdle(graphicsQueue->handle());
+                    VkResult drainIdleRes = vkQueueWaitIdle(graphicsQueue);
                     if (drainIdleRes != VK_SUCCESS) {
                         std::cerr << "[VulkanApp] cleanup: vkQueueWaitIdle (drain) failed: " << drainIdleRes << std::endl;
                     }
@@ -709,7 +709,7 @@ void VulkanApp::initImGui() {
     init_info.PhysicalDevice = physicalDevice;
     init_info.Device = device;
     init_info.QueueFamily = findQueueFamilies(physicalDevice).graphicsFamily.value();
-    init_info.Queue = graphicsQueue->handle();
+    init_info.Queue = graphicsQueue;
     init_info.PipelineCache = pipelineCache;
     init_info.DescriptorPool = imguiDescriptorPool;
     init_info.MinImageCount = 2;
@@ -1015,7 +1015,7 @@ void VulkanApp::createAsyncCmdPoolRing() {
             throw std::runtime_error("failed to create async ring fence");
         }
         resources.addFence(asyncCmdFenceRing[i], "VulkanApp: asyncCmdFenceRing");
-        g_asyncSlotSubmitQueue[i] = graphicsQueue->handle();
+        g_asyncSlotSubmitQueue[i] = graphicsQueue;
     }
 }
 
@@ -1083,9 +1083,9 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         submitInfo.commandBufferInfoCount = 1;
         submitInfo.pCommandBufferInfos = &cmdBufInfo;
         {
-            std::lock_guard<std::mutex> lock(graphicsQueue->submitMutex());
+            std::lock_guard<std::mutex> lock(getQueueSubmitMutex(graphicsQueue));
             SubmissionTracker::record("sync");
-            VkResult sr = vkQueueSubmit2(graphicsQueue->handle(), 1, &submitInfo, fence);
+            VkResult sr = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
             if (sr == VK_ERROR_DEVICE_LOST) {
                 deviceLost.store(true);
                 throw;
@@ -1109,7 +1109,7 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
     submitInfo.pCommandBufferInfos = &cmdBufInfo;
 
     {
-        std::lock_guard<std::mutex> lock(graphicsQueue->submitMutex());
+        std::lock_guard<std::mutex> lock(getQueueSubmitMutex(graphicsQueue));
         // Assign a submit id for this submission for diagnostics
         uint64_t submitId = m_submitCounter.fetch_add(1);
         {
@@ -1122,7 +1122,7 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         preApplyPendingLayoutsBeforeSubmit(cmd);
 
         SubmissionTracker::record("single");
-        VkResult submitRes = vkQueueSubmit2(graphicsQueue->handle(), 1, &submitInfo, fence);
+        VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
         if (submitRes != VK_SUCCESS) {
             if (submitRes == VK_ERROR_DEVICE_LOST) {
                 deviceLost.store(true);
@@ -1145,10 +1145,10 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
 
 VkFence VulkanApp::runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore) {
     // VK_NULL_HANDLE historically meant "use the graphics queue".
-    return runSingleTimeCommandsAsync(fn, outSemaphore, *graphicsQueue);
+    return runSingleTimeCommandsAsync(fn, outSemaphore, graphicsQueue);
 }
 
-VkFence VulkanApp::runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore, Queue& targetQueue) {
+VkFence VulkanApp::runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore, VkQueue targetQueue) {
     // Use the pre-allocated async command buffer ring to avoid per-call
     // vkAllocateCommandBuffers / vkFreeCommandBuffers churn.
     VkCommandBuffer cmd = allocatePrimaryCommandBuffer();
@@ -1189,10 +1189,10 @@ VkFence VulkanApp::runSingleTimeCommandsAsyncOnTransfer(const std::function<void
     // acquired (geometryQueue != graphicsQueue, i.e. a separate Queue object), so
     // staging copies overlap frame rendering. Otherwise fall back to the main
     // graphics queue (preserving the RADV/RENOIR safety net).
-    Queue* q = (geometryQueue != graphicsQueue) ? geometryQueue : nullptr;
-    if (q != nullptr) {
+    VkQueue q = (geometryQueue != graphicsQueue) ? geometryQueue : VK_NULL_HANDLE;
+    if (q != VK_NULL_HANDLE) {
         VkSemaphore sem = VK_NULL_HANDLE;
-        VkFence fence = runSingleTimeCommandsAsync(fn, &sem, *q);
+        VkFence fence = runSingleTimeCommandsAsync(fn, &sem, q);
         if (outSemaphore) *outSemaphore = sem;
         return fence;
     }
@@ -1236,7 +1236,7 @@ VkResult VulkanApp::waitFence(VkDevice device, VkFence fence, uint64_t timeoutNs
 // `runSingleTimeCommands` behavior and is usually sufficient for
 // synchronization, avoiding the cost of `vkDeviceWaitIdle`.
 VkResult VulkanApp::queueWaitIdle() {
-    return vkQueueWaitIdle(graphicsQueue->handle());
+    return vkQueueWaitIdle(graphicsQueue);
 }
 
 VkResult VulkanApp::deviceWaitIdle() {
@@ -1244,11 +1244,11 @@ VkResult VulkanApp::deviceWaitIdle() {
 }
 
 void VulkanApp::waitForFrameFences() {
-    // Copy current in-flight fences under graphicsQueue->submitMutex() then wait on them.
+    // Copy current in-flight fences under getQueueSubmitMutex(graphicsQueue) then wait on them.
     // thread_local: callable from worker threads (VegetationRenderer) too.
     static thread_local std::vector<VkFence> fences;
     {
-        std::lock_guard<std::mutex> lock(graphicsQueue->submitMutex());
+        std::lock_guard<std::mutex> lock(getQueueSubmitMutex(graphicsQueue));
         fences = inFlightFences;
     }
     for (VkFence f : fences) {
@@ -1579,11 +1579,10 @@ void VulkanApp::processPendingCommandBuffers() {
                 auto qit = m_cmdQueueMap.find(cmd);
                 if (qit != m_cmdQueueMap.end()) {
                     VkQueue q = qit->second;
-                    auto qptr = queueByHandle_.find(q);
-                    if (qptr != queueByHandle_.end()) {
-                        qptr->second->markSegmentDone(fence, nowNs());
-                        qptr->second->onCompleted();
-                    }
+                    auto qp = m_queuePending.find(q);
+                    if (qp != m_queuePending.end() && qp->second > 0) qp->second--;
+                    m_queueCompleted[q]++;
+                    markQueueSegmentDone(fence, nowNs());
                     m_cmdQueueMap.erase(qit);
                 }
                 m_pendingCommandBuffersSet.erase(cmd);
@@ -1659,7 +1658,7 @@ void VulkanApp::applyPendingLayoutUpdatesForCommandBuffer(VkCommandBuffer cmd) {
 void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer) {
     // Obtain the submit id (if any) for diagnostics *before* taking
     // pendingLayoutMutex so we maintain a consistent lock ordering
-    // with callers that hold graphicsQueue->submitMutex().
+    // with callers that hold getQueueSubmitMutex(graphicsQueue).
     // Build a map of latest-seen pending updates for affected subresources.
     // "Latest" means the last recorded update for each key, which reflects
     // the final layout the GPU image will be in after the command buffer
@@ -1753,11 +1752,11 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
     // Delegate to the queue-aware helper (graphics queue). submitCommandBufferAsyncToQueue
     // ends the command buffer, performs the global command-buffer/fence tracking, and
     // records the segment on the graphics queue's timeline.
-    return submitCommandBufferAsyncToQueue(commandBuffer, *graphicsQueue, outSemaphore);
+    return submitCommandBufferAsyncToQueue(commandBuffer, graphicsQueue, outSemaphore);
 }
 
 // Submit a pre-recorded command buffer asynchronously to a specific queue and return a fence that will be signaled on completion.
-VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, Queue& queue, VkSemaphore* outSemaphore, const std::vector<VkSemaphore>& waitSemaphores, bool registerSignal, const std::vector<VkSemaphore>& extraSignalSemaphores, const std::vector<uint64_t>& waitSemaphoreValues, uint64_t signalValue, const std::vector<uint64_t>& extraSignalValues, bool persistentSignal) {
+VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore, const std::vector<VkSemaphore>& waitSemaphores, bool registerSignal, const std::vector<VkSemaphore>& extraSignalSemaphores, const std::vector<uint64_t>& waitSemaphoreValues, uint64_t signalValue, const std::vector<uint64_t>& extraSignalValues, bool persistentSignal) {
     // Throttle excessive outstanding submissions which can cause driver hangs
     // on some implementations when resources are exhausted.
     throttleIfTooManyPending();
@@ -1803,7 +1802,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
     // Graphics and vegetation (compute) queues support graphics + compute stages;
     // transfer queues only support COPY and related stages.
     VkPipelineStageFlags2 signalStageMask =
-        (&queue == transferQueue)
+        (targetQueue == transferQueue)
             ? VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_RESOLVE_BIT)
             : VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
 
@@ -1862,7 +1861,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         // two code paths targeting one physical queue still serialize correctly
         // (no double-mutex race). This replaces the old per-queue mutex-selection
         // chain (graphics/transfer/vegetation/sdf/bbox/geometry/solid/water).
-        std::mutex& submitMtx = queue.submitMutex();
+        std::mutex& submitMtx = getQueueSubmitMutex(targetQueue);
         std::lock_guard<std::mutex> lock(submitMtx);
 
         // Double-use validation: check if this command buffer is already pending
@@ -1910,21 +1909,23 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             // Queue-activity accounting: record which queue owns this submission and
             // bump the in-flight + cumulative-submitted counters. Keyed by handle, so
             // aliased queues naturally share one counter (the real hardware queue).
-            m_cmdQueueMap[commandBuffer] = queue.handle();
+            m_cmdQueueMap[commandBuffer] = targetQueue;
             // Queue-activity accounting + queue-timeline segment now live on the
-            // Queue object itself (aliased queues share one Queue, so one counter).
-            queue.onSubmitted();
+            // VulkanApp itself, keyed by VkQueue handle (aliased queues share one
+            // counter because they share a handle).
+            m_queueSubmitted[targetQueue]++;
+            m_queuePending[targetQueue]++;
             // Record a queue-timeline segment for the queue-usage slotted view.
-            queue.recordSegment(fence, submitId, frameCounter_.load(std::memory_order_relaxed));
+            recordQueueSegment(targetQueue, fence, submitId);
         }
 
         // Promote pending layout updates for this submission
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
         SubmissionTracker::record("async-q");
-        VkResult submitRes = vkQueueSubmit2(queue.handle(), 1, &submitInfo, fence);
+        VkResult submitRes = vkQueueSubmit2(targetQueue, 1, &submitInfo, fence);
         if (submitRes == VK_SUCCESS) {
-            signalRingSlotFence(commandBuffer, queue.handle());
+            signalRingSlotFence(commandBuffer, targetQueue);
         }
         if (submitRes != VK_SUCCESS) {
             if (semaphore != VK_NULL_HANDLE) {
@@ -2030,14 +2031,14 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
 
     {
         // Serialize pre-apply and submission to maintain consistent ordering
-        std::lock_guard<std::mutex> lock(graphicsQueue->submitMutex());
+        std::lock_guard<std::mutex> lock(getQueueSubmitMutex(graphicsQueue));
 
         // Promote pending layout updates for this submission so validation
         // sees populated layouts for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
         SubmissionTracker::record("sync-2");
-        VkResult submitRes = vkQueueSubmit2(graphicsQueue->handle(), 1, &submitInfo, fence);
+        VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
         if (submitRes == VK_SUCCESS) {
             // If this command buffer belongs to the async ring (it was
             // obtained via allocatePrimaryCommandBuffer), also signal the
@@ -2046,7 +2047,7 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
             // this slot deadlocks in vkWaitForFences(UINT64_MAX).
             // The async submit paths (submitCommandBufferAsync/ToQueue)
             // already do this; this synchronous submit path did not.
-            signalRingSlotFence(commandBuffer, graphicsQueue->handle());
+            signalRingSlotFence(commandBuffer, graphicsQueue);
         }
         if (submitRes != VK_SUCCESS) {
             if (submitRes == VK_ERROR_DEVICE_LOST) {
@@ -2075,8 +2076,9 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
                 // Queue-activity accounting: record which queue owns this submission and
                 // bump the in-flight + cumulative-submitted counters. Keyed by handle, so
                 // aliased queues naturally share one counter (the real hardware queue).
-                m_cmdQueueMap[commandBuffer] = graphicsQueue->handle();
-                graphicsQueue->onSubmitted();
+                m_cmdQueueMap[commandBuffer] = graphicsQueue;
+                m_queueSubmitted[graphicsQueue]++;
+                m_queuePending[graphicsQueue]++;
         }
                 return;
             }
@@ -4747,8 +4749,8 @@ void VulkanApp::drawFrame() {
     // reset the per-frame command pool (and implicitly the command buffer) for this frame
     VkResult resetCmdResult;
     {
-        // Acquire graphicsQueue->submitMutex() first to match the lock ordering used by endSingleTimeCommands()
-        std::lock_guard<std::mutex> lockQ(graphicsQueue->submitMutex());
+        // Acquire getQueueSubmitMutex(graphicsQueue) first to match the lock ordering used by endSingleTimeCommands()
+        std::lock_guard<std::mutex> lockQ(getQueueSubmitMutex(graphicsQueue));
         std::lock_guard<std::mutex> lockC(commandPoolMutex);
         resetCmdResult = vkResetCommandPool(device, frameCommandPools[imageIndex], 0);
     }
@@ -4901,8 +4903,8 @@ void VulkanApp::drawFrame() {
     uint64_t submitId = 0;
     {
         // Serialize pre-apply and submission to ensure tracked layouts match
-        // the submission order. Acquire `graphicsQueue->submitMutex()` first.
-        std::lock_guard<std::mutex> lock(graphicsQueue->submitMutex());
+        // the submission order. Acquire `getQueueSubmitMutex(graphicsQueue)` first.
+        std::lock_guard<std::mutex> lock(getQueueSubmitMutex(graphicsQueue));
 
         // Assign a submit id for this frame submission for diagnostics and
         // expose it via m_cmdSubmitMap so preApply/apply logging can show it.
@@ -4919,7 +4921,7 @@ void VulkanApp::drawFrame() {
         // sees populated layouts for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
-        r = vkQueueSubmit2(graphicsQueue->handle(), 1, &submitInfo, frameFence);
+        r = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, frameFence);
         if (r == VK_SUCCESS) {
             frameTimelineValue.store(nextTimelineValue);
         }
@@ -4965,12 +4967,12 @@ void VulkanApp::drawFrame() {
     presentInfo.pImageIndices = &imageIndex;
 
     {
-        std::lock_guard<std::mutex> lock(graphicsQueue->submitMutex());
-        r = vkQueuePresentKHR(presentQueue->handle(), &presentInfo);
+        std::lock_guard<std::mutex> lock(getQueueSubmitMutex(graphicsQueue));
+        r = vkQueuePresentKHR(presentQueue, &presentInfo);
     }
     // Record a (zero-duration) timeline segment for the present queue so the
     // queue-usage slotted view can show present as a distinct row/event.
-    presentQueue->recordSegment(VK_NULL_HANDLE, 0, frameCounter_.load(std::memory_order_relaxed));
+    recordQueueSegment(presentQueue, VK_NULL_HANDLE, frameCounter_.load(std::memory_order_relaxed));
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || framebufferResized || vsyncChanged) {
         framebufferResized = false;
         vsyncChanged = false;
@@ -5019,8 +5021,8 @@ void VulkanApp::cleanupSwapchain() {
 
     // free command buffers from their per-frame pools (not the main commandPool)
     if (!commandBuffers.empty()) {
-        // Acquire graphicsQueue->submitMutex() first to maintain consistent lock ordering
-        std::lock_guard<std::mutex> lockQ(graphicsQueue->submitMutex());
+        // Acquire getQueueSubmitMutex(graphicsQueue) first to maintain consistent lock ordering
+        std::lock_guard<std::mutex> lockQ(getQueueSubmitMutex(graphicsQueue));
         std::lock_guard<std::mutex> lockC(commandPoolMutex);
         for (uint32_t i = 0; i < static_cast<uint32_t>(commandBuffers.size()); ++i) {
             if (commandBuffers[i] != VK_NULL_HANDLE && i < frameCommandPools.size()) {
@@ -5167,7 +5169,7 @@ void VulkanApp::recreateSwapchain() {
     init_info.PhysicalDevice = physicalDevice;
     init_info.Device = device;
     init_info.QueueFamily = findQueueFamilies(physicalDevice).graphicsFamily.value();
-    init_info.Queue = graphicsQueue->handle();
+    init_info.Queue = graphicsQueue;
     init_info.PipelineCache = pipelineCache;
     init_info.DescriptorPool = imguiDescriptorPool;
     init_info.MinImageCount = 2;
@@ -5454,7 +5456,7 @@ void VulkanApp::createLogicalDevice() {
     // lost (reproduced 6/6 runs; routing uploads to the main graphics queue
     // made the full burst pass cleanly). geometryTransferQueue() therefore
     // aliases the main graphics queue and all upload/copy paths serialize
-    // through graphicsQueue->submitMutex().
+    // through getQueueSubmitMutex(graphicsQueue).
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     // container to hold per-create-info priority arrays (must outlive createInfo usage)
     std::vector<std::vector<float>> queuePrioritiesStorage;
@@ -5682,18 +5684,9 @@ void VulkanApp::createLogicalDevice() {
     // retrieve queue handles. If we requested multiple queues from the
     // graphics family, obtain them; otherwise fall back to the main
     // graphics queue for vegetation/geometry work. Also obtain transferQueue if available.
-    // Helper: create (and own) one Queue object per distinct physical handle and
-    // register it in the handle->Queue map. Aliased queues reuse the same object.
-    auto makeQueue = [&](VkQueue h, uint32_t family, const char* name) -> Queue* {
-        if (h == VK_NULL_HANDLE) return nullptr;
-        auto it = queueByHandle_.find(h);
-        if (it != queueByHandle_.end()) return it->second;
-        std::unique_ptr<Queue> q = std::make_unique<Queue>(h, family, name);
-        Queue* ptr = q.get();
-        ownedQueues_.push_back(std::move(q));
-        queueByHandle_[h] = ptr;
-        return ptr;
-    };
+    // Materialize the graphics-family queue handles. The 6 logical scene queues
+    // (vegetation/sdf/bbox/solid/water/sky) plus the two brush queues alias
+    // graphicsQueue when the device exposes fewer physical graphics queues.
     auto acquireGfx = [&](uint32_t index) -> VkQueue {
         VkQueue h = VK_NULL_HANDLE;
         vkGetDeviceQueue(device, indices.graphicsFamily.value(), index, &h);
@@ -5701,33 +5694,38 @@ void VulkanApp::createLogicalDevice() {
     };
 
     uint32_t gfxFamily = indices.graphicsFamily.value();
-    graphicsQueue = makeQueue(acquireGfx(0), gfxFamily, "Graphics");
+    graphicsQueue = acquireGfx(0);
     uint32_t gfxRequested = 1;
     auto rit = requestedQueueCount.find(gfxFamily);
     if (rit != requestedQueueCount.end()) gfxRequested = rit->second;
-    // The 6 logical scene queues (vegetation/sdf/bbox/solid/water/sky) are owned by
-    // MyApp; here we only materialize their Queue objects so they can be placed in
-    // parallelGraphicsQueues (used for round-robin parallel face work). They alias
-    // graphicsQueue when the device exposes fewer physical graphics queues.
-    Queue* vegQ  = (gfxRequested > 1) ? makeQueue(acquireGfx(1), gfxFamily, "Vegetation") : graphicsQueue;
-    Queue* sdfQ  = (gfxRequested > 2) ? makeQueue(acquireGfx(2), gfxFamily, "SDF")        : graphicsQueue;
-    Queue* bboxQ = (gfxRequested > 3) ? makeQueue(acquireGfx(3), gfxFamily, "BoundingBox") : graphicsQueue;
-    geometryQueue = (gfxRequested > 4) ? makeQueue(acquireGfx(4), gfxFamily, "Geometry")   : graphicsQueue;
-    Queue* solidQ= (gfxRequested > 5) ? makeQueue(acquireGfx(5), gfxFamily, "Solid")      : graphicsQueue;
-    Queue* waterQ= (gfxRequested > 6) ? makeQueue(acquireGfx(6), gfxFamily, "Water")      : graphicsQueue;
-    Queue* skyQ  = (gfxRequested > 7) ? makeQueue(acquireGfx(7), gfxFamily, "Sky")        : graphicsQueue;
-    Queue* brushSolidQ  = (gfxRequested > 8) ? makeQueue(acquireGfx(8), gfxFamily, "BrushSolid")  : graphicsQueue;
-    Queue* brushLiquidQ = (gfxRequested > 9) ? makeQueue(acquireGfx(9), gfxFamily, "BrushLiquid") : graphicsQueue;
+
+    VkQueue vegQ  = (gfxRequested > 1) ? acquireGfx(1) : graphicsQueue;
+    VkQueue sdfQ  = (gfxRequested > 2) ? acquireGfx(2) : graphicsQueue;
+    VkQueue bboxQ = (gfxRequested > 3) ? acquireGfx(3) : graphicsQueue;
+    geometryQueue = (gfxRequested > 4) ? acquireGfx(4) : graphicsQueue;
+    VkQueue solidQ= (gfxRequested > 5) ? acquireGfx(5) : graphicsQueue;
+    VkQueue waterQ= (gfxRequested > 6) ? acquireGfx(6) : graphicsQueue;
+    VkQueue skyQ  = (gfxRequested > 7) ? acquireGfx(7) : graphicsQueue;
+    brushSolidQueue  = (gfxRequested > 8) ? acquireGfx(8) : graphicsQueue;
+    brushLiquidQueue = (gfxRequested > 9) ? acquireGfx(9) : graphicsQueue;
+
+    // The logical scene-queue handles are also exposed via VulkanApp getters.
+    vegetationQueue = vegQ;
+    sdfQueue = sdfQ;
+    bboxQueue = bboxQ;
+    solidQueue = solidQ;
+    waterQueue = waterQ;
+    skyQueue = skyQ;
 
     // Collect every acquired graphics-family queue (deduplicated by handle) into
     // parallelGraphicsQueues so the solid360 cubemap can submit each of its 6 faces
     // to a different queue for HW-parallel rasterization. Aliased queues share the
-    // same Queue object, so they collapse to one entry and the faces degrade to
-    // serial execution when the device exposes just one graphics queue.
+    // same handle, so they collapse to one entry and the faces degrade to serial
+    // execution when the device exposes just one graphics queue.
     parallelGraphicsQueues.clear();
-    auto addParallelQueue = [&](Queue* q) {
-        if (q == nullptr) return;
-        for (Queue* e : parallelGraphicsQueues) if (e == q) return;
+    auto addParallelQueue = [&](VkQueue q) {
+        if (q == VK_NULL_HANDLE) return;
+        for (VkQueue e : parallelGraphicsQueues) if (e == q) return;
         parallelGraphicsQueues.push_back(q);
     };
     addParallelQueue(graphicsQueue);
@@ -5738,16 +5736,16 @@ void VulkanApp::createLogicalDevice() {
     addParallelQueue(solidQ);
     addParallelQueue(waterQ);
     addParallelQueue(skyQ);
-    addParallelQueue(brushSolidQ);
-    addParallelQueue(brushLiquidQ);
+    addParallelQueue(brushSolidQueue);
+    addParallelQueue(brushLiquidQueue);
 
     if (indices.presentFamily.value() == gfxFamily) {
-        // present uses the same family; reuse the main graphics queue object
+        // present uses the same family; reuse the main graphics queue handle
         presentQueue = graphicsQueue;
     } else {
         VkQueue ph = VK_NULL_HANDLE;
         vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &ph);
-        presentQueue = makeQueue(ph, indices.presentFamily.value(), "Present");
+        presentQueue = ph;
     }
     if (indices.transferFamily.has_value()) {
         if (indices.transferFamily.value() == gfxFamily) {
@@ -5755,7 +5753,7 @@ void VulkanApp::createLogicalDevice() {
         } else {
             VkQueue th = VK_NULL_HANDLE;
             vkGetDeviceQueue(device, indices.transferFamily.value(), 0, &th);
-            transferQueue = makeQueue(th, indices.transferFamily.value(), "Transfer");
+            transferQueue = th;
         }
     } else {
         transferQueue = graphicsQueue;
@@ -5826,20 +5824,20 @@ void VulkanApp::run() {
 
 int VulkanApp::getQueuePending(VkQueue q) const {
     if (q == VK_NULL_HANDLE) return 0;
-    auto it = queueByHandle_.find(q);
-    return it != queueByHandle_.end() ? it->second->pending() : 0;
+    auto it = m_queuePending.find(q);
+    return it != m_queuePending.end() ? it->second : 0;
 }
 
 uint64_t VulkanApp::getQueueSubmitted(VkQueue q) const {
     if (q == VK_NULL_HANDLE) return 0;
-    auto it = queueByHandle_.find(q);
-    return it != queueByHandle_.end() ? it->second->submitted() : 0;
+    auto it = m_queueSubmitted.find(q);
+    return it != m_queueSubmitted.end() ? it->second : 0;
 }
 
 uint64_t VulkanApp::getQueueCompleted(VkQueue q) const {
     if (q == VK_NULL_HANDLE) return 0;
-    auto it = queueByHandle_.find(q);
-    return it != queueByHandle_.end() ? it->second->completed() : 0;
+    auto it = m_queueCompleted.find(q);
+    return it != m_queueCompleted.end() ? it->second : 0;
 }
 
 uint64_t VulkanApp::nowNs() {
@@ -5850,6 +5848,37 @@ uint64_t VulkanApp::nowNs() {
 
 void VulkanApp::getQueueTimeline(std::vector<QueueSegment>& out) const {
     out.clear();
-    out.reserve(out.capacity());
-    for (const auto& q : ownedQueues_) q->getTimeline(out);
+    std::lock_guard<std::mutex> lk(queueTimelineMtx_);
+    out.reserve(queueSegments_.size());
+    for (const auto& s : queueSegments_) out.push_back(s);
+}
+
+void VulkanApp::recordQueueSegment(VkQueue queue, VkFence fence, uint64_t submitId) {
+    std::lock_guard<std::mutex> lk(queueTimelineMtx_);
+    // Cap the retained segments so the slotted view cannot grow unbounded.
+    while (queueSegments_.size() > 4096) queueSegments_.pop_front();
+    queueSegments_.push_back({ queue, fence, frameCounter_.load(std::memory_order_relaxed),
+                               submitId, nowNs(), 0 });
+    queueTimelineLive_[fence] = std::prev(queueSegments_.end());
+}
+
+void VulkanApp::markQueueSegmentDone(VkFence fence, uint64_t endNs) {
+    std::lock_guard<std::mutex> lk(queueTimelineMtx_);
+    auto it = queueTimelineLive_.find(fence);
+    if (it != queueTimelineLive_.end()) {
+        it->second->endNs = endNs;
+        queueTimelineLive_.erase(it);
+    }
+}
+
+std::mutex& VulkanApp::getQueueSubmitMutex(VkQueue q) {
+    // One stable mutex per distinct VkQueue handle. Aliased queues share a handle
+    // (and therefore a mutex), so submissions to one physical queue still serialize
+    // while distinct queues run concurrently.
+    static std::unordered_map<VkQueue, std::unique_ptr<std::mutex>> mutexes;
+    static std::mutex guard;
+    std::lock_guard<std::mutex> lk(guard);
+    auto it = mutexes.find(q);
+    if (it == mutexes.end()) it = mutexes.emplace(q, std::make_unique<std::mutex>()).first;
+    return *(it->second);
 }

@@ -9,18 +9,17 @@ CC = g++
 #        make BUILD=debug
 # or shortcuts: make debug  or make release
 BUILD ?= release
-ifeq ($(BUILD),debug)
-	CFLAGS = -std=c++23 -O0 -g -DDEBUG -pthread -Wall -Wshadow -Ithird_party/imgui
-	LDFLAGS =
-else
-	CFLAGS = -std=c++23 -O3 -march=native -DNDEBUG -pthread -DUSE_IMGUI -Wall -Wshadow -Ithird_party/imgui
-endif
+# CFLAGS is recursive so it re-evaluates $(BUILD) on every reference. This lets the
+# debug/release phony targets switch optimization/defines via a target-specific BUILD
+# without a recursive $(MAKE) submake (which triggered the "forced in submake" jobserver
+# warning and a redundant second parallel pass). LDFLAGS is unused (empty for both).
+CFLAGS = $(if $(filter debug,$(BUILD)),-std=c++23 -O0 -g -DDEBUG,-std=c++23 -O3 -march=native -DNDEBUG -pthread -DUSE_IMGUI) -pthread -Wall -Wshadow -isystem third_party/imgui
 
 # Use vendored Vulkan 1.4 SDK headers (LunarG SDK include/), then pkg-config for
 # GLFW and the Vulkan loader. The vulkan headers are listed first so they shadow
 # the system 1.3 headers from libvulkan-dev. Also add common ImGui/stb includes.
 VK_SDK_INCLUDE = -Ithird_party/Vulkan-Headers/include
-INCLUDES = $(VK_SDK_INCLUDE) `pkg-config --cflags glfw3 vulkan` -I. -Ithird_party/imgui -Ithird_party/imgui/backends -I/usr/include/stb
+INCLUDES = $(VK_SDK_INCLUDE) `pkg-config --cflags glfw3 vulkan` -I. -isystem third_party/imgui -isystem third_party/imgui/backends -I/usr/include/stb
 LIBS = `pkg-config --libs glfw3 vulkan` -lstb -ljpeg -lgdal -lz
 
 # Wii Remote support via vendored wiiuse (third_party/wiiuse).
@@ -66,7 +65,7 @@ SERVER_OBJS := $(filter-out $(OBJ_DIR)/main.o $(OBJ_DIR)/vulkan/%.o $(OBJ_DIR)/w
 
 # Server-specific link flags: now include glfw and vulkan libs for ImGui backends
 SERVER_LIBS := $(LIBS)
-SERVER_INCLUDES := -Ithird_party/imgui -Ithird_party/imgui/backends -I/usr/include/stb
+SERVER_INCLUDES := -isystem third_party/imgui -isystem third_party/imgui/backends -I/usr/include/stb
 
 
 # Automatically find all shader source files in shaders/ with known extensions
@@ -180,17 +179,19 @@ $(foreach ext,$(SHADER_EXTS),$(eval $(call SHADER_COMPILE_RULE,$(ext))))
 .PHONY: debug release
 
 
-release:
-	@$(MAKE) --no-print-directory BUILD=release all
+release: BUILD = release
+release: all
 
 .PHONY: run run-debug valgrind callgrind
 run:
 	@echo "Running app from $(OUT_DIR)/"
-	@cd $(OUT_DIR) && ./app
+	@mkdir -p logs
+	@cd $(OUT_DIR) && ./app 2>&1 | tee ../logs/run.log
 
 run-debug:
 	@echo "Running debug build from $(OUT_DIR)/"
-	@cd $(OUT_DIR) && ./app
+	@mkdir -p logs
+	@cd $(OUT_DIR) && ./app 2>&1 | tee ../logs/run.log
 
 valgrind: debug
 	@echo "Running valgrind with suppressions..."
@@ -204,8 +205,8 @@ clean:
 	# Remove generated SPIR-V files in shaders/ (if present)
 	-rm -f $(SPVS)
 	
-debug:
-	@$(MAKE) --no-print-directory -j$(MAKE_JOBS) BUILD=debug all
+debug: BUILD = debug
+debug: all
 	
 install:
 	sudo apt install vulkan-validationlayers

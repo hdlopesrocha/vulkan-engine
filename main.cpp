@@ -247,26 +247,26 @@ public:
     // Logical scene queues, owned by MyApp. Acquired from VulkanApp's parallel
     // graphics queue pool in setup(); aliased to graphicsQueue when the device
     // exposes a single graphics queue (no HW parallelism, still correct).
-    Queue* vegetationQueue = nullptr;
-    Queue* sdfQueue = nullptr;
-    Queue* bboxQueue = nullptr;
-    Queue* solidQueue = nullptr;
-    Queue* waterQueue = nullptr;
-    Queue* skyQueue = nullptr;
-    Queue& getVegetationQueue() const { return *vegetationQueue; }
-    Queue& getSdfQueue() const { return *sdfQueue; }
-    Queue& getBoundingBoxQueue() const { return *bboxQueue; }
-    Queue& getSolidQueue() const { return *solidQueue; }
-    Queue& getWaterQueue() const { return *waterQueue; }
-    Queue& getSkyQueue() const { return *skyQueue; }
+    VkQueue vegetationQueue = VK_NULL_HANDLE;
+    VkQueue sdfQueue = VK_NULL_HANDLE;
+    VkQueue bboxQueue = VK_NULL_HANDLE;
+    VkQueue solidQueue = VK_NULL_HANDLE;
+    VkQueue waterQueue = VK_NULL_HANDLE;
+    VkQueue skyQueue = VK_NULL_HANDLE;
+    VkQueue getVegetationQueue() const { return vegetationQueue; }
+    VkQueue getSdfQueue() const { return sdfQueue; }
+    VkQueue getBoundingBoxQueue() const { return bboxQueue; }
+    VkQueue getSolidQueue() const { return solidQueue; }
+    VkQueue getWaterQueue() const { return waterQueue; }
+    VkQueue getSkyQueue() const { return skyQueue; }
     // Brush passes get their own queues so the brush solid (offscreen preview) and
     // brush liquid (water overlay) can be submitted in parallel with the main
     // solid/water passes. Aliased to graphicsQueue when only one graphics queue
     // exists (no HW parallelism, still correct).
-    Queue* brushSolidQueue = nullptr;
-    Queue* brushLiquidQueue = nullptr;
-    Queue& getBrushSolidQueue() const { return *brushSolidQueue; }
-    Queue& getBrushLiquidQueue() const { return *brushLiquidQueue; }
+    VkQueue brushSolidQueue = VK_NULL_HANDLE;
+    VkQueue brushLiquidQueue = VK_NULL_HANDLE;
+    VkQueue getBrushSolidQueue() const { return brushSolidQueue; }
+    VkQueue getBrushLiquidQueue() const { return brushLiquidQueue; }
     World * world = nullptr;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
@@ -661,14 +661,14 @@ public:
         // the device exposes fewer physical graphics queues. These are app-owned (not
         // VulkanApp members) so the engine core stays agnostic about scene queues.
         const auto& pg = getParallelGraphicsQueues();
-        vegetationQueue = (pg.size() > 1) ? pg[1] : graphicsQueue;
-        sdfQueue       = (pg.size() > 2) ? pg[2] : graphicsQueue;
-        bboxQueue      = (pg.size() > 3) ? pg[3] : graphicsQueue;
-        solidQueue     = (pg.size() > 5) ? pg[5] : graphicsQueue;
-        waterQueue     = (pg.size() > 6) ? pg[6] : graphicsQueue;
-        skyQueue       = (pg.size() > 7) ? pg[7] : graphicsQueue;
-        brushSolidQueue  = (pg.size() > 8) ? pg[8] : graphicsQueue;
-        brushLiquidQueue = (pg.size() > 9) ? pg[9] : graphicsQueue;
+        vegetationQueue = (pg.size() > 1) ? pg[1] : getGraphicsQueue();
+        sdfQueue       = (pg.size() > 2) ? pg[2] : getGraphicsQueue();
+        bboxQueue      = (pg.size() > 3) ? pg[3] : getGraphicsQueue();
+        solidQueue     = (pg.size() > 5) ? pg[5] : getGraphicsQueue();
+        waterQueue     = (pg.size() > 6) ? pg[6] : getGraphicsQueue();
+        skyQueue       = (pg.size() > 7) ? pg[7] : getGraphicsQueue();
+        brushSolidQueue  = (pg.size() > 8) ? pg[8] : getGraphicsQueue();
+        brushLiquidQueue = (pg.size() > 9) ? pg[9] : getGraphicsQueue();
 
         sceneRenderer = new SceneRenderer();
         for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i)
@@ -1143,6 +1143,18 @@ public:
         if (sceneRenderer)
             sceneRenderer->streamer.update(this);
 
+        // Synchronously complete the initial streaming uploads once so the base
+        // terrain/brush chunks are resident on the GPU before the first draw
+        // (otherwise the indirect buffers are empty for the first frame and the
+        // user sees a black screen). Subsequent streaming stays asynchronous.
+        if (sceneRenderer) {
+            static bool sFlushedInitial = false;
+            if (!sFlushedInitial) {
+                sceneRenderer->streamer.uploadManager().flush();
+                sFlushedInitial = true;
+            }
+        }
+
         // Drain the CPU vegetation-generation queue so chunkBuffers is
         // populated before preRenderPass records read barriers.  Must
         // happen here because barriers cannot be emitted inside dynamic
@@ -1468,7 +1480,7 @@ public:
 
         // --- Cull + early brush pass on its own command buffer (signals semMainCull) ---
         if (sceneRenderer) {
-            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &tlCull, v]() {
+            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
                 MyApp* app = this;
                 VkCommandBuffer cullCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1564,8 +1576,8 @@ public:
             const float shLodBias = settings.lodBias;
             const float shMaxTargetLod = settings.maxTargetLod;
             const glm::vec3 shCamPos = camera.getPosition();
-            asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, &tlCull, &tlShadow, v]() {
-                MyApp* app = this;
+            asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, v]() {
+                // The shadow producer signals a single timeline semaphore tlShadow@v.
                 // The shadow producer signals a single timeline semaphore tlShadow@v.
                 // Its internal cascade/blur sub-passes use their own (persistent binary)
                 // semaphores; only the cross-queue edge becomes a timeline wait. The
@@ -1608,7 +1620,7 @@ public:
         //     explicitly. The fullscreen sky draw stays in the solid color pass.
         {
             SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
-            asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, &tlSky, v]() {
+            asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, v]() {
                 MyApp* app = this;
                 VkCommandBuffer skyCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1635,7 +1647,7 @@ public:
         }
 
         if (sceneRenderer && sceneRenderer->mainSolidRenderer) {
-            asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &tlSolid, &tlCull, &tlShadow, &tlBrushSolid, v]() {
+            asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
                 MyApp* app = this;
                 VkCommandBuffer solidCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1887,7 +1899,7 @@ public:
             const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
             const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
             if (renderCubemap) {
-                asyncSolid360Future = asyncThreadPool.enqueue([this, frameIdx, &tlCull, &tlShadow, &tlSolid, &tlSolid360, waterEnabled, v]() {
+                asyncSolid360Future = asyncThreadPool.enqueue([this, frameIdx, waterEnabled, v]() {
                     this->ensureCubemapResources();
                     CommandBufferState taskState;
                     this->sceneRenderer->setCmdState(&taskState);
@@ -1932,7 +1944,7 @@ public:
         // composite waits on it).
         {
             const glm::vec3 vegCamPos = camera.getPosition();
-            asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, vegCamPos, &tlVeg, &tlCull, &tlShadow, v]() {
+            asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, vegCamPos, v]() {
                 MyApp* app = this;
                 VkCommandBuffer vegCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -2068,7 +2080,7 @@ public:
         // clears the offscreen so the composite shows no SDF cubes.
         {
             const bool sdfEnabled = settings.showSDFDebug;
-            asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, &tlSdf, &tlCull, v]() {
+            asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, v]() {
                 MyApp* app = this;
                 VkCommandBuffer sdfCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -2100,7 +2112,7 @@ public:
         // clears the offscreen so the composite shows no bounding boxes.
         {
             const bool bboxEnabled = settings.showBoundingBoxes;
-            asyncBboxFuture = asyncThreadPool.enqueue([this, frameIdx, bboxEnabled, &tlBbox, &tlCull, v]() {
+            asyncBboxFuture = asyncThreadPool.enqueue([this, frameIdx, bboxEnabled, v]() {
                 MyApp* app = this;
                 VkCommandBuffer bboxCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -2126,7 +2138,7 @@ public:
         // Back-face depth + water geometry pass on a shared command buffer.
         // (waits semMainCull + semSolid360; signals semWater at the end of the task)
         if (waterEnabled && sceneRenderer) {
-            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &tlCull, &tlShadow, &tlSolid360, &tlSolid, &tlSky, &tlBrushSolid, &tlWater, &tlBrushLiquid, v]() {
+            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
                 MyApp* app = this;
                 VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo beginInfo{};
@@ -3978,7 +3990,9 @@ void MyApp::ensureCubemapResources() {
         if (cube360FaceSolidComputeDs[0] == VK_NULL_HANDLE && cube360ComputeDs != VK_NULL_HANDLE) {
             VkDescriptorSetLayout sLayout = solidInd.getComputeDescriptorSetLayout();
             if (sLayout != VK_NULL_HANDLE) {
-                VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128 };
+                // The indirect cull layout has 37 storage-buffer bindings (0..36);
+                // 6 face sets require 6*37 = 222 descriptors. Size generously.
+                VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 256 };
                 VkDescriptorPoolCreateInfo pci{};
                 pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
                 pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 6;
@@ -4021,7 +4035,9 @@ void MyApp::ensureCubemapResources() {
         if (cube360FaceWaterComputeDs[0] == VK_NULL_HANDLE && cube360WaterComputeDs != VK_NULL_HANDLE) {
             VkDescriptorSetLayout wLayout = waterInd.getComputeDescriptorSetLayout();
             if (wLayout != VK_NULL_HANDLE) {
-                VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128 };
+                // The indirect cull layout has 37 storage-buffer bindings (0..36);
+                // 6 face sets require 6*37 = 222 descriptors. Size generously.
+                VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 256 };
                 VkDescriptorPoolCreateInfo pci{};
                 pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
                 pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 6;

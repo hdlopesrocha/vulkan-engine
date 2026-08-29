@@ -270,6 +270,12 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         &streamer.uploadManager(), streaming::StreamCategory::Solid);
     mainLiquidRenderer->getIndirectRenderer().setUploadManager(
         &streamer.uploadManager(), streaming::StreamCategory::Water);
+    if (brushRenderer) {
+        brushRenderer->getSolidIR().setUploadManager(
+            &streamer.uploadManager(), streaming::StreamCategory::Solid);
+        brushRenderer->getLiquidIR().setUploadManager(
+            &streamer.uploadManager(), streaming::StreamCategory::Water);
+    }
 
     // skySettingsRef was initialized at construction and must be valid
     

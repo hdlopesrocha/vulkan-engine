@@ -64,7 +64,7 @@ void UploadManager::init(VulkanApp* app,
     // RADV/Rembrandt under burst load), so this falls back to the main
     // graphics queue on this hardware by design.
     queue_ = app->geometryTransferQueue();
-    if (queue_ == VK_NULL_HANDLE) queue_ = app->graphicsQueue->handle();
+    if (queue_ == VK_NULL_HANDLE) queue_ = app->graphicsQueue;
 
     auto qfi = app->findQueueFamilies(app->getPhysicalDevice());
     queueFamily_ = qfi.graphicsFamily.value();
@@ -100,10 +100,10 @@ void UploadManager::enqueue(UploadJob&& job) {
 std::mutex& UploadManager::pickMutex() {
     // Must serialize vkQueueSubmit2 with the SAME mutex the app uses for the
     // chosen queue, or we race with the app's own submissions to that queue.
-    if (queue_ == app_->transferQueue->handle())   return app_->transferQueue->submitMutex();
-    if (queue_ == app_->geometryQueue->handle() &&
-        app_->geometryQueue != app_->graphicsQueue) return app_->geometryQueue->submitMutex();
-    return app_->graphicsQueue->submitMutex();
+    if (queue_ == app_->transferQueue)   return app_->getQueueSubmitMutex(app_->transferQueue);
+    if (queue_ == app_->geometryQueue &&
+        app_->geometryQueue != app_->graphicsQueue) return app_->getQueueSubmitMutex(app_->geometryQueue);
+    return app_->getQueueSubmitMutex(app_->graphicsQueue);
 }
 
 bool UploadManager::isComplete(const StagingSlot& s) const {
@@ -265,8 +265,12 @@ void UploadManager::prepareFrameWaits(VulkanApp* app) {
     }
 }
 
-void UploadManager::processUploads() {
+ void UploadManager::processUploads() {
     // 1) Recycle completed staging slots on the MAIN thread. Non-blocking.
+    for (auto& s : staging_.slots()) {
+        if (!s.busy) continue;
+        vkGetFenceStatus(device_, s.fence);
+    }
     for (auto& s : staging_.slots()) {
         if (!s.busy) continue;
         if (isComplete(s)) {

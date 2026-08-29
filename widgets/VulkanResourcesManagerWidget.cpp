@@ -30,8 +30,8 @@ void VulkanResourcesManagerWidget::updateWithApp(VulkanApp* app) {
     // counters; it advances once per frame so the chart shows queue load over time.
     const auto& pg = app->getParallelGraphicsQueues();
     auto qat = [&](size_t i) -> VkQueue {
-        Queue* q = (i < pg.size()) ? pg[i] : &app->getGraphicsQueue();
-        return q->handle();
+        VkQueue q = (i < pg.size()) ? pg[i] : app->getGraphicsQueue();
+        return q;
     };
     cachedQueue[Q_GRAPHICS]   = app->getGraphicsQueue();
     cachedQueue[Q_PRESENT]    = app->getPresentQueue();
