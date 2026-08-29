@@ -189,6 +189,14 @@ public:
     // Set which per-frame cull buffers to use. Must be called once per frame
     // before prepareCull / drawPrepared. frame idx should be in [0, MAX_CULL_FRAMES).
     void setCullFrame(uint32_t frame);
+
+    // Re-point the core compute descriptor-set bindings (0..4: inCmds, outCmds,
+    // bounds, visibleCount, visibleLods) to the CURRENT buffer handles for frame
+    // `f`. rebuild() can recreate these buffers (e.g. when meshCapacity grows), and
+    // the once-written descriptor sets would otherwise keep pointing at freed
+    // handles, so the cull reads stale/empty data and emits zero visible draws.
+    // Called every frame from recordCull before the dispatch.
+    void updateCoreComputeDescriptors(uint32_t f);
     
     // Ensure GPU buffers have capacity for at least the given counts. 
     // Call this before a batch of addMesh+uploadMesh if you know the expected size.
@@ -224,7 +232,9 @@ public:
     // Run GPU culling/compaction (must be called outside any render pass).
     // `camPos`/`lodBias` drive the per-chunk LoD band selection.
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
-                     glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16);
+                     glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16,
+                     const glm::mat4* cascadeMatrices = nullptr, bool doCascade = false, bool doMain = true,
+                     bool doVegCascade = false, uint32_t vegChunkCount = 0);
     // Run GPU culling into caller-provided output buffers using a provided compute descriptor set.
     void prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
                                     VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
@@ -304,6 +314,16 @@ public:
     // uint32 meshId used as the draw entry index). value = vec4(instanceCount,
     // firstInstance, 0, 0).
     void setVegetationChunkInfo(const std::unordered_map<uint32_t, glm::vec4>& info);
+    // Vegetation cascade (shadow) streams: bind the per-cascade billboard/impostor
+    // command + count buffers into the merged indirect.comp descriptor set (bindings
+    // 24..36). Called by VegetationRenderer each frame so re-grows are reflected and
+    // the veg cascade dispatch (doVegCascade=true) writes into VegetationRenderer's
+    // own output buffers. VEG_CULL_FRAMES == MAX_CULL_FRAMES == 3.
+    void setVegCascadeData(VkBuffer chunkInfo,
+                           const std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES>& bbCompact,
+                           const std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES>& bbCount,
+                           const std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES>& impCompact,
+                           const std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES>& impCount);
     // Rebuild the per-draw vegetation table (binding 9) from vegChunkInfoMap.
     // Called each frame from prepareCull so it tracks the slotted renderer's
     // incremental draw-index updates.
@@ -332,11 +352,8 @@ public:
     // ── Cascade-aware culling (single pass, 3 cascades) ──
     // Single compute dispatch that culls all chunks against 3 cascade frustums
     // simultaneously. Each chunk is culled independently per cascade.
-    // `camPos`/`lodBias` mirror the main pass so shadow draws use the same
-    // per-chunk LoD selection.
-    void prepareCullCascades(VkCommandBuffer cmd,
-                             const glm::mat4 cascadeMatrices[3],
-                             glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f);
+    // Cascade streams are now emitted by the merged indirect.comp dispatch
+    // (prepareCull with doCascade=true), not a separate pipeline.
     // Draw a specific cascade's compacted output (call inside render pass).
     void drawCascadeOnly(VkCommandBuffer cmd, uint32_t cascadeIndex);
 
@@ -424,10 +441,6 @@ private:
     streaming::UploadManager* uploadMgr_ = nullptr;
     streaming::StreamCategory streamCategory_ = streaming::StreamCategory::Solid;
 
-    // Deferred upload completion callbacks for the legacy staging path.
-    // Fired when publishPendingTransfer detects the staging fence has signaled.
-    // The UploadManager path uses job.onComplete instead.
-    std::vector<std::function<void()>> deferredUploadCallbacks_;
     uint32_t nextId = 1;
     std::unordered_map<uint32_t, MeshInfo> meshes; // chunkId -> MeshInfo
     // Memoized active-mesh count backing getMeshCount()/dispatch-count reads.
@@ -547,6 +560,7 @@ private:
     };
     std::array<CascadeCullFrame, MAX_CULL_FRAMES> cascadeCullFrames;
     Buffer cascadeMatrixBuffer; // storage buffer with 3 mat4 cascade matrices
+    Buffer cascadeDummyBuffer;  // bound to the cascade bindings of external (Solid360) descriptor sets
     TrackedHandle<VkPipeline> cascadeCullPipeline;
     TrackedHandle<VkPipelineLayout> cascadeCullPipelineLayout;
     TrackedHandle<VkDescriptorSetLayout> cascadeCullDescSetLayout;
@@ -559,6 +573,18 @@ private:
     void destroyCascadeCull();
     void updateCascadeDescriptor(VulkanApp* app, uint32_t frame);
     void refreshCascadeDescriptorsIfNeeded();
+
+    // Vegetation cascade (shadow) streams, bound into the merged indirect.comp
+    // descriptor set (bindings 24..36) so a single dispatch can also emit the
+    // vegetation cascade billboard + impostor command streams. Bound once by
+    // VegetationRenderer after both renderers are initialized (VEG_CULL_FRAMES ==
+    // MAX_CULL_FRAMES == 3, so the per-frame indices line up).
+    VkBuffer vegCascadeInfoBuffer = VK_NULL_HANDLE;
+    std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES> vegCascadeBbCompact{};
+    std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES> vegCascadeBbCount{};
+    std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES> vegCascadeImpCompact{};
+    std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES> vegCascadeImpCount{};
+    bool vegCascadeInited = false;
 
     // Optional device function for indirect-count draw (KHR or core 1.2)
     PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;

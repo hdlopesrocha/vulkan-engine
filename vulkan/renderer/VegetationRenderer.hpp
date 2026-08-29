@@ -323,21 +323,19 @@ private:
     bool vegCascadeCullInited = false;
     uint32_t vegCascadeCompactCapacity = 0;
     void initCascadeCull(VulkanApp* app);
-    void updateVegCascadeDescriptor(VulkanApp* app, uint32_t frame);
     // Writes the GPU chunk table (aabbMin/aabbMax/instanceCount/firstInstance
     // triples) via memcpy into the host-visible chunk info buffer. Iteration
     // order MUST match consolidateChunks' concatenated-instance copy order so
     // firstInstance offsets point at the right instance ranges.
     void writeVegChunkInfo();
 
-    // Shared GPU-side chunk table + cascade matrices for the veg cascade cull.
+    // Shared GPU-side chunk table for the veg cascade cull. The per-cascade
+    // billboard/impostor command + count buffers (vegCascadeCullFrames) are bound
+    // into the SOLID IndirectRenderer's merged indirect.comp descriptor set (bindings
+    // 24..36) via solidIR->setVegCascadeData; the old veg_cascade_cull.comp pipeline
+    // is retired.
     Buffer vegChunkInfoBuffer;
     void* vegChunkInfoMapped = nullptr;
-    Buffer vegCascadeMatrixBuffer;
-    TrackedHandle<VkPipeline> vegCascadeCullPipeline;
-    TrackedHandle<VkPipelineLayout> vegCascadeCullPipelineLayout;
-    TrackedHandle<VkDescriptorSetLayout> vegCascadeCullDescSetLayout;
-    TrackedHandle<VkDescriptorPool> vegCascadeCullDescPool;
 
     uint32_t vegNumChunks = 0;             // number of chunks in the consolidated metadata
     uint32_t vegChunkInfoCapacity = 0;     // current chunk-info table capacity (grows as needed)

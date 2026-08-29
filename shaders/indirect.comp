@@ -33,8 +33,9 @@ layout(std430, binding = 3) buffer VisibleCount {
 };
 
 // Chosen-LoD output, one uvec2 per SOLID draw entry: {drawIndex, selectedLevel}.
-// selectedLevel == 0xFFFFFFFF marks an entry with no LoD data.
-layout(std430, binding = 4) writeonly buffer VisibleLods {
+// selectedLevel == 0xFFFFFFFF marks an entry with no LoD data. Read-write: the
+// cascade branch reads the level the main branch stamped for the shadow cull.
+layout(std430, binding = 4) buffer VisibleLods {
     uvec2 data[];
 } visibleLods;
 
@@ -100,6 +101,60 @@ layout(std430, binding = 16) buffer OutBboxCount {
     uint count;
 } bboxCount;
 
+// ── Cascade (shadow) culling outputs ──────────────────────────────────────────
+// Folded into the SAME dispatch as the main-view cull when pc.doCascade == 1.
+// Each entry is independently tested against the 3 cascade view-projection
+// matrices and appended to the cascade stream(s) it is visible in. firstInstance
+// is the draw entry index, so the shadow draw reconstructs the mesh via the same
+// InstanceBuffer lookup as the main pass.
+layout(std430, binding = 17) readonly buffer CascadeMatrices {
+    mat4 viewProj[3];
+} cascades;
+
+layout(std430, binding = 18) writeonly buffer OutCascade0 {
+    DrawCmd cmds[];
+} outCasc0;
+layout(std430, binding = 19) buffer CascadeCount0 {
+    uint count;
+} cc0;
+layout(std430, binding = 20) writeonly buffer OutCascade1 {
+    DrawCmd cmds[];
+} outCasc1;
+layout(std430, binding = 21) buffer CascadeCount1 {
+    uint count;
+} cc1;
+layout(std430, binding = 22) writeonly buffer OutCascade2 {
+    DrawCmd cmds[];
+} outCasc2;
+layout(std430, binding = 23) buffer CascadeCount2 {
+    uint count;
+} cc2;
+
+// ── Vegetation cascade (shadow) outputs ────────────────────────────────────────
+// Folded into the SAME dispatch as the main-view cull when pc.doVegCascade == 1.
+// Each vegetation chunk (not solid draw entry) is frustum-culled against the 3
+// cascade frustums and two command streams are emitted per cascade: billboards
+// (indexCount=36) and impostors (indexCount=6), each with the chunk's instance
+// count + firstInstance so the shadow billboard/impostor draws reconstruct the
+// instance range. Mirrors the retired veg_cascade_cull.comp.
+layout(std430, binding = 24) readonly buffer VegCascadeChunkInfo {
+    vec4 data[];
+} vegCascadeInfo;
+
+layout(std430, binding = 25) writeonly buffer VegBbCascade0 { DrawCmd cmds[]; } vegBbCasc0;
+layout(std430, binding = 26) buffer VegBbCascadeCount0 { uint count; } vegBbCascCnt0;
+layout(std430, binding = 27) writeonly buffer VegBbCascade1 { DrawCmd cmds[]; } vegBbCasc1;
+layout(std430, binding = 28) buffer VegBbCascadeCount1 { uint count; } vegBbCascCnt1;
+layout(std430, binding = 29) writeonly buffer VegBbCascade2 { DrawCmd cmds[]; } vegBbCasc2;
+layout(std430, binding = 30) buffer VegBbCascadeCount2 { uint count; } vegBbCascCnt2;
+
+layout(std430, binding = 31) writeonly buffer VegImpCascade0 { DrawCmd cmds[]; } vegImpCasc0;
+layout(std430, binding = 32) buffer VegImpCascadeCount0 { uint count; } vegImpCascCnt0;
+layout(std430, binding = 33) writeonly buffer VegImpCascade1 { DrawCmd cmds[]; } vegImpCasc1;
+layout(std430, binding = 34) buffer VegImpCascadeCount1 { uint count; } vegImpCascCnt1;
+layout(std430, binding = 35) writeonly buffer VegImpCascade2 { DrawCmd cmds[]; } vegImpCasc2;
+layout(std430, binding = 36) buffer VegImpCascadeCount2 { uint count; } vegImpCascCnt2;
+
 layout(push_constant) uniform PC {
     layout(offset = 0)   mat4 viewProj;
     layout(offset = 64)  uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now)
@@ -111,6 +166,11 @@ layout(push_constant) uniform PC {
     layout(offset = 108) uint terrainCount; // number of SOLID draw commands (s < terrainCount)
     layout(offset = 112) uint sdfCount;     // number of SDF cube entries (appended after solid)
     layout(offset = 116) uint bboxCount;    // number of mesh bounding-box entries (appended after solid + sdf)
+    layout(offset = 120) uint doCascade;         // emit cascade (shadow) streams when 1
+    layout(offset = 124) uint cascadeEntryCount; // number of entries to cascade-cull
+    layout(offset = 128) uint doMain;           // emit main-view streams when 1
+    layout(offset = 132) uint doVegCascade;      // emit vegetation cascade (shadow) streams when 1
+    layout(offset = 136) uint vegChunkCount;     // number of veg chunks to cascade-cull
 } pc;
 
 // Shared, per-workgroup cache of the six frustum planes. The viewProj matrix is
@@ -383,6 +443,130 @@ void processChunk(uint s) {
     processVegetation(s);
 }
 
+// ── Cascade (shadow) culling ───────────────────────────────────────────────────
+void writeCascade(uint c, DrawCmd cmd) {
+    uint dst;
+    if (c == 0u) {
+        dst = atomicAdd(cc0.count, 1u);
+        if (dst < outCasc0.cmds.length()) outCasc0.cmds[dst] = cmd;
+    } else if (c == 1u) {
+        dst = atomicAdd(cc1.count, 1u);
+        if (dst < outCasc1.cmds.length()) outCasc1.cmds[dst] = cmd;
+    } else {
+        dst = atomicAdd(cc2.count, 1u);
+        if (dst < outCasc2.cmds.length()) outCasc2.cmds[dst] = cmd;
+    }
+}
+
+bool aabbVisibleCascade(uint c, vec3 minp, vec3 maxp) {
+    mat4 mvp = cascades.viewProj[c];
+    vec4 row0 = vec4(mvp[0][0], mvp[1][0], mvp[2][0], mvp[3][0]);
+    vec4 row1 = vec4(mvp[0][1], mvp[1][1], mvp[2][1], mvp[3][1]);
+    vec4 row2 = vec4(mvp[0][2], mvp[1][2], mvp[2][2], mvp[3][2]);
+    vec4 row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3]);
+    vec4 p0 = normalizePlane(row3 + row0);
+    vec4 p1 = normalizePlane(row3 - row0);
+    vec4 p2 = normalizePlane(row3 + row1);
+    vec4 p3 = normalizePlane(row3 - row1);
+    vec4 p4 = normalizePlane(row2);
+    vec4 p5 = normalizePlane(row3 - row2);
+    vec4 planes[6] = vec4[6](p0, p1, p2, p3, p4, p5);
+    for (int i = 0; i < 6; ++i) {
+        vec3 n = planes[i].xyz;
+        float d = planes[i].w;
+        vec3 p;
+        p.x = (n.x >= 0.0) ? maxp.x : minp.x;
+        p.y = (n.y >= 0.0) ? maxp.y : minp.y;
+        p.z = (n.z >= 0.0) ? maxp.z : minp.z;
+        if (dot(n, p) + d < 0.0) return false;
+    }
+    return true;
+}
+
+// Cull one draw entry against the 3 cascade frustums and append it to the
+// cascade stream(s) it is visible in. Mirrors cascade_cull.comp: the LoD guard
+// reuses the exact level the main pass stamped into visibleLods (single source of
+// truth), so shadows render at the same LoD as the main pass. Entries without LoD
+// meta (cellSize <= 0, e.g. water/vegetation) are always kept.
+void processChunkCascade(uint s) {
+    if (s >= inCmds.cmds.length()) return;
+    if (inCmds.cmds[s].indexCount == 0u) return;
+
+    uint bIndex = s * 4u;
+    vec3 minp = vec3(0.0);
+    vec3 maxp = vec3(0.0);
+    if ((bIndex + 2u) >= boundsBuf.data.length()) {
+        // No bounds: write to every cascade (legacy behavior).
+        DrawCmd cmd = inCmds.cmds[s];
+        cmd.firstInstance = s;
+        writeCascade(0u, cmd);
+        writeCascade(1u, cmd);
+        writeCascade(2u, cmd);
+        return;
+    }
+    minp = boundsBuf.data[bIndex].xyz;
+    maxp = boundsBuf.data[bIndex + 1u].xyz;
+
+    vec4 lodMeta = boundsBuf.data[bIndex + 2u];
+    float cellSize = lodMeta.x;
+    uint entryLevel = uint(lodMeta.y + 0.5);
+    uint maxLevel   = uint(lodMeta.z + 0.5);
+    if (cellSize > 0.0) {
+        uint selectedLevel = (s < visibleLods.data.length()) ? visibleLods.data[s].y : 0xFFFFFFFFu;
+        bool keep = (selectedLevel == 0xFFFFFFFFu) || (maxLevel == 0u) || (selectedLevel == entryLevel);
+        if (!keep) return;
+    }
+
+    DrawCmd cmd = inCmds.cmds[s];
+    cmd.firstInstance = s;
+    if (aabbVisibleCascade(0u, minp, maxp)) writeCascade(0u, cmd);
+    if (aabbVisibleCascade(1u, minp, maxp)) writeCascade(1u, cmd);
+    if (aabbVisibleCascade(2u, minp, maxp)) writeCascade(2u, cmd);
+}
+
+// Vegetation cascade cull: one invocation per veg CHUNK (not per solid draw
+// entry). Mirrors the retired veg_cascade_cull.comp — emits two command streams
+// per cascade (billboards indexCount=36, impostors indexCount=6) keyed by the
+// chunk's instance count + firstInstance.
+void processVegCascade(uint idx) {
+    if (idx >= pc.vegChunkCount) return;
+    uint bIndex = idx * 3u;
+    if ((bIndex + 2u) >= vegCascadeInfo.data.length()) return;
+    vec3 minp = vegCascadeInfo.data[bIndex].xyz;
+    vec3 maxp = vegCascadeInfo.data[bIndex + 1u].xyz;
+    vec4 meta = vegCascadeInfo.data[bIndex + 2u];
+    if (meta.x < 1.0) return; // empty chunk never draws
+
+    DrawCmd bbCmd;
+    bbCmd.indexCount    = 36u;
+    bbCmd.instanceCount = uint(meta.x);
+    bbCmd.firstIndex    = 0u;
+    bbCmd.vertexOffset  = 0;
+    bbCmd.firstInstance = uint(meta.y);
+
+    DrawCmd impCmd = bbCmd;
+    impCmd.indexCount = 6u;
+
+    if (aabbVisibleCascade(0u, minp, maxp)) {
+        uint dst = atomicAdd(vegBbCascCnt0.count, 1u);
+        if (dst < vegBbCasc0.cmds.length()) vegBbCasc0.cmds[dst] = bbCmd;
+        dst = atomicAdd(vegImpCascCnt0.count, 1u);
+        if (dst < vegImpCasc0.cmds.length()) vegImpCasc0.cmds[dst] = impCmd;
+    }
+    if (aabbVisibleCascade(1u, minp, maxp)) {
+        uint dst = atomicAdd(vegBbCascCnt1.count, 1u);
+        if (dst < vegBbCasc1.cmds.length()) vegBbCasc1.cmds[dst] = bbCmd;
+        dst = atomicAdd(vegImpCascCnt1.count, 1u);
+        if (dst < vegImpCasc1.cmds.length()) vegImpCasc1.cmds[dst] = impCmd;
+    }
+    if (aabbVisibleCascade(2u, minp, maxp)) {
+        uint dst = atomicAdd(vegBbCascCnt2.count, 1u);
+        if (dst < vegBbCasc2.cmds.length()) vegBbCasc2.cmds[dst] = bbCmd;
+        dst = atomicAdd(vegImpCascCnt2.count, 1u);
+        if (dst < vegImpCasc2.cmds.length()) vegImpCasc2.cmds[dst] = impCmd;
+    }
+}
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
 
@@ -415,9 +599,15 @@ void main() {
     }
     barrier();
 
-    // One invocation per solid chunk entry; vegetation is handled inside
-    // processChunk once the chunk is known visible.
+    // One invocation per draw entry.
     uint s = idx;
-    if (s >= pc.numCmds) return;
-    processChunk(s);
+    if (pc.doMain == 1u && s < pc.numCmds) {
+        processChunk(s);
+    }
+    if (pc.doCascade == 1u && s < pc.cascadeEntryCount) {
+        processChunkCascade(s);
+    }
+    if (pc.doVegCascade == 1u && s < pc.vegChunkCount) {
+        processVegCascade(s);
+    }
 }
