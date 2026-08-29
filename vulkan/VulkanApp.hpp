@@ -547,6 +547,25 @@ public:
         int      getQueuePending(VkQueue q) const;
         uint64_t getQueueSubmitted(VkQueue q) const;
         uint64_t getQueueCompleted(VkQueue q) const;
+
+        // ---- Queue timeline -------------------------------------------------
+        // Per-submit busy intervals used by the queue-usage slotted view. Every
+        // submit (graphics, present, compute, transfer, parallel cube queues)
+        // records a segment {queue, startNs, endNs, frame}. The segment end is
+        // resolved when its fence signals inside processPendingCommandBuffers,
+        // so the UI can draw exactly when each queue is processing.
+        struct QueueSegment {
+            VkQueue  queue    = VK_NULL_HANDLE;
+            VkFence  fence    = VK_NULL_HANDLE;
+            uint64_t frame    = 0;   // drawFrame index at submit time
+            uint64_t submitId = 0;
+            uint64_t startNs  = 0;   // steady_clock at submit
+            uint64_t endNs    = 0;   // steady_clock when fence signaled (0 = ongoing)
+        };
+        // Snapshot of recent segments (oldest first). Copy-based: no VulkanApp*
+        // is retained by the caller. Thread-safe.
+        void getQueueTimeline(std::vector<QueueSegment>& out) const;
+        uint64_t getFrameCounter() const { return frameCounter_.load(std::memory_order_relaxed); }
         VkSwapchainKHR getSwapchain() const { return swapchain; }
         VkFormat getSwapchainImageFormat() const { return swapchainImageFormat; }
         VkExtent2D getSwapchainExtent() const { return swapchainExtent; }
@@ -689,6 +708,18 @@ public:
         std::unordered_map<VkQueue, uint64_t> m_queueSubmitted; // cumulative submissions
         std::unordered_map<VkQueue, uint64_t> m_queueCompleted; // cumulative completions
         std::unordered_map<VkCommandBuffer, VkQueue> m_cmdQueueMap; // cmd -> owning queue
+
+        // Queue timeline: per-submit busy intervals for the queue-usage slotted
+        // view. Guarded by queueTimelineMtx_. A std::list keeps segment
+        // iterators stable while we erase the oldest entries on cap.
+        mutable std::mutex queueTimelineMtx_;
+        std::list<QueueSegment> queueSegments_;
+        // fence -> iterator into queueSegments_ for not-yet-completed segments.
+        std::unordered_map<VkFence, std::list<QueueSegment>::iterator> queueTimelineLive_;
+        std::atomic<uint64_t> frameCounter_{0};
+        void recordQueueSegment(VkQueue queue, VkFence fence, uint64_t submitId);
+        void markQueueSegmentDone(VkFence fence, uint64_t endNs);
+        static uint64_t nowNs();
 
         mutable std::vector<MemoryHeapBudget> m_memoryBudgetScratch;
 

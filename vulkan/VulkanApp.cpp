@@ -1570,6 +1570,9 @@ void VulkanApp::processPendingCommandBuffers() {
             }
             if (signaledOrGone) {
                 toFree.emplace_back(cmd, fence);
+                // Resolve the queue-timeline segment end before the fence is
+                // destroyed below, so the slotted view can show exact busy time.
+                markQueueSegmentDone(fence, nowNs());
                 m_pendingCommandBuffersSet.erase(cmd);
                 // Queue-activity accounting: this submission finished, so drop the
                 // in-flight counter and bump the cumulative-completed counter.
@@ -1848,6 +1851,8 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
             m_cmdQueueMap[commandBuffer] = graphicsQueue;
             m_queuePending[graphicsQueue]++;
             m_queueSubmitted[graphicsQueue]++;
+            // Record a queue-timeline segment for the queue-usage slotted view.
+            recordQueueSegment(graphicsQueue, fence, submitId);
         }
 
         // Promote pending layout updates before submit so validation sees
@@ -2078,6 +2083,8 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             m_cmdQueueMap[commandBuffer] = targetQueue;
             m_queuePending[targetQueue]++;
             m_queueSubmitted[targetQueue]++;
+            // Record a queue-timeline segment for the queue-usage slotted view.
+            recordQueueSegment(targetQueue, fence, submitId);
         }
 
         // Promote pending layout updates for this submission
@@ -4524,6 +4531,8 @@ void VulkanApp::drawFrame() {
             if (ms > 100.0) std::cout << "[frame] " << ms << " ms\n";
         }
     } frameProbe;
+    // Absolute draw-frame index used to group queue-timeline segments per frame.
+    frameCounter_.fetch_add(1, std::memory_order_relaxed);
     const uint32_t maxFrames = static_cast<uint32_t>(inFlightFences.size());
     uint32_t imageIndex;
 
@@ -5063,6 +5072,9 @@ void VulkanApp::drawFrame() {
         std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
         r = vkQueuePresentKHR(presentQueue, &presentInfo);
     }
+    // Record a (zero-duration) timeline segment for the present queue so the
+    // queue-usage slotted view can show present as a distinct row/event.
+    recordQueueSegment(presentQueue, VK_NULL_HANDLE, 0);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || framebufferResized || vsyncChanged) {
         framebufferResized = false;
         vsyncChanged = false;
@@ -5900,4 +5912,52 @@ uint64_t VulkanApp::getQueueCompleted(VkQueue q) const {
     std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
     auto it = m_queueCompleted.find(q);
     return it != m_queueCompleted.end() ? it->second : 0;
+}
+
+uint64_t VulkanApp::nowNs() {
+    using namespace std::chrono;
+    return static_cast<uint64_t>(
+        duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
+void VulkanApp::recordQueueSegment(VkQueue queue, VkFence fence, uint64_t submitId) {
+    if (queue == VK_NULL_HANDLE) return;
+    std::lock_guard<std::mutex> lk(queueTimelineMtx_);
+    QueueSegment seg;
+    seg.queue    = queue;
+    seg.fence    = fence;
+    seg.frame    = frameCounter_.load(std::memory_order_relaxed);
+    seg.submitId = submitId;
+    seg.startNs  = nowNs();
+    // A null fence (e.g. present) is recorded as an instantaneous event: mark
+    // it already-done so the UI shows a single-slot marker instead of an
+    // open-ended "ongoing" segment.
+    seg.endNs    = (fence == VK_NULL_HANDLE) ? seg.startNs : 0;
+    queueSegments_.push_back(seg);
+    if (fence != VK_NULL_HANDLE)
+        queueTimelineLive_[fence] = std::prev(queueSegments_.end());
+    // Cap history to keep the snapshot cheap for the UI thread.
+    if (queueSegments_.size() > 8192) {
+        auto& front = queueSegments_.front();
+        auto live = queueTimelineLive_.find(front.fence);
+        if (live != queueTimelineLive_.end()) queueTimelineLive_.erase(live);
+        queueSegments_.pop_front();
+    }
+}
+
+void VulkanApp::markQueueSegmentDone(VkFence fence, uint64_t endNs) {
+    if (fence == VK_NULL_HANDLE) return;
+    std::lock_guard<std::mutex> lk(queueTimelineMtx_);
+    auto it = queueTimelineLive_.find(fence);
+    if (it != queueTimelineLive_.end()) {
+        it->second->endNs = endNs;
+        queueTimelineLive_.erase(it);
+    }
+}
+
+void VulkanApp::getQueueTimeline(std::vector<QueueSegment>& out) const {
+    out.clear();
+    std::lock_guard<std::mutex> lk(queueTimelineMtx_);
+    out.reserve(queueSegments_.size());
+    for (const auto& s : queueSegments_) out.push_back(s);
 }

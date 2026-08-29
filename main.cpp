@@ -46,6 +46,7 @@
 #include "widgets/GamepadWidget.hpp"
 #include "widgets/LightWidget.hpp"
 #include "widgets/VulkanResourcesManagerWidget.hpp"
+#include "widgets/QueueTimelineWidget.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/WindWidget.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
@@ -291,6 +292,7 @@ public:
     std::shared_ptr<GamepadWidget> gamepadWidget;
     std::shared_ptr<LightWidget> lightWidget;
     std::shared_ptr<VulkanResourcesManagerWidget> vulkanResourcesManagerWidget;
+    std::shared_ptr<QueueTimelineWidget> queueTimelineWidget;
     std::shared_ptr<VegetationAtlasEditor> vegetationAtlasEditor;
     std::shared_ptr<WindWidget> windWidget;
     std::shared_ptr<MusicWidget> mp3Widget;
@@ -873,6 +875,8 @@ public:
         lightWidget = std::make_shared<LightWidget>(&light);
         vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources);
         vulkanResourcesManagerWidget->updateWithApp(this);
+        queueTimelineWidget = std::make_shared<QueueTimelineWidget>(this);
+        queueTimelineWidget->updateWithApp(this);
         windWidget = std::make_shared<WindWidget>(sceneRenderer->vegetationRenderer.get());
         mp3Widget = std::make_shared<MusicWidget>();
 
@@ -896,6 +900,7 @@ public:
         widgetManager.addWidget(waterWidget);
         widgetManager.addWidget(renderTargetsWidget);
         widgetManager.addWidget(vulkanResourcesManagerWidget);
+        widgetManager.addWidget(queueTimelineWidget);
         widgetManager.addWidget(vegetationAtlasEditor);
         widgetManager.addWidget(windWidget);
         widgetManager.addWidget(mp3Widget);
@@ -2563,6 +2568,7 @@ public:
         // Update per-frame widget state (avoid storing VulkanApp* inside widgets)
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
         if (vulkanResourcesManagerWidget) vulkanResourcesManagerWidget->updateWithApp(this);
+        if (queueTimelineWidget) queueTimelineWidget->updateWithApp(this);
 
         // Render radial menu (behind all widgets)
         if (radialMenu) {
