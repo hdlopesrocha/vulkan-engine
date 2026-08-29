@@ -2583,7 +2583,9 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             destinationStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         } else if (effectiveOld == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
             barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            // Allow READ as well as WRITE: a target transitioned to
+            // COLOR_ATTACHMENT_OPTIMAL may be LOADed by the render pass.
+            barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
             destinationStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         } else if (effectiveOld == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
@@ -2651,7 +2653,11 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             destinationStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
         } else if (effectiveOld == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
             barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            // Allow READ as well as WRITE: a color target transitioned to
+            // COLOR_ATTACHMENT_OPTIMAL may subsequently be LOADed (read) by the
+            // render pass, not just written. Omitting READ triggers a
+            // READ_AFTER_WRITE hazard in syncval.
+            barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
             destinationStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         } else if (effectiveOld == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) {
@@ -4792,7 +4798,10 @@ void VulkanApp::drawFrame() {
         colorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
         colorBarrier.srcAccessMask = 0;
         colorBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        colorBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        // Allow READ as well as WRITE: the swapchain color attachment may be
+        // LOADed by the render pass. Omitting READ triggers a READ_AFTER_WRITE
+        // hazard in syncval if the pass loads.
+        colorBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
         colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         colorBarrier.image = swapchainImages[imageIndex];
