@@ -576,6 +576,257 @@ void ShadowRenderer::recreateImGuiDescriptors() {
     }
 }
 
+void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
+    if (cascadeSetsBuilt_) return;
+    if (shadowDescriptorSets_.empty()) return; // SceneRenderer hasn't wired them yet
+    VkDevice device = app->getDevice();
+
+    const uint32_t frameCount = static_cast<uint32_t>(
+        std::min<size_t>(shadowDescriptorSets_.size(), VulkanApp::MAX_FRAMES_IN_FLIGHT));
+
+    // Per-frame shadow UBO with one slot per cascade (each cascade's light-space
+    // matrix lives in its own slot so the 3 cascade CBs never share/overwrite it).
+    if (shadowUBO_.empty()) {
+        shadowUBO_.resize(VulkanApp::MAX_FRAMES_IN_FLIGHT);
+        for (uint32_t f = 0; f < VulkanApp::MAX_FRAMES_IN_FLIGHT; ++f) {
+            shadowUBO_[f] = app->createBuffer(
+                sizeof(UniformObject) * SHADOW_CASCADE_COUNT,
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
+    }
+
+        // Descriptor pool for the per-cascade shadow sets (copies of the shared set
+        // with binding 0 redirected at the per-cascade UBO slot). Per set the main
+        // layout has: UBO bindings 0, 6, 10 (3); combined-image-sampler bindings
+        // 1,2,3,4,8,9,11,12,13 (9); storage-buffer bindings 5, 7 (2).
+        if (cascadeDescPool_ == VK_NULL_HANDLE) {
+            const uint32_t setCount = frameCount * SHADOW_CASCADE_COUNT;
+            VkDescriptorPoolSize ps[3]{};
+            ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;          ps[0].descriptorCount = 3 * setCount;
+            ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[1].descriptorCount = 9 * setCount;
+            ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;         ps[2].descriptorCount = 2 * setCount;
+        VkDescriptorPoolCreateInfo pci{};
+        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pci.poolSizeCount = 3;
+        pci.pPoolSizes = ps;
+        pci.maxSets = setCount;
+        pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+        if (vkCreateDescriptorPool(device, &pci, nullptr, &cascadeDescPool_) != VK_SUCCESS)
+            throw std::runtime_error("ShadowRenderer: failed to create cascade descriptor pool");
+        app->resources.addDescriptorPool(cascadeDescPool_, "ShadowRenderer: cascade descriptor pool");
+    }
+
+    if (shadowCascadeSets_.empty()) {
+        shadowCascadeSets_.resize(frameCount);
+        for (uint32_t f = 0; f < frameCount; ++f) {
+            for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+                VkDescriptorSetAllocateInfo ai{};
+                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                ai.descriptorPool = cascadeDescPool_;
+                ai.descriptorSetCount = 1;
+                VkDescriptorSetLayout gfxLayout = app->getDescriptorSetLayout();
+                ai.pSetLayouts = &gfxLayout;
+                if (vkAllocateDescriptorSets(device, &ai, &shadowCascadeSets_[f][c]) != VK_SUCCESS)
+                    throw std::runtime_error("ShadowRenderer: failed to allocate cascade shadow DS");
+                app->resources.addDescriptorSet(shadowCascadeSets_[f][c], "ShadowRenderer: cascade shadow DS");
+
+                // Copy the shared shadow set (textures, dummy depth, storage buffers,
+                // cube360, …) then redirect binding 0 at this cascade's UBO slot so the
+                // cascade draws read only their own light-space matrix.
+                for (uint32_t b = 0; b <= 13; ++b) {
+                    VkCopyDescriptorSet cp{};
+                    cp.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+                    cp.srcSet = shadowDescriptorSets_[f];
+                    cp.dstSet = shadowCascadeSets_[f][c];
+                    cp.srcBinding = b; cp.dstBinding = b; cp.descriptorCount = 1;
+                    vkUpdateDescriptorSets(device, 0, nullptr, 1, &cp);
+                }
+                DescriptorWriter(device)
+                    .writeBuffer(shadowCascadeSets_[f][c], 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                 shadowUBO_[f].buffer, c * sizeof(UniformObject), sizeof(UniformObject))
+                    .flush();
+            }
+        }
+    }
+
+    // Per-frame internal semaphores for the parallel submission graph:
+    //   cullDone -> cascade[0..2] -> (blurDone/restore handled by finalSignals)
+    auto mkSem = [&](VkSemaphore& s, const char* label) {
+        if (s != VK_NULL_HANDLE) return;
+        VkSemaphoreCreateInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (vkCreateSemaphore(device, &si, nullptr, &s) == VK_SUCCESS)
+            app->resources.addSemaphore(s, label);
+    };
+    for (uint32_t f = 0; f < frameCount; ++f) {
+        for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+            mkSem(semCullDone_[f][c], "ShadowRenderer: cullDone");
+            mkSem(semCascadeDone_[f][c], "ShadowRenderer: cascadeDone");
+        }
+    }
+
+    cascadeSetsBuilt_ = true;
+}
+
+void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIdx,
+                                   const UniformObject& uboStatic, const glm::mat4& lsMatrix,
+                                   uint32_t cascadeIndex, uint32_t frameSlot,
+                                   bool renderSolid, bool vegetationEnabled,
+                                   bool shadowTessellationEnabled, float lodBias,
+                                   const glm::vec3& cameraPos) {
+    // Per-cascade UBO: viewProjection = cascade light matrix; passParams.x must be
+    // 0 so the TES emits fragPosWorld (required by the EVSM fragment shader).
+    UniformObject shadowUBO = uboStatic;
+    shadowUBO.viewProjection = lsMatrix;
+    shadowUBO.passParams.x = 0.0f;
+    shadowUBO.passParams.y = shadowTessellationEnabled ? 1.0f : 0.0f;
+
+    VkDeviceSize slot = static_cast<VkDeviceSize>(cascadeIndex) * sizeof(UniformObject);
+    if (frameIdx < uboStagingBuffers_.size()) {
+        memcpy(uboStagingBuffers_[frameIdx].map(slot), &shadowUBO, sizeof(UniformObject));
+        VkBufferCopy copy{ slot, slot, sizeof(UniformObject) };
+        vkCmdCopyBuffer(cmd, uboStagingBuffers_[frameIdx].buffer, shadowUBO_[frameSlot].buffer, 1, &copy);
+    }
+    {
+        VkBufferMemoryBarrier2 memBarrier{};
+        memBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+        memBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        memBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        memBarrier.buffer = shadowUBO_[frameSlot].buffer;
+        memBarrier.offset = 0;
+        memBarrier.size = VK_WHOLE_SIZE;
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 1;
+        depInfo.pBufferMemoryBarriers = &memBarrier;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
+
+    beginShadowPass(app, cmd, cascadeIndex, lsMatrix);
+
+    VkPipelineLayout layout = getShadowPipelineLayout();
+    VkDescriptorSet ds = shadowCascadeSets_[frameSlot][cascadeIndex];
+    if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, layout, 0, 1, &ds, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
+    }
+    // beginShadowPass already bound the EVSM shadow pipeline.
+
+    if (renderSolid && solidRenderer_) {
+        auto& shadowIR = solidRenderer_->getIndirectRenderer();
+        shadowIR.bindBuffers(cmd);
+        shadowIR.drawCascadeOnly(cmd, cascadeIndex);
+    }
+    if (liquidRenderer_) {
+        auto& waterShadowIR = liquidRenderer_->getIndirectRenderer();
+        waterShadowIR.bindBuffers(cmd);
+        waterShadowIR.drawCascadeOnly(cmd, cascadeIndex);
+    }
+    if (vegetationEnabled && vegetationRenderer_) {
+        const glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
+        vegetationRenderer_->drawShadowCascade(app, cmd, ds, camPos, cascadeIndex);
+    }
+
+    endShadowPass(app, cmd, cascadeIndex);
+}
+
+void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
+                                    Buffer& mainUniformBuffer, const UniformObject& uboStatic,
+                                    bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
+                                    bool shadowTessellationEnabled, float lodBias,
+                                    const glm::vec3& cameraPos, int maxTargetLod,
+                                    VkSemaphore waitSemaphore,
+                                    const std::vector<VkSemaphore>& finalSignals) {
+    // One command-buffer state tracker, reset before each CB so pipeline binds
+    // are not incorrectly elided across distinct command buffers.
+    CommandBufferState cbState;
+    this->setCmdState(&cbState);
+
+    auto beginOne = [&](VkCommandBuffer& out) {
+        out = app->allocatePrimaryCommandBuffer();
+        VkCommandBufferBeginInfo bi{};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(out, &bi) != VK_SUCCESS)
+            throw std::runtime_error("ShadowRenderer: failed to begin command buffer");
+    };
+
+    ensureShadowParallelResources(app);
+    const uint32_t f = frameIdx % VulkanApp::MAX_FRAMES_IN_FLIGHT;
+
+    // Fallback: shadows disabled, or parallel resources not ready / frame slot
+    // out of range → record the whole pass into a single CB and submit honoring
+    // waitSemaphore + finalSignals so downstream passes are never blocked.
+    if (!shadowsEnabled || !cascadeSetsBuilt_ || f >= shadowCascadeSets_.size()) {
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        beginOne(cb);
+        if (shadowsEnabled) {
+            this->render(app, cb, frameIdx, mainUniformBuffer, uboStatic,
+                         true, renderSolid, vegetationEnabled, shadowTessellationEnabled,
+                         lodBias, cameraPos, maxTargetLod);
+        }
+        app->submitCommandBufferAsyncToQueue(cb, app->getGraphicsQueue(), nullptr,
+            { waitSemaphore }, false, finalSignals);
+        return;
+    }
+
+    const glm::mat4 cascadeMatrices[SHADOW_CASCADE_COUNT] = {
+        uboStatic.lightSpaceMatrix, uboStatic.lightSpaceMatrix1, uboStatic.lightSpaceMatrix2
+    };
+
+    // ── 1. Serial cascade cull (writes the shared cull buffers) ──
+    VkCommandBuffer cullCmd = VK_NULL_HANDLE;
+    beginOne(cullCmd);
+    cbState.reset();
+    if (solidRenderer_)
+        solidRenderer_->getIndirectRenderer().prepareCullCascades(cullCmd, cascadeMatrices, cameraPos, lodBias);
+    if (liquidRenderer_)
+        liquidRenderer_->getIndirectRenderer().prepareCullCascades(cullCmd, cascadeMatrices, cameraPos, lodBias);
+    if (vegetationEnabled && vegetationRenderer_) {
+        vegetationRenderer_->recordReadBarriers(cullCmd);
+        vegetationRenderer_->prepareCullCascades(cullCmd, cascadeMatrices);
+    }
+    // Raise one dedicated cull-done semaphore per cascade so each parallel cascade
+    // CB waits on exactly one binary semaphore (binary semaphores are single-waiter).
+    std::vector<VkSemaphore> cullDoneSignals(SHADOW_CASCADE_COUNT);
+    for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c)
+        cullDoneSignals[c] = semCullDone_[f][c];
+    app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), nullptr,
+        { waitSemaphore }, false, cullDoneSignals);
+
+    // ── 2. Parallel cascade rasterization (one CB per cascade, distinct queue) ──
+    std::array<VkCommandBuffer, SHADOW_CASCADE_COUNT> cascadeCmd{};
+    for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+        beginOne(cascadeCmd[c]);
+        cbState.reset();
+        recordCascade(app, cascadeCmd[c], frameIdx, uboStatic, cascadeMatrices[c], c, f,
+                      renderSolid, vegetationEnabled, shadowTessellationEnabled, lodBias, cameraPos);
+        app->submitCommandBufferAsyncToQueue(cascadeCmd[c], app->getCubeQueue(c), nullptr,
+            { semCullDone_[f][c] }, false, { semCascadeDone_[f][c] });
+    }
+
+    // ── 3. Serial EVSM blur (shares a single blurTemp) + restore main-camera cull ──
+    VkCommandBuffer blurCmd = VK_NULL_HANDLE;
+    beginOne(blurCmd);
+    cbState.reset();
+    for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT - 1; ++c)
+        blurCascade(app, blurCmd, c);
+    if (solidRenderer_)
+        solidRenderer_->getIndirectRenderer().prepareCull(blurCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
+    if (brushRenderer_)
+        brushRenderer_->getSolidIR().prepareCull(blurCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
+
+    std::vector<VkSemaphore> cascadeDoneWait(SHADOW_CASCADE_COUNT);
+    for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) cascadeDoneWait[c] = semCascadeDone_[f][c];
+    app->submitCommandBufferAsyncToQueue(blurCmd, app->getGraphicsQueue(), nullptr,
+        cascadeDoneWait, false, finalSignals);
+}
+
 void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
                                       Buffer& mainUniformBuffer, const UniformObject& uboStatic,
                                       bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,

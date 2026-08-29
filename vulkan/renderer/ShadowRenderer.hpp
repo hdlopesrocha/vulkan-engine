@@ -50,6 +50,27 @@ public:
                           bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
                           bool shadowTessellationEnabled, float lodBias,
                           const glm::vec3& cameraPos, int maxTargetLod = 16);
+
+    // Parallel shadow pass: each of the SHADOW_CASCADE_COUNT cascades is
+    // rasterized on its own command buffer submitted to a distinct graphics
+    // queue (app->getCubeQueue), so the 3 cascade depth draws overlap. The
+    // cascade cull stays serial (shared scratch buffers) in a cull CB that
+    // signals a per-frame semaphore each raster waits on; the EVSM blur is
+    // serial (shares a single blurTemp image) and, together with the
+    // main-camera cull restore, runs in a final CB that raises finalSignals
+    // once the shadow map is fully ready. Each cascade uses its own UBO slot
+    // (shadowUBO_) and descriptor set (shadowCascadeSets_) so they never
+    // serialize on the shared main UBO. `waitSemaphore` gates the cull CB
+    // (the shadow task's own cull-result semaphore); `finalSignals` are the
+    // per-consumer semaphores (semShadow + veg/solid/water/360) raised at the
+    // end so downstream passes wait on a complete shadow map.
+    void renderParallel(VulkanApp* app, uint32_t frameIdx,
+                          Buffer& mainUniformBuffer, const UniformObject& uboStatic,
+                          bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
+                          bool shadowTessellationEnabled, float lodBias,
+                          const glm::vec3& cameraPos, int maxTargetLod,
+                          VkSemaphore waitSemaphore,
+                          const std::vector<VkSemaphore>& finalSignals);
     // Render shadow pass for a single cascade
     void beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex, const glm::mat4& lightSpaceMatrix);
     void endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
@@ -127,6 +148,45 @@ private:
 
     // Per-frame shadow descriptor sets (cached handles, owned by SceneRenderer)
     std::vector<VkDescriptorSet> shadowDescriptorSets_;
+
+    // ── Parallel per-cascade shadow resources ──
+    // Each cascade gets its own UBO slot + descriptor set so the 3 cascade
+    // rasterizations can overlap on independent command buffers / queues
+    // instead of serializing on the shared main UBO (the old serial path
+    // overwrote the main UBO per cascade). Built lazily once SceneRenderer
+    // has populated shadowDescriptorSets_ (see ensureShadowParallelResources).
+    std::vector<Buffer> shadowUBO_;  // per frame, SHADOW_CASCADE_COUNT UBO slots
+    std::vector<std::array<VkDescriptorSet, SHADOW_CASCADE_COUNT>> shadowCascadeSets_;
+    VkDescriptorPool cascadeDescPool_ = VK_NULL_HANDLE;
+    bool cascadeSetsBuilt_ = false;
+
+    // Per-frame internal semaphores for the parallel cascade graph:
+    //   cullDone -> cascade[0..2] -> blurDone
+    // Sized to MAX_FRAMES_IN_FLIGHT (3) so overlapping frames each own a
+    // distinct set (binary semaphores must not be waited by two CBs).
+    static constexpr uint32_t kShadowFrameSlots = 3; // == VulkanApp::MAX_FRAMES_IN_FLIGHT
+    // One cull-done semaphore PER CASCADE per frame: the serial cull CB raises
+    // all of them, and exactly one parallel cascade CB waits on its own slot. A
+    // single binary semaphore may have only one waiter, so we cannot have all
+    // three cascade CBs wait on the same semaphore.
+    std::array<std::array<VkSemaphore, SHADOW_CASCADE_COUNT>, kShadowFrameSlots> semCullDone_ = {};
+    std::array<std::array<VkSemaphore, SHADOW_CASCADE_COUNT>, kShadowFrameSlots> semCascadeDone_ = {};
+
+    // Allocate (once) the per-cascade UBO / descriptor sets / semaphores used
+    // by renderParallel. No-op until SceneRenderer has provided the shared
+    // shadow descriptor sets; safe to call every frame.
+    void ensureShadowParallelResources(VulkanApp* app);
+
+    // Record a single cascade's depth draw into cmd: per-cascade UBO upload to
+    // shadowUBO_ slot cascadeIndex, shadow pass begin/draw/end using the
+    // cascade-specific descriptor set. frameSlot selects the per-frame UBO /
+    // semaphore set.
+    void recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIdx,
+                       const UniformObject& uboStatic, const glm::mat4& lsMatrix,
+                       uint32_t cascadeIndex, uint32_t frameSlot,
+                       bool renderSolid, bool vegetationEnabled,
+                       bool shadowTessellationEnabled, float lodBias,
+                       const glm::vec3& cameraPos);
 
     // Scene sub-renderers drawn into the shadow map (injected via setSceneRenderers)
     SolidRenderer* solidRenderer_ = nullptr;

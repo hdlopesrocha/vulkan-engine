@@ -1533,37 +1533,28 @@ public:
             const glm::vec3 shCamPos = camera.getPosition();
             asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, &semShadow, &semCullShadow, &semShadowVeg, &semShadowSolid, &semShadowWater, &semShadowSolid360]() {
                 VulkanApp* app = this;
-                VkCommandBuffer shCmd = app->allocatePrimaryCommandBuffer();
-                VkCommandBufferBeginInfo cbegin{};
-                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                if (vkBeginCommandBuffer(shCmd, &cbegin) != VK_SUCCESS) {
-                    std::cerr << "[Async] vkBeginCommandBuffer failed for shadow" << std::endl;
-                    app->freeCommandBuffer(shCmd);
-                    return;
-                }
-                // One signal semaphore per consumer of the shadow map: semShadow ->
-                // main CB, semShadowVeg -> veg task. The shadow task waits on its own
-                // cull-result semaphore (semCullShadow); it must not wait on the main
-                // CB's semMainCull (binary semaphores can't be waited twice).
+                // Fresh per-frame "shadow done" + veg semaphores. Binary semaphores must
+                // not be reused across in-flight frames, so each frame gets its own; the
+                // main CB and veg task wait on these handles. (semShadowSolid / Water /
+                // 360 are the shared per-consumer semaphores, signaled here as before.)
                 VkSemaphoreCreateInfo sci{};
                 sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-                if (vkCreateSemaphore(app->getDevice(), &sci, nullptr, &semShadowVeg) != VK_SUCCESS)
+                if (vkCreateSemaphore(app->getDevice(), &sci, nullptr, &semShadow) != VK_SUCCESS)
                     throw std::runtime_error("failed to create shadow signal semaphore");
-                app->resources.addSemaphore(semShadowVeg, "MyApp::shadowSignalSemaphore");
-                // Dedicated command-buffer state (see cull task).
-                CommandBufferState taskState;
-                this->sceneRenderer->setCmdState(&taskState);
-                this->sceneRenderer->shadowMapper->render(this, shCmd, frameIdx,
+                app->resources.addSemaphore(semShadow, "MyApp::shadowSignalSemaphore");
+                if (vkCreateSemaphore(app->getDevice(), &sci, nullptr, &semShadowVeg) != VK_SUCCESS)
+                    throw std::runtime_error("failed to create shadow veg signal semaphore");
+                app->resources.addSemaphore(semShadowVeg, "MyApp::shadowVegSignalSemaphore");
+                // Render each cascade on its own command buffer (parallel on distinct
+                // cube queues); the EVSM blur + main-camera cull restore run serially in
+                // a final CB that raises the full consumer set once the shadow map is
+                // ready. Waits on semCullShadow (its own cull-result semaphore) so the
+                // cull GPU buffers are visible before the cascade draws read them.
+                std::vector<VkSemaphore> shadowSignals = { semShadow, semShadowVeg, semShadowSolid, semShadowWater, semShadowSolid360 };
+                this->sceneRenderer->shadowMapper->renderParallel(this, frameIdx,
                     sceneRenderer->mainUniformBuffers[frameIdx], uboStatic,
-                    shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shCamPos, shMaxTargetLod);
-                // Register semShadow so the main command buffer waits on it before
-                // sampling the shadow map / restored UBO / visibleLods. Wait on
-                // semCullShadow (the shadow task's own cull-result semaphore) so the
-                // cull task's GPU-written buffers are visible before the shadow pass
-                // reads them. Signal semShadowVeg for the veg task (separate binary
-                // semaphore — semShadow itself is consumed by the main CB).
-                app->submitCommandBufferAsyncToQueue(shCmd, app->getGraphicsQueue(), &semShadow, {semCullShadow}, true, {semShadowVeg, semShadowSolid, semShadowWater, semShadowSolid360});
+                    shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shCamPos, shMaxTargetLod,
+                    semCullShadow, shadowSignals);
             });
         }
 
