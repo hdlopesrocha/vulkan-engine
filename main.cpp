@@ -1431,9 +1431,17 @@ public:
         VkSemaphore semShadowSolid = VK_NULL_HANDLE;
         VkSemaphore semShadowWater = VK_NULL_HANDLE;
         VkSemaphore semShadowSolid360 = VK_NULL_HANDLE;
+        // Sky offscreen runs on its own queue and signals two DISTINCT binary
+        // semaphores (each waited exactly once, per Vulkan binary-semaphore rules):
+        //   semSky      -> registered, waited by the main composite (samples sky for reflections)
+        //   semSkyWater -> waited by the async water/back-face pass (samples sky)
+        // (Solid360 renders the procedural sky directly, so it does not sample the
+        //  offscreen sky image and needs no sky wait.)
+        VkSemaphore semSky = VK_NULL_HANDLE;
+        VkSemaphore semSkyWater = VK_NULL_HANDLE;
         std::future<void> asyncCullFuture, asyncSolid360Future, asyncBackFaceFuture;
         std::future<void> asyncShadowFuture, asyncVegFuture, asyncSdfFuture, asyncBboxFuture;
-        std::future<void> asyncSolidFuture;
+        std::future<void> asyncSolidFuture, asyncSkyFuture;
 
         // Scope-level semaphore factory (mirrors the one used inside the cull task).
         auto mkSem = [&](VkSemaphore& out, const char* label) {
@@ -1452,6 +1460,8 @@ public:
         mkSem(semCullSolid, "MyApp::cullSolidSignalSemaphore");
         mkSem(semCullWater, "MyApp::cullWaterSignalSemaphore");
         mkSem(semCullSolid360, "MyApp::cullSolid360SignalSemaphore");
+        mkSem(semSky, "MyApp::skySignalSemaphore");
+        mkSem(semSkyWater, "MyApp::skyWaterSignalSemaphore");
         mkSem(semShadowSolid, "MyApp::shadowSolidSignalSemaphore");
         mkSem(semShadowWater, "MyApp::shadowWaterSignalSemaphore");
         mkSem(semShadowSolid360, "MyApp::shadowSolid360SignalSemaphore");
@@ -1579,6 +1589,40 @@ public:
         // before their signal has been submitted for execution).
         if (asyncShadowFuture.valid())
             asyncShadowFuture.get();
+
+        // --- Sky offscreen on its OWN queue (skyQueue), in parallel with the solid
+        //     pass. Writes the equirectangular sky image (sampled by water, solid360
+        //     and the main composite for reflections). Signals semSky; the main
+        //     composite auto-waits it (registered signal) and water/solid360 wait it
+        //     explicitly. The fullscreen sky draw stays in the solid color pass.
+        {
+            SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
+            asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, &semSky, &semSkyWater]() {
+                VulkanApp* app = this;
+                VkCommandBuffer skyCmd = app->allocatePrimaryCommandBuffer();
+                VkCommandBufferBeginInfo cbegin{};
+                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                if (vkBeginCommandBuffer(skyCmd, &cbegin) != VK_SUCCESS) {
+                    std::cerr << "[Async] vkBeginCommandBuffer failed for sky" << std::endl;
+                    app->freeCommandBuffer(skyCmd);
+                    return;
+                }
+                CommandBufferState taskState;
+                this->sceneRenderer->setCmdState(&taskState);
+                if (this->sceneRenderer->skyRenderer)
+                    this->sceneRenderer->skyRenderer->renderOffscreen(this, skyCmd, frameIdx,
+                        getMainDescriptorSet(), this->sceneRenderer->mainUniformBuffers[frameIdx], this->uboStatic, viewProj, skyMode);
+                this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
+                // submitCommandBufferAsyncToQueue ends the command buffer and submits
+                // it (do NOT call vkEndCommandBuffer here). registerSignal=true ->
+                // semSky is auto-waited by the main composite; semSkyWater is a
+                // signal-only extra waited exactly once by the water/back-face pass.
+                app->submitCommandBufferAsyncToQueue(skyCmd, app->getSkyQueue(), &semSky, {},
+                    true, {semSkyWater});
+            });
+        }
+
         if (sceneRenderer && sceneRenderer->mainSolidRenderer) {
             asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semSolid, &semSolidWater, &semSolidCube, &semCullSolid, &semShadowSolid]() {
                 VulkanApp* app = this;
@@ -1601,12 +1645,10 @@ public:
                 if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                     vkCmdResetQueryPool(solidCmd, queryPools[frameIdx], 6, 8);
 
-                // ── Sky offscreen (writes the sky image sampled by the color pass) ──
-                if (this->sceneRenderer->skyRenderer) {
-                    SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
-                    this->sceneRenderer->skyRenderer->renderOffscreen(this, solidCmd, frameIdx,
-                        getMainDescriptorSet(), this->sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
-                }
+                // ── Sky offscreen moved to its own queue (asyncSkyFuture) so the
+                //    equirectangular sky image is produced in parallel with the solid
+                //    and shadow passes. The fullscreen sky (render()) still draws into
+                //    this solid color pass below. ──
 
                 VkClearValue colorClear{};
                 colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
@@ -1820,6 +1862,10 @@ public:
             // main CB waits on it (mirrors the cull / solid360 sync-join pattern).
             if (asyncSolidFuture.valid())
                 asyncSolidFuture.get();
+            // Join the sky task so semSky is registered before the solid360 task
+            // (which samples the sky image) is submitted.
+            if (asyncSkyFuture.valid())
+                asyncSkyFuture.get();
         }
         // --- Solid360 cubemap on its own command buffer (waits semMainCull, signals semSolid360) ---
         {
@@ -2065,7 +2111,7 @@ public:
         // Back-face depth + water geometry pass on a shared command buffer.
         // (waits semMainCull + semSolid360; signals semWater at the end of the task)
         if (waterEnabled && sceneRenderer) {
-            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semCullWater, &semShadowWater, &semSolid360, &semSolidWater, &semWater]() {
+            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semCullWater, &semShadowWater, &semSolid360, &semSolidWater, &semWater, &semSkyWater]() {
                 VulkanApp* app = this;
                 VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo beginInfo{};
@@ -2317,7 +2363,7 @@ public:
                 // (semShadowSolid), the solid360 cubemap (semSolid360) and the solid
                 // color/depth (semSolidWater) before shading/refraction. Signal semWater
                 // (registered so the main composite CB waits on it).
-                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &semWater, {semCullWater, semShadowWater, semSolid360, semSolidWater}, true);
+                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &semWater, {semCullWater, semShadowWater, semSolid360, semSolidWater, semSkyWater}, true);
 
             });
         }

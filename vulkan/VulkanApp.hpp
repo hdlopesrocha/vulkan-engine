@@ -84,6 +84,7 @@ class VulkanApp {
     // main graphics queue so the passes still run (degraded, no HW parallelism).
     VkQueue solidQueue = VK_NULL_HANDLE;
     VkQueue waterQueue = VK_NULL_HANDLE;
+    VkQueue skyQueue = VK_NULL_HANDLE;
     // Distinct graphics-family queue handles available for parallel work. Built in
     // createLogicalDevice from all acquired graphics-family queues (deduplicated so
     // aliased queues are not listed twice). The solid360 cubemap renders each of its
@@ -529,6 +530,7 @@ public:
     VkQueue getBoundingBoxQueue() const { return bboxQueue; }
         VkQueue getSolidQueue() const { return solidQueue; }
         VkQueue getWaterQueue() const { return waterQueue; }
+        VkQueue getSkyQueue() const { return skyQueue; }
         // Return a graphics-family queue for parallel face work (round-robin index).
         // When only one graphics queue exists (all dedicated queues aliased), every
         // index maps to that same queue — the caller's submissions are simply

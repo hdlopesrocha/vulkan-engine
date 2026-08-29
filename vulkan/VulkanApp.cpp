@@ -5575,7 +5575,7 @@ void VulkanApp::createLogicalDevice() {
         // so on HW that exposes fewer (e.g. integrated GPUs) the extra handles alias
         // the main graphics queue and the passes still run (no HW parallelism).
         uint32_t want = 1;
-        if (queueFamily == indices.graphicsFamily.value()) want = 7; // graphics + vegetation + sdf + bbox + geometry + solid + water
+        if (queueFamily == indices.graphicsFamily.value()) want = 8; // graphics + vegetation + sdf + bbox + geometry + solid + water + sky
         uint32_t available = 1;
         if (queueFamily < familyProps.size()) available = familyProps[queueFamily].queueCount;
         uint32_t take = std::min(available, want);
@@ -5795,6 +5795,7 @@ void VulkanApp::createLogicalDevice() {
     if (gfxRequested > 4) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 4, &geometryQueue); else geometryQueue = graphicsQueue;
     if (gfxRequested > 5) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 5, &solidQueue); else solidQueue = graphicsQueue;
     if (gfxRequested > 6) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 6, &waterQueue); else waterQueue = graphicsQueue;
+    if (gfxRequested > 7) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 7, &skyQueue); else skyQueue = graphicsQueue;
     // Collect every acquired graphics-family queue handle (deduplicated) into
     // parallelGraphicsQueues so the solid360 cubemap can submit each of its 6 faces
     // to a different queue for HW-parallel rasterization. Aliased queues (those that
@@ -5814,6 +5815,7 @@ void VulkanApp::createLogicalDevice() {
     addParallelQueue(geometryQueue);
     addParallelQueue(solidQueue);
     addParallelQueue(waterQueue);
+    addParallelQueue(skyQueue);
     if (indices.presentFamily.value() == indices.graphicsFamily.value()) {
         // present uses the same family; reuse the main graphics queue
         presentQueue = graphicsQueue;
