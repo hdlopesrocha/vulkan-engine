@@ -337,7 +337,18 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     cascadeDepthLayouts[cascadeIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     // Begin dynamic rendering with color + depth attachments
-    VkClearValue clearColor = {0.0f, 0.0f, 0.0f, 0.0f};
+    // EVSM stores positive moments M1=exp(c*z), M2=exp(2c*z). An EMPTY texel must
+    // represent the FAR plane (z=1) so that any receiver in front of it reads as
+    // "no occluder → lit". Clearing to 0 would make empty texels decode as the
+    // closest depth, so chebyshevUpperBound() returns ~0 and the whole scene is
+    // falsely shadowed (over-darkening). c == EVSM_C == 2.0 from evsm.glsl.
+    const float evsmFarM1 = std::exp(2.0f * 1.0f);   // exp(c * 1)
+    const float evsmFarM2 = std::exp(4.0f * 1.0f);   // exp(2c * 1)
+    VkClearValue clearColor{};
+    clearColor.color.float32[0] = evsmFarM1;
+    clearColor.color.float32[1] = evsmFarM2;
+    clearColor.color.float32[2] = 0.0f;
+    clearColor.color.float32[3] = 0.0f;
 
     VkRenderingAttachmentInfo colorAttachment{};
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -784,9 +795,9 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
     beginOne(cullCmd);
     cbState.reset();
     if (solidRenderer_)
-        solidRenderer_->getIndirectRenderer().prepareCullCascades(cullCmd, cascadeMatrices, cameraPos, lodBias);
+        solidRenderer_->getIndirectRenderer().prepareCull(cullCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, cascadeMatrices, /*doCascade=*/true, /*doMain=*/false);
     if (liquidRenderer_)
-        liquidRenderer_->getIndirectRenderer().prepareCullCascades(cullCmd, cascadeMatrices, cameraPos, lodBias);
+        liquidRenderer_->getIndirectRenderer().prepareCull(cullCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, cascadeMatrices, /*doCascade=*/true, /*doMain=*/false);
     if (vegetationEnabled && vegetationRenderer_) {
         vegetationRenderer_->recordReadBarriers(cullCmd);
         vegetationRenderer_->prepareCullCascades(cullCmd, cascadeMatrices);
@@ -850,12 +861,12 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint3
     // pass stamped into the shared visibleLods buffer (single source of truth),
     // so shadow draws use the exact same LoD as the main pass.
     if (solidRenderer_)
-        solidRenderer_->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, cameraPos, lodBias);
+        solidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, cascadeMatrices, /*doCascade=*/true, /*doMain=*/false);
     // Water shadows share the same LoD sync: the water cascade cull reads the
     // water main pass's visibleLods (the water prepareCull ran before this
     // shadow pass, so the selection is fresh for the current frame).
     if (liquidRenderer_) {
-        liquidRenderer_->getIndirectRenderer().prepareCullCascades(commandBuffer, cascadeMatrices, cameraPos, lodBias);
+        liquidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, cascadeMatrices, /*doCascade=*/true, /*doMain=*/false);
     }
 
     // Acquire vegetation instance/indirect buffers before dynamic rendering
