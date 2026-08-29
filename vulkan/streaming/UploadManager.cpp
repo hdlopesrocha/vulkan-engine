@@ -64,7 +64,7 @@ void UploadManager::init(VulkanApp* app,
     // RADV/Rembrandt under burst load), so this falls back to the main
     // graphics queue on this hardware by design.
     queue_ = app->geometryTransferQueue();
-    if (queue_ == VK_NULL_HANDLE) queue_ = app->graphicsQueue;
+    if (queue_ == VK_NULL_HANDLE) queue_ = app->graphicsQueue->handle();
 
     auto qfi = app->findQueueFamilies(app->getPhysicalDevice());
     queueFamily_ = qfi.graphicsFamily.value();
@@ -100,10 +100,10 @@ void UploadManager::enqueue(UploadJob&& job) {
 std::mutex& UploadManager::pickMutex() {
     // Must serialize vkQueueSubmit2 with the SAME mutex the app uses for the
     // chosen queue, or we race with the app's own submissions to that queue.
-    if (queue_ == app_->transferQueue)        return app_->transferSubmitMutex;
-    if (queue_ == app_->geometryQueue &&
-        app_->geometryQueue != app_->graphicsQueue) return app_->geometrySubmitMutex;
-    return app_->graphicsSubmitMutex;
+    if (queue_ == app_->transferQueue->handle())   return app_->transferQueue->submitMutex();
+    if (queue_ == app_->geometryQueue->handle() &&
+        app_->geometryQueue != app_->graphicsQueue) return app_->geometryQueue->submitMutex();
+    return app_->graphicsQueue->submitMutex();
 }
 
 bool UploadManager::isComplete(const StagingSlot& s) const {

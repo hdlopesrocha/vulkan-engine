@@ -24,6 +24,7 @@
 #include "vulkan.hpp"
 #include "VulkanResourceManager.hpp"
 #include "VmaContext.hpp"
+#include "Queue.hpp"
 
 struct GraphicsPipelineConfig {
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
@@ -72,36 +73,51 @@ class VulkanApp {
     // Whether VK_KHR_pipeline_binary (Vulkan 1.4) is supported by the physical device.
     // When true, per-pipeline binary keys can be used for granular cache invalidation.
     bool pipelineBinarySupported = false;
-    VkQueue graphicsQueue = VK_NULL_HANDLE;
-    VkQueue presentQueue = VK_NULL_HANDLE;
+    // All logical queues are owned Queue objects. Aliased queues (e.g. when the
+    // device exposes only one graphics queue) SHARE the same Queue object via a
+    // pointer, so bookkeeping (timeline segments, activity counters) is never
+    // duplicated per physical handle.
+    Queue* graphicsQueue = nullptr;
     // Dedicated queues for async subsystems
-    VkQueue vegetationQueue = VK_NULL_HANDLE;
-    VkQueue sdfQueue = VK_NULL_HANDLE;
-    VkQueue bboxQueue = VK_NULL_HANDLE;
-    VkQueue geometryQueue = VK_NULL_HANDLE;
+    Queue* vegetationQueue = nullptr;
+    Queue* sdfQueue = nullptr;
+    Queue* bboxQueue = nullptr;
+    Queue* geometryQueue = nullptr;
     // Dedicated queues for the Solid and Water scene passes. Acquired from the
-    // graphics family when available (indices 5 and 6); otherwise they alias the
-    // main graphics queue so the passes still run (degraded, no HW parallelism).
-    VkQueue solidQueue = VK_NULL_HANDLE;
-    VkQueue waterQueue = VK_NULL_HANDLE;
-    VkQueue skyQueue = VK_NULL_HANDLE;
-    // Distinct graphics-family queue handles available for parallel work. Built in
+    // graphics family when available; otherwise they alias the main graphics queue
+    // (same Queue object) so the passes still run (degraded, no HW parallelism).
+    Queue* solidQueue = nullptr;
+    Queue* waterQueue = nullptr;
+    Queue* skyQueue = nullptr;
+    // Distinct graphics-family Queue objects available for parallel work. Built in
     // createLogicalDevice from all acquired graphics-family queues (deduplicated so
     // aliased queues are not listed twice). The solid360 cubemap renders each of its
     // 6 faces on a separate primary command buffer submitted to a different entry of
     // this vector (round-robin) to overlap the 6x scene rasterization across queues.
     // Its size is 1 when the device exposes only a single graphics queue (no HW
     // parallelism — the faces then run serially on the one queue, still correct).
-    std::vector<VkQueue> parallelGraphicsQueues;
+    std::vector<Queue*> parallelGraphicsQueues;
     // Optional dedicated transfer queue (if available)
-    VkQueue transferQueue = VK_NULL_HANDLE;
+    Queue* transferQueue = nullptr;
+    // Present queue (always a Queue object; may alias graphicsQueue).
+    Queue* presentQueue = nullptr;
+
+    // Owns the Queue objects (so their lifetimes are tied to the app) and maps a
+    // raw VkQueue handle back to its Queue for the accessors that still take a
+    // VkQueue (e.g. the resources widget). One entry per distinct physical handle.
+    std::vector<std::unique_ptr<Queue>> ownedQueues_;
+    std::unordered_map<VkQueue, Queue*> queueByHandle_;
 
     // Returns a distinct graphics-family queue for upload/transfer work when one
     // was acquired (gfxRequested > 2), else VK_NULL_HANDLE so callers fall back
     // to the main graphics queue. Feature-detected to preserve the single-queue
     // (and RADV) safety net.
     VkQueue geometryTransferQueue() const {
-        return (geometryQueue != graphicsQueue) ? geometryQueue : VK_NULL_HANDLE;
+        // geometryQueue/graphicsQueue are Queue*; aliased queues share the same
+        // object, so the pointer comparison detects aliasing correctly. Return the
+        // raw handle when distinct, else VK_NULL_HANDLE (callers fall back to the
+        // main graphics queue).
+        return (geometryQueue != graphicsQueue) ? (VkQueue)*geometryQueue : VK_NULL_HANDLE;
     }
 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
@@ -237,23 +253,14 @@ protected:
     GLFWwindow* getWindow();
 
 public:
-    // Per-queue mutexes for concurrent submissions without cross-queue contention.
-    // Transfer, graphics, and compute can submit independently without serializing.
-    std::mutex graphicsSubmitMutex;
-    std::mutex transferSubmitMutex;
-    std::mutex vegetationSubmitMutex;
-    std::mutex sdfSubmitMutex;
-    std::mutex bboxSubmitMutex;
-    // Separate submit mutex for the graphics-family geometry queue so upload
-    // submission does not contend with per-frame render submission on the main
-    // graphics queue's mutex. Only used when a distinct geometry queue exists.
-    std::mutex geometrySubmitMutex;
-    // Submit mutexes for the dedicated Solid / Water queues. Only used when the
-    // queue is genuinely distinct from graphicsQueue; when aliased they fall
-    // back to graphicsSubmitMutex via the selection chain in
-    // submitCommandBufferAsyncToQueue.
-    std::mutex solidSubmitMutex;
-    std::mutex waterSubmitMutex;
+    // Per-queue submit mutexes moved into the Queue class: each Queue owns its own
+    // submitMutex so concurrent submissions to distinct (non-aliased) queues do not
+    // serialize. Use queue->submitMutex() instead of the removed graphics/transfer/
+    // vegetation/sdf/bbox/geometry/solid/water submit mutexes.
+    //
+    // Lock ordering (unchanged, still required): a submit holds the target queue's
+    // submitMutex, then may acquire m_submissionMutex. Never hold m_submissionMutex
+    // and then block waiting for a submit mutex.
     // Mutex used to serialize command pool operations (alloc/free/reset) across threads
     std::mutex commandPoolMutex;
     // Mutex used to serialize vkAllocateDescriptorSets calls across threads
@@ -286,7 +293,11 @@ public:
         // If outSemaphore is non-null, the submission will signal that semaphore when finished (useful to make frame submit wait on generation).
         VkFence submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore = nullptr);
         // Submit a pre-recorded command buffer asynchronously to a specific queue (e.g., vegetation/geometry) and return a fence.
-        VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore = nullptr, const std::vector<VkSemaphore>& waitSemaphores = {}, bool registerSignal = true, const std::vector<VkSemaphore>& extraSignalSemaphores = {});
+        // The queue's own submit mutex is taken internally; the submitted segment is
+        // recorded on that queue's timeline. Global command-buffer/fence tracking
+        // (m_submissionMutex, m_pendingCommandBuffers, m_extraWaitSemaphores, layout
+        // pre-apply) is still performed here in VulkanApp.
+        VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, Queue& queue, VkSemaphore* outSemaphore = nullptr, const std::vector<VkSemaphore>& waitSemaphores = {}, bool registerSignal = true, const std::vector<VkSemaphore>& extraSignalSemaphores = {});
         // Submit a pre-recorded command buffer and block until it completes.
         void submitCommandBufferAndWait(VkCommandBuffer commandBuffer);
         // Wait for the graphics queue to become idle (vkQueueWaitIdle) while holding
@@ -333,7 +344,7 @@ public:
         // Overload that submits to a specific queue (e.g. the graphics-family
         // geometry queue for uploads). targetQueue==VK_NULL_HANDLE falls back to
         // the main graphics queue and is equivalent to the 2-arg overload.
-        VkFence runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore, VkQueue targetQueue);
+        VkFence runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore, Queue& targetQueue);
         // Record and submit a short-lived command buffer asynchronously to the transfer queue.
         // Returns a fence that will be signaled when the submission completes.
         // If `outSemaphore` is non-null the submission will signal that semaphore
@@ -524,28 +535,28 @@ public:
             return props.limits.maxStorageBufferRange;
         }
         VmaAllocator getVmaAllocator() const { return vma.allocator; }
-        VkQueue getGraphicsQueue() const { return graphicsQueue; }
-        VkQueue getVegetationQueue() const { return vegetationQueue; }
-    VkQueue getSdfQueue() const { return sdfQueue; }
-    VkQueue getBoundingBoxQueue() const { return bboxQueue; }
-        VkQueue getSolidQueue() const { return solidQueue; }
-        VkQueue getWaterQueue() const { return waterQueue; }
-        VkQueue getSkyQueue() const { return skyQueue; }
+        Queue& getGraphicsQueue() const { return *graphicsQueue; }
+        Queue& getVegetationQueue() const { return *vegetationQueue; }
+        Queue& getSdfQueue() const { return *sdfQueue; }
+        Queue& getBoundingBoxQueue() const { return *bboxQueue; }
+        Queue& getSolidQueue() const { return *solidQueue; }
+        Queue& getWaterQueue() const { return *waterQueue; }
+        Queue& getSkyQueue() const { return *skyQueue; }
         // Return a graphics-family queue for parallel face work (round-robin index).
         // When only one graphics queue exists (all dedicated queues aliased), every
         // index maps to that same queue — the caller's submissions are simply
         // serialized by the single queue, which is still correct.
-        VkQueue getCubeQueue(uint32_t index) const {
-            if (parallelGraphicsQueues.empty()) return graphicsQueue;
-            return parallelGraphicsQueues[index % parallelGraphicsQueues.size()];
+        Queue& getCubeQueue(uint32_t index) const {
+            if (parallelGraphicsQueues.empty()) return *graphicsQueue;
+            return *parallelGraphicsQueues[index % parallelGraphicsQueues.size()];
         }
         // Number of distinct graphics-family queues available for parallel work
         // (1 == no HW parallelism available).
         size_t getCubeQueueCount() const { return parallelGraphicsQueues.empty() ? 1 : parallelGraphicsQueues.size(); }
-        VkQueue getPresentQueue() const { return presentQueue; }
-        VkQueue getTransferQueue() const { return transferQueue; }
+        Queue& getPresentQueue() const { return *presentQueue; }
+        Queue& getTransferQueue() const { return *transferQueue; }
         // Per-queue activity snapshots for the Vulkan Resources "Queue Activity" chart.
-        // Safe to call from the UI thread; reads are guarded by m_submissionMutex.
+        // Safe to call from the UI thread; reads are guarded by the queue's own counters.
         int      getQueuePending(VkQueue q) const;
         uint64_t getQueueSubmitted(VkQueue q) const;
         uint64_t getQueueCompleted(VkQueue q) const;
@@ -556,16 +567,11 @@ public:
         // records a segment {queue, startNs, endNs, frame}. The segment end is
         // resolved when its fence signals inside processPendingCommandBuffers,
         // so the UI can draw exactly when each queue is processing.
-        struct QueueSegment {
-            VkQueue  queue    = VK_NULL_HANDLE;
-            VkFence  fence    = VK_NULL_HANDLE;
-            uint64_t frame    = 0;   // drawFrame index at submit time
-            uint64_t submitId = 0;
-            uint64_t startNs  = 0;   // steady_clock at submit
-            uint64_t endNs    = 0;   // steady_clock when fence signaled (0 = ongoing)
-        };
-        // Snapshot of recent segments (oldest first). Copy-based: no VulkanApp*
-        // is retained by the caller. Thread-safe.
+        // QueueSegment is defined in Queue.hpp and owned by the Queue class. Re-export
+        // it here so existing callers (the queue timeline widget) keep compiling.
+        using QueueSegment = ::QueueSegment;
+        // Snapshot of recent segments across all queues (oldest first). Copy-based:
+        // no VulkanApp* is retained by the caller. Thread-safe.
         void getQueueTimeline(std::vector<QueueSegment>& out) const;
         uint64_t getFrameCounter() const { return frameCounter_.load(std::memory_order_relaxed); }
         VkSwapchainKHR getSwapchain() const { return swapchain; }
@@ -703,24 +709,14 @@ public:
         std::unordered_set<VkCommandBuffer> m_pendingCommandBuffersSet;
 
         // Per-queue activity tracking (drives the Vulkan Resources "Queue Activity"
-        // chart). Keyed by VkQueue handle, so aliased queues (e.g. vegetationQueue
-        // == graphicsQueue when only one graphics queue exists) collapse to one
-        // counter — which is exactly the real hardware queue.
-        std::unordered_map<VkQueue, int>      m_queuePending;   // in-flight command buffers
-        std::unordered_map<VkQueue, uint64_t> m_queueSubmitted; // cumulative submissions
-        std::unordered_map<VkQueue, uint64_t> m_queueCompleted; // cumulative completions
+        // chart) now lives in the Queue class: each Queue owns its in-flight /
+        // submitted / completed counters and its queue-timeline segment list.
+        // cmd -> owning queue handle, used by processPendingCommandBuffers to find
+        // the Queue for accounting when a submission's fence signals.
         std::unordered_map<VkCommandBuffer, VkQueue> m_cmdQueueMap; // cmd -> owning queue
 
-        // Queue timeline: per-submit busy intervals for the queue-usage slotted
-        // view. Guarded by queueTimelineMtx_. A std::list keeps segment
-        // iterators stable while we erase the oldest entries on cap.
-        mutable std::mutex queueTimelineMtx_;
-        std::list<QueueSegment> queueSegments_;
-        // fence -> iterator into queueSegments_ for not-yet-completed segments.
-        std::unordered_map<VkFence, std::list<QueueSegment>::iterator> queueTimelineLive_;
+        // Frame counter (drawFrame index) captured into queue-timeline segments.
         std::atomic<uint64_t> frameCounter_{0};
-        void recordQueueSegment(VkQueue queue, VkFence fence, uint64_t submitId);
-        void markQueueSegmentDone(VkFence fence, uint64_t endNs);
         static uint64_t nowNs();
 
         mutable std::vector<MemoryHeapBudget> m_memoryBudgetScratch;

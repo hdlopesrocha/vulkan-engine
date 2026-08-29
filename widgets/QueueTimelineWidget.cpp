@@ -53,7 +53,7 @@ void QueueTimelineWidget::updateWithApp(VulkanApp* app) {
             { app->getTransferQueue(),   "Transfer" },
         };
         for (size_t i = 0; i < app->parallelGraphicsQueues.size(); ++i) {
-            cands.push_back({ app->parallelGraphicsQueues[i],
+            cands.push_back({ app->parallelGraphicsQueues[i]->handle(),
                               ("Gfx" + std::to_string(i)).c_str() });
         }
         // List every logical queue as its own row (do NOT de-duplicate by
