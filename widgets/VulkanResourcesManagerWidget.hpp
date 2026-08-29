@@ -39,7 +39,7 @@ private:
     // one graphics queue exposed), they share the same underlying hardware queue and
     // will show identical values.
     static constexpr int QUEUE_HISTORY = 240;
-    enum QueueId : int { Q_GRAPHICS = 0, Q_PRESENT, Q_VEGETATION, Q_SDF, Q_BBOX, Q_GEOMETRY, Q_TRANSFER, Q_COUNT };
+    enum QueueId : int { Q_GRAPHICS = 0, Q_PRESENT, Q_VEGETATION, Q_SDF, Q_BBOX, Q_GEOMETRY, Q_TRANSFER, Q_BRUSH_SOLID, Q_BRUSH_LIQUID, Q_COUNT };
     VkQueue cachedQueue[Q_COUNT] = {};
     std::array<float, QUEUE_HISTORY> queueHistory[Q_COUNT];
     bool queueActive[Q_COUNT] = {};   // handle non-null this frame

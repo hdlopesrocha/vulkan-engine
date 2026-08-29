@@ -48,7 +48,17 @@ public:
     // buffer so the solid pass outputs are available for sampling.
     void renderPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                     bool waterWireframeEnabled, float waterTime, VkImageView skyView,
-                    VkDescriptorSet overrideWaterDs = VK_NULL_HANDLE);
+                    VkDescriptorSet overrideWaterDs = VK_NULL_HANDLE,
+                    bool drawBrushLiquid = true);
+
+    // Brush-liquid overlay: draws the brush water geometry (secondaryIR) on top of
+    // the already-rendered water targets on its own command buffer/queue, so it runs
+    // in parallel with the main water pass's consumers. The water geometry pass is
+    // re-entered with LOAD ops (preserving the main water EVSM + geom depth) and the
+    // targets are restored to SHADER_READ_OPTIMAL for the composite. Must be called
+    // after the main water pass has completed (waits on semWater externally).
+    void renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
+                           VkImageView skyView, VkDescriptorSet overrideWaterDs = VK_NULL_HANDLE);
 
     // Water render time UBO (binding 10) — created and updated here, but
     // bound into the scene descriptor sets by SceneRenderer.
@@ -62,7 +72,7 @@ public:
     IndirectRenderer& getIndirectRenderer() { return waterIndirectRenderer; }
 
     // Begin water geometry pass (renders water depth/normals to offscreen target)
-    void beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex);
+    void beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex, bool loadExisting = false);
     void endWaterGeometryPass(VkCommandBuffer cmd);
 
     // Back-face depth pre-pass (reversed winding for water volume thickness)

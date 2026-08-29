@@ -58,6 +58,8 @@ void QueueTimelineWidget::updateWithApp(VulkanApp* app) {
             { qat(3), "BoundingBox" },
             { app->geometryTransferQueue(), "Geometry" },
             { app->getTransferQueue(),   "Transfer" },
+            { qat(8), "BrushSolid" },
+            { qat(9), "BrushLiquid" },
         };
         for (size_t i = 0; i < app->parallelGraphicsQueues.size(); ++i) {
             cands.push_back({ app->parallelGraphicsQueues[i]->handle(),

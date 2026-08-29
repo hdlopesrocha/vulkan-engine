@@ -259,6 +259,14 @@ public:
     Queue& getSolidQueue() const { return *solidQueue; }
     Queue& getWaterQueue() const { return *waterQueue; }
     Queue& getSkyQueue() const { return *skyQueue; }
+    // Brush passes get their own queues so the brush solid (offscreen preview) and
+    // brush liquid (water overlay) can be submitted in parallel with the main
+    // solid/water passes. Aliased to graphicsQueue when only one graphics queue
+    // exists (no HW parallelism, still correct).
+    Queue* brushSolidQueue = nullptr;
+    Queue* brushLiquidQueue = nullptr;
+    Queue& getBrushSolidQueue() const { return *brushSolidQueue; }
+    Queue& getBrushLiquidQueue() const { return *brushLiquidQueue; }
     World * world = nullptr;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
@@ -659,6 +667,8 @@ public:
         solidQueue     = (pg.size() > 5) ? pg[5] : graphicsQueue;
         waterQueue     = (pg.size() > 6) ? pg[6] : graphicsQueue;
         skyQueue       = (pg.size() > 7) ? pg[7] : graphicsQueue;
+        brushSolidQueue  = (pg.size() > 8) ? pg[8] : graphicsQueue;
+        brushLiquidQueue = (pg.size() > 9) ? pg[9] : graphicsQueue;
 
         sceneRenderer = new SceneRenderer();
         for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i)
@@ -1466,6 +1476,16 @@ public:
         //  offscreen sky image and needs no sky wait.)
         VkSemaphore semSky = VK_NULL_HANDLE;
         VkSemaphore semSkyWater = VK_NULL_HANDLE;
+        // Brush passes run on their own queues. Brush-solid (offscreen preview) must
+        // finish before the solid/water passes sample its depth and before the
+        // composite samples its color; brush-liquid (water overlay) must finish after
+        // the water pass writes the water targets, and before the composite samples them.
+        // semBrushSolid / semBrushLiquid are the registered (composite) signals; the
+        // per-consumer copies below keep the one-waiter-per-binary-semaphore invariant.
+        VkSemaphore semBrushSolid = VK_NULL_HANDLE;
+        VkSemaphore semBrushLiquid = VK_NULL_HANDLE;
+        VkSemaphore semBrushSolidSolid = VK_NULL_HANDLE;
+        VkSemaphore semBrushSolidWater = VK_NULL_HANDLE;
         std::future<void> asyncCullFuture, asyncSolid360Future, asyncBackFaceFuture;
         std::future<void> asyncShadowFuture, asyncVegFuture, asyncSdfFuture, asyncBboxFuture;
         std::future<void> asyncSolidFuture, asyncSkyFuture;
@@ -1489,6 +1509,10 @@ public:
         mkSem(semCullSolid360, "MyApp::cullSolid360SignalSemaphore");
         mkSem(semSky, "MyApp::skySignalSemaphore");
         mkSem(semSkyWater, "MyApp::skyWaterSignalSemaphore");
+        mkSem(semBrushSolid, "MyApp::brushSolidSignalSemaphore");
+        mkSem(semBrushLiquid, "MyApp::brushLiquidSignalSemaphore");
+        mkSem(semBrushSolidSolid, "MyApp::brushSolidSolidSignalSemaphore");
+        mkSem(semBrushSolidWater, "MyApp::brushSolidWaterSignalSemaphore");
         mkSem(semShadowSolid, "MyApp::shadowSolidSignalSemaphore");
         mkSem(semShadowWater, "MyApp::shadowWaterSignalSemaphore");
         mkSem(semShadowSolid360, "MyApp::shadowSolid360SignalSemaphore");
@@ -1544,8 +1568,9 @@ public:
                     this->sceneRenderer->brushRenderer->getLiquidIR().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
                 if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
                     this->sceneRenderer->debugSDFRenderer->prepareCull(cullCmd);
-                if (this->sceneRenderer->brushRenderer)
-                    this->sceneRenderer->brushRenderer->recordEarlyPass(this, cullCmd, frameIdx, *this->sceneRenderer->mainSolidRenderer, getMainDescriptorSet());
+                // Brush-solid offscreen is recorded into its OWN command buffer and
+                // submitted on the brushSolid queue (see below), so it can run in
+                // parallel with the rest of the cull/early work instead of blocking it.
                 // Signal semMainCull (main CB) plus semCullShadow (shadow task),
                 // semCullVeg (veg task), semCullSdf (sdf task) and semCullBbox (bbox
                 // task); each is waited by exactly one command buffer.
@@ -1554,6 +1579,30 @@ public:
             asyncCullFuture.get();
             // Restore the per-frame state for the main CB's continued recording.
             this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
+
+            // --- Brush-solid offscreen on its own queue (signals semBrushSolid) ---
+            // Renders the brush solid (front/back depths + offscreen color) the main
+            // solid/water passes sample for paint-mode occlusion. It depends only on
+            // the brush-solid cull, which completed with the cull task (semCullSolid),
+            // so it is submitted on the dedicated brushSolid queue in parallel with the
+            // solid/shadow/water passes. The composite auto-waits semBrushSolid
+            // (registerSignal=true); the solid and water passes add it to their waits.
+            {
+                VkCommandBuffer brushSolidCmd = allocatePrimaryCommandBuffer();
+                VkCommandBufferBeginInfo bbegin{};
+                bbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                bbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                if (vkBeginCommandBuffer(brushSolidCmd, &bbegin) == VK_SUCCESS) {
+                    CommandBufferState brushState;
+                    this->sceneRenderer->setCmdState(&brushState);
+                    this->sceneRenderer->brushRenderer->recordEarlyPass(this, brushSolidCmd, frameIdx, *this->sceneRenderer->mainSolidRenderer, getMainDescriptorSet());
+                    this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
+                    submitCommandBufferAsyncToQueue(brushSolidCmd, getBrushSolidQueue(), &semBrushSolid, {semCullSolid}, true, {semBrushSolidSolid, semBrushSolidWater});
+                } else {
+                    std::cerr << "[MyApp] vkBeginCommandBuffer failed for brushSolid pass" << std::endl;
+                    freeCommandBuffer(brushSolidCmd);
+                }
+            }
         }
 
 
@@ -1651,7 +1700,7 @@ public:
         }
 
         if (sceneRenderer && sceneRenderer->mainSolidRenderer) {
-            asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semSolid, &semSolidWater, &semSolidCube, &semCullSolid, &semShadowSolid]() {
+            asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semSolid, &semSolidWater, &semSolidCube, &semCullSolid, &semShadowSolid, &semBrushSolidSolid]() {
                 MyApp* app = this;
                 VkCommandBuffer solidCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1881,7 +1930,7 @@ public:
                 // brush depth) and shadow (shadow map + restored UBO) results, then
                 // signal semSolid (registered so the main composite CB waits on it),
                 // semSolidWater (water task) and semSolid360 (solid360 task).
-                app->submitCommandBufferAsyncToQueue(solidCmd, app->getSolidQueue(), &semSolid, {semCullSolid, semShadowSolid}, true, {semSolidWater, semSolidCube});
+                app->submitCommandBufferAsyncToQueue(solidCmd, app->getSolidQueue(), &semSolid, {semCullSolid, semShadowSolid, semBrushSolidSolid}, true, {semSolidWater, semSolidCube});
                 this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
             });
             // Join the solid task before the main (composite) command buffer is recorded
@@ -2138,7 +2187,7 @@ public:
         // Back-face depth + water geometry pass on a shared command buffer.
         // (waits semMainCull + semSolid360; signals semWater at the end of the task)
         if (waterEnabled && sceneRenderer) {
-            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semCullWater, &semShadowWater, &semSolid360, &semSolidWater, &semWater, &semSkyWater]() {
+            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semCullWater, &semShadowWater, &semSolid360, &semSolidWater, &semWater, &semSkyWater, &semBrushSolidWater, &semBrushLiquid]() {
                 MyApp* app = this;
                 VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo beginInfo{};
@@ -2360,7 +2409,7 @@ public:
                         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                             vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
                         this->sceneRenderer->mainLiquidRenderer->renderPass(this, cmd, frameIdx,
-                            settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2);
+                            settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2, /*drawBrushLiquid=*/false);
                         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                             vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
                         // Transition water geometry depth to SRO for the compositor.
@@ -2390,7 +2439,33 @@ public:
                 // (semShadowSolid), the solid360 cubemap (semSolid360) and the solid
                 // color/depth (semSolidWater) before shading/refraction. Signal semWater
                 // (registered so the main composite CB waits on it).
-                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &semWater, {semCullWater, semShadowWater, semSolid360, semSolidWater, semSkyWater}, true);
+                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &semWater, {semCullWater, semShadowWater, semSolid360, semSolidWater, semSkyWater, semBrushSolidWater}, true);
+
+                // Brush-liquid overlay: re-enter the water geometry pass on its own
+                // queue, AFTER the main water pass completes (semWater), and draw the
+                // brush liquid IR on top of the preserved water targets. Signaled via
+                // semBrushLiquid (registered, so the composite waits on it). This lets
+                // the composite run in parallel with the brush-liquid overlay instead
+                // of serializing behind it on the water queue.
+                if (settings.waterEnabled && this->sceneRenderer->brushRenderer) {
+                    VkImageView blsky = (this->sceneRenderer->skyRenderer)
+                        ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
+                    VkCommandBuffer brushLiquidCmd = app->allocatePrimaryCommandBuffer();
+                    VkCommandBufferBeginInfo lblbegin{};
+                    lblbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                    lblbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    if (vkBeginCommandBuffer(brushLiquidCmd, &lblbegin) == VK_SUCCESS) {
+                        CommandBufferState lblState;
+                        this->sceneRenderer->setCmdState(&lblState);
+                        this->sceneRenderer->mainLiquidRenderer->renderBrushLiquid(app, brushLiquidCmd, frameIdx, blsky, slot.waterDs2);
+                        this->sceneRenderer->setCmdState(&taskState);
+                        app->submitCommandBufferAsyncToQueue(brushLiquidCmd, app->getBrushLiquidQueue(), &semBrushLiquid, {semWater}, true);
+                    } else {
+                        std::cerr << "[MyApp] vkBeginCommandBuffer failed for brushLiquid pass" << std::endl;
+                        app->freeCommandBuffer(brushLiquidCmd);
+                        this->sceneRenderer->setCmdState(&taskState);
+                    }
+                }
 
             });
         }

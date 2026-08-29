@@ -1073,8 +1073,9 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         VkCommandBufferSubmitInfo cmdBufInfo{};
         cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
         cmdBufInfo.commandBuffer = cmd;
-        VkSubmitInfo2 submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+
+    VkSubmitInfo2 submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
         submitInfo.commandBufferInfoCount = 1;
         submitInfo.pCommandBufferInfos = &cmdBufInfo;
         {
@@ -5383,13 +5384,14 @@ void VulkanApp::createLogicalDevice() {
         VkDeviceQueueCreateInfo queueCreateInfo{};
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queueCreateInfo.queueFamilyIndex = queueFamily;
-        // determine desired queue count: try to allocate up to 7 from graphics family
-        // (graphics + vegetation + sdf + bbox + geometry + solid + water passes; see
-        // the queue-acquire block below). Clamped to the family's reported queueCount,
-        // so on HW that exposes fewer (e.g. integrated GPUs) the extra handles alias
-        // the main graphics queue and the passes still run (no HW parallelism).
+        // determine desired queue count: try to allocate up to 9 from graphics family
+        // (graphics + vegetation + sdf + bbox + geometry + solid + water + sky +
+        // brushSolid + brushLiquid; see the queue-acquire block below). Clamped to
+        // the family's reported queueCount, so on HW that exposes fewer (e.g.
+        // integrated GPUs) the extra handles alias the main graphics queue and the
+        // passes still run (no HW parallelism).
         uint32_t want = 1;
-        if (queueFamily == indices.graphicsFamily.value()) want = 8; // graphics + vegetation + sdf + bbox + geometry + solid + water + sky
+        if (queueFamily == indices.graphicsFamily.value()) want = 10; // graphics + veg + sdf + bbox + geo + solid + water + sky + brushSolid + brushLiquid
         uint32_t available = 1;
         if (queueFamily < familyProps.size()) available = familyProps[queueFamily].queueCount;
         uint32_t take = std::min(available, want);
@@ -5633,6 +5635,8 @@ void VulkanApp::createLogicalDevice() {
     Queue* solidQ= (gfxRequested > 5) ? makeQueue(acquireGfx(5), gfxFamily, "Solid")      : graphicsQueue;
     Queue* waterQ= (gfxRequested > 6) ? makeQueue(acquireGfx(6), gfxFamily, "Water")      : graphicsQueue;
     Queue* skyQ  = (gfxRequested > 7) ? makeQueue(acquireGfx(7), gfxFamily, "Sky")        : graphicsQueue;
+    Queue* brushSolidQ  = (gfxRequested > 8) ? makeQueue(acquireGfx(8), gfxFamily, "BrushSolid")  : graphicsQueue;
+    Queue* brushLiquidQ = (gfxRequested > 9) ? makeQueue(acquireGfx(9), gfxFamily, "BrushLiquid") : graphicsQueue;
 
     // Collect every acquired graphics-family queue (deduplicated by handle) into
     // parallelGraphicsQueues so the solid360 cubemap can submit each of its 6 faces
@@ -5653,6 +5657,8 @@ void VulkanApp::createLogicalDevice() {
     addParallelQueue(solidQ);
     addParallelQueue(waterQ);
     addParallelQueue(skyQ);
+    addParallelQueue(brushSolidQ);
+    addParallelQueue(brushLiquidQ);
 
     if (indices.presentFamily.value() == gfxFamily) {
         // present uses the same family; reuse the main graphics queue object

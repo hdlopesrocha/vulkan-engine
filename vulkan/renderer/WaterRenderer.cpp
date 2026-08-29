@@ -567,7 +567,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Back-face pipeline creation moved to WaterBackFaceRenderer
 }
 
-void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex) {
+void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex, bool loadExisting) {
     if (waterGeometryPipeline == VK_NULL_HANDLE) return;
     if (frameIndex >= 3) return;
     if (waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
@@ -594,7 +594,9 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colorAttachment.imageView = waterDepthImageViews[frameIndex];
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    // LOAD preserves the main water EVSM output when this pass overlays brush
+    // liquid on top; CLEAR (default) starts a fresh water target.
+    colorAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
 
@@ -604,9 +606,14 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     // Clear depth to 1.0 so every water fragment passes the depth test
     // (self-occlusion only). Forward-pass depth-test handles solid occlusion.
-    // No scene-depth copy is needed.
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    // No scene-depth copy is needed. When LOADing, the main water geom depth is
+    // preserved so the brush overlay depth-tests against it (storeOp STORE keeps
+    // the overlay visible to the composite).
+    depthAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    // STORE (not DONT_CARE) so the geom depth survives the pass: the composite samples
+    // it (postprocess.frag binding 7) and the brush-liquid overlay re-enters this pass
+    // with LOAD ops, depth-testing against the main water geometry written here.
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depthAttachment.clearValue.depthStencil = {1.0f, 0};
 
     VkRenderingInfo renderingInfo{};
@@ -867,6 +874,51 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     endWaterGeometryPass(cmd);
 }
 
+void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView skyView, VkDescriptorSet overrideWaterDs) {
+    if (!app || cmd == VK_NULL_HANDLE || !brushRenderer_) return;
+    if (frameIndex >= 3) return;
+    if (waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
+
+    VkImageView sceneColorView = solidRenderer_ ? solidRenderer_->getColorView(frameIndex) : VK_NULL_HANDLE;
+    prepareRender(app, cmd, frameIndex, sceneColorView, skyView);
+
+    // Re-enter the water geometry pass with LOAD ops so the main water EVSM color
+    // and geom depth are preserved; the brush liquid draws on top of them.
+    beginWaterGeometryPass(cmd, frameIndex, /*loadExisting=*/true);
+
+    VkPipeline waterPipe = getWaterGeometryPipeline();
+    VkPipelineLayout waterLayout = getWaterGeometryPipelineLayout();
+    if (waterPipe != VK_NULL_HANDLE && waterLayout != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsPipeline(cmd, waterPipe);
+        else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipe);
+
+        VkDescriptorSet mainDs = app->getMainDescriptorSet();
+        if (mainDs != VK_NULL_HANDLE) {
+            if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, waterLayout, 0, 1, &mainDs, 0, nullptr);
+            else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 0, 1, &mainDs, 0, nullptr);
+        }
+        VkDescriptorSet sceneDs = (overrideWaterDs != VK_NULL_HANDLE) ? overrideWaterDs : getWaterDepthDescriptorSet(frameIndex);
+        if (sceneDs != VK_NULL_HANDLE) {
+            if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, waterLayout, 2, 1, &sceneDs, 0, nullptr);
+            else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 2, 1, &sceneDs, 0, nullptr);
+        }
+        // Brush liquid water: same pipeline/descriptor sets, its own IndirectRenderer.
+        brushRenderer_->getLiquidIR().drawPrepared(cmd);
+    }
+
+    endWaterGeometryPass(cmd);
+
+    // Restore the water geometry depth to SHADER_READ_ONLY for the composite (the
+    // main water pass does the same transition after its own geometry pass).
+    if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE && appPtr) {
+        appPtr->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex],
+            VK_FORMAT_D32_SFLOAT,
+            waterGeomDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            1, 0, 1);
+        waterGeomDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+}
+
 // Helper: create a 1x1 image with given format, initialize to black (color) or 1.0 (depth).
 // Returns the image view on success, VK_NULL_HANDLE on failure. Outputs image/allocation/memory via pointers.
 static VkImageView _createDummy1x1ImageView(VulkanApp* app, VkFormat fmt, VkImageAspectFlags aspect,
@@ -961,7 +1013,7 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
 
 void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
                                bool waterWireframeEnabled, float waterTime, VkImageView skyView,
-                               VkDescriptorSet overrideWaterDs) {
+                               VkDescriptorSet overrideWaterDs, bool drawBrushLiquid) {
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[WaterRenderer::renderPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;
@@ -1030,7 +1082,7 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
 
                 // Draw filled water geometry (will update depth buffer)
                 getIndirectRenderer().drawPrepared(commandBuffer);
-                if (brushRenderer_) brushRenderer_->getLiquidIR().drawPrepared(commandBuffer);
+                if (drawBrushLiquid && brushRenderer_) brushRenderer_->getLiquidIR().drawPrepared(commandBuffer);
             }
 
             // Draw wireframe overlay on top, inside the same render pass,
@@ -1051,7 +1103,7 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
                     if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, wfLayout, 2, 1, &wfDepthDs, 0, nullptr);
 
                 getIndirectRenderer().drawPrepared(commandBuffer);
-                if (brushRenderer_) brushRenderer_->getLiquidIR().drawPrepared(commandBuffer);
+                if (drawBrushLiquid && brushRenderer_) brushRenderer_->getLiquidIR().drawPrepared(commandBuffer);
             }
 
             endWaterGeometryPass(commandBuffer);
@@ -1061,7 +1113,7 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
     } else {
         if (!_wg_env_skip) {
             render(app, commandBuffer, frameIdx, sceneColorView, skyView,
-                   brushRenderer_ ? &brushRenderer_->getLiquidIR() : nullptr);
+                   (drawBrushLiquid && brushRenderer_) ? &brushRenderer_->getLiquidIR() : nullptr);
         } else {
             // Skipping waterRenderer::render due to VULKAN_DISABLE_WATERGEOM
         }
