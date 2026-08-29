@@ -544,6 +544,10 @@ void VulkanApp::cleanup() {
         }
         m_extraWaitSemaphores.clear();
     }
+    // Persistent frame-graph timeline semaphores are owned by the application and
+    // tracked by ResourceManager; just drop our references (the semaphores are
+    // destroyed during device teardown, not here).
+    m_compositeTimelineWaits.clear();
     // Destroy the frame timeline semaphore — kept alive until after the deferred
     // frame-fence destroys (which no longer query it) have run above.
     if (frameTimeline != VK_NULL_HANDLE) {
@@ -1753,7 +1757,7 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
 }
 
 // Submit a pre-recorded command buffer asynchronously to a specific queue and return a fence that will be signaled on completion.
-VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, Queue& queue, VkSemaphore* outSemaphore, const std::vector<VkSemaphore>& waitSemaphores, bool registerSignal, const std::vector<VkSemaphore>& extraSignalSemaphores) {
+VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, Queue& queue, VkSemaphore* outSemaphore, const std::vector<VkSemaphore>& waitSemaphores, bool registerSignal, const std::vector<VkSemaphore>& extraSignalSemaphores, const std::vector<uint64_t>& waitSemaphoreValues, uint64_t signalValue, const std::vector<uint64_t>& extraSignalValues, bool persistentSignal) {
     // Throttle excessive outstanding submissions which can cause driver hangs
     // on some implementations when resources are exhausted.
     throttleIfTooManyPending();
@@ -1771,15 +1775,24 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
     resources.addFence(fence, "VulkanApp::submitCommandBufferAsyncToQueue: fence");
 
     VkSemaphore semaphore = VK_NULL_HANDLE;
+    bool createdSemaphore = false;
     if (outSemaphore) {
-        VkSemaphoreCreateInfo semInfo{};
-        semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        if (vkCreateSemaphore(device, &semInfo, nullptr, &semaphore) != VK_SUCCESS) {
-            resources.removeFence(fence);
-            vkDestroyFence(device, fence, nullptr);
-            throw std::runtime_error("failed to create semaphore");
+        // If the caller already owns a semaphore (e.g. a persistent frame-graph
+        // timeline semaphore reused across frames), signal that one instead of
+        // allocating a fresh binary semaphore.
+        if (*outSemaphore != VK_NULL_HANDLE) {
+            semaphore = *outSemaphore;
+        } else {
+            VkSemaphoreCreateInfo semInfo{};
+            semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            if (vkCreateSemaphore(device, &semInfo, nullptr, &semaphore) != VK_SUCCESS) {
+                resources.removeFence(fence);
+                vkDestroyFence(device, fence, nullptr);
+                throw std::runtime_error("failed to create semaphore");
+            }
+            createdSemaphore = true;
+            resources.addSemaphore(semaphore, "VulkanApp::submitCommandBufferAsyncToQueue: semaphore");
         }
-        resources.addSemaphore(semaphore, "VulkanApp::submitCommandBufferAsyncToQueue: semaphore");
     }
 
     VkCommandBufferSubmitInfo cmdBufInfo{};
@@ -1800,17 +1813,18 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         VkSemaphoreSubmitInfo info{};
         info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
         info.semaphore = semaphore;
-        info.value = 0;
+        info.value = signalValue;
         info.stageMask = signalStageMask;
         info.deviceIndex = 0;
         signalSemaphoreInfos.push_back(info);
     }
-    for (VkSemaphore es : extraSignalSemaphores) {
+    for (size_t ei = 0; ei < extraSignalSemaphores.size(); ++ei) {
+        VkSemaphore es = extraSignalSemaphores[ei];
         if (es == VK_NULL_HANDLE) continue;
         VkSemaphoreSubmitInfo info{};
         info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
         info.semaphore = es;
-        info.value = 0;
+        info.value = (ei < extraSignalValues.size()) ? extraSignalValues[ei] : 0;
         info.stageMask = signalStageMask;
         info.deviceIndex = 0;
         signalSemaphoreInfos.push_back(info);
@@ -1820,12 +1834,13 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
 
     std::vector<VkSemaphoreSubmitInfo> waitSemaphoreInfos;
     waitSemaphoreInfos.reserve(waitSemaphores.size());
-    for (VkSemaphore ws : waitSemaphores) {
+    for (size_t wi = 0; wi < waitSemaphores.size(); ++wi) {
+        VkSemaphore ws = waitSemaphores[wi];
         if (ws == VK_NULL_HANDLE) continue;
         VkSemaphoreSubmitInfo info{};
         info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
         info.semaphore = ws;
-        info.value = 0;
+        info.value = (wi < waitSemaphoreValues.size()) ? waitSemaphoreValues[wi] : 0;
         info.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
         info.deviceIndex = 0;
         waitSemaphoreInfos.push_back(info);
@@ -1915,7 +1930,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             if (semaphore != VK_NULL_HANDLE) {
                 if (submitRes == VK_ERROR_DEVICE_LOST) {
                     std::cerr << "[VulkanApp] submitCommandBufferAsyncToQueue: vkQueueSubmit2 returned VK_ERROR_DEVICE_LOST\n";
-                } else {
+                } else if (createdSemaphore) {
                     resources.removeSemaphore(semaphore);
                     vkDestroySemaphore(device, semaphore, nullptr);
                 }
@@ -1963,11 +1978,36 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
                 | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT
                 | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
                 | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            m_extraWaitSemaphores.emplace_back(semaphore, waitStage);
+            if (persistentSignal) {
+                // Frame-graph timeline semaphore: the composite waits on it with the
+                // frame value. It is NOT destroyed after the frame (persistent,
+                // monotonic value reused across frames). Stored separately from
+                // m_extraWaitSemaphores which still owns one-shot binary signals.
+                m_compositeTimelineWaits.emplace_back(semaphore, signalValue);
+            } else {
+                m_extraWaitSemaphores.emplace_back(semaphore, waitStage);
+            }
         }
     }
 
     return fence;
+}
+
+VkSemaphore VulkanApp::createTimelineSemaphore(uint64_t initialValue) {
+    VkSemaphoreTypeCreateInfo typeInfo{};
+    typeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    typeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    typeInfo.initialValue = initialValue;
+
+    VkSemaphoreCreateInfo semInfo{};
+    semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    semInfo.pNext = &typeInfo;
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    if (vkCreateSemaphore(device, &semInfo, nullptr, &semaphore) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create timeline semaphore");
+    }
+    resources.addSemaphore(semaphore, "VulkanApp::createTimelineSemaphore");
+    return semaphore;
 }
 
 void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
@@ -4590,6 +4630,32 @@ void VulkanApp::drawFrame() {
         }
     }
 
+    // Pull persistent frame-graph timeline semaphores (one per producer, signaled
+    // with the current frame value). The composite waits on each with that value.
+    // These are NOT destroyed here: the semaphore is reusable across frames and its
+    // value increments monotonically, so the wait point is consumed but the
+    // semaphore persists until shutdown (resources tracks it for device teardown).
+    static std::vector<std::pair<VkSemaphore, uint64_t>> consumedTimelineWaits;
+    consumedTimelineWaits.clear();
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
+        if (!m_compositeTimelineWaits.empty()) {
+            consumedTimelineWaits = std::move(m_compositeTimelineWaits);
+            m_compositeTimelineWaits.clear();
+        }
+        for (auto &e : consumedTimelineWaits) {
+            VkSemaphoreSubmitInfo extraWait{};
+            extraWait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+            extraWait.semaphore = e.first;
+            extraWait.value = e.second;
+            // The composite's work (and downstream) is gated until the producer has
+            // finished; waiting at all-commands completion is correct here.
+            extraWait.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            extraWait.deviceIndex = 0;
+            waitSemaphoreInfos.push_back(extraWait);
+        }
+    }
+
     // If recording or submission fails after the extra waits were consumed, this
     // frame will not submit its fresh fence. Undo the consumption: re-register
     // the extra semaphores (their signal operations may still be pending on the
@@ -4603,6 +4669,12 @@ void VulkanApp::drawFrame() {
             if (e.first != VK_NULL_HANDLE) m_extraWaitSemaphores.push_back(e);
         }
         consumedExtraWaits.clear();
+        // Restore any consumed persistent timeline waits so a later submit (or the
+        // shutdown sweep) still waits on the producer's frame value before teardown.
+        for (auto &e : consumedTimelineWaits) {
+            if (e.first != VK_NULL_HANDLE) m_compositeTimelineWaits.push_back(e);
+        }
+        consumedTimelineWaits.clear();
         for (auto it = m_deferredDestroys.begin(); it != m_deferredDestroys.end();) {
             if (it->first == frameFence) it = m_deferredDestroys.erase(it);
             else ++it;

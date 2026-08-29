@@ -67,12 +67,13 @@ public:
                         const Cube360FaceResources& faceRes,
                         const UniformObject& ubo,
                          bool renderSolid, bool renderWater,
-                         VkSemaphore waitCullSolid360,
-                         VkSemaphore waitShadowSolid360,
-                         const VkSemaphore (&semCullFace)[6],
-                        const VkSemaphore (&semFaceDone)[6],
-                        VkSemaphore signalSolid360,
-                        uint32_t frameIndex = 0);
+                          VkSemaphore waitCullSolid360, uint64_t waitCullSolid360Value,
+                          VkSemaphore waitShadowSolid360, uint64_t waitShadowSolid360Value,
+                          VkSemaphore waitSolid360, uint64_t waitSolid360Value,
+                          const VkSemaphore (&semCullFace)[6],
+                         const VkSemaphore (&semFaceDone)[6],
+                         VkSemaphore signalSolid360, uint64_t signalSolid360Value,
+                         uint32_t frameIndex = 0);
 
     // Return the cubemap view for reflection sampling
     VkImageView getSolid360View() const { return cube360CubeView; }

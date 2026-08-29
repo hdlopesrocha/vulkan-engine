@@ -313,12 +313,13 @@ void Solid360Renderer::render(VulkanApp* app,
                                       VkBuffer faceUboBuffer,
                                       const Cube360FaceResources& faceRes,
                                       const UniformObject& ubo,
-                         bool renderSolid, bool renderWater,
-                         VkSemaphore waitCullSolid360,
-                         VkSemaphore waitShadowSolid360,
-                         const VkSemaphore (&semCullFace)[6],
+                          bool renderSolid, bool renderWater,
+                          VkSemaphore waitCullSolid360, uint64_t waitCullSolid360Value,
+                          VkSemaphore waitShadowSolid360, uint64_t waitShadowSolid360Value,
+                          VkSemaphore waitSolid360, uint64_t waitSolid360Value,
+                          const VkSemaphore (&semCullFace)[6],
                                       const VkSemaphore (&semFaceDone)[6],
-                                      VkSemaphore signalSolid360,
+                                      VkSemaphore signalSolid360, uint64_t signalSolid360Value,
                                       uint32_t frameIndex) {
     if (!app || faceUboBuffer == VK_NULL_HANDLE) return;
     if (cube360FaceViews[0] == VK_NULL_HANDLE) return;
@@ -410,7 +411,8 @@ void Solid360Renderer::render(VulkanApp* app,
         // rasterization (which samples the shadow map at set 2) never races it.
         std::vector<VkSemaphore> cullSigns(semCullFace, semCullFace + 6);
         app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), nullptr,
-            { waitCullSolid360, waitShadowSolid360 }, false, cullSigns);
+            { waitCullSolid360, waitShadowSolid360, waitSolid360 }, false, cullSigns,
+            { waitCullSolid360Value, waitShadowSolid360Value, waitSolid360Value });
     }
 
     // ---- Phase B: parallel per-face rasterization on distinct graphics queues ----
@@ -602,7 +604,7 @@ void Solid360Renderer::render(VulkanApp* app,
     beginOne(joinCmd);
     std::vector<VkSemaphore> joinWaits(semFaceDone, semFaceDone + 6);
     app->submitCommandBufferAsyncToQueue(joinCmd, app->getGraphicsQueue(), nullptr,
-        joinWaits, false, { signalSolid360 });
+        joinWaits, false, { signalSolid360 }, {}, 0, { signalSolid360Value });
 
     cmdState = nullptr;
 }

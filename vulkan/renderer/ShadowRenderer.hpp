@@ -68,9 +68,9 @@ public:
                           Buffer& mainUniformBuffer, const UniformObject& uboStatic,
                           bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
                           bool shadowTessellationEnabled, float lodBias,
-                          const glm::vec3& cameraPos, int maxTargetLod,
-                          VkSemaphore waitSemaphore,
-                          const std::vector<VkSemaphore>& finalSignals);
+                           const glm::vec3& cameraPos, int maxTargetLod,
+                           VkSemaphore waitSemaphore, uint64_t waitValue,
+                           VkSemaphore finalSignal, uint64_t signalValue);
     // Render shadow pass for a single cascade
     void beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex, const glm::mat4& lightSpaceMatrix);
     void endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex);

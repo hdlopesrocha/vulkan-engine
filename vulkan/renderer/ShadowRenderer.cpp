@@ -736,12 +736,12 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
 }
 
 void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
-                                    Buffer& mainUniformBuffer, const UniformObject& uboStatic,
-                                    bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
-                                    bool shadowTessellationEnabled, float lodBias,
-                                    const glm::vec3& cameraPos, int maxTargetLod,
-                                    VkSemaphore waitSemaphore,
-                                    const std::vector<VkSemaphore>& finalSignals) {
+                                     Buffer& mainUniformBuffer, const UniformObject& uboStatic,
+                                     bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
+                                     bool shadowTessellationEnabled, float lodBias,
+                                     const glm::vec3& cameraPos, int maxTargetLod,
+                                     VkSemaphore waitSemaphore, uint64_t waitValue,
+                                     VkSemaphore finalSignal, uint64_t signalValue) {
     // One command-buffer state tracker, reset before each CB so pipeline binds
     // are not incorrectly elided across distinct command buffers.
     CommandBufferState cbState;
@@ -771,7 +771,7 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
                          lodBias, cameraPos, maxTargetLod);
         }
         app->submitCommandBufferAsyncToQueue(cb, app->getGraphicsQueue(), nullptr,
-            { waitSemaphore }, false, finalSignals);
+            { waitSemaphore }, false, { finalSignal }, { waitValue }, 0, { signalValue });
         return;
     }
 
@@ -797,7 +797,7 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
     for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c)
         cullDoneSignals[c] = semCullDone_[f][c];
     app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), nullptr,
-        { waitSemaphore }, false, cullDoneSignals);
+        { waitSemaphore }, false, cullDoneSignals, { waitValue });
 
     // ── 2. Parallel cascade rasterization (one CB per cascade, distinct queue) ──
     std::array<VkCommandBuffer, SHADOW_CASCADE_COUNT> cascadeCmd{};
@@ -824,7 +824,7 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
     std::vector<VkSemaphore> cascadeDoneWait(SHADOW_CASCADE_COUNT);
     for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) cascadeDoneWait[c] = semCascadeDone_[f][c];
     app->submitCommandBufferAsyncToQueue(blurCmd, app->getGraphicsQueue(), nullptr,
-        cascadeDoneWait, false, finalSignals);
+        cascadeDoneWait, false, { finalSignal }, {}, 0, { signalValue });
 }
 
 void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,

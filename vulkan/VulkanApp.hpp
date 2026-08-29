@@ -290,7 +290,12 @@ public:
         // recorded on that queue's timeline. Global command-buffer/fence tracking
         // (m_submissionMutex, m_pendingCommandBuffers, m_extraWaitSemaphores, layout
         // pre-apply) is still performed here in VulkanApp.
-        VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, Queue& queue, VkSemaphore* outSemaphore = nullptr, const std::vector<VkSemaphore>& waitSemaphores = {}, bool registerSignal = true, const std::vector<VkSemaphore>& extraSignalSemaphores = {});
+        VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, Queue& queue, VkSemaphore* outSemaphore = nullptr, const std::vector<VkSemaphore>& waitSemaphores = {}, bool registerSignal = true, const std::vector<VkSemaphore>& extraSignalSemaphores = {}, const std::vector<uint64_t>& waitSemaphoreValues = {}, uint64_t signalValue = 0, const std::vector<uint64_t>& extraSignalValues = {}, bool persistentSignal = false);
+        // Create a timeline semaphore (counter initialised to initialValue). Used by
+        // the frame graph to collapse many binary cross-producer semaphores into a
+        // single semaphore per producer whose monotonically increasing value lets
+        // multiple consumers wait on the same frame without extra binary semaphores.
+        VkSemaphore createTimelineSemaphore(uint64_t initialValue = 0);
         // Submit a pre-recorded command buffer and block until it completes.
         void submitCommandBufferAndWait(VkCommandBuffer commandBuffer);
         // Wait for the graphics queue to become idle (vkQueueWaitIdle) while holding
@@ -691,6 +696,11 @@ public:
         std::unordered_map<VkCommandBuffer, VkCommandPool> m_commandBufferPoolMap;
         std::unordered_map<VkCommandBuffer, std::string> m_cmdBacktraces;
         std::vector<std::pair<VkSemaphore, VkPipelineStageFlags2>> m_extraWaitSemaphores;
+        // Persistent timeline semaphores (one per frame-graph producer) that the
+        // composite waits on with the current frame value. Unlike m_extraWaitSemaphores
+        // these are NOT destroyed after the frame (their value is monotonic and reused
+        // across frames), so they are only consumed as wait points and cleared.
+        std::vector<std::pair<VkSemaphore, uint64_t>> m_compositeTimelineWaits;
         std::list<std::pair<VkFence, std::function<void()>>> m_deferredDestroys;
 
         // O(1) membership mirror of m_pendingCommandBuffers (command-buffer

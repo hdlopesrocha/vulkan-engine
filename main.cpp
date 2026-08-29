@@ -1435,97 +1435,40 @@ public:
         // offscreen), semVeg (vegetation offscreen), semSdf (SDF cubes offscreen) and
         // semBbox (bounding boxes offscreen) via m_extraWaitSemaphores, which the
         // tasks register their signal semaphores into.
-        VkSemaphore semMainCull = VK_NULL_HANDLE;
-        VkSemaphore semSolid360 = VK_NULL_HANDLE;
-        VkSemaphore semWater = VK_NULL_HANDLE;
-        // Composite waits on this (registered signal); semWater is kept as a
-        // SEPARATE binary semaphore so the brush-liquid pass can wait on it
-        // without creating a second waiter on the same binary semaphore.
-        VkSemaphore semWaterComp = VK_NULL_HANDLE;
-        VkSemaphore semShadow = VK_NULL_HANDLE;
-        VkSemaphore semVeg = VK_NULL_HANDLE;
-        VkSemaphore semSdf = VK_NULL_HANDLE;
-        VkSemaphore semBbox = VK_NULL_HANDLE;
-        // Per-consumer signal semaphores. A binary semaphore can satisfy only ONE
-        // wait, so each command buffer that must synchronize on the cull/shadow
-        // results needs its own distinct signal (the main CB consumes semMainCull
-        // and semShadow; the async shadow/veg/sdf/bbox tasks consume the ones below).
-        VkSemaphore semCullShadow = VK_NULL_HANDLE;
-        VkSemaphore semCullVeg = VK_NULL_HANDLE;
-        VkSemaphore semCullSdf = VK_NULL_HANDLE;
-        VkSemaphore semCullBbox = VK_NULL_HANDLE;
-        VkSemaphore semShadowVeg = VK_NULL_HANDLE;
-        // Solid pass signal semaphores. The solid scene pass records on its own
-        // command buffer (solidQueue) and signals one DISTINCT binary semaphore per
-        // consumer (a binary semaphore may be waited by exactly ONE command buffer):
-        //   semSolid      -> main (composite) command buffer
-        //   semSolidWater -> water task (samples solid color/depth for refraction)
-        //   semSolidCube  -> solid360 task (samples solid color/depth for the cubemap)
-        // The solid360 task in turn signals semSolid360 (its cubemap), waited only by
-        // the water task. Per-consumer cull/shadow signals keep the same invariant.
-        VkSemaphore semSolid = VK_NULL_HANDLE;
-        VkSemaphore semSolidWater = VK_NULL_HANDLE;
-        VkSemaphore semSolidCube = VK_NULL_HANDLE;
-        VkSemaphore semCullSolid = VK_NULL_HANDLE;
-        VkSemaphore semCullBrushSolid = VK_NULL_HANDLE;
-        VkSemaphore semCullWater = VK_NULL_HANDLE;
-        VkSemaphore semCullSolid360 = VK_NULL_HANDLE;
-        VkSemaphore semShadowSolid = VK_NULL_HANDLE;
-        VkSemaphore semShadowWater = VK_NULL_HANDLE;
-        VkSemaphore semShadowSolid360 = VK_NULL_HANDLE;
-        // Sky offscreen runs on its own queue and signals two DISTINCT binary
-        // semaphores (each waited exactly once, per Vulkan binary-semaphore rules):
-        //   semSky      -> registered, waited by the main composite (samples sky for reflections)
-        //   semSkyWater -> waited by the async water/back-face pass (samples sky)
-        // (Solid360 renders the procedural sky directly, so it does not sample the
-        //  offscreen sky image and needs no sky wait.)
-        VkSemaphore semSky = VK_NULL_HANDLE;
-        VkSemaphore semSkyWater = VK_NULL_HANDLE;
-        // Brush passes run on their own queues. Brush-solid (offscreen preview) must
-        // finish before the solid/water passes sample its depth and before the
-        // composite samples its color; brush-liquid (water overlay) must finish after
-        // the water pass writes the water targets, and before the composite samples them.
-        // semBrushSolid / semBrushLiquid are the registered (composite) signals; the
-        // per-consumer copies below keep the one-waiter-per-binary-semaphore invariant.
-        VkSemaphore semBrushSolid = VK_NULL_HANDLE;
-        VkSemaphore semBrushLiquid = VK_NULL_HANDLE;
-        VkSemaphore semBrushSolidSolid = VK_NULL_HANDLE;
-        VkSemaphore semBrushSolidWater = VK_NULL_HANDLE;
+        // Frame-graph timeline semaphores: one per producer. A timeline semaphore's
+        // counter is monotonic, so a single semaphore per producer is waited by every
+        // consumer of that frame — collapsing the many binary per-consumer semaphores
+        // into one. Created once and reused across frames; per-frame ordering is the
+        // monotonically increasing tlFrameValue. They are NOT destroyed per frame
+        // (unlike the old binary semaphores) — ResourceManager owns them until teardown.
+        static VkSemaphore tlCull = VK_NULL_HANDLE, tlShadow = VK_NULL_HANDLE, tlSky = VK_NULL_HANDLE;
+        static VkSemaphore tlSolid = VK_NULL_HANDLE, tlSolid360 = VK_NULL_HANDLE, tlBrushSolid = VK_NULL_HANDLE;
+        static VkSemaphore tlVeg = VK_NULL_HANDLE, tlSdf = VK_NULL_HANDLE, tlBbox = VK_NULL_HANDLE;
+        static VkSemaphore tlWater = VK_NULL_HANDLE, tlBrushLiquid = VK_NULL_HANDLE;
+        static uint64_t tlFrameValue = 0;
+        static bool tlInit = false;
+        if (!tlInit) {
+            tlCull      = createTimelineSemaphore();
+            tlShadow    = createTimelineSemaphore();
+            tlSky       = createTimelineSemaphore();
+            tlSolid     = createTimelineSemaphore();
+            tlSolid360  = createTimelineSemaphore();
+            tlBrushSolid  = createTimelineSemaphore();
+            tlVeg       = createTimelineSemaphore();
+            tlSdf       = createTimelineSemaphore();
+            tlBbox      = createTimelineSemaphore();
+            tlWater     = createTimelineSemaphore();
+            tlBrushLiquid = createTimelineSemaphore();
+            tlInit = true;
+        }
+        const uint64_t v = ++tlFrameValue;
         std::future<void> asyncCullFuture, asyncSolid360Future, asyncBackFaceFuture;
         std::future<void> asyncShadowFuture, asyncVegFuture, asyncSdfFuture, asyncBboxFuture;
         std::future<void> asyncSolidFuture, asyncSkyFuture;
 
-        // Scope-level semaphore factory (mirrors the one used inside the cull task).
-        auto mkSem = [&](VkSemaphore& out, const char* label) {
-            VkSemaphoreCreateInfo sci{};
-            sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            if (vkCreateSemaphore(getDevice(), &sci, nullptr, &out) != VK_SUCCESS)
-                throw std::runtime_error("failed to create async signal semaphore");
-            resources.addSemaphore(out, label);
-        };
-        // Pre-create the solid + water dependency semaphores so every async task can
-        // reference a valid handle regardless of launch/recording order (the tasks
-        // below capture these by reference and only signal/wait them).
-        mkSem(semSolid, "MyApp::solidSignalSemaphore");
-        mkSem(semWaterComp, "MyApp::waterCompositeSignalSemaphore");
-        mkSem(semSolidWater, "MyApp::solidWaterSignalSemaphore");
-        mkSem(semSolidCube, "MyApp::solidCubeSignalSemaphore");
-        mkSem(semCullSolid, "MyApp::cullSolidSignalSemaphore");
-        mkSem(semCullWater, "MyApp::cullWaterSignalSemaphore");
-        mkSem(semCullSolid360, "MyApp::cullSolid360SignalSemaphore");
-        mkSem(semSky, "MyApp::skySignalSemaphore");
-        mkSem(semSkyWater, "MyApp::skyWaterSignalSemaphore");
-        mkSem(semBrushSolid, "MyApp::brushSolidSignalSemaphore");
-        mkSem(semBrushLiquid, "MyApp::brushLiquidSignalSemaphore");
-        mkSem(semBrushSolidSolid, "MyApp::brushSolidSolidSignalSemaphore");
-        mkSem(semBrushSolidWater, "MyApp::brushSolidWaterSignalSemaphore");
-        mkSem(semShadowSolid, "MyApp::shadowSolidSignalSemaphore");
-        mkSem(semShadowWater, "MyApp::shadowWaterSignalSemaphore");
-        mkSem(semShadowSolid360, "MyApp::shadowSolid360SignalSemaphore");
-
         // --- Cull + early brush pass on its own command buffer (signals semMainCull) ---
         if (sceneRenderer) {
-            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semMainCull, &semCullShadow, &semCullVeg, &semCullSdf, &semCullBbox, &semCullSolid, &semCullBrushSolid, &semCullWater, &semCullSolid360]() {
+            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &tlCull, v]() {
                 MyApp* app = this;
                 VkCommandBuffer cullCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1536,21 +1479,11 @@ public:
                     app->freeCommandBuffer(cullCmd);
                     return;
                 }
-                // One signal semaphore per consumer of the cull results (binary
-                // semaphores are one-signal/one-wait): semMainCull -> main CB,
-                // semCullShadow -> shadow task, semCullVeg -> veg task.
-                auto makeSem = [&](VkSemaphore& out) {
-                    VkSemaphoreCreateInfo sci{};
-                    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-                    if (vkCreateSemaphore(app->getDevice(), &sci, nullptr, &out) != VK_SUCCESS)
-                        throw std::runtime_error("failed to create cull signal semaphore");
-                    app->resources.addSemaphore(out, "MyApp::cullSignalSemaphore");
-                };
-                makeSem(semCullShadow);
-                makeSem(semCullVeg);
-                makeSem(semCullSdf);
-                makeSem(semCullBbox);
-                makeSem(semCullBrushSolid);
+                // Timeline semaphore: the cull results are signaled once on tlCull with
+                // the current frame value v. Every consumer (shadow, veg, sdf, bbox,
+                // solid, brush-solid, water, solid360, and the composite) waits on
+                // tlCull@v, which is valid because a timeline semaphore may have many
+                // waiters on the same value (unlike a binary semaphore).
                 // Use a dedicated command-buffer state for this async command buffer.
                 // Sharing frameCmdState with the main CB would let the cached
                 // "last bound pipeline" from a different command buffer suppress the
@@ -1575,13 +1508,8 @@ public:
                     this->sceneRenderer->brushRenderer->getLiquidIR().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
                 if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
                     this->sceneRenderer->debugSDFRenderer->prepareCull(cullCmd);
-                // Brush-solid offscreen is recorded into its OWN command buffer and
-                // submitted on the brushSolid queue (see below), so it can run in
-                // parallel with the rest of the cull/early work instead of blocking it.
-                // Signal semMainCull (main CB) plus semCullShadow (shadow task),
-                // semCullVeg (veg task), semCullSdf (sdf task) and semCullBbox (bbox
-                // task); each is waited by exactly one command buffer.
-                app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &semMainCull, {}, true, {semCullShadow, semCullVeg, semCullSdf, semCullBbox, semCullSolid, semCullBrushSolid, semCullWater, semCullSolid360});
+                // Signal the single cull timeline semaphore; consumers wait on tlCull@v.
+                app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &tlCull, {}, true, {}, {}, v, {}, true);
             });
             asyncCullFuture.get();
             // Restore the per-frame state for the main CB's continued recording.
@@ -1604,7 +1532,7 @@ public:
                     this->sceneRenderer->setCmdState(&brushState);
                     this->sceneRenderer->brushRenderer->recordEarlyPass(this, brushSolidCmd, frameIdx, *this->sceneRenderer->mainSolidRenderer, getMainDescriptorSet());
                     this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
-                    submitCommandBufferAsyncToQueue(brushSolidCmd, getBrushSolidQueue(), &semBrushSolid, {semCullBrushSolid}, true, {semBrushSolidSolid, semBrushSolidWater});
+                    submitCommandBufferAsyncToQueue(brushSolidCmd, getBrushSolidQueue(), &tlBrushSolid, {tlCull}, true, {}, {v}, v, {}, true);
                 } else {
                     std::cerr << "[MyApp] vkBeginCommandBuffer failed for brushSolid pass" << std::endl;
                     freeCommandBuffer(brushSolidCmd);
@@ -1629,30 +1557,23 @@ public:
             const float shLodBias = settings.lodBias;
             const float shMaxTargetLod = settings.maxTargetLod;
             const glm::vec3 shCamPos = camera.getPosition();
-            asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, &semShadow, &semCullShadow, &semShadowVeg, &semShadowSolid, &semShadowWater, &semShadowSolid360]() {
+            asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, &tlCull, &tlShadow, v]() {
                 MyApp* app = this;
-                // Fresh per-frame "shadow done" + veg semaphores. Binary semaphores must
-                // not be reused across in-flight frames, so each frame gets its own; the
-                // main CB and veg task wait on these handles. (semShadowSolid / Water /
-                // 360 are the shared per-consumer semaphores, signaled here as before.)
-                VkSemaphoreCreateInfo sci{};
-                sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-                if (vkCreateSemaphore(app->getDevice(), &sci, nullptr, &semShadow) != VK_SUCCESS)
-                    throw std::runtime_error("failed to create shadow signal semaphore");
-                app->resources.addSemaphore(semShadow, "MyApp::shadowSignalSemaphore");
-                if (vkCreateSemaphore(app->getDevice(), &sci, nullptr, &semShadowVeg) != VK_SUCCESS)
-                    throw std::runtime_error("failed to create shadow veg signal semaphore");
-                app->resources.addSemaphore(semShadowVeg, "MyApp::shadowVegSignalSemaphore");
+                // The shadow producer signals a single timeline semaphore tlShadow@v.
+                // Its internal cascade/blur sub-passes use their own (persistent binary)
+                // semaphores; only the cross-queue edge becomes a timeline wait. The
+                // composite does NOT wait on tlShadow (it only samples the final images,
+                // not the shadow map), so registerSignal is false; solid/veg/water/
+                // solid360 wait tlShadow@v via their own wait lists.
                 // Render each cascade on its own command buffer (parallel on distinct
                 // cube queues); the EVSM blur + main-camera cull restore run serially in
-                // a final CB that raises the full consumer set once the shadow map is
-                // ready. Waits on semCullShadow (its own cull-result semaphore) so the
-                // cull GPU buffers are visible before the cascade draws read them.
-                std::vector<VkSemaphore> shadowSignals = { semShadow, semShadowVeg, semShadowSolid, semShadowWater, semShadowSolid360 };
+                // a final CB that raises tlShadow once the shadow map is ready. Waits on
+                // tlCull@v so the cull GPU buffers are visible before the cascade draws
+                // read them.
                 this->sceneRenderer->shadowMapper->renderParallel(this, frameIdx,
                     sceneRenderer->mainUniformBuffers[frameIdx], uboStatic,
                     shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shCamPos, shMaxTargetLod,
-                    semCullShadow, shadowSignals);
+                    tlCull, v, tlShadow, v);
             });
         }
 
@@ -1680,7 +1601,7 @@ public:
         //     explicitly. The fullscreen sky draw stays in the solid color pass.
         {
             SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
-            asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, &semSky, &semSkyWater]() {
+            asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, &tlSky, v]() {
                 MyApp* app = this;
                 VkCommandBuffer skyCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1699,15 +1620,15 @@ public:
                 this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
                 // submitCommandBufferAsyncToQueue ends the command buffer and submits
                 // it (do NOT call vkEndCommandBuffer here). registerSignal=true ->
-                // semSky is auto-waited by the main composite; semSkyWater is a
-                // signal-only extra waited exactly once by the water/back-face pass.
-                app->submitCommandBufferAsyncToQueue(skyCmd, app->getSkyQueue(), &semSky, {},
-                    true, {semSkyWater});
+                // tlSky is auto-waited by the main composite; tlSky@v is also waited by
+                // the water/back-face pass (a timeline semaphore allows multiple waiters).
+                app->submitCommandBufferAsyncToQueue(skyCmd, app->getSkyQueue(), &tlSky, {},
+                    true, {}, {}, v, {}, true);
             });
         }
 
         if (sceneRenderer && sceneRenderer->mainSolidRenderer) {
-            asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semSolid, &semSolidWater, &semSolidCube, &semCullSolid, &semShadowSolid, &semBrushSolidSolid]() {
+            asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &tlSolid, &tlCull, &tlShadow, &tlBrushSolid, v]() {
                 MyApp* app = this;
                 VkCommandBuffer solidCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -1934,10 +1855,10 @@ public:
                 }
 
                 // Submit to the dedicated solid queue. Wait on the cull (visibleLods /
-                // brush depth) and shadow (shadow map + restored UBO) results, then
-                // signal semSolid (registered so the main composite CB waits on it),
-                // semSolidWater (water task) and semSolid360 (solid360 task).
-                app->submitCommandBufferAsyncToQueue(solidCmd, app->getSolidQueue(), &semSolid, {semCullSolid, semShadowSolid, semBrushSolidSolid}, true, {semSolidWater, semSolidCube});
+                // brush depth), shadow (shadow map + restored UBO) and brush-solid
+                // results, then signal tlSolid@v (registered so the main composite CB
+                // waits on it). tlSolid@v is also waited by the water and solid360 tasks.
+                app->submitCommandBufferAsyncToQueue(solidCmd, app->getSolidQueue(), &tlSolid, {tlCull, tlShadow, tlBrushSolid}, true, {}, {v, v, v}, v, {}, true);
                 this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
             });
             // Join the solid task before the main (composite) command buffer is recorded
@@ -1955,7 +1876,7 @@ public:
             const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
             const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
             if (renderCubemap) {
-                asyncSolid360Future = asyncThreadPool.enqueue([this, frameIdx, &semCullSolid360, &semShadowSolid360, &semSolid360, waterEnabled]() {
+                asyncSolid360Future = asyncThreadPool.enqueue([this, frameIdx, &tlCull, &tlShadow, &tlSolid, &tlSolid360, waterEnabled, v]() {
                     this->ensureCubemapResources();
                     CommandBufferState taskState;
                     this->sceneRenderer->setCmdState(&taskState);
@@ -1981,9 +1902,9 @@ public:
                         this->cube360FaceRes,
                         ubo360,
                         settings.renderSolid, waterEnabled,
-                        semCullSolid360, semShadowSolid360,
+                        tlCull, v, tlShadow, v, tlSolid, v,
                         cube360SemCullFace, cube360SemFaceDone,
-                        semSolid360,
+                        tlSolid360, v,
                         frameIdx);
                 });
                 asyncSolid360Future.get();
@@ -2000,7 +1921,7 @@ public:
         // composite waits on it).
         {
             const glm::vec3 vegCamPos = camera.getPosition();
-            asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, vegCamPos, &semVeg, &semCullVeg, &semShadowVeg]() {
+            asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, vegCamPos, &tlVeg, &tlCull, &tlShadow, v]() {
                 MyApp* app = this;
                 VkCommandBuffer vegCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -2016,7 +1937,7 @@ public:
                 VkImageView vegColorView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegColorView(frameIdx) : VK_NULL_HANDLE;
                 VkImageView vegDepthView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegDepthView(frameIdx) : VK_NULL_HANDLE;
                 if (vegColorView == VK_NULL_HANDLE || vegDepthView == VK_NULL_HANDLE) {
-                    app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &semVeg, {semCullVeg, semShadowVeg});
+                    app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg, {tlCull, tlShadow}, true, {}, {v, v}, v, {}, true);
                     return;
                 }
                 // Render area must match the vegetation offscreen targets' backing size
@@ -2123,7 +2044,7 @@ public:
                 // semMainCull/semShadow); the semaphores provide the cross-queue
                 // (graphics→vegetation) memory dependency, and being the same queue family
                 // no ownership transfer is required.
-                app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &semVeg, {semCullVeg, semShadowVeg});
+                app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg, {tlCull, tlShadow}, true, {}, {v, v}, v, {}, true);
             });
         }
 
@@ -2136,7 +2057,7 @@ public:
         // clears the offscreen so the composite shows no SDF cubes.
         {
             const bool sdfEnabled = settings.showSDFDebug;
-            asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, &semSdf, &semCullSdf]() {
+            asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, &tlSdf, &tlCull, v]() {
                 MyApp* app = this;
                 VkCommandBuffer sdfCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -2155,7 +2076,7 @@ public:
                 // Wait on semCullSdf (own binary semaphore, distinct from the main
                 // CB's semMainCull) so the cull task's GPU-written SDF buffers are
                 // visible before the SDF pass reads them; signal semSdf for the composite.
-                app->submitCommandBufferAsyncToQueue(sdfCmd, app->getSdfQueue(), &semSdf, {semCullSdf});
+                app->submitCommandBufferAsyncToQueue(sdfCmd, app->getSdfQueue(), &tlSdf, {tlCull}, true, {}, {v}, v, {}, true);
             });
         }
 
@@ -2168,7 +2089,7 @@ public:
         // clears the offscreen so the composite shows no bounding boxes.
         {
             const bool bboxEnabled = settings.showBoundingBoxes;
-            asyncBboxFuture = asyncThreadPool.enqueue([this, frameIdx, bboxEnabled, &semBbox, &semCullBbox]() {
+            asyncBboxFuture = asyncThreadPool.enqueue([this, frameIdx, bboxEnabled, &tlBbox, &tlCull, v]() {
                 MyApp* app = this;
                 VkCommandBuffer bboxCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -2187,14 +2108,14 @@ public:
                 // Wait on semCullBbox (own binary semaphore, distinct from the main
                 // CB's semMainCull) so the cull task's GPU-written bbox buffers are
                 // visible before the bbox pass reads them; signal semBbox for the composite.
-                app->submitCommandBufferAsyncToQueue(bboxCmd, app->getBoundingBoxQueue(), &semBbox, {semCullBbox});
+                app->submitCommandBufferAsyncToQueue(bboxCmd, app->getBoundingBoxQueue(), &tlBbox, {tlCull}, true, {}, {v}, v, {}, true);
             });
         }
 
         // Back-face depth + water geometry pass on a shared command buffer.
         // (waits semMainCull + semSolid360; signals semWater at the end of the task)
         if (waterEnabled && sceneRenderer) {
-            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semCullWater, &semShadowWater, &semSolid360, &semSolidWater, &semWater, &semWaterComp, &semSkyWater, &semBrushSolidWater, &semBrushLiquid]() {
+            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &tlCull, &tlShadow, &tlSolid360, &tlSolid, &tlSky, &tlBrushSolid, &tlWater, &tlBrushLiquid, v]() {
                 MyApp* app = this;
                 VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo beginInfo{};
@@ -2443,10 +2364,12 @@ public:
                 // buffer, so the one-waiter invariant holds and no deadlock occurs.
                 // Submit to the dedicated water queue. Wait on the cull results
                 // (visibleLods / indirect draw args), the shadow map + restored UBO
-                // (semShadowSolid), the solid360 cubemap (semSolid360) and the solid
-                // color/depth (semSolidWater) before shading/refraction. Signal semWater
-                // (registered so the main composite CB waits on it).
-                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &semWaterComp, {semCullWater, semShadowWater, semSolid360, semSolidWater, semSkyWater, semBrushSolidWater}, true, {semWater});
+                // (tlShadow), the solid360 cubemap (tlSolid360) and the solid
+                // color/depth (tlSolid) + sky (tlSky) + brush-solid (tlBrushSolid)
+                // before shading/refraction. Signal tlWater@v (registered so the main
+                // composite CB waits on it; the brush-liquid pass also waits tlWater@v).
+                // A single timeline semaphore carries every consumer of the water pass.
+                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater, {tlCull, tlShadow, tlSolid360, tlSolid, tlSky, tlBrushSolid}, true, {}, {v, v, v, v, v, v}, v, {}, true);
 
                 // Brush-liquid overlay: re-enter the water geometry pass on its own
                 // queue, AFTER the main water pass completes (semWater), and draw the
@@ -2466,7 +2389,7 @@ public:
                         this->sceneRenderer->setCmdState(&lblState);
                         this->sceneRenderer->mainLiquidRenderer->renderBrushLiquid(app, brushLiquidCmd, frameIdx, blsky, slot.waterDs2);
                         this->sceneRenderer->setCmdState(&taskState);
-                        app->submitCommandBufferAsyncToQueue(brushLiquidCmd, app->getBrushLiquidQueue(), &semBrushLiquid, {semWater}, true);
+                        app->submitCommandBufferAsyncToQueue(brushLiquidCmd, app->getBrushLiquidQueue(), &tlBrushLiquid, {tlWater}, true, {}, {v}, v, {}, true);
                     } else {
                         std::cerr << "[MyApp] vkBeginCommandBuffer failed for brushLiquid pass" << std::endl;
                         app->freeCommandBuffer(brushLiquidCmd);
