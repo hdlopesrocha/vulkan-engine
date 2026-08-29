@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="820" font-family="monospace" font-size="13">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#444"/>
+    </marker>
+    <style>
+      .box   { fill:#eef3fb; stroke:#2b6cb0; stroke-width:1.5; rx:6; }
+      .boxq  { fill:#fdf2e9; stroke:#c05621; stroke-width:1.5; rx:6; }
+      .combo { fill:#e9f9ef; stroke:#276749; stroke-width:1.8; rx:6; }
+      .lbl   { fill:#1a202c; font-weight:bold; }
+      .sub   { fill:#4a5568; font-size:10px; }
+      .qtag  { fill:#2b6cb0; font-size:9px; font-weight:bold; }
+      .edge  { stroke:#444; stroke-width:1.4; fill:none; marker-end:url(#arrow); }
+      .tl    { stroke:#9b2c2c; stroke-width:1.2; stroke-dasharray:4 3; fill:none; }
+      .title { fill:#1a202c; font-size:16px; font-weight:bold; }
+      .leg   { fill:#4a5568; font-size:11px; }
+    </style>
+  </defs>
+
+  <text x="20" y="28" class="title">Vulkan Engine - Per-frame render pass parallelism &amp; dependencies (refactored)</text>
+
+  <rect x="20" y="44" width="14" height="12" class="box"/><text x="40" y="54" class="leg">= graphics-family queue</text>
+  <rect x="200" y="44" width="14" height="12" class="boxq"/><text x="220" y="54" class="leg">= dedicated queue family (true HW parallel)</text>
+  <rect x="470" y="44" width="14" height="12" class="combo"/><text x="490" y="54" class="leg">= main/primary command buffer (composite)</text>
+  <line x1="700" y1="50" x2="740" y2="50" class="tl"/><text x="746" y="54" class="leg">= timeline-semaphore wait (tlX@v)</text>
+
+  <!-- ============ CULL ============ -->
+  <g>
+    <rect x="400" y="80" width="240" height="58" class="box"/>
+    <text x="520" y="104" class="lbl" text-anchor="middle">1. GPU Cull + Early Brush</text>
+    <text x="520" y="120" class="sub" text-anchor="middle">indirect.comp (solid/brush/water/veg)</text>
+    <text x="520" y="132" class="sub" text-anchor="middle">+ brush depth write</text>
+    <text x="412" y="90" class="qtag">graphics</text>
+    <text x="412" y="134" class="sub">signal tlCull</text>
+  </g>
+
+  <!-- ============ Stage 2 ============ -->
+  <g>
+    <rect x="30" y="200" width="190" height="58" class="box"/>
+    <text x="125" y="222" class="lbl" text-anchor="middle">2a. BrushSolid</text>
+    <text x="125" y="238" class="sub" text-anchor="middle">front/back depth + color</text>
+    <text x="42" y="210" class="qtag">brushSolidQ</text>
+    <text x="42" y="252" class="sub">wait tlCull -> tlBrushSolid</text>
+  </g>
+  <g>
+    <rect x="270" y="200" width="210" height="58" class="box"/>
+    <text x="375" y="222" class="lbl" text-anchor="middle">2b. Shadow map</text>
+    <text x="375" y="238" class="sub" text-anchor="middle">CSM cascades (parallel) + blur</text>
+    <text x="375" y="251" class="sub" text-anchor="middle">restores UBO / visibleLods</text>
+    <text x="282" y="210" class="qtag">graphics</text>
+    <text x="282" y="252" class="sub">wait tlCull -> tlShadow</text>
+  </g>
+  <g>
+    <rect x="540" y="200" width="190" height="58" class="boxq"/>
+    <text x="635" y="222" class="lbl" text-anchor="middle">2c. SDF debug</text>
+    <text x="635" y="238" class="sub" text-anchor="middle">offscreen SDF cubes</text>
+    <text x="552" y="210" class="qtag">sdfQueue</text>
+    <text x="552" y="252" class="sub">wait tlCull -> tlSdf</text>
+  </g>
+  <g>
+    <rect x="800" y="200" width="200" height="58" class="boxq"/>
+    <text x="900" y="222" class="lbl" text-anchor="middle">2d. Bounding boxes</text>
+    <text x="900" y="238" class="sub" text-anchor="middle">offscreen wireframe</text>
+    <text x="812" y="210" class="qtag">bboxQueue</text>
+    <text x="812" y="252" class="sub">wait tlCull -> tlBbox</text>
+  </g>
+
+  <!-- ============ Stage 3 ============ -->
+  <g>
+    <rect x="270" y="330" width="210" height="58" class="boxq"/>
+    <text x="375" y="352" class="lbl" text-anchor="middle">3a. Sky offscreen</text>
+    <text x="375" y="368" class="sub" text-anchor="middle">equirect sky image</text>
+    <text x="375" y="381" class="sub" text-anchor="middle">(no deps)</text>
+    <text x="282" y="340" class="qtag">skyQueue</text>
+    <text x="282" y="382" class="sub">-> tlSky</text>
+  </g>
+  <g>
+    <rect x="30" y="330" width="210" height="58" class="boxq"/>
+    <text x="135" y="352" class="lbl" text-anchor="middle">3b. Solid scene</text>
+    <text x="135" y="368" class="sub" text-anchor="middle">depth prepass + color + sky</text>
+    <text x="42" y="340" class="qtag">solidQueue</text>
+    <text x="42" y="382" class="sub">wait tlShadow,tlBrushSolid -> tlSolid</text>
+  </g>
+  <g>
+    <rect x="540" y="330" width="200" height="58" class="boxq"/>
+    <text x="640" y="352" class="lbl" text-anchor="middle">3c. Vegetation</text>
+    <text x="640" y="368" class="sub" text-anchor="middle">offscreen depth+color</text>
+    <text x="552" y="340" class="qtag">vegQueue</text>
+    <text x="552" y="382" class="sub">wait tlShadow -> tlVeg</text>
+  </g>
+
+  <!-- ============ Stage 4 ============ -->
+  <g>
+    <rect x="30" y="460" width="260" height="58" class="boxq"/>
+    <text x="160" y="482" class="lbl" text-anchor="middle">4a. Solid360 cubemap</text>
+    <text x="160" y="498" class="sub" text-anchor="middle">6 faces on distinct cube queues</text>
+    <text x="42" y="470" class="qtag">graphics</text>
+    <text x="42" y="512" class="sub">wait tlSolid -> tlSolid360</text>
+  </g>
+  <g>
+    <rect x="360" y="460" width="270" height="58" class="boxq"/>
+    <text x="495" y="482" class="lbl" text-anchor="middle">4b. Back-face + Water</text>
+    <text x="495" y="498" class="sub" text-anchor="middle">backface depth + water geom</text>
+    <text x="372" y="470" class="qtag">waterQueue</text>
+    <text x="372" y="512" class="sub">wait tlSolid360,tlSky -> tlWater</text>
+  </g>
+
+  <!-- ============ Stage 5 ============ -->
+  <g>
+    <rect x="360" y="590" width="270" height="56" class="boxq"/>
+    <text x="495" y="612" class="lbl" text-anchor="middle">5. Brush-liquid overlay</text>
+    <text x="495" y="628" class="sub" text-anchor="middle">water overlay on top</text>
+    <text x="372" y="600" class="qtag">brushLiquidQ</text>
+    <text x="372" y="640" class="sub">wait tlWater -> tlBrushLiquid</text>
+  </g>
+
+  <!-- ============ Stage 6 : COMPOSITE ============ -->
+  <g>
+    <rect x="240" y="700" width="560" height="64" class="combo"/>
+    <text x="520" y="722" class="lbl" text-anchor="middle">6. Composite (PostProcess) - main CB, graphics</text>
+    <text x="520" y="740" class="sub" text-anchor="middle">waits tlSky, tlVeg, tlSdf, tlBbox, tlBrushLiquid</text>
+    <text x="520" y="754" class="sub" text-anchor="middle">(tlSolid, tlWater, tlCull, tlShadow implied transitively)</text>
+  </g>
+
+  <!-- ===== EDGES (timeline waits) ===== -->
+  <!-- cull -> 2a/2b/2c/2d -->
+  <path class="tl" d="M520,138 C500,170 125,180 125,198"/>
+  <path class="tl" d="M520,138 C500,170 375,180 375,198"/>
+  <path class="tl" d="M520,138 C520,170 635,180 635,198"/>
+  <path class="tl" d="M520,138 C540,170 900,180 900,198"/>
+
+  <!-- 2b shadow -> 3b solid -->
+  <path class="tl" d="M375,258 C330,290 135,300 135,328"/>
+  <!-- 2a brushSolid -> 3b solid -->
+  <path class="tl" d="M125,258 C150,290 135,300 135,328"/>
+
+  <!-- shadow -> 3c veg -->
+  <path class="tl" d="M375,258 C460,300 640,300 640,328"/>
+  <!-- sky 3a -> composite (tlSky) -->
+  <path class="tl" d="M375,388 C420,460 520,640 520,698" stroke-dasharray="4 3"/>
+  <!-- solid 3b -> 4a solid360 -->
+  <path class="tl" d="M135,388 C120,430 160,440 160,458"/>
+  <!-- solid360 -> 4b water -->
+  <path class="tl" d="M160,518 C300,540 495,540 495,458"/>
+  <!-- sky 3a -> 4b water -->
+  <path class="tl" d="M375,388 C400,440 495,450 495,458"/>
+  <!-- water 4b -> 5 brushLiquid -->
+  <path class="tl" d="M495,518 C495,550 495,560 495,588"/>
+  <!-- veg 3c -> composite -->
+  <path class="tl" d="M640,388 C660,520 520,650 520,698"/>
+  <!-- sdf 2c -> composite -->
+  <path class="tl" d="M635,258 C700,520 560,660 540,698"/>
+  <!-- bbox 2d -> composite -->
+  <path class="tl" d="M900,258 C900,560 600,690 560,698"/>
+  <!-- brushLiquid 5 -> composite -->
+  <path class="tl" d="M495,646 C500,670 520,680 520,698"/>
+
+  <!-- Notes -->
+  <text x="20" y="800" class="leg">Refactor: binary per-consumer semaphores -> timeline semaphores (one per producer, monotonic frame value v). Distinct graphics-family queues</text>
+  <text x="20" y="814" class="leg">enable HW parallelism: solid/sky/brushSolid/brushLiquid/water on their own queues; veg/sdf/bbox on separate families. Composite is the single global sync point.</text>
+</svg>
