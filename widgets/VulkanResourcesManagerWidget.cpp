@@ -28,11 +28,16 @@ void VulkanResourcesManagerWidget::updateWithApp(VulkanApp* app) {
     // Cache logical queue handles and sample the activity history (one slot per
     // logical queue). The in-flight count is read from VulkanApp's per-queue
     // counters; it advances once per frame so the chart shows queue load over time.
+    const auto& pg = app->getParallelGraphicsQueues();
+    auto qat = [&](size_t i) -> VkQueue {
+        Queue* q = (i < pg.size()) ? pg[i] : &app->getGraphicsQueue();
+        return q->handle();
+    };
     cachedQueue[Q_GRAPHICS]   = app->getGraphicsQueue();
     cachedQueue[Q_PRESENT]    = app->getPresentQueue();
-    cachedQueue[Q_VEGETATION] = app->getVegetationQueue();
-    cachedQueue[Q_SDF]        = app->getSdfQueue();
-    cachedQueue[Q_BBOX]       = app->getBoundingBoxQueue();
+    cachedQueue[Q_VEGETATION] = qat(1);
+    cachedQueue[Q_SDF]        = qat(2);
+    cachedQueue[Q_BBOX]       = qat(3);
     cachedQueue[Q_GEOMETRY]   = app->geometryTransferQueue();
     cachedQueue[Q_TRANSFER]   = app->getTransferQueue();
 

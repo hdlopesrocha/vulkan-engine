@@ -41,14 +41,21 @@ void QueueTimelineWidget::updateWithApp(VulkanApp* app) {
     // Build the queue row list once (handles are stable for the app lifetime).
     if (!rowsBuilt_) {
         struct Cand { VkQueue h; const char* n; };
+        const auto& pg = app->getParallelGraphicsQueues();
+        auto qat = [&](size_t i) -> VkQueue {
+            // On devices exposing fewer physical graphics queues, the later logical
+            // queues alias graphicsQueue; fall back so each logical row still exists.
+            Queue* q = (i < pg.size()) ? pg[i] : &app->getGraphicsQueue();
+            return q->handle();
+        };
         std::vector<Cand> cands = {
             { app->getGraphicsQueue(),   "Graphics" },
             { app->getPresentQueue(),    "Present" },
-            { app->getSolidQueue(),      "Solid" },
-            { app->getWaterQueue(),      "Water" },
-            { app->getVegetationQueue(), "Vegetation" },
-            { app->getSdfQueue(),        "SDF" },
-            { app->getBoundingBoxQueue(),"BoundingBox" },
+            { qat(5), "Solid" },
+            { qat(6), "Water" },
+            { qat(1), "Vegetation" },
+            { qat(2), "SDF" },
+            { qat(3), "BoundingBox" },
             { app->geometryTransferQueue(), "Geometry" },
             { app->getTransferQueue(),   "Transfer" },
         };

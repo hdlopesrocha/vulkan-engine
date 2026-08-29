@@ -244,6 +244,21 @@ class MyApp : public VulkanApp, public IEventHandler {
 public:
     Settings settings;
     SceneRenderer * sceneRenderer = nullptr;
+    // Logical scene queues, owned by MyApp. Acquired from VulkanApp's parallel
+    // graphics queue pool in setup(); aliased to graphicsQueue when the device
+    // exposes a single graphics queue (no HW parallelism, still correct).
+    Queue* vegetationQueue = nullptr;
+    Queue* sdfQueue = nullptr;
+    Queue* bboxQueue = nullptr;
+    Queue* solidQueue = nullptr;
+    Queue* waterQueue = nullptr;
+    Queue* skyQueue = nullptr;
+    Queue& getVegetationQueue() const { return *vegetationQueue; }
+    Queue& getSdfQueue() const { return *sdfQueue; }
+    Queue& getBoundingBoxQueue() const { return *bboxQueue; }
+    Queue& getSolidQueue() const { return *solidQueue; }
+    Queue& getWaterQueue() const { return *waterQueue; }
+    Queue& getSkyQueue() const { return *skyQueue; }
     World * world = nullptr;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
@@ -633,6 +648,18 @@ public:
     }
 
     void setup() override {
+        // Acquire the 6 logical scene queues from the parallel graphics-family queue
+        // pool built by VulkanApp::createLogicalDevice. They alias graphicsQueue when
+        // the device exposes fewer physical graphics queues. These are app-owned (not
+        // VulkanApp members) so the engine core stays agnostic about scene queues.
+        const auto& pg = getParallelGraphicsQueues();
+        vegetationQueue = (pg.size() > 1) ? pg[1] : graphicsQueue;
+        sdfQueue       = (pg.size() > 2) ? pg[2] : graphicsQueue;
+        bboxQueue      = (pg.size() > 3) ? pg[3] : graphicsQueue;
+        solidQueue     = (pg.size() > 5) ? pg[5] : graphicsQueue;
+        waterQueue     = (pg.size() > 6) ? pg[6] : graphicsQueue;
+        skyQueue       = (pg.size() > 7) ? pg[7] : graphicsQueue;
+
         sceneRenderer = new SceneRenderer();
         for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i)
             shadowParams.shadowMapSizes[i] = sceneRenderer->shadowMapper->getShadowMapSize(i);
@@ -1469,7 +1496,7 @@ public:
         // --- Cull + early brush pass on its own command buffer (signals semMainCull) ---
         if (sceneRenderer) {
             asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semMainCull, &semCullShadow, &semCullVeg, &semCullSdf, &semCullBbox, &semCullSolid, &semCullWater, &semCullSolid360]() {
-                VulkanApp* app = this;
+                MyApp* app = this;
                 VkCommandBuffer cullCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
                 cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1547,7 +1574,7 @@ public:
             const float shMaxTargetLod = settings.maxTargetLod;
             const glm::vec3 shCamPos = camera.getPosition();
             asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, &semShadow, &semCullShadow, &semShadowVeg, &semShadowSolid, &semShadowWater, &semShadowSolid360]() {
-                VulkanApp* app = this;
+                MyApp* app = this;
                 // Fresh per-frame "shadow done" + veg semaphores. Binary semaphores must
                 // not be reused across in-flight frames, so each frame gets its own; the
                 // main CB and veg task wait on these handles. (semShadowSolid / Water /
@@ -1598,7 +1625,7 @@ public:
         {
             SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
             asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, &semSky, &semSkyWater]() {
-                VulkanApp* app = this;
+                MyApp* app = this;
                 VkCommandBuffer skyCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
                 cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1625,7 +1652,7 @@ public:
 
         if (sceneRenderer && sceneRenderer->mainSolidRenderer) {
             asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semSolid, &semSolidWater, &semSolidCube, &semCullSolid, &semShadowSolid]() {
-                VulkanApp* app = this;
+                MyApp* app = this;
                 VkCommandBuffer solidCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
                 cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1918,7 +1945,7 @@ public:
         {
             const glm::vec3 vegCamPos = camera.getPosition();
             asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, vegCamPos, &semVeg, &semCullVeg, &semShadowVeg]() {
-                VulkanApp* app = this;
+                MyApp* app = this;
                 VkCommandBuffer vegCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
                 cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -2054,7 +2081,7 @@ public:
         {
             const bool sdfEnabled = settings.showSDFDebug;
             asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, &semSdf, &semCullSdf]() {
-                VulkanApp* app = this;
+                MyApp* app = this;
                 VkCommandBuffer sdfCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
                 cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -2086,7 +2113,7 @@ public:
         {
             const bool bboxEnabled = settings.showBoundingBoxes;
             asyncBboxFuture = asyncThreadPool.enqueue([this, frameIdx, bboxEnabled, &semBbox, &semCullBbox]() {
-                VulkanApp* app = this;
+                MyApp* app = this;
                 VkCommandBuffer bboxCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
                 cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -2112,7 +2139,7 @@ public:
         // (waits semMainCull + semSolid360; signals semWater at the end of the task)
         if (waterEnabled && sceneRenderer) {
             asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semCullWater, &semShadowWater, &semSolid360, &semSolidWater, &semWater, &semSkyWater]() {
-                VulkanApp* app = this;
+                MyApp* app = this;
                 VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo beginInfo{};
                 beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;

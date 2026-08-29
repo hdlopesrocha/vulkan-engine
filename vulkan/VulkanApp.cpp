@@ -5622,13 +5622,17 @@ void VulkanApp::createLogicalDevice() {
     uint32_t gfxRequested = 1;
     auto rit = requestedQueueCount.find(gfxFamily);
     if (rit != requestedQueueCount.end()) gfxRequested = rit->second;
-    vegetationQueue = (gfxRequested > 1) ? makeQueue(acquireGfx(1), gfxFamily, "Vegetation") : graphicsQueue;
-    sdfQueue       = (gfxRequested > 2) ? makeQueue(acquireGfx(2), gfxFamily, "SDF")        : graphicsQueue;
-    bboxQueue      = (gfxRequested > 3) ? makeQueue(acquireGfx(3), gfxFamily, "BoundingBox") : graphicsQueue;
-    geometryQueue  = (gfxRequested > 4) ? makeQueue(acquireGfx(4), gfxFamily, "Geometry")   : graphicsQueue;
-    solidQueue     = (gfxRequested > 5) ? makeQueue(acquireGfx(5), gfxFamily, "Solid")      : graphicsQueue;
-    waterQueue     = (gfxRequested > 6) ? makeQueue(acquireGfx(6), gfxFamily, "Water")      : graphicsQueue;
-    skyQueue       = (gfxRequested > 7) ? makeQueue(acquireGfx(7), gfxFamily, "Sky")        : graphicsQueue;
+    // The 6 logical scene queues (vegetation/sdf/bbox/solid/water/sky) are owned by
+    // MyApp; here we only materialize their Queue objects so they can be placed in
+    // parallelGraphicsQueues (used for round-robin parallel face work). They alias
+    // graphicsQueue when the device exposes fewer physical graphics queues.
+    Queue* vegQ  = (gfxRequested > 1) ? makeQueue(acquireGfx(1), gfxFamily, "Vegetation") : graphicsQueue;
+    Queue* sdfQ  = (gfxRequested > 2) ? makeQueue(acquireGfx(2), gfxFamily, "SDF")        : graphicsQueue;
+    Queue* bboxQ = (gfxRequested > 3) ? makeQueue(acquireGfx(3), gfxFamily, "BoundingBox") : graphicsQueue;
+    geometryQueue = (gfxRequested > 4) ? makeQueue(acquireGfx(4), gfxFamily, "Geometry")   : graphicsQueue;
+    Queue* solidQ= (gfxRequested > 5) ? makeQueue(acquireGfx(5), gfxFamily, "Solid")      : graphicsQueue;
+    Queue* waterQ= (gfxRequested > 6) ? makeQueue(acquireGfx(6), gfxFamily, "Water")      : graphicsQueue;
+    Queue* skyQ  = (gfxRequested > 7) ? makeQueue(acquireGfx(7), gfxFamily, "Sky")        : graphicsQueue;
 
     // Collect every acquired graphics-family queue (deduplicated by handle) into
     // parallelGraphicsQueues so the solid360 cubemap can submit each of its 6 faces
@@ -5642,13 +5646,13 @@ void VulkanApp::createLogicalDevice() {
         parallelGraphicsQueues.push_back(q);
     };
     addParallelQueue(graphicsQueue);
-    addParallelQueue(vegetationQueue);
-    addParallelQueue(sdfQueue);
-    addParallelQueue(bboxQueue);
+    addParallelQueue(vegQ);
+    addParallelQueue(sdfQ);
+    addParallelQueue(bboxQ);
     addParallelQueue(geometryQueue);
-    addParallelQueue(solidQueue);
-    addParallelQueue(waterQueue);
-    addParallelQueue(skyQueue);
+    addParallelQueue(solidQ);
+    addParallelQueue(waterQ);
+    addParallelQueue(skyQ);
 
     if (indices.presentFamily.value() == gfxFamily) {
         // present uses the same family; reuse the main graphics queue object
@@ -5679,8 +5683,8 @@ void VulkanApp::createLogicalDevice() {
               << " presentQueue handle: " << presentQueue
               << " transferQueue handle: " << transferQueue
               << " dedicatedTransfer=" << (transferQueue != graphicsQueue ? "yes" : "no")
-              << " solidQueue=" << (solidQueue != graphicsQueue ? "dedicated" : "aliased")
-              << " waterQueue=" << (waterQueue != graphicsQueue ? "dedicated" : "aliased")
+               << " solidQueue=" << (parallelGraphicsQueues.size() > 5 ? "dedicated" : "aliased")
+               << " waterQueue=" << (parallelGraphicsQueues.size() > 6 ? "dedicated" : "aliased")
               << "\n";
 
 }

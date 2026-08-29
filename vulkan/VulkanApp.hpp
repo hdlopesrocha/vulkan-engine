@@ -78,17 +78,10 @@ class VulkanApp {
     // pointer, so bookkeeping (timeline segments, activity counters) is never
     // duplicated per physical handle.
     Queue* graphicsQueue = nullptr;
-    // Dedicated queues for async subsystems
-    Queue* vegetationQueue = nullptr;
-    Queue* sdfQueue = nullptr;
-    Queue* bboxQueue = nullptr;
     Queue* geometryQueue = nullptr;
-    // Dedicated queues for the Solid and Water scene passes. Acquired from the
-    // graphics family when available; otherwise they alias the main graphics queue
-    // (same Queue object) so the passes still run (degraded, no HW parallelism).
-    Queue* solidQueue = nullptr;
-    Queue* waterQueue = nullptr;
-    Queue* skyQueue = nullptr;
+    // Logical scene queues (vegetation/sdf/bbox/solid/water/sky) are owned by MyApp,
+    // derived from parallelGraphicsQueues in MyApp::setup (aliased to graphicsQueue
+    // when the device exposes only a single graphics queue).
     // Distinct graphics-family Queue objects available for parallel work. Built in
     // createLogicalDevice from all acquired graphics-family queues (deduplicated so
     // aliased queues are not listed twice). The solid360 cubemap renders each of its
@@ -536,12 +529,9 @@ public:
         }
         VmaAllocator getVmaAllocator() const { return vma.allocator; }
         Queue& getGraphicsQueue() const { return *graphicsQueue; }
-        Queue& getVegetationQueue() const { return *vegetationQueue; }
-        Queue& getSdfQueue() const { return *sdfQueue; }
-        Queue& getBoundingBoxQueue() const { return *bboxQueue; }
-        Queue& getSolidQueue() const { return *solidQueue; }
-        Queue& getWaterQueue() const { return *waterQueue; }
-        Queue& getSkyQueue() const { return *skyQueue; }
+        // All distinct graphics-family queues (deduplicated by handle). MyApp reads
+        // this to obtain the vegetation/sdf/bbox/solid/water/sky logical queues.
+        const std::vector<Queue*>& getParallelGraphicsQueues() const { return parallelGraphicsQueues; }
         // Return a graphics-family queue for parallel face work (round-robin index).
         // When only one graphics queue exists (all dedicated queues aliased), every
         // index maps to that same queue — the caller's submissions are simply
