@@ -234,11 +234,12 @@ public:
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj,
                      glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16,
                      const glm::mat4* cascadeMatrices = nullptr, bool doCascade = false, bool doMain = true,
-                     bool doVegCascade = false, uint32_t vegChunkCount = 0);
+                     bool doVegCascade = false, uint32_t vegChunkCount = 0, uint32_t targetLayer = 0);
     // Run GPU culling into caller-provided output buffers using a provided compute descriptor set.
     void prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
                                     VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
-                                    glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16);
+                                    glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16,
+                                    bool doMainCull = true, bool doCascadeCull = false);
 
     // ── SDF debug-cube culling (merged into the solid indirect.comp dispatch) ──
     // Supplies the AABBs of the SDF debug cubes. prepareCull appends them after
@@ -360,6 +361,8 @@ public:
     // Accessors
     const Buffer& getIndirectBuffer() const { return indirectBuffer; }
     const Buffer& getBoundsBuffer() const { return boundsBuffer; }
+    const Buffer& getCompactBuffer(uint32_t frame) const { return compactIndirectBuffers[frame % MAX_CULL_FRAMES]; }
+    uint32_t* getVisibleCountPtr(uint32_t frame) { return visibleCountMapped[frame % MAX_CULL_FRAMES]; }
     VkDescriptorSetLayout getComputeDescriptorSetLayout() const { return computeDescriptorSetLayout; }
 
     // Get the pre-allocated capacity (indirect command count / max slots)
@@ -370,6 +373,10 @@ public:
     // Persistent scratch buffer bound to binding 4 of the cull compute layout
     // by external descriptor-set owners (cubemap faces, async backface pass).
     VkBuffer getVisibleLodsScratchBuffer() const { return visibleLodsScratch.buffer; }
+
+    // Force host-visible indirect/bounds to GPU (for water fallback without transfer)
+    void syncHostBuffersToGPU();
+    const std::vector<VkDrawIndexedIndirectCommand>& getIndirectCommandsCPU() const { return indirectCommands; }
 
     // Get count of active meshes (memoized: recomputed under the same mutex
     // only after a meshes mutation, so per-frame stats/sizing calls do not
@@ -561,11 +568,18 @@ private:
     std::array<CascadeCullFrame, MAX_CULL_FRAMES> cascadeCullFrames;
     Buffer cascadeMatrixBuffer; // storage buffer with 3 mat4 cascade matrices
     Buffer cascadeDummyBuffer;  // bound to the cascade bindings of external (Solid360) descriptor sets
+
     TrackedHandle<VkPipeline> cascadeCullPipeline;
     TrackedHandle<VkPipelineLayout> cascadeCullPipelineLayout;
     TrackedHandle<VkDescriptorSetLayout> cascadeCullDescSetLayout;
     TrackedHandle<VkDescriptorPool> cascadeCullDescPool;
     bool cascadeCullInited = false;
+    // Bumped whenever the cascade buffers (17..23) backing prepareCullWithDescriptor's
+    // static descriptor writes are (re)allocated, so foreign Solid360/cube360 descriptor
+    // sets can refresh their cascade bindings exactly once (avoids touching an in-flight
+    // set every frame — VUID-vkUpdateDescriptorSets-None-03047).
+    uint64_t cascadeBindingVersion_ = 0;
+    std::unordered_map<VkDescriptorSet, uint64_t> cascadeDescWrittenVersion_;
     VkBuffer cascadeDescIndirectBuffer = VK_NULL_HANDLE; // tracks which indirectBuffer the descriptors reference
     VkBuffer cascadeDescBoundsBuffer = VK_NULL_HANDLE;   // tracks which boundsBuffer the descriptors reference
     VulkanApp* cascadeDescApp = nullptr; // stored for descriptor refresh
