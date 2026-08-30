@@ -11,12 +11,15 @@ layout(push_constant) uniform PC {
     float direction; // 0 = horizontal, 1 = vertical
 } pc;
 
-// 3-tap Gaussian kernel (sigma = 0.5, normalized)
-// Minimal blur to avoid light-bleeding halo on water.
-const float KERNEL[3] = float[](
-    0.2747, 0.4506, 0.2747
+// 9-tap separable Gaussian (sigma = 2.0, normalized). The previous 3-tap
+// kernel left EVSM moment edges essentially unblurred, so shadows rendered
+// blocky/pixelated. A wider kernel smooths the Chebyshev transition and the
+// cascade silhouettes without washing the shadow out.
+const float KERNEL[9] = float[](
+    0.0218, 0.0671, 0.1254, 0.1824, 0.2066,
+    0.1824, 0.1254, 0.0671, 0.0218
 );
-const int RADIUS = 1;
+const int RADIUS = 4;
 
 void main() {
     ivec2 texSize = textureSize(evsmTexture, 0);
