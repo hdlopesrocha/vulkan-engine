@@ -42,22 +42,30 @@ struct GraphicsPipelineConfig {
     bool blendEnable = false;
 };
 
+class SceneDescriptorLayout;
+class SceneQueues;
+
 class VulkanApp {
     public:
-        // Main descriptor sets (one per frame-in-flight). Use
-        // `getMainDescriptorSet()` to obtain the set for the current frame.
-        std::vector<VkDescriptorSet> mainDescriptorSets;
-        VkDescriptorSet getMainDescriptorSet() const {
-            if (mainDescriptorSets.empty()) return VK_NULL_HANDLE;
-            uint32_t idx = currentFrame % static_cast<uint32_t>(mainDescriptorSets.size());
-            return mainDescriptorSets[idx];
-        }
+        // Scene descriptor layouts/sets are owned by the application via
+        // SceneDescriptorLayout. VulkanApp only forwards to them so it stays
+        // agnostic about *what* is rendered. The derived app creates it in setup().
+        // Declared as a forward reference here (defined in vulkan/renderer/) so this
+        // header carries no compile-time dependency on renderer code.
+        std::unique_ptr<SceneDescriptorLayout> sceneDescriptorLayout;
+        // Scene render queues (vegetation, sdf, bbox, solid, water, sky, brush,
+        // geometry compute) are owned via this forward-declared handle and only
+        // forwarded to, so VulkanApp stays agnostic about *how* the scene is
+        // staged across queues. The application creates and configures it in
+        // setup() from the generic parallel graphics-queue pool.
+        std::unique_ptr<SceneQueues> sceneQueues;
+        // Scene descriptor-set accessors. Their bodies live in VulkanApp.cpp (which
+        // includes the full SceneDescriptorLayout definition) so this header stays
+        // renderer-agnostic and the delegation is written only once.
+        VkDescriptorSet getMainDescriptorSet() const;
         // Accessor for descriptor set by frame index (used during init)
-        VkDescriptorSet getMainDescriptorSetForFrame(uint32_t idx) const {
-            if (idx >= mainDescriptorSets.size()) return VK_NULL_HANDLE;
-            return mainDescriptorSets[idx];
-        }
-        size_t getMainDescriptorSetCount() const { return mainDescriptorSets.size(); }
+        VkDescriptorSet getMainDescriptorSetForFrame(uint32_t idx) const;
+        size_t getMainDescriptorSetCount() const;
 
         void initWindow(); // Only one declaration, public
     GLFWwindow* window = nullptr;
@@ -74,17 +82,10 @@ class VulkanApp {
     bool pipelineBinarySupported = false;
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
-    // Dedicated queues for async subsystems
-    VkQueue vegetationQueue = VK_NULL_HANDLE;
-    VkQueue sdfQueue = VK_NULL_HANDLE;
-    VkQueue bboxQueue = VK_NULL_HANDLE;
-    VkQueue geometryQueue = VK_NULL_HANDLE;
-    // Dedicated queues for the Solid and Water scene passes. Acquired from the
-    // graphics family when available (indices 5 and 6); otherwise they alias the
-    // main graphics queue so the passes still run (degraded, no HW parallelism).
-    VkQueue solidQueue = VK_NULL_HANDLE;
-    VkQueue waterQueue = VK_NULL_HANDLE;
-    VkQueue skyQueue = VK_NULL_HANDLE;
+    // Scene-specific render queues (vegetation, sdf, bbox, solid, water, sky,
+    // brush, geometry compute) are owned by the application via the SceneQueues
+    // member and accessed through the getXxxQueue() forwarders below. VulkanApp
+    // itself only owns the generic graphics/present/transfer queues.
     // Distinct graphics-family queue handles available for parallel work. Built in
     // createLogicalDevice from all acquired graphics-family queues (deduplicated so
     // aliased queues are not listed twice). The solid360 cubemap renders each of its
@@ -95,16 +96,13 @@ class VulkanApp {
     std::vector<VkQueue> parallelGraphicsQueues;
     // Optional dedicated transfer queue (if available)
     VkQueue transferQueue = VK_NULL_HANDLE;
-    VkQueue brushSolidQueue = VK_NULL_HANDLE;
-    VkQueue brushLiquidQueue = VK_NULL_HANDLE;
 
-    // Returns a distinct graphics-family queue for upload/transfer work when one
-    // was acquired (gfxRequested > 2), else VK_NULL_HANDLE so callers fall back
-    // to the main graphics queue. Feature-detected to preserve the single-queue
-    // (and RADV) safety net.
-    VkQueue geometryTransferQueue() const {
-        return (geometryQueue != graphicsQueue) ? geometryQueue : VK_NULL_HANDLE;
-    }
+    // A dedicated graphics-family queue for geometry-buffer uploads, when one was
+    // acquired (the 5th graphics queue, index 4). VK_NULL_HANDLE otherwise, so
+    // callers fall back to the main graphics queue. Feature-detected to preserve
+    // the single-queue (and RADV) safety net.
+    VkQueue geometryTransferQueue_ = VK_NULL_HANDLE;
+    VkQueue geometryTransferQueue() const { return geometryTransferQueue_; }
 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     std::vector<VkImage> swapchainImages;
@@ -115,11 +113,9 @@ class VulkanApp {
     VkCommandPool commandPool = VK_NULL_HANDLE;            // primary pool for framebuffers and main-thread work
     std::vector<VkCommandPool> frameCommandPools;          // per-swapchain-image pools (no RESET_COMMAND_BUFFER_BIT)
     VkCommandPool transientCommandPool = VK_NULL_HANDLE;   // separate pool for asynchronous / short-lived operations
-    // Dedicated command pools for subsystem queues
-    VkCommandPool vegetationCommandPool = VK_NULL_HANDLE;
-    VkCommandPool geometryCommandPool = VK_NULL_HANDLE;
-    // Optional command pool for the transfer queue
-    VkCommandPool transferCommandPool = VK_NULL_HANDLE;
+    // NOTE: scene/renderer-specific command pools (vegetation, geometry, transfer)
+    // were removed as dead code — they were created but never allocated from.
+    // Renderers that need a dedicated pool should own it themselves.
 
     std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
@@ -162,15 +158,9 @@ private:
         // Public accessor for command pool (needed for buffer transfers)
         VkCommandPool getCommandPool() const { return commandPool; }
     // texture and descriptor
-
-    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
-    // Static descriptor set layout (bindings 1-13: textures, materials, sky, water params, cubemap)
-    // These resources are written once and reused across all per-frame descriptor sets.
-    VkDescriptorSet staticDescriptorSet = VK_NULL_HANDLE;
-    // Dedicated descriptor set layout for global materials (binding 5)
-    VkDescriptorSetLayout materialDescriptorSetLayout = VK_NULL_HANDLE;
-    // Descriptor set layout for brush depth textures (set=1, binding 0/1)
-    VkDescriptorSetLayout brushDepthDescriptorSetLayout = VK_NULL_HANDLE;
+    // Scene descriptor set layouts/sets live in SceneDescriptorLayout (owned by
+    // the app). The getters below forward to it; VulkanApp itself carries no
+    // scene-binding knowledge.
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     // Registered descriptor sets for runtime inspection (widgets can read these)
     std::vector<VkDescriptorSet> registeredDescriptorSets;
@@ -239,23 +229,13 @@ protected:
     GLFWwindow* getWindow();
 
 public:
-    // Per-queue mutexes for concurrent submissions without cross-queue contention.
-    // Transfer, graphics, and compute can submit independently without serializing.
-    std::mutex graphicsSubmitMutex;
-    std::mutex transferSubmitMutex;
-    std::mutex vegetationSubmitMutex;
-    std::mutex sdfSubmitMutex;
-    std::mutex bboxSubmitMutex;
-    // Separate submit mutex for the graphics-family geometry queue so upload
-    // submission does not contend with per-frame render submission on the main
-    // graphics queue's mutex. Only used when a distinct geometry queue exists.
-    std::mutex geometrySubmitMutex;
-    // Submit mutexes for the dedicated Solid / Water queues. Only used when the
-    // queue is genuinely distinct from graphicsQueue; when aliased they fall
-    // back to graphicsSubmitMutex via the selection chain in
-    // submitCommandBufferAsyncToQueue.
-    std::mutex solidSubmitMutex;
-    std::mutex waterSubmitMutex;
+    // Per-queue submission serialization is handled by the handle-keyed
+    // getQueueSubmitMutex(VkQueue) map (see its definition): it covers every
+    // VkQueue handle, aliased or not. The previous per-role named mutexes
+    // (graphics/transfer/vegetation/sdf/bbox/geometry/solid/water) were removed
+    // as dead code. commandPoolMutex / descriptorAllocMutex below serialize
+    // shared allocator access across threads.
+
     // Mutex used to serialize command pool operations (alloc/free/reset) across threads
     std::mutex commandPoolMutex;
     // Mutex used to serialize vkAllocateDescriptorSets calls across threads
@@ -360,7 +340,7 @@ public:
         bool hasPendingCommandBuffers();
         // Add a semaphore that the next frame submission must wait on (for async uploads)
         void addExtraWaitSemaphore(VkSemaphore sem, VkPipelineStageFlags2 stage);
-        void createDescriptorSetLayout();
+        ~VulkanApp();
 
     // ImGui integration glue: backend can call these to route submits through the
     // application's synchronized submission helpers. `g_imguiVulkanApp` is defined
@@ -422,10 +402,14 @@ public:
         void updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &descriptors);
         void registerDescriptorSet(VkDescriptorSet ds) { if (ds != VK_NULL_HANDLE) registeredDescriptorSets.push_back(ds); }
         const std::vector<VkDescriptorSet>& getRegisteredDescriptorSets() const { return registeredDescriptorSets; }
-        VkDescriptorSetLayout getMaterialDescriptorSetLayout() const { return materialDescriptorSetLayout; }
-        VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
-        VkDescriptorSet getStaticDescriptorSet() const { return staticDescriptorSet; }
-        VkDescriptorSetLayout getBrushDepthDescriptorSetLayout() const { return brushDepthDescriptorSetLayout; }
+        VkDescriptorSetLayout getDescriptorSetLayout() const;
+        VkDescriptorSet getStaticDescriptorSet() const;
+        VkDescriptorSetLayout getMaterialDescriptorSetLayout() const;
+        VkDescriptorSetLayout getBrushDepthDescriptorSetLayout() const;
+        // Register a descriptor set layout with the resource manager (used by
+        // SceneDescriptorLayout for cleanup tracking). Kept on VulkanApp so the
+        // renderer-owned layout class does not reach into private state.
+        void registerDescriptorSetLayout(VkDescriptorSetLayout layout, const char* name);
 
         const std::vector<VkPipeline>& getRegisteredPipelines() const { return registeredPipelines; }
 
@@ -535,12 +519,12 @@ public:
         }
         VmaAllocator getVmaAllocator() const { return vma.allocator; }
         VkQueue getGraphicsQueue() const { return graphicsQueue; }
-        VkQueue getVegetationQueue() const { return vegetationQueue; }
-    VkQueue getSdfQueue() const { return sdfQueue; }
-    VkQueue getBoundingBoxQueue() const { return bboxQueue; }
-        VkQueue getSolidQueue() const { return solidQueue; }
-        VkQueue getWaterQueue() const { return waterQueue; }
-        VkQueue getSkyQueue() const { return skyQueue; }
+        VkQueue getVegetationQueue() const;
+        VkQueue getSdfQueue() const;
+        VkQueue getBoundingBoxQueue() const;
+        VkQueue getSolidQueue() const;
+        VkQueue getWaterQueue() const;
+        VkQueue getSkyQueue() const;
         // Return a graphics-family queue for parallel face work (round-robin index).
         // When only one graphics queue exists (all dedicated queues aliased), every
         // index maps to that same queue — the caller's submissions are simply
@@ -554,8 +538,8 @@ public:
         size_t getCubeQueueCount() const { return parallelGraphicsQueues.empty() ? 1 : parallelGraphicsQueues.size(); }
         VkQueue getPresentQueue() const { return presentQueue; }
         VkQueue getTransferQueue() const { return transferQueue; }
-        VkQueue getBrushSolidQueue() const { return brushSolidQueue; }
-        VkQueue getBrushLiquidQueue() const { return brushLiquidQueue; }
+        VkQueue getBrushSolidQueue() const;
+        VkQueue getBrushLiquidQueue() const;
         const std::vector<VkQueue>& getParallelGraphicsQueues() const { return parallelGraphicsQueues; }
         // Per-queue activity snapshots for the Vulkan Resources "Queue Activity" chart.
         // Safe to call from the UI thread; reads are guarded by m_submissionMutex.

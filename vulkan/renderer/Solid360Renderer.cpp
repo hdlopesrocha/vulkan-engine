@@ -1,4 +1,5 @@
 #include "Solid360Renderer.hpp"
+#include "DescriptorWriter.hpp"
 #include "RendererUtils.hpp"
 #include "../../utils/FileReader.hpp"
 #include "../ShaderStage.hpp"
@@ -390,9 +391,36 @@ void Solid360Renderer::render(VulkanApp* app,
             VkBufferCopy copy{ off, off, sizeof(UniformObject) };
             vkCmdCopyBuffer(cullCmd, staging.buffer, faceUboBuffer, 1, &copy);
 
+            // Initialise the static bindings 0..9 of each cube360 face compute set
+            // exactly once (scene indirect/bounds/visibleLods buffers + this face's
+            // own compact/visible targets + veg dummies). These bindings never change
+            // for the set's lifetime, so writing once avoids re-touching an in-flight
+            // set every frame (VUID-vkUpdateDescriptorSets-None-03047) without needing
+            // update-after-bind. prepareCullWithDescriptor fills 17..36.
+            auto writeCoreOnce = [&](VkDescriptorSet ds, IndirectRenderer& ind,
+                                     VkBuffer compact, VkBuffer visible) {
+                if (faceComputeDsInit_.count(ds)) return;
+                VkDevice dev = app->getDevice();
+                DescriptorWriter(dev)
+                    .writeBuffer(ds, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getIndirectBuffer().buffer, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, compact, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getBoundsBuffer().buffer, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, visible, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVisibleLodsScratchBuffer(), 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                    .flush();
+                faceComputeDsInit_[ds] = true;
+            };
+
             // Solid face cull → per-face compact/visible buffers
             if (renderSolid && faceRes.solidComputeDs[face] != VK_NULL_HANDLE &&
                 faceRes.compact[face] != VK_NULL_HANDLE && faceRes.visible[face] != VK_NULL_HANDLE) {
+                writeCoreOnce(faceRes.solidComputeDs[face], solidRenderer->getIndirectRenderer(),
+                              faceRes.compact[face], faceRes.visible[face]);
                 solidRenderer->getIndirectRenderer().prepareCullWithDescriptor(
                     cullCmd, faceVP, faceRes.solidComputeDs[face],
                     faceRes.compact[face], faceRes.visible[face], camPos);
@@ -400,6 +428,8 @@ void Solid360Renderer::render(VulkanApp* app,
             // Water face cull → per-face compact/visible buffers
             if (renderWater && waterRenderer && faceRes.waterComputeDs[face] != VK_NULL_HANDLE &&
                 faceRes.waterCompact[face] != VK_NULL_HANDLE && faceRes.waterVisible[face] != VK_NULL_HANDLE) {
+                writeCoreOnce(faceRes.waterComputeDs[face], waterRenderer->getIndirectRenderer(),
+                              faceRes.waterCompact[face], faceRes.waterVisible[face]);
                 waterRenderer->getIndirectRenderer().prepareCullWithDescriptor(
                     cullCmd, faceVP, faceRes.waterComputeDs[face],
                     faceRes.waterCompact[face], faceRes.waterVisible[face], camPos);

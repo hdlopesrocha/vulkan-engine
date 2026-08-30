@@ -101,8 +101,8 @@ std::mutex& UploadManager::pickMutex() {
     // Must serialize vkQueueSubmit2 with the SAME mutex the app uses for the
     // chosen queue, or we race with the app's own submissions to that queue.
     if (queue_ == app_->transferQueue)   return app_->getQueueSubmitMutex(app_->transferQueue);
-    if (queue_ == app_->geometryQueue &&
-        app_->geometryQueue != app_->graphicsQueue) return app_->getQueueSubmitMutex(app_->geometryQueue);
+    if (queue_ != VK_NULL_HANDLE && queue_ != app_->getGraphicsQueue())
+        return app_->getQueueSubmitMutex(queue_);
     return app_->getQueueSubmitMutex(app_->graphicsQueue);
 }
 

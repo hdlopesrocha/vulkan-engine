@@ -28,6 +28,8 @@
 #include "vulkan/VulkanApp.hpp"
 #include "vulkan/renderer/SceneRenderer.hpp"
 #include "vulkan/renderer/Solid360Renderer.hpp"
+#include "vulkan/renderer/SceneDescriptorLayout.hpp"
+#include "vulkan/renderer/SceneQueues.hpp"
 #include "vulkan/renderer/RendererUtils.hpp"
 #include "utils/LocalScene.hpp"
 #include "widgets/SettingsWidget.hpp"
@@ -244,29 +246,11 @@ class MyApp : public VulkanApp, public IEventHandler {
 public:
     Settings settings;
     SceneRenderer * sceneRenderer = nullptr;
-    // Logical scene queues, owned by MyApp. Acquired from VulkanApp's parallel
-    // graphics queue pool in setup(); aliased to graphicsQueue when the device
-    // exposes a single graphics queue (no HW parallelism, still correct).
-    VkQueue vegetationQueue = VK_NULL_HANDLE;
-    VkQueue sdfQueue = VK_NULL_HANDLE;
-    VkQueue bboxQueue = VK_NULL_HANDLE;
-    VkQueue solidQueue = VK_NULL_HANDLE;
-    VkQueue waterQueue = VK_NULL_HANDLE;
-    VkQueue skyQueue = VK_NULL_HANDLE;
-    VkQueue getVegetationQueue() const { return vegetationQueue; }
-    VkQueue getSdfQueue() const { return sdfQueue; }
-    VkQueue getBoundingBoxQueue() const { return bboxQueue; }
-    VkQueue getSolidQueue() const { return solidQueue; }
-    VkQueue getWaterQueue() const { return waterQueue; }
-    VkQueue getSkyQueue() const { return skyQueue; }
-    // Brush passes get their own queues so the brush solid (offscreen preview) and
-    // brush liquid (water overlay) can be submitted in parallel with the main
-    // solid/water passes. Aliased to graphicsQueue when only one graphics queue
-    // exists (no HW parallelism, still correct).
-    VkQueue brushSolidQueue = VK_NULL_HANDLE;
-    VkQueue brushLiquidQueue = VK_NULL_HANDLE;
-    VkQueue getBrushSolidQueue() const { return brushSolidQueue; }
-    VkQueue getBrushLiquidQueue() const { return brushLiquidQueue; }
+    // Scene render queues are owned by the generic VulkanApp framework via its
+    // SceneQueues member (forward-declared, created and configured below in
+    // setup()). MyApp no longer duplicates them; the getXxxQueue() forwarders on
+    // VulkanApp delegate to SceneQueues, keeping this class free of scene-staging
+    // boilerplate.
     World * world = nullptr;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
@@ -359,7 +343,7 @@ public:
     size_t cubeCount = 0;
 
     // Camera and input
-    Camera camera = Camera(glm::vec3(2673.0f, 125.0f, 2043.0f), Math::eulerToQuat(0.0f, 0.0f, 0.0f));
+    Camera camera = Camera(glm::vec3(2673.0f, 125.0f, 2043.0f), Math::eulerToQuat(45.0f, 0.0f, 0.0f));
     Light light = Light(glm::vec3(-1.0f, -1.0f, -1.0f));
     EventManager eventManager;
     KeyboardPublisher keyboardPublisher;
@@ -655,20 +639,21 @@ public:
 
     }
 
-    void setup() override {
-        // Acquire the 6 logical scene queues from the parallel graphics-family queue
-        // pool built by VulkanApp::createLogicalDevice. They alias graphicsQueue when
-        // the device exposes fewer physical graphics queues. These are app-owned (not
-        // VulkanApp members) so the engine core stays agnostic about scene queues.
-        const auto& pg = getParallelGraphicsQueues();
-        vegetationQueue = (pg.size() > 1) ? pg[1] : getGraphicsQueue();
-        sdfQueue       = (pg.size() > 2) ? pg[2] : getGraphicsQueue();
-        bboxQueue      = (pg.size() > 3) ? pg[3] : getGraphicsQueue();
-        solidQueue     = (pg.size() > 5) ? pg[5] : getGraphicsQueue();
-        waterQueue     = (pg.size() > 6) ? pg[6] : getGraphicsQueue();
-        skyQueue       = (pg.size() > 7) ? pg[7] : getGraphicsQueue();
-        brushSolidQueue  = (pg.size() > 8) ? pg[8] : getGraphicsQueue();
-        brushLiquidQueue = (pg.size() > 9) ? pg[9] : getGraphicsQueue();
+     void setup() override {
+        // Build the scene descriptor layouts/sets. Owned by the application (not by
+        // the generic VulkanApp framework) so the engine core stays agnostic about
+        // scene bindings. Must exist before SceneRenderer::init() writes the static
+        // descriptor set below.
+        sceneDescriptorLayout = std::make_unique<SceneDescriptorLayout>();
+        sceneDescriptorLayout->create(*this);
+
+        // Build the scene render queues from the parallel graphics-family queue
+        // pool built by VulkanApp::createLogicalDevice. They alias graphicsQueue
+        // when the device exposes fewer physical graphics queues. Owned via the
+        // generic VulkanApp::sceneQueues member (forward-declared; the framework
+        // only forwards), so the engine core stays agnostic about scene staging.
+        sceneQueues = std::make_unique<SceneQueues>();
+        sceneQueues->configure(getParallelGraphicsQueues(), getGraphicsQueue());
 
         sceneRenderer = new SceneRenderer();
         for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i)
@@ -1514,10 +1499,18 @@ public:
                 this->sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
                 this->sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(cullCmd);
                 this->sceneRenderer->brushRenderer->getSolidIR().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
-                if (settings.waterEnabled && this->sceneRenderer->mainLiquidRenderer)
-                    this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
-                if (this->sceneRenderer->brushRenderer)
-                    this->sceneRenderer->brushRenderer->getLiquidIR().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+                if (settings.waterEnabled && this->sceneRenderer->mainLiquidRenderer) {
+                    // Ensure water's pending uploads (vertex/index) have completed and their
+                    // deferred meta (indirect/bounds) is visible before we cull.
+                    this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer().pollPendingTransfers(this);
+                    this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer().syncHostBuffersToGPU();
+                    this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod, nullptr, false, true, false, 0, 1);
+                }
+                if (this->sceneRenderer->brushRenderer) {
+                    this->sceneRenderer->brushRenderer->getLiquidIR().pollPendingTransfers(this);
+                    this->sceneRenderer->brushRenderer->getLiquidIR().syncHostBuffersToGPU();
+                    this->sceneRenderer->brushRenderer->getLiquidIR().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod, nullptr, false, true, false, 0, 1);
+                }
                 if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
                     this->sceneRenderer->debugSDFRenderer->prepareCull(cullCmd);
                 // Signal the single cull timeline semaphore; consumers wait on tlCull@v.
@@ -2245,7 +2238,8 @@ public:
                 // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
                 if (computeDs != VK_NULL_HANDLE) {
                     ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, slot.compact.buffer, slot.visible.buffer,
-                                                  camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+                                                  camera.getPosition(), settings.lodBias, settings.maxTargetLod,
+                                                  /*doMainCull=*/true, /*doCascadeCull=*/false);
                 }
 
                 // Water-depth descriptor set for THIS task: pre-allocated per ring slot

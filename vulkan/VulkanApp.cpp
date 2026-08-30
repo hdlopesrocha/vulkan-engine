@@ -1,5 +1,7 @@
 #include "Buffer.hpp"
 #include "VulkanApp.hpp"
+#include "renderer/SceneDescriptorLayout.hpp"
+#include "renderer/SceneQueues.hpp"
 #include "SubmissionTracker.hpp"
 #include <cstring>
 #include <thread>
@@ -214,7 +216,6 @@ void VulkanApp::initVulkan() {
     stagingRing.init(vma.allocator);
     createSwapchain();
     createImageViews();
-    createDescriptorSetLayout();
     createCommandPool();
     createAsyncCmdPoolRing();
     createSingleTimeCmdRing();
@@ -948,37 +949,6 @@ void VulkanApp::createCommandPool() {
     }
     resources.addCommandPool(transientCommandPool, "VulkanApp: transientCommandPool");
 
-    // Create dedicated command pools for vegetation and geometry (transient, no individual reset)
-    VkCommandPoolCreateInfo vegPoolInfo{};
-    vegPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    vegPoolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
-    vegPoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    if (vkCreateCommandPool(device, &vegPoolInfo, nullptr, &vegetationCommandPool) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create vegetation command pool!");
-    }
-    resources.addCommandPool(vegetationCommandPool, "VulkanApp: vegetationCommandPool");
-
-    VkCommandPoolCreateInfo geoPoolInfo{};
-    geoPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    geoPoolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
-    geoPoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    if (vkCreateCommandPool(device, &geoPoolInfo, nullptr, &geometryCommandPool) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create geometry command pool!");
-    }
-    resources.addCommandPool(geometryCommandPool, "VulkanApp: geometryCommandPool");
-
-    // Create a dedicated command pool for the transfer queue if available
-    if (queueFamilyIndices.transferFamily.has_value()) {
-        VkCommandPoolCreateInfo transferPoolInfo{};
-        transferPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        transferPoolInfo.queueFamilyIndex = queueFamilyIndices.transferFamily.value();
-        transferPoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        if (vkCreateCommandPool(device, &transferPoolInfo, nullptr, &transferCommandPool) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create transfer command pool!");
-        }
-        resources.addCommandPool(transferCommandPool, "VulkanApp: transferCommandPool");
-    }
-
     // initialize async bookkeeping containers (m_submissionMutex guards all)
     m_pendingCommandBuffers.clear();
     m_pendingCommandBuffersSet.clear();
@@ -1186,10 +1156,10 @@ VkFence VulkanApp::runSingleTimeCommandsAsyncOnTransfer(const std::function<void
     // upload before consuming the (newly created) buffer, keeping cross-queue
     // ordering correct.
     // Route uploads to the distinct graphics-family geometry queue when one was
-    // acquired (geometryQueue != graphicsQueue, i.e. a separate Queue object), so
-    // staging copies overlap frame rendering. Otherwise fall back to the main
-    // graphics queue (preserving the RADV/RENOIR safety net).
-    VkQueue q = (geometryQueue != graphicsQueue) ? geometryQueue : VK_NULL_HANDLE;
+    // acquired (geometryTransferQueue() != VK_NULL_HANDLE, i.e. a separate Queue
+    // object), so staging copies overlap frame rendering. Otherwise fall back to
+    // the main graphics queue (preserving the RADV/RENOIR safety net).
+    VkQueue q = geometryTransferQueue_;
     if (q != VK_NULL_HANDLE) {
         VkSemaphore sem = VK_NULL_HANDLE;
         VkFence fence = runSingleTimeCommandsAsync(fn, &sem, q);
@@ -2349,7 +2319,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
 
         // If this was a temporary pool (not ring, not persistent), destroy it now.
         // Ring pools are recycled; persistent pools live for the app lifetime.
-        if (!isRingPool && pool != VK_NULL_HANDLE && pool != commandPool && pool != transientCommandPool && pool != transferCommandPool) {
+        if (!isRingPool && pool != VK_NULL_HANDLE && pool != commandPool && pool != transientCommandPool) {
             resources.removeCommandPool(pool);
             vkDestroyCommandPool(dev, pool, nullptr);
         }
@@ -3445,216 +3415,6 @@ VkSampler VulkanApp::createTextureSampler(uint32_t mipLevels) {
     return textureSampler;
 }
 
-void VulkanApp::createDescriptorSetLayout() {
-    // binding 0 : uniform buffer (vertex shader)
-    VkDescriptorSetLayoutBinding uboLayoutBinding{};
-    uboLayoutBinding.binding = 0;
-    uboLayoutBinding.descriptorCount = 1;
-    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    uboLayoutBinding.pImmutableSamplers = nullptr;
-    // UBO is referenced by vertex, fragment, tessellation, and geometry stages
-    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT;
-
-    // bindings 1..3: arrays of combined image samplers (albedo / normal / height)
-    // bindings 1..3: one combined image sampler each (we use a texture2D array as the image view)
-    VkDescriptorSetLayoutBinding samplerLayoutBinding{};
-    samplerLayoutBinding.binding = 1;
-    samplerLayoutBinding.descriptorCount = 1;
-    samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    samplerLayoutBinding.pImmutableSamplers = nullptr;
-    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-
-    VkDescriptorSetLayoutBinding normalSamplerBinding{};
-    normalSamplerBinding.binding = 2;
-    normalSamplerBinding.descriptorCount = 1;
-    normalSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    normalSamplerBinding.pImmutableSamplers = nullptr;
-    normalSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    VkDescriptorSetLayoutBinding heightSamplerBinding{};
-    heightSamplerBinding.binding = 3;
-    heightSamplerBinding.descriptorCount = 1;
-    heightSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    heightSamplerBinding.pImmutableSamplers = nullptr;
-    // Height sampler is used by fragment shader and tessellation evaluation shader (for displacement)
-    heightSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-
-    // binding 4: shadow map sampler
-    VkDescriptorSetLayoutBinding shadowSamplerBinding{};
-    shadowSamplerBinding.binding = 4;
-    shadowSamplerBinding.descriptorCount = 1;
-    shadowSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    shadowSamplerBinding.pImmutableSamplers = nullptr;
-    shadowSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 6: Sky UBO
-    VkDescriptorSetLayoutBinding skyBinding{};
-    skyBinding.binding = 6;
-    skyBinding.descriptorCount = 1;
-    skyBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    skyBinding.pImmutableSamplers = nullptr;
-    skyBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    
-    // binding 7: Water params SSBO (for water shader) - use storage buffer like Materials
-    VkDescriptorSetLayoutBinding waterParamsBinding{};
-    waterParamsBinding.binding = 7;
-    waterParamsBinding.descriptorCount = 1;
-    waterParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    waterParamsBinding.pImmutableSamplers = nullptr;
-    // Make the water params visible to fragment, tessellation evaluation, and tessellation control shaders
-    waterParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-
-    // Per-instance / per-draw descriptor set uses bindings: 0 (UBO), 1..3 (samplers), 4 (shadow cascade 0),
-    // 5 (Materials SSBO), 6 (Sky UBO), 7 (water params), 8 (shadow cascade 1), 9 (shadow cascade 2)
-    // Note: Materials (binding 5) is declared in shaders as set=0 binding=5, so include it in the main layout.
-
-    // binding 8: shadow map cascade 1
-    VkDescriptorSetLayoutBinding shadowCascade1Binding{};
-    shadowCascade1Binding.binding = 8;
-    shadowCascade1Binding.descriptorCount = 1;
-    shadowCascade1Binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    shadowCascade1Binding.pImmutableSamplers = nullptr;
-    shadowCascade1Binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 9: shadow map cascade 2
-    VkDescriptorSetLayoutBinding shadowCascade2Binding{};
-    shadowCascade2Binding.binding = 9;
-    shadowCascade2Binding.descriptorCount = 1;
-    shadowCascade2Binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    shadowCascade2Binding.pImmutableSamplers = nullptr;
-    shadowCascade2Binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 10: Water render UBO (time parameter for water shaders)
-    VkDescriptorSetLayoutBinding waterRenderUBOBinding{};
-    waterRenderUBOBinding.binding = 10;
-    waterRenderUBOBinding.descriptorCount = 1;
-    waterRenderUBOBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    waterRenderUBOBinding.pImmutableSamplers = nullptr;
-    waterRenderUBOBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-
-    // binding 11: 360° environment cubemap sampler for solid-shader reflections
-    VkDescriptorSetLayoutBinding envMapBinding{};
-    envMapBinding.binding = 11;
-    envMapBinding.descriptorCount = 1;
-    envMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    envMapBinding.pImmutableSamplers = nullptr;
-    envMapBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 12: roughness map array
-    VkDescriptorSetLayoutBinding roughnessSamplerBinding{};
-    roughnessSamplerBinding.binding = 12;
-    roughnessSamplerBinding.descriptorCount = 1;
-    roughnessSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    roughnessSamplerBinding.pImmutableSamplers = nullptr;
-    roughnessSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 13: ambient occlusion map array
-    VkDescriptorSetLayoutBinding aoSamplerBinding{};
-    aoSamplerBinding.binding = 13;
-    aoSamplerBinding.descriptorCount = 1;
-    aoSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    aoSamplerBinding.pImmutableSamplers = nullptr;
-    aoSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    std::array<VkDescriptorSetLayoutBinding, 14> bindings = {
-        uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
-        shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
-        waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
-        envMapBinding, roughnessSamplerBinding, aoSamplerBinding
-    };
-    // Fill the material binding at position 5
-    bindings[5].binding = 5;
-    bindings[5].descriptorCount = 1;
-    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[5].pImmutableSamplers = nullptr;
-    bindings[5].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-
-    // Binding flags — enable update-after-bind for binding 11 (cubemap environment map)
-    // so that vkUpdateDescriptorSets can write binding 11 while a command buffer
-    // referencing this descriptor set is still pending (the cubemap render path
-    // swaps between a dummy cubemap and the real one every frame).
-    std::array<VkDescriptorBindingFlags, 14> bindingFlags{};
-    bindingFlags.fill(0);
-    bindingFlags[11] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-
-    VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};
-    bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    bindingFlagsInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
-    bindingFlagsInfo.pBindingFlags = bindingFlags.data();
-
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.pNext = &bindingFlagsInfo;
-    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-    layoutInfo.pBindings = bindings.data();
-
-    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create descriptor set layout!");
-    }
-
-    // Register the main descriptor set layout for inspection/cleanup
-    resources.addDescriptorSetLayout(descriptorSetLayout, "VulkanApp: descriptorSetLayout");
-
-    // Allocate the main UBO/sampler/materials descriptor sets (one per frame)
-    const uint32_t MAIN_DESC_SETS = MAX_FRAMES_IN_FLIGHT;
-    mainDescriptorSets.clear();
-    mainDescriptorSets.resize(MAIN_DESC_SETS);
-    for (uint32_t i = 0; i < MAIN_DESC_SETS; ++i) {
-        mainDescriptorSets[i] = createDescriptorSet(descriptorSetLayout);
-    }
-
-    // Allocate one static descriptor set for bindings 1-13 (textures, materials, sky,
-    // water params, cubemap). Written once in SceneRenderer::init() and then copied
-    // into per-frame descriptor sets so per-frame updates only touch binding 0 (UBO).
-    staticDescriptorSet = createDescriptorSet(descriptorSetLayout);
-
-    // Create a separate material descriptor layout used for materials only
-    std::array<VkDescriptorSetLayoutBinding, 1> materialBindings = { bindings[5] };
-    VkDescriptorSetLayoutCreateInfo materialLayoutInfo{};
-    materialLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    materialLayoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    materialLayoutInfo.bindingCount = static_cast<uint32_t>(materialBindings.size());
-    materialLayoutInfo.pBindings = materialBindings.data();
-
-    if (vkCreateDescriptorSetLayout(device, &materialLayoutInfo, nullptr, &materialDescriptorSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create material descriptor set layout!");
-    }
-
-    // Register material descriptor set layout
-    resources.addDescriptorSetLayout(materialDescriptorSetLayout, "VulkanApp::createDescriptorSetLayout materialDescriptorSetLayout");
-
-    // ── Brush depth descriptor set layout (set=1, binding 0/1) ──
-    // Separate from the main set so the shadow pass (which uses set=0 only)
-    // doesn't need to reference these bindings. Only pipelines using main.frag
-    // (graphicsPipeline, depthPrePassPipeline, deferredColorPipeline) include
-    // this layout.
-    std::array<VkDescriptorSetLayoutBinding, 2> brushDepthBindings{};
-    brushDepthBindings[0].binding = 0;
-    brushDepthBindings[0].descriptorCount = 1;
-    brushDepthBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    brushDepthBindings[0].pImmutableSamplers = nullptr;
-    brushDepthBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    brushDepthBindings[1].binding = 1;
-    brushDepthBindings[1].descriptorCount = 1;
-    brushDepthBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    brushDepthBindings[1].pImmutableSamplers = nullptr;
-    brushDepthBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    VkDescriptorSetLayoutCreateInfo brushDepthLayoutInfo{};
-    brushDepthLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    brushDepthLayoutInfo.bindingCount = static_cast<uint32_t>(brushDepthBindings.size());
-    brushDepthLayoutInfo.pBindings = brushDepthBindings.data();
-
-    if (vkCreateDescriptorSetLayout(device, &brushDepthLayoutInfo, nullptr, &brushDepthDescriptorSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create brush depth descriptor set layout!");
-    }
-    resources.addDescriptorSetLayout(brushDepthDescriptorSetLayout, "VulkanApp::createDescriptorSetLayout brushDepthDescriptorSetLayout");
-
-    // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
-}
-
 void VulkanApp::createDepthResources() {
     // simple depth resources using a 32-bit float depth format
     VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
@@ -4382,6 +4142,12 @@ Buffer VulkanApp::createDeviceLocalBufferExclusive(const void* data, VkDeviceSiz
     destroyBuffer(stagingBuffer);
     return gpuBuffer;
 }
+
+void VulkanApp::registerDescriptorSetLayout(VkDescriptorSetLayout layout, const char* name) {
+    resources.addDescriptorSetLayout(layout, name);
+}
+
+VulkanApp::~VulkanApp() = default;
 
 void VulkanApp::drawFrame() {
     // Frame GPU-time probe: report any frame that took >100 ms of wall time so
@@ -5549,6 +5315,14 @@ void VulkanApp::createLogicalDevice() {
 
     // Enable Vulkan 1.2 features: drawIndirectCount + descriptorIndexing.
     // timelineSemaphore is part of VkPhysicalDeviceVulkan12Features (core 1.2).
+    // NOTE: the descriptor update-after-bind subset (descriptorBinding*UpdateAfterBind)
+    // is requested here too, but Mesa RADV on a Vulkan 1.4 device silently ignores
+    // those fields inside VkPhysicalDeviceVulkan12Features (and ignores
+    // VkPhysicalDeviceVulkan13Features entirely), so the layout's UPDATE_AFTER_BIND
+    // bit is dropped and vkUpdateDescriptorSets on an in-flight set still trips
+    // VUID-03047. The renderer therefore avoids touching in-flight descriptor sets
+    // every frame (write-once for static bindings, see IndirectRenderer::
+    // prepareCullWithDescriptor) instead of relying on update-after-bind.
     VkPhysicalDeviceVulkan12Features vulkan12Features{};
     vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     vulkan12Features.pNext = &vulkan11Features;
@@ -5578,21 +5352,23 @@ void VulkanApp::createLogicalDevice() {
     const bool deviceSupports14 =
         (VK_VERSION_MAJOR(physDevProps.apiVersion) == 1 && VK_VERSION_MINOR(physDevProps.apiVersion) >= 4);
 
-    // Vulkan 1.4 features, enabled through their KHR extension feature structs.
-    // We deliberately avoid VkPhysicalDeviceVulkan14Features: the 1.3 loader and
-    // validation layers do not recognize its VkStructureType (55) and abort, so we
-    // opt into each 1.4 capability via the KHR struct that both 1.3 and 1.4
-    // runtimes understand. VK_KHR_dynamic_rendering / synchronization2 /
-    // shaderDemoteToHelperInvocation are already enabled above via their KHR structs.
-    VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR dynLocalReadFeatures{};
-    dynLocalReadFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR;
-    VkPhysicalDeviceMaintenance6FeaturesKHR maintenance6Features{};
-    maintenance6Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES_KHR;
+    // Vulkan 1.4 features are enabled through VkPhysicalDeviceVulkan14Features.
+    // This device is Vulkan 1.4, so the loader and validation layers recognize its
+    // VkStructureType; we no longer need the 1.3-era KHR feature structs for
+    // dynamicRenderingLocalRead / maintenance6 (they are folded into the 1.4 struct
+    // below). The 1.2 features (drawIndirectCount, descriptorIndexing,
+    // timelineSemaphore, bufferDeviceAddress, descriptorBinding*UpdateAfterBind)
+    // remain in VkPhysicalDeviceVulkan12Features — VkPhysicalDeviceVulkan14Features
+    // only carries the 1.4-specific features, so it is chained alongside, not in
+    // place of, the 1.2 struct.
+    VkPhysicalDeviceVulkan14Features vulkan14Features{};
+    vulkan14Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
+    vulkan14Features.pNext = &vulkan12Features;
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    // Chain Vulkan 1.2 + 1.1 + dynamic rendering + demote + sync2 (1.4 structs appended below).
-    createInfo.pNext = &vulkan12Features;
+    // Chain Vulkan 1.4 + 1.2 + 1.1 + dynamic rendering + demote + sync2.
+    createInfo.pNext = &vulkan14Features;
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
     createInfo.pEnabledFeatures = &deviceFeatures;
@@ -5649,20 +5425,11 @@ void VulkanApp::createLogicalDevice() {
         extensions.push_back(VK_KHR_MAINTENANCE6_EXTENSION_NAME);
     }
 
-    // Append the optional Vulkan 1.4 KHR feature structs to the pNext chain. They
-    // are valid on both 1.3 and 1.4 runtimes and only chained when actually supported.
-    const void* chainHead = createInfo.pNext;
-    if (dynRenderLocalReadSupported) {
-        dynLocalReadFeatures.dynamicRenderingLocalRead = VK_TRUE;
-        dynLocalReadFeatures.pNext = const_cast<void*>(chainHead);
-        chainHead = &dynLocalReadFeatures;
-    }
-    if (maintenance6Supported) {
-        maintenance6Features.maintenance6 = VK_TRUE;
-        maintenance6Features.pNext = const_cast<void*>(chainHead);
-        chainHead = &maintenance6Features;
-    }
-    createInfo.pNext = chainHead;
+    // Enable the Vulkan 1.4 features carried by VkPhysicalDeviceVulkan14Features.
+    // dynamicRenderingLocalRead and maintenance6 are core in 1.4, so we opt into
+    // them directly (gated on the same support checks used for the extension path).
+    if (dynRenderLocalReadSupported) vulkan14Features.dynamicRenderingLocalRead = VK_TRUE;
+    if (maintenance6Supported)     vulkan14Features.maintenance6 = VK_TRUE;
 
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.ppEnabledExtensionNames = extensions.data();
@@ -5699,45 +5466,28 @@ void VulkanApp::createLogicalDevice() {
     auto rit = requestedQueueCount.find(gfxFamily);
     if (rit != requestedQueueCount.end()) gfxRequested = rit->second;
 
-    VkQueue vegQ  = (gfxRequested > 1) ? acquireGfx(1) : graphicsQueue;
-    VkQueue sdfQ  = (gfxRequested > 2) ? acquireGfx(2) : graphicsQueue;
-    VkQueue bboxQ = (gfxRequested > 3) ? acquireGfx(3) : graphicsQueue;
-    geometryQueue = (gfxRequested > 4) ? acquireGfx(4) : graphicsQueue;
-    VkQueue solidQ= (gfxRequested > 5) ? acquireGfx(5) : graphicsQueue;
-    VkQueue waterQ= (gfxRequested > 6) ? acquireGfx(6) : graphicsQueue;
-    VkQueue skyQ  = (gfxRequested > 7) ? acquireGfx(7) : graphicsQueue;
-    brushSolidQueue  = (gfxRequested > 8) ? acquireGfx(8) : graphicsQueue;
-    brushLiquidQueue = (gfxRequested > 9) ? acquireGfx(9) : graphicsQueue;
-
-    // The logical scene-queue handles are also exposed via VulkanApp getters.
-    vegetationQueue = vegQ;
-    sdfQueue = sdfQ;
-    bboxQueue = bboxQ;
-    solidQueue = solidQ;
-    waterQueue = waterQ;
-    skyQueue = skyQ;
+    // A dedicated graphics-family queue for geometry-buffer uploads. Used by
+    // UploadManager to overlap staging transfers with render submission on the
+    // main graphics queue. When no extra graphics queue was acquired (single
+    // graphics queue, e.g. RADV/RENOIR) it aliases graphicsQueue and is reported
+    // as VK_NULL_HANDLE so callers fall back to graphicsQueue.
+    geometryTransferQueue_ = (gfxRequested > 4) ? acquireGfx(4) : VK_NULL_HANDLE;
 
     // Collect every acquired graphics-family queue (deduplicated by handle) into
     // parallelGraphicsQueues so the solid360 cubemap can submit each of its 6 faces
     // to a different queue for HW-parallel rasterization. Aliased queues share the
     // same handle, so they collapse to one entry and the faces degrade to serial
-    // execution when the device exposes just one graphics queue.
+    // execution when the device exposes just one graphics queue. The scene render
+    // queues (vegetation, sdf, bbox, solid, water, sky, brush, geometry compute)
+    // are derived from this pool by SceneQueues::configure() in the application's
+    // setup(), keeping VulkanApp agnostic about how the scene is staged.
     parallelGraphicsQueues.clear();
     auto addParallelQueue = [&](VkQueue q) {
         if (q == VK_NULL_HANDLE) return;
         for (VkQueue e : parallelGraphicsQueues) if (e == q) return;
         parallelGraphicsQueues.push_back(q);
     };
-    addParallelQueue(graphicsQueue);
-    addParallelQueue(vegQ);
-    addParallelQueue(sdfQ);
-    addParallelQueue(bboxQ);
-    addParallelQueue(geometryQueue);
-    addParallelQueue(solidQ);
-    addParallelQueue(waterQ);
-    addParallelQueue(skyQ);
-    addParallelQueue(brushSolidQueue);
-    addParallelQueue(brushLiquidQueue);
+    for (uint32_t i = 0; i < gfxRequested; ++i) addParallelQueue(acquireGfx(i));
 
     if (indices.presentFamily.value() == gfxFamily) {
         // present uses the same family; reuse the main graphics queue handle
@@ -5882,3 +5632,43 @@ std::mutex& VulkanApp::getQueueSubmitMutex(VkQueue q) {
     if (it == mutexes.end()) it = mutexes.emplace(q, std::make_unique<std::mutex>()).first;
     return *(it->second);
 }
+
+// ---------------------------------------------------------------------------
+// Scene descriptor-set forwarders. VulkanApp owns no scene knowledge; it merely
+// forwards to SceneDescriptorLayout (created and configured by the application).
+// ---------------------------------------------------------------------------
+VkDescriptorSet VulkanApp::getMainDescriptorSet() const {
+    return sceneDescriptorLayout ? sceneDescriptorLayout->getMainDescriptorSet(getCurrentFrame()) : VK_NULL_HANDLE;
+}
+VkDescriptorSet VulkanApp::getMainDescriptorSetForFrame(uint32_t idx) const {
+    return sceneDescriptorLayout ? sceneDescriptorLayout->getMainDescriptorSetForFrame(idx) : VK_NULL_HANDLE;
+}
+size_t VulkanApp::getMainDescriptorSetCount() const {
+    return sceneDescriptorLayout ? sceneDescriptorLayout->getMainDescriptorSetCount() : 0;
+}
+VkDescriptorSetLayout VulkanApp::getDescriptorSetLayout() const {
+    return sceneDescriptorLayout ? sceneDescriptorLayout->descriptorSetLayout() : VK_NULL_HANDLE;
+}
+VkDescriptorSet VulkanApp::getStaticDescriptorSet() const {
+    return sceneDescriptorLayout ? sceneDescriptorLayout->staticDescriptorSet() : VK_NULL_HANDLE;
+}
+VkDescriptorSetLayout VulkanApp::getMaterialDescriptorSetLayout() const {
+    return sceneDescriptorLayout ? sceneDescriptorLayout->materialDescriptorSetLayout() : VK_NULL_HANDLE;
+}
+VkDescriptorSetLayout VulkanApp::getBrushDepthDescriptorSetLayout() const {
+    return sceneDescriptorLayout ? sceneDescriptorLayout->brushDepthDescriptorSetLayout() : VK_NULL_HANDLE;
+}
+
+// ---------------------------------------------------------------------------
+// Scene render-queue forwarders. Storage lives in SceneQueues (owned by the
+// application and configured from the generic parallel graphics-queue pool),
+// keeping VulkanApp agnostic about how the scene is staged across queues.
+// ---------------------------------------------------------------------------
+VkQueue VulkanApp::getVegetationQueue() const { return sceneQueues ? sceneQueues->getVegetationQueue() : VK_NULL_HANDLE; }
+VkQueue VulkanApp::getSdfQueue() const { return sceneQueues ? sceneQueues->getSdfQueue() : VK_NULL_HANDLE; }
+VkQueue VulkanApp::getBoundingBoxQueue() const { return sceneQueues ? sceneQueues->getBoundingBoxQueue() : VK_NULL_HANDLE; }
+VkQueue VulkanApp::getSolidQueue() const { return sceneQueues ? sceneQueues->getSolidQueue() : VK_NULL_HANDLE; }
+VkQueue VulkanApp::getWaterQueue() const { return sceneQueues ? sceneQueues->getWaterQueue() : VK_NULL_HANDLE; }
+VkQueue VulkanApp::getSkyQueue() const { return sceneQueues ? sceneQueues->getSkyQueue() : VK_NULL_HANDLE; }
+VkQueue VulkanApp::getBrushSolidQueue() const { return sceneQueues ? sceneQueues->getBrushSolidQueue() : VK_NULL_HANDLE; }
+VkQueue VulkanApp::getBrushLiquidQueue() const { return sceneQueues ? sceneQueues->getBrushLiquidQueue() : VK_NULL_HANDLE; }

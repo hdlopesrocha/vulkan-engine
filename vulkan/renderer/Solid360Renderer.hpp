@@ -96,6 +96,13 @@ private:
     WaterRenderer* waterRenderer = nullptr;
     static constexpr uint32_t CUBE360_FACE_SIZE = 512;
 
+    // Gate so the static bindings 0..9 of each cube360 face compute set are written
+    // exactly once. They point at scene buffers plus the per-face compact/visible
+    // targets, all of which are stable for the set's lifetime; writing every frame
+    // would touch an in-flight set (VUID-vkUpdateDescriptorSets-None-03047) when
+    // update-after-bind is unavailable. prepareCullWithDescriptor handles 17..36.
+    std::unordered_map<VkDescriptorSet, bool> faceComputeDsInit_;
+
     // Deferred depth test pipelines
     TrackedHandle<VkPipeline> depthOnlyPipeline;
     TrackedHandle<VkPipelineLayout> depthOnlyPipelineLayout;
