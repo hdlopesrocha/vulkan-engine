@@ -532,12 +532,16 @@ void Solid360Renderer::render(VulkanApp* app,
             colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             colorAtt.clearValue = colorClear;
 
+            // Depth must be stored (not DONT_CARE) when the water pass follows:
+            // it runs in its own rendering instance and loads this depth.
+            const bool waterFollows = renderWater && waterRenderer &&
+                faceRes.waterCompact[face] != VK_NULL_HANDLE && faceRes.waterVisible[face] != VK_NULL_HANDLE;
             VkRenderingAttachmentInfo depthAtt{};
             depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             depthAtt.imageView = cube360DepthViews[face];
             depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depthAtt.storeOp = waterFollows ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
             depthAtt.clearValue = {1.0f, 0};
 
             VkRenderingInfo ri{};
@@ -596,12 +600,21 @@ void Solid360Renderer::render(VulkanApp* app,
             vkCmdEndRendering(fcmd);
         }
 
-        // NOTE: Cubemap faces render solid + sky only. Water reflections are sampled
-        // from the main water pipeline's output, not re-rendered into the cube (the
-        // cube face uses the swapchain color format, which is incompatible with the
-        // single water geometry pipeline that targets R32G32B32A32_SFLOAT). Keeping
-        // exactly one water geometry pipeline avoids a second pipeline/layout and the
-        // descriptor-set-1 (materials vs brush-depth) layout clash it caused.
+        // ── Instance 3: water into the cubemap face ──
+        // Water IS rendered into the cube (it is what the water reflections show).
+        // The main water geometry pipeline targets R32G32B32A32_SFLOAT, so the cube
+        // face (swapchain format) uses WaterRenderer's cubemap-compatible pipeline.
+        // renderWaterIntoCubemap opens its own rendering instance with LOAD ops,
+        // compositing water over the solid+sky color and depth-testing against the
+        // prepassed solid depth. The face UBO's materialFlags.x == 1 (capture mode)
+        // makes water.frag skip reflection/refraction, so the pass never samples
+        // the cubemap it is writing; set 2 binds the immutable dummy depth/cube.
+        if (renderWater && waterRenderer &&
+            faceRes.waterCompact[face] != VK_NULL_HANDLE && faceRes.waterVisible[face] != VK_NULL_HANDLE) {
+            waterRenderer->renderWaterIntoCubemap(fcmd, gfxSet,
+                cube360FaceViews[face], cube360DepthViews[face], CUBE360_FACE_SIZE,
+                faceRes.waterCompact[face], faceRes.waterVisible[face]);
+        }
 
         // Transition per-face color/depth layers → SHADER_READ_ONLY_OPTIMAL so the
         // downstream water/composite passes can sample this cubemap layer once the

@@ -14,6 +14,7 @@
 #include <iostream>
 #include <array>
 #include <glm/gtc/matrix_transform.hpp>
+#include "../ShaderStage.hpp"
 #include "../includes/locations.hpp"
 #include "../includes/vertex_layouts.hpp"
 
@@ -966,7 +967,62 @@ static VkImageView _createDummy1x1ImageView(VulkanApp* app, VkFormat fmt, VkImag
 }
 
 void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat) {
-    (void)colorFormat; // color format is fixed (swapchain); kept for API stability
+    // --- Cubemap-compatible water pipeline (solid 360 cube faces) ---
+    // The main water geometry pipeline targets R32G32B32A32_SFLOAT, which cannot
+    // render into the swapchain-format cube faces, so a second pipeline is needed
+    // for the cubemap pass. Recreate it if the swapchain color format changed.
+    if (cubemapWaterPipeline != VK_NULL_HANDLE && cubemapWaterPipelineFormat != colorFormat) {
+        app->resources.removePipeline(cubemapWaterPipeline);
+        vkDestroyPipeline(app->getDevice(), cubemapWaterPipeline, nullptr);
+        cubemapWaterPipeline = VK_NULL_HANDLE;
+        app->resources.removePipelineLayout(cubemapWaterPipelineLayout);
+        vkDestroyPipelineLayout(app->getDevice(), cubemapWaterPipelineLayout, nullptr);
+        cubemapWaterPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (cubemapWaterPipeline == VK_NULL_HANDLE && waterDepthDescriptorSetLayout != VK_NULL_HANDLE &&
+        app->getDescriptorSetLayout() != VK_NULL_HANDLE && app->getMaterialDescriptorSetLayout() != VK_NULL_HANDLE) {
+        ShaderStage vertShader(app->getOrCreateShaderModule("shaders/water.vert.spv"), VK_SHADER_STAGE_VERTEX_BIT);
+        ShaderStage tescShader(app->getOrCreateShaderModule("shaders/water.tesc.spv"), VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
+        ShaderStage teseShader(app->getOrCreateShaderModule("shaders/water.tese.spv"), VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
+        ShaderStage fragShader(app->getOrCreateShaderModule("shaders/water.frag.spv"), VK_SHADER_STAGE_FRAGMENT_BIT);
+
+        std::vector<VkDescriptorSetLayout> setLayouts = {
+            app->getDescriptorSetLayout(),         // set 0: UBO + samplers (per-face cube360 DS)
+            app->getMaterialDescriptorSetLayout(), // set 1: materials (unused by water shaders)
+            waterDepthDescriptorSetLayout          // set 2: dummy back-face depth + dummy cube
+        };
+
+        GraphicsPipelineConfig cfg{};
+        cfg.colorFormats = { colorFormat };
+        cfg.depthFormat = VK_FORMAT_D32_SFLOAT;
+        // Water is drawn after the solid+sky color pass, tested against the
+        // prepassed solid depth; no depth write (nothing consumes cube depth
+        // after the water pass and water-over-water order is irrelevant for a
+        // reflection).
+        cfg.depthTestEnable = true;
+        cfg.depthWriteEnable = false;
+        cfg.depthCompareOp = VK_COMPARE_OP_LESS;
+        cfg.blendEnable = false; // opaque overwrite where water passes the depth test
+
+        auto [pipeline, layout] = app->createGraphicsPipeline(
+            { vertShader.info, tescShader.info, teseShader.info, fragShader.info },
+            std::vector<VkVertexInputBindingDescription>{
+                VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX }
+            },
+            vk_layouts::defaultAttributes(),
+            setLayouts,
+            nullptr,
+            cfg);
+        cubemapWaterPipeline = pipeline;
+        cubemapWaterPipelineLayout = layout;
+        cubemapWaterPipelineFormat = colorFormat;
+        vertShader.info.module = VK_NULL_HANDLE;
+        tescShader.info.module = VK_NULL_HANDLE;
+        teseShader.info.module = VK_NULL_HANDLE;
+        fragShader.info.module = VK_NULL_HANDLE;
+        std::cout << "[WaterRenderer] Created cubemap water pipeline (solid 360)" << std::endl;
+    }
+
     // --- Dummy 1x1 depth (far plane) for back-face depth ---
     if (cubemapDummyDepthView == VK_NULL_HANDLE) {
         cubemapDummyDepthView = _createDummy1x1ImageView(app, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -1007,9 +1063,99 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
             app->recordTransitionImageLayoutLayer(cmd, image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 6);
         });
     }
+
+    // --- Set-2 descriptor set for the cubemap water pass ---
+    // Written ONCE with the immutable dummy depth/cube views and never updated:
+    // the cubemap pass renders before the cube is sampled (feedback is avoided
+    // by the capture-mode flag in the face UBO, which disables reflection and
+    // refraction in water.frag), so the bindings never change. A dedicated pool
+    // keeps the set alive across the waterDepthDescriptorPool reset performed
+    // by destroyRenderTargets().
+    if (cubemapWaterDS == VK_NULL_HANDLE && waterDepthDescriptorSetLayout != VK_NULL_HANDLE &&
+        cubemapDummyDepthView != VK_NULL_HANDLE && cubemapDummyCubeView != VK_NULL_HANDLE &&
+        linearSampler != VK_NULL_HANDLE) {
+        VkDevice device = app->getDevice();
+        if (cubemapWaterDescPool == VK_NULL_HANDLE) {
+            DescriptorAllocator descAlloc{device, app};
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 };
+            cubemapWaterDescPool = descAlloc.createPool(&ps, 1, 1, 0,
+                "WaterRenderer: cubemapWaterDescPool");
+        }
+        DescriptorAllocator descAlloc{device, app};
+        cubemapWaterDS = descAlloc.allocateSet(cubemapWaterDescPool, waterDepthDescriptorSetLayout,
+            "WaterRenderer: cubemapWaterDS");
+
+        VkSampler depthSampler = (nearestSampler != VK_NULL_HANDLE) ? nearestSampler : linearSampler;
+        DescriptorWriter(device)
+            .writeImage(cubemapWaterDS, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                        depthSampler, cubemapDummyDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            .writeImage(cubemapWaterDS, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                        linearSampler, cubemapDummyCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            .flush();
+    }
 }
 
 // Solid 360° cubemap reflection is owned and executed by SceneRenderer.
+
+void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd, VkDescriptorSet sceneDs0,
+                                            VkImageView colorView, VkImageView depthView,
+                                            uint32_t faceSize,
+                                            VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer) {
+    if (!appPtr || cmd == VK_NULL_HANDLE) return;
+    if (cubemapWaterPipeline == VK_NULL_HANDLE || cubemapWaterPipelineLayout == VK_NULL_HANDLE) return;
+    if (sceneDs0 == VK_NULL_HANDLE || cubemapWaterDS == VK_NULL_HANDLE) return;
+
+    // Own rendering instance: LOAD the face color + solid depth written by the
+    // preceding solid color pass so water composites over it (depth-tested).
+    VkRenderingAttachmentInfo colorAtt{};
+    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAtt.imageView = colorView;
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingAttachmentInfo depthAtt{};
+    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAtt.imageView = depthView;
+    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo ri{};
+    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    ri.renderArea.offset = {0, 0};
+    ri.renderArea.extent = {faceSize, faceSize};
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &colorAtt;
+    ri.pDepthAttachment = &depthAtt;
+
+    vkCmdBeginRendering(cmd, &ri);
+
+    VkViewport vp{0.0f, 0.0f, (float)faceSize, (float)faceSize, 0.0f, 1.0f};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    VkRect2D sc{{0, 0}, {faceSize, faceSize}};
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+
+    // Raw binds (no CommandBufferState): this function is called from the solid
+    // 360 per-face command buffers, each of which uses its own tracker owned by
+    // Solid360Renderer; this renderer's cmdState may point at a different task's
+    // tracker, which could wrongly elide the bind in a fresh command buffer.
+    // Each face CB binds this pipeline exactly once, so dedup has no value here.
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cubemapWaterPipeline);
+
+    // Set 0: per-face main-layout DS (binding 0 = this face's cube UBO slot,
+    // with materialFlags.x == 1 so water.frag skips env-map feedback). Water
+    // shaders statically use only sets 0 and 2, so set 1 (materials) is never
+    // bound here.
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cubemapWaterPipelineLayout, 0, 1, &sceneDs0, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cubemapWaterPipelineLayout, 2, 1, &cubemapWaterDS, 0, nullptr);
+
+    // Culled per-face water commands (filled by the solid 360 cull phase).
+    waterIndirectRenderer.drawPreparedWithBuffers(cmd, waterCompactBuffer, waterVisibleCountBuffer);
+
+    vkCmdEndRendering(cmd);
+}
 
 void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
                                bool waterWireframeEnabled, float waterTime, VkImageView skyView,

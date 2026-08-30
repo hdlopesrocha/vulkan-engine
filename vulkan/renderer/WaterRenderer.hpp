@@ -125,10 +125,23 @@ public:
     VkDescriptorSet getWaterDepthDescriptorSet(uint32_t frameIndex) const { return (frameIndex < FRAMES) ? waterDepthDescriptorSets[frameIndex] : VK_NULL_HANDLE; }
 
     // Ensure cubemap reflection resources exist (dummy textures used by the solid 360
-    // pass). There is exactly one water geometry pipeline (waterGeometryPipeline); the
-    // cubemap renders solid + sky only and samples the water pipeline's output for
-    // reflections, so no cubemap-specific water pipeline is created here.
+    // pass, the cubemap-compatible water pipeline and its write-once set-2 descriptor
+    // set). Idempotent; called lazily from the solid 360 pass and from
+    // updateSceneTexturesBinding.
     void ensureCubemapResources(VulkanApp* app, VkFormat colorFormat);
+
+    // Draw water into one solid 360 cubemap face. Must be called INSIDE the face's
+    // command buffer AFTER the solid color pass has ended; begins its own dynamic
+    // rendering instance with LOAD ops so water composites over solid+sky, depth
+    // tested against the prepassed solid depth (no depth writes). The face UBO
+    // carries materialFlags.x == 1 (capture mode), so water.frag skips
+    // reflection/refraction and never samples the cubemap it is rendering into;
+    // set 2 is bound to the immutable dummy depth/cube instead. `sceneDs0` is the
+    // per-face main-layout descriptor set (binding 0 = this face's UBO slot).
+    void renderWaterIntoCubemap(VkCommandBuffer cmd, VkDescriptorSet sceneDs0,
+                                VkImageView colorView, VkImageView depthView,
+                                uint32_t faceSize,
+                                VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer);
 
     // Get sampler for ImGui texture display
     VkSampler getLinearSampler() const { return linearSampler; }
@@ -224,6 +237,21 @@ private:
         }
     };
     std::unordered_map<VkDescriptorSet, SceneTextureBindingSignature> sceneTextureWriteCache;
+
+    // Cubemap water pass: dedicated pipeline (swapchain color format so it can
+    // render into the solid 360 cube faces; the main water geometry pipeline
+    // targets R32G32B32A32_SFLOAT and is format-incompatible). The pipeline owns
+    // a layout built from the same 3 set layouts as waterGeometryPipelineLayout,
+    // so descriptor binding stays compatible. The set-2 descriptor set is written
+    // ONCE with the immutable dummy depth/cube views and never updated, so a
+    // single set (not per-frame) is sufficient and no in-flight update hazard
+    // exists; it lives in its own pool so the waterDepthDescriptorPool reset on
+    // swapchain recreate cannot invalidate it.
+    TrackedHandle<VkPipeline> cubemapWaterPipeline;
+    TrackedHandle<VkPipelineLayout> cubemapWaterPipelineLayout;
+    TrackedHandle<VkDescriptorPool> cubemapWaterDescPool;
+    VkDescriptorSet cubemapWaterDS = VK_NULL_HANDLE;
+    VkFormat cubemapWaterPipelineFormat = VK_FORMAT_UNDEFINED;
 
     // Cubemap water pass resources (per-frame to avoid updating a set that a
     // previous frame's command buffer still has pending)
