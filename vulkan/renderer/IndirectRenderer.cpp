@@ -2375,6 +2375,9 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // count buffers and upload the cascade view-projection matrices so the shader
     // can append to the cascade streams in this dispatch. Mirrors the old
     // prepareCullCascades ordering (drain → fill → compute).
+    // The cascade matrix upload (binding 17) is needed by BOTH the solid cascade
+    // dispatch (doCascade) and the vegetation cascade dispatch (doVegCascade),
+    // since aabbVisibleCascade reads it in both branches.
     if (doCascadeThisFrame || (doVegCascade && vegCascadeInited)) {
         {
             void* matData = cascadeMatrixBuffer.map(0);
@@ -2405,6 +2408,18 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
             depInfo.pBufferMemoryBarriers = &matBarrier;
             vkCmdPipelineBarrier2(cmd, &depInfo);
         }
+    }
+
+    // Solid cascade OUTPUT zeroing: ONLY when this dispatch actually emits the
+    // solid cascade streams (doCascade). The vegetation cascade cull
+    // (doVegCascade=true, doCascade=false) runs as a SEPARATE later dispatch on
+    // this same renderer inside the shadow cull command buffer (see
+    // ShadowRenderer::render/renderParallel -> VegetationRenderer::
+    // prepareCullCascades); zeroing the solid cascade streams there would wipe
+    // the streams the solid cascade cull just filled, and since that dispatch
+    // runs with pc.doCascade=0 they are never refilled — drawCascadeOnly then
+    // reads count=0 and no solid geometry is rendered into the shadow cascades.
+    if (doCascadeThisFrame) {
         {
             VkBufferMemoryBarrier2 preFill[6]{};
             uint32_t preCount = 0;
