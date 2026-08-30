@@ -1801,6 +1801,17 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         resources.addSemaphore(es, "VulkanApp::submitCommandBufferAsyncToQueue: extraSignalSemaphore");
     }
 
+    // Determine stage mask for wait semaphores.
+    // For graphics/compute queues, include COMPUTE_SHADER so compute dispatches
+    // properly wait on timeline semaphores from preceding compute work.
+    // Transfer queues only need COPY/BLIT/RESOLVE.
+    VkPipelineStageFlags2 waitStageMask;
+    if (targetQueue == transferQueue) {
+        waitStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_RESOLVE_BIT;
+    } else {
+        waitStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    }
+
     std::vector<VkSemaphoreSubmitInfo> waitSemaphoreInfos;
     waitSemaphoreInfos.reserve(waitSemaphores.size());
     for (size_t wi = 0; wi < waitSemaphores.size(); ++wi) {
@@ -1810,7 +1821,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
         info.semaphore = ws;
         info.value = (wi < waitSemaphoreValues.size()) ? waitSemaphoreValues[wi] : 0;
-        info.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+        info.stageMask = waitStageMask;
         info.deviceIndex = 0;
         waitSemaphoreInfos.push_back(info);
     }

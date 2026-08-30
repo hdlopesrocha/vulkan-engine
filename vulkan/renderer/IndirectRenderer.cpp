@@ -2029,7 +2029,13 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 
     // Zero the per-frame chosen-LoD output so entries beyond the current
     // dispatch range can never be misread as a stale (chunk, level) pair.
-    vkCmdFillBuffer(cmd, visibleLods.buffer, 0, VK_WHOLE_SIZE, 0);
+    // Skip when doMain==false (cascade-only cull): the cascade branch reads
+    // the LoD selection the main-view cull stamped earlier in the frame
+    // (single source of truth), so zeroing here would erase it and the
+    // cascade LoD gate would reject every entry (selectedLevel==0 != entryLevel).
+    if (doMain) {
+        vkCmdFillBuffer(cmd, visibleLods.buffer, 0, VK_WHOLE_SIZE, 0);
+    }
 
     // ── Vegetation merged-cull outputs ──
     // When vegetation culling is enabled the same dispatch also emits billboard
