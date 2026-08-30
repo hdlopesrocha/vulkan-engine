@@ -831,6 +831,12 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
         solidRenderer_->getIndirectRenderer().prepareCull(blurCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
     if (brushRenderer_)
         brushRenderer_->getSolidIR().prepareCull(blurCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
+    // Restore the water main-view cull too: the cascade cull above ran
+    // prepareCull on the liquid IR with doMain=false, which zeroes its
+    // compact/count buffers without re-emitting main-view commands. Without
+    // this re-dispatch the water pass's drawPrepared reads count=0 (no water).
+    if (liquidRenderer_)
+        liquidRenderer_->getIndirectRenderer().prepareCull(blurCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, nullptr, /*doCascade=*/false, /*doMain=*/true, false, 0, 1);
 
     std::vector<VkSemaphore> cascadeDoneWait(SHADOW_CASCADE_COUNT);
     for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) cascadeDoneWait[c] = semCascadeDone_[f][c];
@@ -1000,6 +1006,13 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint3
         solidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
     if (brushRenderer_) {
         brushRenderer_->getSolidIR().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
+    }
+    // Restore the water main-view cull too: the cascade cull above ran
+    // prepareCull on the liquid IR with doMain=false, which zeroes its
+    // compact/count buffers without re-emitting main-view commands. Without
+    // this re-dispatch the water pass's drawPrepared reads count=0 (no water).
+    if (liquidRenderer_) {
+        liquidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, nullptr, /*doCascade=*/false, /*doMain=*/true, false, 0, 1);
     }
 
     // Restore the main UBO so subsequent passes see the original data.
