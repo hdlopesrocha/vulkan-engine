@@ -2383,6 +2383,28 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
                 cascadeMatrixBuffer.unmap();
             }
         }
+        // HOST→COMPUTE barrier for cascadeMatrixBuffer (binding 17). Without it
+        // the host memcpy is not visible to the compute shader's read of
+        // cascades.viewProj, so aabbVisibleCascade sees zero matrices and
+        // rejects everything (cascCount=0 while mainVisible>0).
+        {
+            VkBufferMemoryBarrier2 matBarrier{};
+            matBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            matBarrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+            matBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+            matBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            matBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            matBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            matBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            matBarrier.buffer = cascadeMatrixBuffer.buffer;
+            matBarrier.offset = 0;
+            matBarrier.size = VK_WHOLE_SIZE;
+            VkDependencyInfo depInfo{};
+            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            depInfo.bufferMemoryBarrierCount = 1;
+            depInfo.pBufferMemoryBarriers = &matBarrier;
+            vkCmdPipelineBarrier2(cmd, &depInfo);
+        }
         {
             VkBufferMemoryBarrier2 preFill[6]{};
             uint32_t preCount = 0;
