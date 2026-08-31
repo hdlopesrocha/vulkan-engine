@@ -85,10 +85,14 @@ public:
     // `secondaryIR` is drawn with the same water pipeline, right after the main
     // water IR, inside the same geometry pass (used for brush liquid geometry —
     // brush water renders like main water but lives in its own IndirectRenderer).
+    // `overrideWaterDs` (async path) is the caller-owned set-2 descriptor set
+    // (binding 0 = real back-face depth, binding 1 = solid360 cubemap); when null
+    // the per-frame set from prepareSceneTexturesForFrame() is bound instead.
     void render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                 VkImageView sceneColorView,
                 VkImageView skyView = VK_NULL_HANDLE,
-                IndirectRenderer* secondaryIR = nullptr);
+                IndirectRenderer* secondaryIR = nullptr,
+                VkDescriptorSet overrideWaterDs = VK_NULL_HANDLE);
 
     // Get water color/depth image view for post-process sampling
     VkImageView getWaterDepthView(uint32_t frameIndex) const { return waterDepthImageViews[frameIndex]; }

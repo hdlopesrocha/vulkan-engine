@@ -835,7 +835,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 }
 
 // Back-face pass implementation moved to WaterBackFaceRenderer
-void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView skyView, IndirectRenderer* secondaryIR) {
+void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView skyView, IndirectRenderer* secondaryIR, VkDescriptorSet overrideWaterDs) {
     if (!app || cmd == VK_NULL_HANDLE) return;
 
     prepareRender(app, cmd, frameIndex, sceneColorView, skyView);
@@ -853,7 +853,13 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
     }
-    VkDescriptorSet sceneDs = getWaterDepthDescriptorSet(frameIndex);
+    // In the async path the caller owns the set-2 set (already populated on the
+    // host before submission); the per-frame set is only populated in the
+    // non-async path (see renderPass). Binding the per-frame set unconditionally
+    // here used to leave set 2 unbound in the async path (it is never allocated
+    // there), so the water pass accidentally inherited whatever the back-face
+    // pass left bound — whose binding 0 is patched to the dummy depth.
+    VkDescriptorSet sceneDs = (overrideWaterDs != VK_NULL_HANDLE) ? overrideWaterDs : getWaterDepthDescriptorSet(frameIndex);
     if (sceneDs != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
             waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
@@ -1259,7 +1265,8 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
     } else {
         if (!_wg_env_skip) {
             render(app, commandBuffer, frameIdx, sceneColorView, skyView,
-                   (drawBrushLiquid && brushRenderer_) ? &brushRenderer_->getLiquidIR() : nullptr);
+                   (drawBrushLiquid && brushRenderer_) ? &brushRenderer_->getLiquidIR() : nullptr,
+                   overrideWaterDs);
         } else {
             // Skipping waterRenderer::render due to VULKAN_DISABLE_WATERGEOM
         }

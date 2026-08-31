@@ -204,16 +204,50 @@ void main() {
     // still shows nearby solids via the cubemap.
     vec3 sceneColor = vec3(0.0);
     if (enableRefraction) {
-        // Approximate air->water refraction. `refract` expects the incident
-        // vector (we use `viewDir` here to match reflection sign conventions).
+        // Approximate air->water refraction. GLSL `refract` expects the incident
+        // vector (eye -> surface), i.e. -viewDir; the result is the true
+        // transmitted ray pointing INTO the water toward the underwater scene.
         float waterIor = 1.333333; // approximate index of refraction for water
-        vec3 refractDir = refract(viewDir, normal, 1.0 / waterIor);
+        vec3 refractDir = refract(-viewDir, normal, 1.0 / waterIor);
         if (length(refractDir) < 1e-5) {
             // fallback to reflection if total internal reflection occurs
-            refractDir = reflect(viewDir, normal);
+            refractDir = reflect(-viewDir, normal);
         }
+        // Apply Perlin-based angular distortion so refractionStrength visibly
+        // warps the cubemap lookup. The offset is expressed in the surface
+        // tangent frame (T,B) so the distortion follows the wave orientation
+        // and is already modulated by edgeFade above.
+        refractDir = normalize(refractDir + T * refractionOffset.x + B * refractionOffset.y);
 
-        vec3 cubeColor = texture(sceneSkyCube, refractDir).rgb;
+        // The solid360 cube faces are captured with INVERTED view directions
+        // (see Solid360Renderer): sampling the cube with direction d returns the
+        // view captured toward -d. Negate the transmitted ray so the lookup lands
+        // on the face holding the underwater scene instead of the opposite one
+        // (same sign convention the reflection lookup below relies on).
+        vec3 sampleDir = -refractDir;
+
+        vec3 cubeColor;
+        // Optional box blur of the refracted cubemap. The original screen-space
+        // blur sampled neighbouring texels around refractedUV; the cubemap path
+        // approximates it by sampling neighbouring directions around sampleDir.
+        if (enableBlur && blurSamples > 1 && blurRadius > 0.01 && volumeBlurFactor > 0.01) {
+            int halfK = blurSamples / 2;
+            vec3 acc = vec3(0.0);
+            float weight = 0.0;
+            // Convert texel radius to angular offset. 0.01 rad per texel is a
+            // heuristic that yields a visible but subtle blur at blurRadius=8.
+            float angularStep = 0.01 * blurRadius;
+            for (int bx = -halfK; bx <= halfK; ++bx) {
+                for (int by = -halfK; by <= halfK; ++by) {
+                    vec3 jittered = normalize(sampleDir + T * float(bx) * angularStep + B * float(by) * angularStep);
+                    acc += texture(sceneSkyCube, jittered).rgb;
+                    weight += 1.0;
+                }
+            }
+            cubeColor = acc / max(weight, 1.0);
+        } else {
+            cubeColor = texture(sceneSkyCube, sampleDir).rgb;
+        }
         sceneColor = cubeColor;
     }
 
@@ -261,6 +295,9 @@ void main() {
     }
     
     // === REFLECTION ===
+    // The solid360 cube faces are captured inverted (sampling d returns the view
+    // toward -d), so pass the surface->eye view direction straight into reflect()
+    // to land on the correct face — same convention as main.frag's environmentMap.
     vec3 reflectDir = reflect(viewDir, normal);
 
     vec3 skyColor = texture(sceneSkyCube, reflectDir).rgb;
