@@ -285,7 +285,7 @@ void processChunk(uint s) {
             float band = distance(pc.camPos, center) / (baseCell * pc.lodBias);
             uint selectedLevel = uint(floor(band));
             selectedLevel = uint(min(float(selectedLevel), float(maxLevel)));
-            selectedLevel = uint(max(float(selectedLevel), 1.0f));        // no rung-0 hole (1 = finest)
+            selectedLevel = uint(max(float(selectedLevel), 0.0f));        // 0 = finest (0-based rung)
             selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
             if (uint(entryLevel) != selectedLevel) return;
         }
@@ -343,9 +343,9 @@ void processChunk(uint s) {
     if (inCmds.cmds[s].indexCount == 0u) return;
 
     // bounds stored as min, max, meta triples in `boundsBuf.data`
-    // meta = {chunkLod, lod, maxLevel, unused}: chunkLod is the band's ladder
-    // rung (1 = finest published rung), lod is the node's stored getLod
-    // (chunkLod + 1), maxLevel is the tree's real ladder depth.
+    // meta = {cellSize, level, maxLevel, unused}: level is the 0-based band
+    // rung (0 = finest published rung), maxLevel is the tree's real ladder
+    // depth (0-based, from maxChunkLod).
     uint bIndex = s * 4u;
     bool hasBounds = (bIndex + 3u) < boundsBuf.data.length();
     vec3 minp = vec3(0.0);
@@ -374,7 +374,7 @@ void processChunk(uint s) {
     // cull reads the exact same level instead of re-deriving the band with a
     // stale camera position. (The band depends only on distance to the camera,
     // not on the frustum.)
-    // Per-entry LoD rung: chunkLod is the band's ladder level (1 = finest
+    // Per-entry LoD rung: level is the 0-based band rung (0 = finest
     // published rung). Distance alone selects the rung to draw; no geometric
     // sizes are involved.
     // Per-chunk LoD band selection (frustum-independent). Each published entry is
@@ -395,14 +395,14 @@ void processChunk(uint s) {
         // by distance from the camera to the chunk's own centre. baseCell == G/2 is
         // invariant across rungs, so the band is a pure function of distance; nested
         // rungs in a column derive different bands and exactly one survives per
-        // region (no overlap, no holes). Clamping keeps the finest rung near the
-        // camera (no rung-0 hole) and the coarsest rung far away.
+        // region (no overlap, no holes). Clamping keeps the finest rung (0)
+        // near the camera and the coarsest rung far away.
         float baseCell = cellSize / exp2(float(max(entryLevel, 0)));
         vec3  center   = base + 0.5f * cellSize;
         float band = distance(pc.camPos, center) / (baseCell * pc.lodBias);
         selectedLevel = uint(floor(band));
         selectedLevel = uint(min(float(selectedLevel), float(maxLevel)));
-        selectedLevel = uint(max(float(selectedLevel), 1.0f));
+        selectedLevel = uint(max(float(selectedLevel), 0.0f));
         selectedLevel = uint(min(float(selectedLevel), float(pc.maxTargetLod)));
     }
 

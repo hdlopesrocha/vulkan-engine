@@ -968,7 +968,7 @@ size_t SceneRenderer::publishPendingMeshes(
 
         // Publish the mesh into its single draw entry slot. The slot index is
         // the chunk's stable slot (one draw entry per chunk); `lod.lod` is the
-        // chunk's 1-based chunkLod (1 = finest published rung), published in the
+        // chunk's 0-based band rung (0 = finest published rung), published in the
         // bounds meta for the GPU's per-chunk distance band test (entryLevel).
         const uint32_t slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(base),
                                                     &cubeMin,
@@ -1001,8 +1001,8 @@ size_t SceneRenderer::publishPendingMeshes(
         onChunkPublished(layer, nid, slotIdx, lod.version, isBrush);
 
         // Generate vegetation for every published grass chunk (lod.lod is the
-        // 1-based chunkLod, so the old "frontier (lod.lod == 0)" test could never
-        // fire and vegetation was never generated). The LoD band gate in
+        // 0-based band rung, so every rung carries its own grass for full
+        // terrain coverage). The LoD band gate in
         // indirect.comp keeps exactly one rung per region visible, so only the
         // selected rung's grass is drawn — generating per rung (not just the
         // finest) lets grass appear across the whole visible terrain instead of
@@ -1367,12 +1367,13 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
                 c.sdf = sdf;
                 c.brushIndex = static_cast<int>(brushIndex);
                 // LoD meta for the SDF cull's clipmap band gate (mirrors the solid chunk
-                // entry): cellSize = chunk cube side, level = chunkLod rung, base = chunk min
-                // corner (shared column anchor). The SDF cubes are emitted at the chunk's
-                // finest surface rung, but the gate selects the rung by the CHUNK's LoD so
-                // parent/child chunk SDF cubes never overlap.
+                // entry): cellSize = chunk cube side, level = 0-based band rung
+                // (chunkLod - 1), base = chunk min corner. The SDF cubes are
+                // emitted at the chunk's finest surface rung, but the gate
+                // selects the rung by the CHUNK's LoD so parent/child chunk SDF
+                // cubes never overlap.
                 c.cellSize = nodeData.cube.getLengthX();
-                c.level    = static_cast<int>(nodeData.node->getChunkLod());
+                c.level    = static_cast<int>(nodeData.node->getChunkLod()) - 1;
                 c.base     = nodeData.cube.getMin();
                 std::lock_guard<std::mutex> lk(sdfMtx);
                 sdfCubes.push_back(std::move(c));
@@ -1397,10 +1398,10 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
                     ? glm::vec3(0.0f, 1.0f, 0.0f)
                     : glm::vec3(0.0f, 0.5f, 1.0f);
                 // LoD meta for the bbox cull's clipmap band gate (mirrors the solid
-                // chunk entry): cellSize = node cube side, level = chunkLod rung,
-                // base = chunk min corner (shared column anchor).
+                // chunk entry): cellSize = node cube side, level = 0-based band
+                // rung (chunkLod - 1), base = chunk min corner.
                 c.cellSize = cube.getLengthX();
-                c.level    = static_cast<int>(nodeData.node->getChunkLod());
+                c.level    = static_cast<int>(nodeData.node->getChunkLod()) - 1;
                 c.base     = nodeData.cube.getMin();
                 std::lock_guard<std::mutex> lk(bbMtx);
                 bbCubes.push_back(std::move(c));
