@@ -241,14 +241,10 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
         }
     }
     // The per-slot scene-texture sets live in waterDepthDescriptorPool, so the
-    // reset above frees them; just drop the dangling handles.
+    // reset above frees them; just drop the dangling handles. No write cache
+    // exists to clear: bindings are rewritten unconditionally (descriptor-
+    // buffer style plain writes), so a reused handle is always rewritten.
     for (uint32_t i = 0; i < FRAMES; ++i) waterDepthDescriptorSets[i] = VK_NULL_HANDLE;
-    // The pool reset invalidated every set allocated from it; drop all cached
-    // descriptor-write signatures so the next update always rewrites (a set
-    // handle reused by the allocator must never be skipped against a stale
-    // entry). The async per-task sets use their own pools and are re-created
-    // lazily, so clearing here only costs one extra write for them.
-    sceneTextureWriteCache.clear();
 }
 
 void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex) {
@@ -761,26 +757,13 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
     imageInfos[1].imageView = finalCubeView;
     imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Descriptor write cache: skip the vkUpdateDescriptorSets calls when this
-    // set already holds identical bindings. The signature is keyed by the
-    // descriptor set handle, so the per-frame sets (prepareSceneTexturesForFrame)
-    // and the async per-task sets (main.cpp) never interfere; if the async path
-    // feeds different views into the same set, the signature changes and the
-    // writes still happen. A fresh set has no cache entry, so its first update
-    // always writes. Note: in the async path main.cpp re-patches binding 0
-    // (patchBinding0? no — back-face) right after this call with the same dummy view
-    // every task, so skipping here cannot leave that binding stale either way.
-    SceneTextureBindingSignature sig;
-    for (uint32_t i = 0; i < 2; ++i) {
-        sig.samplers[i] = imageInfos[i].sampler;
-        sig.views[i] = imageInfos[i].imageView;
-        sig.layouts[i] = imageInfos[i].imageLayout;
-    }
-    auto cacheIt = sceneTextureWriteCache.find(ds);
-    if (cacheIt != sceneTextureWriteCache.end() && cacheIt->second == sig) {
-        return; // bindings unchanged since the last write to this set
-    }
-
+    // Descriptor-buffer style update: rewrite the bindings unconditionally.
+    // No write cache, no set allocation/free, no deferred destruction — the
+    // per-frame set is allocated once (see prepareSceneTexturesForFrame) and
+    // updated in place here. With VK_EXT_descriptor_buffer this same call
+    // becomes plain host memory writes (vkGetDescriptorEXT); the classic
+    // vkUpdateDescriptorSets below is the fallback until the layout carries
+    // VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT.
     DescriptorWriter writer(app->getDevice());
     for (uint32_t i = 0; i < 2; ++i) {
         writer.writeImage(ds, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -788,7 +771,6 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
                           imageInfos[i].imageLayout);
     }
     writer.flush();
-    sceneTextureWriteCache[ds] = sig;
 }
 
 VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint32_t frameIndex,

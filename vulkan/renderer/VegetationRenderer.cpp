@@ -40,7 +40,10 @@ void VegetationRenderer::cleanup(VulkanApp* app) {
     for (NodeID id : idsToDestroy) destroyInstanceBuffer(id);
     chunkBuffers.clear();
     chunkInstanceCounts.clear();
-    vegDescriptorVersion = 0;
+    // Stable descriptor set: owned by the app descriptor pool, never freed or
+    // deferred-destroyed in the render loop. Just drop our handle; pool
+    // teardown reclaims it. Re-init reallocates on demand via ensure.
+    vegDescriptorSet = VK_NULL_HANDLE;
     if (vegetationTextureArrayManager && vegTextureListenerId != -1) {
         vegetationTextureArrayManager->removeAllocationListener(vegTextureListenerId);
         vegTextureListenerId = -1;
@@ -594,49 +597,55 @@ void VegetationRenderer::setBillboardArrayTextures(VkImageView albedoView, VkIma
 
     if (!app || descriptorSetLayout == VK_NULL_HANDLE) return;
 
-    if (vegDescriptorSet != VK_NULL_HANDLE) {
-        // Defer destruction of the old descriptor set. The current frame's
-        // command buffer may still reference it.  deferDestroyUntilAllPending
-        // waits for all in-flight rendering to complete before freeing.
-        VkDescriptorSet ds = vegDescriptorSet;
-        VkDevice dev = app->getDevice();
-        VkDescriptorPool pool = app->getDescriptorPool();
-        app->deferDestroyUntilAllPending([dev, pool, ds, app]() {
-            if (app->resources.removeDescriptorSet(ds))
-                vkFreeDescriptorSets(dev, pool, 1, &ds);
-        });
-        vegDescriptorSet = VK_NULL_HANDLE;
-        vegDescriptorVersion = 0;
+    // Stable set: never freed or deferred-destroyed. If a set already exists,
+    // just rewrite its bindings in place (UPDATE_AFTER_BIND layout makes the
+    // update safe while pending command buffers reference it; with descriptor
+    // buffers this is a plain host memory write). No allocation/free needed.
+    if (vegDescriptorSet == VK_NULL_HANDLE) {
+        ensureVegDescriptorSet(app);
+    } else {
+        refreshVegDescriptors(app);
     }
-
-    ensureVegDescriptorSet(app);
 }
 
 void VegetationRenderer::onTextureArraysReallocated(VulkanApp* app) {
-    std::cerr << "[VEGETATION] onTextureArraysReallocated: invalidating vegDescriptorSet" << std::endl;
+    std::cerr << "[VEGETATION] onTextureArraysReallocated: refreshing vegDescriptorSet in place" << std::endl;
     if (!app) return;
+    // Stable set: no free/realloc, no deferred destruction, no versioning.
+    // Just rewrite the bindings into the existing set (or allocate once if
+    // the set does not exist yet). Event-driven only — never in the loop.
     if (vegDescriptorSet != VK_NULL_HANDLE) {
-        VkDescriptorSet ds = vegDescriptorSet;
-        VkDevice device = app->getDevice();
-        VkDescriptorPool pool = app->getDescriptorPool();
-        // Defer the free until all pending command buffers AND in-flight frame
-        // fences signal — the descriptor set may still be referenced by a
-        // previously-submitted frame command buffer. The remove happens inside
-        // the deferred lambda so that, if this handle value is recycled for a
-        // newer live set before the lambda runs, the second remove returns
-        // false and we avoid a double free of an already-freed set.
-        app->deferDestroyUntilAllPending([device, pool, ds, app]() {
-            if (app->resources.removeDescriptorSet(ds))
-                vkFreeDescriptorSets(device, pool, 1, &ds);
-        });
-        vegDescriptorSet = VK_NULL_HANDLE;
-        vegDescriptorVersion = 0;
+        refreshVegDescriptors(app);
+        return;
     }
     if (ensureVegDescriptorSet(app)) {
-        std::cerr << "[VEGETATION] onTextureArraysReallocated: recreated vegDescriptorSet=" << (void*)vegDescriptorSet << std::endl;
+        std::cerr << "[VEGETATION] onTextureArraysReallocated: created vegDescriptorSet=" << (void*)vegDescriptorSet << std::endl;
     } else {
         std::cerr << "[VEGETATION] onTextureArraysReallocated: descriptor still not ready" << std::endl;
     }
+}
+
+void VegetationRenderer::refreshVegDescriptors(VulkanApp* app) {
+    if (!app) return;
+    if (vegDescriptorSet == VK_NULL_HANDLE) return;
+    if (billboardAlbedoView  == VK_NULL_HANDLE ||
+        billboardNormalView  == VK_NULL_HANDLE ||
+        billboardOpacityView == VK_NULL_HANDLE ||
+        billboardArraySampler == VK_NULL_HANDLE) return;
+    // In-place rewrite of the 3 billboard bindings. Safe while the set is
+    // bound by pending work (UPDATE_AFTER_BIND layout/pool); with descriptor
+    // buffers this is a plain host memory write — no allocation/free.
+    DescriptorWriter writer(app->getDevice());
+    writer.writeImage(vegDescriptorSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                      billboardArraySampler, billboardAlbedoView,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    writer.writeImage(vegDescriptorSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                      billboardArraySampler, billboardNormalView,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    writer.writeImage(vegDescriptorSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                      billboardArraySampler, billboardOpacityView,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    writer.flush();
 }
 
 bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
@@ -654,18 +663,7 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
     if (vegDescriptorSet == VK_NULL_HANDLE) {
         vegDescriptorSet = app->createDescriptorSet(descriptorSetLayout);
 
-        DescriptorWriter writer(app->getDevice());
-        writer.writeImage(vegDescriptorSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                          billboardArraySampler, billboardAlbedoView,
-                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        writer.writeImage(vegDescriptorSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                          billboardArraySampler, billboardNormalView,
-                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        writer.writeImage(vegDescriptorSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                          billboardArraySampler, billboardOpacityView,
-                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        writer.flush();
-        vegDescriptorVersion = 1;
+        refreshVegDescriptors(app);
         app->registerDescriptorSet(vegDescriptorSet);
         std::cerr << "[VEGETATION] Allocated vegDescriptorSet=" << (void*)vegDescriptorSet << " (3 sampler2DArray)" << std::endl;
     }

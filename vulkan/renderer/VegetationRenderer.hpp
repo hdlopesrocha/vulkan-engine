@@ -232,10 +232,19 @@ private:
     VkImageView billboardOpacityView  = VK_NULL_HANDLE;
     TrackedHandle<VkSampler> billboardArraySampler;
 
-    // Descriptor set allocated from the app's descriptor pool and re-created when the texture arrays are (re)allocated
+    // Descriptor set allocated once from the app's descriptor pool and updated
+    // in place when the texture arrays are (re)allocated. The layout carries
+    // UPDATE_AFTER_BIND_POOL_BIT (pool has UPDATE_AFTER_BIND_BIT), so an
+    // in-place vkUpdateDescriptorSets is legal even while pending command
+    // buffers reference the set — no free/realloc and no deferred destruction
+    // is ever needed. With VK_EXT_descriptor_buffer this update becomes a
+    // plain host memory write (vkGetDescriptorEXT); no set allocation/free.
     TrackedHandle<VkDescriptorSet> vegDescriptorSet;
-    uint32_t vegDescriptorVersion = 0;
     bool ensureVegDescriptorSet(VulkanApp* app);
+    // Rewrite the 3 billboard bindings into the existing set (event-driven
+    // only: setBillboardArrayTextures / onTextureArraysReallocated — never
+    // called from the render loop, so steady state issues 0 updates).
+    void refreshVegDescriptors(VulkanApp* app);
     // Listener id returned from TextureArrayManager::addAllocationListener(), -1 if none
     int vegTextureListenerId = -1;
 

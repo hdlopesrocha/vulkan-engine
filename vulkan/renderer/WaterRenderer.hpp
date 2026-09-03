@@ -12,7 +12,6 @@
 #include "../../utils/Scene.hpp"
 #include "../ubo/UniformObject.hpp"
 #include "../../widgets/SkySettings.hpp"
-#include <unordered_map>
 #include "../../space/Model3DVersion.hpp"
 #include "../../utils/WaterParams.hpp"
 #include "../ubo/WaterParamsGPU.hpp"
@@ -223,32 +222,14 @@ private:
     // Descriptor set for water geometry (scene depth texture)
     TrackedHandle<VkDescriptorSetLayout> waterDepthDescriptorSetLayout;
     TrackedHandle<VkDescriptorPool> waterDepthDescriptorPool;
-    // Per-frame descriptor sets for scene textures (3 frames in flight)
-    // One scene-texture descriptor set per in-flight slot. Each slot's set is
-    // freed and reallocated in prepareSceneTexturesForFrame() while the per-slot
-    // in-flight fence guarantees the previous command buffer using that slot has
-    // completed. This avoids both VUID-03047 (update/destroy while pending) and
-    // the GPU-assisted false "length 0" seen with UPDATE_AFTER_BIND.
+    // Per-frame descriptor sets for scene textures (3 frames in flight).
+    // Each slot's set is allocated once and updated in place via
+    // vkUpdateDescriptorSets — never freed or deferred-destroyed in the
+    // render loop (zero vkFreeDescriptorSets). With VK_EXT_descriptor_buffer
+    // the same update becomes a plain host memory write (vkGetDescriptorEXT)
+    // into descriptor-buffer memory: no set allocation/free, no cache needed,
+    // so the bindings are rewritten unconditionally on every call.
     std::array<VkDescriptorSet, FRAMES> waterDepthDescriptorSets{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
-
-    // Cache of the last descriptor contents written per descriptor set by
-    // updateSceneTexturesBinding(). The offscreen target views bound here are
-    // stable per frame slot, so the per-frame vkUpdateDescriptorSets calls can
-    // be skipped while the set already holds identical bindings. Keyed by the
-    // descriptor set handle so the per-frame sets (prepareSceneTexturesForFrame)
-    // and the async per-task sets (allocated in main.cpp) stay independent: if
-    // the async path feeds different views into a set, the signature changes
-    // and the writes still happen. Cleared when the pool is reset so a reused
-    // handle is never skipped against a stale entry.
-    struct SceneTextureBindingSignature {
-        std::array<VkSampler, 4> samplers{};
-        std::array<VkImageView, 4> views{};
-        std::array<VkImageLayout, 4> layouts{};
-        bool operator==(const SceneTextureBindingSignature& o) const {
-            return samplers == o.samplers && views == o.views && layouts == o.layouts;
-        }
-    };
-    std::unordered_map<VkDescriptorSet, SceneTextureBindingSignature> sceneTextureWriteCache;
 
     // Cubemap water pass: dedicated pipeline (swapchain color format so it can
     // render into the solid 360 cube faces; the main water geometry pipeline
