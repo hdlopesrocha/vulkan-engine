@@ -12,6 +12,7 @@
 #include "../../utils/FileReader.hpp"
 #include "../../math/Vertex.hpp"
 #include <backends/imgui_impl_vulkan.h>
+#include <cassert>
 #include <stdexcept>
 #include <fstream>
 #include <limits>
@@ -341,110 +342,6 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     beginShadowRendering(commandBuffer, cascadeIndex);
 }
 
-void ShadowRenderer::beginShadowPassAll(VulkanApp* app, VkCommandBuffer commandBuffer) {
-    // Frame graph: node "shadow-pre" (sampled layouts after the previous
-    // frame) → node "shadow-draw" (attachment layouts). One merged transition
-    // per cascade image, emitted as a SINGLE vkCmdPipelineBarrier2 call (6
-    // image barriers, 1 call instead of 3 beginShadowPass calls). Resources
-    // already in the target layout resolve to no-ops inside the same call.
-    RendererUtils::FrameGraph fg;
-    uint32_t pre  = fg.addPass("shadow-pre");
-    uint32_t draw = fg.addPass("shadow-draw");
-    for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
-        auto& cas = cascades[c];
-
-        RendererUtils::FrameGraphResourceAccess colorPre{};
-        colorPre.image   = cas.colorImage;
-        colorPre.format  = EVSM_FORMAT;
-        colorPre.layout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        colorPre.access  = VK_ACCESS_2_SHADER_READ_BIT;
-        colorPre.stage   = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        colorPre.isWrite = false;
-        fg.addAccess(pre, colorPre);
-        RendererUtils::FrameGraphResourceAccess colorDraw = colorPre;
-        colorDraw.layout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorDraw.access  = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        colorDraw.stage   = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        colorDraw.isWrite = true;
-        fg.addAccess(draw, colorDraw);
-
-        RendererUtils::FrameGraphResourceAccess depthPre{};
-        depthPre.image   = cas.depthImage;
-        depthPre.format  = VK_FORMAT_D32_SFLOAT;
-        depthPre.layout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        depthPre.access  = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-        depthPre.stage   = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        depthPre.isWrite = false;
-        fg.addAccess(pre, depthPre);
-        RendererUtils::FrameGraphResourceAccess depthDraw = depthPre;
-        depthDraw.layout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        depthDraw.access  = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-        depthDraw.stage   = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        depthDraw.isWrite = true;
-        fg.addAccess(draw, depthDraw);
-    }
-    fg.emitMergedBarriers(commandBuffer, app);
-
-    // Authoritative tracking (mirrors per-cascade beginShadowPass).
-    for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
-        auto& cas = cascades[c];
-        app->setImageLayoutTracked(cas.colorImage, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
-        app->setImageLayoutTracked(cas.depthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-        cascadeDepthLayouts[c] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    }
-}
-
-void ShadowRenderer::endShadowPassAll(VulkanApp* app, VkCommandBuffer commandBuffer) {
-    // Frame graph: node "shadow-draw" (attachment layouts) → node
-    // "shadow-post" (sampled layouts for the EVSM blur + main scene). Single
-    // barrier call for all cascades (was: one endShadowPass call per cascade).
-    RendererUtils::FrameGraph fg;
-    uint32_t draw = fg.addPass("shadow-draw");
-    uint32_t post = fg.addPass("shadow-post");
-    for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
-        auto& cas = cascades[c];
-
-        RendererUtils::FrameGraphResourceAccess colorDraw{};
-        colorDraw.image   = cas.colorImage;
-        colorDraw.format  = EVSM_FORMAT;
-        colorDraw.layout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorDraw.access  = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        colorDraw.stage   = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        colorDraw.isWrite = true;
-        fg.addAccess(draw, colorDraw);
-        RendererUtils::FrameGraphResourceAccess colorPost = colorDraw;
-        colorPost.layout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        colorPost.access  = VK_ACCESS_2_SHADER_READ_BIT;
-        colorPost.stage   = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        colorPost.isWrite = false;
-        fg.addAccess(post, colorPost);
-
-        RendererUtils::FrameGraphResourceAccess depthDraw{};
-        depthDraw.image   = cas.depthImage;
-        depthDraw.format  = VK_FORMAT_D32_SFLOAT;
-        depthDraw.layout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        depthDraw.access  = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-        depthDraw.stage   = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        depthDraw.isWrite = true;
-        fg.addAccess(draw, depthDraw);
-        RendererUtils::FrameGraphResourceAccess depthPost = depthDraw;
-        depthPost.layout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        depthPost.access  = VK_ACCESS_2_SHADER_READ_BIT;
-        depthPost.stage   = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        depthPost.isWrite = false;
-        fg.addAccess(post, depthPost);
-    }
-    fg.emitMergedBarriers(commandBuffer, app);
-
-    // Authoritative tracking (mirrors per-cascade endShadowPass).
-    for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
-        auto& cas = cascades[c];
-        app->setImageLayoutTracked(cas.colorImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-        app->setImageLayoutTracked(cas.depthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 0, 1);
-        cascadeDepthLayouts[c] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    }
-}
-
 void ShadowRenderer::beginShadowRendering(VkCommandBuffer commandBuffer, uint32_t cascadeIndex) {
     uint32_t size = shadowMapSizes[cascadeIndex];
     auto& cas = cascades[cascadeIndex];
@@ -721,7 +618,12 @@ void ShadowRenderer::recreateImGuiDescriptors() {
 
 void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
     if (cascadeSetsBuilt_) return;
-    if (shadowDescriptorSets_.empty()) return; // SceneRenderer hasn't wired them yet
+    // Parallel resources are pre-created at init (SceneRenderer calls this
+    // after setShadowDescriptorSets). Missing sets here is a programming
+    // error — there is no serial fallback, so fail loudly instead of
+    // silently running without shadows.
+    if (shadowDescriptorSets_.empty())
+        throw std::runtime_error("ShadowRenderer: shadow descriptor sets not wired before parallel resource build");
     VkDevice device = app->getDevice();
 
     const uint32_t frameCount = static_cast<uint32_t>(
@@ -926,19 +828,21 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
     };
 
     ensureShadowParallelResources(app);
+    // Parallel cascade resources are pre-created at init — there is no serial
+    // fallback. Fail loudly if they are missing.
+    assert(cascadeSetsBuilt_ && "ShadowRenderer: parallel cascade resources not built before renderParallel");
+    if (!cascadeSetsBuilt_)
+        throw std::runtime_error("ShadowRenderer: parallel cascade resources not built");
     const uint32_t f = frameIdx % VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    if (f >= shadowCascadeSets_.size())
+        throw std::runtime_error("ShadowRenderer: frame slot out of range for cascade sets");
+    (void)mainUniformBuffer; // Parallel path uses per-cascade shadowUBO_ slots, never the shared main UBO.
 
-    // Fallback: shadows disabled, or parallel resources not ready / frame slot
-    // out of range → record the whole pass into a single CB and submit honoring
-    // waitSemaphore + finalSignals so downstream passes are never blocked.
-    if (!shadowsEnabled || !cascadeSetsBuilt_ || f >= shadowCascadeSets_.size()) {
+    // Shadows disabled: forward the timeline with an empty CB (waits
+    // waitSemaphore, signals finalSignal) so downstream passes never block.
+    if (!shadowsEnabled) {
         VkCommandBuffer cb = VK_NULL_HANDLE;
         beginOne(cb);
-        if (shadowsEnabled) {
-            this->render(app, cb, frameIdx, mainUniformBuffer, uboStatic,
-                         true, renderSolid, vegetationEnabled, shadowTessellationEnabled,
-                         lodBias, cameraPos, maxTargetLod);
-        }
         app->submitCommandBufferAsyncToQueue(cb, app->getGraphicsQueue(), nullptr,
             { waitSemaphore }, false, { finalSignal }, { waitValue }, 0, { signalValue });
         return;
@@ -968,14 +872,23 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
     app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), nullptr,
         { waitSemaphore }, false, cullDoneSignals, { waitValue });
 
-    // ── 2. Parallel cascade rasterization (one CB per cascade, distinct queue) ──
+    // ── 2. Parallel cascade rasterization (one CB per cascade) ──
+    // Multi-queue: each cascade CB goes to a distinct graphics queue
+    // (app->getCubeQueue) so the 3 depth draws overlap. Single-queue HW
+    // (getCubeQueueCount() == 1): all cascade CBs target the graphics queue.
+    // The CBs are still recorded in parallel; execution serializes via queue
+    // order plus the existing binary-semaphore chain (cull -> cascade[c] ->
+    // blur, one waiter per semaphore), submitted strictly in
+    // signal-before-wait order, so the same DAG stays validation-clean.
+    const bool singleQueue = app->getCubeQueueCount() <= 1;
     std::array<VkCommandBuffer, SHADOW_CASCADE_COUNT> cascadeCmd{};
     for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
         beginOne(cascadeCmd[c]);
         cbState.reset();
         recordCascade(app, cascadeCmd[c], frameIdx, uboStatic, cascadeMatrices[c], c, f,
                       renderSolid, vegetationEnabled, shadowTessellationEnabled, lodBias, cameraPos);
-        app->submitCommandBufferAsyncToQueue(cascadeCmd[c], app->getCubeQueue(c), nullptr,
+        VkQueue cascadeQueue = singleQueue ? app->getGraphicsQueue() : app->getCubeQueue(c);
+        app->submitCommandBufferAsyncToQueue(cascadeCmd[c], cascadeQueue, nullptr,
             { semCullDone_[f][c] }, false, { semCascadeDone_[f][c] });
     }
 
@@ -1002,239 +915,3 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
         cascadeDoneWait, false, { finalSignal }, {}, 0, { signalValue });
 }
 
-void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
-                                      Buffer& mainUniformBuffer, const UniformObject& uboStatic,
-                                      bool shadowsEnabled, bool renderSolid, bool vegetationEnabled,
-                                      bool shadowTessellationEnabled, float lodBias,
-                                      const glm::vec3& cameraPos, int maxTargetLod) {
-    if (commandBuffer == VK_NULL_HANDLE) return;
-    if (!shadowsEnabled) return;
-
-    // Render each cascade: upload light-space UBO, draw scene, restore UBO
-    const glm::mat4 cascadeMatrices[SHADOW_CASCADE_COUNT] = {
-        uboStatic.lightSpaceMatrix,
-        uboStatic.lightSpaceMatrix1,
-        uboStatic.lightSpaceMatrix2
-    };
-
-    // Single cascade-aware GPU culling pass: culls all chunks against all 3
-    // cascade frustums simultaneously.  Each cascade independently receives
-    // every chunk visible in its frustum — no exclusion between cascades —
-    // so the fragment shader's per-cascade sampling always finds the geometry
-    // it needs. The cascade cull reads the per-chunk LoD selection the main
-    // pass stamped into the shared visibleLods buffer (single source of truth),
-    // so shadow draws use the exact same LoD as the main pass.
-    if (solidRenderer_)
-        solidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, cascadeMatrices, /*doCascade=*/true, /*doMain=*/false);
-    // Water shadows share the same LoD sync: the water cascade cull reads the
-    // water main pass's visibleLods (the water prepareCull ran before this
-    // shadow pass, so the selection is fresh for the current frame).
-    if (liquidRenderer_) {
-        liquidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, cascadeMatrices, /*doCascade=*/true, /*doMain=*/false);
-    }
-
-    // Acquire vegetation instance/indirect buffers before dynamic rendering
-    if (vegetationEnabled && vegetationRenderer_) {
-        vegetationRenderer_->recordReadBarriers(commandBuffer);
-        vegetationRenderer_->prepareCullCascades(commandBuffer, cascadeMatrices);
-    }
-
-    // Frame-graph batching: transition ALL cascade color+depth images to
-    // attachment layouts in a single barrier call (was: one barrier call per
-    // cascade inside the loop). The per-cascade draws below share no sampled
-    // inputs from these images (the shadow descriptor set binds a dummy
-    // depth), so drawing all cascades before transitioning back is safe; the
-    // EVSM blurs run after endShadowPassAll, when the images are readable.
-    beginShadowPassAll(app, commandBuffer);
-
-    for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
-        glm::mat4 lsMatrix = cascadeMatrices[c];
-
-        // Upload a shadow-specific UBO: viewProjection = cascade lightSpaceMatrix.
-        // passParams.x MUST be 0 so the TES computes fragPosWorld (needed by the EVSM
-        // fragment shader to produce correct moments).  With passParams.x=1 the TES
-        // outputs fragPosWorld = vec3(0) → EVSM gets garbage depth → no shadows.
-        UniformObject shadowUBO = uboStatic;
-        shadowUBO.viewProjection = lsMatrix;
-        shadowUBO.passParams.x = 0.0f;
-        shadowUBO.passParams.y = shadowTessellationEnabled ? 1.0f : 0.0f;
-
-        // Wait for previous cascade draws to finish reading the UBO
-        // before overwriting it via vkCmdCopyBuffer.
-        {
-            VkBufferMemoryBarrier2 preBarrier{};
-            preBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-            preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-            preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            preBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            preBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            preBarrier.buffer = mainUniformBuffer.buffer;
-            preBarrier.offset = 0;
-            preBarrier.size = VK_WHOLE_SIZE;
-            VkDependencyInfo depInfo{};
-            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            depInfo.bufferMemoryBarrierCount = 1;
-            depInfo.pBufferMemoryBarriers = &preBarrier;
-            vkCmdPipelineBarrier2(commandBuffer, &depInfo);
-            RendererUtils::BarrierStats::noteBarrier(0);
-        }
-
-        // Upload shadow UBO via vkCmdCopyBuffer from persistently mapped staging
-        // buffer (avoids vkCmdUpdateBuffer's implicit FULL_QUEUE barrier).
-        VkDeviceSize stagingOff = static_cast<VkDeviceSize>(c) * sizeof(UniformObject);
-        if (frameIdx < uboStagingBuffers_.size()) {
-            memcpy(uboStagingBuffers_[frameIdx].map(stagingOff), &shadowUBO, sizeof(UniformObject));
-            VkBufferCopy copy{ stagingOff, 0, sizeof(UniformObject) };
-            vkCmdCopyBuffer(commandBuffer, uboStagingBuffers_[frameIdx].buffer, mainUniformBuffer.buffer, 1, &copy);
-        }
-        {
-            VkBufferMemoryBarrier2 memBarrier{};
-            memBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-            memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            memBarrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-            memBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            memBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            memBarrier.buffer = mainUniformBuffer.buffer;
-            memBarrier.offset = 0;
-            memBarrier.size = VK_WHOLE_SIZE;
-            VkDependencyInfo depInfo{};
-            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            depInfo.bufferMemoryBarrierCount = 1;
-            depInfo.pBufferMemoryBarriers = &memBarrier;
-            vkCmdPipelineBarrier2(commandBuffer, &depInfo);
-            RendererUtils::BarrierStats::noteBarrier(0);
-        }
-
-        // Cascade-specific draw (no per-cascade cull — already handled above).
-        // Barrier-free: beginShadowPassAll/endShadowPassAll bracket the loop.
-        beginShadowRendering(commandBuffer, c);
-
-        // Bind shadow descriptor set (uses dummy depth at bindings 4,8,9)
-        VkPipelineLayout layout = getShadowPipelineLayout();
-        VkDescriptorSet ds = VK_NULL_HANDLE;
-        if (!shadowDescriptorSets_.empty()) {
-            uint32_t idx = frameIdx % static_cast<uint32_t>(shadowDescriptorSets_.size());
-            ds = shadowDescriptorSets_[idx];
-        }
-        if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
-            if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, layout, 0, 1, &ds, 0, nullptr);
-            else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
-        }
-
-        // Bind the EVSM shadow pipeline (shared by the solid and water depth
-        // draws; both use the same Vertex format and indexed-indirect draws).
-        VkPipeline solidShadowPipeline = getShadowPipeline();
-        if (solidShadowPipeline != VK_NULL_HANDLE) {
-            if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, solidShadowPipeline);
-            else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowPipeline);
-        }
-
-        // Draw solid geometry into shadow map (can be toggled off to isolate
-        // vegetation shadows for debugging).
-        if (renderSolid && solidRenderer_) {
-            auto& shadowIR = solidRenderer_->getIndirectRenderer();
-            shadowIR.bindBuffers(commandBuffer);
-            shadowIR.drawCascadeOnly(commandBuffer, c);
-        }
-
-        // Draw water geometry into the shadow map so water casts shadows at the
-        // same LoD as the main pass (the water cascade cull read the shared
-        // visibleLods selection). Reuses the same EVSM shadow pipeline.
-        if (liquidRenderer_) {
-            auto& waterShadowIR = liquidRenderer_->getIndirectRenderer();
-            waterShadowIR.bindBuffers(commandBuffer);
-            waterShadowIR.drawCascadeOnly(commandBuffer, c);
-        }
-
-        // Vegetation shadow pass: drawn after solid so its 2-buffer vertex
-        // bindings don't leak into the solid draw. Uses cascade-aware culling
-        // (prepareCullCascades dispatched above).
-        if (vegetationEnabled && vegetationRenderer_) {
-            const glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
-            vegetationRenderer_->drawShadowCascade(app, commandBuffer, ds, camPos, c);
-        }
-
-        endShadowRendering(commandBuffer);
-    }
-
-    // Single batched transition of all cascades back to sampled layouts (was:
-    // one endShadowPass barrier call per cascade).
-    endShadowPassAll(app, commandBuffer);
-
-    // Apply separable Gaussian blur (EVSM moment filtering) to reduce noise.
-    // Skip the smallest cascade: at 512x512 the 3-tap blur is barely visible
-    // and skipping it saves two fullscreen draws plus layout transitions.
-    // Runs after endShadowPassAll so every cascade is sampled coherently.
-    for (int c = 0; c < SHADOW_CASCADE_COUNT - 1; ++c) {
-        blurCascade(app, commandBuffer, c);
-    }
-
-    // Restore GPU culling for the main camera frustum (was overwritten by
-    // per-cascade prepareCull calls above) so drawPrepared in the main pass
-    // uses the correct visible set.
-    if (solidRenderer_)
-        solidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
-    if (brushRenderer_) {
-        brushRenderer_->getSolidIR().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
-    }
-    // Restore the water main-view cull too: the cascade cull above ran
-    // prepareCull on the liquid IR with doMain=false, which zeroes its
-    // compact/count buffers without re-emitting main-view commands. Without
-    // this re-dispatch the water pass's drawPrepared reads count=0 (no water).
-    if (liquidRenderer_) {
-        liquidRenderer_->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, nullptr, /*doCascade=*/false, /*doMain=*/true, false, 0, 1);
-    }
-
-    // Restore the main UBO so subsequent passes see the original data.
-    // Wait for all shadow cascade draws to finish reading the UBO first.
-    {
-        VkBufferMemoryBarrier2 preBarrier{};
-        preBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-        preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        preBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        preBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        preBarrier.buffer = mainUniformBuffer.buffer;
-        preBarrier.offset = 0;
-        preBarrier.size = VK_WHOLE_SIZE;
-        VkDependencyInfo depInfo{};
-        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 1;
-        depInfo.pBufferMemoryBarriers = &preBarrier;
-        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
-        RendererUtils::BarrierStats::noteBarrier(0);
-    }
-
-    // Restore main UBO via vkCmdCopyBuffer from persistently mapped staging buffer.
-    VkDeviceSize restoreOff = static_cast<VkDeviceSize>(SHADOW_CASCADE_COUNT) * sizeof(UniformObject);
-    if (frameIdx < uboStagingBuffers_.size()) {
-        memcpy(uboStagingBuffers_[frameIdx].map(restoreOff), &uboStatic, sizeof(UniformObject));
-        VkBufferCopy copy{ restoreOff, 0, sizeof(UniformObject) };
-        vkCmdCopyBuffer(commandBuffer, uboStagingBuffers_[frameIdx].buffer, mainUniformBuffer.buffer, 1, &copy);
-    }
-    {
-        VkBufferMemoryBarrier2 memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-        memBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        memBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        memBarrier.buffer = mainUniformBuffer.buffer;
-        memBarrier.offset = 0;
-        memBarrier.size = VK_WHOLE_SIZE;
-        VkDependencyInfo depInfo{};
-        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 1;
-        depInfo.pBufferMemoryBarriers = &memBarrier;
-        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
-        RendererUtils::BarrierStats::noteBarrier(0);
-    }
-}

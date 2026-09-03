@@ -653,8 +653,12 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     }
     // Shadow descriptor set handles are stable after init (subsequent writes
     // only update them in place), so ShadowRenderer can cache them once.
+    // Pre-create all parallel cascade resources now (UBOs, cascade descriptor
+    // sets, internal semaphores) so renderParallel never falls back — it
+    // asserts cascadeSetsBuilt_ on every frame.
     if (shadowMapper) {
         shadowMapper->setShadowDescriptorSets(shadowDescriptorSets);
+        shadowMapper->ensureShadowParallelResources(app);
     }
 
     // Register listener so we update the main descriptor set when texture arrays are allocated later

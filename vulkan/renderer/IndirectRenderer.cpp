@@ -1088,7 +1088,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // solid cascade streams (doCascade). The vegetation cascade cull
     // (doVegCascade=true, doCascade=false) runs as a SEPARATE later dispatch on
     // this same renderer inside the shadow cull command buffer (see
-    // ShadowRenderer::render/renderParallel -> VegetationRenderer::
+    // ShadowRenderer::renderParallel -> VegetationRenderer::
     // prepareCullCascades); zeroing the solid cascade streams there would wipe
     // the streams the solid cascade cull just filled, and since that dispatch
     // runs with pc.doCascade=0 they are never refilled — drawCascadeOnly then
