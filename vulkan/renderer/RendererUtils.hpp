@@ -83,6 +83,10 @@ struct FullscreenPipelineOpts {
     VkCompareOp    depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
     uint32_t       colorAttachmentCount = 1;
     bool           blendEnable      = false;
+    // VK_EXT_descriptor_buffer: when true the pipeline is created with
+    // VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT (VUID-vkCmdDraw-None-08117
+    // requires it for vkCmdSetDescriptorBufferOffsetsEXT binds).
+    bool           descriptorBuffer = false;
 };
 
 // Build a simple graphics pipeline with no vertex-input state and dynamic
@@ -148,6 +152,7 @@ inline VkPipeline buildFullscreenPipeline(
 
     VkGraphicsPipelineCreateInfo pi{};
     pi.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pi.flags               = opts.descriptorBuffer ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0;
     pi.stageCount          = static_cast<uint32_t>(stages.size());
     pi.pStages             = stages.data();
     pi.pVertexInputState   = &vi;

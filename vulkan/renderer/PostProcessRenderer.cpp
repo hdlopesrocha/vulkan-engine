@@ -18,16 +18,27 @@ PostProcessRenderer::~PostProcessRenderer() {}
 
 void PostProcessRenderer::init(VulkanApp* app) {
     createSampler(app);
-    createPipeline(app);
-    createDescriptorSets(app);
 
-    // Create uniform buffer for post-process UBO
+    // Create uniform buffer for post-process UBO BEFORE descriptors: the
+    // descriptor-buffer path stores its device address (binding 5) once via
+    // vkGetDescriptorEXT, so the buffer needs SHADER_DEVICE_ADDRESS_BIT and
+    // must exist before createDescriptorBuffers().
+    VkBufferUsageFlags uboUsage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    if (app->useDescriptorBuffer())
+        uboUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     uniformBuffer = app->createBuffer(sizeof(WaterUBO),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        uboUsage,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    createPipeline(app);
+    if (app->useDescriptorBuffer())
+        createDescriptorBuffers(app);
+    else
+        createDescriptorSets(app);
 }
 
 void PostProcessRenderer::cleanup(VulkanApp* app) {
+    destroyDescriptorBuffers(app);
     uniformBuffer = {};
 }
 
@@ -111,9 +122,23 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     bindings[14].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     DescriptorAllocator descAlloc{device, app};
+    // Descriptor-buffer path: the layout must carry DESCRIPTOR_BUFFER_BIT_EXT
+    // (VUID-requires it for vkGetDescriptorSetLayoutSizeEXT /
+    // vkGetDescriptorSetLayoutBindingOffsetEXT and for
+    // vkCmdSetDescriptorBufferOffsetsEXT binds). It must NOT be combined with
+    // UPDATE_AFTER_BIND_POOL_BIT (VUID-flags-08002); host-written descriptor
+    // memory needs no update-after-bind. Classic fallback keeps the original
+    // UPDATE_AFTER_BIND flag for in-flight vkUpdateDescriptorSets writes.
+#ifndef VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT
+#define VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT 0x00000010
+#endif
+    VkDescriptorSetLayoutCreateFlags layoutFlags =
+        app->useDescriptorBuffer()
+            ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT
+            : VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     descriptorSetLayout = descAlloc.createLayout(
         bindings.data(), static_cast<uint32_t>(bindings.size()),
-        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        layoutFlags,
         nullptr,
         "PostProcessRenderer: descriptorSetLayout");
 
@@ -137,10 +162,14 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, "main", nullptr},
     };
 
-    // No vertex input (fullscreen triangle generated in shader)
+    // No vertex input (fullscreen triangle generated in shader).
+    // DB path: the pipeline must carry DESCRIPTOR_BUFFER_BIT_EXT, otherwise
+    // vkCmdDraw with a bound descriptor buffer fails VUID-vkCmdDraw-None-08117.
+    RendererUtils::FullscreenPipelineOpts pipeOpts{};
+    pipeOpts.descriptorBuffer = app->useDescriptorBuffer();
     pipeline = RendererUtils::buildFullscreenPipeline(
         device, app, app->getSwapchainImageFormat(), VK_FORMAT_D32_SFLOAT, pipelineLayout, stages,
-        RendererUtils::FullscreenPipelineOpts{}, "PostProcessRenderer: pipeline");
+        pipeOpts, "PostProcessRenderer: pipeline");
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
     vertModule = VK_NULL_HANDLE;
@@ -166,6 +195,131 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     descAlloc.allocateSets(descriptorPool, descriptorSetLayout,
                            FRAMES_IN_FLIGHT, reinterpret_cast<VkDescriptorSet*>(descriptorSets.data()),
                            "PostProcessRenderer: descriptorSet");
+}
+
+// ─── Descriptor Buffers (VK_EXT_descriptor_buffer, Phase 2) ────────────────
+// 3 buffers (one per frame slot). Layout = descriptorSetLayout (15 bindings:
+// 14 images + 1 UBO). Static bindings 0-4, 6-14 are stable per frame slot;
+// binding 5 holds the UBO device address (written once — per-frame UBO
+// contents stream via memcpy into uniformBuffer, no descriptor update).
+
+void PostProcessRenderer::createDescriptorBuffers(VulkanApp* app) {
+    destroyDescriptorBuffers(app);
+    if (!app || !app->useDescriptorBuffer()) return;
+    if (!app->fpGetDescriptorSetLayoutSizeEXT || !app->fpGetDescriptorSetLayoutBindingOffsetEXT ||
+        !app->fpGetDescriptorEXT)
+        return;
+    if (descriptorSetLayout == VK_NULL_HANDLE) return;
+
+    VkDevice device = app->getDevice();
+    VkDeviceSize rawSize = 0;
+    app->fpGetDescriptorSetLayoutSizeEXT(device, descriptorSetLayout, &rawSize);
+    VkDeviceSize align = static_cast<VkDeviceSize>(app->descriptorBufferProps.descriptorBufferOffsetAlignment);
+    if (align == 0) align = 1;
+    VkDeviceSize setSize = (rawSize + align - 1) & ~(align - 1);
+    if (setSize == 0) return;
+
+    for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i) {
+        Buffer b = app->createBuffer(setSize,
+            VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (b.buffer == VK_NULL_HANDLE || b.mappedData == nullptr) {
+            destroyDescriptorBuffers(app);
+            return;
+        }
+        VkBufferDeviceAddressInfo addrInfo{};
+        addrInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        addrInfo.buffer = b.buffer;
+        VkDeviceAddress addr = vkGetBufferDeviceAddress(device, &addrInfo);
+        if (addr == 0) {
+            app->destroyBuffer(b);
+            destroyDescriptorBuffers(app);
+            return;
+        }
+        descBuffers_[i] = b;
+        descAddresses_[i] = addr;
+    }
+    for (uint32_t binding = 0; binding < 15; ++binding) {
+        VkDeviceSize off = 0;
+        app->fpGetDescriptorSetLayoutBindingOffsetEXT(device, descriptorSetLayout, binding, &off);
+        descBindingOffsets_[binding] = off;
+    }
+    descSetSize_ = setSize;
+    descReady_ = true;
+    printf("[PostProcessRenderer] descriptor buffers: %u frames x %llu bytes\n",
+           FRAMES_IN_FLIGHT, (unsigned long long)setSize);
+}
+
+void PostProcessRenderer::destroyDescriptorBuffers(VulkanApp* app) {
+    bool any = false;
+    for (auto& b : descBuffers_) {
+        if (b.buffer != VK_NULL_HANDLE) { any = true; break; }
+    }
+    if (!any) {
+        descAddresses_.fill(0);
+        descBindingOffsets_.fill(0);
+        descSetSize_ = 0;
+        descReady_ = false;
+        return;
+    }
+    if (app) {
+        for (auto& b : descBuffers_) {
+            if (b.buffer != VK_NULL_HANDLE) app->destroyBuffer(b);
+            else b = {};
+        }
+    } else {
+        for (auto& b : descBuffers_) b = {};
+    }
+    descAddresses_.fill(0);
+    descBindingOffsets_.fill(0);
+    descSetSize_ = 0;
+    descReady_ = false;
+}
+
+bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t slot,
+                                    const std::array<VkDescriptorImageInfo, 15>& imageInfos,
+                                    const VkDescriptorImageInfo& skyImageInfo,
+                                    const VkDescriptorBufferInfo& bufferInfo) {
+    if (!app || !descReady_ || slot >= FRAMES_IN_FLIGHT) return false;
+    if (!app->fpGetDescriptorEXT) return false;
+    Buffer& dst = descBuffers_[slot];
+    if (dst.buffer == VK_NULL_HANDLE || dst.mappedData == nullptr) return false;
+    const auto& props = app->descriptorBufferProps;
+    const size_t align = props.descriptorBufferOffsetAlignment ? props.descriptorBufferOffsetAlignment : 1;
+    DescriptorBuffer view(app->getDevice(), app->fpGetDescriptorEXT,
+                          app->fpGetDescriptorSetLayoutBindingOffsetEXT,
+                          dst.mappedData, static_cast<size_t>(descSetSize_), align);
+    const size_t imgSize = props.combinedImageSamplerDescriptorSize;
+    const size_t uboSize = props.uniformBufferDescriptorSize;
+    bool ok = true;
+    auto wImg = [&](uint32_t binding, const VkDescriptorImageInfo& info) {
+        if (info.imageView == VK_NULL_HANDLE || info.sampler == VK_NULL_HANDLE) return;
+        if (!view.writeImage(static_cast<size_t>(descBindingOffsets_[binding]),
+                             imgSize, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                             info.sampler, info.imageView, info.imageLayout))
+            ok = false;
+    };
+    // Static image bindings 0-4, 6-14 (binding 6 = sky).
+    for (uint32_t i = 0; i <= 4; ++i) wImg(i, imageInfos[i]);
+    wImg(6, skyImageInfo);
+    wImg(7, imageInfos[7]);
+    wImg(8, imageInfos[8]);
+    wImg(9, imageInfos[9]);
+    wImg(10, imageInfos[10]);
+    wImg(11, imageInfos[11]);
+    wImg(12, imageInfos[12]);
+    wImg(13, imageInfos[13]);
+    wImg(14, imageInfos[14]);
+    // Dynamic binding 5 (UBO): address written once per slot; contents stream
+    // via memcpy. vkGetDescriptorEXT forbids VK_WHOLE_SIZE, so the exact range
+    // is passed.
+    if (bufferInfo.buffer != VK_NULL_HANDLE && bufferInfo.range != VK_WHOLE_SIZE && bufferInfo.range != 0) {
+        if (!view.writeBuffer(static_cast<size_t>(descBindingOffsets_[5]),
+                              uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                              bufferInfo.buffer, bufferInfo.offset, bufferInfo.range))
+            ok = false;
+    }
+    return ok;
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
@@ -263,20 +417,12 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     const uint32_t slot = frameIdx % FRAMES_IN_FLIGHT;
-    VkDescriptorSet currentDs = descriptorSets[slot];
+    const bool useDescBuf = app->useDescriptorBuffer() && descReady_;
 
-    // Per-frame descriptor write cache (fallback path — see the header note).
-    // The offscreen target views/samplers bound here are stable per frame slot,
-    // so the descriptor writes are skipped whenever the full set of inputs
-    // (image view/sampler/layout per binding + UBO) is identical to what the
-    // slot already holds — steady state issues 0 vkUpdateDescriptorSets calls
-    // in the render loop (verified via DescriptorUpdateStats). Per-frame UBO
-    // contents stream via mapped memcpy above into the already-bound buffer.
-    // We only skip when ALL inputs match — any difference (including a binding
-    // that goes NULL) still rewrites, so a skipped write can never leave a
-    // stale descriptor behind. `valid` starts false, so the first frame always
-    // writes. With descriptor buffers this branch becomes host-side
-    // vkGetDescriptorEXT writes (no driver call at all).
+    // Per-frame-slot signature: offscreen views are stable per slot, so writes
+    // are skipped while every input matches — steady state issues 0 descriptor
+    // updates. UBO contents stream via mapped memcpy above. `valid` starts
+    // false, so the first frame always writes.
     FrameDescriptorSignature sig;
     for (int i = 0; i < 15; ++i) {
         if (i == 5) continue; // binding 5 is the UBO, stored separately below
@@ -292,6 +438,21 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     sig.uboRange = bufferInfo.range;
 
     FrameDescriptorSignature& cached = descriptorWriteCache[slot];
+    // Descriptor-buffer path: cache miss = host vkGetDescriptorEXT writes into
+    // the slot's descriptor buffer (no vkUpdateDescriptorSets, no validation).
+    // Static bindings 0-4, 6-14 are stable per slot; binding 5 (UBO address)
+    // is written once and its contents stream via memcpy.
+    if (useDescBuf) {
+        if (!cached.valid || !cached.matches(sig)) {
+            cached = sig;
+            cached.valid = true;
+            if (!writeSlotToDescriptorBuffer(app, slot, imageInfos, skyImageInfo, bufferInfo)) {
+                std::cerr << "[PostProcessRenderer] descriptor-buffer write failed for slot "
+                          << slot << std::endl;
+            }
+        }
+    } else {
+    VkDescriptorSet currentDs = descriptorSets[slot];
     if (!cached.valid || !cached.matches(sig)) {
         cached = sig;
         cached.valid = true;
@@ -370,6 +531,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
 
         writer.flush();
     }
+    } // end classic fallback
 
     // Set viewport and scissor (safe to call inside already-open dynamic rendering scope)
     VkViewport viewport{};
@@ -386,12 +548,33 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     scissor.extent = {renderWidth, renderHeight};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    // Bind pipeline and descriptor set
+    // Bind pipeline and descriptors.
+    // DB path: single vkCmdBindDescriptorBuffersEXT +
+    // vkCmdSetDescriptorBufferOffsetsEXT per frame (no sets, no pool).
+    // Classic path: vkCmdBindDescriptorSets with the per-slot set.
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 1, &currentDs, 0, nullptr);
-    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
-                            0, 1, &currentDs, 0, nullptr);
+    if (useDescBuf) {
+        // Documented barrier: descriptor-buffer host writes are host-visible +
+        // coherent, and this bind runs on the same queue after the writes, so
+        // no explicit barrier is needed (same serialization as the classic
+        // writes this path mirrors, never concurrent with GPU reads of the
+        // same slot: slot = frameIdx % FRAMES_IN_FLIGHT).
+        VkDescriptorBufferBindingInfoEXT bindInfo{};
+        bindInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+        bindInfo.address = descAddresses_[slot];
+        bindInfo.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+        app->fpCmdBindDescriptorBuffersEXT(cmd, 1, &bindInfo);
+        const uint32_t bufferIndex = 0;
+        const VkDeviceSize setOffset = 0;
+        app->fpCmdSetDescriptorBufferOffsetsEXT(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                                pipelineLayout, 0, 1, &bufferIndex, &setOffset);
+    } else {
+        VkDescriptorSet currentDs = descriptorSets[slot];
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 1, &currentDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+                                0, 1, &currentDs, 0, nullptr);
+    }
 
     // Draw fullscreen triangle (3 vertices, no vertex buffer needed)
     vkCmdDraw(cmd, 3, 1, 0, 0);
