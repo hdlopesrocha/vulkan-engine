@@ -257,23 +257,38 @@ void main() {
 
     // Environment reflection (360° cubemap) — skipped during cubemap capture
     // (ubo.materialFlags.x is set to 1.0 by the 360 async task to avoid feedback).
+    // Physical model: Schlick Fresnel with a dielectric F0 (0.04) scaled by the
+    // per-material reflectionStrength, plus roughness-driven cubemap LOD so
+    // rough surfaces sample the blurred mips generated each frame by the 360
+    // pass instead of a razor-sharp mirror image. The final mix below is
+    // energy-conserving: lit*(1-k) + env*k with k = strength*Fresnel, so a
+    // strength of 1 gives ~4% reflectance at normal incidence and a full
+    // mirror only at grazing angles.
     vec3 envReflection = vec3(0.0);
     float blendedRefStrength = 0.0;
+    float envFresnelFactor = 0.0;
     if (ubo.materialFlags.x < 0.5) {
         float refStrength0 = materials[texIndices.x].tessLevelParams.z;
         float refStrength1 = materials[texIndices.y].tessLevelParams.z;
         float refStrength2 = materials[texIndices.z].tessLevelParams.z;
         blendedRefStrength = refStrength0 * w.x + refStrength1 * w.y + refStrength2 * w.z;
-        // Skip the cubemap fetch on non-reflective surfaces (the result is
-        // multiplied by zero and mix() later collapses to the lit colour).
+        // Skip the cubemap fetch on non-reflective surfaces (the mix factor
+        // below collapses to zero, leaving the lit colour untouched).
         if (blendedRefStrength > 1e-4) {
+            vec3 reflN = normalize(worldNormal);
+            vec3 reflV = normalize(viewDir);
+            float cosTheta = clamp(dot(reflN, reflV), 0.0, 1.0);
+            float fresnel = 0.04 + 0.96 * pow(1.0 - cosTheta, 5.0);
+            float rough = clamp(roughnessValue * roughnessFactor, 0.0, 1.0);
+            // CUBE360_MIP_LEVELS - 1 == 4: fully rough samples the smallest mip.
+            float envLod = rough * 4.0;
             vec3 envReflectDir = reflect(viewDir, worldNormal);
-            vec3 envColor = texture(environmentMap, normalize(envReflectDir)).rgb;
-            // Full-strength environment reflection at all angles
-            float envBlend = 1.0;
-            envReflection = envColor * envBlend * blendedRefStrength;
-            // Apply global AO and roughness to environment reflection
-            envReflection *= aoBlend * (1.0 - roughnessValue * roughnessFactor);
+            vec3 envColor = textureLod(environmentMap, normalize(envReflectDir), envLod).rgb;
+            // AO darkens the reflected environment; roughness softens (via the
+            // LOD above) and mildly dims it instead of killing it outright.
+            envColor *= aoBlend * (1.0 - rough * 0.5);
+            envReflection = envColor;
+            envFresnelFactor = clamp(blendedRefStrength * fresnel, 0.0, 1.0);
         }
     }
 
@@ -542,15 +557,17 @@ void main() {
         return;
     }
     if (debugMode == 49) {
-        // Environment reflection factor — shows the cubemap sample shaded by
-        // Fresnel and per-material reflectionStrength (pre-multiplied).
-        outColor = vec4(envReflection, 1.0);
+        // Environment reflection contribution — the cubemap sample weighted
+        // by the Fresnel factor actually mixed into the final colour.
+        outColor = vec4(envReflection * envFresnelFactor, 1.0);
         return;
     }
 
-    // Blend between lit color and environment reflection.
-    // reflectionStrength=0 → lit color only, =1 → pure mirror.
-    vec3 finalColor = mix(ambient + diffuse + specular, envReflection, blendedRefStrength);
+    // Energy-conserving blend between lit color and environment reflection.
+    // reflectionStrength=0 → lit color only; =1 → physical Fresnel mirror
+    // (~4% at normal incidence, full mirror at grazing angles).
+    vec3 litColor = ambient + diffuse + specular;
+    vec3 finalColor = mix(litColor, envReflection, envFresnelFactor);
 
     // REMOVE mode: smoothly fade between red tint and brush texture at 1Hz
     if (brushRedFade > 0.0) {

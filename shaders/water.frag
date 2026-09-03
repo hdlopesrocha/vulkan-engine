@@ -226,6 +226,12 @@ void main() {
         // (same sign convention the reflection lookup below relies on).
         vec3 sampleDir = -refractDir;
 
+        // Depth-softened refraction LOD: thicker water columns and stronger
+        // volume blur sample deeper (blurrier) mips of the environment cube,
+        // approximating volumetric scattering that a single sharp fetch
+        // cannot reproduce. Range 0..4 matches CUBE360_MIP_LEVELS - 1.
+        float refrLod = clamp(waterThickness * 0.02 + blurRadius * 0.15 * volumeBlurFactor, 0.0, 4.0);
+
         vec3 cubeColor;
         // Optional box blur of the refracted cubemap. The original screen-space
         // blur sampled neighbouring texels around refractedUV; the cubemap path
@@ -240,13 +246,13 @@ void main() {
             for (int bx = -halfK; bx <= halfK; ++bx) {
                 for (int by = -halfK; by <= halfK; ++by) {
                     vec3 jittered = normalize(sampleDir + T * float(bx) * angularStep + B * float(by) * angularStep);
-                    acc += texture(sceneSkyCube, jittered).rgb;
+                    acc += textureLod(sceneSkyCube, jittered, refrLod).rgb;
                     weight += 1.0;
                 }
             }
             cubeColor = acc / max(weight, 1.0);
         } else {
-            cubeColor = texture(sceneSkyCube, sampleDir).rgb;
+            cubeColor = textureLod(sceneSkyCube, sampleDir, refrLod).rgb;
         }
         sceneColor = cubeColor;
     }
@@ -271,8 +277,12 @@ void main() {
     float depthFade = 1.0 - exp(-depthDiff * depthFalloff);
     
     // === FRESNEL EFFECT ===
-    float fresnel = pow(1.0 - max(dot(viewDir, normal), 0.0), fresnelPower);
-    fresnel = clamp(fresnel, 0.0, 1.0);
+    // Schlick approximation anchored at the physical air->water base
+    // reflectance F0 = 0.02: looking straight down reflects ~2% of the
+    // environment, grazing angles approach a full mirror. fresnelPower
+    // (default 5 = standard Schlick) shapes the transition curve.
+    float fresnelCurve = pow(1.0 - max(dot(viewDir, normal), 0.0), clamp(fresnelPower, 1.0, 8.0));
+    float fresnel = clamp(0.02 + 0.98 * fresnelCurve, 0.0, 1.0);
     
     // === SPECULAR LIGHTING (Perlin noise-based) ===
     vec3 halfDir = normalize(lightDir + viewDir);
@@ -300,7 +310,11 @@ void main() {
     // to land on the correct face — same convention as main.frag's environmentMap.
     vec3 reflectDir = reflect(viewDir, normal);
 
-    vec3 skyColor = texture(sceneSkyCube, reflectDir).rgb;
+    // Wind-roughened water blurs its mirror image: drive the cubemap LOD from
+    // the user blur radius so calm water stays sharp while rough water
+    // samples the smaller mips generated each frame by the 360 pass.
+    float reflLod = clamp(blurRadius * 0.15, 0.0, 4.0);
+    vec3 skyColor = textureLod(sceneSkyCube, reflectDir, reflLod).rgb;
 
     // Uniform reflection toggle: when set, apply reflectionStrength uniformly
     // instead of modulating by Fresnel. This flag is stored in reserved2.w

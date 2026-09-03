@@ -23,6 +23,42 @@ void Solid360Renderer::init(VulkanApp* app) {
         }
     }
     stagingFrameIndex = 0;
+
+    // Dedicated environment-cubemap sampler (created once for the app
+    // lifetime): trilinear mip filtering so roughness-driven LOD in the
+    // shaders actually blurs reflections, clamp-to-edge (correct for
+    // cubemaps — repeat would seam), and anisotropy when supported to keep
+    // grazing-angle reflections sharp instead of shimmering. maxLod matches
+    // CUBE360_MIP_LEVELS - 1 (the shared linear sampler this used to alias
+    // has maxLod == 0, which would pin every cubemap fetch to mip 0 and
+    // defeat all roughness blur).
+    if (!cubeSamplerOwned_ && app) {
+        VkSamplerCreateInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter = VK_FILTER_LINEAR;
+        si.minFilter = VK_FILTER_LINEAR;
+        si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.mipLodBias = 0.0f;
+        si.minLod = 0.0f;
+        si.maxLod = static_cast<float>(CUBE360_MIP_LEVELS - 1);
+        si.compareEnable = VK_FALSE;
+        si.unnormalizedCoordinates = VK_FALSE;
+        si.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(app->getPhysicalDevice(), &props);
+        if (props.limits.maxSamplerAnisotropy > 1.0f) {
+            si.anisotropyEnable = VK_TRUE;
+            si.maxAnisotropy = std::min(8.0f, props.limits.maxSamplerAnisotropy);
+        } else {
+            si.anisotropyEnable = VK_FALSE;
+            si.maxAnisotropy = 1.0f;
+        }
+        solid360Sampler = app->createSampler(si, "Solid360Renderer: cube sampler");
+        cubeSamplerOwned_ = (solid360Sampler != VK_NULL_HANDLE);
+    }
 }
 
 void Solid360Renderer::cleanup(VulkanApp* app) {
@@ -47,6 +83,12 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
         if (cullQueryPool != VK_NULL_HANDLE) {
             vkDestroyQueryPool(dev, cullQueryPool, nullptr);
             cullQueryPool = VK_NULL_HANDLE;
+        }
+        if (cubeSamplerOwned_ && solid360Sampler != VK_NULL_HANDLE) {
+            app->resources.removeSampler(solid360Sampler);
+            vkDestroySampler(dev, solid360Sampler, nullptr);
+            solid360Sampler = VK_NULL_HANDLE;
+            cubeSamplerOwned_ = false;
         }
     }
     for (uint32_t i = 0; i < STAGING_FRAMES; ++i) {
@@ -76,15 +118,16 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSam
 
     auto createView = [&](VkImage image, VkFormat format, VkImageAspectFlags aspect,
                            VkImageViewType viewType, uint32_t baseLayer, uint32_t layerCount,
-                           VkImageView& view, const char* name) {
+                           VkImageView& view, const char* name,
+                           uint32_t baseMip = 0, uint32_t levelCount = 1) {
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image = image;
         viewInfo.viewType = viewType;
         viewInfo.format = format;
         viewInfo.subresourceRange.aspectMask = aspect;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseMipLevel = baseMip;
+        viewInfo.subresourceRange.levelCount = levelCount;
         viewInfo.subresourceRange.baseArrayLayer = baseLayer;
         viewInfo.subresourceRange.layerCount = layerCount;
         if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS)
@@ -92,18 +135,30 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSam
         app->resources.addImageView(view, name);
     };
 
-    // --- 1. Cubemap color image (6 layers) ---
+    // Mip generation needs linear blitting on this format; without it the
+    // shaders must sample mip 0 only (still correct, just sharper).
+    {
+        VkFormatProperties fp{};
+        vkGetPhysicalDeviceFormatProperties(app->getPhysicalDevice(), colorFormat, &fp);
+        cubeMipmapsSupported_ = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+    }
+    const uint32_t mipLevels = cubeMipmapsSupported_ ? CUBE360_MIP_LEVELS : 1u;
+
+    // --- 1. Cubemap color image (6 layers, mip-chained for roughness LOD) ---
     {
         VkImageCreateInfo imgInfo{};
         imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imgInfo.imageType = VK_IMAGE_TYPE_2D;
         imgInfo.format = colorFormat;
         imgInfo.extent = {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE, 1};
-        imgInfo.mipLevels = 1;
+        imgInfo.mipLevels = mipLevels;
         imgInfo.arrayLayers = 6;
         imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imgInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        // TRANSFER bits feed the per-face blit mip generation recorded in
+        // render() after each face finishes rasterizing mip 0.
+        imgInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         imgInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         allocImage(imgInfo, cube360ColorImage, cube360ColorAllocation, cube360ColorMemory);
@@ -127,13 +182,21 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSam
                    cube360FaceViews[face], "Solid360Renderer: cube360 face view");
     }
 
-    // Create a cube-type view so shaders can sample the entire cubemap directly
+    // Create a cube-type view spanning the full mip chain so shaders can
+    // sample the entire cubemap with roughness-driven LOD directly
     createView(cube360ColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT,
                VK_IMAGE_VIEW_TYPE_CUBE, 0, 6,
-               cube360CubeView, "Solid360Renderer: cube360 cube view");
+               cube360CubeView, "Solid360Renderer: cube360 cube view",
+               0, mipLevels);
 
-    // Keep the sampler used for solid 360 sampling, which must be clamp-to-edge.
-    solid360Sampler = linearSampler;
+    // Prefer the dedicated trilinear/anisotropic cube sampler created in
+    // init(). Fall back to the caller's linear sampler only if init() never
+    // ran (defensive; init() is always called from SceneRenderer::init).
+    // NOTE: never overwrite an owned sampler here — this function runs on
+    // every swapchain resize and must not leak samplers.
+    if (!cubeSamplerOwned_) {
+        solid360Sampler = linearSampler;
+    }
 
     // --- 2. Depth image with per-face layers (one layer per cubemap face) ---
     {
@@ -193,7 +256,11 @@ void Solid360Renderer::destroySolid360Targets(VulkanApp* app) {
     cube360ColorMemory = VK_NULL_HANDLE;
     for (auto& v : cube360FaceViews) v = VK_NULL_HANDLE;
     cube360CubeView = VK_NULL_HANDLE;
-    solid360Sampler = VK_NULL_HANDLE;
+    // The dedicated cube sampler (when owned) survives target recreation —
+    // only drop the fallback alias to the caller's shared sampler.
+    if (!cubeSamplerOwned_) {
+        solid360Sampler = VK_NULL_HANDLE;
+    }
     cube360DepthImage = VK_NULL_HANDLE;
     cube360DepthAllocation = VK_NULL_HANDLE;
     cube360DepthMemory = VK_NULL_HANDLE;
@@ -736,23 +803,13 @@ void Solid360Renderer::render(VulkanApp* app,
                 faceRes.waterCompact[face], faceRes.waterVisible[face]);
         }
 
-        // Batched per-face end barriers (single vkCmdPipelineBarrier2 for this
-        // face's color + depth layers → SHADER_READ_ONLY_OPTIMAL; was: one
-        // call per image) so the downstream water/composite passes can sample
-        // this cubemap layer once the join semaphore fires. Each layer is a
-        // distinct image subresource, so the 6 transitions stay safe to run
+        // Per-face end barriers so the downstream water/composite passes can
+        // sample this cubemap layer once the join semaphore fires. Each layer
+        // is a distinct image subresource, so the 6 faces stay safe to run
         // concurrently on different queues.
+        // Depth goes straight to SHADER_READ_ONLY_OPTIMAL via the batched
+        // helper (keeps the app's layout tracker authoritative for depth).
         if (app) {
-            std::vector<VulkanApp::BatchTransition> endBatch;
-            endBatch.reserve(2);
-            VulkanApp::BatchTransition colorEnd{};
-            colorEnd.image          = cube360ColorImage;
-            colorEnd.format         = app->getSwapchainImageFormat();
-            colorEnd.oldLayout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorEnd.newLayout      = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            colorEnd.baseArrayLayer = face;
-            colorEnd.layerCount     = 1;
-            endBatch.push_back(colorEnd);
             VulkanApp::BatchTransition depthEnd{};
             depthEnd.image          = cube360DepthImage;
             depthEnd.format         = VK_FORMAT_D32_SFLOAT;
@@ -760,8 +817,117 @@ void Solid360Renderer::render(VulkanApp* app,
             depthEnd.newLayout      = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             depthEnd.baseArrayLayer = face;
             depthEnd.layerCount     = 1;
-            endBatch.push_back(depthEnd);
-            app->recordTransitionBatch(fcmd, endBatch);
+            app->recordTransitionBatch(fcmd, { depthEnd });
+        }
+        // Color mip 0 is blit-downsampled into mips 1..N-1 right here in the
+        // face's own command buffer (distinct array layer per face → no cross-
+        // face hazard), ending with every mip in SHADER_READ_ONLY_OPTIMAL.
+        // Without this, roughness-driven textureLod() in the shaders would
+        // have no mip chain to sample and reflections would stay razor sharp
+        // on every material. When the format cannot be linearly blitted,
+        // fall back to a plain mip-0 transition (still correct).
+        if (app && cubeMipmapsSupported_) {
+            const uint32_t mips = CUBE360_MIP_LEVELS;
+            auto barrierMip = [&](uint32_t mip, VkImageLayout oldL, VkImageLayout newL,
+                                  VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                                  VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
+                VkImageMemoryBarrier2 b{};
+                b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                b.image = cube360ColorImage;
+                b.oldLayout = oldL;
+                b.newLayout = newL;
+                b.srcStageMask = srcStage;
+                b.srcAccessMask = srcAccess;
+                b.dstStageMask = dstStage;
+                b.dstAccessMask = dstAccess;
+                b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                b.subresourceRange.baseMipLevel = mip;
+                b.subresourceRange.levelCount = 1;
+                b.subresourceRange.baseArrayLayer = face;
+                b.subresourceRange.layerCount = 1;
+                VkDependencyInfo dep{};
+                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.imageMemoryBarrierCount = 1;
+                dep.pImageMemoryBarriers = &b;
+                vkCmdPipelineBarrier2(fcmd, &dep);
+            };
+            // Why COLOR_ATTACHMENT → TRANSFER_SRC: the blit below reads mip 0
+            // as its source, and TRANSFER_SRC_OPTIMAL is the only layout that
+            // guarantees transfer-read visibility of attachment writes.
+            barrierMip(0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+            int32_t w = static_cast<int32_t>(CUBE360_FACE_SIZE);
+            int32_t h = static_cast<int32_t>(CUBE360_FACE_SIZE);
+            for (uint32_t i = 1; i < mips; ++i) {
+                // Why UNDEFINED as oldLayout: mip contents are fully
+                // overwritten by the blit, and UNDEFINED is a wildcard that is
+                // valid regardless of the layout the mip was left in last
+                // frame (SHADER_READ) or before first use (UNDEFINED).
+                barrierMip(i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                VkImageBlit blit{};
+                blit.srcOffsets[0] = {0, 0, 0};
+                blit.srcOffsets[1] = {w, h, 1};
+                blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                blit.srcSubresource.mipLevel = i - 1;
+                blit.srcSubresource.baseArrayLayer = face;
+                blit.srcSubresource.layerCount = 1;
+                blit.dstOffsets[0] = {0, 0, 0};
+                blit.dstOffsets[1] = {std::max(1, w / 2), std::max(1, h / 2), 1};
+                blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                blit.dstSubresource.mipLevel = i;
+                blit.dstSubresource.baseArrayLayer = face;
+                blit.dstSubresource.layerCount = 1;
+                vkCmdBlitImage(fcmd,
+                               cube360ColorImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               cube360ColorImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               1, &blit, VK_FILTER_LINEAR);
+                // The just-consumed source mip is no longer needed downstream:
+                // release it to SHADER_READ so later passes can sample it.
+                // The final mip instead goes DST → SHADER_READ after the loop.
+                if (i < mips - 1) {
+                    // Why TRANSFER_SRC → TRANSFER_SRC is NOT used: mip i must
+                    // become a blit SOURCE for the next iteration, so it goes
+                    // DST → SRC here; mip i-1 goes SRC → SHADER_READ.
+                    barrierMip(i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                }
+                barrierMip(i - 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+                if (w > 1) w /= 2;
+                if (h > 1) h /= 2;
+            }
+            // Last mip was never promoted to SRC: DST → SHADER_READ.
+            barrierMip(mips - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+            // Manual barriers bypass the app's layout tracker, so re-sync both
+            // of its channels (same pattern as SolidRenderer::endPass):
+            // - the authoritative map, so later record calls resolve the
+            //   correct oldLayout for mip 0;
+            // - this command buffer's pending queue, so submit-time
+            //   preApplyPendingLayoutsBeforeSubmit promotes SHADER_READ
+            //   instead of the stale COLOR_ATTACHMENT left by beginBatch.
+            //   Without the pending entry the next frame's beginBatch skips
+            //   its SHADER_READ → COLOR_ATTACHMENT barrier as a no-op and the
+            //   face renders into a SHADER_READ image (VUID-vkCmdDraw-None-09600).
+            app->setImageLayoutTracked(cube360ColorImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, face, 1);
+            app->recordTrackedLayoutForCommandBuffer(fcmd, cube360ColorImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, face, 1);
+        } else if (app) {
+            VulkanApp::BatchTransition colorEnd{};
+            colorEnd.image          = cube360ColorImage;
+            colorEnd.format         = app->getSwapchainImageFormat();
+            colorEnd.oldLayout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorEnd.newLayout      = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            colorEnd.baseArrayLayer = face;
+            colorEnd.layerCount     = 1;
+            app->recordTransitionBatch(fcmd, { colorEnd });
         }
         cube360ColorLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

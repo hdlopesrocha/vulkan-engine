@@ -102,6 +102,22 @@ public:
 private:
     WaterRenderer* waterRenderer = nullptr;
     static constexpr uint32_t CUBE360_FACE_SIZE = 512;
+    // Mip chain for the environment cubemap. Base mip (0) is the render
+    // target; mips 1..N-1 are generated each frame via blit and sampled with
+    // roughness-driven LOD so rough surfaces get blurry (realistic) rather
+    // than mirror-sharp reflections. 5 levels (512 -> 32) is enough blur
+    // range while keeping the per-frame blit cost trivial (6 faces x 4 blits).
+    static constexpr uint32_t CUBE360_MIP_LEVELS = 5;
+    // True once the dedicated cubemap sampler has been created in init().
+    // The sampler is owned by the Vulkan resource manager (like the other
+    // renderers' samplers) and lives for the app lifetime — it is NOT
+    // recreated on swapchain resize, so createSolid360Targets() never leaks
+    // samplers by re-creating it.
+    bool cubeSamplerOwned_ = false;
+    // False when the swapchain color format cannot be linearly blitted
+    // (checked per format in createSolid360Targets); mip generation is then
+    // skipped and shaders fall back to mip-0 sampling (still correct).
+    bool cubeMipmapsSupported_ = true;
 
     // Gate so the static bindings 0..9 of each cube360 face compute set are written
     // exactly once. They point at scene buffers plus the per-face compact/visible

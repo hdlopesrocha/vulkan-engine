@@ -761,8 +761,17 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
     imageInfos[0].imageView = backFaceDepthView;
     imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Cubemap (binding 1) — real solid360 cube view only.
-    imageInfos[1].sampler = linearSampler;
+    // Cubemap (binding 1) — real solid360 cube view only. Prefer the
+    // solid360 renderer's dedicated trilinear/anisotropic cube sampler so
+    // roughness-driven LOD actually filters across the new mip chain; the
+    // shared linear sampler pins maxLod == 0 (mip 0 only). Falls back to the
+    // shared sampler if the 360 renderer is not attached yet.
+    VkSampler cubeSampler = linearSampler;
+    if (solid360Renderer_ != nullptr) {
+        VkSampler dedicated = solid360Renderer_->getSolid360Sampler();
+        if (dedicated != VK_NULL_HANDLE) cubeSampler = dedicated;
+    }
+    imageInfos[1].sampler = cubeSampler;
     imageInfos[1].imageView = finalCubeView;
     imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
