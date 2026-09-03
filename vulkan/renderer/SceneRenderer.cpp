@@ -254,10 +254,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // Initialize the async streaming orchestrator. It is now the real transfer
     // engine: solid/water incremental chunk uploads route through it (K
-    // concurrent staging slots, no per-frame cap) instead of the single-slot
-    // IndirectRenderer pendingTransfer path. slotSize = chunkVertexBytes +
-    // chunkIndexBytes; a chunk mesh larger than one slot falls back to the
-    // renderer's legacy ring-backed staging path automatically.
+    // concurrent staging slots, no per-frame cap). slotSize = chunkVertexBytes +
+    // chunkIndexBytes; oversized batches are automatically split across multiple
+    // slots by IndirectRenderer::uploadMeshesBatched().
     streamer.init(app,
                   /*chunkVertexBytes*/ 1u << 20,
                   /*chunkIndexBytes*/  1u << 20,

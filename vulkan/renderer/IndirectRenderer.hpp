@@ -45,18 +45,18 @@ public:
         void setDirty(bool value) { dirty = value; }
     // Upload vertex and index data for a single mesh (coalesced into one transfer)
     bool uploadMesh(VulkanApp* app, uint32_t meshId);
-    // Upload vertex and index data for a batch of meshes in a single staging
-    // buffer / command buffer submission.  Coalescing amortizes submission
-    // overhead and removes the per-chunk fence stall that serialized chunk
-    // uploads when processed one-by-one (see perf_report).
+    // Upload vertex and index data for a batch of meshes. Splits the batch across
+    // multiple UploadManager slots when the total size exceeds the per-slot limit.
+    // Requires UploadManager to be set via setUploadManager().
     bool uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds, float priority = 0.0f);
+    // Internal batched upload implementation (splits across slots).
+    bool uploadMeshesBatched(const std::vector<uint32_t>& meshIds, float priority);
 
     // Route incremental per-mesh GPU copies through the shared async
-    // UploadManager (the real transfer engine) instead of the single-slot
-    // pendingTransfer path. When set, uploadMeshes()/uploadMesh() enqueue an
-    // UploadJob (no per-frame cap, K concurrent staging slots) and publish each
-    // mesh's indirect/bounds meta entry when its own transfer retires. Passing
-    // nullptr restores the legacy staging-ring path.
+    // UploadManager (the real transfer engine). uploadMeshes()/uploadMesh()
+    // enqueue an UploadJob (no per-frame cap, K concurrent staging slots) and
+    // publish each mesh's indirect/bounds meta entry when its own transfer
+    // retires. Requires UploadManager to be set; nullptr is not allowed.
     void setUploadManager(streaming::UploadManager* mgr, streaming::StreamCategory category) {
         uploadMgr_ = mgr;
         streamCategory_ = category;
@@ -221,7 +221,11 @@ public:
     // the results (update meta-buffers, etc.).  Call once per frame
     // before acquireBuffers so deferred publications are visible to
     // the current frame's draws.
-    void pollPendingTransfers(VulkanApp* app);
+    void pollPendingTransfers(VulkanApp* app) {
+        // No-op: all mesh uploads now go through UploadManager which handles
+        // completion via its own onComplete callbacks.
+        (void)app;
+    }
 
     // Acquire vertex/index buffers from the transfer queue. Must be called once
     // per frame before draws. Records a buffer memory barrier with no QFO
@@ -411,18 +415,7 @@ private:
     // LocalScene::maxChunkLod). Used as lodMeta.z in the GPU band test.
     int maxLodLevel_ = 16;
 
-    struct PendingTransfer {
-        VkFence fence = VK_NULL_HANDLE;
-        // Staging region suballocated from the app's persistent StagingRingBuffer
-        // (preferred). When the ring cannot satisfy the request we fall back to a
-        // dedicated staging buffer stored in `stagingBuffer`.
-        StagingRingBuffer::Allocation stagingAlloc = {};
-        Buffer stagingBuffer = {};
-    };
-    PendingTransfer pendingTransfer = {};
-
     mutable std::recursive_mutex mutex;
-    void publishPendingTransfer(VulkanApp* app);
     // Unlocked variant — caller must hold mutex.
     void doUploadMeshMetaBuffers(VulkanApp* app);
     // Publish ONE mesh's indirect command + bounds at its current drawIndex.
@@ -443,8 +436,7 @@ private:
     // mergedVertices/mergedIndices (absolute offsets). Requires slotted mode.
     void copyGeometryToLevel(const Geometry& mesh, MeshInfo::LevelData& ld);
 
-    // Async transfer engine (optional). When non-null, uploadMeshes routes
-    // through it instead of the single-slot pendingTransfer path.
+    // Async transfer engine (required). All mesh uploads route through it.
     streaming::UploadManager* uploadMgr_ = nullptr;
     streaming::StreamCategory streamCategory_ = streaming::StreamCategory::Solid;
 
@@ -667,7 +659,7 @@ private:
     struct MetaStageRecord {
         uint32_t entryIndex = 0;
         VkDrawIndexedIndirectCommand cmd{};
-        glm::vec4 bounds[3] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
+        glm::vec4 bounds[4] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
         bool boundsValid = false;
     };
     std::array<std::vector<MetaStageRecord>, MAX_CULL_FRAMES> metaStagePending_;

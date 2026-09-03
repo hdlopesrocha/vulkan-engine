@@ -80,54 +80,6 @@ uint32_t IndirectRenderer::getCullDispatchCountLocked() const {
     return static_cast<uint32_t>(activeMeshCountLocked());
 }
 
-void IndirectRenderer::publishPendingTransfer(VulkanApp* app) {
-    if (pendingTransfer.fence == VK_NULL_HANDLE) return;
-    VkDevice dev = app->getDevice();
-
-    // processPendingCommandBuffers owns the fence lifecycle — it will
-    // free the command buffer and destroy the fence once signaled.
-    // If the fence is no longer tracked, the work is already done.
-    if (app->resources.find((uintptr_t)pendingTransfer.fence).has_value()) {
-        VulkanApp::waitFence(dev, pendingTransfer.fence);
-    }
-    // Meta-buffers (indirect/draw-count) are append-only: a new mesh's
-    // entry is only written once.  Calling doUploadMeshMetaBuffers
-    // after the vertex/index data lands on the GPU is safe even when
-    // earlier entries were written in a prior upload.
-    doUploadMeshMetaBuffers(app);
-
-    // Release the staging region. For the ring-backed path this returns the
-    // suballocated region to the persistent StagingRingBuffer (no vkFreeMemory);
-    // for the fallback path the dedicated staging buffer is destroyed.
-    if (pendingTransfer.stagingAlloc.mappedPtr) {
-        app->stagingRing.release(pendingTransfer.stagingAlloc);
-        pendingTransfer.stagingAlloc = {};
-    }
-    if (pendingTransfer.stagingBuffer.buffer != VK_NULL_HANDLE) {
-        app->resources.removeBufferVma(pendingTransfer.stagingBuffer.buffer, pendingTransfer.stagingBuffer.allocation);
-        pendingTransfer.stagingBuffer = {};
-    }
-
-    // Do NOT destroy the fence — processPendingCommandBuffers handles it.
-    pendingTransfer = {};
-}
-
-void IndirectRenderer::pollPendingTransfers(VulkanApp* app) {
-    if (pendingTransfer.fence == VK_NULL_HANDLE) return;
-    VkDevice dev = app->getDevice();
-    // If processPendingCommandBuffers already cleaned up the fence, the
-    // transfer is done — skip vkGetFenceStatus on the destroyed handle.
-    if (!app->resources.find((uintptr_t)pendingTransfer.fence).has_value()) {
-        std::lock_guard<std::recursive_mutex> lock(mutex);
-        publishPendingTransfer(app);
-        return;
-    }
-    VkResult r = vkGetFenceStatus(dev, pendingTransfer.fence);
-    if (r == VK_NOT_READY) return;
-    std::lock_guard<std::recursive_mutex> lock(mutex);
-    publishPendingTransfer(app);
-}
-
 void IndirectRenderer::syncHostBuffersToGPU() {
     std::lock_guard<std::recursive_mutex> lock(mutex);
     if (!slottedMode) {
@@ -452,6 +404,19 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
     std::lock_guard<std::recursive_mutex> guard(mutex);
     if (meshIds.empty()) return true;
 
+    if (!uploadMgr_) {
+        std::cerr << "[IndirectRenderer] uploadMeshes: UploadManager not set — all mesh uploads must go through UploadManager\n";
+        return false;
+    }
+
+    return uploadMeshesBatched(meshIds, priority);
+}
+
+// Splits a batch of mesh uploads across multiple UploadManager slots when the
+// total staging size exceeds the per-slot capacity. Each slot gets its own
+// UploadJob with its own onComplete callback that publishes the mesh meta
+// entries for that slot's subset of meshes.
+bool IndirectRenderer::uploadMeshesBatched(const std::vector<uint32_t>& meshIds, float priority) {
     // Per-mesh copy request gathered before any GPU work is recorded.
     struct Req {
         uint32_t meshId;
@@ -460,8 +425,6 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
         VkDeviceSize vertexSize;
         VkDeviceSize indexOffset;
         VkDeviceSize indexSize;
-        VkDeviceSize stagingVertexOffset;
-        VkDeviceSize stagingIndexOffset;
         bool doVertex;
         bool doIndex;
     };
@@ -556,41 +519,44 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
         if (doVertexUpload) anyVertex = true;
         if (doIndexUpload) anyIndex = true;
 
-        // Direct memcpy to HOST_VISIBLE staging buffer, then vkCmdCopyBuffer
-        // to device-local vertex/index buffers. Device-local memory is
-        // required because HOST_VISIBLE pages on RADV iGPU lack TCP-read
-        // permission in the GPU page table.
         if (doVertexUpload || doIndexUpload) {
             VkDeviceSize stagingSize = (doVertexUpload ? vertexSize : 0)
                                      + (doIndexUpload  ? indexSize  : 0);
             totalStaging += stagingSize;
             reqs.push_back({meshId, meshVertexCount, vertexOffset, vertexSize,
-                            indexOffset, indexSize, 0, 0, doVertexUpload, doIndexUpload});
+                            indexOffset, indexSize, doVertexUpload, doIndexUpload});
         }
     }
 
     if (reqs.empty()) return true;
 
-    // --- Async UploadManager path -------------------------------------------
-    // When an UploadManager is wired in, route the copies through it: the whole
-    // validated batch is packaged as a single UploadJob (vertex + index slices)
-    // and streamed via one of K concurrent staging slots. This removes the
-    // single in-flight pendingTransfer slot (and its vkWaitForFences stall in
-    // publishPendingTransfer) that serialized incremental uploads. Each mesh's
-    // indirect/bounds meta entry is published individually when the transfer
-    // retires (per-mesh, since manager transfers may complete out of order).
-    // If the batch would not fit in one staging slot we fall through to the
-    // legacy ring-backed path, which allocates a right-sized staging buffer.
-    if (uploadMgr_ && totalStaging <= uploadMgr_->slotSize()) {
+    const VkDeviceSize slotSize = uploadMgr_->slotSize();
+    size_t start = 0;
+
+    while (start < reqs.size()) {
+        // Accumulate reqs for this slot until we hit the slot size limit.
+        VkDeviceSize slotStaging = 0;
+        size_t end = start;
+        for (; end < reqs.size(); ++end) {
+            const Req& r = reqs[end];
+            VkDeviceSize reqSize = (r.doVertex ? r.vertexSize : 0) + (r.doIndex ? r.indexSize : 0);
+            if (slotStaging + reqSize > slotSize && end > start) {
+                break; // This req would overflow the slot; start a new one.
+            }
+            slotStaging += reqSize;
+        }
+
+        // Build the UploadJob for reqs[start..end).
         streaming::UploadJob job;
         job.category  = streamCategory_;
         job.priority  = priority;
-        job.chunkSlot = nullptr;   // merged buffers are owned by this renderer
-        job.uploads.reserve(reqs.size() * 2);
+        job.chunkSlot = nullptr;
+        job.uploads.reserve((end - start) * 2);
 
         std::vector<uint32_t> batchIds;
-        batchIds.reserve(reqs.size());
-        for (auto& r : reqs) {
+        batchIds.reserve(end - start);
+        for (size_t i = start; i < end; ++i) {
+            const Req& r = reqs[i];
             if (r.doVertex) {
                 streaming::BufferUpload bu;
                 bu.dst       = vertexBuffer;
@@ -616,116 +582,9 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
         };
 
         uploadMgr_->enqueue(std::move(job));
-        return true;
+        start = end;
     }
 
-    // Suballocate the staging region from the app's persistent StagingRingBuffer
-    // (persistently-mapped, avoids a per-chunk vkAllocateMemory + map + free).
-    // Fall back to a dedicated host-visible staging buffer only if the ring is
-    // exhausted or fragmented.
-    StagingRingBuffer::Allocation stagingAlloc = app->stagingRing.allocate(totalStaging);
-    Buffer stagingFallback;
-    void* mapped = nullptr;
-    VkBuffer stagingVk = VK_NULL_HANDLE;
-    VkDeviceSize stagingBase = 0;
-    if (stagingAlloc.mappedPtr) {
-        mapped = stagingAlloc.mappedPtr;
-        stagingVk = app->stagingRing.buffer();
-        stagingBase = stagingAlloc.offset;
-    } else {
-        stagingFallback = app->createBuffer(totalStaging,
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        mapped = stagingFallback.map(0);
-        stagingVk = stagingFallback.buffer;
-        stagingBase = 0;
-    }
-    VkDeviceSize off = 0;
-    for (auto& r : reqs) {
-        if (r.doVertex) {
-            r.stagingVertexOffset = off;
-            std::memcpy(static_cast<char*>(mapped) + off, &mergedVertices[meshes[r.meshId].baseVertex], r.vertexSize);
-            off += r.vertexSize;
-        }
-        if (r.doIndex) {
-            r.stagingIndexOffset = off;
-            std::memcpy(static_cast<char*>(mapped) + off, &mergedIndices[meshes[r.meshId].firstIndex], r.indexSize);
-            off += r.indexSize;
-        }
-    }
-    if (stagingFallback.buffer != VK_NULL_HANDLE) {
-        stagingFallback.unmap(); // VMA persistent mapping
-    }
-
-    // Submit the staging→device-local copies asynchronously and defer the
-    // meta-buffer write until the fence signals. The whole batch is coalesced
-    // into a single command buffer, so one fence covers every mesh's copy:
-    // when it signals, all vertex/index data has landed and publishing the
-    // (append-only) meta-buffer entries for the batch is safe.  The meta-buffer
-    // (indirect + bounds) is append-only, so publishing it later is safe:
-    // in-flight draws that already reference earlier offsets still see valid data.
-    // Publishing the previous batch first avoids overwriting its single
-    // in-flight staging buffer / fence slot.
-    if (pendingTransfer.fence != VK_NULL_HANDLE) {
-        publishPendingTransfer(app);
-    }
-    pendingTransfer.fence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
-        // Barrier: prior vertex/index reads must complete before the transfers
-        // write to those buffers. A single barrier per destination buffer (the
-        // whole buffer) covers every disjoint copy in this batch.
-        // srcStageMask must be ALL_COMMANDS: sync validation attributes a
-        // draw's vertex-attribute reads to the whole pipeline span (TESS_EVAL,
-        // GEOMETRY, FRAGMENT, COLOR_ATTACHMENT_OUTPUT, ... — observed for the
-        // tessellated solid pipeline), so VERTEX_INPUT alone leaves the copy
-        // unsynchronized against those reads (SYNC-HAZARD-WRITE-AFTER-READ).
-        VkBufferMemoryBarrier2 vb{};
-        vb.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        vb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        vb.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
-        vb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        vb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vb.offset = 0;
-        vb.size = VK_WHOLE_SIZE;
-        if (anyVertex) {
-            vb.srcAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
-            vb.buffer = vertexBuffer.buffer;
-
-            VkDependencyInfo depInfo{};
-            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            depInfo.bufferMemoryBarrierCount = 1;
-            depInfo.pBufferMemoryBarriers = &vb;
-            vkCmdPipelineBarrier2(cmd, &depInfo);
-        }
-        if (anyIndex) {
-            vb.srcAccessMask = VK_ACCESS_2_INDEX_READ_BIT;
-            vb.buffer = indexBuffer.buffer;
-
-            VkDependencyInfo depInfo{};
-            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            depInfo.bufferMemoryBarrierCount = 1;
-            depInfo.pBufferMemoryBarriers = &vb;
-            vkCmdPipelineBarrier2(cmd, &depInfo);
-        }
-        for (auto& r : reqs) {
-            if (r.doVertex) {
-                VkBufferCopy vCopy{};
-                vCopy.srcOffset = stagingBase + r.stagingVertexOffset;
-                vCopy.dstOffset = r.vertexOffset;
-                vCopy.size = r.vertexSize;
-                vkCmdCopyBuffer(cmd, stagingVk, vertexBuffer.buffer, 1, &vCopy);
-            }
-            if (r.doIndex) {
-                VkBufferCopy iCopy{};
-                iCopy.srcOffset = stagingBase + r.stagingIndexOffset;
-                iCopy.dstOffset = r.indexOffset;
-                iCopy.size = r.indexSize;
-                vkCmdCopyBuffer(cmd, stagingVk, indexBuffer.buffer, 1, &iCopy);
-            }
-        }
-    });
-    pendingTransfer.stagingAlloc = stagingAlloc;
-    pendingTransfer.stagingBuffer = stagingFallback;
     return true;
 }
 
@@ -743,7 +602,7 @@ bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
     if (!uploadMeshes(app, std::vector<uint32_t>{meshId})) {
         return false;
     }
-    // uploadMeshMetaBuffers deferred until pendingTransfer fence signals.
+    // uploadMeshMetaBuffers deferred until UploadJob's onComplete fires.
     return true;
 }
 
@@ -920,8 +779,8 @@ void IndirectRenderer::flushStagedMetaWrites(VkCommandBuffer cmd, uint32_t frame
         vkCmdCopyBuffer(cmd, sbuf.buffer, indirectBuffer.buffer, 1, &c);
         if (rec.boundsValid && boundsBuffer.buffer != VK_NULL_HANDLE) {
             c.srcOffset = recOffset + offsetof(MetaStageRecord, bounds);
-            c.dstOffset = static_cast<VkDeviceSize>(rec.entryIndex) * 3 * sizeof(glm::vec4);
-            c.size = 3 * sizeof(glm::vec4);
+            c.dstOffset = static_cast<VkDeviceSize>(rec.entryIndex) * 4 * sizeof(glm::vec4);
+            c.size = 4 * sizeof(glm::vec4);
             vkCmdCopyBuffer(cmd, sbuf.buffer, boundsBuffer.buffer, 1, &c);
         }
     }
@@ -947,7 +806,11 @@ void IndirectRenderer::publishMeshMeta(uint32_t meshId) {
     const auto& cmd = indirectCommands[i];
     info.indirectOffset = cmdOffset;
 
-    glm::vec4 bounds[3] = { info.boundsMin, info.boundsMax, glm::vec4(0.0f) };
+    const float cellSize = info.boundsMax.x - info.boundsMin.x;
+    const glm::vec4 lodMeta = glm::vec4(cellSize,
+                                        static_cast<float>(info.level_.level),
+                                        static_cast<float>(maxLodLevel_), 0.0f);
+    glm::vec4 bounds[4] = { info.boundsMin, info.boundsMax, lodMeta, info.boundsBase };
     stageMeshMetaWrite(static_cast<uint32_t>(i), cmd, bounds, true);
 }
 
@@ -972,11 +835,6 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     if (uploadMgr_) uploadMgr_->flush();
 
     std::lock_guard<std::recursive_mutex> guard(mutex);
-
-    // Publish any pending async upload before rebuilding.
-    if (pendingTransfer.fence != VK_NULL_HANDLE) {
-        publishPendingTransfer(app);
-    }
 
     size_t activeMeshCount = 0;
     for (const auto& kv : meshes) if (kv.second.active) ++activeMeshCount;
@@ -1936,9 +1794,52 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 
     // Flush staged host-side meta writes via GPU copies BEFORE any barrier or
     // dispatch: the copies (TRANSFER_WRITE) are ordered before the cull reads
-    // (SHADER_READ) by the acquireBuffers barrier below, and queue-ordered
-    // after every in-flight frame's reads of the same entries.
+    // (SHADER_READ) by the barrier below, and queue-ordered after every
+    // in-flight frame's reads of the same entries.
     flushStagedMetaWrites(cmd, currentCullFrame);
+
+    // Ensure the TRANSFER_WRITE from flushStagedMetaWrites (vkCmdCopyBuffer to
+    // indirectBuffer and boundsBuffer) is visible to the cull dispatch's
+    // SHADER_READ of those buffers. The acquireBuffers barrier below covers
+    // vertex/index buffers but not the indirect/bounds buffers used as compute
+    // shader inputs (bindings 0 and 2).
+    if (indirectBuffer.buffer != VK_NULL_HANDLE || boundsBuffer.buffer != VK_NULL_HANDLE) {
+        VkBufferMemoryBarrier2 metaBarriers[2] = {};
+        uint32_t metaBarrierCount = 0;
+        if (indirectBuffer.buffer != VK_NULL_HANDLE) {
+            metaBarriers[metaBarrierCount].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            metaBarriers[metaBarrierCount].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            metaBarriers[metaBarrierCount].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            metaBarriers[metaBarrierCount].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            metaBarriers[metaBarrierCount].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            metaBarriers[metaBarrierCount].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            metaBarriers[metaBarrierCount].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            metaBarriers[metaBarrierCount].buffer = indirectBuffer.buffer;
+            metaBarriers[metaBarrierCount].offset = 0;
+            metaBarriers[metaBarrierCount].size = VK_WHOLE_SIZE;
+            metaBarrierCount++;
+        }
+        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+            metaBarriers[metaBarrierCount].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            metaBarriers[metaBarrierCount].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            metaBarriers[metaBarrierCount].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            metaBarriers[metaBarrierCount].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            metaBarriers[metaBarrierCount].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            metaBarriers[metaBarrierCount].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            metaBarriers[metaBarrierCount].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            metaBarriers[metaBarrierCount].buffer = boundsBuffer.buffer;
+            metaBarriers[metaBarrierCount].offset = 0;
+            metaBarriers[metaBarrierCount].size = VK_WHOLE_SIZE;
+            metaBarrierCount++;
+        }
+        if (metaBarrierCount > 0) {
+            VkDependencyInfo depInfo{};
+            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            depInfo.bufferMemoryBarrierCount = metaBarrierCount;
+            depInfo.pBufferMemoryBarriers = metaBarriers;
+            vkCmdPipelineBarrier2(cmd, &depInfo);
+        }
+    }
 
     Buffer& compactBuf = compactIndirectBuffers[currentCullFrame];
     Buffer& visibleCount = visibleCountBuffers[currentCullFrame];
@@ -3888,7 +3789,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
     // entry, and a torn write would be observed as garbage by the cull.
     {
         VkDrawIndexedIndirectCommand zeroCmd{};
-        glm::vec4 zeroBounds[3] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
+        glm::vec4 zeroBounds[4] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
         stageMeshMetaWrite(entryIndex, zeroCmd, zeroBounds, true);
     }
 
@@ -3946,7 +3847,7 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
     // and drops it. Staged (not memcpy'd) so an in-flight cull dispatch never
     // observes a torn entry mid-write.
     VkDrawIndexedIndirectCommand zeroCmd{};
-    glm::vec4 zeroBounds[3] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
+    glm::vec4 zeroBounds[4] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
     if (slotIndex < indirectCommands.size()) {
         indirectCommands[slotIndex] = VkDrawIndexedIndirectCommand{};
     }
