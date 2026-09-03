@@ -240,7 +240,6 @@ void Octree::iterateTriangles(
             OctreeNodeTriangleHandler &func,
             ThreadContext * context,
             int targetLod) const {
-    (void)fromLevel;
     OctreeSharedLock lock(treeMutex);
 
     struct EdgeCell {
