@@ -132,7 +132,8 @@ private:
     uint32_t currentCullFrame = 0;
     bool hasCubes_ = false;
 
-    PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
+    // NOTE: vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 and is
+    // called directly (device creation requires drawIndirectCount).
     VulkanApp* cullApp_ = nullptr; // stashed for buffer (re)allocation
     IndirectRenderer* terrainIR_ = nullptr; // owns the merged SDF cull dispatch
 

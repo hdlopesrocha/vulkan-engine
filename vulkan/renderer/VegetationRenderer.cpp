@@ -514,9 +514,9 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
         VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
         VkDeviceSize offsets[2] = { 0, 0 };
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-        if (cmdDrawIndexedIndirectCount) {
+        {
             uint32_t vegMaxDraws = std::min(vegNumChunks, vegCascadeCompactCapacity);
-            cmdDrawIndexedIndirectCount(commandBuffer,
+            vkCmdDrawIndexedIndirectCount(commandBuffer,
                 vegCascadeCullFrames[f].compactBuffers[cascadeIndex].buffer, 0,
                 vegCascadeCullFrames[f].countBuffers[cascadeIndex].buffer, 0,
                 vegMaxDraws, sizeof(VkDrawIndexedIndirectCommand));
@@ -559,8 +559,8 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
             Buffer& impCountBuf   = vegCascadeCullFrames[f].impostorCountBuffers[cascadeIndex];
             if (impCompactBuf.buffer != VK_NULL_HANDLE && impCountBuf.buffer != VK_NULL_HANDLE) {
                 uint32_t vegMaxImpostorDraws = std::min(vegNumChunks, vegCascadeCompactCapacity);
-                if (cmdDrawIndexedIndirectCount) {
-                    cmdDrawIndexedIndirectCount(commandBuffer,
+                {
+                    vkCmdDrawIndexedIndirectCount(commandBuffer,
                         impCompactBuf.buffer, 0,
                         impCountBuf.buffer, 0,
                         vegMaxImpostorDraws, sizeof(VkDrawIndexedIndirectCommand));
@@ -694,10 +694,8 @@ void VegetationRenderer::init(VulkanApp* app) {
         nullptr,
         "VegetationRenderer: descriptorSetLayout");
 
-    // Load indexed indirect draw function pointer
-    cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(device, "vkCmdDrawIndexedIndirectCountKHR");
-    if (!cmdDrawIndexedIndirectCount)
-        cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(device, "vkCmdDrawIndexedIndirectCount");
+    // vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 — called
+    // directly (see VulkanApp::createLogicalDevice drawIndirectCount check).
 
     // ── Wind params UBO + descriptor set layout (set=2) ────────────────────
     {
@@ -1136,7 +1134,7 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
         VkDeviceSize offsets[2] = { 0, 0 };
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-        cmdDrawIndexedIndirectCount(commandBuffer, compactedCmdBuffers[sf].buffer, 0,
+        vkCmdDrawIndexedIndirectCount(commandBuffer, compactedCmdBuffers[sf].buffer, 0,
         visibleCountBuffers[sf].buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
     }
 
@@ -1520,8 +1518,8 @@ void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLay
         solidIR->getVegBbCompact(f) != VK_NULL_HANDLE && solidIR->getVegBbCount(f) != VK_NULL_HANDLE) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
         vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
-        if (cmdDrawIndexedIndirectCount) {
-            cmdDrawIndexedIndirectCount(cmd, solidIR->getVegBbCompact(f), 0,
+        {
+            vkCmdDrawIndexedIndirectCount(cmd, solidIR->getVegBbCompact(f), 0,
                 solidIR->getVegBbCount(f), 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
         }
     }
@@ -1541,8 +1539,8 @@ void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayou
         // Indirect draw consuming the impostor stream compacted by the merged
         // GPU vegetation cull (solid IndirectRenderer's indirect.comp dispatch).
         uint32_t vegMaxImpostorDraws = std::min(vegNumChunks, vegMainCompactCapacity);
-        if (cmdDrawIndexedIndirectCount) {
-            cmdDrawIndexedIndirectCount(cmd,
+        {
+            vkCmdDrawIndexedIndirectCount(cmd,
                 solidIR->getVegImpCompact(f), 0,
                 solidIR->getVegImpCount(f), 0,
                 vegMaxImpostorDraws, sizeof(VkDrawIndexedIndirectCommand));

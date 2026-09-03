@@ -128,14 +128,8 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
 
 void DebugSDFRenderer::createCullResources(VulkanApp* app) {
     cullApp_ = app;
-
-    cmdDrawIndexedIndirectCount =
-        (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCountKHR");
-    if (!cmdDrawIndexedIndirectCount)
-        cmdDrawIndexedIndirectCount =
-            (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCount");
-    if (!cmdDrawIndexedIndirectCount)
-        throw std::runtime_error("DebugSDFRenderer: vkCmdDrawIndexedIndirectCountKHR not available");
+    // vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 — called
+    // directly (see VulkanApp::createLogicalDevice drawIndirectCount check).
 }
 
 void DebugSDFRenderer::ensureCullCapacity(uint32_t frame, uint32_t cubeCount) {
@@ -365,14 +359,8 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
     // (written into the terrain IR's SDF stream by indirect.comp, count in sdfCount) are drawn.
     // maxDrawCount must bound the SDF *command* buffer (sdfCompactBuf, capacity MAX_SDF_CUBES),
     // NOT the instance buffer capacity (cf.capacity, which holds every AABB and can be larger).
-    if (!cmdDrawIndexedIndirectCount) {
-        vkCmdEndRendering(cmd);
-        app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-        app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-        setSdfColorLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        setSdfDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        return;
-    }
+    // NOTE: vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 (required
+    // at device creation); no null-pointer skip path.
     // maxDrawCount bounds the SDF *command* buffer (capacity MAX_SDF_CUBES), not the
     // instance buffer (cf.capacity, which holds every AABB and may be larger).
     const uint32_t maxSdfDraws = terrainIR_ ? terrainIR_->getMaxSdfCommands() : 8192u;
@@ -410,7 +398,7 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
     dep.pBufferMemoryBarriers = allBarriers.data();
     vkCmdPipelineBarrier2(cmd, &dep);
 
-    cmdDrawIndexedIndirectCount(cmd, sdfCompact, 0, sdfCount, 0,
+    vkCmdDrawIndexedIndirectCount(cmd, sdfCompact, 0, sdfCount, 0,
                                 maxDrawCount, sizeof(VkDrawIndexedIndirectCommand));
 
     vkCmdEndRendering(cmd);

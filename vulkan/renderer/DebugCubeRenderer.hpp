@@ -137,7 +137,8 @@ private:
     // payload (model + color) is still uploaded here, indexed by gl_InstanceIndex.
     IndirectRenderer* terrainIR_ = nullptr;
     uint32_t currentCullFrame = 0;
-    PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
+    // NOTE: vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 and is
+    // called directly (device creation requires drawIndirectCount).
 
     // Offscreen color+depth targets (one per frame in flight) for bounding boxes.
     std::array<VkImage, BBOX_FRAMES> bboxColorImages{};

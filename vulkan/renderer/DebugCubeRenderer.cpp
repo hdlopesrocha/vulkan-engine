@@ -69,10 +69,8 @@ void DebugCubeRenderer::init(VulkanApp* app) {
         std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create pipeline!" << std::endl;
     }
 
-    // Load the indirect-count draw function pointer (required for GPU-culled draws).
-    cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCountKHR");
-    if (!cmdDrawIndexedIndirectCount)
-        cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCount");
+    // vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 — called
+    // directly (see VulkanApp::createLogicalDevice drawIndirectCount check).
 }
 
 void DebugCubeRenderer::createCubeVBO(VulkanApp* app) {
@@ -337,7 +335,7 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
     // bboxCountBuf) are drawn. maxDrawCount bounds the bbox command buffer capacity
     // (MAX_BBOX_CUBES), not the instance buffer. When the IR stream is unavailable we
     // fall back to drawing every box unculled so the debug overlay still works.
-    if (cmdDrawIndexedIndirectCount && terrainIR_ && cubeVBO.indexCount > 0) {
+    if (terrainIR_ && cubeVBO.indexCount > 0) {
         VkBuffer bboxCompact = terrainIR_->getBboxCompactBuffer(currentCullFrame);
         VkBuffer bboxCount   = terrainIR_->getBboxCountBuffer(currentCullFrame);
         if (bboxCompact != VK_NULL_HANDLE && bboxCount != VK_NULL_HANDLE) {
@@ -365,7 +363,7 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
             dep.pBufferMemoryBarriers = bb;
             vkCmdPipelineBarrier2(cmd, &dep);
 
-            cmdDrawIndexedIndirectCount(cmd, bboxCompact, 0, bboxCount, 0,
+            vkCmdDrawIndexedIndirectCount(cmd, bboxCompact, 0, bboxCount, 0,
                                         maxDrawCount, sizeof(VkDrawIndexedIndirectCommand));
             return;
         }
@@ -519,7 +517,7 @@ void DebugCubeRenderer::renderToOffscreen(VulkanApp* app, VkCommandBuffer& cmd, 
         // bboxCount) are drawn. maxDrawCount bounds the bbox command buffer capacity
         // (MAX_BBOX_CUBES), not the instance buffer. When the IR stream is unavailable we
         // fall back to drawing every box unculled so the debug overlay still works.
-        if (cmdDrawIndexedIndirectCount && terrainIR_ && cubeVBO.indexCount > 0) {
+        if (terrainIR_ && cubeVBO.indexCount > 0) {
             VkBuffer bboxCompact = terrainIR_->getBboxCompactBuffer(currentCullFrame);
             VkBuffer bboxCount   = terrainIR_->getBboxCountBuffer(currentCullFrame);
             if (bboxCompact != VK_NULL_HANDLE && bboxCount != VK_NULL_HANDLE) {
@@ -550,7 +548,7 @@ void DebugCubeRenderer::renderToOffscreen(VulkanApp* app, VkCommandBuffer& cmd, 
                 dep.pBufferMemoryBarriers = allBarriers.data();
                 vkCmdPipelineBarrier2(cmd, &dep);
 
-                cmdDrawIndexedIndirectCount(cmd, bboxCompact, 0, bboxCount, 0,
+                vkCmdDrawIndexedIndirectCount(cmd, bboxCompact, 0, bboxCount, 0,
                                             maxDrawCount, sizeof(VkDrawIndexedIndirectCommand));
             } else {
                 // Fall back to unculled draw; still need the host barrier.

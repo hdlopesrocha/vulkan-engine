@@ -135,7 +135,8 @@ public:
     // Camera position is used for distance-based LOD; viewProj is the camera's
     // view-projection for GPU frustum culling (matching solid shadow culling).
     void drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos);
-    PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
+    // NOTE: vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 and is
+    // called directly (device creation requires drawIndirectCount).
 
     // Stats helpers
     size_t getChunkCount() const { return chunkInstanceCounts.size(); }

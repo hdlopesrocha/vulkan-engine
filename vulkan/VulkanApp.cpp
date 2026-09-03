@@ -5391,13 +5391,42 @@ void VulkanApp::pickPhysicalDevice() {
     }
 
     if (physicalDevice == VK_NULL_HANDLE) {
-        throw std::runtime_error("failed to find a suitable GPU!");
+        throw std::runtime_error("failed to find a suitable GPU! (requires Vulkan 1.2+ with "
+                                 "drawIndirectCount for vkCmdDrawIndexedIndirectCount; "
+                                 "Vulkan 1.0/1.1 devices are not supported)");
     }
 }
 
 bool VulkanApp::isDeviceSuitable(VkPhysicalDevice physDevice) {
     QueueFamilyIndices indices = findQueueFamilies(physDevice);
-    return indices.isComplete();
+    if (!indices.isComplete()) return false;
+
+    // Minimum requirement: Vulkan 1.2+ with drawIndirectCount
+    // (vkCmdDrawIndexedIndirectCount is core since 1.2; the KHR
+    // extension entry points are no longer loaded).
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physDevice, &props);
+    const uint32_t major = VK_VERSION_MAJOR(props.apiVersion);
+    const uint32_t minor = VK_VERSION_MINOR(props.apiVersion);
+    const bool is12OrNewer = (major > 1) || (major == 1 && minor >= 2);
+    if (!is12OrNewer) return false;
+
+    VkPhysicalDeviceVulkan12Features f12{};
+    f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    VkPhysicalDeviceFeatures2 f2{};
+    f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    f2.pNext = &f12;
+    vkGetPhysicalDeviceFeatures2(physDevice, &f2);
+    if (f12.drawIndirectCount != VK_TRUE) {
+        // Pre-1.2 fallback: VK_KHR_draw_indirect_count / VK_AMD_draw_indirect_count
+        // would provide the KHR entry point, but the engine calls core
+        // vkCmdDrawIndexedIndirectCount directly, so 1.2+ is mandatory.
+        uint32_t extCount = 0;
+        vkEnumerateDeviceExtensionProperties(physDevice, nullptr, &extCount, nullptr);
+        (void)extCount;
+        return false;
+    }
+    return true;
 }
 
 void VulkanApp::createLogicalDevice() {
@@ -5487,6 +5516,36 @@ void VulkanApp::createLogicalDevice() {
     if (supportedFeatures.multiDrawIndirect) {
         deviceFeatures.multiDrawIndirect = VK_TRUE;
         deviceFeatures.drawIndirectFirstInstance = VK_TRUE;
+    }
+
+    // ── Minimum requirement: Vulkan 1.2 + drawIndirectCount ──────────────
+    // vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2; the engine
+    // calls it directly and no longer loads the KHR/AMD entry points.
+    // Fail cleanly on Vulkan 1.0/1.1 devices with a clear message.
+    {
+        VkPhysicalDeviceProperties verProps{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &verProps);
+        const uint32_t vMajor = VK_VERSION_MAJOR(verProps.apiVersion);
+        const uint32_t vMinor = VK_VERSION_MINOR(verProps.apiVersion);
+        const bool is12OrNewer = (vMajor > 1) || (vMajor == 1 && vMinor >= 2);
+        if (!is12OrNewer) {
+            throw std::runtime_error("Selected GPU only supports Vulkan 1." +
+                std::to_string(vMinor) + ", but Vulkan 1.2+ is required "
+                "(vkCmdDrawIndexedIndirectCount is core since 1.2; "
+                "VK_KHR_draw_indirect_count alone is no longer sufficient).");
+        }
+        VkPhysicalDeviceVulkan12Features supported12{};
+        supported12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        VkPhysicalDeviceFeatures2 supported2{};
+        supported2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        supported2.pNext = &supported12;
+        vkGetPhysicalDeviceFeatures2(physicalDevice, &supported2);
+        if (supported12.drawIndirectCount != VK_TRUE) {
+            throw std::runtime_error("Selected GPU does not support drawIndirectCount, "
+                "but it is required for vkCmdDrawIndexedIndirectCount (core since Vulkan 1.2).");
+        }
+        printf("[VulkanApp] Vulkan %u.%u device — drawIndirectCount supported (core 1.2 path)\n",
+            vMajor, vMinor);
     }
 
     // Enable Vulkan 1.1 shaderDrawParameters for gl_BaseInstanceARB in shaders
