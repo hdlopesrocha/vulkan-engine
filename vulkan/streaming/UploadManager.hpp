@@ -32,7 +32,7 @@ public:
     void init(VulkanApp* app,
               VkDeviceSize chunkVertexBytes,
               VkDeviceSize chunkIndexBytes,
-              uint32_t stagingSlots = 4,
+              uint32_t stagingSlots = 32,
               uint32_t initialChunkSlots = 64);
 
     // Worker threads call this (lock-free push). `job` must reference
@@ -42,9 +42,10 @@ public:
     ChunkBufferPool& chunkPool() { return chunkPool_; }
     const ChunkBufferPool& chunkPool() const { return chunkPool_; }
 
-    // Byte capacity of a single staging slot. A job whose total footprint
-    // exceeds this cannot be serviced and the caller must fall back to its
-    // own (larger) staging path.
+    // Byte capacity of a single staging slot. UploadManager is the ONLY upload
+    // path: a job whose total footprint exceeds this is rejected by the caller
+    // (assert + return false). Size slots to cover the largest chunk
+    // (currently 2 MiB vertex + 2 MiB index = 4 MiB per slot).
     VkDeviceSize slotSize() const { return slotSize_; }
 
     // --- Called once per frame from the render loop -----------------------
@@ -100,7 +101,7 @@ public:
     void init(VulkanApp* app,
               VkDeviceSize chunkVertexBytes,
               VkDeviceSize chunkIndexBytes,
-              uint32_t stagingSlots = 4,
+              uint32_t stagingSlots = 32,
               uint32_t initialChunkSlots = 64,
               uint32_t workersPerCategory = 2);
 

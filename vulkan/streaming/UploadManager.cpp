@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <array>
+#include <cassert>
 #include <cstring>
 
 namespace {
@@ -126,6 +127,18 @@ VkSemaphore UploadManager::makeBinarySemaphore() {
 }
 
 void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
+    // UploadManager is the only upload path: the job must fit in one slot.
+    // Callers split oversized batches (IndirectRenderer::uploadMeshesBatched);
+    // overflowing here would corrupt the staging buffer and produce buffer
+    // barrier / WRITE_AFTER_READ validation errors.
+    VkDeviceSize total = 0;
+    for (auto& u : job.uploads) total += static_cast<VkDeviceSize>(u.cpuData.size());
+    if (total > s.size) {
+        std::cerr << "[UploadManager] submitJob: job size " << total
+                  << " exceeds slot size " << s.size << " — rejecting\n";
+        assert(false && "UploadManager job exceeds slot size");
+        throw std::runtime_error("UploadManager: job exceeds staging slot size");
+    }
     char* base = static_cast<char*>(s.mapped);
     VkDeviceSize off = 0;
 

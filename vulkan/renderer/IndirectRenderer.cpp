@@ -444,6 +444,7 @@ bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, siz
 
 bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds, float priority) {
     app_ = app;
+    assert(uploadMgr_ != nullptr && "IndirectRenderer::uploadMeshes requires UploadManager (set via setUploadManager) — it is the only upload path");
     std::lock_guard<std::recursive_mutex> guard(mutex);
     if (meshIds.empty()) return true;
 
@@ -574,6 +575,19 @@ bool IndirectRenderer::uploadMeshesBatched(const std::vector<uint32_t>& meshIds,
     if (reqs.empty()) return true;
 
     const VkDeviceSize slotSize = uploadMgr_->slotSize();
+    // UploadManager is the ONLY upload path (no StagingRingBuffer/dedicated
+    // fallback): a single mesh must fit in one slot. 4 MiB slots cover the
+    // largest chunk (512 KB vertex + 128 KB index worst case with headroom).
+    for (const Req& r : reqs) {
+        const VkDeviceSize reqSize = (r.doVertex ? r.vertexSize : 0) + (r.doIndex ? r.indexSize : 0);
+        if (reqSize > slotSize) {
+            std::cerr << "[IndirectRenderer] uploadMeshesBatched: mesh " << r.meshId
+                      << " needs " << reqSize << " bytes > UploadManager slotSize "
+                      << slotSize << " — bump streamer chunk budgets\n";
+            assert(false && "single mesh exceeds UploadManager slotSize — bump streamer budgets");
+            return false;
+        }
+    }
     size_t start = 0;
 
     while (start < reqs.size()) {
@@ -4207,6 +4221,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     // the UploadManager (now wired for every slotted IndirectRenderer). It is the
     // only path that uploads both vertex/index data and publishes the indirect
     // command on completion.
+    assert(uploadMgr_ != nullptr && "IndirectRenderer::uploadSlot requires UploadManager — it is the only upload path");
     if (uploadMgr_ == nullptr) return false;
     if ((vertexBytes + indexBytes) > uploadMgr_->slotSize()) return false;
 
