@@ -3,6 +3,7 @@
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
 #include <cstdlib>
+#include <vector>
 #include "RendererUtils.hpp"
 #include "BrushRenderer.hpp"
 #include "WaterBackFaceRenderer.hpp"
@@ -575,20 +576,33 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
 
     activeWaterFrameIndex = frameIndex;
 
-    // Transition water color image: SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
-    // so the water pipeline can write EVSM depth-linearisation output.
-    appPtr->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex],
-        VK_FORMAT_R32G32B32A32_SFLOAT,
-        waterDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        1, 0, 1);
-
-    // Transition water geometry depth: tracked → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    // for per-pixel occlusion testing during water rasterization.
-    if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        appPtr->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex],
-            VK_FORMAT_D32_SFLOAT,
-            waterGeomDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            1, 0, 1);
+    // Batched begin barriers (single vkCmdPipelineBarrier2 for color+depth;
+    // was: one call per image). Transitions: water color SHADER_READ_ONLY →
+    // COLOR_ATTACHMENT_OPTIMAL (water pipeline writes EVSM output) and water
+    // geometry depth tracked → DEPTH_STENCIL_ATTACHMENT_OPTIMAL (occlusion
+    // testing). Same stage/access mapping as the single transitions; entries
+    // already in the target layout (e.g. depth re-entered with LOAD ops for
+    // the brush-liquid overlay) resolve to no-ops inside the same call.
+    {
+        std::vector<VulkanApp::BatchTransition> batch;
+        batch.reserve(2);
+        VulkanApp::BatchTransition colorBegin{};
+        colorBegin.image     = waterDepthImages[frameIndex];
+        colorBegin.format    = VK_FORMAT_R32G32B32A32_SFLOAT;
+        colorBegin.oldLayout = waterDepthImageLayouts[frameIndex];
+        colorBegin.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorBegin.mipLevels = 1;
+        batch.push_back(colorBegin);
+        if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
+            VulkanApp::BatchTransition depthBegin{};
+            depthBegin.image     = waterGeomDepthImages[frameIndex];
+            depthBegin.format    = VK_FORMAT_D32_SFLOAT;
+            depthBegin.oldLayout = waterGeomDepthImageLayouts[frameIndex];
+            depthBegin.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthBegin.mipLevels = 1;
+            batch.push_back(depthBegin);
+        }
+        appPtr->recordTransitionBatch(cmd, batch);
     }
 
     VkRenderingAttachmentInfo colorAttachment{};
@@ -642,9 +656,13 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 }
 
-void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
+void WaterRenderer::endWaterRendering(VkCommandBuffer cmd) {
     if (cmd == VK_NULL_HANDLE) return;
     vkCmdEndRendering(cmd);
+}
+
+void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
+    endWaterRendering(cmd);
 
     uint32_t frameIndex = activeWaterFrameIndex;
     if (waterDepthImages[frameIndex] != VK_NULL_HANDLE && appPtr) {
@@ -656,6 +674,42 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
             1, 0, 1);
         waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
+}
+
+void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t frameIndex) {
+    endWaterRendering(cmd);
+    if (!appPtr || waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
+
+    // Batched end barriers (single vkCmdPipelineBarrier2 for color+depth):
+    // water color COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL (sampled
+    // by the composite) together with the water geometry depth
+    // DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL (sampled by
+    // the composite at postprocess binding 7). Was: endWaterGeometryPass plus
+    // a second lone depth transition (two calls). Same mapping as the single
+    // transitions; the geom depth shares the pass boundary, so one call covers
+    // both resources.
+    std::vector<VulkanApp::BatchTransition> batch;
+    batch.reserve(2);
+    VulkanApp::BatchTransition colorEnd{};
+    colorEnd.image     = waterDepthImages[frameIndex];
+    colorEnd.format    = VK_FORMAT_R32G32B32A32_SFLOAT;
+    colorEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    colorEnd.mipLevels = 1;
+    batch.push_back(colorEnd);
+    if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
+        VulkanApp::BatchTransition depthEnd{};
+        depthEnd.image     = waterGeomDepthImages[frameIndex];
+        depthEnd.format    = VK_FORMAT_D32_SFLOAT;
+        depthEnd.oldLayout = waterGeomDepthImageLayouts[frameIndex];
+        depthEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        depthEnd.mipLevels = 1;
+        batch.push_back(depthEnd);
+    }
+    appPtr->recordTransitionBatch(cmd, batch);
+    waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE)
+        waterGeomDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 // Back-face pass is owned and executed by SceneRenderer via its WaterBackFaceRenderer.
@@ -913,17 +967,10 @@ void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint3
         brushRenderer_->getLiquidIR().drawPrepared(cmd);
     }
 
-    endWaterGeometryPass(cmd);
-
-    // Restore the water geometry depth to SHADER_READ_ONLY for the composite (the
-    // main water pass does the same transition after its own geometry pass).
-    if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE && appPtr) {
-        appPtr->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex],
-            VK_FORMAT_D32_SFLOAT,
-            waterGeomDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            1, 0, 1);
-        waterGeomDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    }
+    // Merged end: water color + water geometry depth (sampled by the composite)
+    // transition in a single barrier call (was: endWaterGeometryPass plus a
+    // second lone depth transition).
+    endWaterGeometryPassWithDepth(cmd, frameIndex);
 }
 
 // Helper: create a 1x1 image with given format, initialize to black (color) or 1.0 (depth).

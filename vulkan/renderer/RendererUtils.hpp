@@ -2,6 +2,8 @@
 
 #include "../VulkanApp.hpp"
 #include <vulkan/vulkan.h>
+#include <atomic>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -176,6 +178,33 @@ inline VkPipeline buildFullscreenPipeline(
     return pipeline;
 }
 
+// ─── Barrier statistics: per-frame vkCmdPipelineBarrier2 accounting ─────────
+// Goal: <20 vkCmdPipelineBarrier2 calls per frame (currently 40+). Every
+// barrier emitted through RendererUtils helpers or VulkanApp::
+// recordTransitionBatch is counted here. Call beginFrame() at the start of
+// each frame and endFrameReport() at the end to get a throttled log line.
+struct BarrierStats {
+    inline static std::atomic<uint64_t> totalCalls{0};
+    inline static std::atomic<uint64_t> totalImageBarriers{0};
+    inline static std::atomic<uint64_t> frameCalls{0};
+    inline static std::atomic<uint64_t> frameImageBarriers{0};
+    inline static std::atomic<uint64_t> frameIndex{0};
+
+    static void noteBarrier(uint64_t imageBarrierCount) {
+        totalCalls.fetch_add(1, std::memory_order_relaxed);
+        totalImageBarriers.fetch_add(imageBarrierCount, std::memory_order_relaxed);
+        frameCalls.fetch_add(1, std::memory_order_relaxed);
+        frameImageBarriers.fetch_add(imageBarrierCount, std::memory_order_relaxed);
+    }
+    static void beginFrame() {
+        frameCalls.store(0, std::memory_order_relaxed);
+        frameImageBarriers.store(0, std::memory_order_relaxed);
+    }
+    // Logs one line per frame when `VULKAN_BARRIER_STATS=1` is set. Warns when
+    // the frame exceeds `warnThreshold` barrier calls (default 20).
+    static void endFrameReport(uint64_t warnThreshold = 20);
+};
+
 // Record a single-image layout transition barrier into a command buffer.
 // Wraps VkImageMemoryBarrier2 + vkCmdPipelineBarrier2 for the common case
 // of transitioning a single subresource (mip 0, layer 0).
@@ -211,6 +240,92 @@ inline void transitionImageLayout(
     depInfo.pImageMemoryBarriers    = &barrier;
 
     vkCmdPipelineBarrier2(cmd, &depInfo);
+    BarrierStats::noteBarrier(1);
 }
+
+// ─── Explicit no-op barrier ─────────────────────────────────────────────────
+// Emits a VK_ACCESS_2_NONE / VK_PIPELINE_STAGE_2_NONE memory barrier. Use for
+// "no-op" dependency points where the image layout is unchanged and no memory
+// hazard exists, so the barrier documents the frame-graph edge without
+// stalling the pipeline. Prefer dropping pure no-ops from batched barrier
+// calls entirely; use this helper only where an explicit ordering point aids
+// readability or debugging.
+inline void emitNoOpBarrier(VkCommandBuffer cmd, const char* reason = nullptr) {
+    VkMemoryBarrier2 mb{};
+    mb.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    mb.srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
+    mb.dstStageMask  = VK_PIPELINE_STAGE_2_NONE;
+    mb.srcAccessMask = VK_ACCESS_2_NONE;
+    mb.dstAccessMask = VK_ACCESS_2_NONE;
+
+    VkDependencyInfo depInfo{};
+    depInfo.sType             = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    depInfo.memoryBarrierCount = 1;
+    depInfo.pMemoryBarriers    = &mb;
+
+    vkCmdPipelineBarrier2(cmd, &depInfo);
+    BarrierStats::noteBarrier(0);
+    (void)reason;
+}
+
+// ─── Minimal frame graph for barrier batching ───────────────────────────────
+// Nodes = render passes, edges = resource dependencies (shared VkImages).
+// Each pass declares its explicit resource accesses (read/write, stage,
+// layout). buildMergedBarriers() computes, per distinct (image, layer range),
+// the single transition covering all uses in the frame (first-seen layout →
+// last-seen layout). emitMergedBarriers() records all of them in ONE
+// vkCmdPipelineBarrier2 call. Resources whose layout never changes across
+// uses become VK_ACCESS_2_NONE / VK_PIPELINE_STAGE_2_NONE no-op entries
+// inside the same call (no extra barrier, no stall).
+struct FrameGraphResourceAccess {
+    VkImage               image      = VK_NULL_HANDLE;
+    VkFormat              format     = VK_FORMAT_UNDEFINED;
+    VkImageLayout         layout     = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkAccessFlags2        access     = 0;
+    VkPipelineStageFlags2 stage      = 0;
+    uint32_t              baseLayer  = 0;
+    uint32_t              layerCount = 1;
+    bool                  isWrite    = false;
+};
+
+struct FrameGraphPassNode {
+    std::string name;
+    std::vector<FrameGraphResourceAccess> accesses;
+};
+
+class FrameGraph {
+public:
+    // Add a render-pass node; returns its index for addAccess().
+    uint32_t addPass(const std::string& name);
+    void addAccess(uint32_t pass, const FrameGraphResourceAccess& access);
+    size_t passCount() const { return passes_.size(); }
+    void clear() { passes_.clear(); }
+
+    // One merged transition per distinct (image, layer range): first-seen
+    // layout → last-seen layout. Entries with unchanged layouts are flagged
+    // as no-ops (caller should emit them with NONE/NONE masks).
+    struct MergedTransition {
+        VkImage       image      = VK_NULL_HANDLE;
+        VkFormat      format     = VK_FORMAT_UNDEFINED;
+        VkImageLayout oldLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkImageLayout newLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        uint32_t      baseLayer  = 0;
+        uint32_t      layerCount = 1;
+        bool          isWrite    = false;
+        bool          isNoOp     = false; // oldLayout == newLayout && !isWrite
+    };
+    std::vector<MergedTransition> buildMergedBarriers() const;
+
+    // Record all merged transitions in a single vkCmdPipelineBarrier2 via
+    // VulkanApp::recordTransitionBatch (which applies the same stage/access
+    // mapping as single transitions, so semantics are unchanged — only the
+    // call count drops). No-op entries are emitted with NONE/NONE masks.
+    // Returns the number of vkCmdPipelineBarrier2 calls emitted (0 or 1).
+    // `app` must be non-null; `cmd` must be in the recording state.
+    uint32_t emitMergedBarriers(VkCommandBuffer cmd, VulkanApp* app) const;
+
+private:
+    std::vector<FrameGraphPassNode> passes_;
+};
 
 } // namespace RendererUtils

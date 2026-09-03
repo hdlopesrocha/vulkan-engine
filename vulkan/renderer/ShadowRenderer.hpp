@@ -74,6 +74,16 @@ public:
     // Render shadow pass for a single cascade
     void beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex, const glm::mat4& lightSpaceMatrix);
     void endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
+    // Batched frame-graph variants for the SERIAL path (ShadowRenderer::render):
+    // transition all SHADOW_CASCADE_COUNT cascade color+depth images in a
+    // SINGLE vkCmdPipelineBarrier2 call (was: one call per cascade). Modelled
+    // as a two-node RendererUtils::FrameGraph (sampled layouts → attachment
+    // layouts and back). Must bracket the per-cascade draws; EVSM blurs run
+    // after endShadowPassAll. The parallel path (recordCascade) keeps the
+    // per-cascade begin/endShadowPass (one barrier call per cascade command
+    // buffer — already minimal, cross-queue batching is impossible).
+    void beginShadowPassAll(VulkanApp* app, VkCommandBuffer commandBuffer);
+    void endShadowPassAll(VulkanApp* app, VkCommandBuffer commandBuffer);
     // EVSM blur for a single cascade (horizontal + vertical passes)
     void blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
     // Getters for resources (per-cascade)
@@ -171,6 +181,12 @@ private:
     // three cascade CBs wait on the same semaphore.
     std::array<std::array<VkSemaphore, SHADOW_CASCADE_COUNT>, kShadowFrameSlots> semCullDone_ = {};
     std::array<std::array<VkSemaphore, SHADOW_CASCADE_COUNT>, kShadowFrameSlots> semCascadeDone_ = {};
+
+    // Dynamic-rendering begin/end WITHOUT barriers (used between
+    // beginShadowPassAll/endShadowPassAll in the serial path; the barriers
+    // for all cascades are emitted once by the *All wrappers).
+    void beginShadowRendering(VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
+    void endShadowRendering(VkCommandBuffer commandBuffer);
 
     // Allocate (once) the per-cascade UBO / descriptor sets / semaphores used
     // by renderParallel. No-op until SceneRenderer has provided the shared

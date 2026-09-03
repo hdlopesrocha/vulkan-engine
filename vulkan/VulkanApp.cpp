@@ -1,5 +1,6 @@
 #include "Buffer.hpp"
 #include "VulkanApp.hpp"
+#include "renderer/RendererUtils.hpp"
 #include "renderer/SceneDescriptorLayout.hpp"
 #include "renderer/SceneQueues.hpp"
 #include "SubmissionTracker.hpp"
@@ -2361,175 +2362,32 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         }
     }
 
-    void VulkanApp::recordTransitionImageLayoutLayer(VkCommandBuffer commandBuffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount) {
-        if (commandBuffer == VK_NULL_HANDLE) throw std::runtime_error("recordTransitionImageLayoutLayer called with VK_NULL_HANDLE commandBuffer");
-        if (image == VK_NULL_HANDLE) throw std::runtime_error("recordTransitionImageLayoutLayer called with VK_NULL_HANDLE image");
-
-            // If this image belongs to the swapchain, skip recording transitions
-            // here — `drawFrame()` performs explicit swapchain image transitions
-            // (UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL, COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC_KHR).
-            // Recording additional transitions for swapchain images from other
-            // modules can produce duplicate barriers and validation hazards.
-            for (const auto &si : swapchainImages) {
-                if (si == image) {
-                    std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: skipping swapchain image=" << (void*)image << " (drawFrame handles swapchain transitions)" << std::endl;
-                    return;
-                }
-            }
-
-        // Determine authoritative oldLayout per image-layer. If the caller's
-        // supplied oldLayout disagrees with the app-tracked layout, prefer the
-        // app-tracked value to avoid validation-layer VUID-oldLayout-01197.
-        VkImageLayout effectiveOld = oldLayout;
-        VkImageLayout tracked = VK_IMAGE_LAYOUT_UNDEFINED;
-        {
-            std::lock_guard<std::mutex> lk(imageLayoutMutex);
-            uint64_t key = ((uint64_t)(uintptr_t)image << 32) | (uint64_t)baseArrayLayer;
-            auto it = imageLayerLayouts.find(key);
-            if (it != imageLayerLayouts.end()) {
-                tracked = it->second;
-                if (tracked != oldLayout) {
-                    // Prefer the app-tracked layout when available. Recording
-                    // a transition from the tracked layout reduces the chance
-                    // of emitting barriers that claim an UNDEFINED oldLayout
-                    // while the app (or previous submissions) know the image
-                    // is already in a concrete layout. This helps avoid
-                    // validation errors when callers pass VK_IMAGE_LAYOUT_UNDEFINED
-                    // to indicate they don't know the current layout.
-                    // KHR/EXT extension layouts have values in 1000000000+ range.
-                    // Catch truly corrupted values (small positive numbers that aren't
-                    // valid core layouts 0-5 or the KHR attachment layout 7).
-                    effectiveOld = tracked;
-                }
-            } else {
-                // Initialize tracking for this layer from caller's oldLayout.
-                imageLayerLayouts[key] = oldLayout;
-            }
+    static VkImageAspectFlags aspectFromFormat(VkFormat fmt) {
+        switch (fmt) {
+            case VK_FORMAT_D16_UNORM:
+            case VK_FORMAT_X8_D24_UNORM_PACK32:
+            case VK_FORMAT_D32_SFLOAT:
+                return VK_IMAGE_ASPECT_DEPTH_BIT;
+            case VK_FORMAT_D16_UNORM_S8_UINT:
+            case VK_FORMAT_D24_UNORM_S8_UINT:
+            case VK_FORMAT_D32_SFLOAT_S8_UINT:
+                return VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+            default:
+                return VK_IMAGE_ASPECT_COLOR_BIT;
         }
+    }
 
-        // Guard against corrupted effectiveOld (from caller or tracked map)
-        if (effectiveOld > 7) {
-            std::cerr << "[VulkanApp] WARNING: invalid effectiveOld " << effectiveOld
-                      << " for image " << (void*)image << ", clamping to UNDEFINED" << std::endl;
-            effectiveOld = VK_IMAGE_LAYOUT_UNDEFINED;
-        }
-
-        // If this command buffer has previously recorded layout updates for
-        // the same image/layer, prefer the most recent pending value so
-        // subsequent records within the same command buffer observe earlier
-        // recorded operations. Use the most recent pending update (barrier or
-        // tracked-only) because tracked entries can represent implicit
-        // render-pass transitions that affect the effective layout.
-        VkImageLayout pendingOld = VK_IMAGE_LAYOUT_UNDEFINED;
-        {
-            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
-            auto pit = commandBufferPendingLayouts.find(commandBuffer);
-            if (pit != commandBufferPendingLayouts.end()) {
-                auto &vec = pit->second;
-                // Prefer the most recent pending update that was recorded as
-                // an actual barrier. Tracked-only updates (isBarrier==false)
-                // represent implicit render-pass finalLayouts and do not
-                // correspond to an emitted VkImageMemoryBarrier; using them
-                // as the effective old layout for a vkCmdPipelineBarrier can
-                // lead to validation-layer mismatches. If no barrier-type
-                // pending update exists, fall back to the most recent
-                // pending update of any type.
-                bool foundBarrier = false;
-                // Prefer the most recent pending barrier recorded for this
-                // command buffer. If an earlier vkCmdPipelineBarrier was
-                // emitted in the same command buffer for the same image/layer,
-                // the effective old layout for any subsequent barrier must
-                // reflect that earlier pending barrier to avoid emitting a
-                // second barrier whose oldLayout disagrees with the validation
-                // layer's recorded state for this command buffer.
-                for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
-                    if (it->image == image && it->isBarrier) {
-                        uint32_t pendingBase = it->baseArrayLayer;
-                        uint32_t pendingCount = it->layerCount;
-                        // Treat a pending update as applicable if it covers the
-                        // requested base array layer (overlap). This handles
-                        // cases where a previous barrier updated multiple
-                        // layers but the current request targets a single
-                        // layer inside that range.
-                        if (baseArrayLayer >= pendingBase && baseArrayLayer < pendingBase + pendingCount) {
-                            pendingOld = it->newLayout;
-                            // A recorded barrier in the same command buffer is
-                            // the authoritative subresource layout for any
-                            // subsequent barrier in that command buffer.
-                            // Always prefer it over global tracked state.
-                            effectiveOld = it->newLayout;
-                            foundBarrier = true;
-                            break;
-                        }
-                    }
-                }
-                if (!foundBarrier) {
-                    // If no barrier-type pending update exists, do NOT adopt
-                    // tracked-only pending updates as the effective old layout.
-                    // Tracked-only updates represent implicit render-pass
-                    // finalLayouts and do not correspond to an emitted
-                    // VkImageMemoryBarrier; using them here can cause
-                    // validation-layer mismatches. Leave `effectiveOld`
-                    // unchanged so we prefer the caller-supplied or
-                    // authoritative tracked layout instead.
-                    (void)pendingOld;
-                }
-            }
-        }
-
-        // If the authoritative (tracked) layout already equals the requested
-        // final layout, there's nothing to emit.
-        if (effectiveOld == newLayout) {
-            return;
-        }
-
-        // Runtime validation: if we have recorded array-layer metadata for this
-        // image, ensure the requested baseArrayLayer+layerCount is within bounds.
-        if (image != VK_NULL_HANDLE) {
-            auto layersOpt = resources.getImageArrayLayers(image);
-            if (layersOpt.has_value()) {
-                uint32_t recordedLayers = layersOpt.value();
-                // Detect obvious out-of-range requests
-                if (baseArrayLayer >= recordedLayers || baseArrayLayer + layerCount > recordedLayers) {
-                    auto entry = resources.find((uintptr_t)image);
-                    std::string desc = entry ? entry->desc : std::string("(unknown)");
-                    std::cerr << "[VulkanApp] ERROR: requested array layer range out-of-bounds for image=" << (void*)image
-                              << " desc='" << desc << "' base=" << baseArrayLayer << " count=" << layerCount
-                              << " recordedLayers=" << recordedLayers << std::endl;
-                    throw std::runtime_error("recordTransitionImageLayoutLayer: requested array layer range out-of-bounds");
-                }
-            }
-        }
-
-        VkImageMemoryBarrier2 barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        barrier.oldLayout = effectiveOld;
-        barrier.newLayout = newLayout;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = image;
-        auto aspectFromFormat = [](VkFormat fmt) -> VkImageAspectFlags {
-            switch (fmt) {
-                case VK_FORMAT_D16_UNORM:
-                case VK_FORMAT_X8_D24_UNORM_PACK32:
-                case VK_FORMAT_D32_SFLOAT:
-                    return VK_IMAGE_ASPECT_DEPTH_BIT;
-                case VK_FORMAT_D16_UNORM_S8_UINT:
-                case VK_FORMAT_D24_UNORM_S8_UINT:
-                case VK_FORMAT_D32_SFLOAT_S8_UINT:
-                    return VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
-                default:
-                    return VK_IMAGE_ASPECT_COLOR_BIT;
-            }
-        };
-        barrier.subresourceRange.aspectMask = aspectFromFormat(format);
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = mipLevels;
-        barrier.subresourceRange.baseArrayLayer = baseArrayLayer;
-        barrier.subresourceRange.layerCount = layerCount;
-
-        VkPipelineStageFlags2 sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-        VkPipelineStageFlags2 destinationStage = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+    // Shared stage/access mapping for image layout transitions. Backs both
+    // recordTransitionImageLayoutLayer() and recordTransitionBatch() so a
+    // batched barrier has exactly the same semantics as the equivalent single
+    // barriers — only the vkCmdPipelineBarrier2 call count drops. Fills
+    // barrier.srcAccessMask/dstAccessMask/srcStageMask/dstStageMask from the
+    // (effectiveOld, newLayout) pair. Returns false for unhandled pairs (the
+    // caller throws with its own context message).
+    static bool fillTransitionStagesAccess(VkImageMemoryBarrier2& barrier, VkImageLayout effectiveOld, VkImageLayout newLayout,
+                                           VkPipelineStageFlags2& sourceStage, VkPipelineStageFlags2& destinationStage) {
+        sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        destinationStage = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
 
         if (effectiveOld == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
             barrier.srcAccessMask = 0;
@@ -2694,19 +2552,181 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             sourceStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
             destinationStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
         } else {
-            throw std::runtime_error(
-                std::string("[recordTransitionImageLayoutLayer] Unhandled transition: old=") +
-                std::to_string((int)effectiveOld) + " new=" + std::to_string((int)newLayout));
+            return false;
         }
 
         barrier.srcStageMask = sourceStage;
         barrier.dstStageMask = destinationStage;
+        return true;
+    }
+
+    void VulkanApp::recordTransitionImageLayoutLayer(VkCommandBuffer commandBuffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount) {
+        if (commandBuffer == VK_NULL_HANDLE) throw std::runtime_error("recordTransitionImageLayoutLayer called with VK_NULL_HANDLE commandBuffer");
+        if (image == VK_NULL_HANDLE) throw std::runtime_error("recordTransitionImageLayoutLayer called with VK_NULL_HANDLE image");
+
+            // If this image belongs to the swapchain, skip recording transitions
+            // here — `drawFrame()` performs explicit swapchain image transitions
+            // (UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL, COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC_KHR).
+            // Recording additional transitions for swapchain images from other
+            // modules can produce duplicate barriers and validation hazards.
+            for (const auto &si : swapchainImages) {
+                if (si == image) {
+                    std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: skipping swapchain image=" << (void*)image << " (drawFrame handles swapchain transitions)" << std::endl;
+                    return;
+                }
+            }
+
+        // Determine authoritative oldLayout per image-layer. If the caller's
+        // supplied oldLayout disagrees with the app-tracked layout, prefer the
+        // app-tracked value to avoid validation-layer VUID-oldLayout-01197.
+        VkImageLayout effectiveOld = oldLayout;
+        VkImageLayout tracked = VK_IMAGE_LAYOUT_UNDEFINED;
+        {
+            std::lock_guard<std::mutex> lk(imageLayoutMutex);
+            uint64_t key = ((uint64_t)(uintptr_t)image << 32) | (uint64_t)baseArrayLayer;
+            auto it = imageLayerLayouts.find(key);
+            if (it != imageLayerLayouts.end()) {
+                tracked = it->second;
+                if (tracked != oldLayout) {
+                    // Prefer the app-tracked layout when available. Recording
+                    // a transition from the tracked layout reduces the chance
+                    // of emitting barriers that claim an UNDEFINED oldLayout
+                    // while the app (or previous submissions) know the image
+                    // is already in a concrete layout. This helps avoid
+                    // validation errors when callers pass VK_IMAGE_LAYOUT_UNDEFINED
+                    // to indicate they don't know the current layout.
+                    // KHR/EXT extension layouts have values in 1000000000+ range.
+                    // Catch truly corrupted values (small positive numbers that aren't
+                    // valid core layouts 0-5 or the KHR attachment layout 7).
+                    effectiveOld = tracked;
+                }
+            } else {
+                // Initialize tracking for this layer from caller's oldLayout.
+                imageLayerLayouts[key] = oldLayout;
+            }
+        }
+
+        // Guard against corrupted effectiveOld (from caller or tracked map)
+        if (effectiveOld > 7) {
+            std::cerr << "[VulkanApp] WARNING: invalid effectiveOld " << effectiveOld
+                      << " for image " << (void*)image << ", clamping to UNDEFINED" << std::endl;
+            effectiveOld = VK_IMAGE_LAYOUT_UNDEFINED;
+        }
+
+        // If this command buffer has previously recorded layout updates for
+        // the same image/layer, prefer the most recent pending value so
+        // subsequent records within the same command buffer observe earlier
+        // recorded operations. Use the most recent pending update (barrier or
+        // tracked-only) because tracked entries can represent implicit
+        // render-pass transitions that affect the effective layout.
+        VkImageLayout pendingOld = VK_IMAGE_LAYOUT_UNDEFINED;
+        {
+            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
+            auto pit = commandBufferPendingLayouts.find(commandBuffer);
+            if (pit != commandBufferPendingLayouts.end()) {
+                auto &vec = pit->second;
+                // Prefer the most recent pending update that was recorded as
+                // an actual barrier. Tracked-only updates (isBarrier==false)
+                // represent implicit render-pass finalLayouts and do not
+                // correspond to an emitted VkImageMemoryBarrier; using them
+                // as the effective old layout for a vkCmdPipelineBarrier can
+                // lead to validation-layer mismatches. If no barrier-type
+                // pending update exists, fall back to the most recent
+                // pending update of any type.
+                bool foundBarrier = false;
+                // Prefer the most recent pending barrier recorded for this
+                // command buffer. If an earlier vkCmdPipelineBarrier was
+                // emitted in the same command buffer for the same image/layer,
+                // the effective old layout for any subsequent barrier must
+                // reflect that earlier pending barrier to avoid emitting a
+                // second barrier whose oldLayout disagrees with the validation
+                // layer's recorded state for this command buffer.
+                for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
+                    if (it->image == image && it->isBarrier) {
+                        uint32_t pendingBase = it->baseArrayLayer;
+                        uint32_t pendingCount = it->layerCount;
+                        // Treat a pending update as applicable if it covers the
+                        // requested base array layer (overlap). This handles
+                        // cases where a previous barrier updated multiple
+                        // layers but the current request targets a single
+                        // layer inside that range.
+                        if (baseArrayLayer >= pendingBase && baseArrayLayer < pendingBase + pendingCount) {
+                            pendingOld = it->newLayout;
+                            // A recorded barrier in the same command buffer is
+                            // the authoritative subresource layout for any
+                            // subsequent barrier in that command buffer.
+                            // Always prefer it over global tracked state.
+                            effectiveOld = it->newLayout;
+                            foundBarrier = true;
+                            break;
+                        }
+                    }
+                }
+                if (!foundBarrier) {
+                    // If no barrier-type pending update exists, do NOT adopt
+                    // tracked-only pending updates as the effective old layout.
+                    // Tracked-only updates represent implicit render-pass
+                    // finalLayouts and do not correspond to an emitted
+                    // VkImageMemoryBarrier; using them here can cause
+                    // validation-layer mismatches. Leave `effectiveOld`
+                    // unchanged so we prefer the caller-supplied or
+                    // authoritative tracked layout instead.
+                    (void)pendingOld;
+                }
+            }
+        }
+
+        // If the authoritative (tracked) layout already equals the requested
+        // final layout, there's nothing to emit.
+        if (effectiveOld == newLayout) {
+            return;
+        }
+
+        // Runtime validation: if we have recorded array-layer metadata for this
+        // image, ensure the requested baseArrayLayer+layerCount is within bounds.
+        if (image != VK_NULL_HANDLE) {
+            auto layersOpt = resources.getImageArrayLayers(image);
+            if (layersOpt.has_value()) {
+                uint32_t recordedLayers = layersOpt.value();
+                // Detect obvious out-of-range requests
+                if (baseArrayLayer >= recordedLayers || baseArrayLayer + layerCount > recordedLayers) {
+                    auto entry = resources.find((uintptr_t)image);
+                    std::string desc = entry ? entry->desc : std::string("(unknown)");
+                    std::cerr << "[VulkanApp] ERROR: requested array layer range out-of-bounds for image=" << (void*)image
+                              << " desc='" << desc << "' base=" << baseArrayLayer << " count=" << layerCount
+                              << " recordedLayers=" << recordedLayers << std::endl;
+                    throw std::runtime_error("recordTransitionImageLayoutLayer: requested array layer range out-of-bounds");
+                }
+            }
+        }
+
+        VkImageMemoryBarrier2 barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.oldLayout = effectiveOld;
+        barrier.newLayout = newLayout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange.aspectMask = aspectFromFormat(format);
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = mipLevels;
+        barrier.subresourceRange.baseArrayLayer = baseArrayLayer;
+        barrier.subresourceRange.layerCount = layerCount;
+
+        VkPipelineStageFlags2 sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        VkPipelineStageFlags2 destinationStage = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+        if (!fillTransitionStagesAccess(barrier, effectiveOld, newLayout, sourceStage, destinationStage)) {
+            throw std::runtime_error(
+                std::string("[recordTransitionImageLayoutLayer] Unhandled transition: old=") +
+                std::to_string((int)effectiveOld) + " new=" + std::to_string((int)newLayout));
+        }
 
         VkDependencyInfo depInfo{};
         depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         depInfo.imageMemoryBarrierCount = 1;
         depInfo.pImageMemoryBarriers = &barrier;
         vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+        RendererUtils::BarrierStats::noteBarrier(1);
         // Record pending layout update for this command buffer so the
         // authoritative map is only updated when the command buffer actually
         // completes. This avoids marking the global tracked layout as changed
@@ -2722,6 +2742,163 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             up.isBarrier = true;
             commandBufferPendingLayouts[commandBuffer].push_back(up);
         }
+    }
+
+    uint32_t VulkanApp::recordTransitionBatch(VkCommandBuffer commandBuffer,
+                                              const std::vector<BatchTransition>& transitions) {
+        if (commandBuffer == VK_NULL_HANDLE) throw std::runtime_error("recordTransitionBatch called with VK_NULL_HANDLE commandBuffer");
+        if (transitions.empty()) return 0;
+
+        // Same-CB pending lookups below only resolve correctly when every item
+        // targets a distinct (image, layer-range) subresource; shared images
+        // across items must use disjoint layer ranges.
+        std::vector<VkImageMemoryBarrier2> barriers;
+        std::vector<PendingLayoutUpdate> pushes;
+        barriers.reserve(transitions.size());
+        pushes.reserve(transitions.size());
+
+        for (const auto& t : transitions) {
+            if (t.image == VK_NULL_HANDLE) throw std::runtime_error("recordTransitionBatch called with VK_NULL_HANDLE image");
+
+            // Swapchain images are owned by drawFrame() — skip, as in the
+            // single-transition path.
+            bool isSwapchain = false;
+            for (const auto& si : swapchainImages) {
+                if (si == t.image) { isSwapchain = true; break; }
+            }
+            if (isSwapchain) {
+                std::cerr << "[VulkanApp] recordTransitionBatch: skipping swapchain image=" << (void*)t.image
+                          << " (drawFrame handles swapchain transitions)" << std::endl;
+                continue;
+            }
+
+            // Authoritative oldLayout: app-tracked value wins over the
+            // caller's hint (avoids VUID-oldLayout mismatches), exactly as in
+            // recordTransitionImageLayoutLayer().
+            VkImageLayout effectiveOld = t.oldLayout;
+            {
+                std::lock_guard<std::mutex> lk(imageLayoutMutex);
+                uint64_t key = ((uint64_t)(uintptr_t)t.image << 32) | (uint64_t)t.baseArrayLayer;
+                auto it = imageLayerLayouts.find(key);
+                if (it != imageLayerLayouts.end()) {
+                    if (it->second != t.oldLayout)
+                        effectiveOld = it->second;
+                } else {
+                    imageLayerLayouts[key] = t.oldLayout;
+                }
+            }
+
+            if (effectiveOld > 7) {
+                std::cerr << "[VulkanApp] WARNING: invalid effectiveOld " << effectiveOld
+                          << " for image " << (void*)t.image << ", clamping to UNDEFINED" << std::endl;
+                effectiveOld = VK_IMAGE_LAYOUT_UNDEFINED;
+            }
+
+            // Prefer the most recent same-CB pending *barrier* for an
+            // overlapping layer range (tracked-only render-pass layouts do not
+            // correspond to an emitted barrier and must not be adopted here).
+            {
+                std::lock_guard<std::mutex> plk(pendingLayoutMutex);
+                auto pit = commandBufferPendingLayouts.find(commandBuffer);
+                if (pit != commandBufferPendingLayouts.end()) {
+                    auto& vec = pit->second;
+                    for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
+                        if (it->image == t.image && it->isBarrier) {
+                            uint32_t pendingBase = it->baseArrayLayer;
+                            uint32_t pendingCount = it->layerCount;
+                            if (t.baseArrayLayer >= pendingBase && t.baseArrayLayer < pendingBase + pendingCount) {
+                                effectiveOld = it->newLayout;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            VkImageMemoryBarrier2 barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            barrier.oldLayout = effectiveOld;
+            barrier.newLayout = t.newLayout;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = t.image;
+            barrier.subresourceRange.aspectMask = aspectFromFormat(t.format);
+            barrier.subresourceRange.baseMipLevel = 0;
+            barrier.subresourceRange.levelCount = t.mipLevels;
+            barrier.subresourceRange.baseArrayLayer = t.baseArrayLayer;
+            barrier.subresourceRange.layerCount = t.layerCount;
+
+            if (effectiveOld == t.newLayout) {
+                // Layout unchanged. Explicit frame-graph no-op entries become
+                // VK_ACCESS_2_NONE / VK_PIPELINE_STAGE_2_NONE barriers inside
+                // the merged call (document the edge, no stall); anything else
+                // is skipped, matching the single-transition early-out.
+                if (!t.isNoOp) continue;
+                barrier.srcAccessMask = VK_ACCESS_2_NONE;
+                barrier.dstAccessMask = VK_ACCESS_2_NONE;
+                barrier.srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
+                barrier.dstStageMask  = VK_PIPELINE_STAGE_2_NONE;
+                barriers.push_back(barrier);
+                PendingLayoutUpdate up{};
+                up.image = t.image;
+                up.newLayout = t.newLayout;
+                up.baseArrayLayer = t.baseArrayLayer;
+                up.layerCount = t.layerCount;
+                up.isBarrier = true;
+                pushes.push_back(up);
+                continue;
+            }
+
+            // Layer bounds check (mirrors the single-transition path).
+            {
+                auto layersOpt = resources.getImageArrayLayers(t.image);
+                if (layersOpt.has_value()) {
+                    uint32_t recordedLayers = layersOpt.value();
+                    if (t.baseArrayLayer >= recordedLayers || t.baseArrayLayer + t.layerCount > recordedLayers) {
+                        auto entry = resources.find((uintptr_t)t.image);
+                        std::string desc = entry ? entry->desc : std::string("(unknown)");
+                        std::cerr << "[VulkanApp] ERROR: requested array layer range out-of-bounds for image=" << (void*)t.image
+                                  << " desc='" << desc << "' base=" << t.baseArrayLayer << " count=" << t.layerCount
+                                  << " recordedLayers=" << recordedLayers << std::endl;
+                        throw std::runtime_error("recordTransitionBatch: requested array layer range out-of-bounds");
+                    }
+                }
+            }
+
+            VkPipelineStageFlags2 sourceStage;
+            VkPipelineStageFlags2 destinationStage;
+            if (!fillTransitionStagesAccess(barrier, effectiveOld, t.newLayout, sourceStage, destinationStage)) {
+                throw std::runtime_error(
+                    std::string("[recordTransitionBatch] Unhandled transition: old=") +
+                    std::to_string((int)effectiveOld) + " new=" + std::to_string((int)t.newLayout));
+            }
+            barriers.push_back(barrier);
+            PendingLayoutUpdate up{};
+            up.image = t.image;
+            up.newLayout = t.newLayout;
+            up.baseArrayLayer = t.baseArrayLayer;
+            up.layerCount = t.layerCount;
+            up.isBarrier = true;
+            pushes.push_back(up);
+        }
+
+        if (barriers.empty()) return 0;
+
+        // Single barrier call for the whole batch: this is where the
+        // per-frame vkCmdPipelineBarrier2 count drops (N transitions, 1 call).
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
+        depInfo.pImageMemoryBarriers = barriers.data();
+        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+        RendererUtils::BarrierStats::noteBarrier(barriers.size());
+
+        {
+            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
+            auto& vec = commandBufferPendingLayouts[commandBuffer];
+            for (const auto& up : pushes) vec.push_back(up);
+        }
+        return 1;
     }
 
 void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount) {
@@ -4179,6 +4356,9 @@ void VulkanApp::drawFrame() {
     } frameProbe;
     // Absolute draw-frame index used to group queue-timeline segments per frame.
     frameCounter_.fetch_add(1, std::memory_order_relaxed);
+    // Reset the per-frame vkCmdPipelineBarrier2 counter (see BarrierStats;
+    // report at the end of this function when VULKAN_BARRIER_STATS=1).
+    RendererUtils::BarrierStats::beginFrame();
     const uint32_t maxFrames = static_cast<uint32_t>(inFlightFences.size());
     uint32_t imageIndex;
 
@@ -4774,6 +4954,10 @@ void VulkanApp::drawFrame() {
 
     // Hook for derived apps to run post-submit instrumentation (e.g., readback)
     postSubmit();
+
+    // Per-frame barrier accounting: logs vkCmdPipelineBarrier2 calls recorded
+    // this frame (target <20/frame). Enable with VULKAN_BARRIER_STATS=1.
+    RendererUtils::BarrierStats::endFrameReport();
 
     // Advance to next CPU frame
     currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;

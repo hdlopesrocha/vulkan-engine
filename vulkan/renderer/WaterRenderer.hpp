@@ -74,6 +74,10 @@ public:
     // Begin water geometry pass (renders water depth/normals to offscreen target)
     void beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex, bool loadExisting = false);
     void endWaterGeometryPass(VkCommandBuffer cmd);
+    // Merged end for the brush-liquid overlay path: water color + water
+    // geometry depth → SHADER_READ_ONLY_OPTIMAL in a single barrier call
+    // (was: endWaterGeometryPass plus a lone depth transition).
+    void endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t frameIndex);
 
     // Back-face depth pre-pass (reversed winding for water volume thickness)
     // NOTE: back-face depth pre-pass is now owned by SceneRenderer. SceneRenderer
@@ -177,6 +181,10 @@ public:
     // views (back-face depth, cubemap/equirect) to WaterRenderer.
 
 private:
+
+    // vkCmdEndRendering without barriers (shared by endWaterGeometryPass and
+    // endWaterGeometryPassWithDepth, which emit their own batched barriers).
+    void endWaterRendering(VkCommandBuffer cmd);
 
     void createWaterPipelines(VulkanApp* app, const std::vector<WaterParams>& waterParams);
     void initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams);

@@ -457,22 +457,33 @@ void Solid360Renderer::render(VulkanApp* app,
         cmdState = &faceState;
         VkDescriptorSet gfxSet = faceRes.gfxDs[face];
 
-        // Transition color layer: tracked layout → COLOR_ATTACHMENT_OPTIMAL
-        {
-            VkAccessFlags2 srcAccess = (cube360ColorLayouts[face] == VK_IMAGE_LAYOUT_UNDEFINED)
-                ? 0 : VK_ACCESS_2_SHADER_READ_BIT;
-            RendererUtils::transitionImageLayout(
-                fcmd, cube360ColorImage,
-                cube360ColorLayouts[face], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                srcAccess, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT, face, 1);
-        }
-        // Transition depth layer: tracked layout → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        // Batched per-face begin barriers (single vkCmdPipelineBarrier2 for
+        // this face's color + depth layers; was: one call per image): color
+        // tracked → COLOR_ATTACHMENT_OPTIMAL, depth tracked →
+        // DEPTH_STENCIL_ATTACHMENT_OPTIMAL. Each face writes a distinct array
+        // layer of the cube images, so the 6 per-face batches stay independent
+        // across the parallel cube queues. Same stage/access mapping as the
+        // single transitions; already-correct layouts become no-ops.
         if (app) {
-            app->recordTransitionImageLayoutLayer(fcmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
-                cube360DepthLayouts[face], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                1, face, 1);
+            std::vector<VulkanApp::BatchTransition> beginBatch;
+            beginBatch.reserve(2);
+            VulkanApp::BatchTransition colorBegin{};
+            colorBegin.image          = cube360ColorImage;
+            colorBegin.format         = app->getSwapchainImageFormat();
+            colorBegin.oldLayout      = cube360ColorLayouts[face];
+            colorBegin.newLayout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorBegin.baseArrayLayer = face;
+            colorBegin.layerCount     = 1;
+            beginBatch.push_back(colorBegin);
+            VulkanApp::BatchTransition depthBegin{};
+            depthBegin.image          = cube360DepthImage;
+            depthBegin.format         = VK_FORMAT_D32_SFLOAT;
+            depthBegin.oldLayout      = cube360DepthLayouts[face];
+            depthBegin.newLayout      = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthBegin.baseArrayLayer = face;
+            depthBegin.layerCount     = 1;
+            beginBatch.push_back(depthBegin);
+            app->recordTransitionBatch(fcmd, beginBatch);
         }
 
         // ── Instance 1: Depth pre-pass (no color, lightweight depth_only.frag) ──
@@ -616,21 +627,34 @@ void Solid360Renderer::render(VulkanApp* app,
                 faceRes.waterCompact[face], faceRes.waterVisible[face]);
         }
 
-        // Transition per-face color/depth layers → SHADER_READ_ONLY_OPTIMAL so the
-        // downstream water/composite passes can sample this cubemap layer once the
-        // join semaphore fires. Each layer is a distinct image subresource, so the
-        // 6 transitions are safe to run concurrently on different queues.
-        {
-            RendererUtils::transitionImageLayout(
-                fcmd, cube360ColorImage,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT, face, 1);
+        // Batched per-face end barriers (single vkCmdPipelineBarrier2 for this
+        // face's color + depth layers → SHADER_READ_ONLY_OPTIMAL; was: one
+        // call per image) so the downstream water/composite passes can sample
+        // this cubemap layer once the join semaphore fires. Each layer is a
+        // distinct image subresource, so the 6 transitions stay safe to run
+        // concurrently on different queues.
+        if (app) {
+            std::vector<VulkanApp::BatchTransition> endBatch;
+            endBatch.reserve(2);
+            VulkanApp::BatchTransition colorEnd{};
+            colorEnd.image          = cube360ColorImage;
+            colorEnd.format         = app->getSwapchainImageFormat();
+            colorEnd.oldLayout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorEnd.newLayout      = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            colorEnd.baseArrayLayer = face;
+            colorEnd.layerCount     = 1;
+            endBatch.push_back(colorEnd);
+            VulkanApp::BatchTransition depthEnd{};
+            depthEnd.image          = cube360DepthImage;
+            depthEnd.format         = VK_FORMAT_D32_SFLOAT;
+            depthEnd.oldLayout      = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthEnd.newLayout      = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            depthEnd.baseArrayLayer = face;
+            depthEnd.layerCount     = 1;
+            endBatch.push_back(depthEnd);
+            app->recordTransitionBatch(fcmd, endBatch);
         }
         cube360ColorLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        if (app) app->recordTransitionImageLayoutLayer(fcmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
-            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, face, 1);
         cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         // Wait on this face's cull (which itself waited on the main cull + shadow map);

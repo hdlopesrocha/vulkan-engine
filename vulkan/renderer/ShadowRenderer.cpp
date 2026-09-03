@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <limits>
+#include <vector>
 #include "../includes/locations.hpp"
 #include "../includes/vertex_layouts.hpp"
 
@@ -290,7 +291,7 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
 }
 
 void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex, const glm::mat4& lightSpaceMatrix) {
-    uint32_t size = shadowMapSizes[cascadeIndex];
+    (void)lightSpaceMatrix; // The light-space matrix travels via the UBO, not the barrier.
     auto& cas = cascades[cascadeIndex];
 
     // Barrier: transition cascade color from SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
@@ -331,10 +332,122 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     beginDep.imageMemoryBarrierCount = 2;
     beginDep.pImageMemoryBarriers = beginBarriers;
     vkCmdPipelineBarrier2(commandBuffer, &beginDep);
+    RendererUtils::BarrierStats::noteBarrier(2);
 
     app->setImageLayoutTracked(cas.colorImage, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
     app->setImageLayoutTracked(cas.depthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
     cascadeDepthLayouts[cascadeIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    beginShadowRendering(commandBuffer, cascadeIndex);
+}
+
+void ShadowRenderer::beginShadowPassAll(VulkanApp* app, VkCommandBuffer commandBuffer) {
+    // Frame graph: node "shadow-pre" (sampled layouts after the previous
+    // frame) → node "shadow-draw" (attachment layouts). One merged transition
+    // per cascade image, emitted as a SINGLE vkCmdPipelineBarrier2 call (6
+    // image barriers, 1 call instead of 3 beginShadowPass calls). Resources
+    // already in the target layout resolve to no-ops inside the same call.
+    RendererUtils::FrameGraph fg;
+    uint32_t pre  = fg.addPass("shadow-pre");
+    uint32_t draw = fg.addPass("shadow-draw");
+    for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+        auto& cas = cascades[c];
+
+        RendererUtils::FrameGraphResourceAccess colorPre{};
+        colorPre.image   = cas.colorImage;
+        colorPre.format  = EVSM_FORMAT;
+        colorPre.layout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        colorPre.access  = VK_ACCESS_2_SHADER_READ_BIT;
+        colorPre.stage   = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        colorPre.isWrite = false;
+        fg.addAccess(pre, colorPre);
+        RendererUtils::FrameGraphResourceAccess colorDraw = colorPre;
+        colorDraw.layout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorDraw.access  = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        colorDraw.stage   = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        colorDraw.isWrite = true;
+        fg.addAccess(draw, colorDraw);
+
+        RendererUtils::FrameGraphResourceAccess depthPre{};
+        depthPre.image   = cas.depthImage;
+        depthPre.format  = VK_FORMAT_D32_SFLOAT;
+        depthPre.layout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        depthPre.access  = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        depthPre.stage   = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        depthPre.isWrite = false;
+        fg.addAccess(pre, depthPre);
+        RendererUtils::FrameGraphResourceAccess depthDraw = depthPre;
+        depthDraw.layout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthDraw.access  = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        depthDraw.stage   = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        depthDraw.isWrite = true;
+        fg.addAccess(draw, depthDraw);
+    }
+    fg.emitMergedBarriers(commandBuffer, app);
+
+    // Authoritative tracking (mirrors per-cascade beginShadowPass).
+    for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+        auto& cas = cascades[c];
+        app->setImageLayoutTracked(cas.colorImage, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+        app->setImageLayoutTracked(cas.depthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+        cascadeDepthLayouts[c] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
+}
+
+void ShadowRenderer::endShadowPassAll(VulkanApp* app, VkCommandBuffer commandBuffer) {
+    // Frame graph: node "shadow-draw" (attachment layouts) → node
+    // "shadow-post" (sampled layouts for the EVSM blur + main scene). Single
+    // barrier call for all cascades (was: one endShadowPass call per cascade).
+    RendererUtils::FrameGraph fg;
+    uint32_t draw = fg.addPass("shadow-draw");
+    uint32_t post = fg.addPass("shadow-post");
+    for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+        auto& cas = cascades[c];
+
+        RendererUtils::FrameGraphResourceAccess colorDraw{};
+        colorDraw.image   = cas.colorImage;
+        colorDraw.format  = EVSM_FORMAT;
+        colorDraw.layout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorDraw.access  = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        colorDraw.stage   = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        colorDraw.isWrite = true;
+        fg.addAccess(draw, colorDraw);
+        RendererUtils::FrameGraphResourceAccess colorPost = colorDraw;
+        colorPost.layout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        colorPost.access  = VK_ACCESS_2_SHADER_READ_BIT;
+        colorPost.stage   = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        colorPost.isWrite = false;
+        fg.addAccess(post, colorPost);
+
+        RendererUtils::FrameGraphResourceAccess depthDraw{};
+        depthDraw.image   = cas.depthImage;
+        depthDraw.format  = VK_FORMAT_D32_SFLOAT;
+        depthDraw.layout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthDraw.access  = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        depthDraw.stage   = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        depthDraw.isWrite = true;
+        fg.addAccess(draw, depthDraw);
+        RendererUtils::FrameGraphResourceAccess depthPost = depthDraw;
+        depthPost.layout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        depthPost.access  = VK_ACCESS_2_SHADER_READ_BIT;
+        depthPost.stage   = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        depthPost.isWrite = false;
+        fg.addAccess(post, depthPost);
+    }
+    fg.emitMergedBarriers(commandBuffer, app);
+
+    // Authoritative tracking (mirrors per-cascade endShadowPass).
+    for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+        auto& cas = cascades[c];
+        app->setImageLayoutTracked(cas.colorImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+        app->setImageLayoutTracked(cas.depthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 0, 1);
+        cascadeDepthLayouts[c] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    }
+}
+
+void ShadowRenderer::beginShadowRendering(VkCommandBuffer commandBuffer, uint32_t cascadeIndex) {
+    uint32_t size = shadowMapSizes[cascadeIndex];
+    auto& cas = cascades[cascadeIndex];
 
     // Begin dynamic rendering with color + depth attachments
     // EVSM stores positive moments M1=exp(c*z), M2=exp(2c*z). An EMPTY texel must
@@ -399,8 +512,12 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     }
 }
 
-void ShadowRenderer::endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex) {
+void ShadowRenderer::endShadowRendering(VkCommandBuffer commandBuffer) {
     vkCmdEndRendering(commandBuffer);
+}
+
+void ShadowRenderer::endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex) {
+    endShadowRendering(commandBuffer);
 
     auto& cas = cascades[cascadeIndex];
 
@@ -440,6 +557,7 @@ void ShadowRenderer::endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer
     endDep.imageMemoryBarrierCount = 2;
     endDep.pImageMemoryBarriers = endBarriers;
     vkCmdPipelineBarrier2(commandBuffer, &endDep);
+    RendererUtils::BarrierStats::noteBarrier(2);
 
     app->setImageLayoutTracked(cas.colorImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
     app->setImageLayoutTracked(cas.depthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 0, 1);
@@ -499,16 +617,30 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
         vkCmdEndRendering(commandBuffer);
     }
 
-    // Transition blurTemp from COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
-    // so the vertical blur pass can sample the intermediate result.
-    app->recordTransitionImageLayoutLayer(commandBuffer, blurTempImage, EVSM_FORMAT,
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-
-    // ── Vertical blur: read blurTemp → write back to cascade color ──
-    // Transition cascade color from SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
-    // so the vertical blur pass can write the final EVSM result back.
-    app->recordTransitionImageLayoutLayer(commandBuffer, cas.colorImage, EVSM_FORMAT,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
+    // Merged mid-blur transition (single barrier call, 2 image barriers): the
+    // blurTemp COLOR_ATTACHMENT → SHADER_READ (vertical pass samples it) and
+    // the cascade color SHADER_READ → COLOR_ATTACHMENT (vertical pass writes
+    // it back) are independent subresources, so one vkCmdPipelineBarrier2
+    // covers both. Same stage/access mapping as the two single transitions.
+    {
+        std::vector<VulkanApp::BatchTransition> mid;
+        mid.reserve(2);
+        VulkanApp::BatchTransition tempBack{};
+        tempBack.image     = blurTempImage;
+        tempBack.format    = EVSM_FORMAT;
+        tempBack.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        tempBack.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        tempBack.mipLevels = 1;
+        mid.push_back(tempBack);
+        VulkanApp::BatchTransition cascadeOut{};
+        cascadeOut.image     = cas.colorImage;
+        cascadeOut.format    = EVSM_FORMAT;
+        cascadeOut.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        cascadeOut.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        cascadeOut.mipLevels = 1;
+        mid.push_back(cascadeOut);
+        app->recordTransitionBatch(commandBuffer, mid);
+    }
 
     // Vertical blur pass (reads blurTemp via pre-allocated blurVerticalDS)
     {
@@ -741,6 +873,7 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
         depInfo.bufferMemoryBarrierCount = 1;
         depInfo.pBufferMemoryBarriers = &memBarrier;
         vkCmdPipelineBarrier2(cmd, &depInfo);
+        RendererUtils::BarrierStats::noteBarrier(0);
     }
 
     beginShadowPass(app, cmd, cascadeIndex, lsMatrix);
@@ -906,6 +1039,14 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint3
         vegetationRenderer_->prepareCullCascades(commandBuffer, cascadeMatrices);
     }
 
+    // Frame-graph batching: transition ALL cascade color+depth images to
+    // attachment layouts in a single barrier call (was: one barrier call per
+    // cascade inside the loop). The per-cascade draws below share no sampled
+    // inputs from these images (the shadow descriptor set binds a dummy
+    // depth), so drawing all cascades before transitioning back is safe; the
+    // EVSM blurs run after endShadowPassAll, when the images are readable.
+    beginShadowPassAll(app, commandBuffer);
+
     for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
         glm::mat4 lsMatrix = cascadeMatrices[c];
 
@@ -937,6 +1078,7 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint3
             depInfo.bufferMemoryBarrierCount = 1;
             depInfo.pBufferMemoryBarriers = &preBarrier;
             vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+            RendererUtils::BarrierStats::noteBarrier(0);
         }
 
         // Upload shadow UBO via vkCmdCopyBuffer from persistently mapped staging
@@ -964,10 +1106,12 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint3
             depInfo.bufferMemoryBarrierCount = 1;
             depInfo.pBufferMemoryBarriers = &memBarrier;
             vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+            RendererUtils::BarrierStats::noteBarrier(0);
         }
 
-        // Cascade-specific draw (no per-cascade cull — already handled above)
-        beginShadowPass(app, commandBuffer, c, lsMatrix);
+        // Cascade-specific draw (no per-cascade cull — already handled above).
+        // Barrier-free: beginShadowPassAll/endShadowPassAll bracket the loop.
+        beginShadowRendering(commandBuffer, c);
 
         // Bind shadow descriptor set (uses dummy depth at bindings 4,8,9)
         VkPipelineLayout layout = getShadowPipelineLayout();
@@ -1014,14 +1158,19 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint3
             vegetationRenderer_->drawShadowCascade(app, commandBuffer, ds, camPos, c);
         }
 
-        endShadowPass(app, commandBuffer, c);
+        endShadowRendering(commandBuffer);
+    }
 
-        // Apply separable Gaussian blur (EVSM moment filtering) to reduce noise.
-        // Skip the smallest cascade: at 512x512 the 3-tap blur is barely visible
-        // and skipping it saves two fullscreen draws plus four layout transitions.
-        if (c < SHADOW_CASCADE_COUNT - 1) {
-            blurCascade(app, commandBuffer, c);
-        }
+    // Single batched transition of all cascades back to sampled layouts (was:
+    // one endShadowPass barrier call per cascade).
+    endShadowPassAll(app, commandBuffer);
+
+    // Apply separable Gaussian blur (EVSM moment filtering) to reduce noise.
+    // Skip the smallest cascade: at 512x512 the 3-tap blur is barely visible
+    // and skipping it saves two fullscreen draws plus layout transitions.
+    // Runs after endShadowPassAll so every cascade is sampled coherently.
+    for (int c = 0; c < SHADOW_CASCADE_COUNT - 1; ++c) {
+        blurCascade(app, commandBuffer, c);
     }
 
     // Restore GPU culling for the main camera frustum (was overwritten by
@@ -1059,6 +1208,7 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint3
         depInfo.bufferMemoryBarrierCount = 1;
         depInfo.pBufferMemoryBarriers = &preBarrier;
         vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+        RendererUtils::BarrierStats::noteBarrier(0);
     }
 
     // Restore main UBO via vkCmdCopyBuffer from persistently mapped staging buffer.
@@ -1085,5 +1235,6 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, uint3
         depInfo.bufferMemoryBarrierCount = 1;
         depInfo.pBufferMemoryBarriers = &memBarrier;
         vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+        RendererUtils::BarrierStats::noteBarrier(0);
     }
 }

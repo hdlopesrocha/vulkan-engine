@@ -1,5 +1,6 @@
 #include "SolidRenderer.hpp"
 #include "RendererUtils.hpp"
+#include <vector>
 
 #include "../../utils/FileReader.hpp"
 #include "../ShaderStage.hpp"
@@ -96,24 +97,38 @@ void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearV
     }
     if (!app) throw std::runtime_error("SolidRenderer::beginPass requires valid VulkanApp");
 
-    // Barrier: transition solid color from SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
-    // so the solid pipeline can write scene color.  The image was left in read-only
-    // layout after the previous frame for ImGui / debug overlay sampling.
-    if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
-        RendererUtils::transitionImageLayout(
-            cmd, solidColorImages[frameIndex],
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_ACCESS_2_SHADER_READ_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
-        app->setImageLayoutTracked(solidColorImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
-    }
-
-    // Barrier: transition solid depth from its tracked layout to DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    // for depth testing during the solid geometry pass.  The depth is usually
-    // in SHADER_READ_ONLY (sampled by water / debug) or read-only attachment.
-    if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        if (solidDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-            app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, solidDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+    // Batched begin barriers (single vkCmdPipelineBarrier2 for color+depth;
+    // was: one call per image): solid color SHADER_READ_ONLY →
+    // COLOR_ATTACHMENT_OPTIMAL (left read-only by the previous frame's ImGui /
+    // debug sampling) and solid depth tracked → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    // (usually SHADER_READ_ONLY from water / debug sampling). Same stage/access
+    // mapping as the single transitions; already-correct layouts resolve to
+    // no-ops inside the same call.
+    {
+        std::vector<VulkanApp::BatchTransition> batch;
+        batch.reserve(2);
+        if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
+            VulkanApp::BatchTransition colorBegin{};
+            colorBegin.image     = solidColorImages[frameIndex];
+            colorBegin.format    = app->getSwapchainImageFormat();
+            colorBegin.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            colorBegin.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorBegin.mipLevels = 1;
+            batch.push_back(colorBegin);
+        }
+        if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
+            VulkanApp::BatchTransition depthBegin{};
+            depthBegin.image     = solidDepthImages[frameIndex];
+            depthBegin.format    = VK_FORMAT_D32_SFLOAT;
+            depthBegin.oldLayout = solidDepthImageLayouts[frameIndex];
+            depthBegin.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthBegin.mipLevels = 1;
+            batch.push_back(depthBegin);
+        }
+        app->recordTransitionBatch(cmd, batch);
+        if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE)
+            app->setImageLayoutTracked(solidColorImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+        if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
             app->recordTrackedLayoutForCommandBuffer(cmd, solidDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
             solidDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         }
@@ -151,23 +166,47 @@ void SolidRenderer::endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp*
     if (cmd == VK_NULL_HANDLE) return;
     vkCmdEndRendering(cmd);
 
-    // Barrier: transition solid color from COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
-    // after the solid pass so water / sky / debug renderers can sample it.
-    if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
-        RendererUtils::transitionImageLayout(
-            cmd, solidColorImages[frameIndex],
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
-        if (app) app->setImageLayoutTracked(solidColorImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-    }
-
-    // Barrier: transition solid depth from DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
-    // so water / debug / post-process renderers can sample the depth buffer.
-    if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        if (solidDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    // Batched end barriers (single vkCmdPipelineBarrier2 for color+depth;
+    // was: one call per image): solid color COLOR_ATTACHMENT_OPTIMAL →
+    // SHADER_READ_ONLY_OPTIMAL (sampled by water / sky / debug) and solid
+    // depth tracked → SHADER_READ_ONLY_OPTIMAL (sampled by water / debug /
+    // post-process). Same mapping as the single transitions.
+    {
+        std::vector<VulkanApp::BatchTransition> batch;
+        batch.reserve(2);
+        if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
+            VulkanApp::BatchTransition colorEnd{};
+            colorEnd.image     = solidColorImages[frameIndex];
+            colorEnd.format    = app ? app->getSwapchainImageFormat() : VK_FORMAT_B8G8R8A8_SRGB;
+            colorEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            colorEnd.mipLevels = 1;
+            batch.push_back(colorEnd);
+        }
+        if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
+            VulkanApp::BatchTransition depthEnd{};
+            depthEnd.image     = solidDepthImages[frameIndex];
+            depthEnd.format    = VK_FORMAT_D32_SFLOAT;
+            depthEnd.oldLayout = solidDepthImageLayouts[frameIndex];
+            depthEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            depthEnd.mipLevels = 1;
+            batch.push_back(depthEnd);
+        }
+        if (app) {
+            app->recordTransitionBatch(cmd, batch);
+        } else if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
+            // No app for tracked batching: single direct transition (legacy path).
+            RendererUtils::transitionImageLayout(
+                cmd, solidColorImages[frameIndex],
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+        }
+        if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
+            if (app) app->setImageLayoutTracked(solidColorImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+        }
+        if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
             if (app) {
-                app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, solidDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
                 app->recordTrackedLayoutForCommandBuffer(cmd, solidDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
             }
             solidDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

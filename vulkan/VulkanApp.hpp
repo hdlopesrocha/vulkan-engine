@@ -664,6 +664,35 @@ public:
         // Record an image layout transition into an existing command buffer (non-blocking).
         void recordTransitionImageLayoutLayer(VkCommandBuffer commandBuffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
 
+        // One batched transition request for recordTransitionBatch().
+        struct BatchTransition {
+            VkImage       image          = VK_NULL_HANDLE;
+            VkFormat      format         = VK_FORMAT_UNDEFINED;
+            VkImageLayout oldLayout      = VK_IMAGE_LAYOUT_UNDEFINED;
+            VkImageLayout newLayout      = VK_IMAGE_LAYOUT_UNDEFINED;
+            uint32_t      mipLevels      = 1;
+            uint32_t      baseArrayLayer = 0;
+            uint32_t      layerCount     = 1;
+            // When true and oldLayout == newLayout, the entry is emitted as a
+            // VK_ACCESS_2_NONE / VK_PIPELINE_STAGE_2_NONE no-op barrier inside
+            // the same vkCmdPipelineBarrier2 call (documents the frame-graph
+            // edge without stalling). Entries without isNoOp whose resolved
+            // layouts are equal are skipped entirely (same as the single
+            // transition early-out).
+            bool          isNoOp         = false;
+        };
+        // Record N image layout transitions in a SINGLE vkCmdPipelineBarrier2
+        // call. Applies the exact same stage/access mapping and layout
+        // tracking as recordTransitionImageLayoutLayer per image, so semantics
+        // are unchanged — only the barrier call count drops. Items must refer
+        // to distinct (image, layer-range) subresources. Swapchain images are
+        // skipped as in the single path. Returns the number of
+        // vkCmdPipelineBarrier2 calls emitted (0 if every item was a no-op).
+        // Throws std::runtime_error on an unhandled layout pair (before
+        // emitting anything) or an out-of-bounds layer range.
+        uint32_t recordTransitionBatch(VkCommandBuffer commandBuffer,
+                                       const std::vector<BatchTransition>& transitions);
+
         void run();
     // request the app to close the main window
     void requestClose();
