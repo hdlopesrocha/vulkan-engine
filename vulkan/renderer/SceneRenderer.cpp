@@ -9,6 +9,7 @@
 #include "../../math/ContainmentType.hpp"
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cfloat>
 #include <mutex>
@@ -1201,9 +1202,35 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
                                     uint32_t vertexBytesPerChunk,
                                     uint32_t indexBytesPerChunk)
 {
-    // Packed pools: the TOTAL shared element budget is the per-chunk ceiling
-    // times the chunk count. Actual allocation is data-driven (chunks pack
-    // into free spans), so this is the worst-case footprint.
+    // Worst-case sizing (startup-only; never reallocated at runtime):
+    //   maxChunks  = every mesh-bearing octree node (chunks + ancestors) plus
+    //                transient double-slotting during chunk rebuilds/edits.
+    //                Upper bound ≈ 8^depth ladder nodes; the kMax* constants
+    //                below hold ~2.5x the measured reference-scene peak while
+    //                keeping the reservation (~2 GB) under the ~4 GB radv
+    //                device-lost threshold. If world_ is set, its octree depth
+    //                is logged as a sanity check on the bound.
+    //   totalBytes = maxChunks × per-chunk ceiling (packed pools: allocation
+    //                is data-driven, so this is the footprint ceiling).
+    // Single large buffer + offset management (PackedSpaceAllocator) is used
+    // for growth without reallocation; sparse virtual aliasing
+    // (VK_BUFFER_CREATE_SPARSE_BINDING_BIT + vkBindBufferMemory2) is queried
+    // in VulkanApp::createLogicalDevice but NOT used — VMA has no sparse
+    // allocator and most iGPUs lack sparseResidencyBuffer. Buffer device
+    // address (VK_EXT/BDA) needs no separate buffer: the merged pools already
+    // provide the single-large-buffer + offset model.
+    if (world_) {
+        std::cout << "[SceneRenderer] initSlottedMode: world "
+                  << (world_->scene().maxChunkLod(LAYER_OPAQUE, 1.0f))
+                  << " maxChunkLod(opaque) / world set — pools sized to worst case\n";
+    }
+    std::cout << "[SceneRenderer] memory model: "
+              << (app->supportsSparseBinding()
+                      ? "sparse binding available (reserved: fixed pre-alloc pools)"
+                      : "no sparse binding — fixed pre-allocated pools + offsets")
+              << ", BDA " << (app->supportsBufferDeviceAddress() ? "supported" : "unsupported")
+              << std::endl;
+
     const uint64_t solidVertBytes = static_cast<uint64_t>(maxSolidChunks) * vertexBytesPerChunk;
     const uint64_t solidIdxBytes  = static_cast<uint64_t>(maxSolidChunks) * indexBytesPerChunk;
     const uint64_t waterVertBytes = static_cast<uint64_t>(maxWaterChunks) * vertexBytesPerChunk;
@@ -1215,6 +1242,31 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
     mainLiquidRenderer->getIndirectRenderer().initSlots(app, maxWaterChunks,
                                                         static_cast<uint32_t>(waterVertBytes),
                                                         static_cast<uint32_t>(waterIdxBytes));
+
+    // Validate the worst-case reservation once at init (slotted-mode
+    // ensureCapacity is a pure check — it asserts instead of growing).
+    {
+        const size_t solidVerts = solidVertBytes / sizeof(Vertex);
+        const size_t solidIdx = solidIdxBytes / sizeof(uint32_t);
+        const bool okSolid = mainSolidRenderer->getIndirectRenderer().ensureCapacity(
+            solidVerts, solidIdx, maxSolidChunks);
+        const size_t waterVerts = waterVertBytes / sizeof(Vertex);
+        const size_t waterIdx = waterIdxBytes / sizeof(uint32_t);
+        const bool okWater = mainLiquidRenderer->getIndirectRenderer().ensureCapacity(
+            waterVerts, waterIdx, maxWaterChunks);
+        if (!okSolid || !okWater) {
+            std::cerr << "[SceneRenderer] initSlottedMode: worst-case ensureCapacity FAILED\n";
+            assert(false && "initSlottedMode worst-case capacity check failed");
+        }
+    }
+
+    // Pre-allocate ALL vegetation culling buffers to max chunk count (4096)
+    // in the same init-time burst — zero vegetation vmaCreateBuffer calls
+    // after the first frame.
+    if (vegetationRenderer) {
+        vegetationRenderer->preallocate(app, VegetationRenderer::kMaxVegChunks,
+                                        VegetationRenderer::kMaxVegInstancesPerChunk);
+    }
 
     std::cout << "[SceneRenderer] packed pools: solid=" << maxSolidChunks
               << " blocks / water=" << maxWaterChunks

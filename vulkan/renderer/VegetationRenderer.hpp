@@ -170,6 +170,25 @@ public:
     // Uses a temporary command buffer (synchronous, one-time cost).
     void consolidateChunks(VulkanApp* app);
 
+    // Worst-case vegetation capacities, sized ONCE at startup so no runtime
+    // vmaCreateBuffer calls occur after the first frame. 4096 matches the
+    // solid slotted-mode chunk ceiling (SceneRenderer: every veg chunk keys
+    // off a solid chunk id); per-chunk instances are bounded by the chunk
+    // mesh size (1 instance per grass triangle, ≤ ~2k tris for the 512 KB
+    // per-chunk vertex budget).
+    static constexpr uint32_t kMaxVegChunks = 4096;
+    static constexpr uint32_t kMaxVegInstancesPerChunk = 2048;
+    static constexpr VkDeviceSize kMaxVegInstances =
+        static_cast<VkDeviceSize>(kMaxVegChunks) * kMaxVegInstancesPerChunk;
+    // Pre-allocate ALL culling buffers to worst-case capacity in a single
+    // init-time burst: concatenated instances, per-frame compact/count (main
+    // + impostor), chunk-info table, and cascade buffers. Idempotent — a
+    // second call with the same sizes is a no-op; different sizes assert.
+    // Must be called once during SceneRenderer::init before scene loading.
+    void preallocate(VulkanApp* app, uint32_t maxChunks = kMaxVegChunks,
+                     uint32_t maxInstancesPerChunk = kMaxVegInstancesPerChunk);
+    bool isPreallocated() const { return vegPreallocated; }
+
     // GPU frustum culling: dispatch compute shader that culls chunks against
     // viewProj and compacts visible draw commands. Must be called OUTSIDE any
     // render pass (compute dispatches are illegal inside dynamic rendering).
@@ -339,6 +358,9 @@ private:
 
     uint32_t vegNumChunks = 0;             // number of chunks in the consolidated metadata
     uint32_t vegChunkInfoCapacity = 0;     // current chunk-info table capacity (grows as needed)
+    uint32_t vegPreallocatedChunks = 0;    // worst-case chunk reservation from preallocate()
+    VkDeviceSize vegPreallocatedInstances = 0; // worst-case instance reservation
+    bool vegPreallocated = false;          // true once preallocate() has run
     uint32_t vegCullFrameIndex = 0;        // auto-cycling frame index for triple buffering
     uint32_t vegCullCurrentSlot = 0;       // slot selected for current frame's cull + draws
     bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata

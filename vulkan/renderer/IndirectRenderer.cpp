@@ -370,7 +370,28 @@ void IndirectRenderer::removeAllMeshes() {
 
 bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, size_t meshCount) {
     std::lock_guard<std::recursive_mutex> guard(mutex);
-    
+
+    // Slotted mode: buffers are pre-allocated ONCE at initSlots() to worst-case
+    // capacity and never reallocated at runtime (that is the point of the
+    // design — zero vmaCreateBuffer calls after the first frame). This is a
+    // pure check: exceeding capacity is a sizing bug, caught early via
+    // assert + log instead of a silent growth path.
+    if (slottedMode) {
+        const bool fits = vertexCount <= vertexCapacity &&
+                          indexCount <= indexCapacity &&
+                          meshCount <= meshCapacity;
+        if (!fits) {
+            std::cerr << "[IndirectRenderer] ensureCapacity: capacity exceeded in slotted mode "
+                      << "(need v=" << vertexCount << "/" << vertexCapacity
+                      << " i=" << indexCount << "/" << indexCapacity
+                      << " m=" << meshCount << "/" << meshCapacity
+                      << ") — bump initSlots() worst-case estimates\n";
+            assert(false && "IndirectRenderer slotted capacity exceeded — bump initSlots estimates");
+        }
+        return fits;
+    }
+
+    // Legacy append-based path (non-slotted): retain growth-on-demand.
     // Add 25% headroom for future growth
     size_t neededVertexCap = vertexCount + vertexCount / 4;
     size_t neededIndexCap = indexCount + indexCount / 4;
@@ -716,14 +737,18 @@ void IndirectRenderer::flushStagedMetaWrites(VkCommandBuffer cmd, uint32_t frame
 
     const size_t recordBytes = metaStageFlush_.size() * sizeof(MetaStageRecord);
     Buffer& sbuf = metaStageBuffers[frame];
+    // Fixed-capacity staging buffers are pre-allocated in initSlots() to
+    // meshCapacity records. Runtime growth is removed: exceeding the worst
+    // case is a sizing bug (assert), not a realloc trigger — the steady state
+    // must issue zero vmaCreateBuffer calls.
     if (sbuf.buffer == VK_NULL_HANDLE || metaStageCapBytes[frame] < recordBytes) {
         if (sbuf.buffer != VK_NULL_HANDLE) {
-            // Immediate destroy is safe: this staging buffer's last GPU use was
-            // frame-3's submission, which is guaranteed signaled before frame
-            // `frame`'s prepareCull runs (the frame-slot fence wait in drawFrame
-            // precedes render()/prepareCull — same rotation guarantee the
-            // compact buffers rely on).
-            app_->resources.removeBufferVma(sbuf.buffer, sbuf.allocation);
+            std::cerr << "[IndirectRenderer] flushStagedMetaWrites: staged meta overflow "
+                      << "(need " << recordBytes << " cap " << metaStageCapBytes[frame]
+                      << ") — bump initSlots() worst-case estimates\n";
+            assert(false && "IndirectRenderer meta-stage capacity exceeded");
+            metaStageFlush_.clear();
+            return;
         }
         sbuf = app_->createBuffer(recordBytes,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -919,6 +944,22 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     size_t oldVertexCapacity = vertexCapacity;
     size_t oldIndexCapacity = indexCapacity;
     size_t oldMeshCapacity = meshCapacity;
+
+    // Legacy growth path: buffers were pre-sized via ensureCapacity() at init.
+    // Exceeding the reservation at runtime is a sizing bug — catch it early
+    // via assert + log instead of silently reallocating (steady state must
+    // issue zero vmaCreateBuffer calls). Growth is retained only for the
+    // first reservation (capacity == 0).
+    if ((neededVertexCap > vertexCapacity && vertexCapacity > 0) ||
+        (neededIndexCap > indexCapacity && indexCapacity > 0) ||
+        (neededMeshCap > meshCapacity && meshCapacity > 0)) {
+        std::cerr << "[IndirectRenderer::rebuild] capacity exceeded "
+                  << "(need v=" << neededVertexCap << "/" << vertexCapacity
+                  << " i=" << neededIndexCap << "/" << indexCapacity
+                  << " m=" << neededMeshCap << "/" << meshCapacity
+                  << ") — size once via ensureCapacity() at startup\n";
+        assert(false && "IndirectRenderer::rebuild capacity exceeded — pre-size at startup");
+    }
 
     // Use max of current capacity or needed capacity (never shrink)
     if (neededVertexCap > vertexCapacity) vertexCapacity = neededVertexCap;
@@ -1710,6 +1751,14 @@ void IndirectRenderer::updateVegTable() {
     if (meshCapacity == 0) return;
     VkDeviceSize vegTableSize = sizeof(glm::vec4) * meshCapacity;
     bool needNew = (vegTableBuffer.buffer == VK_NULL_HANDLE) || (meshCapacity > vegTableCapacity);
+    if (needNew && vegTableBuffer.buffer != VK_NULL_HANDLE) {
+        // Pre-allocated in initSlots() to meshCapacity: regrowing at runtime
+        // is a sizing bug (assert) — steady state must not reallocate.
+        std::cerr << "[IndirectRenderer::updateVegTable] capacity exceeded "
+                  << "(need " << meshCapacity << " cap " << vegTableCapacity << ")\n";
+        assert(false && "IndirectRenderer veg-table capacity exceeded");
+        return;
+    }
     if (needNew) {
         if (vegTableBuffer.buffer != VK_NULL_HANDLE) {
             if (vegTableMapped) { vegTableBuffer.unmap(); vegTableMapped = nullptr; }
@@ -3076,6 +3125,23 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     app_ = app;
     std::lock_guard<std::recursive_mutex> guard(mutex);
 
+    // Fixed-capacity pools are allocated ONCE at startup to worst-case size.
+    // A second initSlots() call must never reallocate (that would reintroduce
+    // runtime vmaCreateBuffer churn): it is a sizing bug — assert unless the
+    // request exactly matches the existing reservation.
+    if (slottedMode) {
+        const bool same = (meshCapacity == static_cast<size_t>(maxActiveChunks)) &&
+                          (vertexCapacity == totalVertexBytes / sizeof(Vertex)) &&
+                          (indexCapacity == totalIndexBytes / sizeof(uint32_t));
+        if (!same) {
+            std::cerr << "[IndirectRenderer::initSlots] already initialized "
+                      << "(meshCap=" << meshCapacity << " vs " << maxActiveChunks << ") — "
+                      << "reallocation refused; size once at startup\n";
+            assert(false && "IndirectRenderer::initSlots called twice with different sizes");
+        }
+        return;
+    }
+
     // Packed-slot layout:
     //  - vertexCapacity/indexCapacity: TOTAL shared element pools. Each chunk
     //    packs its geometry into its OWN free-space span of these pools
@@ -3206,6 +3272,33 @@ void IndirectRenderer::initSlots(VulkanApp* app,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         visibleCountMapped[f] = static_cast<uint32_t*>(visibleCountBuffers[f].map(0));
         *visibleCountMapped[f] = 0;
+    }
+
+    // Pre-allocate the per-frame staged-meta staging buffers to worst case
+    // (one MetaStageRecord per draw entry) so flushStagedMetaWrites() never
+    // reallocates at runtime. Zero vmaCreateBuffer calls after the first frame.
+    {
+        const VkDeviceSize metaStageSize =
+            static_cast<VkDeviceSize>(meshCapacity) * sizeof(MetaStageRecord);
+        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+            metaStageBuffers[f] = app->createBuffer(metaStageSize,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            metaStageCapBytes[f] = static_cast<uint32_t>(metaStageSize);
+        }
+        metaStageFlush_.reserve(meshCapacity);
+    }
+
+    // Pre-allocate the per-draw vegetation table (binding 9 input) to
+    // meshCapacity so updateVegTable() never reallocates at runtime — its
+    // first-frame create becomes part of this init-time burst.
+    {
+        const VkDeviceSize vegTableSize = sizeof(glm::vec4) * meshCapacity;
+        vegTableBuffer = app->createBuffer(vegTableSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vegTableMapped = vegTableBuffer.map(0);
+        vegTableCapacity = static_cast<uint32_t>(meshCapacity);
     }
 
     // ── SDF debug-cube culling buffers (folded into the solid indirect.comp dispatch) ──

@@ -5539,6 +5539,32 @@ void VulkanApp::createLogicalDevice() {
             fprintf(stderr, "[VulkanApp] WARNING: VK_EXT_descriptor_buffer enabled but entry points missing — using fallback\n");
         }
     }
+    // ── Sparse binding + buffer device address support query ──────────────
+    // Feature detection (never version checks): sparseBinding and
+    // sparseResidencyBuffer come from VkPhysicalDeviceFeatures, while
+    // bufferDeviceAddress availability comes from VkPhysicalDeviceVulkan12Features
+    // via vkGetPhysicalDeviceFeatures2. Both are LOGGED at startup; renderers
+    // branch on supportsSparseBinding()/supportsBufferDeviceAddress().
+    // NOTE: VMA (used by createBuffer) has no sparse-binding allocator, so
+    // even when sparse is supported the renderers keep the fixed pre-allocated
+    // pool model (no runtime reallocation) and treat sparse as a future
+    // virtual-aliasing optimization, not a current allocation path.
+    {
+        VkPhysicalDeviceFeatures sparseFeats{};
+        vkGetPhysicalDeviceFeatures(physicalDevice, &sparseFeats);
+        sparseBufferSupported = (sparseFeats.sparseBinding == VK_TRUE) &&
+                                (sparseFeats.sparseResidencyBuffer == VK_TRUE);
+        VkPhysicalDeviceVulkan12Features bdaQuery{};
+        bdaQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        VkPhysicalDeviceFeatures2 bdaFeatures2{};
+        bdaFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        bdaFeatures2.pNext = &bdaQuery;
+        vkGetPhysicalDeviceFeatures2(physicalDevice, &bdaFeatures2);
+        bufferDeviceAddressSupported = (bdaQuery.bufferDeviceAddress == VK_TRUE);
+        printf("[VulkanApp] Sparse binding (virtual aliasing): %s; bufferDeviceAddress: %s\n",
+            sparseBufferSupported ? "supported" : "NOT supported — using pre-allocated pools",
+            bufferDeviceAddressSupported ? "supported" : "NOT supported");
+    }
     printf("[VulkanApp] Device features: bufferDeviceAddress=%d descriptorBuffer=%d\n",
         (int)(vulkan12Features.bufferDeviceAddress == VK_TRUE), (int)descriptorBufferSupported);
 

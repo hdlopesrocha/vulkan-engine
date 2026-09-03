@@ -88,6 +88,23 @@ class VulkanApp {
     // When false, all renderers must use the classic vkUpdateDescriptorSets
     // fallback path (init-time / on-change writes only, never per-frame).
     bool descriptorBufferSupported = false;
+    // Whether the physical device supports sparse buffer binding
+    // (sparseBinding + sparseResidencyBuffer). Queried once in
+    // createLogicalDevice via feature detection (never version checks).
+    // When true, renderers MAY use VK_BUFFER_CREATE_SPARSE_BINDING_BIT +
+    // vkBindBufferMemory2 for virtual memory aliasing to grow a buffer's
+    // logical size without reallocation. When false (most iGPUs), renderers
+    // must fall back to a single pre-allocated buffer + offset management
+    // (the merged packed-pool model already used by IndirectRenderer).
+    bool sparseBufferSupported = false;
+    // Whether buffer device address (Vulkan 1.2 core) is available on this
+    // device. Queried via VkPhysicalDeviceVulkan12Features. Renderers use
+    // this to decide whether the single-large-buffer + BDA offset path is
+    // viable; the flag is informational — BDA is only ENABLED on the device
+    // when actually needed (GPU-assisted validation, descriptor buffers).
+    bool bufferDeviceAddressSupported = false;
+    bool supportsSparseBinding() const { return sparseBufferSupported; }
+    bool supportsBufferDeviceAddress() const { return bufferDeviceAddressSupported; }
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptorBufferProps{};
     // Extension entry points, resolved after vkCreateDevice when supported.
     PFN_vkGetDescriptorEXT fpGetDescriptorEXT = nullptr;
