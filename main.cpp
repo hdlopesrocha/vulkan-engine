@@ -3962,11 +3962,11 @@ void MyApp::ensureCubemapResources() {
     }
 
     // 7. Per-face parallel resources: each face gets its own compact/visible indirect
-    //    buffers and its own gfx + compute descriptor sets, so the 6 face
-    //    rasterizations can run concurrently on different queues without sharing any
-    //    writable resource. The 6 culls stay serial (they share a scratch buffer) but
-    //    each writes its OWN per-face compact/visible, so a raster reading face f's
-    //    buffers never races with the (serial) cull of face f+1.
+    //    buffers and its own gfx + compute descriptor sets, so the 6 face culls AND
+    //    the 6 face rasterizations run concurrently on different queues without
+    //    sharing any writable resource. Each face cull additionally writes its OWN
+    //    visible-lods scratch buffer (binding 4, owned by the IndirectRenderer —
+    //    see ensureFaceScratchBuffers), so neither the culls nor the rasters race.
     {
         VkBufferUsageFlags sUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         VkBufferUsageFlags vUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;

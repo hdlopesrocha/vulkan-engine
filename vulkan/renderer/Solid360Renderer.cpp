@@ -7,6 +7,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <stdexcept>
 #include <iostream>
+#include <cstdio>
+#include <algorithm>
 #include <vector>
 
 Solid360Renderer::Solid360Renderer() {}
@@ -41,6 +43,10 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
         if (equalComparePipelineLayout != VK_NULL_HANDLE) {
             app->resources.removePipelineLayout(equalComparePipelineLayout);
             vkDestroyPipelineLayout(dev, equalComparePipelineLayout, nullptr);
+        }
+        if (cullQueryPool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(dev, cullQueryPool, nullptr);
+            cullQueryPool = VK_NULL_HANDLE;
         }
     }
     for (uint32_t i = 0; i < STAGING_FRAMES; ++i) {
@@ -361,20 +367,96 @@ void Solid360Renderer::render(VulkanApp* app,
             throw std::runtime_error("[solid360] failed to begin command buffer");
     };
 
-    // ---- Phase A: serial per-face indirect cull (one CB, six face signals) -------
-    // prepareCullWithDescriptor shares a single visible-lods scratch buffer, so the
-    // 6 face culls MUST run serially (no HW parallelism). Each face writes its OWN
-    // compact/visible buffers (faceRes) so the (parallel) raster passes never race
-    // with the next face's cull. We keep all 6 culls in ONE command buffer (so the
-    // geometry upload inside acquireBuffers happens once, not six times) and signal
-    // one dedicated semaphore per face at the end; each raster waits only its own
-    // semaphore, so the 6 rasterizations still overlap fully with each other.
+    // ---- Phase A: parallel per-face indirect cull (6 CBs, 6 queues) ------------
+    // Each face records its OWN cull command buffer: UBO slot upload + solid cull
+    // + water cull, writing that face's compact/visible outputs and its OWN
+    // visible-lods scratch buffer (binding 4, one per face — see
+    // IndirectRenderer::ensureFaceScratchBuffers). No writable resource is shared
+    // between faces, so the 6 culls dispatch concurrently on the distinct
+    // graphics-family queues (app->getCubeQueue(face); graphics queues have
+    // compute capability). Each CB signals its own semCullFace[face], which only
+    // that face's raster CB waits on. The acquireBuffers barrier inside
+    // prepareCullWithDescriptor is recorded per-CB (idempotent reads of the same
+    // shared geometry — safe to repeat).
+    // The culls run after the main cull AND the shadow map are ready (timeline
+    // waits below), so rasterization (which samples the shadow map at set 2)
+    // never races them. GPU timestamp profiling brackets each face's cull work
+    // (see profileThisFrame); the non-blocking readback + log follow the loop.
     {
-        VkCommandBuffer cullCmd;
-        beginOne(cullCmd);
-        CommandBufferState cullState;
-        cmdState = &cullState;
+        // Lazily create the 12-query timestamp pool (2 queries per face) when
+        // the graphics queue family supports timestamps; otherwise profiling
+        // stays disabled (cullQueryPool == VK_NULL_HANDLE).
+        if (cullQueryPool == VK_NULL_HANDLE && app) {
+            uint32_t qCount = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(app->getPhysicalDevice(), &qCount, nullptr);
+            std::vector<VkQueueFamilyProperties> qProps(qCount);
+            if (qCount > 0)
+                vkGetPhysicalDeviceQueueFamilyProperties(app->getPhysicalDevice(), &qCount, qProps.data());
+            for (const auto& q : qProps) {
+                if (q.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+                    // Timestamp period lives in the device limits (ns per tick);
+                    // per-queue-family timestampValidBits gates query support.
+                    if (q.timestampValidBits > 0) {
+                        VkPhysicalDeviceProperties props{};
+                        vkGetPhysicalDeviceProperties(app->getPhysicalDevice(), &props);
+                        cullTimestampPeriod = props.limits.timestampPeriod;
+                        VkQueryPoolCreateInfo qi{};
+                        qi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+                        qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+                        qi.queryCount = 12;
+                        if (vkCreateQueryPool(app->getDevice(), &qi, nullptr, &cullQueryPool) != VK_SUCCESS)
+                            cullQueryPool = VK_NULL_HANDLE;
+                    }
+                    break;
+                }
+            }
+        }
+        ++cullFrameCounter;
+        // Profile one frame out of every 240: the next reset lands 240 frames
+        // later, so the host readback below can never race a device reset of
+        // the same queries (no WAIT stall, no reset-vs-read hazard).
+        const bool profileThisFrame = (cullQueryPool != VK_NULL_HANDLE) && (cullFrameCounter % 240 == 1);
 
+        // Initialise the static bindings 0..9 of each cube360 face compute set
+        // exactly once (scene indirect/bounds buffers + this face's own
+        // compact/visible targets + OWN scratch buffer at binding 4 + veg
+        // dummies). These bindings never change for the set's lifetime, so
+        // writing once avoids re-touching an in-flight set every frame
+        // (VUID-vkUpdateDescriptorSets-None-03047) without needing
+        // update-after-bind. prepareCullWithDescriptor fills 17..36. When
+        // capacity growth reallocates a face scratch buffer, binding 4 alone is
+        // re-written exactly once (tracked via faceComputeScratchBound_).
+        auto writeCoreOnce = [&](VkDescriptorSet ds, IndirectRenderer& ind,
+                                 VkBuffer compact, VkBuffer visible, VkBuffer scratch) {
+            VkDevice dev = app->getDevice();
+            VkBuffer want = (scratch != VK_NULL_HANDLE) ? scratch : ind.getVisibleLodsScratchBuffer();
+            auto it = faceComputeDsInit_.find(ds);
+            if (it == faceComputeDsInit_.end()) {
+                DescriptorWriter(dev)
+                    .writeBuffer(ds, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getIndirectBuffer().buffer, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, compact, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getBoundsBuffer().buffer, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, visible, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, want, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                    .writeBuffer(ds, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
+                    .flush();
+                faceComputeDsInit_[ds] = true;
+                faceComputeScratchBound_[ds] = want;
+                return;
+            }
+            if (want != VK_NULL_HANDLE && faceComputeScratchBound_[ds] != want) {
+                DescriptorWriter(dev)
+                    .writeBuffer(ds, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, want, 0, VK_WHOLE_SIZE)
+                    .flush();
+                faceComputeScratchBound_[ds] = want;
+            }
+        };
+
+        // One cull CB per face; each is submitted to its own queue below.
         for (uint32_t face = 0; face < 6; ++face) {
             glm::mat4 faceView = glm::lookAt(camPos, camPos + faces[face].target, faces[face].up);
             glm::mat4 faceVP = faceProj * faceView;
@@ -384,65 +466,122 @@ void Solid360Renderer::render(VulkanApp* app,
             faceUBO.invViewProjection = glm::inverse(faceVP);
             faceUBO.materialFlags.x = 1.0f;
 
+            // Resolve this face's scratch buffers, ensuring they exist at the
+            // current capacity (uvec2 per draw entry). Null when the renderer
+            // has no capacity yet — prepareCullWithDescriptor then falls back
+            // to the legacy serial scratch for that dispatch.
+            VkBuffer solidScratch = VK_NULL_HANDLE;
+            if (renderSolid && solidRenderer) {
+                IndirectRenderer& ind = solidRenderer->getIndirectRenderer();
+                const size_t cap = ind.getMeshCapacity();
+                if (cap > 0) {
+                    ind.ensureFaceScratchBuffers(app, static_cast<VkDeviceSize>(cap * sizeof(uint32_t) * 2));
+                    solidScratch = ind.getVisibleLodsScratchBuffer(face);
+                }
+            }
+            VkBuffer waterScratch = VK_NULL_HANDLE;
+            if (renderWater && waterRenderer) {
+                IndirectRenderer& ind = waterRenderer->getIndirectRenderer();
+                const size_t cap = ind.getMeshCapacity();
+                if (cap > 0) {
+                    ind.ensureFaceScratchBuffers(app, static_cast<VkDeviceSize>(cap * sizeof(uint32_t) * 2));
+                    waterScratch = ind.getVisibleLodsScratchBuffer(face);
+                }
+            }
+
+            VkCommandBuffer cullCmd;
+            beginOne(cullCmd);
+            CommandBufferState cullState;
+            cmdState = &cullState;
+
             // Upload face UBO into the per-face slot of the 6-slot cube UBO via a
             // host-mapped staging copy (avoids vkCmdUpdateBuffer's FULL_QUEUE barrier).
+            // The memcpy runs on the CPU at record time; the 6 GPU copies read
+            // disjoint ranges of the same staging buffer and write disjoint dst
+            // slots, so concurrent execution is race-free.
             VkDeviceSize off = static_cast<VkDeviceSize>(face) * sizeof(UniformObject);
             memcpy(staging.map(off), &faceUBO, sizeof(UniformObject));
             VkBufferCopy copy{ off, off, sizeof(UniformObject) };
             vkCmdCopyBuffer(cullCmd, staging.buffer, faceUboBuffer, 1, &copy);
 
-            // Initialise the static bindings 0..9 of each cube360 face compute set
-            // exactly once (scene indirect/bounds/visibleLods buffers + this face's
-            // own compact/visible targets + veg dummies). These bindings never change
-            // for the set's lifetime, so writing once avoids re-touching an in-flight
-            // set every frame (VUID-vkUpdateDescriptorSets-None-03047) without needing
-            // update-after-bind. prepareCullWithDescriptor fills 17..36.
-            auto writeCoreOnce = [&](VkDescriptorSet ds, IndirectRenderer& ind,
-                                     VkBuffer compact, VkBuffer visible) {
-                if (faceComputeDsInit_.count(ds)) return;
-                VkDevice dev = app->getDevice();
-                DescriptorWriter(dev)
-                    .writeBuffer(ds, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getIndirectBuffer().buffer, 0, VK_WHOLE_SIZE)
-                    .writeBuffer(ds, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, compact, 0, VK_WHOLE_SIZE)
-                    .writeBuffer(ds, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getBoundsBuffer().buffer, 0, VK_WHOLE_SIZE)
-                    .writeBuffer(ds, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, visible, 0, VK_WHOLE_SIZE)
-                    .writeBuffer(ds, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVisibleLodsScratchBuffer(), 0, VK_WHOLE_SIZE)
-                    .writeBuffer(ds, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
-                    .writeBuffer(ds, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
-                    .writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
-                    .writeBuffer(ds, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
-                    .writeBuffer(ds, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
-                    .flush();
-                faceComputeDsInit_[ds] = true;
-            };
+            if (profileThisFrame) {
+                vkCmdResetQueryPool(cullCmd, cullQueryPool, face * 2, 2);
+                vkCmdWriteTimestamp(cullCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                    cullQueryPool, face * 2);
+            }
 
-            // Solid face cull → per-face compact/visible buffers
-            if (renderSolid && faceRes.solidComputeDs[face] != VK_NULL_HANDLE &&
+            // Solid face cull → per-face compact/visible buffers + face scratch
+            if (renderSolid && solidRenderer && faceRes.solidComputeDs[face] != VK_NULL_HANDLE &&
                 faceRes.compact[face] != VK_NULL_HANDLE && faceRes.visible[face] != VK_NULL_HANDLE) {
                 writeCoreOnce(faceRes.solidComputeDs[face], solidRenderer->getIndirectRenderer(),
-                              faceRes.compact[face], faceRes.visible[face]);
+                              faceRes.compact[face], faceRes.visible[face], solidScratch);
                 solidRenderer->getIndirectRenderer().prepareCullWithDescriptor(
                     cullCmd, faceVP, faceRes.solidComputeDs[face],
-                    faceRes.compact[face], faceRes.visible[face], camPos);
+                    faceRes.compact[face], faceRes.visible[face], camPos,
+                    8.0f, 16, true, false, solidScratch);
             }
-            // Water face cull → per-face compact/visible buffers
+            // Water face cull → per-face compact/visible buffers + face scratch
             if (renderWater && waterRenderer && faceRes.waterComputeDs[face] != VK_NULL_HANDLE &&
                 faceRes.waterCompact[face] != VK_NULL_HANDLE && faceRes.waterVisible[face] != VK_NULL_HANDLE) {
                 writeCoreOnce(faceRes.waterComputeDs[face], waterRenderer->getIndirectRenderer(),
-                              faceRes.waterCompact[face], faceRes.waterVisible[face]);
+                              faceRes.waterCompact[face], faceRes.waterVisible[face], waterScratch);
                 waterRenderer->getIndirectRenderer().prepareCullWithDescriptor(
                     cullCmd, faceVP, faceRes.waterComputeDs[face],
-                    faceRes.waterCompact[face], faceRes.waterVisible[face], camPos);
+                    faceRes.waterCompact[face], faceRes.waterVisible[face], camPos,
+                    8.0f, 16, true, false, waterScratch);
+            }
+
+            if (profileThisFrame) {
+                vkCmdWriteTimestamp(cullCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                    cullQueryPool, face * 2 + 1);
+            }
+
+            // Submit to this face's graphics-family queue (compute-capable).
+            // Waits: main cull + shadow map + prior solid360 work (timeline).
+            // Signals: this face's raster CB waits on semCullFace[face] only, so
+            // the 6 cull→raster pairs overlap fully across the cube queues.
+            app->submitCommandBufferAsyncToQueue(cullCmd, app->getCubeQueue(face), nullptr,
+                { waitCullSolid360, waitShadowSolid360, waitSolid360 }, false, { semCullFace[face] },
+                { waitCullSolid360Value, waitShadowSolid360Value, waitSolid360Value });
+        }
+        if (profileThisFrame) cullProfilePending = true;
+        // Non-blocking readback of the last profiled frame's cull timestamps.
+        // Skipped on the profile frame itself (results cannot be ready yet) and
+        // whenever any query is still unavailable — the pool is only reset on
+        // profile frames (1/240), so a pending read never races a device reset.
+        // Parallel wall time should approach a single face's time, not the sum.
+        if (cullProfilePending && !profileThisFrame && cullQueryPool != VK_NULL_HANDLE) {
+            struct TsAvail { uint64_t ts; uint64_t avail; };
+            TsAvail results[12] = {};
+            VkResult qr = vkGetQueryPoolResults(app->getDevice(), cullQueryPool, 0, 12,
+                sizeof(results), results, sizeof(TsAvail),
+                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            if (qr == VK_SUCCESS) {
+                bool allReady = true;
+                for (int i = 0; i < 12; ++i) allReady &= (results[i].avail != 0);
+                if (allReady) {
+                    uint64_t faceNs[6] = {};
+                    uint64_t sum = 0, mx = 0;
+                    for (uint32_t f = 0; f < 6; ++f) {
+                        const uint64_t d = results[f * 2 + 1].ts - results[f * 2].ts;
+                        faceNs[f] = static_cast<uint64_t>(d * cullTimestampPeriod);
+                        sum += faceNs[f];
+                        mx = std::max(mx, faceNs[f]);
+                    }
+                    fprintf(stderr,
+                        "[solid360] cull profile: face ns=[%llu,%llu,%llu,%llu,%llu,%llu] "
+                        "max=%llu sum=%llu (parallel wall should approach max, not sum)\n",
+                        (unsigned long long)faceNs[0], (unsigned long long)faceNs[1],
+                        (unsigned long long)faceNs[2], (unsigned long long)faceNs[3],
+                        (unsigned long long)faceNs[4], (unsigned long long)faceNs[5],
+                        (unsigned long long)mx, (unsigned long long)sum);
+                    cullProfilePending = false;
+                }
+            } else {
+                cullProfilePending = false; // pool reset or device loss — retry next profile frame
             }
         }
-
-        // Signal all 6 per-face cull semaphores; each raster waits only its own.
-        // The cull must run after the main cull AND the shadow map are ready, so the
-        // rasterization (which samples the shadow map at set 2) never races it.
-        std::vector<VkSemaphore> cullSigns(semCullFace, semCullFace + 6);
-        app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), nullptr,
-            { waitCullSolid360, waitShadowSolid360, waitSolid360 }, false, cullSigns,
-            { waitCullSolid360Value, waitShadowSolid360Value, waitSolid360Value });
+        cmdState = nullptr;
     }
 
     // ---- Phase B: parallel per-face rasterization on distinct graphics queues ----

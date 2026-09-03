@@ -49,16 +49,20 @@ public:
     // Create depth-only and EQUAL-compare pipelines for deferred depth testing
     void createSolid360Pipelines(VulkanApp* app);
 
-    // Render the 6 cubemap faces of the solid360 reflections in parallel. The 6 face
-    // rasterizations are submitted as independent primary command buffers to distinct
-    // graphics-family queues (app->getCubeQueue, round-robin); the indirect cull must
-    // stay serial (it relies on a shared scratch buffer), so a single cull command
-    // buffer feeds each face its own compact/visible buffers, then signals one
-    // per-face semaphore (semCullFace[f]) that the raster CB waits on. A final join
-    // command buffer waits all semFaceDone[f] and signals signalSolid360 so downstream
-    // water/composite passes can sample the cubemap. The caller must pre-create
-    // semCullFace[6] and semFaceDone[6]; faceRes holds the per-face descriptors and
-    // indirect buffers (see Cube360FaceResources).
+    // Render the 6 cubemap faces of the solid360 reflections in parallel. The 6
+    // face culls are recorded as independent primary command buffers — each with
+    // its OWN visible-lods scratch buffer (binding 4) plus its own
+    // compact/visible outputs — and submitted to distinct graphics-family queues
+    // (app->getCubeQueue, round-robin; graphics queues have compute capability),
+    // each signalling its own semCullFace[f] that the matching raster CB waits
+    // on. A final join command buffer waits all semFaceDone[f] and signals
+    // signalSolid360 so downstream water/composite passes can sample the cubemap.
+    // The caller must pre-create semCullFace[6] and semFaceDone[6]; faceRes holds
+    // the per-face descriptors and indirect buffers (see Cube360FaceResources).
+    // GPU timestamp profiling: every 240th frame each cull CB brackets its work
+    // with vkCmdWriteTimestamp (2 queries per face); the result is read back
+    // non-blockingly and logged — parallel wall time should approach a single
+    // face's time, not the 6-face sum.
     void render(VulkanApp* app,
                         SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                         SolidRenderer* solidRenderer,
@@ -102,6 +106,17 @@ private:
     // would touch an in-flight set (VUID-vkUpdateDescriptorSets-None-03047) when
     // update-after-bind is unavailable. prepareCullWithDescriptor handles 17..36.
     std::unordered_map<VkDescriptorSet, bool> faceComputeDsInit_;
+    // Scratch buffer bound at binding 4 per face compute set. Re-written exactly
+    // once when capacity growth reallocates the per-face scratch buffers.
+    std::unordered_map<VkDescriptorSet, VkBuffer> faceComputeScratchBound_;
+
+    // GPU timestamp query pool for cull profiling: 2 queries per face (start/end).
+    // Created lazily on first render when the graphics queue family supports
+    // timestamps; VK_NULL_HANDLE disables profiling.
+    VkQueryPool cullQueryPool = VK_NULL_HANDLE;
+    float cullTimestampPeriod = 0.0f;
+    uint64_t cullFrameCounter = 0;
+    bool cullProfilePending = false;
 
     // Deferred depth test pipelines
     TrackedHandle<VkPipeline> depthOnlyPipeline;

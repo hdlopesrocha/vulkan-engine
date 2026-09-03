@@ -226,10 +226,51 @@ void IndirectRenderer::cleanup(VulkanApp* app) {
     for (auto& b : compactIndirectBuffers) b = {};
     for (auto& b : visibleLodBuffers) b = {};
     visibleLodsScratch = {};
+    for (auto& b : visibleLodsScratchFaces) b = {};
+    faceScratchSize_ = 0;
     boundsBuffer = {};
     for (auto& b : visibleCountBuffers) b = {};
     for (auto& b : visibleCountReadback) b = {};
     lastVisibleCount = {0, 0, 0};
+}
+
+// (Re)allocate the 6 per-face chosen-LoD scratch buffers to `lodBufSize` bytes.
+// Each face cull dispatch writes one uvec2 per draw entry keyed to its own
+// viewProj, so concurrent dispatches must never share a buffer. Buffers are
+// created once and grown only when capacity increases (no per-frame churn);
+// existing correctly-sized buffers are reused. DEVICE_LOCAL cull outputs,
+// zeroed by createBuffer and reset per dispatch with vkCmdFillBuffer (hence
+// TRANSFER_DST usage).
+void IndirectRenderer::ensureFaceScratchBuffers(VulkanApp* app, VkDeviceSize lodBufSize) {
+    if (!app || lodBufSize == 0) return;
+    // Grow path: capacity increased since the last allocation — retire the old
+    // buffers via the frame-fence-gated deferred destroy (in-flight culls may
+    // still reference them) and recreate at the new size. Mirrors rebuild()'s
+    // local scheduleDestroyBuffer (a lambda there, so the logic is repeated).
+    if (faceScratchSize_ != 0 && lodBufSize > faceScratchSize_) {
+        for (uint32_t f = 0; f < NUM_FACE_SCRATCH; ++f) {
+            if (visibleLodsScratchFaces[f].buffer != VK_NULL_HANDLE) {
+                Buffer copy = visibleLodsScratchFaces[f];
+                app->deferDestroyUntilFence(app->getCurrentFrameFence(), [app, copy]() {
+                    if (copy.buffer != VK_NULL_HANDLE) {
+                        app->resources.removeBufferVma(copy.buffer, copy.allocation);
+                    }
+                });
+                visibleLodsScratchFaces[f] = {};
+            }
+        }
+        faceScratchSize_ = 0;
+    }
+    for (uint32_t f = 0; f < NUM_FACE_SCRATCH; ++f) {
+        Buffer& b = visibleLodsScratchFaces[f];
+        if (b.buffer == VK_NULL_HANDLE) {
+            b = app->createBuffer(lodBufSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
+    }
+    if (visibleLodsScratchFaces[0].buffer != VK_NULL_HANDLE)
+        faceScratchSize_ = lodBufSize;
 }
 
 uint32_t IndirectRenderer::addMesh(const Geometry& mesh) {
@@ -1248,6 +1289,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
+    // Per-face scratch buffers for parallel 6-face culls (one writable buffer
+    // per concurrent dispatch — see ensureFaceScratchBuffers).
+    ensureFaceScratchBuffers(app, lodBufSize);
 
     // Create the per-frame visible count buffers. The counts are DEVICE_LOCAL
     // cull outputs (atomically appended by the dispatch, consumed by the
@@ -2703,7 +2747,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
                                                   VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
                                                   glm::vec3 camPos, float lodBias, int maxTargetLod,
-                                                  bool doMainCull, bool doCascadeCull) {
+                                                  bool doMainCull, bool doCascadeCull,
+                                                  VkBuffer scratchBuffer) {
     if (computePipeline == VK_NULL_HANDLE) {
         // No meshes loaded yet (e.g. during parallel background loading). Nothing to cull.
         return;
@@ -2711,6 +2756,14 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     if (outCompactBuffer == VK_NULL_HANDLE || computeDesc == VK_NULL_HANDLE) {
         throw std::runtime_error("IndirectRenderer::prepareCullWithDescriptor requires valid outCompactBuffer and computeDesc");
     }
+    // Resolve the chosen-LoD scratch buffer for THIS dispatch. Parallel face
+    // culls must each pass their own per-face buffer (binding 4); the legacy
+    // shared scratch is only the serial fallback. Documented with a short
+    // barrier rationale below: each dispatch fills + writes ONLY its own
+    // scratch, so concurrent dispatches on distinct queues never share a
+    // writable resource and need no cross-dispatch ordering.
+    VkBuffer scratch = scratchBuffer != VK_NULL_HANDLE
+        ? scratchBuffer : visibleLodsScratch.buffer;
 
     // The merged indirect.comp layout (bindings 17..23) references the cascade
     // resources statically. Solid360 / cube360 / back-face culls never run the
@@ -2804,17 +2857,16 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
         preFill[0].offset = 0;
         preFill[0].size = VK_WHOLE_SIZE;
 
-        // The caller's descriptor set may bind this instance's shared
-        // visibleLodsScratch as the chosen-LoD output (e.g. the solid-360
-        // cubemap DS). That buffer is written by every face's dispatch, so a
-        // prior dispatch's writes must complete before our fill overwrites
-        // them — same WRITE_AFTER_WRITE reasoning as the count buffer.
+        // The caller's descriptor set binds `scratch` (binding 4) as the
+        // chosen-LoD output. With per-face scratch buffers each face owns its
+        // scratch, so no cross-face WRITE_AFTER_WRITE ordering is needed — the
+        // barrier below only orders THIS command buffer's own prior writes.
         // (Skipped when the scratch hasn't been allocated yet — VK_NULL_HANDLE
         // is not a valid barrier buffer.)
         uint32_t preFillCount = 1;
-        if (visibleLodsScratch.buffer != VK_NULL_HANDLE) {
+        if (scratch != VK_NULL_HANDLE) {
             preFill[preFillCount] = preFill[0];
-            preFill[preFillCount].buffer = visibleLodsScratch.buffer;
+            preFill[preFillCount].buffer = scratch;
             preFill[preFillCount].size = VK_WHOLE_SIZE;
             ++preFillCount;
         }
@@ -2839,10 +2891,10 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     // data — a garbage indexCount here would make the indirect draw's GE
     // process a giant draw and never finish.
     vkCmdFillBuffer(cmd, outCompactBuffer, 0, VK_WHOLE_SIZE, 0);
-    // Zero the shared chosen-LoD scratch as well: untouched entries from a
+    // Zero the chosen-LoD scratch as well: untouched entries from a
     // previous frame must never be misread as a stale (chunk, level) pair.
-    if (visibleLodsScratch.buffer != VK_NULL_HANDLE)
-        vkCmdFillBuffer(cmd, visibleLodsScratch.buffer, 0, VK_WHOLE_SIZE, 0);
+    if (scratch != VK_NULL_HANDLE)
+        vkCmdFillBuffer(cmd, scratch, 0, VK_WHOLE_SIZE, 0);
     {
         VkMemoryBarrier2 fillBarrier{};
         fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -2863,8 +2915,9 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     // prior vkCmdFillBuffer (e.g. main pass) or written by a previous face's
     // compute dispatch. Ensure that write is visible before this dispatch
     // writes to it again (TRANSFER_WRITE/SHADER_WRITE → COMPUTE hazard).
-    // The shared visibleLodsScratch (written by this dispatch via the caller's
-    // descriptor set) needs the same fill→compute ordering.
+    // This dispatch's own scratch (binding 4) needs the same fill→compute
+    // ordering. With per-face scratch buffers the scratch barrier is purely
+    // intra-CB (no cross-face dependency).
     {
         VkBufferMemoryBarrier2 compactBarriers[2] = {};
         compactBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
@@ -2882,9 +2935,9 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
         compactBarriers[0].size = VK_WHOLE_SIZE;
 
         uint32_t compactBarrierCount = 1;
-        if (visibleLodsScratch.buffer != VK_NULL_HANDLE) {
+        if (scratch != VK_NULL_HANDLE) {
             compactBarriers[compactBarrierCount] = compactBarriers[0];
-            compactBarriers[compactBarrierCount].buffer = visibleLodsScratch.buffer;
+            compactBarriers[compactBarrierCount].buffer = scratch;
             compactBarriers[compactBarrierCount].size = VK_WHOLE_SIZE;
             ++compactBarrierCount;
         }
@@ -3267,6 +3320,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
+    ensureFaceScratchBuffers(app, lodBufSize);
 
     // Visible count buffers (one per cull frame). DEVICE_LOCAL cull outputs
     // (TRANSFER_SRC so prepareCull can copy them to the readback buffers);
