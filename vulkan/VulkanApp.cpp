@@ -31,6 +31,12 @@ namespace {
 #define VK_KHR_MAINTENANCE5_EXTENSION_NAME "VK_KHR_maintenance5"
 #endif
 
+// VK_EXT_descriptor_buffer may not be in older Vulkan headers (pre-1.3.235).
+// Define the extension name so we can check for runtime support.
+#ifndef VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME
+#define VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME "VK_EXT_descriptor_buffer"
+#endif
+
 // Vulkan 1.4 features exposed here via their KHR extension structs so the same
 // code path works on both 1.3 and 1.4 runtimes (the 1.3 loader/validation
 // layers do not recognize the monolithic VkPhysicalDeviceVulkan14Features).
@@ -5400,6 +5406,7 @@ void VulkanApp::createLogicalDevice() {
     pipelineBinarySupported = deviceSupports14; // core in 1.4
     bool dynRenderLocalReadSupported = deviceSupports14; // core in 1.4
     bool maintenance6Supported = deviceSupports14;       // core in 1.4
+    bool descriptorBufferExtFound = false;
     uint32_t availExtCount = 0;
     vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &availExtCount, nullptr);
     if (availExtCount > 0) {
@@ -5418,7 +5425,38 @@ void VulkanApp::createLogicalDevice() {
             if (strcmp(ext.extensionName, VK_KHR_MAINTENANCE6_EXTENSION_NAME) == 0) {
                 maintenance6Supported = true;
             }
+            if (strcmp(ext.extensionName, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) == 0) {
+                descriptorBufferExtFound = true;
+            }
         }
+    }
+    // Query VK_EXT_descriptor_buffer feature support via vkGetPhysicalDeviceFeatures2.
+    // Feature detection (not version checks): the extension may be advertised
+    // without the descriptorBuffer feature, in which case we stay on the
+    // classic vkUpdateDescriptorSets fallback path.
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeaturesQuery{};
+    descriptorBufferFeaturesQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT;
+    VkPhysicalDeviceFeatures2 features2Query{};
+    features2Query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features2Query.pNext = &descriptorBufferFeaturesQuery;
+    vkGetPhysicalDeviceFeatures2(physicalDevice, &features2Query);
+    const bool descriptorBufferFeatSupported =
+        descriptorBufferExtFound && descriptorBufferFeaturesQuery.descriptorBuffer == VK_TRUE;
+    // Enabling struct chained into VkDeviceCreateInfo::pNext only when supported.
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeaturesEnable{};
+    descriptorBufferFeaturesEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT;
+    descriptorBufferFeaturesEnable.descriptorBuffer = VK_TRUE;
+    if (descriptorBufferFeatSupported) {
+        // Chain: descriptorBuffer -> vulkan14 -> vulkan12 -> ... (createInfo.pNext
+        // is rewired below to point at descriptorBufferFeaturesEnable).
+        descriptorBufferFeaturesEnable.pNext = &vulkan14Features;
+        // Descriptor buffers require bufferDeviceAddress (spec). Enable it
+        // alongside whenever we opt into descriptor buffers.
+        vulkan12Features.bufferDeviceAddress = VK_TRUE;
+        extensions.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+        printf("[VulkanApp] VK_EXT_descriptor_buffer supported — enabling (GPU-side descriptor updates)\n");
+    } else {
+        printf("[VulkanApp] VK_EXT_descriptor_buffer not supported — using vkUpdateDescriptorSets fallback (init-time only)\n");
     }
     if (maintenance5Supported && !deviceSupports14) {
         extensions.push_back(VK_KHR_MAINTENANCE5_EXTENSION_NAME);
@@ -5442,6 +5480,12 @@ void VulkanApp::createLogicalDevice() {
     if (dynRenderLocalReadSupported) vulkan14Features.dynamicRenderingLocalRead = VK_TRUE;
     if (maintenance6Supported)     vulkan14Features.maintenance6 = VK_TRUE;
 
+    // Rewire pNext when descriptor buffers are enabled so the enable struct is
+    // at the head of the chain (it already points at vulkan14Features).
+    if (descriptorBufferFeatSupported) {
+        createInfo.pNext = &descriptorBufferFeaturesEnable;
+    }
+
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.ppEnabledExtensionNames = extensions.data();
 
@@ -5454,6 +5498,49 @@ void VulkanApp::createLogicalDevice() {
     if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) != VK_SUCCESS) {
         throw std::runtime_error("failed to create logical device!");
     }
+
+    // Resolve VK_EXT_descriptor_buffer entry points and properties when enabled.
+    // All calls are feature-gated: descriptorBufferSupported stays false unless
+    // every entry point resolves, so renderers can branch on useDescriptorBuffer().
+    descriptorBufferSupported = false;
+    if (descriptorBufferFeatSupported) {
+        fpGetDescriptorEXT = reinterpret_cast<PFN_vkGetDescriptorEXT>(
+            vkGetDeviceProcAddr(device, "vkGetDescriptorEXT"));
+        fpCmdBindDescriptorBuffersEXT = reinterpret_cast<PFN_vkCmdBindDescriptorBuffersEXT>(
+            vkGetDeviceProcAddr(device, "vkCmdBindDescriptorBuffersEXT"));
+        fpCmdSetDescriptorBufferOffsetsEXT = reinterpret_cast<PFN_vkCmdSetDescriptorBufferOffsetsEXT>(
+            vkGetDeviceProcAddr(device, "vkCmdSetDescriptorBufferOffsetsEXT"));
+        fpGetDescriptorSetLayoutSizeEXT = reinterpret_cast<PFN_vkGetDescriptorSetLayoutSizeEXT>(
+            vkGetDeviceProcAddr(device, "vkGetDescriptorSetLayoutSizeEXT"));
+        fpGetDescriptorSetLayoutBindingOffsetEXT = reinterpret_cast<PFN_vkGetDescriptorSetLayoutBindingOffsetEXT>(
+            vkGetDeviceProcAddr(device, "vkGetDescriptorSetLayoutBindingOffsetEXT"));
+        if (fpGetDescriptorEXT && fpCmdBindDescriptorBuffersEXT &&
+            fpCmdSetDescriptorBufferOffsetsEXT && fpGetDescriptorSetLayoutSizeEXT &&
+            fpGetDescriptorSetLayoutBindingOffsetEXT) {
+            descriptorBufferProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
+            VkPhysicalDeviceProperties2 props2{};
+            props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            props2.pNext = &descriptorBufferProps;
+            vkGetPhysicalDeviceProperties2(physicalDevice, &props2);
+            descriptorBufferSupported = true;
+            printf("[VulkanApp] descriptor buffers enabled: uniformOffsetAlign=%llu storageOffsetAlign=%llu samplerOffsetAlign=%llu\n",
+                (unsigned long long)descriptorBufferProps.descriptorBufferOffsetAlignment,
+                (unsigned long long)descriptorBufferProps.descriptorBufferOffsetAlignment,
+                (unsigned long long)descriptorBufferProps.descriptorBufferOffsetAlignment);
+        } else {
+            // Partial support: keep the fallback path. Null out everything so
+            // renderers never dereference a null entry point.
+            fpGetDescriptorEXT = nullptr;
+            fpCmdBindDescriptorBuffersEXT = nullptr;
+            fpCmdSetDescriptorBufferOffsetsEXT = nullptr;
+            fpGetDescriptorSetLayoutSizeEXT = nullptr;
+            fpGetDescriptorSetLayoutBindingOffsetEXT = nullptr;
+            descriptorBufferSupported = false;
+            fprintf(stderr, "[VulkanApp] WARNING: VK_EXT_descriptor_buffer enabled but entry points missing — using fallback\n");
+        }
+    }
+    printf("[VulkanApp] Device features: bufferDeviceAddress=%d descriptorBuffer=%d\n",
+        (int)(vulkan12Features.bufferDeviceAddress == VK_TRUE), (int)descriptorBufferSupported);
 
     // Create main descriptor pool immediately after device creation
     // (choose reasonable default counts for UBOs and samplers)

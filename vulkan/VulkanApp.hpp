@@ -80,6 +80,22 @@ class VulkanApp {
     // Whether VK_KHR_pipeline_binary (Vulkan 1.4) is supported by the physical device.
     // When true, per-pipeline binary keys can be used for granular cache invalidation.
     bool pipelineBinarySupported = false;
+    // Whether VK_EXT_descriptor_buffer is supported AND enabled on this device.
+    // When true, renderers may write descriptors directly into host-visible
+    // descriptor-buffer memory (vkGetDescriptorEXT) and bind them with
+    // vkCmdBindDescriptorBuffersEXT / vkCmdSetDescriptorBufferOffsetsEXT
+    // instead of calling vkUpdateDescriptorSets in the render loop.
+    // When false, all renderers must use the classic vkUpdateDescriptorSets
+    // fallback path (init-time / on-change writes only, never per-frame).
+    bool descriptorBufferSupported = false;
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptorBufferProps{};
+    // Extension entry points, resolved after vkCreateDevice when supported.
+    PFN_vkGetDescriptorEXT fpGetDescriptorEXT = nullptr;
+    PFN_vkCmdBindDescriptorBuffersEXT fpCmdBindDescriptorBuffersEXT = nullptr;
+    PFN_vkCmdSetDescriptorBufferOffsetsEXT fpCmdSetDescriptorBufferOffsetsEXT = nullptr;
+    PFN_vkGetDescriptorSetLayoutSizeEXT fpGetDescriptorSetLayoutSizeEXT = nullptr;
+    PFN_vkGetDescriptorSetLayoutBindingOffsetEXT fpGetDescriptorSetLayoutBindingOffsetEXT = nullptr;
+    bool useDescriptorBuffer() const { return descriptorBufferSupported; }
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
     // Scene-specific render queues (vegetation, sdf, bbox, solid, water, sky,

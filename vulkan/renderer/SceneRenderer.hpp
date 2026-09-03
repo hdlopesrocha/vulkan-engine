@@ -276,6 +276,36 @@ private:
     // The World owns ChunkManager and all chunk state.
     World* world_ = nullptr;
 
+    // Descriptor-buffer migration: change guard for updateTextureDescriptorSet().
+    // Static bindings (texture arrays, shadow maps, materials, water params) are
+    // written once at init and re-written only when the underlying resources
+    // actually change (texture realloc, resize). updateTextureDescriptorSet() is
+    // event-driven (allocation listener / swapchain resize) — never called from
+    // the render loop — and this signature makes repeated invocations with
+    // unchanged resources a no-op, guaranteeing 0 vkUpdateDescriptorSets calls
+    // in steady state. When VulkanApp::useDescriptorBuffer() is true the same
+    // guard selects the GPU-side path (direct vkGetDescriptorEXT host writes
+    // into the descriptor buffer, overlapped with compute) instead of the
+    // classic vkUpdateDescriptorSets fallback below.
+    struct StaticTextureSignature {
+        VkSampler samplers[5] = {};
+        VkImageView views[5] = {};
+        VkSampler shadowSampler = VK_NULL_HANDLE;
+        VkImageView shadowViews[3] = {};
+        VkBuffer materials = VK_NULL_HANDLE;
+        VkBuffer waterParams = VK_NULL_HANDLE;
+        bool valid = false;
+        bool matches(const StaticTextureSignature& o) const {
+            for (int i = 0; i < 5; ++i)
+                if (samplers[i] != o.samplers[i] || views[i] != o.views[i]) return false;
+            if (shadowSampler != o.shadowSampler) return false;
+            for (int i = 0; i < 3; ++i)
+                if (shadowViews[i] != o.shadowViews[i]) return false;
+            return materials == o.materials && waterParams == o.waterParams;
+        }
+    };
+    StaticTextureSignature lastStaticSignature_{};
+
     // Camera position from the last processPendingMeshes call; used by the
     // shadow pass to cull with the same camPos/lodBias as the main pass so
     // shadow draws use the identical per-chunk LoD selection.

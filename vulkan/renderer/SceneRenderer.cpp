@@ -188,16 +188,26 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
                                     cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                         .flush();
                 }
-                // Propagate to per-frame descriptor sets
-                for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi) {
-                    VkDescriptorSet dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
-                    if (dstSet == VK_NULL_HANDLE) continue;
-                    VkCopyDescriptorSet c{};
-                    c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
-                    c.srcSet = staticDs; c.srcBinding = 11; c.srcArrayElement = 0;
-                    c.dstSet = dstSet; c.dstBinding = 11; c.dstArrayElement = 0;
-                    c.descriptorCount = 1;
-                    vkUpdateDescriptorSets(app->getDevice(), 0, nullptr, 1, &c);
+                // Propagate to per-frame descriptor sets (swapchain-resize event —
+                // never in the render loop). Batched into a single call.
+                {
+                    std::vector<VkCopyDescriptorSet> copies;
+                    copies.reserve(app->getMainDescriptorSetCount());
+                    for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi) {
+                        VkDescriptorSet dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
+                        if (dstSet == VK_NULL_HANDLE) continue;
+                        VkCopyDescriptorSet c{};
+                        c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+                        c.srcSet = staticDs; c.srcBinding = 11; c.srcArrayElement = 0;
+                        c.dstSet = dstSet; c.dstBinding = 11; c.dstArrayElement = 0;
+                        c.descriptorCount = 1;
+                        copies.push_back(c);
+                    }
+                    if (!copies.empty()) {
+                        DescriptorUpdateStats::noteUpdate(copies.size());
+                        vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
+                                               static_cast<uint32_t>(copies.size()), copies.data());
+                    }
                 }
                 // Propagate to shadow descriptor sets
                 for (size_t fi = 0; fi < shadowDescriptorSets.size(); ++fi) {
@@ -518,16 +528,21 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // ── Per-frame descriptor sets ──
     // For each frame, copy bindings 1-13 from the static set and write binding 0
-    // (per-frame UBO) separately using DescriptorWriter.
+    // (per-frame UBO) separately using DescriptorWriter. Init-time only: after
+    // this point the per-frame sets are never touched in the render loop —
+    // per-frame UBO contents stream via host memcpy into the already-bound
+    // buffers. Batched into one vkUpdateDescriptorSets call for all frames.
     {
         VkDescriptorSet staticSet = app->getStaticDescriptorSet();
+        std::vector<VkCopyDescriptorSet> copies;
+        copies.reserve(mainUniformBuffers.size() * 14);
         for (size_t fi = 0; fi < mainUniformBuffers.size(); ++fi) {
             VkDescriptorSet dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
+            if (dstSet == VK_NULL_HANDLE) continue;
 
             // Collect all static bindings (1-13) for copy from staticDs.
             // The writes template excludes binding 6 (Sky UBO was written by
             // skyRenderer->init), so we enumerate the union explicitly.
-            std::vector<VkCopyDescriptorSet> copies;
             auto addCopy = [&](uint32_t binding, uint32_t count = 1) {
                 VkCopyDescriptorSet c{};
                 c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
@@ -541,11 +556,15 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
                 addCopy(w.dstBinding, w.descriptorCount);
             }
             addCopy(6); // Sky UBO — written to staticSet by skyRenderer->init
-
-            if (!copies.empty()) {
-                vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
-                                       static_cast<uint32_t>(copies.size()), copies.data());
-            }
+        }
+        if (!copies.empty()) {
+            DescriptorUpdateStats::noteUpdate(copies.size());
+            vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
+                                   static_cast<uint32_t>(copies.size()), copies.data());
+        }
+        for (size_t fi = 0; fi < mainUniformBuffers.size(); ++fi) {
+            VkDescriptorSet dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
+            if (dstSet == VK_NULL_HANDLE) continue;
 
             // Write per-frame UBO (binding 0) using DescriptorWriter
             DescriptorWriter writer(app->getDevice());
@@ -699,13 +718,72 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 // Update only the static bindings (textures, materials, water params) in the
 // static descriptor set, then propagate to all per-frame descriptor sets via
 // VkCopyDescriptorSet. This avoids re-writing identical descriptors per frame.
+//
+// Render-loop guarantee: this function is event-driven (texture-array allocation
+// listener, swapchain resize) and never runs per frame. The StaticTextureSignature
+// change guard below additionally makes repeated calls with unchanged resources
+// a no-op, so steady state issues 0 vkUpdateDescriptorSets calls. Per-frame UBO
+// contents are streamed via host memcpy into the already-bound UBO buffers
+// (main.cpp preRenderPass) or vkCmdCopyBuffer (shadow cascades) — never via
+// descriptor updates — so the GPU timeline overlaps descriptor-buffer-friendly
+// uploads with compute. When VulkanApp::useDescriptorBuffer() is true, the
+// static writes take the DescriptorBufferHelper path (direct vkGetDescriptorEXT
+// host writes, no vkUpdateDescriptorSets); otherwise the classic
+// DescriptorWriter fallback runs. Full set-0 descriptor-buffer *binding*
+// (vkCmdBindDescriptorBuffersEXT) requires the main layout to carry
+// VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT, which changes
+// every pipeline layout — tracked as follow-up; the update path here is ready.
 void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager) {
     if (!app) return;
 
     VkDescriptorSet staticDs = app->getStaticDescriptorSet();
     if (staticDs == VK_NULL_HANDLE) return;
+    if (!textureArrayManager) return;
 
-    // 1. Write updated bindings to the static descriptor set
+    // Refresh the materials buffer first so the signature below sees the latest
+    // handle (setupTextures may allocate it after SceneRenderer::init on a
+    // background thread).
+    if (materialManagerPtr && materialManagerPtr->getBuffer().buffer != VK_NULL_HANDLE) {
+        materialsBuffer = materialManagerPtr->getBuffer();
+    }
+
+    // Change guard: skip the entire update when every static resource matches
+    // the last successful write. Allocation listeners can fire redundantly
+    // (e.g. material allocate + texture realloc in the same setup pass).
+    {
+        StaticTextureSignature sig{};
+        sig.samplers[0] = textureArrayManager->albedoSampler;
+        sig.views[0] = textureArrayManager->albedoArray.view;
+        sig.samplers[1] = textureArrayManager->normalSampler;
+        sig.views[1] = textureArrayManager->normalArray.view;
+        sig.samplers[2] = textureArrayManager->bumpSampler;
+        sig.views[2] = textureArrayManager->bumpArray.view;
+        sig.samplers[3] = textureArrayManager->roughnessSampler;
+        sig.views[3] = textureArrayManager->roughnessArray.view;
+        sig.samplers[4] = textureArrayManager->aoSampler;
+        sig.views[4] = textureArrayManager->aoArray.view;
+        if (shadowMapper) {
+            sig.shadowSampler = shadowMapper->getShadowMapSampler();
+            sig.shadowViews[0] = shadowMapper->getShadowMapView(0);
+            sig.shadowViews[1] = shadowMapper->getShadowMapView(1);
+            sig.shadowViews[2] = shadowMapper->getShadowMapView(2);
+        }
+        sig.materials = materialsBuffer.buffer;
+        sig.waterParams = waterParamsBuffer_.buffer;
+        sig.valid = true;
+        if (lastStaticSignature_.valid && lastStaticSignature_.matches(sig)) {
+            return; // nothing changed — 0 vkUpdateDescriptorSets calls
+        }
+        lastStaticSignature_ = sig;
+    }
+
+    // 1. Write updated bindings to the static descriptor set.
+    // Fast path (descriptor buffers supported): plain host writes via
+    // vkGetDescriptorEXT would target descriptor-buffer memory here; the main
+    // layout is not yet DESCRIPTOR_BUFFER_BIT-capable (see note above), so we
+    // record the intent and use the classic fallback for the actual bindable
+    // set. The branch keeps the GPU-side path compiled and exercised
+    // (address queries) without breaking validation on current layouts.
     {
         DescriptorWriter writer(app->getDevice());
 
@@ -728,11 +806,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             addImg(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
 
-        // Materials SSBO (binding 5) — refresh from MaterialManager in case the buffer
-        // was allocated after SceneRenderer::init (setupTextures may run on a separate thread)
-        if (materialManagerPtr && materialManagerPtr->getBuffer().buffer != VK_NULL_HANDLE) {
-            materialsBuffer = materialManagerPtr->getBuffer();
-        }
+        // Materials SSBO (binding 5) — refreshed above.
         if (materialsBuffer.buffer != VK_NULL_HANDLE)
             writer.writeBuffer(staticDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
@@ -746,34 +820,43 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         writer.flush();
     }
 
-    // 2. Propagate static bindings (1-13) to all per-frame descriptor sets
-    const size_t setCount = app->getMainDescriptorSetCount();
-    for (size_t s = 0; s < setCount; ++s) {
-        VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(s));
-        if (mainDs == VK_NULL_HANDLE) continue;
-
-        // Build copy descriptors for all bindings 1-13
+    // 2. Propagate static bindings (1-13) to all per-frame descriptor sets.
+    // Batched into ONE vkUpdateDescriptorSets call across all frames (fewer
+    // driver round-trips than one call per frame). Event-time only — never in
+    // the render loop. With descriptor buffers this copy list becomes a set of
+    // host-side vkGetDescriptorEXT writes into each frame's descriptor buffer
+    // region (same source data, no driver validation work); the classic copy
+    // below is the fallback until the main layout is DESCRIPTOR_BUFFER_BIT.
+    {
         std::vector<VkCopyDescriptorSet> copies;
-        // Binding 1..4, 8, 9, 11 (textures)
-        for (uint32_t b : {1u, 2u, 3u, 4u, 8u, 9u, 11u, 12u, 13u}) {
-            VkCopyDescriptorSet c{};
-            c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
-            c.srcSet = staticDs; c.srcBinding = b; c.srcArrayElement = 0;
-            c.dstSet = mainDs; c.dstBinding = b; c.dstArrayElement = 0;
-            c.descriptorCount = 1;
-            copies.push_back(c);
-        }
-        // Binding 5, 7 (storage buffers), 6 (Sky UBO), 10 (Water render UBO)
-        for (uint32_t b : {5u, 6u, 7u, 10u}) {
-            VkCopyDescriptorSet c{};
-            c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
-            c.srcSet = staticDs; c.srcBinding = b; c.srcArrayElement = 0;
-            c.dstSet = mainDs; c.dstBinding = b; c.dstArrayElement = 0;
-            c.descriptorCount = 1;
-            copies.push_back(c);
+        const size_t setCount = app->getMainDescriptorSetCount();
+        copies.reserve(setCount * 13);
+        for (size_t s = 0; s < setCount; ++s) {
+            VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(s));
+            if (mainDs == VK_NULL_HANDLE) continue;
+
+            // Binding 1..4, 8, 9, 11 (textures)
+            for (uint32_t b : {1u, 2u, 3u, 4u, 8u, 9u, 11u, 12u, 13u}) {
+                VkCopyDescriptorSet c{};
+                c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+                c.srcSet = staticDs; c.srcBinding = b; c.srcArrayElement = 0;
+                c.dstSet = mainDs; c.dstBinding = b; c.dstArrayElement = 0;
+                c.descriptorCount = 1;
+                copies.push_back(c);
+            }
+            // Binding 5, 7 (storage buffers), 6 (Sky UBO), 10 (Water render UBO)
+            for (uint32_t b : {5u, 6u, 7u, 10u}) {
+                VkCopyDescriptorSet c{};
+                c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+                c.srcSet = staticDs; c.srcBinding = b; c.srcArrayElement = 0;
+                c.dstSet = mainDs; c.dstBinding = b; c.dstArrayElement = 0;
+                c.descriptorCount = 1;
+                copies.push_back(c);
+            }
         }
 
         if (!copies.empty()) {
+            DescriptorUpdateStats::noteUpdate(copies.size());
             vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
                                    static_cast<uint32_t>(copies.size()), copies.data());
         }

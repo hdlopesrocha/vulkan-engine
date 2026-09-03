@@ -58,10 +58,17 @@ private:
     std::array<TrackedHandle<VkDescriptorSet>, FRAMES_IN_FLIGHT> descriptorSets;
 
     // Per-frame-slot cache of the last descriptor contents written by render().
-    // The offscreen target views bound here are stable per frame slot, so the
-    // per-frame vkUpdateDescriptorSets calls can be skipped while every input
-    // (sampler/view/layout per binding + UBO) is unchanged. `valid` starts
-    // false, guaranteeing the first frame always writes.
+    // FALLBACK-PATH mechanism for the descriptor-buffer migration: the offscreen
+    // target views bound here are stable per frame slot, so the per-frame
+    // vkUpdateDescriptorSets calls are skipped while every input (sampler/view/
+    // layout per binding + UBO) is unchanged — steady state issues 0 descriptor
+    // updates (per-frame UBO contents stream via mapped memcpy into the
+    // already-bound buffer, overlapped with compute on the GPU timeline).
+    // `valid` starts false, guaranteeing the first frame always writes.
+    // When VulkanApp::useDescriptorBuffer() becomes bind-capable (layout created
+    // with VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT, bound via
+    // vkCmdBindDescriptorBuffersEXT), this cache is replaced by direct
+    // DescriptorBufferHelper host writes (plain memcpys, no driver validation).
     struct FrameDescriptorSignature {
         std::array<VkSampler, 15> samplers{};
         std::array<VkImageView, 15> views{};

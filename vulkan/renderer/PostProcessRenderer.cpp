@@ -266,14 +266,18 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     const uint32_t slot = frameIdx % FRAMES_IN_FLIGHT;
     VkDescriptorSet currentDs = descriptorSets[slot];
 
-    // Per-frame descriptor write cache: the offscreen target views/samplers
-    // bound here are stable per frame slot, so the descriptor writes can be
-    // skipped whenever the full set of inputs (image view/sampler/layout per
-    // binding + UBO) is identical to what the slot already holds. We only skip
-    // when ALL inputs match — any difference (including a binding that goes
-    // NULL) still rewrites, so a skipped write can never leave a stale
-    // descriptor behind. `valid` starts false, so the first frame always
-    // writes.
+    // Per-frame descriptor write cache (fallback path — see the header note).
+    // The offscreen target views/samplers bound here are stable per frame slot,
+    // so the descriptor writes are skipped whenever the full set of inputs
+    // (image view/sampler/layout per binding + UBO) is identical to what the
+    // slot already holds — steady state issues 0 vkUpdateDescriptorSets calls
+    // in the render loop (verified via DescriptorUpdateStats). Per-frame UBO
+    // contents stream via mapped memcpy above into the already-bound buffer.
+    // We only skip when ALL inputs match — any difference (including a binding
+    // that goes NULL) still rewrites, so a skipped write can never leave a
+    // stale descriptor behind. `valid` starts false, so the first frame always
+    // writes. With descriptor buffers this branch becomes host-side
+    // vkGetDescriptorEXT writes (no driver call at all).
     FrameDescriptorSignature sig;
     for (int i = 0; i < 15; ++i) {
         if (i == 5) continue; // binding 5 is the UBO, stored separately below

@@ -629,6 +629,18 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
     }
 
     if (shadowCascadeSets_.empty()) {
+        // Batch ALL cascade copies (every frame x every cascade x bindings 0-13)
+        // into a single vkUpdateDescriptorSets call instead of one call per
+        // binding (14 driver round-trips per set before). Init-time only — this
+        // function returns early via cascadeSetsBuilt_ afterwards, so the render
+        // loop never issues descriptor updates here. Per-frame cascade data
+        // streams via vkCmdCopyBuffer into shadowUBO_ slots (see recordCascade),
+        // overlapped with compute on the GPU timeline. With descriptor buffers
+        // the copy list below becomes host-side vkGetDescriptorEXT writes into
+        // each cascade's descriptor-buffer region; the classic copy is the
+        // fallback until the main layout is DESCRIPTOR_BUFFER_BIT-capable.
+        std::vector<VkCopyDescriptorSet> copies;
+        copies.reserve(static_cast<size_t>(frameCount) * SHADOW_CASCADE_COUNT * 14);
         shadowCascadeSets_.resize(frameCount);
         for (uint32_t f = 0; f < frameCount; ++f) {
             for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
@@ -645,14 +657,27 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
                 // Copy the shared shadow set (textures, dummy depth, storage buffers,
                 // cube360, …) then redirect binding 0 at this cascade's UBO slot so the
                 // cascade draws read only their own light-space matrix.
-                for (uint32_t b = 0; b <= 13; ++b) {
+                // (Binding 0 is overwritten by the DescriptorWriter below, so it is
+                // excluded from the copy list.)
+                for (uint32_t b = 1; b <= 13; ++b) {
                     VkCopyDescriptorSet cp{};
                     cp.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
                     cp.srcSet = shadowDescriptorSets_[f];
                     cp.dstSet = shadowCascadeSets_[f][c];
                     cp.srcBinding = b; cp.dstBinding = b; cp.descriptorCount = 1;
-                    vkUpdateDescriptorSets(device, 0, nullptr, 1, &cp);
+                    copies.push_back(cp);
                 }
+            }
+        }
+        if (!copies.empty()) {
+            DescriptorUpdateStats::noteUpdate(copies.size());
+            vkUpdateDescriptorSets(device, 0, nullptr,
+                                   static_cast<uint32_t>(copies.size()), copies.data());
+        }
+        // Redirect binding 0 of each cascade set at its own UBO slot (per-cascade
+        // light-space matrix). One DescriptorWriter per set, flushed once each.
+        for (uint32_t f = 0; f < frameCount; ++f) {
+            for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
                 DescriptorWriter(device)
                     .writeBuffer(shadowCascadeSets_[f][c], 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                  shadowUBO_[f].buffer, c * sizeof(UniformObject), sizeof(UniformObject))
