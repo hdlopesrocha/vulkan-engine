@@ -5,6 +5,7 @@
 #include "RendererUtils.hpp"
 #include "WaterRenderer.hpp"   // WaterParams, WaterUBO
 #include "../../utils/FileReader.hpp"
+#include <cassert>
 #include <stdexcept>
 #include <iostream>
 #include <array>
@@ -183,6 +184,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                    const glm::vec3& viewPos,
                                    uint32_t frameIdx,
                                    VkImageView skyView) {
+    assert(skyView != VK_NULL_HANDLE);
     if (pipeline == VK_NULL_HANDLE) {
         std::cerr << "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping." << std::endl;
         return;
@@ -253,15 +255,12 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
 
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
 
-    // Sky color image info (binding 6) - fallback to scene color if null
+    // Sky color image info (binding 6) — sky offscreen targets are always
+    // available (SceneRenderer::init creates them before PostProcess init).
     VkDescriptorImageInfo skyImageInfo{};
-    if (skyView == VK_NULL_HANDLE) {
-        skyImageInfo = imageInfos[0]; // fallback to scene color
-    } else {
-        skyImageInfo.sampler = linearSampler;
-        skyImageInfo.imageView = skyView;
-        skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    }
+    skyImageInfo.sampler = linearSampler;
+    skyImageInfo.imageView = skyView;
+    skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     const uint32_t slot = frameIdx % FRAMES_IN_FLIGHT;
     VkDescriptorSet currentDs = descriptorSets[slot];

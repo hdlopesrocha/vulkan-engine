@@ -691,7 +691,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             "water wireframe");
     }
 
-    // Initialize post-process renderer (composites scene + water into swapchain)
+    // Initialize post-process renderer (composites scene + water into swapchain).
+    // Sky offscreen targets are created above (before this point) and always
+    // available from here on, so PostProcessRenderer assumes a valid skyView.
     postProcessRenderer->init(app);
     postProcessRenderer->setRenderSize(app->getWidth(), app->getHeight());
     
