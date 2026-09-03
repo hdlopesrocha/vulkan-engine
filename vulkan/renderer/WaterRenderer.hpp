@@ -131,10 +131,10 @@ public:
     // Get water depth descriptor set (for binding scene depth texture)
     VkDescriptorSet getWaterDepthDescriptorSet(uint32_t frameIndex) const { return (frameIndex < FRAMES) ? waterDepthDescriptorSets[frameIndex] : VK_NULL_HANDLE; }
 
-    // Ensure cubemap reflection resources exist (dummy textures used by the solid 360
-    // pass, the cubemap-compatible water pipeline and its write-once set-2 descriptor
-    // set). Idempotent; called lazily from the solid 360 pass and from
-    // updateSceneTexturesBinding.
+    // Ensure cubemap reflection resources exist (the cubemap-compatible water
+    // pipeline and its set-2 descriptor set bound to real resources).
+    // Idempotent; called lazily from the solid 360 pass. The real cubemap
+    // targets are created in SceneRenderer::init before first use.
     void ensureCubemapResources(VulkanApp* app, VkFormat colorFormat);
 
     // Draw water into one solid 360 cubemap face. Must be called INSIDE the face's
@@ -143,8 +143,9 @@ public:
     // tested against the prepassed solid depth (no depth writes). The face UBO
     // carries materialFlags.x == 1 (capture mode), so water.frag skips
     // reflection/refraction and never samples the cubemap it is rendering into;
-    // set 2 is bound to the immutable dummy depth/cube instead. `sceneDs0` is the
-    // per-face main-layout descriptor set (binding 0 = this face's UBO slot).
+    // set 2 is bound to the back-face dummy depth + real cube view instead.
+    // `sceneDs0` is the per-face main-layout descriptor set (binding 0 = this
+    // face's UBO slot).
     void renderWaterIntoCubemap(VkCommandBuffer cmd, VkDescriptorSet sceneDs0,
                                 VkImageView colorView, VkImageView depthView,
                                 uint32_t faceSize,
@@ -235,27 +236,21 @@ private:
     // render into the solid 360 cube faces; the main water geometry pipeline
     // targets R32G32B32A32_SFLOAT and is format-incompatible). The pipeline owns
     // a layout built from the same 3 set layouts as waterGeometryPipelineLayout,
-    // so descriptor binding stays compatible. The set-2 descriptor set is written
-    // ONCE with the immutable dummy depth/cube views and never updated, so a
-    // single set (not per-frame) is sufficient and no in-flight update hazard
-    // exists; it lives in its own pool so the waterDepthDescriptorPool reset on
-    // swapchain recreate cannot invalidate it.
+    // so descriptor binding stays compatible. The set-2 descriptor set binds
+    // the back-face dummy depth + real cube view (rewritten only when the
+    // cube view is recreated on swapchain resize), so a single set (not
+    // per-frame) is sufficient; it lives in its own pool so the
+    // waterDepthDescriptorPool reset on swapchain recreate cannot invalidate it.
     TrackedHandle<VkPipeline> cubemapWaterPipeline;
     TrackedHandle<VkPipelineLayout> cubemapWaterPipelineLayout;
     TrackedHandle<VkDescriptorPool> cubemapWaterDescPool;
     VkDescriptorSet cubemapWaterDS = VK_NULL_HANDLE;
     VkFormat cubemapWaterPipelineFormat = VK_FORMAT_UNDEFINED;
-
-    // Cubemap water pass resources (per-frame to avoid updating a set that a
-    // previous frame's command buffer still has pending)
-    VkImage cubemapDummyDepthImage = VK_NULL_HANDLE;
-    VmaAllocation cubemapDummyDepthAllocation = VK_NULL_HANDLE;
-    VkDeviceMemory cubemapDummyDepthMemory = VK_NULL_HANDLE;
-    VkImageView cubemapDummyDepthView = VK_NULL_HANDLE;
-    VkImage cubemapDummyCubeImage = VK_NULL_HANDLE;
-    VmaAllocation cubemapDummyCubeAllocation = VK_NULL_HANDLE;
-    VkDeviceMemory cubemapDummyCubeMemory = VK_NULL_HANDLE;
-    VkImageView cubemapDummyCubeView = VK_NULL_HANDLE;
+    // Views currently bound into cubemapWaterDS (to detect swapchain-resize
+    // staleness: the real cube view is recreated on resize, so the write-once
+    // set must be rewritten when the handles change).
+    VkImageView cubemapWaterBoundDepthView = VK_NULL_HANDLE;
+    VkImageView cubemapWaterBoundCubeView = VK_NULL_HANDLE;
 
     // Storage buffer (SSBO) for per-layer WaterParamsGPU entries
     Buffer waterParamsBuffer;

@@ -131,8 +131,8 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
 
     // Binding flags — enable update-after-bind for binding 11 (cubemap environment map)
     // so that vkUpdateDescriptorSets can write binding 11 while a command buffer
-    // referencing this descriptor set is still pending (the cubemap render path
-    // swaps between a dummy cubemap and the real one every frame).
+    // referencing this descriptor set is still pending (the cubemap view is
+    // recreated on swapchain resize).
     std::array<VkDescriptorBindingFlags, 14> bindingFlags{};
     bindingFlags.fill(0);
     bindingFlags[11] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;

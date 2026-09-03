@@ -710,14 +710,13 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
     if (ds == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return;
     }
+    (void)frameIndex;
 
-    // Guarantee the dummy 1x1 depth/cube views exist so the descriptor set can
-    // always be populated, even before the solid 360 cubemap (or the back-face
-    // depth) is available on the very first frames. ensureCubemapResources is
-    // idempotent.
-    if (cubemapDummyCubeView == VK_NULL_HANDLE || cubemapDummyDepthView == VK_NULL_HANDLE) {
-        ensureCubemapResources(app, app->getSwapchainImageFormat());
-    }
+    // The real cubemap + back-face depth are created in SceneRenderer::init
+    // (and recreated on swapchain resize) before the first frame, so they are
+    // always ready before first use. No dummy fallback: if either view is
+    // missing, leave the set untouched so no dummy/NULL view is ever bound
+    // at draw time.
 
     // Determine the effective cubemap to bind:
     // - If a new explicit `cube360View` is provided, use it and remember it.
@@ -737,23 +736,23 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
         // whose state should change when cubemap availability toggles.
     }
 
+    // Both views must be valid — otherwise skip the update entirely (never
+    // bind VK_NULL_HANDLE or a dummy placeholder).
+    if (backFaceDepthView == VK_NULL_HANDLE || finalCubeView == VK_NULL_HANDLE) {
+        return;
+    }
+    if (nearestSampler == VK_NULL_HANDLE) return;
+
     std::array<VkDescriptorImageInfo, 2> imageInfos{};
 
-    // Water back-face depth (binding 0) — prefer explicit `backFaceDepthView` if provided.
+    // Water back-face depth (binding 0) — real view only.
     // Use nearest filtering so depth values are not interpolated across geometry edges.
-    // Fall back to the dummy depth view when none is available (e.g. before the first
-    // back-face pass) so the descriptor set stays valid and bound.
     imageInfos[0].sampler = nearestSampler;
-    if (backFaceDepthView == VK_NULL_HANDLE) backFaceDepthView = cubemapDummyDepthView;
     imageInfos[0].imageView = backFaceDepthView;
     imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Cubemap (binding 1) — prefer `finalCubeView` if available, otherwise fall back to the
-    // dummy cubemap so the descriptor set stays valid even before the solid 360 is ready.
+    // Cubemap (binding 1) — real solid360 cube view only.
     imageInfos[1].sampler = linearSampler;
-    if (finalCubeView == VK_NULL_HANDLE && cubemapDummyCubeView != VK_NULL_HANDLE) {
-        finalCubeView = cubemapDummyCubeView;
-    }
     imageInfos[1].imageView = finalCubeView;
     imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -951,52 +950,6 @@ void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint3
     endWaterGeometryPassWithDepth(cmd, frameIndex);
 }
 
-// Helper: create a 1x1 image with given format, initialize to black (color) or 1.0 (depth).
-// Returns the image view on success, VK_NULL_HANDLE on failure. Outputs image/allocation/memory via pointers.
-static VkImageView _createDummy1x1ImageView(VulkanApp* app, VkFormat fmt, VkImageAspectFlags aspect,
-                                            VkImage* outImage = nullptr, VmaAllocation* outAllocation = nullptr, VkDeviceMemory* outMemory = nullptr) {
-    VkDevice device = app->getDevice();
-    VkImageCreateInfo img{};
-    img.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    img.imageType = VK_IMAGE_TYPE_2D; img.format = fmt;
-    img.extent = {1, 1, 1}; img.mipLevels = 1; img.arrayLayers = 1;
-    img.samples = VK_SAMPLE_COUNT_1_BIT; img.tiling = VK_IMAGE_TILING_OPTIMAL;
-    img.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    img.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImage image; VmaAllocation allocation; VkDeviceMemory mem;
-    app->createImageWithVma(img, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, allocation, mem, "WaterRenderer: cubemapDummy");
-    VkImageViewCreateInfo vi{}; vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vi.image = image; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = fmt;
-    vi.subresourceRange.aspectMask = aspect;
-    vi.subresourceRange.levelCount = 1; vi.subresourceRange.layerCount = 1;
-    VkImageView view;
-    if (vkCreateImageView(device, &vi, nullptr, &view) != VK_SUCCESS) {
-        app->destroyImageWithVma(image, allocation, mem);
-        return VK_NULL_HANDLE;
-    }
-    app->resources.addImageView(view, "WaterRenderer: cubemapDummyView");
-    if (outImage) *outImage = image;
-    if (outAllocation) *outAllocation = allocation;
-    if (outMemory) *outMemory = mem;
-    // Initialize (clear) via 1-shot command buffer — record ALL barriers
-    // and the clear into the same cb so layout transitions and clear are
-    // submitted atomically. Must use recordTransitionImageLayoutLayer
-    // (not transitionImageLayout) to avoid separate transient submissions.
-    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-        VkImageSubresourceRange range{aspect, 0, 1, 0, 1};
-        app->recordTransitionImageLayoutLayer(cmd, image, fmt, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
-        if (aspect == VK_IMAGE_ASPECT_DEPTH_BIT) {
-            VkClearDepthStencilValue cv{1.0f, 0};
-            vkCmdClearDepthStencilImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &range);
-        } else {
-            VkClearColorValue cv{};
-            vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &range);
-        }
-        app->recordTransitionImageLayoutLayer(cmd, image, fmt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-    });
-    return view;
-}
-
 void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat) {
     // --- Cubemap-compatible water pipeline (solid 360 cube faces) ---
     // The main water geometry pipeline targets R32G32B32A32_SFLOAT, which cannot
@@ -1020,7 +973,7 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
         std::vector<VkDescriptorSetLayout> setLayouts = {
             app->getDescriptorSetLayout(),         // set 0: UBO + samplers (per-face cube360 DS)
             app->getMaterialDescriptorSetLayout(), // set 1: materials (unused by water shaders)
-            waterDepthDescriptorSetLayout          // set 2: dummy back-face depth + dummy cube
+            waterDepthDescriptorSetLayout          // set 2: back-face depth + real cubemap
         };
 
         GraphicsPipelineConfig cfg{};
@@ -1054,57 +1007,31 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
         std::cout << "[WaterRenderer] Created cubemap water pipeline (solid 360)" << std::endl;
     }
 
-    // --- Dummy 1x1 depth (far plane) for back-face depth ---
-    if (cubemapDummyDepthView == VK_NULL_HANDLE) {
-        cubemapDummyDepthView = _createDummy1x1ImageView(app, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT,
-                                                         &cubemapDummyDepthImage, &cubemapDummyDepthAllocation, &cubemapDummyDepthMemory);
-    }
-
-    // --- Dummy 1x1 cubemap (black) ---
-    if (cubemapDummyCubeView == VK_NULL_HANDLE) {
-        VkDevice device2 = app->getDevice();
-        VkImageCreateInfo ic{};
-        ic.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        ic.imageType = VK_IMAGE_TYPE_2D;
-        ic.format = VK_FORMAT_R8G8B8A8_UNORM;
-        ic.extent = {1, 1, 1};
-        ic.mipLevels = 1;
-        ic.arrayLayers = 6;
-        ic.samples = VK_SAMPLE_COUNT_1_BIT;
-        ic.tiling = VK_IMAGE_TILING_OPTIMAL;
-        ic.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        ic.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-        ic.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        VkImage image; VmaAllocation allocation; VkDeviceMemory mem;
-        app->createImageWithVma(ic, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, allocation, mem, "WaterRenderer: cubemapDummyCube");
-        VkImageViewCreateInfo vi{}; vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vi.image = image; vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE; vi.format = VK_FORMAT_R8G8B8A8_UNORM;
-        vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        vi.subresourceRange.levelCount = 1; vi.subresourceRange.layerCount = 6;
-        VkImageView view;
-        vkCreateImageView(device2, &vi, nullptr, &view);
-        app->resources.addImageView(view, "WaterRenderer: cubemapDummyCubeView");
-        cubemapDummyCubeImage = image; cubemapDummyCubeAllocation = allocation; cubemapDummyCubeMemory = mem; cubemapDummyCubeView = view;
-        // Initialize all 6 faces to black — record barriers and clear atomically
-        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-            VkImageSubresourceRange range2{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
-            app->recordTransitionImageLayoutLayer(cmd, image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 6);
-            VkClearColorValue cv{};
-            vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &range2);
-            app->recordTransitionImageLayoutLayer(cmd, image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 6);
-        });
-    }
-
     // --- Set-2 descriptor set for the cubemap water pass ---
-    // Written ONCE with the immutable dummy depth/cube views and never updated:
-    // the cubemap pass renders before the cube is sampled (feedback is avoided
-    // by the capture-mode flag in the face UBO, which disables reflection and
-    // refraction in water.frag), so the bindings never change. A dedicated pool
-    // keeps the set alive across the waterDepthDescriptorPool reset performed
-    // by destroyRenderTargets().
-    if (cubemapWaterDS == VK_NULL_HANDLE && waterDepthDescriptorSetLayout != VK_NULL_HANDLE &&
-        cubemapDummyDepthView != VK_NULL_HANDLE && cubemapDummyCubeView != VK_NULL_HANDLE &&
-        linearSampler != VK_NULL_HANDLE) {
+    // Bound to REAL resources (no dummy 1x1 images):
+    // - binding 0: WaterBackFaceRenderer's 1x1 far-plane dummy depth. This is
+    //   the shared thin-water depth (not a cubemap dummy): the cubemap faces
+    //   have no per-face back-face pass, so thickness must read far-plane.
+    // - binding 1: the REAL solid360 cube view. The face UBO carries
+    //   materialFlags.x == 1 (capture mode), so water.frag skips
+    //   reflection/refraction and never samples the cube it is rendering
+    //   into — no feedback, no hazard. Bound with GENERAL layout (wildcard
+    //   matching any actual image layout): the rendered face layer is
+    //   COLOR_ATTACHMENT_OPTIMAL while the other layers are SHADER_READ_ONLY.
+    // A dedicated pool keeps the set alive across the waterDepthDescriptorPool
+    // reset performed by destroyRenderTargets(). When the real cube view is
+    // recreated (swapchain resize), the set is rewritten in place: ensure is
+    // only called before the cubemap pass records (never while pending).
+    {
+        VkImageView depthView = (backFaceRenderer_ != nullptr)
+            ? backFaceRenderer_->getDummyDepthView() : VK_NULL_HANDLE;
+        VkImageView cubeView = (solid360Renderer_ != nullptr)
+            ? solid360Renderer_->getSolid360View() : VK_NULL_HANDLE;
+        if (waterDepthDescriptorSetLayout == VK_NULL_HANDLE ||
+            depthView == VK_NULL_HANDLE || cubeView == VK_NULL_HANDLE ||
+            linearSampler == VK_NULL_HANDLE) {
+            return;
+        }
         VkDevice device = app->getDevice();
         if (cubemapWaterDescPool == VK_NULL_HANDLE) {
             DescriptorAllocator descAlloc{device, app};
@@ -1112,17 +1039,30 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
             cubemapWaterDescPool = descAlloc.createPool(&ps, 1, 1, 0,
                 "WaterRenderer: cubemapWaterDescPool");
         }
-        DescriptorAllocator descAlloc{device, app};
-        cubemapWaterDS = descAlloc.allocateSet(cubemapWaterDescPool, waterDepthDescriptorSetLayout,
-            "WaterRenderer: cubemapWaterDS");
-
         VkSampler depthSampler = (nearestSampler != VK_NULL_HANDLE) ? nearestSampler : linearSampler;
-        DescriptorWriter(device)
-            .writeImage(cubemapWaterDS, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                        depthSampler, cubemapDummyDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-            .writeImage(cubemapWaterDS, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                        linearSampler, cubemapDummyCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-            .flush();
+        if (cubemapWaterDS == VK_NULL_HANDLE) {
+            DescriptorAllocator descAlloc{device, app};
+            cubemapWaterDS = descAlloc.allocateSet(cubemapWaterDescPool, waterDepthDescriptorSetLayout,
+                "WaterRenderer: cubemapWaterDS");
+            if (cubemapWaterDS == VK_NULL_HANDLE) return;
+            DescriptorWriter(device)
+                .writeImage(cubemapWaterDS, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            depthSampler, depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                .writeImage(cubemapWaterDS, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            linearSampler, cubeView, VK_IMAGE_LAYOUT_GENERAL)
+                .flush();
+            cubemapWaterBoundDepthView = depthView;
+            cubemapWaterBoundCubeView = cubeView;
+        } else if (cubemapWaterBoundDepthView != depthView || cubemapWaterBoundCubeView != cubeView) {
+            DescriptorWriter(device)
+                .writeImage(cubemapWaterDS, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            depthSampler, depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                .writeImage(cubemapWaterDS, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            linearSampler, cubeView, VK_IMAGE_LAYOUT_GENERAL)
+                .flush();
+            cubemapWaterBoundDepthView = depthView;
+            cubemapWaterBoundCubeView = cubeView;
+        }
     }
 }
 

@@ -80,9 +80,12 @@ public:
                          uint32_t frameIndex = 0);
 
     // Return the cubemap view for reflection sampling
+    // NOTE: the cubemap targets are created in createSolid360Targets() during
+    // SceneRenderer::init (and recreated on swapchain resize) — before any
+    // consumer (WaterRenderer, PostProcessRenderer, cube360GfxDs) binds them,
+    // so the real cube view is always ready before first use. No dummy fallback.
     VkImageView getSolid360View() const { return cube360CubeView; }
     VkSampler getSolid360Sampler() const { return solid360Sampler; }
-    VkImageView getDummyCubeView() const { return cube360DummyCubeView; }
     VkImageView getCube360FaceView(uint32_t face) const { return (face < 6) ? cube360FaceViews[face] : VK_NULL_HANDLE; }
     VkImageView getCube360DepthView(uint32_t face) const { return (face < 6) ? cube360DepthViews[face] : VK_NULL_HANDLE; }
     VkImage getCube360DepthImage() const { return cube360DepthImage; }
@@ -130,11 +133,6 @@ private:
     std::array<VkImageView, 6> cube360FaceViews = {};
     VkImageView cube360CubeView = VK_NULL_HANDLE;
     TrackedHandle<VkSampler> solid360Sampler;
-
-    VkImage cube360DummyColorImage = VK_NULL_HANDLE;
-    VmaAllocation cube360DummyColorAllocation = VK_NULL_HANDLE;
-    VkDeviceMemory cube360DummyColorMemory = VK_NULL_HANDLE;
-    VkImageView cube360DummyCubeView = VK_NULL_HANDLE;
 
     VkImage cube360DepthImage = VK_NULL_HANDLE;
     VmaAllocation cube360DepthAllocation = VK_NULL_HANDLE;

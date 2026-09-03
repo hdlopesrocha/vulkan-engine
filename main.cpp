@@ -391,7 +391,7 @@ public:
         Buffer visible{};                          // cull output: draw count (uint32_t)
         uint32_t compactCapacity = 0;              // elements `compact` can hold
         VkDescriptorPool pool = VK_NULL_HANDLE;    // per-slot pool (maxSets=1) for back-face set 2
-        VkDescriptorSet waterDs = VK_NULL_HANDLE;  // back-face water-depth set (binding 0 = dummy)
+        VkDescriptorSet waterDs = VK_NULL_HANDLE;  // back-face water-depth set (binding 0 = back-face dummy depth)
         VkDescriptorPool poolW = VK_NULL_HANDLE;   // per-slot pool for the parallel water geometry set 2
         VkDescriptorSet waterDs2 = VK_NULL_HANDLE; // water geometry pass set 2 (binding 0 = real backface depth)
     };
@@ -3658,6 +3658,18 @@ void MyApp::loadSceneFromFile(const std::string& path) {
 void MyApp::ensureCubemapResources() {
     VkDevice dev = getDevice();
 
+    // 0. Guarantee the REAL cubemap targets exist before any consumer binds
+    // them (WaterRenderer, PostProcessRenderer, cube360GfxDs binding 11).
+    // SceneRenderer::init / onSwapchainResized normally create them, but if a
+    // frame reaches here first (e.g. after init ordering changes), create now
+    // so no dummy fallback is ever needed.
+    if (sceneRenderer && sceneRenderer->solid360Renderer &&
+        sceneRenderer->solid360Renderer->getSolid360View() == VK_NULL_HANDLE &&
+        sceneRenderer->mainLiquidRenderer) {
+        sceneRenderer->solid360Renderer->createSolid360Targets(
+            this, sceneRenderer->mainLiquidRenderer->getLinearSampler());
+    }
+
     // 1. UBO buffer — 6 slots, one per cubemap face (faces are now rasterized on
     //    separate command buffers/queues, so each face needs its own UBO slot).
     if (cube360UBO.buffer == VK_NULL_HANDLE) {
@@ -3773,10 +3785,20 @@ void MyApp::ensureCubemapResources() {
             addImg(9, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
             if (sceneRenderer->solid360Renderer) {
-                VkImageView dummyCubeView = sceneRenderer->solid360Renderer->getDummyCubeView();
+                // Bind the REAL cubemap (no dummy): the 360 targets are created
+                // in SceneRenderer::init before first use, and the face UBO
+                // sets materialFlags.x == 1 (capture mode) so main.frag skips
+                // the env-map fetch — no read-after-write feedback.
+                // Layout GENERAL is a wildcard matching any actual image layout
+                // (VUID-VkDescriptorImageInfo-imageLayout-00344): during the
+                // capture the rendered face layer is COLOR_ATTACHMENT_OPTIMAL
+                // while the other layers are SHADER_READ_ONLY_OPTIMAL, so no
+                // single concrete layout would match. Since the shader skips
+                // the fetch, no actual sampling occurs.
+                VkImageView cubeView = sceneRenderer->solid360Renderer->getSolid360View();
                 VkSampler cubeSampler = sceneRenderer->solid360Renderer->getSolid360Sampler();
-                if (dummyCubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE)
-                    addImg(11, cubeSampler, dummyCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE)
+                    addImg(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_GENERAL);
             }
 
             if (sceneRenderer->materialsBuffer.buffer != VK_NULL_HANDLE)
@@ -3824,10 +3846,12 @@ void MyApp::ensureCubemapResources() {
             addImg(9, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
         if (sceneRenderer->solid360Renderer) {
-            VkImageView dummyCubeView = sceneRenderer->solid360Renderer->getDummyCubeView();
+            // Same real-cubemap binding as above (GENERAL wildcard; capture
+            // mode skips sampling).
+            VkImageView cubeView = sceneRenderer->solid360Renderer->getSolid360View();
             VkSampler cubeSampler = sceneRenderer->solid360Renderer->getSolid360Sampler();
-            if (dummyCubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE)
-                addImg(11, cubeSampler, dummyCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE)
+                addImg(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_GENERAL);
         }
         texWriter.flush();
     }
