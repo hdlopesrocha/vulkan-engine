@@ -104,12 +104,6 @@ WaterBackFaceRenderer & \texttt{indirect.drawPrepared()} & Depth-only pre-pass (
 
 \section{Fallback Mechanisms}
 
-\subsection{Water Geometry Disable}
-\begin{itemize}
-    \item \texttt{VULKAN\_DISABLE\_WATERGEOM=1} environment variable completely disables water geometry rendering (WaterRenderer::init, line 52).
-    \item Used for debugging/profiling water pass overhead.
-\end{itemize}
-
 \subsection{Upload Manager Fallback (IndirectRenderer::uploadMeshes)}
 \begin{itemize}
     \item Primary: Async \texttt{UploadManager} with K concurrent staging slots (16 slots, 2 workers/category).

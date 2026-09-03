@@ -43,8 +43,8 @@ public:
 
     // Full water pass orchestration: updates the water render UBO with the
     // active layer time, (re)allocates this slot's scene-texture descriptor
-    // set, then records the offscreen water geometry pass (filled, wireframe
-    // overlay, or skipped via VULKAN_DISABLE_WATERGEOM) on the same command
+    // set, then records the offscreen water geometry pass (filled or wireframe
+    // overlay) on the same command
     // buffer so the solid pass outputs are available for sampling.
     void renderPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                     bool waterWireframeEnabled, float waterTime, VkImageView skyView,
@@ -307,8 +307,4 @@ private:
 
     // Water render time UBO (binding 10)
     Buffer waterRenderUBO_;
-
-    // Cached env-var flag: VULKAN_DISABLE_WATERGEOM skips the water geometry
-    // pass (read once in init, never per frame)
-    bool envDisableWaterGeom_ = false;
 };
