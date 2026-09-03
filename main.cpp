@@ -117,7 +117,7 @@ struct PublishTarget {
     std::unordered_map<NodeID, Model3DVersion>& chunks;
     // Mutex guarding [chunks] (per-space, chosen by the caller).
     std::recursive_mutex& chunksMutex;
-    // IndirectRenderer owning the meshes (removeMesh/removeMeshSlotted).
+    // IndirectRenderer owning the meshes (removeMeshSlotted).
     IndirectRenderer& indirect;
     // Deferred slot-registry on delete (solid/water) — only used when
     // chunkManaged + slotted mode.
@@ -217,19 +217,15 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
             return;
         }
 
-        // Legacy (append-based) main scene or brush scene: the chunk's mesh
-        // is removed immediately from the target's chunk map + indirect
-        // renderer. Brush meshes live in the brush IR (slotted removal); the
-        // legacy main scene uses the append-based removal path.
+        // Brush scene: the chunk's mesh is removed immediately from the
+        // target's chunk map + indirect renderer (slotted removal). The
+        // chunk-managed main scene returns early above (deferred slots).
         {
             std::lock_guard<std::recursive_mutex> lock(target.chunksMutex);
             auto it = target.chunks.find(nid);
             if (it != target.chunks.end()) {
                 if (it->second.meshId != UINT32_MAX) {
-                    if (target.chunkManaged)
-                        target.indirect.removeMesh(it->second.meshId);
-                    else
-                        target.indirect.removeMeshSlotted(it->second.meshId);
+                    target.indirect.removeMeshSlotted(it->second.meshId);
                 }
                 target.chunks.erase(it);
             }
@@ -3513,15 +3509,10 @@ void MyApp::applyBrushToScene() {
     // Use cachedSweepStart from rebuild's START (before it advanced previousTranslate)
     forEachBrushSDF(entry, model, cachedSweepStart, entry.minSize, "[applyBrushToScene]", applyEntry);
 
-    // Flush queued change events to trigger mesh creation
+    // Flush queued change events to trigger mesh creation. Chunk uploads are
+    // incremental (addMeshSlotted() + uploadSlot()) — no global rebuild required.
     mainSolidCollector.dispatch(mainSolidAddHandler, mainSolidRemoveHandler);
     mainLiquidCollector.dispatch(mainLiquidAddHandler, mainLiquidRemoveHandler);
-
-    // Mark indirect buffers dirty so the mesh changes are visible
-    sceneRenderer->mainSolidRenderer->getIndirectRenderer().setDirty(true);
-    sceneRenderer->mainSolidRenderer->getIndirectRenderer().rebuild(this);
-    sceneRenderer->mainLiquidRenderer->getIndirectRenderer().setDirty(true);
-    sceneRenderer->mainLiquidRenderer->getIndirectRenderer().rebuild(this);
 
     // Update previousTranslate for the next sweep apply
     if (entry.sweepMode) {

@@ -68,32 +68,16 @@ size_t IndirectRenderer::activeMeshCountLocked() const {
 }
 
 // Unlocked — caller must hold `mutex`. Returns the number of draw commands
-// (slots) to cull in the current mode. In slotted mode this is the fixed slot
-// pool capacity (one draw entry per chunk); in legacy mode it's the active
-// mesh count.
+// (slots) to cull: the fixed slot pool capacity (one draw entry per chunk;
+// zeroed tail entries are skipped on indexCount).
 uint32_t IndirectRenderer::getCullDispatchCountLocked() const {
-    if (slottedMode) {
-        // One draw entry per active chunk slot; the pool capacity is the
-        // fixed dispatch size (zeroed tail entries are skipped on indexCount).
-        return static_cast<uint32_t>(slotAlloc.capacity());
-    }
-    return static_cast<uint32_t>(activeMeshCountLocked());
+    return static_cast<uint32_t>(slotAlloc.capacity());
 }
 
 void IndirectRenderer::syncHostBuffersToGPU() {
     std::lock_guard<std::recursive_mutex> lock(mutex);
-    if (!slottedMode) {
-        if (indirectBuffer.buffer != VK_NULL_HANDLE && !indirectCommands.empty()) {
-            void* dst = indirectBuffer.map(0);
-            if (dst) {
-                std::memcpy(dst, indirectCommands.data(), indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand));
-                indirectBuffer.unmap();
-            }
-        }
-        return;
-    }
-    // Slotted: ensure every active slot's indirect/bounds is visible via host mapping
-    // This is the fallback path for water when deferredWriteMeta hasn't yet run
+    // Ensure every active slot's indirect/bounds is visible via host mapping.
+    // This is the fallback path for water when deferredWriteMeta hasn't yet run.
     for (const auto& kv : meshes) {
         const MeshInfo& mi = kv.second;
         if (!mi.active) continue;
@@ -155,55 +139,6 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
     }
 }
 
-void IndirectRenderer::setVertexBufferForMesh(uint32_t meshId, Buffer vbuf) {
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-    // For simplicity, just assign to the main vertexBuffer (per-mesh not tracked in this design)
-    vertexBuffer = vbuf;
-}
-
-void IndirectRenderer::setIndexBufferForMesh(uint32_t meshId, Buffer ibuf) {
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-    indexBuffer = ibuf;
-}
-
-uint32_t IndirectRenderer::acquireGeomSlot() {
-    // Caller holds `mutex`. Lowest free index keeps the number of slots that
-    // ever get allocated minimal (only as many as are concurrently in flight).
-    for (uint32_t i = 0; i < MAX_GEOM_BUFFERS; i++) {
-        if (!geomSlotInUse[i]) {
-            geomSlotInUse[i] = true;
-            return i;
-        }
-    }
-    return UINT32_MAX;
-}
-
-void IndirectRenderer::markGeomSlotFree(uint32_t slot) {
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-    if (slot < MAX_GEOM_BUFFERS) geomSlotInUse[slot] = false;
-}
-
-void IndirectRenderer::recyclePreviousGeom(VulkanApp* app, uint32_t prevSlot,
-                                           Buffer prevVertex, Buffer prevIndex) {
-    // Gate recycling on the current frame's fence. Graphics-queue submission is
-    // FIFO, so when this frame's fence signals every earlier frame (the only
-    // ones that referenced the previous buffers) has completed. The callback is
-    // polled non-blocking in processPendingCommandBuffers — no vkWaitForFences,
-    // hence no fence-index wraparound deadlock.
-    VkFence f = app->getCurrentFrameFence();
-    if (prevSlot != UINT32_MAX) {
-        app->deferDestroyUntilFence(f, [this, prevSlot]() { markGeomSlotFree(prevSlot); });
-    } else if (prevVertex.buffer != VK_NULL_HANDLE || prevIndex.buffer != VK_NULL_HANDLE) {
-        // Previous buffers were a throwaway fallback allocation — free them.
-        app->deferDestroyUntilFence(f, [app, prevVertex, prevIndex]() {
-            if (prevVertex.buffer != VK_NULL_HANDLE)
-                app->resources.removeBufferVma(prevVertex.buffer, prevVertex.allocation);
-            if (prevIndex.buffer != VK_NULL_HANDLE)
-                app->resources.removeBufferVma(prevIndex.buffer, prevIndex.allocation);
-        });
-    }
-}
-
 IndirectRenderer::IndirectRenderer() {}
 IndirectRenderer::~IndirectRenderer() {}
 
@@ -216,12 +151,6 @@ void IndirectRenderer::cleanup(VulkanApp* app) {
     activeMeshCountDirty_ = true;
     vertexBuffer = {};
     indexBuffer = {};
-    for (auto& b : vertexSlots) b = {};
-    for (auto& b : indexSlots) b = {};
-    vertexSlotCap.fill(0);
-    indexSlotCap.fill(0);
-    geomSlotInUse.fill(false);
-    currentGeomSlot = UINT32_MAX;
     indirectBuffer = {};
     for (auto& b : compactIndirectBuffers) b = {};
     for (auto& b : visibleLodBuffers) b = {};
@@ -245,8 +174,7 @@ void IndirectRenderer::ensureFaceScratchBuffers(VulkanApp* app, VkDeviceSize lod
     if (!app || lodBufSize == 0) return;
     // Grow path: capacity increased since the last allocation — retire the old
     // buffers via the frame-fence-gated deferred destroy (in-flight culls may
-    // still reference them) and recreate at the new size. Mirrors rebuild()'s
-    // local scheduleDestroyBuffer (a lambda there, so the logic is repeated).
+    // still reference them) and recreate at the new size.
     if (faceScratchSize_ != 0 && lodBufSize > faceScratchSize_) {
         for (uint32_t f = 0; f < NUM_FACE_SCRATCH; ++f) {
             if (visibleLodsScratchFaces[f].buffer != VK_NULL_HANDLE) {
@@ -273,445 +201,72 @@ void IndirectRenderer::ensureFaceScratchBuffers(VulkanApp* app, VkDeviceSize lod
         faceScratchSize_ = lodBufSize;
 }
 
-uint32_t IndirectRenderer::addMesh(const Geometry& mesh) {
-    if (slottedMode) {
-        return UINT32_MAX;
-    }
-    return updateMesh(mesh, nextId++);
-}
-
-uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
-    if (slottedMode) {
-        return UINT32_MAX;
-    }
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-
-    MeshInfo m{};
-    m.id = customId;
-    m.baseVertex = static_cast<uint32_t>(mergedVertices.size());
-    m.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
-    m.firstIndex = static_cast<uint32_t>(mergedIndices.size());
-    m.indexCount = static_cast<uint32_t>(mesh.indices.size());
-    m.drawIndex = static_cast<uint32_t>(indirectCommands.size());
-    m.active = true;
-
-    if (mesh.vertices.empty()) {
-        // Empty mesh: set degenerate zero-sized bounds at origin
-        m.boundsMin = glm::vec4(0.0f);
-        m.boundsMax = glm::vec4(0.0f);
-    } else {
-        glm::vec3 minp(FLT_MAX), maxp(-FLT_MAX);
-        for (const auto& v : mesh.vertices) {
-            minp = glm::min(minp, v.position);
-            maxp = glm::max(maxp, v.position);
-        }
-        m.boundsMin = glm::vec4(minp, 0.0f);
-        m.boundsMax = glm::vec4(maxp, 0.0f);
-    }
-
-    mergedVertices.insert(mergedVertices.end(), mesh.vertices.begin(), mesh.vertices.end());
-    mergedIndices.insert(mergedIndices.end(), mesh.indices.begin(), mesh.indices.end());
-
-    VkDrawIndexedIndirectCommand cmd{};
-    cmd.indexCount = m.indexCount;
-    cmd.instanceCount = 1;
-    cmd.firstIndex = m.firstIndex;
-    cmd.vertexOffset = static_cast<int32_t>(m.baseVertex);
-    cmd.firstInstance = static_cast<uint32_t>(indirectCommands.size());
-    indirectCommands.push_back(cmd);
-
-    meshes[m.id] = m; // insert or replace
-    activeMeshCountDirty_ = true; // active set may have changed
-    dirty = true;     // adding a mesh always requires a rebuild
-
-    return customId;
-}
 
 
-void IndirectRenderer::removeMesh(uint32_t meshId) {
-    if (slottedMode) {
-        return;
-    }
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-    auto it = meshes.find(meshId);
-    if (it == meshes.end()) return;
-    it->second.active = false;
-    activeMeshCountDirty_ = true;
-    dirty = true;
-}
+
 
 void IndirectRenderer::removeAllMeshes() {
     std::lock_guard<std::recursive_mutex> guard(mutex);
     meshes.clear();
     activeMeshCountDirty_ = true;
-    metaBuffersWrittenCount = 0;
-    dirty = true;
 
-    if (slottedMode) {
-        // Pre-sized slot buffers: zero in-place instead of clearing/resizing.
-        if (!mergedVertices.empty())
-            for (auto& v : mergedVertices) v = Vertex{};
-        if (!mergedIndices.empty())
-            std::memset(mergedIndices.data(), 0, mergedIndices.size() * sizeof(uint32_t));
-        if (!indirectCommands.empty())
-            std::memset(indirectCommands.data(), 0,
-                        indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand));
+    // Pre-sized slot buffers: zero in-place instead of clearing/resizing.
+    if (!mergedVertices.empty())
+        for (auto& v : mergedVertices) v = Vertex{};
+    if (!mergedIndices.empty())
+        std::memset(mergedIndices.data(), 0, mergedIndices.size() * sizeof(uint32_t));
+    if (!indirectCommands.empty())
+        std::memset(indirectCommands.data(), 0,
+                    indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand));
 
-        // Zero GPU indirect and bounds buffers so culling sees indexCount=0.
-        if (indirectBuffer.buffer != VK_NULL_HANDLE) {
-            void* ptr = indirectBuffer.map(0);
-            if (ptr) {
-                std::memset(ptr, 0, indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand));
-                indirectBuffer.unmap();
-            }
+    // Zero GPU indirect and bounds buffers so culling sees indexCount=0.
+    if (indirectBuffer.buffer != VK_NULL_HANDLE) {
+        void* ptr = indirectBuffer.map(0);
+        if (ptr) {
+            std::memset(ptr, 0, indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand));
+            indirectBuffer.unmap();
         }
-        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-            void* ptr = boundsBuffer.map(0);
-            if (ptr) {
-                std::memset(ptr, 0, slotAlloc.capacity() * 4 * sizeof(glm::vec4));
-                boundsBuffer.unmap();
-            }
-        }
-        // Chosen-LoD outputs are DEVICE_LOCAL cull outputs now: they are
-        // zeroed on the GPU by prepareCull's vkCmdFillBuffer before every
-        // dispatch, so no stale (chunk, level) pair can survive a scene clear
-        // past the next cull. No host writes here.
-
-        // Free all slots (collect indices first to avoid recursive locking).
-        std::vector<uint32_t> active;
-        slotAlloc.visitActive([&active](uint32_t idx, const auto&) { active.push_back(idx); });
-        for (uint32_t idx : active) slotAlloc.free(idx);
-    } else {
-        mergedVertices.clear();
-        mergedIndices.clear();
-        mergedVertices.shrink_to_fit();
-        mergedIndices.shrink_to_fit();
-        indirectCommands.clear();
     }
+    if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+        void* ptr = boundsBuffer.map(0);
+        if (ptr) {
+            std::memset(ptr, 0, slotAlloc.capacity() * 4 * sizeof(glm::vec4));
+            boundsBuffer.unmap();
+        }
+    }
+    // Chosen-LoD outputs are DEVICE_LOCAL cull outputs now: they are
+    // zeroed on the GPU by prepareCull's vkCmdFillBuffer before every
+    // dispatch, so no stale (chunk, level) pair can survive a scene clear
+    // past the next cull. No host writes here.
+
+    // Free all slots (collect indices first to avoid recursive locking).
+    std::vector<uint32_t> active;
+    slotAlloc.visitActive([&active](uint32_t idx, const auto&) { active.push_back(idx); });
+    for (uint32_t idx : active) slotAlloc.free(idx);
 }
 
 bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, size_t meshCount) {
     std::lock_guard<std::recursive_mutex> guard(mutex);
 
-    // Slotted mode: buffers are pre-allocated ONCE at initSlots() to worst-case
+    // Buffers are pre-allocated ONCE at initSlots() to worst-case
     // capacity and never reallocated at runtime (that is the point of the
     // design — zero vmaCreateBuffer calls after the first frame). This is a
     // pure check: exceeding capacity is a sizing bug, caught early via
     // assert + log instead of a silent growth path.
-    if (slottedMode) {
-        const bool fits = vertexCount <= vertexCapacity &&
-                          indexCount <= indexCapacity &&
-                          meshCount <= meshCapacity;
-        if (!fits) {
-            std::cerr << "[IndirectRenderer] ensureCapacity: capacity exceeded in slotted mode "
-                      << "(need v=" << vertexCount << "/" << vertexCapacity
-                      << " i=" << indexCount << "/" << indexCapacity
-                      << " m=" << meshCount << "/" << meshCapacity
-                      << ") — bump initSlots() worst-case estimates\n";
-            assert(false && "IndirectRenderer slotted capacity exceeded — bump initSlots estimates");
-        }
-        return fits;
+    const bool fits = vertexCount <= vertexCapacity &&
+                      indexCount <= indexCapacity &&
+                      meshCount <= meshCapacity;
+    if (!fits) {
+        std::cerr << "[IndirectRenderer] ensureCapacity: capacity exceeded "
+                  << "(need v=" << vertexCount << "/" << vertexCapacity
+                  << " i=" << indexCount << "/" << indexCapacity
+                  << " m=" << meshCount << "/" << meshCapacity
+                  << ") — bump initSlots() worst-case estimates\n";
+        assert(false && "IndirectRenderer capacity exceeded — bump initSlots estimates");
     }
-
-    // Legacy append-based path (non-slotted): retain growth-on-demand.
-    // Add 25% headroom for future growth
-    size_t neededVertexCap = vertexCount + vertexCount / 4;
-    size_t neededIndexCap = indexCount + indexCount / 4;
-    size_t neededMeshCap = meshCount + meshCount / 4;
-    
-    bool needsRebuild = false;
-    
-    if (vertexBuffer.buffer == VK_NULL_HANDLE || vertexCapacity < neededVertexCap) {
-        needsRebuild = true;
-    }
-    if (indexBuffer.buffer == VK_NULL_HANDLE || indexCapacity < neededIndexCap) {
-        needsRebuild = true;
-    }
-    if (indirectBuffer.buffer == VK_NULL_HANDLE || meshCapacity < neededMeshCap) {
-        needsRebuild = true;
-    }
-    
-    if (needsRebuild) {
-        // Set target capacities - rebuild will use these
-        if (neededVertexCap > vertexCapacity) vertexCapacity = neededVertexCap;
-        if (neededIndexCap > indexCapacity) indexCapacity = neededIndexCap;
-        if (neededMeshCap > meshCapacity) meshCapacity = neededMeshCap;
-        dirty = true;
-    }
-    
-    return !needsRebuild;
+    return fits;
 }
 
-bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds, float priority) {
-    app_ = app;
-    assert(uploadMgr_ != nullptr && "IndirectRenderer::uploadMeshes requires UploadManager (set via setUploadManager) — it is the only upload path");
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-    if (meshIds.empty()) return true;
-
-    if (!uploadMgr_) {
-        std::cerr << "[IndirectRenderer] uploadMeshes: UploadManager not set — all mesh uploads must go through UploadManager\n";
-        return false;
-    }
-
-    return uploadMeshesBatched(meshIds, priority);
-}
-
-// Splits a batch of mesh uploads across multiple UploadManager slots when the
-// total staging size exceeds the per-slot capacity. Each slot gets its own
-// UploadJob with its own onComplete callback that publishes the mesh meta
-// entries for that slot's subset of meshes.
-bool IndirectRenderer::uploadMeshesBatched(const std::vector<uint32_t>& meshIds, float priority) {
-    // Per-mesh copy request gathered before any GPU work is recorded.
-    struct Req {
-        uint32_t meshId;
-        size_t meshVertexCount;
-        VkDeviceSize vertexOffset;
-        VkDeviceSize vertexSize;
-        VkDeviceSize indexOffset;
-        VkDeviceSize indexSize;
-        bool doVertex;
-        bool doIndex;
-    };
-    std::vector<Req> reqs;
-    reqs.reserve(meshIds.size());
-    VkDeviceSize totalStaging = 0;
-    bool anyVertex = false;
-    bool anyIndex = false;
-
-    for (uint32_t meshId : meshIds) {
-        auto it = meshes.find(meshId);
-        if (it == meshes.end()) {
-            continue;
-        }
-        MeshInfo& info = it->second;
-        if (!info.active) {
-            continue;
-        }
-        if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) {
-            return false;
-        }
-
-        // Basic bounds validations to detect corrupted mesh data early.
-        size_t indicesAvailable = mergedIndices.size();
-        size_t verticesAvailable = mergedVertices.size();
-        if (info.firstIndex + static_cast<uint64_t>(info.indexCount) > indicesAvailable) {
-            std::cerr << "[IndirectRenderer] uploadMeshes: mesh " << meshId
-                      << " index range out of bounds: firstIndex=" << info.firstIndex
-                      << " indexCount=" << info.indexCount
-                      << " mergedIndices.size=" << indicesAvailable << std::endl;
-            assert(false && "mesh index range out of bounds");
-            return false;
-        }
-
-        uint32_t maxVertexIdx = 0;
-        for (size_t i = info.firstIndex; i < info.firstIndex + info.indexCount; ++i) {
-            uint32_t idx = mergedIndices[i];
-            if (idx > maxVertexIdx) maxVertexIdx = idx;
-        }
-        size_t meshVertexCount = static_cast<size_t>(maxVertexIdx) + 1;
-
-        if (info.baseVertex + meshVertexCount > verticesAvailable) {
-            std::cerr << "[IndirectRenderer] uploadMeshes: mesh " << meshId
-                      << " vertex range out of bounds: baseVertex=" << info.baseVertex
-                      << " meshVertexCount=" << meshVertexCount
-                      << " mergedVertices.size=" << verticesAvailable << std::endl;
-            assert(false && "mesh vertex range out of bounds");
-            return false;
-        }
-
-        if (info.baseVertex + meshVertexCount > vertexCapacity) {
-            std::cerr << "[IndirectRenderer] uploadMeshes] vertex capacity exceeded (" << info.baseVertex << " + " << meshVertexCount << " > " << vertexCapacity << ")\n";
-            return false;
-        }
-        if (info.firstIndex + info.indexCount > indexCapacity) {
-            std::cerr << "[IndirectRenderer] uploadMeshes: index capacity exceeded (" << info.firstIndex << " + " << info.indexCount << " > " << indexCapacity << ")\n";
-            return false;
-        }
-
-        // Ensure every index references a local vertex (before vertexOffset is applied)
-        for (size_t i = info.firstIndex; i < info.firstIndex + info.indexCount; ++i) {
-            uint32_t idx = mergedIndices[i];
-            if (idx >= meshVertexCount) {
-                std::cerr << "[IndirectRenderer] uploadMeshes: mesh " << meshId
-                          << " index value out of local vertex range: indexPos=" << i
-                          << " indexVal=" << idx << " meshVertexCount=" << meshVertexCount << std::endl;
-                assert(false && "index value out of range for mesh");
-                return false;
-            }
-        }
-
-        // Check for non-finite vertex positions which indicate memory corruption or bad generation
-        for (size_t v = info.baseVertex; v < info.baseVertex + meshVertexCount; ++v) {
-            const Vertex &vert = mergedVertices[v];
-            if (!std::isfinite(vert.position.x) || !std::isfinite(vert.position.y) || !std::isfinite(vert.position.z)) {
-                std::cerr << "[IndirectRenderer] uploadMeshes: mesh " << meshId
-                          << " has non-finite vertex at index=" << v << " pos=(" << vert.position.x << "," << vert.position.y << "," << vert.position.z << ")\n";
-                assert(false && "non-finite vertex position");
-                return false;
-            }
-        }
-
-        if (info.indexCount % 3 != 0) {
-            std::cerr << "[IndirectRenderer] warning: mesh " << meshId << " indexCount not multiple of 3: " << info.indexCount << std::endl;
-        }
-        VkDeviceSize vertexOffset = info.baseVertex * sizeof(Vertex);
-        VkDeviceSize vertexSize = meshVertexCount * sizeof(Vertex);
-        VkDeviceSize indexOffset = info.firstIndex * sizeof(uint32_t);
-        VkDeviceSize indexSize = info.indexCount * sizeof(uint32_t);
-        bool doVertexUpload = (vertexSize > 0 && info.baseVertex < mergedVertices.size());
-        bool doIndexUpload = (indexSize > 0 && info.firstIndex < mergedIndices.size());
-        if (doVertexUpload) anyVertex = true;
-        if (doIndexUpload) anyIndex = true;
-
-        if (doVertexUpload || doIndexUpload) {
-            VkDeviceSize stagingSize = (doVertexUpload ? vertexSize : 0)
-                                     + (doIndexUpload  ? indexSize  : 0);
-            totalStaging += stagingSize;
-            reqs.push_back({meshId, meshVertexCount, vertexOffset, vertexSize,
-                            indexOffset, indexSize, doVertexUpload, doIndexUpload});
-        }
-    }
-
-    if (reqs.empty()) return true;
-
-    const VkDeviceSize slotSize = uploadMgr_->slotSize();
-    // UploadManager is the ONLY upload path (no StagingRingBuffer/dedicated
-    // fallback): a single mesh must fit in one slot. 4 MiB slots cover the
-    // largest chunk (512 KB vertex + 128 KB index worst case with headroom).
-    for (const Req& r : reqs) {
-        const VkDeviceSize reqSize = (r.doVertex ? r.vertexSize : 0) + (r.doIndex ? r.indexSize : 0);
-        if (reqSize > slotSize) {
-            std::cerr << "[IndirectRenderer] uploadMeshesBatched: mesh " << r.meshId
-                      << " needs " << reqSize << " bytes > UploadManager slotSize "
-                      << slotSize << " — bump streamer chunk budgets\n";
-            assert(false && "single mesh exceeds UploadManager slotSize — bump streamer budgets");
-            return false;
-        }
-    }
-    size_t start = 0;
-
-    while (start < reqs.size()) {
-        // Accumulate reqs for this slot until we hit the slot size limit.
-        VkDeviceSize slotStaging = 0;
-        size_t end = start;
-        for (; end < reqs.size(); ++end) {
-            const Req& r = reqs[end];
-            VkDeviceSize reqSize = (r.doVertex ? r.vertexSize : 0) + (r.doIndex ? r.indexSize : 0);
-            if (slotStaging + reqSize > slotSize && end > start) {
-                break; // This req would overflow the slot; start a new one.
-            }
-            slotStaging += reqSize;
-        }
-
-        // Build the UploadJob for reqs[start..end).
-        streaming::UploadJob job;
-        job.category  = streamCategory_;
-        job.priority  = priority;
-        job.chunkSlot = nullptr;
-        job.uploads.reserve((end - start) * 2);
-
-        std::vector<uint32_t> batchIds;
-        batchIds.reserve(end - start);
-        for (size_t i = start; i < end; ++i) {
-            const Req& r = reqs[i];
-            if (r.doVertex) {
-                streaming::BufferUpload bu;
-                bu.dst       = vertexBuffer;
-                bu.dstOffset = r.vertexOffset;
-                bu.cpuData.resize(r.vertexSize);
-                std::memcpy(bu.cpuData.data(), &mergedVertices[meshes[r.meshId].baseVertex], r.vertexSize);
-                job.uploads.push_back(std::move(bu));
-            }
-            if (r.doIndex) {
-                streaming::BufferUpload bu;
-                bu.dst       = indexBuffer;
-                bu.dstOffset = r.indexOffset;
-                bu.cpuData.resize(r.indexSize);
-                std::memcpy(bu.cpuData.data(), &mergedIndices[meshes[r.meshId].firstIndex], r.indexSize);
-                job.uploads.push_back(std::move(bu));
-            }
-            batchIds.push_back(r.meshId);
-        }
-
-        job.onComplete = [this, batchIds]() {
-            std::lock_guard<std::recursive_mutex> lock(mutex);
-            for (uint32_t id : batchIds) publishMeshMeta(id);
-        };
-
-        uploadMgr_->enqueue(std::move(job));
-        start = end;
-    }
-
-    return true;
-}
-
-size_t IndirectRenderer::getMergedVertexCount() const {
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-    return mergedVertices.size();
-}
-
-size_t IndirectRenderer::getMergedIndexCount() const {
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-    return mergedIndices.size();
-}
-
-bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
-    if (!uploadMeshes(app, std::vector<uint32_t>{meshId})) {
-        return false;
-    }
-    // uploadMeshMetaBuffers deferred until UploadJob's onComplete fires.
-    return true;
-}
-
-// Write all mesh indirect/model/bounds buffers for all active meshes
-void IndirectRenderer::uploadMeshMetaBuffers(VulkanApp* app) {
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-    doUploadMeshMetaBuffers(app);
-}
-
-// Unlocked variant — caller must hold mutex.
-void IndirectRenderer::doUploadMeshMetaBuffers(VulkanApp* app) {
-    if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
-
-    // Write new entries (those past metaBuffersWrittenCount) in
-    // indirectCommands order.  This is critical: prepareCull dispatches
-    // numCmds workgroups indexed by drawIndex, and drawPrepared caps the
-    // indirect draw at indirectCommands.size() — so GPU buffer positions
-    // must match indirectCommands positions.  Iterating the unordered_map
-    // (used before drawIndex was added) produces a different ordering,
-    // causing newly-added meshes to read stale bounds at their drawIndex
-    // and get incorrectly culled.
-    for (size_t i = metaBuffersWrittenCount; i < indirectCommands.size(); i++) {
-        const auto& cmd = indirectCommands[i];
-        VkDeviceSize cmdOffset = i * sizeof(VkDrawIndexedIndirectCommand);
-        void* data = indirectBuffer.map(cmdOffset);
-        memcpy(data, &cmd, sizeof(cmd));
-        indirectBuffer.unmap();
-
-        // Find the MeshInfo for this position via drawIndex.
-        MeshInfo* info = nullptr;
-        for (auto& kv : meshes) {
-            if (kv.second.active && kv.second.drawIndex == i) {
-                info = &kv.second;
-                break;
-            }
-        }
-
-        if (info) {
-            info->indirectOffset = cmdOffset;
-            if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-                // Per draw entry the bounds buffer holds min, max and an
-                // unused meta vec4 (zeroed — chunks carry no LoD band meta).
-                VkDeviceSize boundsOffset = i * 4 * sizeof(glm::vec4);
-                glm::vec4 bounds[3] = { info->boundsMin, info->boundsMax, glm::vec4(0.0f) };
-                data = boundsBuffer.map(boundsOffset);
-                memcpy(data, bounds, sizeof(bounds));
-                boundsBuffer.unmap();
-            }
-        }
-    }
-    metaBuffersWrittenCount = indirectCommands.size();
-}
 
 // Caller must hold `mutex`. Queues a host-side write of one draw entry (and
 // optionally its bounds) to be copied to the GPU indirect/bounds buffers by
@@ -849,858 +404,7 @@ void IndirectRenderer::flushStagedMetaWrites(VkCommandBuffer cmd, uint32_t frame
     metaStageFlush_.clear();
 }
 
-// Unlocked — caller must hold mutex. Writes a single mesh's indirect command
-// and bounds at its CURRENT drawIndex offset. Both indirectCommands[drawIndex]
-// and meshes[id].drawIndex are read here under the lock, so they stay
-// consistent even if a rebuild() reordered draw indices between the upload
-// enqueue and its completion. The write is staged for the next prepareCull's
-// GPU copy, so it never races in-flight cull dispatches reading the same entry.
-void IndirectRenderer::publishMeshMeta(uint32_t meshId) {
-    if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
-    auto it = meshes.find(meshId);
-    if (it == meshes.end() || !it->second.active) return;
-    MeshInfo& info = it->second;
-    size_t i = info.drawIndex;
-    if (i >= indirectCommands.size()) return;
 
-    VkDeviceSize cmdOffset = i * sizeof(VkDrawIndexedIndirectCommand);
-    const auto& cmd = indirectCommands[i];
-    info.indirectOffset = cmdOffset;
-
-    const float cellSize = info.boundsMax.x - info.boundsMin.x;
-    const glm::vec4 lodMeta = glm::vec4(cellSize,
-                                        static_cast<float>(info.level_.level),
-                                        static_cast<float>(maxLodLevel_), 0.0f);
-    glm::vec4 bounds[4] = { info.boundsMin, info.boundsMax, lodMeta, info.boundsBase };
-    stageMeshMetaWrite(static_cast<uint32_t>(i), cmd, bounds, true);
-}
-
-void IndirectRenderer::rebuild(VulkanApp* app) {
-    // In slotted mode, global rebuilds are NEVER performed. Each chunk
-    // updates only its own slot via uploadSlot(). If we reach here in
-    // slotted mode, the caller is using the legacy API incorrectly.
-    if (slottedMode) {
-        app_ = app;
-        return;
-    }
-    app_ = app;
-
-    // A rebuild may reallocate the merged vertex/index buffers below. Any
-    // UploadJob still queued or in flight in the UploadManager captured the
-    // CURRENT buffer handles at uploadMeshes() time; if we destroyed those
-    // buffers while such a job is pending, its vkCmdCopyBuffer would target a
-    // freed VkBuffer (VUID-vkCmdCopyBuffer-dstBuffer-parameter). Drain the
-    // manager first so no pending job references a soon-to-be-destroyed buffer.
-    // This MUST happen BEFORE acquiring `mutex`: flush() fires each job's
-    // onComplete → publishMeshMeta, which locks the same (non-recursive) mutex.
-    if (uploadMgr_) uploadMgr_->flush();
-
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-
-    size_t activeMeshCount = 0;
-    for (const auto& kv : meshes) if (kv.second.active) ++activeMeshCount;
-
-    if (!dirty) return;
-
-    // Defer destruction until ALL pending GPU work completes, not just
-    // the current frame's fence.  Using VK_NULL_HANDLE (wait-for-all-pending)
-    // avoids a fence-index wrap-around bug where (currentFrame+1)%n picks
-    // an already-signaled fence, destroying buffers that are still being
-    // read by in-flight indirect.comp compute dispatches — causing GPUVM
-    // faults on RADV.
-    //
-    // The raw vkDestroyBuffer path was safe because it only destroyed the
-    // VkBuffer *handle* — the underlying VkDeviceMemory remained alive and
-    // GPU reads continued to work.  But vmaDestroyBuffer calls vkFreeMemory
-    // too, so the memory must be guaranteed free of GPU access before we
-    // call it.
-    auto scheduleDestroyBuffer = [&](const Buffer &b) {
-        if (b.buffer == VK_NULL_HANDLE) return;
-        Buffer copy = b;
-        // Gate destruction on the current frame fence (FIFO: when it signals,
-        // every earlier in-flight frame that may still reference `b` has also
-        // completed). This is bounded to frames-in-flight. Using
-        // deferDestroyUntilAllPending(NULL fence) here would only run once ALL
-        // inFlightFences are signaled, which never happens during continuous
-        // rendering (a frame is always in flight) — so buffers recreated every
-        // rebuild() (compact/indirect/bounds) would leak. Matches
-        // recyclePreviousGeom's fence-gated recycling.
-        app->deferDestroyUntilFence(app->getCurrentFrameFence(), [app, copy]() {
-            if (copy.buffer != VK_NULL_HANDLE) {
-                app->resources.removeBufferVma(copy.buffer, copy.allocation);
-            }
-        });
-    };
-
-    // Compact merged vertex/index data to reclaim space from removed meshes.
-    // Without this, every brush-animation frame appends new geometry while stale
-    // data from prior frames accumulates indefinitely (GPU memory leak).
-    if (activeMeshCount < meshes.size()) {
-        std::vector<Vertex> compactVerts;
-        std::vector<uint32_t> compactIndices;
-        size_t totalVerts = 0, totalIndices = 0;
-        for (const auto& kv : meshes) {
-            if (!kv.second.active) continue;
-            totalVerts += kv.second.vertexCount;
-            totalIndices += kv.second.indexCount;
-        }
-        compactVerts.reserve(totalVerts);
-        compactIndices.reserve(totalIndices);
-
-        for (auto& kv : meshes) {
-            MeshInfo& info = kv.second;
-            if (!info.active) continue;
-
-            uint32_t oldBaseVertex = info.baseVertex;
-            uint32_t oldFirstIndex = info.firstIndex;
-            uint32_t vCount = info.vertexCount;
-            uint32_t iCount = info.indexCount;
-
-            info.baseVertex = static_cast<uint32_t>(compactVerts.size());
-            info.firstIndex = static_cast<uint32_t>(compactIndices.size());
-
-            auto vertStart = mergedVertices.begin() + oldBaseVertex;
-            compactVerts.insert(compactVerts.end(), vertStart, vertStart + vCount);
-
-            auto idxStart = mergedIndices.begin() + oldFirstIndex;
-            compactIndices.insert(compactIndices.end(), idxStart, idxStart + iCount);
-        }
-
-        mergedVertices = std::move(compactVerts);
-        mergedIndices = std::move(compactIndices);
-    }
-
-    // Calculate required capacity with 25% headroom for incremental adds
-    size_t neededVertexCap = mergedVertices.size() + mergedVertices.size() / 4 + 1024;
-    size_t neededIndexCap = mergedIndices.size() + mergedIndices.size() / 4 + 4096;
-    size_t neededMeshCap = activeMeshCount + activeMeshCount / 4 + 64;
-    
-    // Save old capacities before potentially updating them (used to decide
-    // whether existing GPU buffers can be reused vs. needing recreation).
-    size_t oldVertexCapacity = vertexCapacity;
-    size_t oldIndexCapacity = indexCapacity;
-    size_t oldMeshCapacity = meshCapacity;
-
-    // Legacy growth path: buffers were pre-sized via ensureCapacity() at init.
-    // Exceeding the reservation at runtime is a sizing bug — catch it early
-    // via assert + log instead of silently reallocating (steady state must
-    // issue zero vmaCreateBuffer calls). Growth is retained only for the
-    // first reservation (capacity == 0).
-    if ((neededVertexCap > vertexCapacity && vertexCapacity > 0) ||
-        (neededIndexCap > indexCapacity && indexCapacity > 0) ||
-        (neededMeshCap > meshCapacity && meshCapacity > 0)) {
-        std::cerr << "[IndirectRenderer::rebuild] capacity exceeded "
-                  << "(need v=" << neededVertexCap << "/" << vertexCapacity
-                  << " i=" << neededIndexCap << "/" << indexCapacity
-                  << " m=" << neededMeshCap << "/" << meshCapacity
-                  << ") — size once via ensureCapacity() at startup\n";
-        assert(false && "IndirectRenderer::rebuild capacity exceeded — pre-size at startup");
-    }
-
-    // Use max of current capacity or needed capacity (never shrink)
-    if (neededVertexCap > vertexCapacity) vertexCapacity = neededVertexCap;
-    if (neededIndexCap > indexCapacity) indexCapacity = neededIndexCap;
-    if (neededMeshCap > meshCapacity) meshCapacity = neededMeshCap;
-
-    // Build merged GPU-side vertex and index buffers from the CPU arrays.
-    // If there are no meshes, free existing buffers.
-    static bool printedBufferInfo = false;
-    if (!printedBufferInfo) {
-        printedBufferInfo = true;
-    }
-    // Capture the geometry that was current BEFORE this rebuild so it can be
-    // recycled once its in-flight frames retire (see recyclePreviousGeom).
-    uint32_t prevSlot = currentGeomSlot;
-    Buffer prevVertex = vertexBuffer;
-    Buffer prevIndex = indexBuffer;
-    (void)oldVertexCapacity; (void)oldIndexCapacity;
-
-    if (mergedVertices.empty() || mergedIndices.empty()) {
-        // No geometry: recycle the previous slot/buffers and clear the mirror.
-        recyclePreviousGeom(app, prevSlot, prevVertex, prevIndex);
-        currentGeomSlot = UINT32_MAX;
-        vertexBuffer = {};
-        indexBuffer = {};
-        vertexCapacity = 0;
-        indexCapacity = 0;
-    } else {
-        // Pick a free pool slot to receive the fresh full copy. The previous
-        // "current" slot is still in-use (recycled below via a frame-fence
-        // callback), so acquireGeomSlot never returns it.
-        uint32_t slot = acquireGeomSlot();
-        VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
-        VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
-
-        if (slot != UINT32_MAX) {
-            // Create the slot's buffers on first use, or grow them if capacity
-            // increased (never shrink). Growth defer-destroys the old undersized
-            // buffers; the common steady-state path reuses them in place.
-            if (vertexSlots[slot].buffer == VK_NULL_HANDLE || vertexSlotCap[slot] < vertexCapacity) {
-                if (vertexSlots[slot].buffer != VK_NULL_HANDLE) scheduleDestroyBuffer(vertexSlots[slot]);
-                vertexSlots[slot] = app->createBuffer(vertexBufferSize,
-                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-                vertexSlotCap[slot] = vertexCapacity;
-            }
-            if (indexSlots[slot].buffer == VK_NULL_HANDLE || indexSlotCap[slot] < indexCapacity) {
-                if (indexSlots[slot].buffer != VK_NULL_HANDLE) scheduleDestroyBuffer(indexSlots[slot]);
-                indexSlots[slot] = app->createBuffer(indexBufferSize,
-                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-                indexSlotCap[slot] = indexCapacity;
-            }
-            vertexBuffer = vertexSlots[slot];
-            indexBuffer = indexSlots[slot];
-        } else {
-            // Pool exhausted (rare burst): allocate throwaway buffers reclaimed
-            // once the frame that uses them retires. Bounded — never accumulates
-            // like deferDestroyUntilAllPending did.
-            vertexBuffer = app->createBuffer(vertexBufferSize,
-                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            indexBuffer = app->createBuffer(indexBufferSize,
-                VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        }
-        currentGeomSlot = slot;
-
-        // Recycle the previous geometry now that the new slot is current.
-        recyclePreviousGeom(app, prevSlot, prevVertex, prevIndex);
-
-        // Upload current data via staging → device-local copy into the freshly
-        // selected slot. That slot is either a brand-new buffer or one whose
-        // last frame has retired (guaranteed by the fence-gated recycle above),
-        // so no in-flight frame is reading it — no WRITE_AFTER_READ hazard, and
-        // no need for a device-wide stall.
-        bool doVertexUpload = !mergedVertices.empty();
-        bool doIndexUpload = !mergedIndices.empty();
-        VkDeviceSize vertexDataSize = mergedVertices.size() * sizeof(Vertex);
-        VkDeviceSize indexDataSize = mergedIndices.size() * sizeof(uint32_t);
-
-        if (doVertexUpload || doIndexUpload) {
-            VkDeviceSize stagingSize = (doVertexUpload ? vertexDataSize : 0)
-                                     + (doIndexUpload  ? indexDataSize  : 0);
-            Buffer staging = app->createBuffer(stagingSize,
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            void* mapped = nullptr;
-            mapped = staging.map(0);
-            VkDeviceSize offset = 0;
-            if (doVertexUpload) {
-                std::memcpy(static_cast<char*>(mapped) + offset, mergedVertices.data(), vertexDataSize);
-                offset += vertexDataSize;
-            }
-            if (doIndexUpload) {
-                std::memcpy(static_cast<char*>(mapped) + offset, mergedIndices.data(), indexDataSize);
-            }
-            staging.unmap(); // VMA persistent mapping
-
-            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-                VkDeviceSize off = 0;
-                if (doVertexUpload) {
-                    VkBufferCopy vCopy{};
-                    vCopy.size = vertexDataSize;
-                    vkCmdCopyBuffer(cmd, staging.buffer, vertexBuffer.buffer, 1, &vCopy);
-                    off += vertexDataSize;
-                }
-                if (doVertexUpload && doIndexUpload) {
-                    VkBufferMemoryBarrier2 barrier{};
-                    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-                    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-                    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-                    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                    barrier.buffer = vertexBuffer.buffer;
-                    barrier.offset = 0;
-                    barrier.size = vertexDataSize;
-                    VkDependencyInfo depInfo{};
-                    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                    depInfo.bufferMemoryBarrierCount = 1;
-                    depInfo.pBufferMemoryBarriers = &barrier;
-                    vkCmdPipelineBarrier2(cmd, &depInfo);
-                }
-                if (doIndexUpload) {
-                    VkBufferCopy iCopy{};
-                    iCopy.srcOffset = off;
-                    iCopy.size = indexDataSize;
-                    vkCmdCopyBuffer(cmd, staging.buffer, indexBuffer.buffer, 1, &iCopy);
-                }
-            });
-
-            app->resources.removeBufferVma(staging.buffer, staging.allocation);
-        }
-    }
-
-    // Rebuild indirect command list from active meshes so GPU-side compaction matches models/bounds
-    std::vector<VkDrawIndexedIndirectCommand> cmds;
-    cmds.reserve(meshes.size());
-    for (auto& kv : meshes) {
-        MeshInfo& info = kv.second;
-        if (!info.active) continue;
-        info.drawIndex = static_cast<uint32_t>(cmds.size());
-        VkDrawIndexedIndirectCommand cmd{};
-        cmd.indexCount = info.indexCount;
-        cmd.instanceCount = 1;
-        cmd.firstIndex = info.firstIndex;
-        cmd.vertexOffset = static_cast<int32_t>(info.baseVertex);
-        cmd.firstInstance = info.drawIndex;
-        cmds.push_back(cmd);
-    }
-    indirectCommands = cmds;
-
-    // Create or update the global indirect buffer with capacity-based sizing
-    // Use host-visible memory for AMD RADV driver compatibility
-    VkDeviceSize indirectBufferSize = sizeof(VkDrawIndexedIndirectCommand) * meshCapacity;
-    VkDeviceSize indirectDataSize = sizeof(VkDrawIndexedIndirectCommand) * indirectCommands.size();
-    bool needNewIndirectBuffer = (indirectBuffer.buffer == VK_NULL_HANDLE) || (meshCapacity > oldMeshCapacity);
-    if (needNewIndirectBuffer) {
-        if (indirectBuffer.buffer != VK_NULL_HANDLE || indirectBuffer.memory != VK_NULL_HANDLE) {
-            scheduleDestroyBuffer(indirectBuffer);
-            indirectBuffer = {};
-        }
-        if (meshCapacity > 0) {
-            indirectBuffer = app->createBuffer(indirectBufferSize, 
-                VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        }
-    }
-    // Write data to the (existing or newly-created) indirect buffer
-    if (indirectBuffer.buffer != VK_NULL_HANDLE) {
-        void* data;
-        data = indirectBuffer.map(0);
-        // Zero the entire buffer, then copy only the valid commands. The
-        // capacity headroom must never hold allocator garbage, otherwise the
-        // compute cull shader reads invalid DrawCmd entries as visible.
-        memset(data, 0, (size_t)indirectBufferSize);
-        if (indirectDataSize > 0) {
-            memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
-        }
-        indirectBuffer.unmap(); // VMA persistent mapping
-    }
-
-    // Mark per-mesh indirect offsets (byte offsets inside indirect buffer).
-    // `meshes` is an unordered_map keyed by mesh id, so never index it as an array.
-    VkDeviceSize offsetCursor = 0;
-    for (auto& kv : meshes) {
-        MeshInfo& info = kv.second;
-        if (!info.active) continue;
-        info.indirectOffset = offsetCursor;
-        offsetCursor += sizeof(VkDrawIndexedIndirectCommand);
-    }
-
-    // Models SSBO removed: shaders use identity model matrices, no modelsBuffer
-
-    // Upload bounds SSBO (four vec4s per active mesh: min, max, lod meta, base)
-    std::vector<glm::vec4> boundsData;
-    boundsData.reserve(meshes.size() * 4);
-    for (const auto& kv : meshes) {
-        const MeshInfo& info = kv.second;
-        if (!info.active) continue;
-        boundsData.push_back(info.boundsMin);
-        boundsData.push_back(info.boundsMax);
-        boundsData.push_back(glm::vec4(0.0f)); // meta: unused (no LoD bands)
-        boundsData.push_back(info.boundsBase); // shared column base (0 for legacy)
-    }
-    VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 4;
-    VkDeviceSize boundsDataSize = sizeof(glm::vec4) * boundsData.size();
-    bool needNewBoundsBuffer = (boundsBuffer.buffer == VK_NULL_HANDLE) || (meshCapacity > oldMeshCapacity);
-    if (needNewBoundsBuffer) {
-        if (boundsBuffer.buffer != VK_NULL_HANDLE || boundsBuffer.memory != VK_NULL_HANDLE) {
-            scheduleDestroyBuffer(boundsBuffer);
-            boundsBuffer = {};
-        }
-        if (meshCapacity > 0) {
-            boundsBuffer = app->createBuffer(boundsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        }
-    }
-    // Write data to the (existing or newly-created) bounds buffer
-    if (boundsBuffer.buffer != VK_NULL_HANDLE && boundsDataSize > 0) {
-        void* bdata;
-        bdata = boundsBuffer.map(0);
-        memcpy(bdata, boundsData.data(), (size_t)boundsDataSize);
-        boundsBuffer.unmap(); // VMA persistent mapping
-    }
-
-    // ── Vegetation per-draw table (binding 9 of indirect.comp) ──
-    // Indexed by the solid draw entry index s (== MeshInfo::drawIndex). For each
-    // active solid chunk that carries vegetation, store {instanceCount,
-    // firstInstance, 0, 0}; entries without vegetation stay zeroed. The merged
-    // dispatch reads this table inside processVegetation(s).
-    {
-        VkDeviceSize vegTableSize = sizeof(glm::vec4) * meshCapacity;
-        bool needNewVegTable = (vegTableBuffer.buffer == VK_NULL_HANDLE) || (meshCapacity > vegTableCapacity);
-        if (needNewVegTable) {
-            if (vegTableBuffer.buffer != VK_NULL_HANDLE) {
-                if (vegTableMapped) { vegTableBuffer.unmap(); vegTableMapped = nullptr; }
-                scheduleDestroyBuffer(vegTableBuffer);
-                vegTableBuffer = {};
-            }
-            if (meshCapacity > 0) {
-                vegTableBuffer = app->createBuffer(vegTableSize,
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                vegTableMapped = vegTableBuffer.map(0);
-            }
-            vegTableCapacity = meshCapacity;
-        }
-        if (vegTableBuffer.buffer != VK_NULL_HANDLE) {
-            std::vector<glm::vec4> vt(meshCapacity, glm::vec4(0.0f));
-            for (const auto& kv : meshes) {
-                const MeshInfo& info = kv.second;
-                if (!info.active) continue;
-                auto it = vegChunkInfoMap.find(kv.first);
-                if (it != vegChunkInfoMap.end() && info.drawIndex < meshCapacity)
-                    vt[info.drawIndex] = it->second;
-            }
-            if (vegTableMapped) {
-                memcpy(vegTableMapped, vt.data(), (size_t)vegTableSize);
-            } else {
-                void* data = vegTableBuffer.map(0);
-                memcpy(data, vt.data(), (size_t)vegTableSize);
-                vegTableBuffer.unmap();
-            }
-        }
-    }
-
-    // Create/resize compact indirect buffer (storage + indirect usage).
-    // Written by the compute shader every frame, read by the indirect draw:
-    // DEVICE_LOCAL (no host traffic). Zero-initialized by createBuffer; the
-    // per-frame vkCmdFillBuffer in prepareCull resets it before each dispatch.
-    VkDeviceSize compactSize = indirectBufferSize;
-    for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
-        if (compactIndirectBuffers[f].buffer != VK_NULL_HANDLE || compactIndirectBuffers[f].memory != VK_NULL_HANDLE) {
-            scheduleDestroyBuffer(compactIndirectBuffers[f]);
-            compactIndirectBuffers[f] = {};
-        }
-        if (compactSize > 0) {
-            compactIndirectBuffers[f] = app->createBuffer(compactSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        }
-    }
-
-    // Per-frame chosen-LoD output buffers (uvec2 per entry) + the scratch
-    // buffer bound by external descriptor-set owners (cubemap/backface).
-    // Same lifecycle as compactIndirectBuffers. DEVICE_LOCAL cull outputs;
-    // zeroed by createBuffer and reset each frame with vkCmdFillBuffer.
-    VkDeviceSize lodBufSize = sizeof(glm::uvec2) * meshCapacity;
-    for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
-        if (visibleLodBuffers[f].buffer != VK_NULL_HANDLE || visibleLodBuffers[f].memory != VK_NULL_HANDLE) {
-            scheduleDestroyBuffer(visibleLodBuffers[f]);
-            visibleLodBuffers[f] = {};
-        }
-        if (lodBufSize > 0) {
-            visibleLodBuffers[f] = app->createBuffer(lodBufSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        }
-    }
-    if (visibleLodsScratch.buffer == VK_NULL_HANDLE && lodBufSize > 0) {
-        // TRANSFER_DST required: prepareCullWithDescriptor clears it with
-        // vkCmdFillBuffer each cull.
-        visibleLodsScratch = app->createBuffer(lodBufSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    }
-    // Per-face scratch buffers for parallel 6-face culls (one writable buffer
-    // per concurrent dispatch — see ensureFaceScratchBuffers).
-    ensureFaceScratchBuffers(app, lodBufSize);
-
-    // Create the per-frame visible count buffers. The counts are DEVICE_LOCAL
-    // cull outputs (atomically appended by the dispatch, consumed by the
-    // indirect-count draw). After each dispatch prepareCull copies the count
-    // into the small HOST_VISIBLE readback buffer, which the CPU stats path
-    // reads with 1-frame latency — no persistent host mapping, no stalls.
-    VkDeviceSize countSize = sizeof(uint32_t);
-    uint32_t initialCount = static_cast<uint32_t>(indirectCommands.size());
-    for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
-        if (visibleCountBuffers[f].buffer != VK_NULL_HANDLE || visibleCountBuffers[f].memory != VK_NULL_HANDLE) {
-            scheduleDestroyBuffer(visibleCountBuffers[f]);
-            visibleCountBuffers[f] = {};
-        }
-        visibleCountBuffers[f] = app->createBuffer(countSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (visibleCountReadback[f].buffer == VK_NULL_HANDLE) {
-            visibleCountReadback[f] = app->createBuffer(countSize,
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        }
-        // Initialize the stats readback with the full count (fallback when culling is off).
-        if (void* data = visibleCountReadback[f].map(0))
-            *static_cast<uint32_t*>(data) = initialCount;
-        lastVisibleCount[f] = initialCount;
-    }
-
-    // Create compute pipeline + descriptor sets for GPU culling if not present
-    if (computePipeline == VK_NULL_HANDLE) {
-        VkDescriptorSetLayoutBinding bindings[37] = {};
-        bindings[0].binding = 0;
-        bindings[0].descriptorCount = 1;
-        bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[1].binding = 1;
-        bindings[1].descriptorCount = 1;
-        bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[2].binding = 2;
-        bindings[2].descriptorCount = 1;
-        bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[3].binding = 3;
-        bindings[3].descriptorCount = 1;
-        bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[4].binding = 4;
-        bindings[4].descriptorCount = 1;
-        bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        // 5,6: vegetation impostor command + count streams.
-        // 7,8: vegetation billboard command + count streams.
-        // 9: vegetation chunk-info table (input). When vegetation culling is
-        // disabled these are bound to a dummy buffer (the shader statically
-        // references them, so they must always be valid).
-        bindings[5].binding = 5;
-        bindings[5].descriptorCount = 1;
-        bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[6].binding = 6;
-        bindings[6].descriptorCount = 1;
-        bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[7].binding = 7;
-        bindings[7].descriptorCount = 1;
-        bindings[7].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[8].binding = 8;
-        bindings[8].descriptorCount = 1;
-        bindings[8].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[9].binding = 9;
-        bindings[9].descriptorCount = 1;
-        bindings[9].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        // 10,11: SDF debug-cube compacted output (DrawCmd stream + count).
-        // 12,13: SDF debug-cube input (DrawCmd stream + bounds). SDF cubes are
-        // frustum-culled in the SAME solid dispatch and written to a dedicated
-        // stream so the solid indirect draw is never polluted by them.
-        bindings[10].binding = 10;
-        bindings[10].descriptorCount = 1;
-        bindings[10].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[11].binding = 11;
-        bindings[11].descriptorCount = 1;
-        bindings[11].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[12].binding = 12;
-        bindings[12].descriptorCount = 1;
-        bindings[12].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[12].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[13].binding = 13;
-        bindings[13].descriptorCount = 1;
-        bindings[13].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[13].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        // 14: mesh bounding-box input bounds (folded into the SAME solid dispatch).
-        // 15,16: mesh bounding-box compacted output (DrawCmd stream + count).
-        bindings[14].binding = 14;
-        bindings[14].descriptorCount = 1;
-        bindings[14].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[14].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[15].binding = 15;
-        bindings[15].descriptorCount = 1;
-        bindings[15].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[15].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[16].binding = 16;
-        bindings[16].descriptorCount = 1;
-        bindings[16].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        // 17: cascade (shadow) view-projection matrices (readonly mat4[3]).
-        // 18,20,22: cascade compacted DrawCmd streams (writeonly).
-        // 19,21,23: cascade compacted counts (read-write).
-        bindings[17].binding = 17;
-        bindings[17].descriptorCount = 1;
-        bindings[17].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[17].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[18].binding = 18;
-        bindings[18].descriptorCount = 1;
-        bindings[18].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[18].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[19].binding = 19;
-        bindings[19].descriptorCount = 1;
-        bindings[19].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[19].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[20].binding = 20;
-        bindings[20].descriptorCount = 1;
-        bindings[20].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[20].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[21].binding = 21;
-        bindings[21].descriptorCount = 1;
-        bindings[21].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[21].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[22].binding = 22;
-        bindings[22].descriptorCount = 1;
-        bindings[22].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[22].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[23].binding = 23;
-        bindings[23].descriptorCount = 1;
-        bindings[23].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[23].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        // 24: vegetation cascade chunk info (readonly). 25..36: vegetation cascade
-        // outputs (billboard + impostor command/count streams per cascade). These
-        // are only meaningfully bound for the vegetation IndirectRenderer; all
-        // other renderers bind the shared dummy buffer so the statically-used
-        // bindings are always valid.
-        for (uint32_t i = 24; i <= 36; i++) {
-            bindings[i].binding = i;
-            bindings[i].descriptorCount = 1;
-            bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        }
-
-         VkDescriptorBindingFlags bindingFlags[37] = {
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
-         };
-
-        DescriptorAllocator descAlloc{app->getDevice(), app};
-        computeDescriptorSetLayout = descAlloc.createLayout(
-            bindings, 37,
-            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-            bindingFlags,
-            "IndirectRenderer: computeDescriptorSetLayout");
-
-        VkPushConstantRange pc{};
-        pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        pc.offset = 0;
-        pc.size = sizeof(CullPushConstants); // 104 bytes: mat4 + 2*uint + pad + vec3 + float + uint
-
-        VkPipelineLayoutCreateInfo plinfo{};
-        plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        plinfo.setLayoutCount = 1;
-        plinfo.pSetLayouts = &computeDescriptorSetLayout;
-        plinfo.pushConstantRangeCount = 1;
-        plinfo.pPushConstantRanges = &pc;
-
-        if (vkCreatePipelineLayout(app->getDevice(), &plinfo, nullptr, &computePipelineLayout) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create compute pipeline layout!");
-        }
-        // central manager
-        app->resources.addPipelineLayout(computePipelineLayout, "IndirectRenderer: computePipelineLayout");
-
-        VkShaderModule compModule = app->getOrCreateShaderModule("shaders/indirect.comp.spv");
-
-        VkPipelineShaderStageCreateInfo stage{};
-        stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stage.module = compModule;
-        stage.pName = "main";
-
-        VkComputePipelineCreateInfo pipelineInfo{};
-        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipelineInfo.stage = stage;
-        pipelineInfo.layout = computePipelineLayout;
-
-        if (vkCreateComputePipelines(app->getDevice(), app->getPipelineCache(), 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
-            // Shader module is cached by VulkanApp — do not destroy it even on error.
-            throw std::runtime_error("failed to create compute pipeline!");
-        }
-        // track compute pipeline
-        app->resources.addPipeline(computePipeline, "IndirectRenderer: computePipeline");
-
-        VkDescriptorPoolSize irPoolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2048};
-        computeDescriptorPool = descAlloc.createPool(
-            &irPoolSize, 1, 64,
-            VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
-            "IndirectRenderer: computeDescriptorPool");
-
-        descAlloc.allocateSets(computeDescriptorPool, computeDescriptorSetLayout,
-                               MAX_CULL_FRAMES, reinterpret_cast<VkDescriptorSet*>(computeDescriptorSets.data()),
-                               "IndirectRenderer: computeDescriptorSet");
-
-        // Tiny dummy bound to the vegetation bindings (5..9) on the solid-only
-        // dispatch so the layout's statically-referenced bindings are always valid.
-        // prepareCull re-points these to the real veg buffers when vegetation is enabled.
-        if (vegDummyBuffer.buffer == VK_NULL_HANDLE) {
-            vegDummyBuffer = app->createBuffer(16,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        }
-    }
-
-    // Update per-frame compute descriptor sets with buffer infos
-    VkDescriptorBufferInfo inBuf{};
-    inBuf.buffer = indirectBuffer.buffer;
-    inBuf.offset = 0;
-    inBuf.range = VK_WHOLE_SIZE;
-    VkDescriptorBufferInfo boundsBufInfo{};
-    boundsBufInfo.buffer = boundsBuffer.buffer;
-    boundsBufInfo.offset = 0;
-    boundsBufInfo.range = VK_WHOLE_SIZE;
-
-    bool anyNull = (indirectBuffer.buffer == VK_NULL_HANDLE || boundsBuffer.buffer == VK_NULL_HANDLE);
-    for (uint32_t f = 0; f < MAX_CULL_FRAMES && !anyNull; f++) {
-        if (compactIndirectBuffers[f].buffer == VK_NULL_HANDLE || visibleCountBuffers[f].buffer == VK_NULL_HANDLE) {
-            anyNull = true;
-        }
-    }
-    if (anyNull) {
-        std::cerr << "[IndirectRenderer] Skipping compute descriptor set update: one or more buffers are VK_NULL_HANDLE" << std::endl;
-    } else {
-        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
-            VkDescriptorBufferInfo outBuf{};
-            outBuf.buffer = compactIndirectBuffers[f].buffer;
-            outBuf.offset = 0;
-            outBuf.range = VK_WHOLE_SIZE;
-            VkDescriptorBufferInfo countBuf{};
-            countBuf.buffer = visibleCountBuffers[f].buffer;
-            countBuf.offset = 0;
-            countBuf.range = VK_WHOLE_SIZE;
-            VkDescriptorBufferInfo lodBuf{};
-            lodBuf.buffer = visibleLodBuffers[f].buffer;
-            lodBuf.offset = 0;
-            lodBuf.range = VK_WHOLE_SIZE;
-
-            VkDescriptorSet computeDs = computeDescriptorSets[f];
-    DescriptorWriter(app_->getDevice())
-                .writeBuffer(computeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             inBuf.buffer, inBuf.offset, inBuf.range)
-                .writeBuffer(computeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             outBuf.buffer, outBuf.offset, outBuf.range)
-                .writeBuffer(computeDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             boundsBufInfo.buffer, boundsBufInfo.offset, boundsBufInfo.range)
-                .writeBuffer(computeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             countBuf.buffer, countBuf.offset, countBuf.range)
-                 .writeBuffer(computeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              lodBuf.buffer, lodBuf.offset, lodBuf.range)
-                 .writeBuffer(computeDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                 .writeBuffer(computeDs, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                 .writeBuffer(computeDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                 .writeBuffer(computeDs, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-              .writeBuffer(computeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-              .writeBuffer(computeDs, 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            sdfCompactBuf[f].buffer, 0, VK_WHOLE_SIZE)
-              .writeBuffer(computeDs, 11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            sdfCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
-              .writeBuffer(computeDs, 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            sdfInCmdsBuf[f].buffer, 0, VK_WHOLE_SIZE)
-               .writeBuffer(computeDs, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             sdfBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
-               .writeBuffer(computeDs, 14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             bboxBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
-               .writeBuffer(computeDs, 15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             bboxCompactBuf[f].buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              bboxCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
-                .flush();
-            // Non-cascade renderers (brush/SDF/debug) never run initCascadeCull,
-            // so their indirect.comp descriptor set would leave bindings 17-23
-            // unbound (a validation error, since the shader statically uses them).
-            // Bind the shared dummy buffer there; cascade renderers overwrite with
-            // their real cascade buffers inside initCascadeCull().
-            if (!cascadeCullInited) {
-                if (cascadeDummyBuffer.buffer == VK_NULL_HANDLE)
-                    cascadeDummyBuffer = app_->createBuffer(256,
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-                DescriptorWriter(app_->getDevice())
-                    .writeBuffer(computeDs, 17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                    .writeBuffer(computeDs, 18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                    .writeBuffer(computeDs, 19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                    .writeBuffer(computeDs, 20, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                    .writeBuffer(computeDs, 21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                    .writeBuffer(computeDs, 22, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                    .writeBuffer(computeDs, 23, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                    .flush();
-            }
-            // Bind the vegetation cascade inputs (24..36) to the dummy buffer for
-            // every renderer; the vegetation IndirectRenderer overwrites these with
-            // its real cascade buffers via setVegCascadeData(). The shader statically
-            // references them, so they must always be valid.
-            if (cascadeDummyBuffer.buffer == VK_NULL_HANDLE)
-                cascadeDummyBuffer = app_->createBuffer(256,
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            DescriptorWriter(app_->getDevice())
-                .writeBuffer(computeDs, 24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 25, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 26, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 27, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 29, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 30, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 31, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 32, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 33, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 34, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 35, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .writeBuffer(computeDs, 36, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cascadeDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
-                .flush();
-        }
-    }
-
-    // Try to load device function for indirect-count draws; require it.
-    cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCountKHR");
-    if (!cmdDrawIndexedIndirectCount) {
-        cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCount");
-    }
-    if (!cmdDrawIndexedIndirectCount) {
-        throw std::runtime_error("Required device function vkCmdDrawIndexedIndirectCountKHR is not available");
-    }
-
-    // Models SSBO removed: skip updating main descriptor set for models
-    descriptorDirty = false;
-    pendingDescriptorSet = VK_NULL_HANDLE;
-
-    dirty = false;
-    // rebuild() already wrote all indirect/bounds entries via memcpy above,
-    // so mark every active mesh as written.  Without this the append-only
-    // doUploadMeshMetaBuffers would treat the buffer as empty and rewrite
-    // every entry — harmless but wasteful — and needsFullRebuild() (which
-    // checks metaBuffersWrittenCount == 0) would force unnecessary rebuilds
-    // on every subsequent incremental batch.
-    metaBuffersWrittenCount = indirectCommands.size();
-}
 
 void IndirectRenderer::setCullFrame(uint32_t frame) {
     currentCullFrame = frame % MAX_CULL_FRAMES;
@@ -1763,9 +467,8 @@ void IndirectRenderer::setVegetationCullData(const std::array<Buffer, MAX_CULL_F
 
 void IndirectRenderer::setVegetationChunkInfo(const std::unordered_map<uint32_t, glm::vec4>& info) {
     vegChunkInfoMap = info;
-    // The veg table is rebuilt during the next buildDrawList (which knows the
-    // solid draw entry indices). Force a rebuild so the map is reflected.
-    setDirty(true);
+    // The veg table is rebuilt every frame by updateVegTable() (called from
+    // prepareCull), so the new map is picked up automatically.
 }
 
 void IndirectRenderer::updateVegTable() {
@@ -1860,7 +563,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
                                     const glm::mat4* cascadeMatrices, bool doCascade, bool doMain,
                                     bool doVegCascade, uint32_t vegChunkCount, uint32_t targetLayer) {
     // NOTE: No mutex lock here - this is only called from the main render thread
-    // and all buffer modifications happen in rebuild() which does lock.
+    // and all buffer modifications happen under mutex in the slot APIs.
 
     // Flush staged host-side meta writes via GPU copies BEFORE any barrier or
     // dispatch: the copies (TRANSFER_WRITE) are ordered before the cull reads
@@ -1917,9 +620,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     VkDescriptorSet descSet = computeDescriptorSets[currentCullFrame];
 
     // Keep the core compute descriptor bindings pointed at the CURRENT buffer
-    // handles. rebuild() may have recreated indirectBuffer / compact / bounds /
-    // visibleCount / visibleLods after the descriptor sets were first written,
-    // leaving them bound to freed handles (cull reads stale/empty -> 0 draws).
+    // handles (created once by initSlots), so the cull never reads stale/empty
+    // data (-> 0 draws).
     updateCoreComputeDescriptors(currentCullFrame);
 
     if (computePipeline == VK_NULL_HANDLE || compactBuf.buffer == VK_NULL_HANDLE) {
@@ -2033,7 +735,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     if (vegActive) {
         // Refresh the per-draw vegetation table (binding 9) from the latest
         // vegChunkInfoMap. The slotted renderer updates draw indices incrementally,
-        // so this is rebuilt every frame (cheap memcpy) rather than only in rebuild().
+        // so this is rebuilt every frame (cheap memcpy).
         updateVegTable();
         // Drain the previous frame's veg fills (CLEAR/TRANSFER_WRITE) and the
         // previous merged dispatch's atomic appends (COMPUTE/SHADER_WRITE) on these
@@ -3057,10 +1759,7 @@ void IndirectRenderer::drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer com
     }
     if (maxCount == 0) return; // nothing to draw — avoid calling indirect draw with 0 maxDraw
 
-    if (!cmdDrawIndexedIndirectCount) {
-        throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
-    }
-    cmdDrawIndexedIndirectCount(cmd, compactBuffer, 0, visibleCountBuffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    vkCmdDrawIndexedIndirectCount(cmd, compactBuffer, 0, visibleCountBuffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
 }
 
 void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
@@ -3087,11 +1786,8 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
         std::cerr << "[drawPrepared] CLAMPING maxCount from " << maxCount << " to meshCapacity " << bufMaxCount << std::endl;
         maxCount = bufMaxCount;
     }
-    if (!cmdDrawIndexedIndirectCount) {
-        throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
-    }
     // Use indirect-count variant to let the GPU supply the visible count from compute shader
-    cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffers[currentCullFrame].buffer, 0, visibleCountBuffers[currentCullFrame].buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    vkCmdDrawIndexedIndirectCount(cmd, compactIndirectBuffers[currentCullFrame].buffer, 0, visibleCountBuffers[currentCullFrame].buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
 }
 
 void IndirectRenderer::bindBuffers(VkCommandBuffer cmd) {
@@ -3126,10 +1822,7 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pi
         maxCount = bufMaxCount;
     }
     if (maxCount == 0) return; // nothing to draw
-    if (!cmdDrawIndexedIndirectCount) {
-        throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
-    }
-    cmdDrawIndexedIndirectCount(cmd, compactBuf.buffer, 0, visibleCount.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    vkCmdDrawIndexedIndirectCount(cmd, compactBuf.buffer, 0, visibleCount.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
 }
 
 uint32_t IndirectRenderer::readVisibleCount(VulkanApp* app) const {
@@ -3159,47 +1852,6 @@ IndirectRenderer::MeshInfo IndirectRenderer::getMeshInfo(uint32_t meshId) const 
 
 
 
-// Erase a mesh's indirect command on the GPU so it will not be drawn
-// before a full `rebuild()` updates the indirect buffer. This attempts
-// an immediate host-write to the `indirectBuffer` (if present) to zero
-// the VkDrawIndexedIndirectCommand for the specified mesh id.
-void IndirectRenderer::eraseMeshFromGPU(VulkanApp* app, uint32_t meshId) {
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-    auto it = meshes.find(meshId);
-    if (it == meshes.end()) return;
-    MeshInfo &info = it->second;
-    if (indirectBuffer.buffer == VK_NULL_HANDLE || indirectBuffer.memory == VK_NULL_HANDLE) return;
-    // If indirectOffset was assigned during the last rebuild, zero that entry.
-    VkDeviceSize offset = info.indirectOffset;
-    if (offset == 0 && indirectCommands.empty()) {
-        // No valid indirect data available
-        return;
-    }
-    VkDeviceSize cmdSize = sizeof(VkDrawIndexedIndirectCommand);
-    // Sanity: don't write beyond current mesh capacity
-    if (meshCapacity == 0) return;
-    if (offset / cmdSize >= meshCapacity) return;
-
-    VkDrawIndexedIndirectCommand zeroCmd{};
-    // indexCount == 0 prevents drawing this command
-    zeroCmd.indexCount = 0;
-    zeroCmd.instanceCount = 0;
-    zeroCmd.firstIndex = 0;
-    zeroCmd.vertexOffset = 0;
-    zeroCmd.firstInstance = 0;
-
-    VkDevice dev = app ? app->getDevice() : VK_NULL_HANDLE;
-    if (dev == VK_NULL_HANDLE) return;
-    void* data = indirectBuffer.map(offset);
-    if (data) {
-        memcpy(data, &zeroCmd, cmdSize);
-        std::cerr << "[IndirectRenderer] eraseMeshFromGPU: zeroed indirect cmd for mesh " << meshId << " at offset " << offset << std::endl;
-        // Mark indirectOffset as invalid so future logic won't assume it
-        info.indirectOffset = static_cast<VkDeviceSize>(-1);
-    } else {
-        std::cerr << "[IndirectRenderer] eraseMeshFromGPU: failed to map indirectBuffer memory for mesh " << meshId << std::endl;
-    }
-}
 
 // ── Stable slot-based API ──────────────────────────────────────────────────
 
@@ -3427,7 +2079,6 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     }
 
     // ── Create compute pipeline + descriptor sets for GPU culling ────────────
-    // (Same as in rebuild() — factored out to share)
     {
         // Bindings (0..9): 0 input commands, 1 output commands, 2 bounds,
         // 3 count, 4 chosen-LoD output, 5/6 vegetation impostor cmd + count,
@@ -3735,18 +2386,10 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     }
 
 
-    // Load indirect-count draw function
-    cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCountKHR");
-    if (!cmdDrawIndexedIndirectCount) {
-        cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCount");
-    }
-    if (!cmdDrawIndexedIndirectCount) {
-        throw std::runtime_error("Required device function vkCmdDrawIndexedIndirectCountKHR is not available");
-    }
+    // vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 — called
+    // directly (see VulkanApp::createLogicalDevice drawIndirectCount check).
 
     slottedMode = true;
-    dirty = false;
-    metaBuffersWrittenCount = 0;
 
     // Initialize cascade-aware culling resources
     initCascadeCull(app);
@@ -4380,7 +3023,7 @@ void IndirectRenderer::updateCascadeDescriptor(VulkanApp* app, uint32_t frame) {
     // Binding 9: the per-frame chosen-LoD buffer written by the main cull pass.
     // Same frame index as this cascade descriptor set, so the cascade reads the
     // selection computed for the current frame in flight. visibleLodBuffers are
-    // recreated only alongside indirectBuffer/boundsBuffer (initSlots/rebuild),
+    // recreated only alongside indirectBuffer/boundsBuffer (initSlots),
     // so the existing indirect/bounds refresh proxy covers them.
     writer.writeBuffer(ds, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                        visibleLodBuffers[frame].buffer, 0, VK_WHOLE_SIZE);
@@ -4407,11 +3050,10 @@ void IndirectRenderer::drawCascadeOnly(VkCommandBuffer cmd, uint32_t cascadeInde
 
     if (compactBuf.buffer == VK_NULL_HANDLE || countBuf.buffer == VK_NULL_HANDLE) return;
     if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) return;
-    if (!cmdDrawIndexedIndirectCount) return;
 
     uint32_t maxCount = static_cast<uint32_t>(meshCapacity);
     if (maxCount == 0) maxCount = 1024;
 
     // Cascade compact + cascade count (full cascade buffers)
-    cmdDrawIndexedIndirectCount(cmd, compactBuf.buffer, 0, countBuf.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    vkCmdDrawIndexedIndirectCount(cmd, compactBuf.buffer, 0, countBuf.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
 }

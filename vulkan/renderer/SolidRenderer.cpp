@@ -528,11 +528,6 @@ void SolidRenderer::cleanup(VulkanApp* app) {
     destroyRenderTargets(app);
     deferredPipelinesCreated = false;
 
-    for (auto &entry : solidChunks) {
-        if (entry.second.meshId != UINT32_MAX) indirectRenderer.removeMesh(entry.second.meshId);
-    }
-    solidChunks.clear();
-
     indirectRenderer.cleanup(app);
 }
 

@@ -101,7 +101,7 @@ public:
     std::recursive_mutex mainSolidChunksMutex;
     std::recursive_mutex mainLiquidChunksMutex;
 
-    // ── Legacy chunk tracking (append-based, full rebuild) ──
+    // ── Chunk tracking ──
     // Track model ids for transparent/water meshes so we can remove them if erased/updated
     std::unordered_map<NodeID, Model3DVersion> mainLiquidChunks;
     std::unordered_map<NodeID, Model3DVersion> mainSolidChunks;

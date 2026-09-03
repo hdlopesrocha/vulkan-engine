@@ -22,12 +22,11 @@
 
 namespace streaming { class UploadManager; }
 
-// Manages a single large vertex/index/indirect buffer and provides a simple
-// CPU-side allocator for adding/removing meshes. Draws are performed via
-// vkCmdDrawIndexedIndirect (one indirect command per mesh). The allocator is
-// append-first and supports reclamation on remove (simple free list rebuild).
+// Manages a single large vertex/index/indirect buffer with stable per-chunk
+// draw entries ("slots"). Draws are performed via vkCmdDrawIndexedIndirect
+// (one indirect command per chunk slot).
 //
-// STABLE SLOT MODE (preferred):
+// STABLE SLOT MODE (the only mode):
 // Call initSlots() once with the maximum expected active chunk count and the
 // TOTAL vertex/index element budgets, then use addMeshSlotted()/
 // removeMeshSlotted(). Each chunk gets a fixed draw-entry block (a "slot")
@@ -41,29 +40,17 @@ namespace streaming { class UploadManager; }
 class IndirectRenderer : public Renderer {
 public:
     static constexpr uint32_t MAX_CULL_FRAMES = 3;
-        // Allow external code to force the dirty flag
-        void setDirty(bool value) { dirty = value; }
-    // Upload vertex and index data for a single mesh (coalesced into one transfer)
-    bool uploadMesh(VulkanApp* app, uint32_t meshId);
-    // Upload vertex and index data for a batch of meshes. Splits the batch across
-    // multiple UploadManager slots when the total size exceeds the per-slot limit.
-    // Requires UploadManager to be set via setUploadManager().
-    bool uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds, float priority = 0.0f);
-    // Internal batched upload implementation (splits across slots).
-    bool uploadMeshesBatched(const std::vector<uint32_t>& meshIds, float priority);
 
-    // Route incremental per-mesh GPU copies through the shared async
-    // UploadManager (the real transfer engine). uploadMeshes()/uploadMesh()
-    // enqueue an UploadJob (no per-frame cap, K concurrent staging slots) and
-    // publish each mesh's indirect/bounds meta entry when its own transfer
-    // retires. Requires UploadManager to be set; nullptr is not allowed.
+    // Route incremental per-chunk GPU copies through the shared async
+    // UploadManager (the real transfer engine). uploadSlot() enqueues an
+    // UploadJob (no per-frame cap, K concurrent staging slots) and publishes
+    // the chunk's indirect/bounds meta entry when its transfer retires.
+    // Requires UploadManager to be set; nullptr is not allowed.
     void setUploadManager(streaming::UploadManager* mgr, streaming::StreamCategory category) {
         uploadMgr_ = mgr;
         streamCategory_ = category;
     }
     bool hasUploadManager() const { return uploadMgr_ != nullptr; }
-    // Write all mesh indirect/model/bounds buffers for all active meshes
-    void uploadMeshMetaBuffers(VulkanApp* app);
     struct MeshInfo {
         uint32_t id = UINT32_MAX;
         uint32_t baseVertex = 0;
@@ -110,16 +97,9 @@ public:
     void init();
     void cleanup(VulkanApp* app) override;
 
-    // ── Legacy append-based API (triggers full rebuild) ──
-    // Add mesh and return mesh id.
-    uint32_t addMesh(const Geometry& mesh);
-    // Add mesh with a custom ID (e.g., node ID from octree). If mesh with this ID exists, it is replaced.
-    uint32_t updateMesh(const Geometry& mesh, uint32_t customId);
-    void removeMesh(uint32_t meshId);
-    // Remove all meshes and reset GPU write tracking.
+    // ── Slotted API (stable slots, no global rebuilds) ──
+    // Remove all meshes and reset the slot pools (scene reset path).
     void removeAllMeshes();
-    // Rebuild GPU backing buffers from current CPU mesh list.
-    void rebuild(VulkanApp* app);
 
     // ── Stable slot-based API (no global rebuilds) ──
     // Pre-allocate the packed element pools and the draw-entry pool and
@@ -162,29 +142,13 @@ public:
     // chunk whose level exceeds it, leaving holes across the terrain.
     void setMaxLodLevel(int l) { maxLodLevel_ = l; }
 
-    // Upload a single mesh's vertex/index data to the GPU, and write its
+    // Upload a single chunk's vertex/index data to the GPU, and write its
     // indirect command + bounds into the host-visible metadata buffers.
-    // This is the per-chunk equivalent of a full rebuild — but only touches
-    // one slot. The GPU culling buffer layout is unchanged.
-    // When using the UploadManager path, `onComplete` is invoked after the
-    // transfer fence signals (async). For the legacy staging path, it's
-    // called when the pending transfer fence signals.
+    // Only touches one slot. The GPU culling buffer layout is unchanged.
+    // `onComplete` is invoked after the transfer fence signals (async).
     // Returns true on success.
     bool uploadSlot(VulkanApp* app, uint32_t slotIndex, float priority = 0.0f,
                     std::function<void()> onComplete = nullptr);
-
-    // Upload a single mesh to GPU (incremental update). Requires buffers to have capacity.
-    // Returns true if upload succeeded, false if rebuild() is needed (capacity exceeded or buffers not created).
-    // Setters for async buffer publication (called when an async upload finishes)
-    void setVertexBufferForMesh(uint32_t meshId, Buffer vbuf);
-    void setIndexBufferForMesh(uint32_t meshId, Buffer ibuf);
-    
-    // Erase a mesh from GPU by zeroing its indirect command (prevents culling from reading trash).
-
-        public:
-            // Needed for main.cpp and other modules
-    // Call after removeMesh() for runtime removals.
-    void eraseMeshFromGPU(VulkanApp* app, uint32_t meshId);
     
     // Set which per-frame cull buffers to use. Must be called once per frame
     // before prepareCull / drawPrepared. frame idx should be in [0, MAX_CULL_FRAMES).
@@ -192,28 +156,16 @@ public:
 
     // Re-point the core compute descriptor-set bindings (0..4: inCmds, outCmds,
     // bounds, visibleCount, visibleLods) to the CURRENT buffer handles for frame
-    // `f`. rebuild() can recreate these buffers (e.g. when meshCapacity grows), and
-    // the once-written descriptor sets would otherwise keep pointing at freed
-    // handles, so the cull reads stale/empty data and emits zero visible draws.
+    // `f`. Buffers are created once by initSlots(), but the re-point keeps the
+    // sets correct if handles ever change, so the cull never reads stale/empty
+    // data and emits zero visible draws.
     // Called every frame from recordCull before the dispatch.
     void updateCoreComputeDescriptors(uint32_t f);
     
-    // Ensure GPU buffers have capacity for at least the given counts. 
-    // Call this before a batch of addMesh+uploadMesh if you know the expected size.
-    // Returns true if buffers are ready, false if they needed to be created/grown (triggers rebuild).
+    // Ensure GPU buffers have capacity for at least the given counts.
+    // Slotted mode: pure check (buffers are pre-allocated once by initSlots
+    // and never grown). Exceeding capacity is a sizing bug (asserts).
     bool ensureCapacity(size_t vertexCount, size_t indexCount, size_t meshCount);
-    
-    // Check if dirty flag is set (needs rebuild or incremental uploads)
-    bool isDirty() const { return dirty; }
-
-    // Returns true when the GPU indirect/bounds buffers have never been written
-    // (metaBuffersWrittenCount == 0) but active meshes exist — the GPU buffers
-    // still contain stale data from a previous scene.  Callers should force a
-    // full rebuild instead of the incremental path.
-    bool needsFullRebuild() const {
-        std::lock_guard<std::recursive_mutex> lock(mutex);
-        return metaBuffersWrittenCount == 0 && !meshes.empty();
-    }
 
 public:
 
@@ -375,9 +327,8 @@ public:
     uint32_t getLastVisibleCount(uint32_t frame) const { return lastVisibleCount[frame % MAX_CULL_FRAMES]; }
     VkDescriptorSetLayout getComputeDescriptorSetLayout() const { return computeDescriptorSetLayout; }
 
-    // Get the pre-allocated capacity (indirect command count / max slots)
-    // In slotted mode this is the fixed slot pool size; in legacy mode it grows
-    // with addMesh(). Used for sizing external compact buffers (e.g. cubemap).
+    // Get the pre-allocated slot-pool capacity (fixed by initSlots).
+    // Used for sizing external compact buffers (e.g. cubemap).
     size_t getMeshCapacity() const { return meshCapacity; }
 
     // Persistent scratch buffer bound to binding 4 of the cull compute layout
@@ -399,12 +350,11 @@ public:
     // (Re)allocates the 6 per-face scratch buffers to `lodBufSize` bytes when
     // capacity grew. Public so Solid360Renderer can ensure the buffers exist
     // before binding them at descriptor-set init. Also called automatically
-    // from the buffer-creation paths (initSlots / rebuild).
+    // from the buffer-creation path (initSlots).
     void ensureFaceScratchBuffers(VulkanApp* app, VkDeviceSize lodBufSize);
 
     // Force host-visible indirect/bounds to GPU (for water fallback without transfer)
     void syncHostBuffersToGPU();
-    const std::vector<VkDrawIndexedIndirectCommand>& getIndirectCommandsCPU() const { return indirectCommands; }
 
     // Get count of active meshes (memoized: recomputed under the same mutex
     // only after a meshes mutation, so per-frame stats/sizing calls do not
@@ -413,10 +363,6 @@ public:
         std::lock_guard<std::recursive_mutex> lock(mutex);
         return activeMeshCountLocked();
     }
-    // Total merged vertex/index counts (used for capacity planning)
-    size_t getMergedVertexCount() const;
-    size_t getMergedIndexCount() const;
-
     // Host-read of the GPU-visible count. Uses a per-frame fence to avoid
     // stalling unrelated queue work.
     uint32_t readVisibleCount(VulkanApp* app) const;
@@ -440,19 +386,11 @@ private:
     int maxLodLevel_ = 16;
 
     mutable std::recursive_mutex mutex;
-    // Unlocked variant — caller must hold mutex.
-    void doUploadMeshMetaBuffers(VulkanApp* app);
-    // Publish ONE mesh's indirect command + bounds at its current drawIndex.
-    // Unlocked — caller must hold mutex. Used by the async UploadManager path
-    // where transfers may complete out of order, so the contiguous
-    // append-only watermark (doUploadMeshMetaBuffers) cannot be used.
-    void publishMeshMeta(uint32_t meshId);
     // Unlocked — caller must hold `mutex`. Memoized active-mesh count;
     // recomputed (full scan) only after any meshes mutation.
     size_t activeMeshCountLocked() const;
     // Unlocked — caller must hold `mutex`. Number of draw commands (slots)
-    // to cull: fixed slot pool capacity in slotted mode, active mesh count
-    // in legacy mode.
+    // to cull: the fixed slot pool capacity (one draw entry per chunk).
     uint32_t getCullDispatchCountLocked() const;
 
     // ── Slotted-mode internals ──
@@ -464,7 +402,6 @@ private:
     streaming::UploadManager* uploadMgr_ = nullptr;
     streaming::StreamCategory streamCategory_ = streaming::StreamCategory::Solid;
 
-    uint32_t nextId = 1;
     std::unordered_map<uint32_t, MeshInfo> meshes; // chunkId -> MeshInfo
     // Memoized active-mesh count backing getMeshCount()/dispatch-count reads.
     // Invalidated by every mutation of `meshes` (all under `mutex`), so the
@@ -472,16 +409,18 @@ private:
     mutable bool activeMeshCountDirty_ = true;
     mutable size_t activeMeshCount_ = 0;
 
-    // CPU-side combined buffers
+    // CPU-side staging mirrors of the GPU pools, pre-sized once by initSlots()
+    // to the shared element-pool / draw-entry capacity. Each chunk's span is
+    // written into its allocated sub-range (see copyGeometryToLevel); uploads
+    // copy out of these into the GPU buffers.
     std::vector<Vertex> mergedVertices;
     std::vector<uint32_t> mergedIndices;
     std::vector<VkDrawIndexedIndirectCommand> indirectCommands;
 
-    // When true, the slotted API is active. In this mode, mergedVertices and
-    // mergedIndices are pre-sized to the shared element pool capacity and each
-    // chunk owns a draw-entry block (see slotAlloc). The indirectCommands
-    // vector is also pre-sized. No full rebuilds are performed; each block and
-    // level span is updated independently.
+    // The slotted API is the only mesh API. mergedVertices and mergedIndices
+    // are pre-sized to the shared element pool capacity and each chunk owns a
+    // draw-entry block (see slotAlloc). The indirectCommands vector is also
+    // pre-sized. Each block and level span is updated independently.
     bool slottedMode = false;
 
     // Draw-entry allocator: one draw entry per active chunk. allocate(1,1)/
@@ -630,43 +569,13 @@ private:
     std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES> vegCascadeImpCount{};
     bool vegCascadeInited = false;
 
-    // Optional device function for indirect-count draw (KHR or core 1.2)
-    PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
+    // vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 and is called
+    // directly (device creation requires drawIndirectCount).
 
-    // GPU buffers
-    // Geometry (vertex/index) is double-buffered across a small fixed pool of
-    // slots. rebuild() uploads a fresh full copy into a slot that no in-flight
-    // frame is reading, then swaps the "current" slot for subsequent draws — so
-    // the brush flow no longer needs a device-wide deviceWaitIdle() to avoid a
-    // WRITE_AFTER_READ hazard. Slots are created once and reused (grown only
-    // when capacity increases — no per-rebuild alloc churn). A slot is recycled
-    // (marked free) via a frame-fence-gated, NON-blocking deferred callback
-    // (deferDestroyUntilFence), so there is no vkWaitForFences in the rebuild
-    // path and thus no fence-index wraparound deadlock. Pool size =
-    // MAX_FRAMES_IN_FLIGHT (3) + 3 headroom so a free slot is virtually always
-    // available under 1–2 rebuilds/frame; a temporary throwaway allocation is
-    // used as a bounded fallback if none is free.
-    static constexpr uint32_t MAX_GEOM_BUFFERS = 6;
-    std::array<Buffer, MAX_GEOM_BUFFERS> vertexSlots{};
-    std::array<Buffer, MAX_GEOM_BUFFERS> indexSlots{};
-    std::array<size_t, MAX_GEOM_BUFFERS> vertexSlotCap{};
-    std::array<size_t, MAX_GEOM_BUFFERS> indexSlotCap{};
-    std::array<bool, MAX_GEOM_BUFFERS> geomSlotInUse{};
-    uint32_t currentGeomSlot = UINT32_MAX;
-    // Mirrors of the current slot's buffers. All bind/draw/barrier and
-    // incremental-upload paths reference these; kept in sync on every slot swap.
+    // GPU buffers (created once by initSlots, never reallocated).
+    // All bind/draw/barrier and incremental-upload paths reference these.
     Buffer vertexBuffer;
     Buffer indexBuffer;
-    // Reserve a free geometry slot (marks it in-use). Caller must hold `mutex`.
-    // Returns UINT32_MAX when the pool is exhausted (caller uses fallback path).
-    uint32_t acquireGeomSlot();
-    // Mark a slot reusable. Locks `mutex` — invoked from the deferred-destroy
-    // processor, not from within rebuild().
-    void markGeomSlotFree(uint32_t slot);
-    // Recycle the geometry buffers that were current before a rebuild swap:
-    // pool slots are returned to the free list, throwaway fallback buffers are
-    // destroyed — both gated on the current frame fence. Caller must hold `mutex`.
-    void recyclePreviousGeom(VulkanApp* app, uint32_t prevSlot, Buffer prevVertex, Buffer prevIndex);
     Buffer indirectBuffer;
     
     // Capacity tracking (in elements, not bytes)
@@ -674,15 +583,7 @@ private:
     size_t indexCapacity = 0;
     size_t meshCapacity = 0;
 
-    // Tracks how many active mesh entries have been written to GPU
-    // indirect/bounds buffers. Used for append-only writes to avoid
-    // rewriting existing entries while in-flight GPU frames read them.
-    size_t metaBuffersWrittenCount = 0;
-
-    bool dirty = false;
     uint32_t currentCullFrame = 0;
-    bool descriptorDirty = false;  // flag for deferred descriptor update
-    VkDescriptorSet pendingDescriptorSet = VK_NULL_HANDLE; // ds to update (VK_NULL_HANDLE means use/create material set)
 
     // ── Staged meta writes ───────────────────────────────────────────────────
     // Host-side publishes (draw command + bounds) must NEVER memcpy directly

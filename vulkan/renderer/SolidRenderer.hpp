@@ -98,8 +98,6 @@ private:
     TrackedHandle<VkPipelineLayout> brushOverlayPipelineLayout;
     bool deferredPipelinesCreated = false;
 
-    std::unordered_map<NodeID, Model3DVersion> solidChunks;
-
     // Offscreen framebuffer resources matching MAX_FRAMES_IN_FLIGHT
     static constexpr uint32_t SOLID_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
     std::array<VkImage, SOLID_FRAMES> solidColorImages = {};

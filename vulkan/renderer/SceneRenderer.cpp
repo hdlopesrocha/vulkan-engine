@@ -268,8 +268,8 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // concurrent 4 MiB staging slots, no per-frame cap). slotSize =
     // chunkVertexBytes + chunkIndexBytes = 2 MiB + 2 MiB = 4 MiB, covering the
     // largest chunk (512 KB vertex + 128 KB index worst case with headroom);
-    // oversized batches are automatically split across multiple slots by
-    // IndirectRenderer::uploadMeshesBatched().
+    // each chunk uploads in a single slot (IndirectRenderer::uploadSlot
+    // rejects chunks larger than one slot).
     streamer.init(app,
                   /*chunkVertexBytes*/ 2u << 20,
                   /*chunkIndexBytes*/  2u << 20,
