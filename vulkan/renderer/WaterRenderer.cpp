@@ -44,7 +44,11 @@ void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer_, const std::
     // Water render time UBO (binding 10): created here, bound into the scene
     // descriptor sets by SceneRenderer, updated per frame in renderPass().
     if (waterRenderUBO_.buffer == VK_NULL_HANDLE) {
-        waterRenderUBO_ = app->createBuffer(sizeof(WaterRenderUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        // Descriptor-buffer sources need a device address for vkGetDescriptorEXT.
+        VkBufferUsageFlags uboUsage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        if (app->useDescriptorBuffer())
+            uboUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        waterRenderUBO_ = app->createBuffer(sizeof(WaterRenderUBO), uboUsage,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
 
@@ -94,6 +98,12 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
 void WaterRenderer::cleanup(VulkanApp* app) {
     waterIndirectRenderer.cleanup(app);
     destroyRenderTargets(app);
+    // Dummy cube image/view destruction deferred to VulkanResourceManager.
+    cubemapDummyCubeImage = VK_NULL_HANDLE;
+    cubemapDummyCubeAllocation = VK_NULL_HANDLE;
+    cubemapDummyCubeMemory = VK_NULL_HANDLE;
+    cubemapDummyCubeView = VK_NULL_HANDLE;
+    cubemapDummyCubeFormat = VK_FORMAT_UNDEFINED;
     if (waterRenderUBO_.buffer != VK_NULL_HANDLE) waterRenderUBO_ = {};
 }
 
@@ -950,8 +960,67 @@ void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint3
     endWaterGeometryPassWithDepth(cmd, frameIndex);
 }
 
-void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat) {
-    // --- Cubemap-compatible water pipeline (solid 360 cube faces) ---
+// 1x1 cube-typed dummy for cubemapWaterDS binding 1 (see member comment).
+// Created once per swapchain color format, cleared to black, left in
+// SHADER_READ_ONLY_OPTIMAL. Actual destruction is deferred to
+// VulkanResourceManager; a format change orphans the old handles.
+VkImageView WaterRenderer::ensureDummyCubeView(VulkanApp* app, VkFormat format) {
+    if (!app || format == VK_FORMAT_UNDEFINED) return VK_NULL_HANDLE;
+    if (cubemapDummyCubeView != VK_NULL_HANDLE && cubemapDummyCubeFormat == format)
+        return cubemapDummyCubeView;
+    cubemapDummyCubeImage = VK_NULL_HANDLE;
+    cubemapDummyCubeAllocation = VK_NULL_HANDLE;
+    cubemapDummyCubeMemory = VK_NULL_HANDLE;
+    cubemapDummyCubeView = VK_NULL_HANDLE;
+
+    VkImageCreateInfo img{};
+    img.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    img.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    img.imageType = VK_IMAGE_TYPE_2D;
+    img.format = format;
+    img.extent = {1, 1, 1};
+    img.mipLevels = 1;
+    img.arrayLayers = 6;
+    img.samples = VK_SAMPLE_COUNT_1_BIT;
+    img.tiling = VK_IMAGE_TILING_OPTIMAL;
+    img.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    img.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    app->createImageWithVma(img, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        cubemapDummyCubeImage, cubemapDummyCubeAllocation, cubemapDummyCubeMemory,
+        "WaterRenderer: cubemapDummyCube");
+
+    VkImageViewCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image = cubemapDummyCubeImage;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+    vi.format = format;
+    vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vi.subresourceRange.levelCount = 1;
+    vi.subresourceRange.layerCount = 6;
+    if (vkCreateImageView(app->getDevice(), &vi, nullptr, &cubemapDummyCubeView) != VK_SUCCESS) {
+        app->destroyImageWithVma(cubemapDummyCubeImage, cubemapDummyCubeAllocation, cubemapDummyCubeMemory);
+        cubemapDummyCubeImage = VK_NULL_HANDLE;
+        cubemapDummyCubeView = VK_NULL_HANDLE;
+        return VK_NULL_HANDLE;
+    }
+    app->resources.addImageView(cubemapDummyCubeView, "WaterRenderer: cubemapDummyCubeView");
+
+    // Clear to black and park in SHADER_READ_ONLY_OPTIMAL (all 6 layers) in a
+    // single synchronous submit, mirroring the old 2D-dummy helper.
+    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+        app->recordTransitionImageLayoutLayer(cmd, cubemapDummyCubeImage, format,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 6);
+        VkClearColorValue cv{};
+        VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
+        vkCmdClearColorImage(cmd, cubemapDummyCubeImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &range);
+        app->recordTransitionImageLayoutLayer(cmd, cubemapDummyCubeImage, format,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 6);
+    });
+    cubemapDummyCubeFormat = format;
+    return cubemapDummyCubeView;
+}
+
+void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat) {    // --- Cubemap-compatible water pipeline (solid 360 cube faces) ---
     // The main water geometry pipeline targets R32G32B32A32_SFLOAT, which cannot
     // render into the swapchain-format cube faces, so a second pipeline is needed
     // for the cubemap pass. Recreate it if the swapchain color format changed.
@@ -1008,30 +1077,35 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
     }
 
     // --- Set-2 descriptor set for the cubemap water pass ---
-    // Bound to REAL resources (no dummy 1x1 images):
+    // Bound to validation-legal resources (never sampled in capture mode):
     // - binding 0: WaterBackFaceRenderer's 1x1 far-plane dummy depth. This is
     //   the shared thin-water depth (not a cubemap dummy): the cubemap faces
     //   have no per-face back-face pass, so thickness must read far-plane.
-    // - binding 1: the REAL solid360 cube view. The face UBO carries
-    //   materialFlags.x == 1 (capture mode), so water.frag skips
+    // - binding 1: a 1x1 cube-typed dummy (SHADER_READ_ONLY_OPTIMAL). The face
+    //   UBO carries materialFlags.x == 1 (capture mode), so water.frag skips
     //   reflection/refraction and never samples the cube it is rendering
-    //   into — no feedback, no hazard. Bound with GENERAL layout (wildcard
-    //   matching any actual image layout): the rendered face layer is
-    //   COLOR_ATTACHMENT_OPTIMAL while the other layers are SHADER_READ_ONLY.
+    //   into — no feedback, no hazard. The REAL in-flight cube cannot be bound
+    //   here: its rendered face is a color attachment while the other layers
+    //   are read-only, so no single descriptor layout matches (VUID-00344).
     // A dedicated pool keeps the set alive across the waterDepthDescriptorPool
-    // reset performed by destroyRenderTargets(). When the real cube view is
-    // recreated (swapchain resize), the set is rewritten in place: ensure is
+    // reset performed by destroyRenderTargets(). When the dummy is recreated
+    // (swapchain color-format change), the set is rewritten in place: ensure is
     // only called before the cubemap pass records (never while pending).
     {
         VkImageView depthView = (backFaceRenderer_ != nullptr)
             ? backFaceRenderer_->getDummyDepthView() : VK_NULL_HANDLE;
-        VkImageView cubeView = (solid360Renderer_ != nullptr)
+        // Readiness gate: the real cube targets must exist (the pass renders
+        // into its faces) before the set is created — but the real view is
+        // never bound (see above).
+        VkImageView realCubeView = (solid360Renderer_ != nullptr)
             ? solid360Renderer_->getSolid360View() : VK_NULL_HANDLE;
         if (waterDepthDescriptorSetLayout == VK_NULL_HANDLE ||
-            depthView == VK_NULL_HANDLE || cubeView == VK_NULL_HANDLE ||
+            depthView == VK_NULL_HANDLE || realCubeView == VK_NULL_HANDLE ||
             linearSampler == VK_NULL_HANDLE) {
             return;
         }
+        VkImageView dummyCubeView = ensureDummyCubeView(app, colorFormat);
+        if (dummyCubeView == VK_NULL_HANDLE) return;
         VkDevice device = app->getDevice();
         if (cubemapWaterDescPool == VK_NULL_HANDLE) {
             DescriptorAllocator descAlloc{device, app};
@@ -1049,19 +1123,19 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
                 .writeImage(cubemapWaterDS, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             depthSampler, depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                 .writeImage(cubemapWaterDS, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            linearSampler, cubeView, VK_IMAGE_LAYOUT_GENERAL)
+                            linearSampler, dummyCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                 .flush();
             cubemapWaterBoundDepthView = depthView;
-            cubemapWaterBoundCubeView = cubeView;
-        } else if (cubemapWaterBoundDepthView != depthView || cubemapWaterBoundCubeView != cubeView) {
+            cubemapWaterBoundCubeView = dummyCubeView;
+        } else if (cubemapWaterBoundDepthView != depthView || cubemapWaterBoundCubeView != dummyCubeView) {
             DescriptorWriter(device)
                 .writeImage(cubemapWaterDS, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             depthSampler, depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                 .writeImage(cubemapWaterDS, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            linearSampler, cubeView, VK_IMAGE_LAYOUT_GENERAL)
+                            linearSampler, dummyCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                 .flush();
             cubemapWaterBoundDepthView = depthView;
-            cubemapWaterBoundCubeView = cubeView;
+            cubemapWaterBoundCubeView = dummyCubeView;
         }
     }
 }

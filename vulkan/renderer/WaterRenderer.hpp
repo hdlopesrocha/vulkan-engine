@@ -132,10 +132,14 @@ public:
     VkDescriptorSet getWaterDepthDescriptorSet(uint32_t frameIndex) const { return (frameIndex < FRAMES) ? waterDepthDescriptorSets[frameIndex] : VK_NULL_HANDLE; }
 
     // Ensure cubemap reflection resources exist (the cubemap-compatible water
-    // pipeline and its set-2 descriptor set bound to real resources).
-    // Idempotent; called lazily from the solid 360 pass. The real cubemap
-    // targets are created in SceneRenderer::init before first use.
+    // pipeline and its set-2 descriptor set). Idempotent; called lazily from
+    // the solid 360 pass. The real cubemap targets are created in
+    // SceneRenderer::init before first use. Set 2 binds the back-face dummy
+    // depth + a 1x1 cube dummy (binding 1 is never sampled in capture mode).
     void ensureCubemapResources(VulkanApp* app, VkFormat colorFormat);
+    // Create (once per swapchain color format) the 1x1 cube dummy for
+    // cubemapWaterDS binding 1. Returns the view or VK_NULL_HANDLE.
+    VkImageView ensureDummyCubeView(VulkanApp* app, VkFormat format);
 
     // Draw water into one solid 360 cubemap face. Must be called INSIDE the face's
     // command buffer AFTER the solid color pass has ended; begins its own dynamic
@@ -143,7 +147,7 @@ public:
     // tested against the prepassed solid depth (no depth writes). The face UBO
     // carries materialFlags.x == 1 (capture mode), so water.frag skips
     // reflection/refraction and never samples the cubemap it is rendering into;
-    // set 2 is bound to the back-face dummy depth + real cube view instead.
+    // set 2 is bound to the back-face dummy depth + a 1x1 cube dummy instead.
     // `sceneDs0` is the per-face main-layout descriptor set (binding 0 = this
     // face's UBO slot).
     void renderWaterIntoCubemap(VkCommandBuffer cmd, VkDescriptorSet sceneDs0,
@@ -237,7 +241,9 @@ private:
     // targets R32G32B32A32_SFLOAT and is format-incompatible). The pipeline owns
     // a layout built from the same 3 set layouts as waterGeometryPipelineLayout,
     // so descriptor binding stays compatible. The set-2 descriptor set binds
-    // the back-face dummy depth + real cube view (rewritten only when the
+    // the back-face dummy depth + a 1x1 cube dummy (never sampled in capture
+    // mode; rewritten only when the dummy is recreated on swapchain-format
+    // change), so a single set (not
     // cube view is recreated on swapchain resize), so a single set (not
     // per-frame) is sufficient; it lives in its own pool so the
     // waterDepthDescriptorPool reset on swapchain recreate cannot invalidate it.
@@ -251,6 +257,19 @@ private:
     // set must be rewritten when the handles change).
     VkImageView cubemapWaterBoundDepthView = VK_NULL_HANDLE;
     VkImageView cubemapWaterBoundCubeView = VK_NULL_HANDLE;
+    // 1x1 cube-typed dummy bound to cubemapWaterDS binding 1. The capture pass
+    // never samples the cube (face-UBO capture flag skips reflection and
+    // refraction in water.frag), but the binding is statically used so its
+    // descriptor must be validation-legal: the real in-flight cube cannot be
+    // bound (its rendered face is a color attachment while the other layers
+    // are read-only — no single layout matches, VUID-00344). The dummy stays
+    // in SHADER_READ_ONLY_OPTIMAL for the app's lifetime (recreated only when
+    // the swapchain color format changes).
+    VkImage cubemapDummyCubeImage = VK_NULL_HANDLE;
+    VmaAllocation cubemapDummyCubeAllocation = VK_NULL_HANDLE;
+    VkDeviceMemory cubemapDummyCubeMemory = VK_NULL_HANDLE;
+    VkImageView cubemapDummyCubeView = VK_NULL_HANDLE;
+    VkFormat cubemapDummyCubeFormat = VK_FORMAT_UNDEFINED;
 
     // Storage buffer (SSBO) for per-layer WaterParamsGPU entries
     Buffer waterParamsBuffer;

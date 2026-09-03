@@ -1,6 +1,8 @@
 #include "SceneRenderer.hpp"
 #include "DescriptorWriter.hpp"
 #include "RendererUtils.hpp"
+#include "SceneDescriptorLayout.hpp"
+#include "../ubo/SkyUniform.hpp"
 
 
 #include <stdexcept>
@@ -128,6 +130,7 @@ void SceneRenderer::cleanup(VulkanApp* app) {
         if (b.buffer != VK_NULL_HANDLE) b = {};
     }
     mainUniformBuffers.clear();
+    destroyDescriptorBuffers(app);
 }
 
 // Propagate the shared per-frame command state tracker to every renderer that
@@ -218,6 +221,23 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
                         .writeImage(ds, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                     cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                         .flush();
+                }
+                // Mirror binding 11 into the descriptor buffers (host write, no
+                // vkUpdateDescriptorSets). Cubemap views are recreated here, so
+                // the stored descriptors would otherwise dangle.
+                if (descBuffers_.ready && app->useDescriptorBuffer() && app->fpGetDescriptorEXT) {
+                    const size_t imgSize = app->descriptorBufferProps.combinedImageSamplerDescriptorSize;
+                    const size_t align = app->descriptorBufferProps.descriptorBufferOffsetAlignment
+                                             ? app->descriptorBufferProps.descriptorBufferOffsetAlignment : 1;
+                    for (auto& dst : descBuffers_.buffers) {
+                        if (dst.buffer == VK_NULL_HANDLE || dst.mappedData == nullptr) continue;
+                        DescriptorBuffer view(app->getDevice(), app->fpGetDescriptorEXT,
+                                              app->fpGetDescriptorSetLayoutBindingOffsetEXT,
+                                              dst.mappedData, static_cast<size_t>(descBuffers_.setSize), align);
+                        view.writeImage(static_cast<size_t>(descBuffers_.bindingOffsets[11]),
+                                        imgSize, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                        cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    }
                 }
             }
         }
@@ -344,8 +364,12 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     if (dsCount == 0) dsCount = 1;
     mainUniformBuffers.clear();
     mainUniformBuffers.resize(dsCount);
+    // Descriptor-buffer sources need a device address for vkGetDescriptorEXT.
+    VkBufferUsageFlags uboUsage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (app->useDescriptorBuffer())
+        uboUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     for (size_t i = 0; i < dsCount; ++i) {
-        mainUniformBuffers[i] = app->createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        mainUniformBuffers[i] = app->createBuffer(sizeof(UniformObject), uboUsage,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
     // Per-frame staging buffers for shadow-pass UBO uploads are owned by
@@ -448,8 +472,12 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     }
     
     size_t paramsBufferSize = sizeof(WaterParamsGPU) * static_cast<size_t>(layerCount);
-    waterParamsBuffer_ = app->createBuffer(paramsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+    VkBufferUsageFlags waterParamsUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (app->useDescriptorBuffer())
+        waterParamsUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    waterParamsBuffer_ = app->createBuffer(paramsBufferSize, waterParamsUsage,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    waterParamsBufferSize_ = static_cast<VkDeviceSize>(paramsBufferSize);
     // Create scene-owned water sub-renderers. Back-face renderpass must exist
     // before water pipelines are created, so create it first.
     backFaceRenderer = std::make_unique<WaterBackFaceRenderer>();
@@ -577,6 +605,17 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             writer.flush();
         }
     }
+
+    // ── Descriptor buffers (Phase 1, step 1–2) ────────────────────────────
+    // Allocate 3 host-visible descriptor buffers and populate every static
+    // set-0 binding via vkGetDescriptorEXT. No-op when the device lacks
+    // VK_EXT_descriptor_buffer (classic sets above stay authoritative).
+    // Snapshot the signature so the first allocation-listener callback with
+    // unchanged resources is a no-op (0 vkUpdateDescriptorSets in steady state).
+    initDescriptorBuffers(app);
+    writeStaticDescriptorsToBuffers(app, textureArrayManager);
+    if (hasDescriptorBuffers())
+        lastStaticSignature_ = currentStaticSignature(textureArrayManager);
 
     // ── Initialize the brush renderer ──
     // Wire the samplers used by the brush depth descriptor writes (from the
@@ -724,6 +763,233 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     }
 }
 
+// ── Descriptor-buffer migration (Phase 1) ───────────────────────────────────
+// Step 1: allocate 3 host-visible descriptor buffers (one per frame). Size =
+// the driver's set-0 layout size (vkGetDescriptorSetLayoutSizeEXT on the
+// DESCRIPTOR_BUFFER_BIT query layout), aligned to
+// descriptorBufferOffsetAlignment. Per-binding offsets come from
+// vkGetDescriptorSetLayoutBindingOffsetEXT on the same layout.
+void SceneRenderer::initDescriptorBuffers(VulkanApp* app) {
+    destroyDescriptorBuffers(app);
+    if (!app || !app->useDescriptorBuffer()) return;
+    if (!app->fpGetDescriptorSetLayoutSizeEXT || !app->fpGetDescriptorSetLayoutBindingOffsetEXT)
+        return;
+    if (!app->sceneDescriptorLayout) return;
+    VkDescriptorSetLayout query = app->sceneDescriptorLayout->descriptorBufferQueryLayout();
+    if (query == VK_NULL_HANDLE) return;
+
+    VkDeviceSize rawSize = 0;
+    app->fpGetDescriptorSetLayoutSizeEXT(app->getDevice(), query, &rawSize);
+    VkDeviceSize align = static_cast<VkDeviceSize>(app->descriptorBufferProps.descriptorBufferOffsetAlignment);
+    if (align == 0) align = 1;
+    VkDeviceSize setSize = (rawSize + align - 1) & ~(align - 1);
+    if (setSize == 0) return;
+
+    const uint32_t frames = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    descBuffers_.buffers.reserve(frames);
+    descBuffers_.addresses.reserve(frames);
+    for (uint32_t i = 0; i < frames; ++i) {
+        Buffer b = app->createBuffer(setSize,
+            VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (b.buffer == VK_NULL_HANDLE || b.mappedData == nullptr) {
+            destroyDescriptorBuffers(app);
+            return;
+        }
+        VkBufferDeviceAddressInfo addrInfo{};
+        addrInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        addrInfo.buffer = b.buffer;
+        VkDeviceAddress addr = vkGetBufferDeviceAddress(app->getDevice(), &addrInfo);
+        if (addr == 0) {
+            app->destroyBuffer(b);
+            destroyDescriptorBuffers(app);
+            return;
+        }
+        descBuffers_.buffers.push_back(b);
+        descBuffers_.addresses.push_back(addr);
+    }
+    for (uint32_t binding = 0; binding < 14; ++binding) {
+        VkDeviceSize off = 0;
+        app->fpGetDescriptorSetLayoutBindingOffsetEXT(app->getDevice(), query, binding, &off);
+        descBuffers_.bindingOffsets[binding] = off;
+    }
+    descBuffers_.setSize = setSize;
+    descBuffers_.ready = true;
+    printf("[SceneRenderer] descriptor buffers: %u frames x %llu bytes (set 0)\n",
+           frames, (unsigned long long)setSize);
+}
+
+void SceneRenderer::destroyDescriptorBuffers(VulkanApp* app) {
+    if (descBuffers_.buffers.empty()) {
+        descBuffers_.addresses.clear();
+        descBuffers_.setSize = 0;
+        descBuffers_.ready = false;
+        return;
+    }
+    if (app) {
+        for (auto& b : descBuffers_.buffers) {
+            if (b.buffer != VK_NULL_HANDLE) app->destroyBuffer(b);
+            else b = {};
+        }
+    } else {
+        for (auto& b : descBuffers_.buffers) b = {};
+    }
+    descBuffers_.buffers.clear();
+    descBuffers_.addresses.clear();
+    descBuffers_.setSize = 0;
+    descBuffers_.ready = false;
+}
+
+// Step 2/4: populate every frame's descriptor buffer with the static set-0
+// bindings (1–13) plus the per-frame UBO address (binding 0) via
+// DescriptorBuffer::writeBuffer / writeImage (vkGetDescriptorEXT host writes —
+// no vkUpdateDescriptorSets, no driver validation work on this path).
+// Host-visible + coherent memory makes the writes visible without explicit
+// barriers; this runs at init / on resource change (same serialization as the
+// classic writes it mirrors), never in the render loop.
+void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArrayManager* textureArrayManager) {
+    if (!app || !descBuffers_.ready || !app->useDescriptorBuffer()) return;
+    if (!app->fpGetDescriptorEXT) return;
+    const auto& props = app->descriptorBufferProps;
+    const size_t align = props.descriptorBufferOffsetAlignment ? props.descriptorBufferOffsetAlignment : 1;
+
+    Buffer skyUBO{};
+    if (skyRenderer) skyUBO = skyRenderer->getSkyUniformBuffer();
+    Buffer waterRenderUBO{};
+    if (mainLiquidRenderer) waterRenderUBO = mainLiquidRenderer->getWaterRenderUBO();
+    VkImageView cubeView = VK_NULL_HANDLE;
+    VkSampler cubeSampler = VK_NULL_HANDLE;
+    if (solid360Renderer) {
+        cubeView = solid360Renderer->getSolid360View();
+        cubeSampler = solid360Renderer->getSolid360Sampler();
+    }
+    VkSampler shadowSampler = VK_NULL_HANDLE;
+    VkImageView shadowViews[3] = {};
+    if (shadowMapper) {
+        shadowSampler = shadowMapper->getShadowMapSampler();
+        shadowViews[0] = shadowMapper->getShadowMapView(0);
+        shadowViews[1] = shadowMapper->getShadowMapView(1);
+        shadowViews[2] = shadowMapper->getShadowMapView(2);
+    }
+
+    uint32_t failures = 0;
+    for (size_t fi = 0; fi < descBuffers_.buffers.size(); ++fi) {
+        Buffer& dst = descBuffers_.buffers[fi];
+        if (dst.buffer == VK_NULL_HANDLE || dst.mappedData == nullptr) { ++failures; continue; }
+        DescriptorBuffer view(app->getDevice(), app->fpGetDescriptorEXT,
+                              app->fpGetDescriptorSetLayoutBindingOffsetEXT,
+                              dst.mappedData, static_cast<size_t>(descBuffers_.setSize), align);
+        auto imgSize = props.combinedImageSamplerDescriptorSize;
+        auto uboSize = props.uniformBufferDescriptorSize;
+        auto ssboSize = props.storageBufferDescriptorSize;
+        auto wImg = [&](uint32_t binding, VkSampler sampler, VkImageView view_, VkImageLayout layout) {
+            if (view_ == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
+            if (!view.writeImage(static_cast<size_t>(descBuffers_.bindingOffsets[binding]),
+                                 imgSize, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                 sampler, view_, layout))
+                ++failures;
+        };
+        auto wBuf = [&](uint32_t binding, size_t dataSize, VkDescriptorType type,
+                        VkBuffer src, VkDeviceSize range) {
+            if (src == VK_NULL_HANDLE) return;
+            if (!view.writeBuffer(static_cast<size_t>(descBuffers_.bindingOffsets[binding]),
+                                  dataSize, type, src, 0, range))
+                ++failures;
+        };
+
+        // Binding 0: this frame's UBO address (contents stream via memcpy).
+        if (fi < mainUniformBuffers.size())
+            wBuf(0, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                 mainUniformBuffers[fi].buffer, sizeof(UniformObject));
+        // Bindings 1–3, 12–13: texture arrays.
+        if (textureArrayManager) {
+            wImg(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            wImg(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            wImg(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            wImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            wImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+        // Bindings 4, 8, 9: shadow cascades.
+        wImg(4, shadowSampler, shadowViews[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        wImg(8, shadowSampler, shadowViews[1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        wImg(9, shadowSampler, shadowViews[2], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        // Binding 5: materials SSBO. Binding 7: water params SSBO.
+        // NOTE: vkGetDescriptorEXT forbids VK_WHOLE_SIZE ranges
+        // (VUID-VkDescriptorAddressInfoEXT-nullDescriptor-08939), so exact
+        // byte sizes are passed; a zero/unknown size skips the write.
+        VkDeviceSize materialsSize = (materialManagerPtr) ? static_cast<VkDeviceSize>(materialManagerPtr->bufferSize()) : 0;
+        if (materialsSize > 0)
+            wBuf(5, ssboSize, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, materialsBuffer.buffer, materialsSize);
+        if (waterParamsBufferSize_ > 0)
+            wBuf(7, ssboSize, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterParamsBuffer_.buffer, waterParamsBufferSize_);
+        // Binding 6: sky UBO. Binding 10: water render UBO. Binding 11: cubemap.
+        wBuf(6, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, skyUBO.buffer, sizeof(SkyUniform));
+        wBuf(10, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, waterRenderUBO.buffer, sizeof(WaterRenderUBO));
+        wImg(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+    if (failures > 0)
+        std::cerr << "[SceneRenderer] descriptor-buffer static writes: " << failures << " skipped/failed (missing source or address)\n";
+}
+
+// Step 3: per-frame bind of set 0 from the descriptor buffer. Activates with
+// the main-layout DESCRIPTOR_BUFFER_BIT cutover (all set-0 classic binds must
+// be removed at the same time: VUID-08010 forbids classic binds of sets from
+// a DESCRIPTOR_BUFFER_BIT layout, and SetDescriptorBufferOffsets invalidates
+// classic set-1/set-2 binds in the same draw). Until then this is the
+// documented bind point — kept uncalled so the classic path stays valid.
+void SceneRenderer::bindSet0ForFrame(VkCommandBuffer cmd, VulkanApp* app,
+                                     VkPipelineLayout layout, uint32_t frameIndex) const {
+    if (!app || cmd == VK_NULL_HANDLE || layout == VK_NULL_HANDLE) return;
+    if (!descriptorBufferBindActive(app)) return;
+    if (descBuffers_.buffers.empty() || descBuffers_.addresses.empty()) return;
+    const uint32_t idx = frameIndex % static_cast<uint32_t>(descBuffers_.buffers.size());
+    VkDescriptorBufferBindingInfoEXT bindInfo{};
+    bindInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+    bindInfo.address = descBuffers_.addresses[idx];
+    bindInfo.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+    app->fpCmdBindDescriptorBuffersEXT(cmd, 1, &bindInfo);
+    const uint32_t bufferIndex = 0;
+    const VkDeviceSize setOffset = 0;
+    app->fpCmdSetDescriptorBufferOffsetsEXT(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                            layout, 0, 1, &bufferIndex, &setOffset);
+}
+
+// Step 5 helper: the bind path is live only with extension + ready buffers +
+// a DESCRIPTOR_BUFFER_BIT-capable main layout. False selects the unchanged
+// vkUpdateDescriptorSets fallback.
+bool SceneRenderer::descriptorBufferBindActive(VulkanApp* app) const {
+    if (!app || !app->useDescriptorBuffer() || !descBuffers_.ready) return false;
+    if (!app->fpCmdBindDescriptorBuffersEXT || !app->fpCmdSetDescriptorBufferOffsetsEXT) return false;
+    if (!app->sceneDescriptorLayout) return false;
+    return app->sceneDescriptorLayout->descriptorBufferBindActive();
+}
+
+SceneRenderer::StaticTextureSignature SceneRenderer::currentStaticSignature(TextureArrayManager* textureArrayManager) const {
+    StaticTextureSignature sig{};
+    if (textureArrayManager) {
+        sig.samplers[0] = textureArrayManager->albedoSampler;
+        sig.views[0] = textureArrayManager->albedoArray.view;
+        sig.samplers[1] = textureArrayManager->normalSampler;
+        sig.views[1] = textureArrayManager->normalArray.view;
+        sig.samplers[2] = textureArrayManager->bumpSampler;
+        sig.views[2] = textureArrayManager->bumpArray.view;
+        sig.samplers[3] = textureArrayManager->roughnessSampler;
+        sig.views[3] = textureArrayManager->roughnessArray.view;
+        sig.samplers[4] = textureArrayManager->aoSampler;
+        sig.views[4] = textureArrayManager->aoArray.view;
+    }
+    if (shadowMapper) {
+        sig.shadowSampler = shadowMapper->getShadowMapSampler();
+        sig.shadowViews[0] = shadowMapper->getShadowMapView(0);
+        sig.shadowViews[1] = shadowMapper->getShadowMapView(1);
+        sig.shadowViews[2] = shadowMapper->getShadowMapView(2);
+    }
+    sig.materials = materialsBuffer.buffer;
+    sig.waterParams = waterParamsBuffer_.buffer;
+    sig.valid = true;
+    return sig;
+}
+
 // Update only the static bindings (textures, materials, water params) in the
 // static descriptor set, then propagate to all per-frame descriptor sets via
 // VkCopyDescriptorSet. This avoids re-writing identical descriptors per frame.
@@ -736,12 +1002,15 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 // (main.cpp preRenderPass) or vkCmdCopyBuffer (shadow cascades) — never via
 // descriptor updates — so the GPU timeline overlaps descriptor-buffer-friendly
 // uploads with compute. When VulkanApp::useDescriptorBuffer() is true, the
-// static writes take the DescriptorBufferHelper path (direct vkGetDescriptorEXT
-// host writes, no vkUpdateDescriptorSets); otherwise the classic
-// DescriptorWriter fallback runs. Full set-0 descriptor-buffer *binding*
-// (vkCmdBindDescriptorBuffersEXT) requires the main layout to carry
-// VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT, which changes
-// every pipeline layout — tracked as follow-up; the update path here is ready.
+// static writes go to the per-frame descriptor buffers first (direct
+// vkGetDescriptorEXT host writes via writeStaticDescriptorsToBuffers, no
+// vkUpdateDescriptorSets); while SceneDescriptorLayout::
+// descriptorBufferBindActive() is false the classic DescriptorWriter path below
+// still runs so the bound sets stay current (buffers kept warm for the
+// cutover), otherwise it returns early. Full set-0 descriptor-buffer *binding*
+// (bindSet0ForFrame) requires the main layout to carry
+// VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT plus the set-1/2
+// migration — tracked as follow-up; the buffer update path here is live.
 void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager) {
     if (!app) return;
 
@@ -760,30 +1029,25 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     // the last successful write. Allocation listeners can fire redundantly
     // (e.g. material allocate + texture realloc in the same setup pass).
     {
-        StaticTextureSignature sig{};
-        sig.samplers[0] = textureArrayManager->albedoSampler;
-        sig.views[0] = textureArrayManager->albedoArray.view;
-        sig.samplers[1] = textureArrayManager->normalSampler;
-        sig.views[1] = textureArrayManager->normalArray.view;
-        sig.samplers[2] = textureArrayManager->bumpSampler;
-        sig.views[2] = textureArrayManager->bumpArray.view;
-        sig.samplers[3] = textureArrayManager->roughnessSampler;
-        sig.views[3] = textureArrayManager->roughnessArray.view;
-        sig.samplers[4] = textureArrayManager->aoSampler;
-        sig.views[4] = textureArrayManager->aoArray.view;
-        if (shadowMapper) {
-            sig.shadowSampler = shadowMapper->getShadowMapSampler();
-            sig.shadowViews[0] = shadowMapper->getShadowMapView(0);
-            sig.shadowViews[1] = shadowMapper->getShadowMapView(1);
-            sig.shadowViews[2] = shadowMapper->getShadowMapView(2);
-        }
-        sig.materials = materialsBuffer.buffer;
-        sig.waterParams = waterParamsBuffer_.buffer;
-        sig.valid = true;
+        StaticTextureSignature sig = currentStaticSignature(textureArrayManager);
         if (lastStaticSignature_.valid && lastStaticSignature_.matches(sig)) {
             return; // nothing changed — 0 vkUpdateDescriptorSets calls
         }
         lastStaticSignature_ = sig;
+    }
+
+    // Step 4: on texture-array (re)alloc, refresh the descriptor buffers with
+    // plain host writes (vkGetDescriptorEXT) — no vkUpdateDescriptorSets. Once
+    // the bind path is live this returns right after (classic sets are never
+    // bound then); while binding stays classic the classic writes below still
+    // run so the bound sets stay current, and the buffers are kept warm for
+    // the cutover. Event-driven only — never in the render loop.
+    if (descBuffers_.ready && app->useDescriptorBuffer()) {
+        writeStaticDescriptorsToBuffers(app, textureArrayManager);
+        if (descriptorBufferBindActive(app)) {
+            if (brushRenderer) brushRenderer->writeDepthDescriptors(app);
+            return;
+        }
     }
 
     // 1. Write updated bindings to the static descriptor set.

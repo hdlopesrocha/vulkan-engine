@@ -32,7 +32,13 @@ void MaterialManager::allocate(size_t count, VulkanApp* app) {
     }
 
     if (materialBuffer.buffer == VK_NULL_HANDLE) {
-        materialBuffer = app->createBuffer(static_cast<VkDeviceSize>(newSize), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        // Descriptor-buffer sources need a device address for vkGetDescriptorEXT,
+        // which requires SHADER_DEVICE_ADDRESS_BIT at buffer creation. The flag
+        // is harmless on the classic vkUpdateDescriptorSets path.
+        VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (app->useDescriptorBuffer())
+            usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        materialBuffer = app->createBuffer(static_cast<VkDeviceSize>(newSize), usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         materialBufferSize = newSize;
     }
 

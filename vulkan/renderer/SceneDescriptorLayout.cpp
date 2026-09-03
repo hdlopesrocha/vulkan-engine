@@ -213,4 +213,36 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     app.registerDescriptorSetLayout(brushDepthDescriptorSetLayout_, "SceneDescriptorLayout: brushDepthDescriptorSetLayout");
 
     // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
+
+    // ── Descriptor-buffer query layout (Phase 1) ──────────────────────────
+    // Duplicate of the main set-0 bindings with DESCRIPTOR_BUFFER_BIT_EXT so
+    // SceneRenderer can query the driver for the set size
+    // (vkGetDescriptorSetLayoutSizeEXT) and per-binding offsets
+    // (vkGetDescriptorSetLayoutBindingOffsetEXT) — both VUID-require the bit.
+    // The MAIN layout deliberately keeps its classic flags: flipping it would
+    // invalidate every classic vkCmdBindDescriptorSets of set 0 (VUID-08010)
+    // and forbid mixing with the classic set-1/set-2 binds in the same draw.
+    // That cutover (mainLayoutDescriptorBufferCapable_ = true + bind-site
+    // migration) ships with the set-1/set-2 migration; until then this layout
+    // is query-only (never in a pipeline layout, never used to allocate sets).
+    if (app.useDescriptorBuffer()) {
+#ifndef VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT
+#define VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT 0x00000010
+#endif
+        VkDescriptorSetLayoutCreateInfo queryInfo{};
+        queryInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        // DESCRIPTOR_BUFFER_BIT must NOT be combined with
+        // UPDATE_AFTER_BIND_POOL_BIT (VUID-flags-08002), and the
+        // UPDATE_AFTER_BIND binding flag is meaningless for host-written
+        // descriptor memory — so the query layout carries the DB bit alone
+        // with no binding-flags pNext. This also matches the future cutover
+        // main layout (direct host writes need no update-after-bind).
+        queryInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        queryInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        queryInfo.pBindings = bindings.data();
+        if (vkCreateDescriptorSetLayout(app.device, &queryInfo, nullptr, &descriptorBufferQueryLayout_) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create descriptor-buffer query layout!");
+        }
+        app.registerDescriptorSetLayout(descriptorBufferQueryLayout_, "SceneDescriptorLayout: descriptorBufferQueryLayout");
+    }
 }

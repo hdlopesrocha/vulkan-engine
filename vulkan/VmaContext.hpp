@@ -40,7 +40,11 @@ public:
         ci.device = dev;
         ci.instance = instance;
         ci.pVulkanFunctions = &vf;
-        ci.flags = 0;
+        // Allow creating buffers with VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+        // (required for VK_EXT_descriptor_buffer source buffers and GPU-assisted
+        // validation). Harmless when the device feature is disabled — only the
+        // buffers that request the usage bit depend on it.
+        ci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 
         vmaCreateAllocator(&ci, &allocator);
     }

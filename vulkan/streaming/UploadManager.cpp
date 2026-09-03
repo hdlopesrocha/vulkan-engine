@@ -5,6 +5,7 @@
 
 #include <stdexcept>
 #include <iostream>
+#include <cstdio>
 #include <array>
 #include <cassert>
 #include <cstring>
@@ -454,8 +455,16 @@ void TerrainStreamer::init(VulkanApp* app,
                            uint32_t initialChunkSlots,
                            uint32_t workersPerCategory) {
     upload_.init(app, chunkVertexBytes, chunkIndexBytes, stagingSlots, initialChunkSlots);
-    for (auto& p : pools_) {
+    for (size_t i = 0; i < pools_.size(); ++i) {
         // ThreadPool owns a std::mutex → not movable; store via unique_ptr.
+        auto& p = pools_[i];
+        if (p) {
+            // init is meant to run once; replacing a live pool destroys it
+            // (joining its workers). Log it so a double-init is visible in
+            // run.log instead of silently churning threads.
+            fprintf(stderr, "[TerrainStreamer::init] replacing live pool for category %zu\n", i);
+            p.reset();
+        }
         p = std::make_unique<ThreadPool>(workersPerCategory);
     }
 }

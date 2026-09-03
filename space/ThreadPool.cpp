@@ -1,4 +1,6 @@
 #include "ThreadPool.hpp"
+#include <cstdio>
+#include <system_error>
 
 // Constructor: launch worker threads
 ThreadPool::ThreadPool(size_t threads)
@@ -38,9 +40,20 @@ void ThreadPool::stop()
 		stopping = true;
 	}
 	condition.notify_all();
-	for(auto &worker : workers) {
+	for(size_t i = 0; i < workers.size(); ++i) {
+		auto &worker = workers[i];
 		if(worker.joinable()) {
-			worker.join();
+			try {
+				worker.join();
+			} catch (const std::system_error& e) {
+				// Never let a failed join escape: stop() runs from the
+				// noexcept destructor, so any exception here is an
+				// immediate std::terminate. Log and continue tearing down
+				// the remaining workers instead (seen once as ESRCH /
+				// "No such process" during TerrainStreamer pool replacement).
+				fprintf(stderr, "[ThreadPool::stop] worker %zu join failed: %s\n",
+				        i, e.what());
+			}
 		}
 	}
 }

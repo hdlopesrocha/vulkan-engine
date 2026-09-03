@@ -19,7 +19,11 @@ void SkySphere::init(VulkanApp* app, SkySettings& settings,
     if (skyBuffer.memory != VK_NULL_HANDLE) {
         skyBuffer.memory = VK_NULL_HANDLE;
     }
-    skyBuffer = app->createBuffer(sbSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    // Descriptor-buffer sources need a device address for vkGetDescriptorEXT.
+    VkBufferUsageFlags skyUsage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    if (app->useDescriptorBuffer())
+        skyUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    skyBuffer = app->createBuffer(sbSize, skyUsage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     skyBufferSize = sbSize;
 
     // upload initial data

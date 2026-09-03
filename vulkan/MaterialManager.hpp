@@ -27,6 +27,9 @@ public:
     // Access underlying storage buffer (for descriptor binding)
     const Buffer& getBuffer() const { return materialBuffer; }
     Buffer& getBuffer() { return materialBuffer; }
+    // Byte size of the storage buffer (for vkGetDescriptorEXT, which forbids
+    // VK_WHOLE_SIZE ranges). 0 when not allocated.
+    size_t bufferSize() const { return materialBufferSize; }
 
 private:
     Buffer materialBuffer{};

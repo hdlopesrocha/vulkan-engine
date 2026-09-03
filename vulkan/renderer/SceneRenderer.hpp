@@ -16,6 +16,7 @@ class World;
 #include "../../math/Vertex.hpp"
 #include "../../math/BoundingCubeHasher.hpp"
 #include <unordered_map>
+#include <array>
 #include <memory>
 #include <mutex>
 #include <deque>
@@ -51,6 +52,8 @@ public:
 
     // Water params UBO (binding 7) — stored for descriptor rebinding
     Buffer waterParamsBuffer_;
+    // Byte size of waterParamsBuffer_ (vkGetDescriptorEXT forbids WHOLE_SIZE).
+    VkDeviceSize waterParamsBufferSize_ = 0;
 
     // Shadow-specific descriptor sets (one per frame). Each mirrors the main
     // descriptor set but binding 4 points to a dummy depth view to avoid
@@ -148,6 +151,29 @@ public:
     void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams);
     // Re-update main descriptor set when texture arrays are (re)allocated
     void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);
+
+    // ── Descriptor-buffer migration (Phase 1) ─────────────────────────────
+    // Step 1: allocate 3 host-visible descriptor buffers (one per frame).
+    // No-op (leaves descBuffers_.ready false) when !app->useDescriptorBuffer().
+    void initDescriptorBuffers(VulkanApp* app);
+    // Step 2/4: (re)write all static set-0 bindings into every frame's
+    // descriptor buffer via DescriptorBuffer::writeBuffer/writeImage.
+    // No-op when buffers are not ready. Sources that are not yet allocated
+    // (e.g. cubemap before Solid360 init) are skipped.
+    void writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArrayManager* textureArrayManager);
+    bool hasDescriptorBuffers() const { return descBuffers_.ready; }
+    // Step 3: bind frame N's descriptor buffer + set-0 offset. Activates once
+    // the main layout carries DESCRIPTOR_BUFFER_BIT (see
+    // SceneDescriptorLayout::descriptorBufferBindActive); until then this is
+    // the documented per-frame bind point for the cutover, kept uncalled so
+    // the classic set-0/set-1/set-2 binds stay valid.
+    void bindSet0ForFrame(VkCommandBuffer cmd, VulkanApp* app,
+                          VkPipelineLayout layout, uint32_t frameIndex) const;
+    // Step 5 helper: true only when the descriptor-buffer bind path is live
+    // (extension supported + buffers ready + layout capable). False keeps the
+    // existing vkUpdateDescriptorSets path unchanged.
+    bool descriptorBufferBindActive(VulkanApp* app) const;
+    void destroyDescriptorBuffers(VulkanApp* app);
     // cleanup declared above (accepts VulkanApp*)
 
     using GeometryHandler = const std::function<void(Layer, NodeID, const Octree::LoDMesh&)>&;
@@ -305,6 +331,29 @@ private:
         }
     };
     StaticTextureSignature lastStaticSignature_{};
+
+    // Build the StaticTextureSignature for the current resources (shared by
+    // init and updateTextureDescriptorSet so both agree on "unchanged").
+    StaticTextureSignature currentStaticSignature(TextureArrayManager* textureArrayManager) const;
+
+    // ── Descriptor-buffer migration (Phase 1: static set-0 bindings) ──────
+    // Three host-visible descriptor buffers (one per frame-in-flight) holding
+    // the full set-0 image/buffer descriptors, written via vkGetDescriptorEXT
+    // (DescriptorBuffer wrapper) instead of vkUpdateDescriptorSets. Binding 0
+    // (per-frame UBO) stores the UBO device address once — per-frame UBO
+    // *contents* still stream via memcpy into the already-bound UBO buffers.
+    // While SceneDescriptorLayout::descriptorBufferBindActive() is false the
+    // buffers are warm mirrors (classic sets stay authoritative); once the
+    // main layout flips to DESCRIPTOR_BUFFER_BIT, bindSet0ForFrame() becomes
+    // the bind path and classic set-0 writes stop.
+    struct Set0DescriptorBuffers {
+        std::vector<Buffer> buffers;                 // one per frame
+        std::vector<VkDeviceAddress> addresses;      // device address per frame
+        VkDeviceSize setSize = 0;                    // aligned set-0 byte size
+        std::array<VkDeviceSize, 14> bindingOffsets{}; // driver binding offsets
+        bool ready = false;
+    };
+    Set0DescriptorBuffers descBuffers_;
 
     // Camera position from the last processPendingMeshes call; used by the
     // shadow pass to cull with the same camPos/lodBias as the main pass so
