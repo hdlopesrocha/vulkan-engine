@@ -73,12 +73,10 @@ void VegetationRenderer::destroyCulling() {
     }
     for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
         if (compactedCmdBuffers[f].buffer != VK_NULL_HANDLE) {
-            compactedCmdMapped[f] = nullptr;
             appPtr->destroyBuffer(compactedCmdBuffers[f]);
             compactedCmdBuffers[f] = {};
         }
         if (visibleCountBuffers[f].buffer != VK_NULL_HANDLE) {
-            visibleCountMapped[f] = nullptr;
             appPtr->destroyBuffer(visibleCountBuffers[f]);
             visibleCountBuffers[f] = {};
         }
@@ -134,34 +132,28 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // Per-frame compact/count buffers (billboard + impostor) at maxChunks.
+    // DEVICE_LOCAL cull outputs (GPU-only): zero-initialized by createBuffer,
+    // reset each frame by the merged dispatch's vkCmdFillBuffer. Never mapped.
     const VkDeviceSize compactedSize =
         static_cast<VkDeviceSize>(std::max(256u, maxChunks)) * sizeof(VkDrawIndexedIndirectCommand);
     for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
         compactedCmdBuffers[f] = app->createBuffer(compactedSize,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        compactedCmdMapped[f] = static_cast<VkDrawIndexedIndirectCommand*>(compactedCmdBuffers[f].map(0));
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (visibleCountBuffers[f].buffer == VK_NULL_HANDLE) {
             visibleCountBuffers[f] = app->createBuffer(sizeof(uint32_t),
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            visibleCountMapped[f] = static_cast<uint32_t*>(visibleCountBuffers[f].map(0));
-            *visibleCountMapped[f] = 0;
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         }
         if (impostorCompactBuffers[f].buffer == VK_NULL_HANDLE) {
             impostorCompactBuffers[f] = app->createBuffer(compactedSize,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            void* impData = impostorCompactBuffers[f].map(0);
-            if (impData) { std::memset(impData, 0, (size_t)compactedSize); impostorCompactBuffers[f].unmap(); }
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         }
         if (impostorCountBuffers[f].buffer == VK_NULL_HANDLE) {
             impostorCountBuffers[f] = app->createBuffer(sizeof(uint32_t),
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            void* impMapped = impostorCountBuffers[f].map(0);
-            if (impMapped) *static_cast<uint32_t*>(impMapped) = 0;
-            impostorCountBuffers[f].unmap();
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         }
     }
     vegMainCompactCapacity = maxChunks;
@@ -174,6 +166,8 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
     vegChunkInfoMapped = vegChunkInfoBuffer.map(0);
 
     // Cascade buffers at maxChunks (per frame × 3 cascades, billboard + impostor).
+    // DEVICE_LOCAL cull outputs (GPU-only): zero-initialized by createBuffer,
+    // reset each frame by vkCmdFillBuffer in the merged dispatch. Never mapped.
     const VkDeviceSize cascadeCompactSize =
         static_cast<VkDeviceSize>(maxChunks) * sizeof(VkDrawIndexedIndirectCommand);
     if (!vegCascadeCullInited) {
@@ -182,31 +176,16 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
             for (uint32_t c = 0; c < 3; c++) {
                 vegCascadeCullFrames[f].compactBuffers[c] = app->createBuffer(cascadeCompactSize,
                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                void* data = vegCascadeCullFrames[f].compactBuffers[c].map(0);
-                if (data) {
-                    std::memset(data, 0, (size_t)cascadeCompactSize);
-                    vegCascadeCullFrames[f].compactBuffers[c].unmap();
-                }
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
                 vegCascadeCullFrames[f].countBuffers[c] = app->createBuffer(sizeof(uint32_t),
                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                uint32_t* mapped = static_cast<uint32_t*>(vegCascadeCullFrames[f].countBuffers[c].map(0));
-                if (mapped) *mapped = 0;
-
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
                 vegCascadeCullFrames[f].impostorCompactBuffers[c] = app->createBuffer(cascadeCompactSize,
                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                void* impData = vegCascadeCullFrames[f].impostorCompactBuffers[c].map(0);
-                if (impData) {
-                    std::memset(impData, 0, (size_t)cascadeCompactSize);
-                    vegCascadeCullFrames[f].impostorCompactBuffers[c].unmap();
-                }
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
                 vegCascadeCullFrames[f].impostorCountBuffers[c] = app->createBuffer(sizeof(uint32_t),
                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                uint32_t* impMapped = static_cast<uint32_t*>(vegCascadeCullFrames[f].impostorCountBuffers[c].map(0));
-                if (impMapped) *impMapped = 0;
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
             }
         }
     }

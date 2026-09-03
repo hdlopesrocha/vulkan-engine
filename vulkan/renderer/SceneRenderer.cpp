@@ -1060,6 +1060,14 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         }
     }
 
+    // ── Async visible-count snapshot (stats only) ─────────────────────────
+    // The cull counts live in DEVICE_LOCAL buffers; every prepareCull copies
+    // them into small host-visible readback slots. Snapshot both layers here
+    // once per frame (1-frame latency) so the stats overlay never touches GPU
+    // memory on the ImGui path.
+    lastOpaqueVisible_ = mainSolidRenderer->getIndirectRenderer().readVisibleCount(app);
+    lastTransparentVisible_ = mainLiquidRenderer->getIndirectRenderer().readVisibleCount(app);
+
     if (batch.empty()) {
         // No new geometry yet (brush tessellation may still be running). Keep
         // old geometry visible — don't free anything. On the next rebuild,

@@ -2539,16 +2539,17 @@ public:
                 // Statistics: loaded/visible counts
                 ImGui::Text("Textures Loaded (CPU): %u", loadedTextureLayers);
 
-                // Opaque (solid)
+                // Opaque (solid) — async snapshot taken in processPendingMeshes
+                // (1-frame latency, never touches GPU memory on the UI path).
                 size_t opaqueLoaded = sceneRenderer->mainSolidRenderer->getIndirectRenderer().getMeshCount();
-                uint32_t opaqueVisible = sceneRenderer->mainSolidRenderer->getIndirectRenderer().readVisibleCount(this);
+                uint32_t opaqueVisible = sceneRenderer ? sceneRenderer->getLastOpaqueVisible() : 0;
                 ImGui::Text("Opaque - Loaded (GPU): %zu  Visible (GPU cull): %u", opaqueLoaded, opaqueVisible);
                 size_t opaqueTracked = sceneRenderer ? sceneRenderer->getRegisteredModelCount() : 0;
                 ImGui::Text("Opaque Models Tracked: %zu", opaqueTracked);
 
                 // Transparent / water
                 size_t transparentLoaded = sceneRenderer && sceneRenderer->mainLiquidRenderer ? sceneRenderer->mainLiquidRenderer->getIndirectRenderer().getMeshCount() : 0;
-                uint32_t transparentVisible = sceneRenderer && sceneRenderer->mainLiquidRenderer ? sceneRenderer->mainLiquidRenderer->getIndirectRenderer().readVisibleCount(this) : 0;
+                uint32_t transparentVisible = sceneRenderer ? sceneRenderer->getLastTransparentVisible() : 0;
                 ImGui::Text("Transparent - Loaded (GPU): %zu  Visible (GPU cull): %u", transparentLoaded, transparentVisible);
                 size_t transparentTracked = sceneRenderer ? sceneRenderer->getTransparentModelCount() : 0;
                 ImGui::Text("Transparent Models Tracked: %zu", transparentTracked);

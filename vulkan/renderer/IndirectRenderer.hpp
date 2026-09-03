@@ -366,7 +366,8 @@ public:
     const Buffer& getIndirectBuffer() const { return indirectBuffer; }
     const Buffer& getBoundsBuffer() const { return boundsBuffer; }
     const Buffer& getCompactBuffer(uint32_t frame) const { return compactIndirectBuffers[frame % MAX_CULL_FRAMES]; }
-    uint32_t* getVisibleCountPtr(uint32_t frame) { return visibleCountMapped[frame % MAX_CULL_FRAMES]; }
+    // Last observed visible count for a cull frame (async readback cache, 1-frame latency, for stats only).
+    uint32_t getLastVisibleCount(uint32_t frame) const { return lastVisibleCount[frame % MAX_CULL_FRAMES]; }
     VkDescriptorSetLayout getComputeDescriptorSetLayout() const { return computeDescriptorSetLayout; }
 
     // Get the pre-allocated capacity (indirect command count / max slots)
@@ -475,11 +476,14 @@ private:
     // Set which per-frame cull buffers to use. Must be called once per frame
     // before prepareCull / drawPrepared. frame idx should be in [0, MAX_CULL_FRAMES).
 
-    // A temporary compact indirect buffer used to upload only visible commands — per-frame to avoid cross-frame races
+    // A temporary compact indirect buffer used to upload only visible commands — per-frame to avoid cross-frame races.
+    // DEVICE_LOCAL cull output: written by the cull dispatch (binding 1), read by
+    // the indirect-count draw. Never mapped on the host.
     std::array<Buffer, MAX_CULL_FRAMES> compactIndirectBuffers;
     // Per-frame chosen-LoD output from the cull compute shader (uvec2 per kept
     // entry: drawIndex, chosen level). Written by binding 4 of the cull
     // pipeline; zeroed together with the compact buffer each prepareCull.
+    // DEVICE_LOCAL cull output: never mapped on the host.
     std::array<Buffer, MAX_CULL_FRAMES> visibleLodBuffers;
     // Dedicated visibleLods buffer for the caller-provided-descriptor paths
     // (cubemap faces, async backface): those sets bind this scratch buffer so
@@ -537,11 +541,14 @@ private:
     // indirect.comp shader statically references them so they must always be
     // valid, even when vegetation isn't being culled.
     Buffer vegDummyBuffer;
-    // Per-frame visible count buffers
+    // Per-frame visible count buffers (DEVICE_LOCAL cull outputs, GPU-only).
     std::array<Buffer, MAX_CULL_FRAMES> visibleCountBuffers;
-    // Persistent host mapping for zeroing visible counts (avoids vkCmdFillBuffer + barrier on RADV)
-    mutable std::array<uint32_t*, MAX_CULL_FRAMES> visibleCountMapped = {nullptr, nullptr, nullptr};
-    VkDevice storedDevice = VK_NULL_HANDLE;
+    // Small HOST_VISIBLE readback buffers (one uint32 each). After every cull
+    // dispatch the device-local count is copied here with vkCmdCopyBuffer; the
+    // CPU stats path reads this buffer (1-frame latency, never stalls the GPU).
+    std::array<Buffer, MAX_CULL_FRAMES> visibleCountReadback;
+    // Last value observed in each readback slot (stats cache, updated by readVisibleCount).
+    mutable std::array<uint32_t, MAX_CULL_FRAMES> lastVisibleCount = {0, 0, 0};
 
     // Compute pipeline objects for GPU culling
     TrackedHandle<VkPipeline> computePipeline;
@@ -552,9 +559,8 @@ private:
 
     // ── Cascade-aware culling (per-frame resources) ──
     struct CascadeCullFrame {
-        std::array<Buffer, 3> compactBuffers; // compact output per cascade
-        std::array<Buffer, 3> countBuffers;   // visible count per cascade
-        std::array<uint32_t*, 3> countMapped = {nullptr, nullptr, nullptr};
+        std::array<Buffer, 3> compactBuffers; // compact output per cascade (DEVICE_LOCAL)
+        std::array<Buffer, 3> countBuffers;   // visible count per cascade (DEVICE_LOCAL)
         TrackedHandle<VkDescriptorSet> descSet;
     };
     std::array<CascadeCullFrame, MAX_CULL_FRAMES> cascadeCullFrames;

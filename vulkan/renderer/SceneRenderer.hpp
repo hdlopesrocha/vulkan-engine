@@ -311,7 +311,16 @@ private:
     // shadow draws use the identical per-chunk LoD selection.
     glm::vec3 lastCameraPos_ = glm::vec3(0.0f);
 
+    // Async visible-count snapshot for stats (updated once per frame in
+    // processPendingMeshes from the IRs' host-visible readback buffers;
+    // 1-frame latency, never touches GPU memory). The overlay reads these.
+    uint32_t lastOpaqueVisible_ = 0;
+    uint32_t lastTransparentVisible_ = 0;
+
 public:
+    uint32_t getLastOpaqueVisible() const { return lastOpaqueVisible_; }
+    uint32_t getLastTransparentVisible() const { return lastTransparentVisible_; }
+
     // Thread-safe mesh queue fed by tessellation on the generation pools;
     // drained on the main thread by processPendingMeshes(). ONE shared queue
     // for every stream (main solid/water + brush solid/water): entries are

@@ -310,12 +310,13 @@ private:
     // ── CPU frustum culling (indirection via concatenated instance buffer) ────
     Buffer concatenatedInstanceBuffer;  // all instances concatenated (vec4 per element)
     // Triple-buffered culling resources to prevent CPU/GPU race conditions
-    // (same pattern as IndirectRenderer::MAX_CULL_FRAMES).
+    // (same pattern as IndirectRenderer::MAX_CULL_FRAMES). All DEVICE_LOCAL
+    // cull outputs (GPU-only): written by the merged cull dispatch, consumed
+    // by the indirect-count draws. Zeroed by createBuffer and reset each frame
+    // with vkCmdFillBuffer — never mapped on the host (no CPU reader exists).
     static constexpr uint32_t VEG_CULL_FRAMES = 3;
     std::array<Buffer, VEG_CULL_FRAMES> compactedCmdBuffers;
     std::array<Buffer, VEG_CULL_FRAMES> visibleCountBuffers;
-    mutable std::array<uint32_t*, VEG_CULL_FRAMES> visibleCountMapped = {nullptr, nullptr, nullptr};
-    mutable std::array<VkDrawIndexedIndirectCommand*, VEG_CULL_FRAMES> compactedCmdMapped = {nullptr, nullptr, nullptr};
 
     // ── Merged main-camera vegetation cull outputs ──
     // Per-frame GPU-compacted indirect command streams (billboards +

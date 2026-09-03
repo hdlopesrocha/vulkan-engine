@@ -227,13 +227,9 @@ void IndirectRenderer::cleanup(VulkanApp* app) {
     for (auto& b : visibleLodBuffers) b = {};
     visibleLodsScratch = {};
     boundsBuffer = {};
-    for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
-        if (visibleCountMapped[f] && storedDevice != VK_NULL_HANDLE) {
-            visibleCountBuffers[f].unmap();
-            visibleCountMapped[f] = nullptr;
-        }
-        visibleCountBuffers[f] = {};
-    }
+    for (auto& b : visibleCountBuffers) b = {};
+    for (auto& b : visibleCountReadback) b = {};
+    lastVisibleCount = {0, 0, 0};
 }
 
 uint32_t IndirectRenderer::addMesh(const Geometry& mesh) {
@@ -335,25 +331,10 @@ void IndirectRenderer::removeAllMeshes() {
                 boundsBuffer.unmap();
             }
         }
-        // Zero the chosen-LoD outputs so no stale (chunk, level) pair survives
-        // a scene clear.
-        VkDeviceSize lodBytes = sizeof(glm::uvec2) * slotAlloc.capacity();
-        for (auto& b : visibleLodBuffers) {
-            if (b.buffer != VK_NULL_HANDLE) {
-                void* ptr = b.map(0);
-                if (ptr) {
-                    std::memset(ptr, 0, (size_t)lodBytes);
-                    b.unmap();
-                }
-            }
-        }
-        if (visibleLodsScratch.buffer != VK_NULL_HANDLE) {
-            void* ptr = visibleLodsScratch.map(0);
-            if (ptr) {
-                std::memset(ptr, 0, (size_t)lodBytes);
-                visibleLodsScratch.unmap();
-            }
-        }
+        // Chosen-LoD outputs are DEVICE_LOCAL cull outputs now: they are
+        // zeroed on the GPU by prepareCull's vkCmdFillBuffer before every
+        // dispatch, so no stale (chunk, level) pair can survive a scene clear
+        // past the next cull. No host writes here.
 
         // Free all slots (collect indices first to avoid recursive locking).
         std::vector<uint32_t> active;
@@ -1227,9 +1208,10 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         }
     }
 
-    // Create/resize compact indirect buffer (storage + indirect usage)
-    // Written by compute shader every frame, read by indirect draw — DEVICE_LOCAL
-    // for optimal GPU performance on discrete GPUs.
+    // Create/resize compact indirect buffer (storage + indirect usage).
+    // Written by the compute shader every frame, read by the indirect draw:
+    // DEVICE_LOCAL (no host traffic). Zero-initialized by createBuffer; the
+    // per-frame vkCmdFillBuffer in prepareCull resets it before each dispatch.
     VkDeviceSize compactSize = indirectBufferSize;
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         if (compactIndirectBuffers[f].buffer != VK_NULL_HANDLE || compactIndirectBuffers[f].memory != VK_NULL_HANDLE) {
@@ -1239,24 +1221,14 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         if (compactSize > 0) {
             compactIndirectBuffers[f] = app->createBuffer(compactSize,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            if (indirectDataSize > 0) {
-                void* data;
-                data = compactIndirectBuffers[f].map(0);
-                // Zero the ENTIRE buffer first so any headroom (capacity beyond
-                // the valid command count) is never left as uninitialized
-                // allocator garbage that could be read as a giant indexCount by
-                // vkCmdDrawIndexedIndirectCount and spin the GPU.
-                memset(data, 0, (size_t)compactSize);
-                memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
-                compactIndirectBuffers[f].unmap(); // VMA persistent mapping
-            }
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         }
     }
 
     // Per-frame chosen-LoD output buffers (uvec2 per entry) + the scratch
     // buffer bound by external descriptor-set owners (cubemap/backface).
-    // Same lifecycle as compactIndirectBuffers.
+    // Same lifecycle as compactIndirectBuffers. DEVICE_LOCAL cull outputs;
+    // zeroed by createBuffer and reset each frame with vkCmdFillBuffer.
     VkDeviceSize lodBufSize = sizeof(glm::uvec2) * meshCapacity;
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         if (visibleLodBuffers[f].buffer != VK_NULL_HANDLE || visibleLodBuffers[f].memory != VK_NULL_HANDLE) {
@@ -1265,13 +1237,8 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         }
         if (lodBufSize > 0) {
             visibleLodBuffers[f] = app->createBuffer(lodBufSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            void* data = visibleLodBuffers[f].map(0);
-            if (data) {
-                std::memset(data, 0, (size_t)lodBufSize);
-                visibleLodBuffers[f].unmap();
-            }
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         }
     }
     if (visibleLodsScratch.buffer == VK_NULL_HANDLE && lodBufSize > 0) {
@@ -1279,37 +1246,33 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         // vkCmdFillBuffer each cull.
         visibleLodsScratch = app->createBuffer(lodBufSize,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        void* data = visibleLodsScratch.map(0);
-        if (data) {
-            std::memset(data, 0, (size_t)lodBufSize);
-            visibleLodsScratch.unmap();
-        }
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
 
-    // Create or zero the per-frame visible count buffers.
+    // Create the per-frame visible count buffers. The counts are DEVICE_LOCAL
+    // cull outputs (atomically appended by the dispatch, consumed by the
+    // indirect-count draw). After each dispatch prepareCull copies the count
+    // into the small HOST_VISIBLE readback buffer, which the CPU stats path
+    // reads with 1-frame latency — no persistent host mapping, no stalls.
     VkDeviceSize countSize = sizeof(uint32_t);
     uint32_t initialCount = static_cast<uint32_t>(indirectCommands.size());
-    VkDevice dev = app->getDevice();
-    storedDevice = dev;
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
-        // Unmap old persistent mapping before destroying
-        if (visibleCountMapped[f]) {
-            visibleCountBuffers[f].unmap(); // VMA persistent mapping
-            visibleCountMapped[f] = nullptr;
-        }
         if (visibleCountBuffers[f].buffer != VK_NULL_HANDLE || visibleCountBuffers[f].memory != VK_NULL_HANDLE) {
             scheduleDestroyBuffer(visibleCountBuffers[f]);
             visibleCountBuffers[f] = {};
         }
         visibleCountBuffers[f] = app->createBuffer(countSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-        // Persistently map for host-side zeroing (avoids vkCmdFillBuffer + barrier issues on RADV)
-        visibleCountMapped[f] = static_cast<uint32_t*>(visibleCountBuffers[f].map(0));
-        // Initialize with full count (fallback when culling is off)
-        *visibleCountMapped[f] = initialCount;
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (visibleCountReadback[f].buffer == VK_NULL_HANDLE) {
+            visibleCountReadback[f] = app->createBuffer(countSize,
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }
+        // Initialize the stats readback with the full count (fallback when culling is off).
+        if (void* data = visibleCountReadback[f].map(0))
+            *static_cast<uint32_t*>(data) = initialCount;
+        lastVisibleCount[f] = initialCount;
     }
 
     // Create compute pipeline + descriptor sets for GPU culling if not present
@@ -1935,9 +1898,10 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
                                   | VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT
                                   | VK_PIPELINE_STAGE_2_CLEAR_BIT;
         readBarriers[0].srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT
-                                  | VK_ACCESS_2_SHADER_READ_BIT
-                                  | VK_ACCESS_2_SHADER_WRITE_BIT
-                                  | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                                   | VK_ACCESS_2_SHADER_READ_BIT
+                                   | VK_ACCESS_2_SHADER_WRITE_BIT
+                                   | VK_ACCESS_2_TRANSFER_READ_BIT
+                                   | VK_ACCESS_2_TRANSFER_WRITE_BIT;
         readBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT
                                   | VK_PIPELINE_STAGE_2_CLEAR_BIT;
         readBarriers[0].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -2675,6 +2639,63 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     depInfo.bufferMemoryBarrierCount = barrierCount;
     depInfo.pBufferMemoryBarriers = barriers;
     vkCmdPipelineBarrier2(cmd, &depInfo);
+
+    // ── Async stats readback ──────────────────────────────────────────────
+    // Copy the device-local visible count into the small host-visible readback
+    // buffer so the CPU stats path (readVisibleCount) never touches GPU memory
+    // directly. COMPUTE_WRITE → TRANSFER_READ orders the dispatch's atomic
+    // appends before the copy; TRANSFER_WRITE → HOST_READ publishes the copy to
+    // the CPU. The read lags by one frame, which is invisible in the overlay.
+    const Buffer& readback = visibleCountReadback[currentCullFrame];
+    if (readback.buffer != VK_NULL_HANDLE) {
+        VkBufferMemoryBarrier2 copyBarriers[2]{};
+        copyBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        copyBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        copyBarriers[0].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+        copyBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        copyBarriers[0].dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        copyBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        copyBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        copyBarriers[0].buffer = visibleCount.buffer;
+        copyBarriers[0].offset = 0;
+        copyBarriers[0].size = VK_WHOLE_SIZE;
+        // Order this copy's TRANSFER_WRITE after the previous frame's copy to
+        // the same per-frame readback slot (WRITE_AFTER_WRITE).
+        copyBarriers[1] = copyBarriers[0];
+        copyBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        copyBarriers[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        copyBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        copyBarriers[1].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        copyBarriers[1].buffer = readback.buffer;
+        VkDependencyInfo depCopy{};
+        depCopy.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depCopy.bufferMemoryBarrierCount = 2;
+        depCopy.pBufferMemoryBarriers = copyBarriers;
+        vkCmdPipelineBarrier2(cmd, &depCopy);
+
+        VkBufferCopy countCopy{};
+        countCopy.srcOffset = 0;
+        countCopy.dstOffset = 0;
+        countCopy.size = sizeof(uint32_t);
+        vkCmdCopyBuffer(cmd, visibleCount.buffer, readback.buffer, 1, &countCopy);
+
+        VkBufferMemoryBarrier2 hostBarrier{};
+        hostBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        hostBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        hostBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        hostBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        hostBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+        hostBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hostBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hostBarrier.buffer = readback.buffer;
+        hostBarrier.offset = 0;
+        hostBarrier.size = VK_WHOLE_SIZE;
+        VkDependencyInfo depHost{};
+        depHost.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depHost.bufferMemoryBarrierCount = 1;
+        depHost.pBufferMemoryBarriers = &hostBarrier;
+        vkCmdPipelineBarrier2(cmd, &depHost);
+    }
 }
 
 
@@ -3046,19 +3067,17 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pi
 
 uint32_t IndirectRenderer::readVisibleCount(VulkanApp* app) const {
     const uint32_t frame = currentCullFrame;
-    const Buffer& visibleCount = visibleCountBuffers[frame];
-    if (!app || visibleCount.buffer == VK_NULL_HANDLE) return 0;
+    const Buffer& rb = visibleCountReadback[frame];
+    if (!app || rb.buffer == VK_NULL_HANDLE) return lastVisibleCount[frame];
 
-    // Non-blocking read of the persistently-mapped, host-coherent count buffer.
-    // The value reflects the most recent GPU cull result for this frame slot,
-    // which (due to the frames-in-flight rotation) is always from an already
-    // completed frame. Reading it is lock-free and never stalls the render
-    // thread: no empty submit, no fence wait, no queue idle. The count shown in
-    // the stats overlay lags by at most a few frames, which is invisible.
-    if (visibleCountMapped[frame]) {
-        return *visibleCountMapped[frame];
+    // Async stats read of the HOST_COHERENT readback buffer. It holds the most
+    // recently COMPLETED frame's count for this slot (1-frame latency), so the
+    // read is lock-free and never stalls the render thread: no fence wait, no
+    // queue idle, no persistent mapping of GPU-written memory.
+    if (rb.mappedData) {
+        lastVisibleCount[frame] = *static_cast<const uint32_t*>(rb.mappedData);
     }
-    return 0;
+    return lastVisibleCount[frame];
 }
 
 
@@ -3222,56 +3241,47 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         }
     }
 
-    // Compact indirect buffers (one per cull frame, used by GPU culling)
+    // Compact indirect buffers (one per cull frame, used by GPU culling).
+    // DEVICE_LOCAL cull outputs (no host traffic): zero-initialized by
+    // createBuffer and reset each frame by prepareCull's vkCmdFillBuffer.
     VkDeviceSize compactSize = indirectBufferSize;
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         compactIndirectBuffers[f] = app->createBuffer(compactSize,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        // Zero the entire buffer so headroom is never garbage
-        void* data = compactIndirectBuffers[f].map(0);
-        if (data) {
-            std::memset(data, 0, (size_t)compactSize);
-            compactIndirectBuffers[f].unmap();
-        }
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
 
     // Per-frame chosen-LoD output buffers (uvec2 per draw entry: the compacted
     // firstInstance and the level, always 0 now that chunks are single-mesh)
     // and the scratch buffer bound by external descriptor-set owners.
     // TRANSFER_DST: prepareCull zeroes them with vkCmdFillBuffer each frame.
+    // DEVICE_LOCAL cull outputs (no host traffic).
     VkDeviceSize lodBufSize = sizeof(glm::uvec2) * meshCapacity;
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         visibleLodBuffers[f] = app->createBuffer(lodBufSize,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        void* data = visibleLodBuffers[f].map(0);
-        if (data) {
-            std::memset(data, 0, (size_t)lodBufSize);
-            visibleLodBuffers[f].unmap();
-        }
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
     if (visibleLodsScratch.buffer == VK_NULL_HANDLE) {
         visibleLodsScratch = app->createBuffer(lodBufSize,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        void* data = visibleLodsScratch.map(0);
-        if (data) {
-            std::memset(data, 0, (size_t)lodBufSize);
-            visibleLodsScratch.unmap();
-        }
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
 
-    // Visible count buffers (one per cull frame, host-visible)
+    // Visible count buffers (one per cull frame). DEVICE_LOCAL cull outputs
+    // (TRANSFER_SRC so prepareCull can copy them to the readback buffers);
+    // the small HOST_VISIBLE readback buffers serve the CPU stats path.
     VkDeviceSize countSize = sizeof(uint32_t);
-    VkDevice dev = app->getDevice();
-    storedDevice = dev;
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         visibleCountBuffers[f] = app->createBuffer(countSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        visibleCountReadback[f] = app->createBuffer(countSize,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        visibleCountMapped[f] = static_cast<uint32_t*>(visibleCountBuffers[f].map(0));
-        *visibleCountMapped[f] = 0;
+        if (void* data = visibleCountReadback[f].map(0))
+            *static_cast<uint32_t*>(data) = 0;
+        lastVisibleCount[f] = 0;
     }
 
     // Pre-allocate the per-frame staged-meta staging buffers to worst case
@@ -4179,19 +4189,14 @@ void IndirectRenderer::initCascadeCull(VulkanApp* app) {
 
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         for (uint32_t c = 0; c < 3; c++) {
+            // DEVICE_LOCAL cull outputs (no host traffic): zero-initialized by
+            // createBuffer, reset each frame by vkCmdFillBuffer in prepareCull.
             cascadeCullFrames[f].compactBuffers[c] = app->createBuffer(compactSize,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            void* data = cascadeCullFrames[f].compactBuffers[c].map(0);
-            if (data) {
-                std::memset(data, 0, (size_t)compactSize);
-                cascadeCullFrames[f].compactBuffers[c].unmap();
-            }
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
             cascadeCullFrames[f].countBuffers[c] = app->createBuffer(countSize,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            cascadeCullFrames[f].countMapped[c] = static_cast<uint32_t*>(cascadeCullFrames[f].countBuffers[c].map(0));
-            *cascadeCullFrames[f].countMapped[c] = 0;
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         }
         // Bind this renderer's cascade resources into the merged indirect.comp
         // compute descriptor set (bindings 17..23) so a single dispatch can also
@@ -4257,7 +4262,6 @@ void IndirectRenderer::destroyCascadeCull() {
         for (uint32_t c = 0; c < 3; c++) {
             frame.compactBuffers[c] = {};
             frame.countBuffers[c] = {};
-            frame.countMapped[c] = nullptr;
         }
     }
     cascadeMatrixBuffer = {};
