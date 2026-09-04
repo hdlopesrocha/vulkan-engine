@@ -5612,6 +5612,42 @@ void VulkanApp::createLogicalDevice() {
     const bool deviceSupports14 =
         (VK_VERSION_MAJOR(physDevProps.apiVersion) == 1 && VK_VERSION_MINOR(physDevProps.apiVersion) >= 4);
 
+    // ── Hardware ray-tracing capability detection ──────────────────────────
+    // Feature detection (never version checks): probe the physical device for
+    // VK_KHR_acceleration_structure + VK_KHR_ray_tracing_pipeline + BDA. When
+    // usable, the RT extensions are appended below and their feature structs
+    // are chained into VkDeviceCreateInfo::pNext; otherwise the engine keeps
+    // the legacy rasterizer (RayTracingRenderer reports unavailable).
+    rayTracingSupport = rt::queryDeviceSupport(physicalDevice);
+    const bool wantRayTracing = rayTracingSupport.usable();
+    if (wantRayTracing) {
+        // Buffer device address is required for AS builds; scalar block layout
+        // is enabled alongside for future compact vertex-fetch layouts.
+        vulkan12Features.bufferDeviceAddress = VK_TRUE;
+        vulkan12Features.scalarBlockLayout = VK_TRUE;
+        printf("[VulkanApp] Ray tracing supported (AS+RT pipeline+BDA%s) — enabling\n",
+               rayTracingSupport.rayQuery ? "+rayQuery" : "");
+    } else {
+        printf("[VulkanApp] Ray tracing NOT fully supported (missing: %s) — rasterizer fallback\n",
+               rayTracingSupport.missingReason().c_str());
+    }
+    // Feature structs for the RT extensions (chained only when supported).
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeaturesEnable{};
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtpFeaturesEnable{};
+    VkPhysicalDeviceRayQueryFeaturesKHR rqFeaturesEnable{};
+    if (wantRayTracing) {
+        asFeaturesEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+        asFeaturesEnable.accelerationStructure = VK_TRUE;
+        rtpFeaturesEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+        rtpFeaturesEnable.rayTracingPipeline = VK_TRUE;
+        rtpFeaturesEnable.pNext = &asFeaturesEnable;
+        if (rayTracingSupport.rayQuery) {
+            rqFeaturesEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+            rqFeaturesEnable.rayQuery = VK_TRUE;
+            rqFeaturesEnable.pNext = &rtpFeaturesEnable;
+        }
+    }
+
     // Vulkan 1.4 features are enabled through VkPhysicalDeviceVulkan14Features.
     // This device is Vulkan 1.4, so the loader and validation layers recognize its
     // VkStructureType; we no longer need the 1.3-era KHR feature structs for
@@ -5723,9 +5759,36 @@ void VulkanApp::createLogicalDevice() {
     if (dynRenderLocalReadSupported) vulkan14Features.dynamicRenderingLocalRead = VK_TRUE;
     if (maintenance6Supported)     vulkan14Features.maintenance6 = VK_TRUE;
 
+    // Chain the RT feature structs at the head when supported: (rayQuery?) ->
+    // rayTracingPipeline -> accelerationStructure -> vulkan14 -> ... The RT
+    // enable structs were left unchained above so the non-RT path is untouched.
+    if (wantRayTracing) {
+        asFeaturesEnable.pNext = &vulkan14Features;
+        if (rayTracingSupport.rayQuery) {
+            createInfo.pNext = &rqFeaturesEnable;
+        } else {
+            createInfo.pNext = &rtpFeaturesEnable;
+        }
+        for (const char* name : {rt::kRequiredDeviceExtensions[0], rt::kRequiredDeviceExtensions[1],
+                                 rt::kRequiredDeviceExtensions[2]}) {
+            extensions.push_back(name);
+        }
+        if (rayTracingSupport.rayQuery)
+            extensions.push_back(rt::kOptionalDeviceExtensions[0]);
+    }
+
     // Rewire pNext when descriptor buffers are enabled so the enable struct is
     // at the head of the chain (it already points at vulkan14Features).
+    // NOTE: when ray tracing is also enabled, descriptor-buffer chaining takes
+    // precedence at the head and must forward into the RT chain instead of
+    // directly into vulkan14Features.
     if (descriptorBufferFeatSupported) {
+        if (wantRayTracing) {
+            // descriptorBuffer -> (rayQuery?) -> rtp -> as -> vulkan14 -> ...
+            descriptorBufferFeaturesEnable.pNext = static_cast<void*>(
+                rayTracingSupport.rayQuery ? static_cast<void*>(&rqFeaturesEnable)
+                                           : static_cast<void*>(&rtpFeaturesEnable));
+        }
         createInfo.pNext = &descriptorBufferFeaturesEnable;
     }
 
@@ -5780,6 +5843,20 @@ void VulkanApp::createLogicalDevice() {
             fpGetDescriptorSetLayoutBindingOffsetEXT = nullptr;
             descriptorBufferSupported = false;
             fprintf(stderr, "[VulkanApp] WARNING: VK_EXT_descriptor_buffer enabled but entry points missing — using fallback\n");
+        }
+    }
+    // Resolve VK_KHR_ray_tracing entry points when the RT extensions were
+    // enabled. All null otherwise so RayTracingRenderer::isAvailable() stays
+    // false and the engine keeps the legacy rasterizer.
+    rtFunctions = {};
+    if (wantRayTracing) {
+        rtFunctions.load(device);
+        if (rtFunctions.loaded()) {
+            printf("[VulkanApp] Ray tracing entry points loaded (AS + RT pipeline)\n");
+        } else {
+            fprintf(stderr, "[VulkanApp] WARNING: RT extensions enabled but entry points missing — rasterizer fallback\n");
+            rayTracingSupport = {};
+            rtFunctions = {};
         }
     }
     // ── Sparse binding + buffer device address support query ──────────────

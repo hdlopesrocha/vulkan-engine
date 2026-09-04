@@ -24,6 +24,7 @@
 #include "vulkan.hpp"
 #include "VulkanResourceManager.hpp"
 #include "VmaContext.hpp"
+#include "renderer/RayTracingSupport.hpp"
 
 struct GraphicsPipelineConfig {
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
@@ -105,6 +106,14 @@ class VulkanApp {
     bool bufferDeviceAddressSupported = false;
     bool supportsSparseBinding() const { return sparseBufferSupported; }
     bool supportsBufferDeviceAddress() const { return bufferDeviceAddressSupported; }
+    // ── Hardware ray-tracing device support (VK_KHR_acceleration_structure +
+    // VK_KHR_ray_tracing_pipeline). Queried in createLogicalDevice via feature
+    // detection; when usable() the device was created with the RT extensions +
+    // features enabled and rtFunctions is loaded. Renderers branch on
+    // supportsRayTracing() and fall back to rasterization otherwise.
+    rt::DeviceSupport rayTracingSupport{};
+    rt::Functions rtFunctions{};
+    bool supportsRayTracing() const { return rayTracingSupport.usable() && rtFunctions.loaded(); }
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptorBufferProps{};
     // Extension entry points, resolved after vkCreateDevice when supported.
     PFN_vkGetDescriptorEXT fpGetDescriptorEXT = nullptr;

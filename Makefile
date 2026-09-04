@@ -69,7 +69,8 @@ SERVER_INCLUDES := -isystem third_party/imgui -isystem third_party/imgui/backend
 
 
 # Automatically find all shader source files in shaders/ with known extensions
-SHADER_EXTS = vert frag geom comp tesc tese
+# (rgen/rmiss/rchit/rahit are the hardware ray-tracing stages)
+SHADER_EXTS = vert frag geom comp tesc tese rgen rmiss rchit rahit
 SHADERS = $(foreach ext,$(SHADER_EXTS),$(wildcard shaders/*.$(ext)))
 SHADER_INCLUDES = $(wildcard shaders/includes/*.glsl)
 # Map each shader to its corresponding .spv output in bin/shaders, preserving extension
@@ -80,6 +81,10 @@ OUT_SPVS = \
 	$(patsubst shaders/%.comp, $(OUT_DIR)/shaders/%.comp.spv, $(wildcard shaders/*.comp)) \
 	$(patsubst shaders/%.tesc, $(OUT_DIR)/shaders/%.tesc.spv, $(wildcard shaders/*.tesc)) \
 	$(patsubst shaders/%.tese, $(OUT_DIR)/shaders/%.tese.spv, $(wildcard shaders/*.tese)) \
+	$(patsubst shaders/%.rgen, $(OUT_DIR)/shaders/%.rgen.spv, $(wildcard shaders/*.rgen)) \
+	$(patsubst shaders/%.rmiss, $(OUT_DIR)/shaders/%.rmiss.spv, $(wildcard shaders/*.rmiss)) \
+	$(patsubst shaders/%.rchit, $(OUT_DIR)/shaders/%.rchit.spv, $(wildcard shaders/*.rchit)) \
+	$(patsubst shaders/%.rahit, $(OUT_DIR)/shaders/%.rahit.spv, $(wildcard shaders/*.rahit)) \
 	$(OUT_DIR)/shaders/main_brush.frag.spv
 
 # Compile main.frag with -DBRUSH_PASS for brush rendering (no PAINT mode, no set=1)

@@ -1,0 +1,27 @@
+// Any-hit: alpha-tested vegetation. Foliage billboards must not behave as
+// fully opaque cutouts: sample the albedo array and discard intersections
+// below the alpha threshold so the ray continues traversal. Non-vegetation
+// instances (no VEG_BIT) never take this path.
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "rt_common.glsl"
+
+hitAttributeEXT vec2 bary;
+
+void main() {
+    uint ci = gl_InstanceCustomIndexEXT;
+    if ((ci & VEG_BIT) == 0u) return; // opaque solid: keep the intersection
+    uint slot = ci & SLOT_MASK;
+    bool isWater = (ci & WATER_BIT) != 0u;
+    vec3 p0, p1, p2, n0, n1, n2; vec2 uv0, uv1, uv2; ivec3 brush; vec3 hh0, hh1, hh2;
+    rtFetchTriangle(isWater, slot, gl_PrimitiveID, p0, p1, p2, n0, n1, n2, uv0, uv1, uv2, brush, hh0, hh1, hh2);
+    vec3 bary3 = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
+    vec2 tuv = uv0 * bary3.x + uv1 * bary3.y + uv2 * bary3.z;
+    int layers = textureSize(albedoArray, 0).z;
+    if (layers > 0) {
+        int li = clamp(brush.x, 0, layers - 1);
+        float alpha = texture(albedoArray, vec3(tuv, float(li))).a;
+        if (alpha < 0.5) ignoreIntersectionEXT;
+    }
+}

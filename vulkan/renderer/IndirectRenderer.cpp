@@ -1915,16 +1915,25 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     // These are created ONCE and never rebuilt. Individual slots are updated
     // in-place without touching other slots or the buffer layout.
 
-    // Vertex buffer (device-local)
+    // Vertex buffer (device-local). Extra usage bits are required for the
+    // hardware ray-tracing path: BLAS builds read the buffer as build input
+    // (ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY) and the closest-hit
+    // shaders fetch attributes via buffer device address (SHADER_DEVICE_ADDRESS
+    // + STORAGE_BUFFER). They are always added — on devices without BDA/RT the
+    // bits are ignored at creation and cost nothing at draw time.
     VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
     vertexBuffer = app->createBuffer(vertexBufferSize,
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    // Index buffer (device-local)
+    // Index buffer (device-local, same RT rationale as above).
     VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
     indexBuffer = app->createBuffer(indexBufferSize,
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // Indirect buffer (host-visible, persistently mapped for per-slot writes).

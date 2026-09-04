@@ -1,0 +1,91 @@
+// Primary camera ray generation. For each pixel: build a world-space ray from
+// the inverse view-projection matrix, trace the TLAS for primary visibility,
+// and write the HDR color + NDC depth (same space as the raster depth buffer,
+// so the existing post-process obstacle tests compare correctly).
+// Debug modes rewrite the color from the payload's recorded surface data.
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "rt_common.glsl"
+
+layout(location = 0) rayPayloadEXT RadiancePayload payload;
+
+void main() {
+    ivec2 size = imageSize(outImage);
+    vec2 pixel = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+    vec2 ndc = (pixel / vec2(size)) * 2.0 - 1.0;
+
+    vec4 nearP = rt.invViewProj * vec4(ndc.x, ndc.y, 0.0, 1.0);
+    vec4 farP = rt.invViewProj * vec4(ndc.x, ndc.y, 1.0, 1.0);
+    nearP /= nearP.w;
+    farP /= farP.w;
+    vec3 origin = nearP.xyz;
+    vec3 dir = normalize(farP.xyz - origin);
+
+    payload.radiance = vec3(0.0);
+    payload.hitT = -1.0;
+    payload.normal = vec3(0.0, 1.0, 0.0);
+    payload.fresnel = 0.0;
+    payload.materialId = -1;
+    payload.slotId = -1;
+    payload.primitiveId = -1;
+    payload.waterThickness = 0.0;
+    payload.bounceCount = 0;
+    payload.reflectWeight = 0.0;
+    payload.refractWeight = 0.0;
+    payload.shadow = 1.0;
+    payload.worldPos = origin + dir * 1e5;
+
+    uint mask = uint(rt.traceMask.x + 0.5);
+    traceRayEXT(tlas, gl_RayFlagsNoneEXT, mask, 0, 0, 0, origin, RAY_TMIN, dir, 1e32, 0);
+
+    // NDC depth for the post-process composite. Misses write 1.0 (sky).
+    float ndcDepth = 1.0;
+    float alpha = 0.0;
+    if (payload.hitT > 0.0) {
+        vec4 clip = rt.viewProj * vec4(payload.worldPos, 1.0);
+        ndcDepth = clamp(clip.z / max(clip.w, 1e-9), 0.0, 1.0);
+        alpha = 1.0;
+    }
+
+    vec3 outColor = payload.radiance;
+    int debugMode = int(rt.rtParams.y + 0.5);
+    if (debugMode == 1) { // primary hit distance (log-scaled)
+        float t = payload.hitT < 0.0 ? 1e5 : payload.hitT;
+        float d = clamp(log(1.0 + t * 0.02) / log(1.0 + 2000.0 * 0.02), 0.0, 1.0);
+        outColor = mix(vec3(0.02, 0.05, 0.1), vec3(1.0, 0.9, 0.4), d);
+        alpha = 1.0;
+    } else if (debugMode == 2) { // world normal
+        outColor = payload.normal * 0.5 + 0.5;
+        alpha = 1.0;
+    } else if (debugMode == 3) { // material ID hash
+        float m = payload.materialId < 0 ? 0.0 : fract(float(payload.materialId) * 0.1733 + 0.311);
+        outColor = vec3(m, fract(m * 7.0), fract(m * 13.0));
+        alpha = 1.0;
+    } else if (debugMode == 4) { // instance/slot + primitive hash
+        float s = payload.slotId < 0 ? 0.0 : fract(float(payload.slotId & 1023) * 0.371 + float(max(payload.primitiveId, 0) % 97) * 0.013);
+        outColor = vec3(s, fract(s * 5.0 + 0.2), fract(s * 9.0 + 0.6));
+        alpha = 1.0;
+    } else if (debugMode == 5) { // Fresnel
+        outColor = vec3(payload.fresnel);
+        alpha = 1.0;
+    } else if (debugMode == 6) { // water thickness (log scale, 60 m full scale)
+        float d = clamp(log(1.0 + payload.waterThickness * 0.25) / log(1.0 + 60.0 * 0.25), 0.0, 1.0);
+        outColor = mix(vec3(0.0, 0.1, 0.4), vec3(0.4, 1.0, 1.0), d);
+        alpha = 1.0;
+    } else if (debugMode == 7) { // reflection contribution
+        outColor = vec3(payload.reflectWeight);
+        alpha = 1.0;
+    } else if (debugMode == 8) { // refraction contribution
+        outColor = vec3(payload.refractWeight);
+        alpha = 1.0;
+    } else if (debugMode == 9) { // shadow visibility
+        outColor = vec3(payload.shadow);
+        alpha = 1.0;
+    } else if (debugMode == 10) { // bounce count
+        outColor = vec3(float(payload.bounceCount) / 4.0, 0.2, 0.8 - float(payload.bounceCount) / 8.0);
+        alpha = 1.0;
+    }
+    imageStore(outImage, ivec2(gl_LaunchIDEXT.xy), vec4(outColor, alpha));
+    imageStore(outDepth, ivec2(gl_LaunchIDEXT.xy), vec4(ndcDepth, 0.0, 0.0, 0.0));
+}

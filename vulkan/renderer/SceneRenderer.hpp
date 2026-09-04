@@ -36,6 +36,7 @@ class World;
 #include "BrushRenderer.hpp"
 #include "Solid360Renderer.hpp"
 #include "IndirectRenderer.hpp"
+#include "RayTracingRenderer.hpp"
 #include "../streaming/UploadManager.hpp"   // TerrainStreamer: async streaming orchestration
 #include "../../world/World.hpp"
 
@@ -73,6 +74,10 @@ public:
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
     std::unique_ptr<DebugSDFRenderer> debugSDFRenderer;
     std::unique_ptr<WireframeRenderer> waterWireframe;
+    // Hardware ray-traced primary renderer (replaces the legacy rasterizer as
+    // the primary solid/water visibility path when the device supports it).
+    // Null-safe: init() leaves it unavailable on devices without RT support.
+    std::unique_ptr<RayTracingRenderer> rayTracingRenderer;
     // Sky settings owned by this renderer
     std::unique_ptr<SkySettings> skySettings;
     SkySettings& getSkySettings() { return *skySettings; }

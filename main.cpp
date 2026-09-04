@@ -1380,6 +1380,26 @@ public:
 
         const bool waterEnabled = settings.waterEnabled;
         const bool vegetationEnabled = settings.vegetationEnabled;
+        // RT primary-path predicate (runtime switch RT_RENDERER_ENABLED).
+        // When active, the hardware ray tracer replaces the legacy solid/water
+        // rasterizer as the primary visibility path; the raster draws below are
+        // skipped (clears + frame-graph signals are kept so the timeline graph
+        // and the post-process composite stay intact).
+        const bool rtPrimary = sceneRenderer && sceneRenderer->rayTracingRenderer &&
+                               sceneRenderer->rayTracingRenderer->useAsPrimary();
+
+        // ── Hardware ray-traced primary path ──
+        // Records AS sync/build + vkCmdTraceRaysKHR on the main command buffer
+        // BEFORE the async tasks below are launched, so the TLAS build and the
+        // ray dispatch overlap the raster overlay passes on the GPU timeline.
+        // All ordering uses Synchronization2 barriers (no device/queue waits).
+        if (rtPrimary) {
+            const uint32_t rtMask = waterEnabled ? 0xFF : 0x01; // hide water layer when disabled
+            sceneRenderer->rayTracingRenderer->renderFrame(this, commandBuffer, frameIdx,
+                                                           uboStatic, mainTime, rtMask,
+                                                           settings.lodBias,
+                                                           static_cast<uint32_t>(settings.maxTargetLod));
+        }
 
         // ── Solid scene pass (sky offscreen + depth prepass + color pass) ──
         // Recorded on its OWN command buffer (solidCmd) and submitted to the
@@ -1650,6 +1670,12 @@ public:
                 // Own command-buffer state (see cull task).
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
+                // RT primary path: skip every legacy raster draw in this pass
+                // (primary visibility comes from the TLAS). Clears, layout
+                // transitions and the tlSolid signal below are kept so the
+                // frame-graph timeline and the composite stay intact.
+                const bool rtPrimaryTask = this->sceneRenderer->rayTracingRenderer &&
+                                           this->sceneRenderer->rayTracingRenderer->useAsPrimary();
 
                 // Reset the query slots owned by this command buffer (depthPrepass,
                 // sky, solid draw, veg-impostor) so the GPU profiling timestamps below
@@ -1712,7 +1738,7 @@ public:
 
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                         vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
-                    if (settings.renderSolid) {
+                    if (settings.renderSolid && !rtPrimaryTask) {
                         this->sceneRenderer->mainSolidRenderer->drawDepth(solidCmd, this, getMainDescriptorSet());
                     }
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -1772,7 +1798,7 @@ public:
 
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                         vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
-                    if (this->sceneRenderer->skyRenderer) {
+                    if (this->sceneRenderer->skyRenderer && !rtPrimaryTask) {
                         SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
                         this->sceneRenderer->skyRenderer->render(this, solidCmd, getMainDescriptorSet(),
                             this->sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
@@ -1783,7 +1809,7 @@ public:
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                         vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
 
-                    if (settings.renderSolid) {
+                    if (settings.renderSolid && !rtPrimaryTask) {
                         VkDescriptorSet brushDepthSet = this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx);
                         this->sceneRenderer->mainSolidRenderer->drawColor(solidCmd, this, getMainDescriptorSet(), brushDepthSet);
                     }
@@ -1809,7 +1835,7 @@ public:
                         this->sceneRenderer->debugCubeRenderer->renderOverlay(this, solidCmd, getMainDescriptorSet(), widgetCubes);
                     }
 
-                    if (settings.renderSolid && settings.wireframeMode && this->sceneRenderer) {
+                    if (settings.renderSolid && settings.wireframeMode && !rtPrimaryTask && this->sceneRenderer) {
                         this->sceneRenderer->mainSolidRenderer->drawWireframeOverlay(solidCmd, this, getMainDescriptorSet());
                     }
 
@@ -2292,9 +2318,15 @@ public:
                 }
 
                 // Render back-face pass using this slot's (ring-reused) compact/visible
-                // buffers so draws consume the cull results
+                // buffers so draws consume the cull results.
+                // RT primary path: the ray tracer evaluates water thickness from
+                // actual ray intersections, so the raster back-face depth and the
+                // raster water geometry pass are skipped (targets are cleared
+                // below; the queue submit + tlWater signal are kept).
+                const bool rtPrimaryTask = this->sceneRenderer->rayTracingRenderer &&
+                                           this->sceneRenderer->rayTracingRenderer->useAsPrimary();
                 auto tBackface = std::chrono::high_resolution_clock::now();
-                if (this->sceneRenderer->backFaceRenderer) {
+                if (this->sceneRenderer->backFaceRenderer && !rtPrimaryTask) {
                     this->sceneRenderer->backFaceRenderer->render(app, cmd, frameIdx,
                                                 ind,
                                                 this->sceneRenderer->mainLiquidRenderer->getWaterGeometryPipelineLayout(),
@@ -2317,51 +2349,60 @@ public:
                 if (this->sceneRenderer->mainLiquidRenderer) {
                     auto& waterIR = this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
                     waterIR.acquireBuffers(cmd);
-                    VkImageView wBack = (this->sceneRenderer->backFaceRenderer)
-                        ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
-                    VkImageView wCube = (this->sceneRenderer->solid360Renderer)
-                        ? this->sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-                    // Dedicated per-slot set for the water geometry pass so the REAL
-                    // back-face depth can be bound at binding 0 (the back-face pass used
-                    // a different set with binding 0 patched to the dummy depth).
-                    if (slot.waterDs2 == VK_NULL_HANDLE && slot.poolW == VK_NULL_HANDLE) {
-                        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 };
-                        VkDescriptorPoolCreateInfo pci{};
-                        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                        pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
-                        pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-                        if (vkCreateDescriptorPool(dev, &pci, nullptr, &slot.poolW) == VK_SUCCESS) {
-                            app->resources.addDescriptorPool(slot.poolW, "cachedBackfaceWaterGeom pool");
-                            VkDescriptorSetLayout wdsLayout = this->sceneRenderer->mainLiquidRenderer->getWaterDepthDescriptorSetLayout();
-                            if (wdsLayout != VK_NULL_HANDLE) {
-                                VkDescriptorSetAllocateInfo ai{};
-                                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                                ai.descriptorPool = slot.poolW; ai.descriptorSetCount = 1; ai.pSetLayouts = &wdsLayout;
-                                if (vkAllocateDescriptorSets(dev, &ai, &slot.waterDs2) != VK_SUCCESS)
-                                    slot.waterDs2 = VK_NULL_HANDLE;
-                                else app->resources.addDescriptorSet(slot.waterDs2, "cachedBackfaceWaterGeom DS");
+                    if (rtPrimaryTask) {
+                        // RT primary: no raster water. Clear the offscreen water
+                        // targets (same helper as the water-disabled path) so the
+                        // composite sees no stale raster water; the RT HDR image
+                        // already contains the ray-traced water. The brush-liquid
+                        // overlay below still draws into these targets on top.
+                        this->sceneRenderer->mainLiquidRenderer->clearRenderTargets(app, cmd, frameIdx);
+                    } else {
+                        VkImageView wBack = (this->sceneRenderer->backFaceRenderer)
+                            ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
+                        VkImageView wCube = (this->sceneRenderer->solid360Renderer)
+                            ? this->sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
+                        // Dedicated per-slot set for the water geometry pass so the REAL
+                        // back-face depth can be bound at binding 0 (the back-face pass used
+                        // a different set with binding 0 patched to the dummy depth).
+                        if (slot.waterDs2 == VK_NULL_HANDLE && slot.poolW == VK_NULL_HANDLE) {
+                            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 };
+                            VkDescriptorPoolCreateInfo pci{};
+                            pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                            pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
+                            pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+                            if (vkCreateDescriptorPool(dev, &pci, nullptr, &slot.poolW) == VK_SUCCESS) {
+                                app->resources.addDescriptorPool(slot.poolW, "cachedBackfaceWaterGeom pool");
+                                VkDescriptorSetLayout wdsLayout = this->sceneRenderer->mainLiquidRenderer->getWaterDepthDescriptorSetLayout();
+                                if (wdsLayout != VK_NULL_HANDLE) {
+                                    VkDescriptorSetAllocateInfo ai{};
+                                    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                                    ai.descriptorPool = slot.poolW; ai.descriptorSetCount = 1; ai.pSetLayouts = &wdsLayout;
+                                    if (vkAllocateDescriptorSets(dev, &ai, &slot.waterDs2) != VK_SUCCESS)
+                                        slot.waterDs2 = VK_NULL_HANDLE;
+                                    else app->resources.addDescriptorSet(slot.waterDs2, "cachedBackfaceWaterGeom DS");
+                                }
                             }
                         }
-                    }
-                    if (slot.waterDs2 != VK_NULL_HANDLE) {
-                        this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, frameIdx, wBack, wCube);
-                        VkImageView wsky = (this->sceneRenderer->skyRenderer)
-                            ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-                        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
-                        this->sceneRenderer->mainLiquidRenderer->renderPass(this, cmd, frameIdx,
-                            settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2, /*drawBrushLiquid=*/false);
-                        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
-                        // Transition water geometry depth to SRO for the compositor.
-                        VkImage wgdImg = this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(frameIdx);
-                        if (wgdImg != VK_NULL_HANDLE) {
-                            app->recordTransitionImageLayoutLayer(cmd, wgdImg, VK_FORMAT_D32_SFLOAT,
-                                this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthLayout(frameIdx),
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-                            this->sceneRenderer->mainLiquidRenderer->setWaterGeomDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                        if (slot.waterDs2 != VK_NULL_HANDLE) {
+                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, frameIdx, wBack, wCube);
+                            VkImageView wsky = (this->sceneRenderer->skyRenderer)
+                                ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
+                            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
+                            this->sceneRenderer->mainLiquidRenderer->renderPass(this, cmd, frameIdx,
+                                settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2, /*drawBrushLiquid=*/false);
+                            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
+                            // Transition water geometry depth to SRO for the compositor.
+                            VkImage wgdImg = this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(frameIdx);
+                            if (wgdImg != VK_NULL_HANDLE) {
+                                app->recordTransitionImageLayoutLayer(cmd, wgdImg, VK_FORMAT_D32_SFLOAT,
+                                    this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthLayout(frameIdx),
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+                                this->sceneRenderer->mainLiquidRenderer->setWaterGeomDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                            }
                         }
-                    }
+                    } // end non-RT water geometry path
                 }
 
                 // Submit to the dedicated water queue. The ring slot's buffers/set are
@@ -2391,6 +2432,28 @@ public:
                 // the composite run in parallel with the brush-liquid overlay instead
                 // of serializing behind it on the water queue.
                 if (settings.waterEnabled && this->sceneRenderer->brushRenderer) {
+                    if (rtPrimaryTask) {
+                        // RT primary: the raster brush-liquid overlay is skipped.
+                        // Its set-2 inputs are only created by the skipped raster
+                        // water pass, so drawing would bind just set 0 against a
+                        // pipeline that statically uses set 2 (VUID-08600).
+                        // Submit an empty command buffer with the identical
+                        // timeline shape (wait tlWater, signal tlBrushLiquid,
+                        // registered) so the composite's wait is still satisfied
+                        // and the frame graph cannot deadlock.
+                        VkCommandBuffer emptyCmd = app->allocatePrimaryCommandBuffer();
+                        VkCommandBufferBeginInfo ebegin{};
+                        ebegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                        ebegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                        if (vkBeginCommandBuffer(emptyCmd, &ebegin) == VK_SUCCESS) {
+                            // submitCommandBufferAsyncToQueue ends the CB and
+                            // submits it (do NOT call vkEndCommandBuffer here).
+                            app->submitCommandBufferAsyncToQueue(emptyCmd, app->getBrushLiquidQueue(), &tlBrushLiquid, {tlWater}, true, {}, {v}, v, {}, true);
+                        } else {
+                            std::cerr << "[MyApp] vkBeginCommandBuffer failed for brushLiquid (RT no-op) pass" << std::endl;
+                            app->freeCommandBuffer(emptyCmd);
+                        }
+                    } else {
                     VkImageView blsky = (this->sceneRenderer->skyRenderer)
                         ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
                     VkCommandBuffer brushLiquidCmd = app->allocatePrimaryCommandBuffer();
@@ -2408,6 +2471,7 @@ public:
                         app->freeCommandBuffer(brushLiquidCmd);
                         this->sceneRenderer->setCmdState(&taskState);
                     }
+                    } // end non-RT brush-liquid overlay
                 }
 
             });
@@ -2550,6 +2614,17 @@ public:
                 size_t transparentTracked = sceneRenderer ? sceneRenderer->getTransparentModelCount() : 0;
                 ImGui::Text("Transparent Models Tracked: %zu", transparentTracked);
 
+                // Hardware ray-tracing path state (BLAS/TLAS + per-frame builds).
+                if (sceneRenderer && sceneRenderer->rayTracingRenderer &&
+                    sceneRenderer->rayTracingRenderer->isAvailable()) {
+                    auto rstats = sceneRenderer->rayTracingRenderer->stats();
+                    int rmode = static_cast<int>(sceneRenderer->rayTracingRenderer->getSettings().mode);
+                    const char* rmodeName = (rmode == 0) ? "raster" : ((rmode == 1) ? "RT" : "RT-debug");
+                    ImGui::Text("RT [%s] BLAS: %u  TLAS: %u  overlap: %u  builds: %u (%.2f ms)",
+                        rmodeName, rstats.blasCount, rstats.tlasInstances, rstats.overlapColumns,
+                        rstats.blasBuildsThisFrame, rstats.blasBuildMs + rstats.tlasBuildMs);
+                }
+
                 // Vegetation
                 size_t vegChunks = sceneRenderer && sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getChunkCount() : 0;
                 size_t vegInstances = sceneRenderer && sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getInstanceTotal() : 0;
@@ -2670,6 +2745,19 @@ public:
 
         // Render all widgets
         widgetManager.renderAll();
+
+        // Hardware ray-tracing controls + statistics (RT_RENDERER_ENABLED switch,
+        // debug views, water optics, BLAS/TLAS stats). No-op when the device
+        // lacks RT support.
+#ifdef USE_IMGUI
+        if (sceneRenderer && sceneRenderer->rayTracingRenderer &&
+            sceneRenderer->rayTracingRenderer->isAvailable()) {
+            if (ImGui::Begin("Ray Tracing")) {
+                sceneRenderer->rayTracingRenderer->drawUI();
+            }
+            ImGui::End();
+        }
+#endif
     }
 
     void draw(VkCommandBuffer &commandBuffer) override {
@@ -2731,11 +2819,23 @@ public:
             }
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 16);
+            // RT primary path: the ray-traced HDR color + NDC depth replace the
+            // raster solid targets as the composite's scene input. Raster water
+            // targets were cleared in preRenderPass (RT already holds water), so
+            // the legacy water composite is a no-op except the brush-liquid
+            // overlay, which still draws on top. Vegetation/brush/debug overlays
+            // keep compositing against the RT depth (same NDC space).
+            VkImageView sceneColorView = sceneRenderer->mainSolidRenderer->getColorView(frameIdx);
+            VkImageView sceneDepthView = sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
+            if (sceneRenderer->rayTracingRenderer && sceneRenderer->rayTracingRenderer->useAsPrimary()) {
+                sceneColorView = sceneRenderer->rayTracingRenderer->outputView(frameIdx);
+                sceneDepthView = sceneRenderer->rayTracingRenderer->depthView(frameIdx);
+            }
             sceneRenderer->postProcessRenderer->render(
                 this,
                 commandBuffer,
-                sceneRenderer->mainSolidRenderer->getColorView(frameIdx),
-                sceneRenderer->mainSolidRenderer->getDepthView(frameIdx),
+                sceneColorView,
+                sceneDepthView,
                 sceneRenderer->mainLiquidRenderer->getWaterDepthView(frameIdx),
                 brushColorView,
                 brushDepthView,

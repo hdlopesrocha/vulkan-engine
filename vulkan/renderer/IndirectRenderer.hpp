@@ -322,6 +322,60 @@ public:
     // Accessors
     const Buffer& getIndirectBuffer() const { return indirectBuffer; }
     const Buffer& getBoundsBuffer() const { return boundsBuffer; }
+    // ── Ray-tracing accessors ────────────────────────────────────────────
+    // The RT path builds BLASes directly from these GPU-resident packed pools
+    // (no geometry copy): each active slot contributes one triangle range
+    // [firstIndex, firstIndex+indexCount) over the shared vertex/index buffers.
+    const Buffer& getVertexBuffer() const { return vertexBuffer; }
+    const Buffer& getIndexBuffer() const { return indexBuffer; }
+    // Compact per-slot geometry snapshot for BLAS/TLAS construction.
+    // Carries the same LoD inputs the GPU cull's band gate uses (level =
+    // 0-based rung, boundsMin/Max = the chunk's own cube, base = the shared
+    // column anchor), so the ray tracer can select exactly one rung per
+    // region just like indirect.comp does.
+    struct RtSlotGeometry {
+        uint32_t slotIndex = UINT32_MAX;
+        uint32_t baseVertex = 0;
+        uint32_t vertexCount = 0;
+        uint32_t firstIndex = 0;
+        uint32_t indexCount = 0;
+        glm::vec4 boundsMin = glm::vec4(0.0f);
+        glm::vec4 boundsMax = glm::vec4(0.0f);
+        int level = 0;
+        glm::vec3 base = glm::vec3(0.0f);
+    };
+    // Thread-safe copy of every active slot's geometry range. The caller holds
+    // no locks; the snapshot is stable for the current frame's AS build.
+    std::vector<RtSlotGeometry> collectActiveSlotGeometries() const {
+        std::vector<RtSlotGeometry> out;
+        std::lock_guard<std::recursive_mutex> lock(mutex);
+        out.reserve(activeMeshCountLocked());
+        for (const auto& kv : meshes) {
+            const MeshInfo& mi = kv.second;
+            if (!mi.active) continue;
+            if (mi.slotIndex == UINT32_MAX) continue;
+            const auto& ld = mi.level_;
+            if (!ld.allocated || ld.indexCount == 0 || ld.vertexCount == 0) continue;
+            RtSlotGeometry g;
+            g.slotIndex = mi.slotIndex;
+            g.baseVertex = ld.baseVertex;
+            g.vertexCount = ld.vertexCount;
+            g.firstIndex = ld.firstIndex;
+            g.indexCount = ld.indexCount;
+            g.boundsMin = ld.boundsMin;
+            g.boundsMax = ld.boundsMax;
+            g.level = ld.level;
+            g.base = glm::vec3(mi.boundsBase);
+            out.push_back(g);
+        }
+        return out;
+    }
+    // Real ladder depth of the tree (drives the GPU band clamp and the RT
+    // rung selection alike). Set from LocalScene::maxChunkLod per layer.
+    int getMaxLodLevel() const {
+        std::lock_guard<std::recursive_mutex> lock(mutex);
+        return maxLodLevel_;
+    }
     const Buffer& getCompactBuffer(uint32_t frame) const { return compactIndirectBuffers[frame % MAX_CULL_FRAMES]; }
     // Last observed visible count for a cull frame (async readback cache, 1-frame latency, for stats only).
     uint32_t getLastVisibleCount(uint32_t frame) const { return lastVisibleCount[frame % MAX_CULL_FRAMES]; }

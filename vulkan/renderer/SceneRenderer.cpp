@@ -124,6 +124,9 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (waterWireframe) {
         waterWireframe->cleanup(app);
     }
+    if (rayTracingRenderer && app) {
+        rayTracingRenderer->cleanup(app);
+    }
 
     // Clear local CPU-side handles; Vulkan objects are destroyed via VulkanResourceManager
     for (auto &b : mainUniformBuffers) {
@@ -244,6 +247,9 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     }
     if (postProcessRenderer) {
         postProcessRenderer->setRenderSize(width, height);
+    }
+    if (rayTracingRenderer) {
+        rayTracingRenderer->onSwapchainResized(app, width, height);
     }
     if (skyRenderer) {
         skyRenderer->destroyOffscreenTargets(app);
@@ -761,6 +767,26 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
                                  kMaxBrushChunkSlots * (1u << 18),  // total vertex pool
                                  kMaxBrushChunkSlots * (1u << 16)); // total index pool
     }
+
+    // ── Hardware ray-tracing primary renderer ──────────────────────────────
+    // Built directly on the packed solid/water pools initialized above (BLASes
+    // reference them in place — no geometry copies). Unavailable devices keep
+    // the legacy rasterizer; the runtime switch (RT_RENDERER_ENABLED) selects
+    // the active path per frame. Init failure is non-fatal by design.
+    rayTracingRenderer = std::make_unique<RayTracingRenderer>();
+    {
+        Buffer skyUBO{};
+        if (skyRenderer) skyUBO = skyRenderer->getSkyUniformBuffer();
+        const bool rtOk = rayTracingRenderer->init(
+            app, textureArrayManager, materialManager,
+            &mainSolidRenderer->getIndirectRenderer(),
+            mainLiquidRenderer ? &mainLiquidRenderer->getIndirectRenderer() : nullptr,
+            skyUBO, waterParamsBuffer_,
+            static_cast<uint32_t>(waterParams.size()));
+        if (!rtOk) {
+            std::cerr << "[SceneRenderer] RayTracingRenderer unavailable — legacy rasterizer remains primary\n";
+        }
+    }
 }
 
 // ── Descriptor-buffer migration (Phase 1) ───────────────────────────────────
@@ -1165,6 +1191,10 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 
     // Also rewrite brush depth descriptors for all per-frame main sets
     if (brushRenderer) brushRenderer->writeDepthDescriptors(app);
+
+    // Re-point the RT pipeline's static descriptors (texture arrays, materials)
+    // at the new resources. Event-driven only — never in the render loop.
+    if (rayTracingRenderer) rayTracingRenderer->refreshStaticDescriptors(app);
 }
 
 
