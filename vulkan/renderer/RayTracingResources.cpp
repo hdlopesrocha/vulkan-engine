@@ -43,6 +43,12 @@ void RayTracingResources::init(VulkanApp* app, uint32_t width, uint32_t height) 
         std::cerr << "[HybridRT] RT unsupported — raster + CSM fallback (sky for misses)\n";
         return;
     }
+    // Scratch-address alignment comes from the physical device (NOT from VMA
+    // buffer placement): 256 on AMD RADV, 8 on llvmpipe. Must be known before
+    // any scratch buffer is sized (slack is over-allocated for manual aligning).
+    scratchAlign_ = app->accelProps.minAccelerationStructureScratchOffsetAlignment;
+    if (scratchAlign_ == 0) scratchAlign_ = 256;
+    printf("[HybridRT] scratch alignment: %llu bytes\n", (unsigned long long)scratchAlign_);
     try {
         createProxyBuffers(app);
         createAccelStructures(app);
@@ -284,12 +290,21 @@ void RayTracingResources::createProxyBuffers(VulkanApp* app) {
     // HOST->ACCEL_BUILD barrier recorded in recordBuild().
     VkBufferUsageFlags boxUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
         | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    aabbBuffer_ = app->createBuffer(vertBytes + idxBytes, boxUsage,
+    // +16 slack: the vertex base is aligned up to 16 (triangle vertex/index
+    // input requirement) since VMA placement alone does not guarantee it.
+    aabbBuffer_ = app->createBuffer(vertBytes + idxBytes + 16, boxUsage,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     // Static index pattern (slot s base vertex s*8), written once — vertex
     // positions are rewritten on every proxy update.
     {
-        auto* base = static_cast<char*>(aabbBuffer_.mappedData);
+        auto* rawBase = static_cast<char*>(aabbBuffer_.mappedData);
+        VkBufferDeviceAddressInfo addrQ{};
+        addrQ.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        addrQ.buffer = aabbBuffer_.buffer;
+        const VkDeviceAddress rawAddr = vkGetBufferDeviceAddress(app->getDevice(), &addrQ);
+        if (rawAddr == 0) throw std::runtime_error("box buffer device address is 0");
+        boxBaseDelta_ = alignUpAddr(rawAddr, 16) - rawAddr;
+        auto* base = rawBase + boxBaseDelta_;
         auto* idx = reinterpret_cast<uint32_t*>(base + vertBytes);
         for (uint32_t s = 0; s < kMaxProxies; ++s)
             for (uint32_t i = 0; i < kIndicesPerBox; ++i)
@@ -301,19 +316,24 @@ void RayTracingResources::createProxyBuffers(VulkanApp* app) {
     ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     ai.buffer = aabbBuffer_.buffer;
     const VkDeviceAddress boxAddr = vkGetBufferDeviceAddress(app->getDevice(), &ai);
-    aabbAddress_ = boxAddr; // verts at +0, indices at +vertBytes
-    if (boxAddr == 0) throw std::runtime_error("box buffer device address is 0");
+    aabbAddress_ = alignUpAddr(boxAddr, 16); // verts at +delta, indices at +delta+vertBytes
+    if (aabbAddress_ == 0) throw std::runtime_error("box buffer device address is 0");
 
     metaBuffer_ = app->createBuffer(sizeof(RTProxyMeta) * kMaxProxies,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    tlasInstanceBuffer_ = app->createBuffer(sizeof(VkAccelerationStructureInstanceKHR),
+    tlasInstanceBuffer_ = app->createBuffer(sizeof(VkAccelerationStructureInstanceKHR) + 16,
         VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
         | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     ai.buffer = tlasInstanceBuffer_.buffer;
-    tlasInstanceAddress_ = vkGetBufferDeviceAddress(app->getDevice(), &ai);
+    {
+        const VkDeviceAddress rawInst = vkGetBufferDeviceAddress(app->getDevice(), &ai);
+        if (rawInst == 0) throw std::runtime_error("instance buffer device address is 0");
+        instanceDelta_ = alignUpAddr(rawInst, 16) - rawInst; // instance input needs 16
+        tlasInstanceAddress_ = rawInst + instanceDelta_;
+    }
 
     paramsBuffer_ = app->createBuffer(sizeof(RayTracingParams),
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -355,9 +375,20 @@ void RayTracingResources::createAccelStructures(VulkanApp* app) {
         | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     blasBuffer_ = app->createBuffer(sizes.accelerationStructureSize, asUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    blasScratch_ = app->createBuffer(std::max(sizes.buildScratchSize, VkDeviceSize(1)), 
+    blasScratch_ = app->createBuffer(std::max(sizes.buildScratchSize, VkDeviceSize(1)) + scratchAlign_,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    {
+        // Scratch addresses MUST satisfy minAccelerationStructureScratchOffset-
+        // Alignment (VUID-03710); VMA placement alone does not guarantee it, so
+        // align up inside the over-allocated buffer.
+        VkBufferDeviceAddressInfo addrQ{};
+        addrQ.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        addrQ.buffer = blasScratch_.buffer;
+        const VkDeviceAddress rawScratch = vkGetBufferDeviceAddress(device, &addrQ);
+        if (rawScratch == 0) throw std::runtime_error("BLAS scratch device address is 0");
+        blasScratchAligned_ = alignUpAddr(rawScratch, scratchAlign_);
+    }
 
     VkAccelerationStructureCreateInfoKHR blasCI{};
     blasCI.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
@@ -372,7 +403,9 @@ void RayTracingResources::createAccelStructures(VulkanApp* app) {
     blasAddress_ = app->fpGetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
 
     // TLAS: one instance -> BLAS, identity, full mask, cull disabled (volumes).
-    auto* inst = static_cast<VkAccelerationStructureInstanceKHR*>(tlasInstanceBuffer_.mappedData);
+    // Written at the aligned offset (see instanceDelta_).
+    auto* inst = reinterpret_cast<VkAccelerationStructureInstanceKHR*>(
+        static_cast<char*>(tlasInstanceBuffer_.mappedData) + instanceDelta_);
     memset(inst, 0, sizeof(*inst));
     inst->transform.matrix[0][0] = 1.0f;
     inst->transform.matrix[1][1] = 1.0f;
@@ -404,9 +437,17 @@ void RayTracingResources::createAccelStructures(VulkanApp* app) {
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &tlasBuild, &onePrimitive, &tlasSizes);
     tlasBuffer_ = app->createBuffer(tlasSizes.accelerationStructureSize, asUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    tlasScratch_ = app->createBuffer(std::max(tlasSizes.buildScratchSize, VkDeviceSize(1)),
+    tlasScratch_ = app->createBuffer(std::max(tlasSizes.buildScratchSize, VkDeviceSize(1)) + scratchAlign_,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    {
+        VkBufferDeviceAddressInfo addrQ{};
+        addrQ.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        addrQ.buffer = tlasScratch_.buffer;
+        const VkDeviceAddress rawScratch = vkGetBufferDeviceAddress(device, &addrQ);
+        if (rawScratch == 0) throw std::runtime_error("TLAS scratch device address is 0");
+        tlasScratchAligned_ = alignUpAddr(rawScratch, scratchAlign_);
+    }
     VkAccelerationStructureCreateInfoKHR tlasCI{};
     tlasCI.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
     tlasCI.buffer = tlasBuffer_.buffer;
@@ -520,10 +561,28 @@ bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
 }
 
 bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd, uint32_t count) {
-    VkDevice device = app->getDevice();
+    // Defensive: never feed a zero/misaligned device address to an AS build —
+    // that is a fatal validation error (VUID-03710). Skip the build instead;
+    // shaders fall back to sky/CSM until a later throttled retry succeeds.
+    if (blasScratchAligned_ == 0 || (blasScratchAligned_ % scratchAlign_) != 0 ||
+        tlasScratchAligned_ == 0 || (tlasScratchAligned_ % scratchAlign_) != 0 ||
+        tlasInstanceAddress_ == 0 || (tlasInstanceAddress_ % 16) != 0 ||
+        aabbAddress_ == 0 || (aabbAddress_ % 16) != 0) {
+        static int guardLogs = 0;
+        if (guardLogs++ < 3) {
+            fprintf(stderr,
+                "[HybridRT] AS build skipped: bad device address "
+                "(blasScratch=0x%llx tlasScratch=0x%llx instances=0x%llx boxes=0x%llx align=%llu)\n",
+                (unsigned long long)blasScratchAligned_, (unsigned long long)tlasScratchAligned_,
+                (unsigned long long)tlasInstanceAddress_, (unsigned long long)aabbAddress_,
+                (unsigned long long)scratchAlign_);
+        }
+        return false;
+    }
     // 1. Stage box verts + metadata on the host-visible buffers (coherent memcpy).
     {
-        auto* verts = static_cast<float*>(aabbBuffer_.mappedData);
+        auto* verts = reinterpret_cast<float*>(
+            static_cast<char*>(aabbBuffer_.mappedData) + boxBaseDelta_);
         auto* metas = static_cast<RTProxyMeta*>(metaBuffer_.mappedData);
         for (uint32_t s = 0; s < kMaxProxies; ++s) {
             float* v = verts + size_t(s) * kVertsPerBox * 3;
@@ -593,10 +652,7 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd, uint3
     buildInfo.dstAccelerationStructure = blas_;
     buildInfo.geometryCount = 1;
     buildInfo.pGeometries = &geom;
-    VkBufferDeviceAddressInfo scratchAddr{};
-    scratchAddr.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-    scratchAddr.buffer = blasScratch_.buffer;
-    buildInfo.scratchData.deviceAddress = vkGetBufferDeviceAddress(device, &scratchAddr);
+    buildInfo.scratchData.deviceAddress = blasScratchAligned_;
     const uint32_t totalTris = kMaxProxies * kTrisPerBox;
     VkAccelerationStructureBuildRangeInfoKHR range{};
     range.primitiveCount = totalTris;
@@ -624,7 +680,8 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd, uint3
     }
     // Refresh the instance's BLAS reference (stable address, cheap) then build TLAS.
     {
-        auto* inst = static_cast<VkAccelerationStructureInstanceKHR*>(tlasInstanceBuffer_.mappedData);
+        auto* inst = reinterpret_cast<VkAccelerationStructureInstanceKHR*>(
+            static_cast<char*>(tlasInstanceBuffer_.mappedData) + instanceDelta_);
         inst->accelerationStructureReference = blasAddress_;
         VkAccelerationStructureGeometryInstancesDataKHR instances{};
         instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
@@ -643,10 +700,7 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd, uint3
         tlasBuild.dstAccelerationStructure = tlas_;
         tlasBuild.geometryCount = 1;
         tlasBuild.pGeometries = &tlasGeom;
-        VkBufferDeviceAddressInfo tscratch{};
-        tscratch.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-        tscratch.buffer = tlasScratch_.buffer;
-        tlasBuild.scratchData.deviceAddress = vkGetBufferDeviceAddress(device, &tscratch);
+        tlasBuild.scratchData.deviceAddress = tlasScratchAligned_;
         VkAccelerationStructureBuildRangeInfoKHR trange{};
         trange.primitiveCount = 1;
         const VkAccelerationStructureBuildRangeInfoKHR* pTrange = &trange;
@@ -764,21 +818,26 @@ void RayTracingResources::createRTPipeline(VulkanApp* app) {
     const uint32_t handleStride = alignUp(handleSize, handleAlign);
     const uint32_t recordStride = alignUp(handleStride, baseAlign);
     const VkDeviceSize sbtSize = VkDeviceSize(recordStride) * 3;
-    sbtBuffer_ = app->createBuffer(sbtSize,
+    // +baseAlign slack: SBT region base addresses must satisfy
+    // shaderGroupBaseAlignment; VMA placement alone does not guarantee it.
+    sbtBuffer_ = app->createBuffer(sbtSize + baseAlign,
         VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     std::vector<uint8_t> handles(size_t(handleSize) * 3);
     if (app->fpGetRayTracingShaderGroupHandlesKHR(device, rtPipeline_, 0, 3,
             handles.size(), handles.data()) != VK_SUCCESS)
         throw std::runtime_error("HybridRT: vkGetRayTracingShaderGroupHandlesKHR failed");
-    auto* dst = static_cast<uint8_t*>(sbtBuffer_.mappedData);
+    VkBufferDeviceAddressInfo sbtAddrQ{};
+    sbtAddrQ.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    sbtAddrQ.buffer = sbtBuffer_.buffer;
+    const VkDeviceAddress sbtRaw = vkGetBufferDeviceAddress(device, &sbtAddrQ);
+    if (sbtRaw == 0) throw std::runtime_error("HybridRT: SBT device address is 0");
+    const VkDeviceSize sbtDelta = alignUpAddr(sbtRaw, baseAlign) - sbtRaw;
+    auto* dst = static_cast<uint8_t*>(sbtBuffer_.mappedData) + sbtDelta;
     memset(dst, 0, size_t(sbtSize));
     for (int i = 0; i < 3; ++i)
         memcpy(dst + size_t(i) * recordStride, handles.data() + size_t(i) * handleSize, handleSize);
-    VkBufferDeviceAddressInfo sai{};
-    sai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-    sai.buffer = sbtBuffer_.buffer;
-    sbtAddress_ = vkGetBufferDeviceAddress(device, &sai);
+    sbtAddress_ = sbtRaw + sbtDelta;
     rgenRegion_ = {sbtAddress_, recordStride, recordStride};
     missRegion_ = {sbtAddress_ + recordStride, recordStride, recordStride};
     hitRegion_ = {sbtAddress_ + recordStride * 2, recordStride, recordStride};

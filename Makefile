@@ -14,6 +14,14 @@ BUILD ?= release
 # without a recursive $(MAKE) submake (which triggered the "forced in submake" jobserver
 # warning and a redundant second parallel pass). LDFLAGS is unused (empty for both).
 CFLAGS = $(if $(filter debug,$(BUILD)),-std=c++23 -O0 -g -DDEBUG,-std=c++23 -O3 -march=native -DNDEBUG -pthread -DUSE_IMGUI) -pthread -Wall -Wshadow -isystem third_party/imgui
+# Auto header dependencies (-MMD -MP): every compile emits a .d file next to
+# its .o, and the include below rebuilds dependents when a header changes.
+# Without this, editing a header (e.g. adding a class member) silently leaves
+# stale objects with mismatched layouts — a proven source of heap corruption
+# and phantom validation errors in this codebase.
+DEPFLAGS = -MMD -MP
+DEPS := $(OBJS:.o=.d)
+-include $(DEPS)
 
 # Use vendored Vulkan 1.4 SDK headers (LunarG SDK include/), then pkg-config for
 # GLFW and the Vulkan loader. The vulkan headers are listed first so they shadow
@@ -162,18 +170,18 @@ $(OUT): $(OBJS)
 $(OBJ_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	@echo "Compiling: $<"
-	@$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 
 $(OBJ_DIR)/imgui/%.o: third_party/imgui/%.cpp
 	@mkdir -p $(OBJ_DIR)/imgui
 	@echo "Compiling ImGui: $<"
-	@$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/imgui/backends/%.o: third_party/imgui/backends/%.cpp
 	@mkdir -p $(OBJ_DIR)/imgui/backends
 	@echo "Compiling ImGui Backend: $<"
-	@$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 # Compile vendored wiiuse C sources with gcc (no C++ flags).
 $(OBJ_DIR)/wiiuse/%.o: third_party/wiiuse/src/%.c

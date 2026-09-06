@@ -153,6 +153,23 @@ private:
     bool pipelineReady_ = false;
     VulkanApp* app_ = nullptr;
 
+    // VMA suballocates, so a buffer's device address is only guaranteed the
+    // alignment Vulkan reports for that buffer — NOT the stricter alignments
+    // the ray-tracing build API demands (notably
+    // minAccelerationStructureScratchOffsetAlignment, 256 on AMD, vs 8 on
+    // llvmpipe — which is why this only ever failed on discrete/integrated
+    // AMD). Every address fed to an AS build or SBT region is therefore
+    // manually aligned up inside an over-allocated buffer; the *_delta_ values
+    // are the (alignedBase - rawBase) byte offsets applied to CPU writes.
+    static VkDeviceSize alignUpAddr(VkDeviceSize v, VkDeviceSize a) {
+        return (a <= 1) ? v : (v + a - 1) & ~(a - 1);
+    }
+    VkDeviceSize scratchAlign_ = 256; // from accelProps (set in init)
+    VkDeviceAddress blasScratchAligned_ = 0;
+    VkDeviceAddress tlasScratchAligned_ = 0;
+    VkDeviceSize boxBaseDelta_ = 0;   // aabbBuffer_: verts at +delta, indices at +delta+vertBytes
+    VkDeviceSize instanceDelta_ = 0;  // tlasInstanceBuffer_: instance at +delta
+
     // Proxy staging (host-visible, coherent) + device addresses for builds.
     Buffer aabbBuffer_{}; // VkAabbPositionsKHR array (device address, build input)
     Buffer metaBuffer_{}; // RTProxyMeta array (storage, hit shading)
