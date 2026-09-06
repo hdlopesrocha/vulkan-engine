@@ -119,8 +119,8 @@ public:
     void setCmdState(CommandBufferState* state) override {
         Renderer::setCmdState(state);
         wireframe.setCmdState(state);
-        // The solid IndirectRenderer is main-thread-only (main/shadow/solid360
-        // passes), so it is safe to wire into the shared per-frame tracker.
+        // The solid IndirectRenderer is main-thread-only (main/shadow passes),
+        // so it is safe to wire into the shared per-frame tracker.
         indirectRenderer.setCmdState(state);
     }
 };

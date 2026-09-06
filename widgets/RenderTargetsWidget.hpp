@@ -3,7 +3,6 @@
 #include "../vulkan/ubo/UniformObject.hpp"
 #include <vulkan/vulkan.h>
 #include "../vulkan/Buffer.hpp"
-#include "../vulkan/renderer/CubeToEquirectRenderer.hpp"
 #include <unordered_map>
 
 class VulkanApp;
@@ -28,10 +27,9 @@ private:
 
     // ImGui texture descriptors
     VkDescriptorSet skyDescriptor = VK_NULL_HANDLE;
-    VkDescriptorSet solid360Descriptor = VK_NULL_HANDLE;
-    VkDescriptorSet cube360EquirectDescriptor = VK_NULL_HANDLE;
-    VkDescriptorSet cube360FaceDescriptor[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VkDescriptorSet cube360FaceDepthDescriptor[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    // Hybrid RT output previews (reflection / refraction+thickness).
+    VkDescriptorSet rtReflectDescriptor = VK_NULL_HANDLE;
+    VkDescriptorSet rtRefractDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet solidColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet solidDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterColorDescriptor = VK_NULL_HANDLE;
@@ -39,14 +37,11 @@ private:
     VkDescriptorSet brushBackFaceDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterDepthLinearDescriptor = VK_NULL_HANDLE;
 
-    CubeToEquirectRenderer cube360EquirectRenderer;
 
     // Ownership flags: true if this widget created the descriptor via ImGui_ImplVulkan_AddTexture
     bool skyDescriptorOwned = false;
-    bool solid360DescriptorOwned = false;
-    bool cube360EquirectDescriptorOwned = false;
-    bool cube360FaceDescriptorOwned[6] = { false, false, false, false, false, false };
-    bool cube360FaceDepthDescriptorOwned[6] = { false, false, false, false, false, false };
+    bool rtReflectDescriptorOwned = false;
+    bool rtRefractDescriptorOwned = false;
     bool solidColorDescriptorOwned = false;
     int selectedCubeFaceIndex = 0;
     bool solidDepthDescriptorOwned = false;
@@ -153,9 +148,11 @@ private:
     // UI: which preview to show (only one at a time)
     enum class PreviewTarget {
         Sky = 0,
-        Solid360Cube,
-        Solid360DepthCube,
-        Solid360Equirect,
+        Solid360Cube,       // legacy (capture removed; preview shows "unavailable")
+        Solid360DepthCube,  // legacy (capture removed)
+        Solid360Equirect,   // legacy (capture removed)
+        RTReflect,          // hybrid RT water reflection output
+        RTRefract,          // hybrid RT water refraction + thickness output
         SolidColor,
         SolidDepth,
         BackFaceColor,
@@ -186,7 +183,7 @@ private:
     int autoAdvanceFrameCounter = 0;
 
     // NOTE: widget no longer maintains fallbacks or heuristic layout maps.
-    // Rely on renderer-provided tracked layouts (e.g. Solid360Renderer).
+    // Rely on renderer-provided tracked layouts.
 
 public:
     RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
@@ -207,9 +204,6 @@ public:
     // (created with the old DSL) and resets them to VK_NULL_HANDLE so they are re-created
     // with the new DSL on the next frame.
     void invalidateImGuiDescriptors();
-    // True when the currently selected preview is one of the Solid360 cubemap
-    // targets (so the cubemap must be kept up to date even when water is disabled).
-    bool isSolid360Preview() const;
     // Run a small fullscreen pass that samples a depth image and writes a
     // normalized RGBA preview into `dstView`. `dstDescriptor` will be
     // created via ImGui_ImplVulkan_AddTexture if needed. `mode` selects

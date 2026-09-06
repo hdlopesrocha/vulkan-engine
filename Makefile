@@ -69,7 +69,11 @@ SERVER_INCLUDES := -isystem third_party/imgui -isystem third_party/imgui/backend
 
 
 # Automatically find all shader source files in shaders/ with known extensions
+# rgen/rmiss/rchit/rint/rahit/rcallable are the KHR ray-tracing stages used by
+# the hybrid-RT water pipeline (compiled with the same vulkan1.3 target; glslc
+# enables GL_EXT_ray_tracing / GL_EXT_ray_query per-shader via #extension).
 SHADER_EXTS = vert frag geom comp tesc tese
+RT_SHADER_EXTS = rgen rmiss rchit rint rahit rcallable
 SHADERS = $(foreach ext,$(SHADER_EXTS),$(wildcard shaders/*.$(ext)))
 SHADER_INCLUDES = $(wildcard shaders/includes/*.glsl)
 # Map each shader to its corresponding .spv output in bin/shaders, preserving extension
@@ -80,7 +84,10 @@ OUT_SPVS = \
 	$(patsubst shaders/%.comp, $(OUT_DIR)/shaders/%.comp.spv, $(wildcard shaders/*.comp)) \
 	$(patsubst shaders/%.tesc, $(OUT_DIR)/shaders/%.tesc.spv, $(wildcard shaders/*.tesc)) \
 	$(patsubst shaders/%.tese, $(OUT_DIR)/shaders/%.tese.spv, $(wildcard shaders/*.tese)) \
-	$(OUT_DIR)/shaders/main_brush.frag.spv
+	$(foreach ext,$(RT_SHADER_EXTS),$(patsubst shaders/%.$(ext), $(OUT_DIR)/shaders/%.$(ext).spv, $(wildcard shaders/*.$(ext)))) \
+	$(OUT_DIR)/shaders/main_brush.frag.spv \
+	$(OUT_DIR)/shaders/main_rt.frag.spv \
+	$(OUT_DIR)/shaders/water_rt.frag.spv
 
 # Compile main.frag with -DBRUSH_PASS for brush rendering (no PAINT mode, no set=1)
 $(OUT_DIR)/shaders/main_brush.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
@@ -90,6 +97,26 @@ $(OUT_DIR)/shaders/main_brush.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
 		glslc --target-env=vulkan1.3 -Ishaders/includes -DBRUSH_PASS $< -o $@; \
 	else \
 		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D BRUSH_PASS $< -o $@; \
+	fi
+
+# Hybrid RT variants (hardware ray tracing: ray queries + TLAS). Selected at
+# runtime by rayTracingEnabled(); the non-RT variants above stay the fallback
+# for hardware without VK_KHR_ray_query (validation-clean, sky approx).
+$(OUT_DIR)/shaders/main_rt.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (RT_ENABLED)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes -DRT_ENABLED $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D RT_ENABLED $< -o $@; \
+	fi
+$(OUT_DIR)/shaders/water_rt.frag.spv: shaders/water.frag $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (RT_ENABLED)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes -DRT_ENABLED $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D RT_ENABLED $< -o $@; \
 	fi
 
 
@@ -175,6 +202,7 @@ $(OUT_DIR)/shaders/%.$(1).spv: shaders/%.$(1) $(SHADER_INCLUDES)
 endef
 
 $(foreach ext,$(SHADER_EXTS),$(eval $(call SHADER_COMPILE_RULE,$(ext))))
+$(foreach ext,$(RT_SHADER_EXTS),$(eval $(call SHADER_COMPILE_RULE,$(ext))))
 
 .PHONY: debug release
 

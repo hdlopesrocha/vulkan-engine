@@ -1,0 +1,106 @@
+// Hybrid RT water pipeline: ray generation.
+// Half-res dispatch producing the water reflection + refraction/thickness
+// outputs sampled by the NEXT frame's water shading (1-frame latency,
+// same-queue ordered — see RayTracingResources::dispatchWaterRT).
+//
+// Per pixel: reconstruct the water surface from the full-res water depth,
+// estimate the shading normal via depth neighbors (screen-space; the inline
+// ray-query path in water.frag keeps full analytic normals), then trace one
+// reflection ray and one refraction ray (Snell, IOR 1.333) through the TLAS.
+// Refraction thickness = analytic underwater path to the hit (entry=water
+// surface, exit=underwater hit) or maxDist on miss (deep water).
+
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+#include "includes/rt_params.glsl"
+
+// RT set (dedicated, per frame slot):
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
+layout(set = 0, binding = 1, rgba16f) uniform image2D reflectOut;
+layout(set = 0, binding = 2, rgba16f) uniform image2D refractOut;
+layout(set = 0, binding = 3) uniform RTBlock { RayTracingParamsGLSL rt; };
+layout(set = 0, binding = 4) readonly buffer ProxyMeta { RTProxyMetaGLSL metas[]; };
+layout(set = 0, binding = 5) uniform sampler2D waterDepthTex;
+layout(set = 0, binding = 6) uniform sampler2D skyEquirectTex;
+
+// Shared payload: rgb=hit color (or sky on miss), a=hitT (or -1 on miss).
+// The refraction trace reinterprets a miss (a<0) as full-path deep water.
+layout(location = 0) rayPayloadEXT vec4 rtPayload;
+
+vec3 reconstructWorld(vec2 uv, float depth) {
+    vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 w = rt.invViewProj * clip;
+    return w.xyz / max(w.w, 1e-8);
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_LaunchIDEXT.xy);
+    vec2 outSize = vec2(gl_LaunchSizeEXT.xy);
+    vec2 uv = (vec2(coord) + 0.5) / outSize;
+
+    float depth = texture(waterDepthTex, uv).r;
+    if (depth >= 0.9999 || rt.debug.y < 0.5) {
+        // No water here (or TLAS not built yet): invalid markers. The water
+        // shader checks reflect.a > 0.5 before sampling reflection and
+        // refract.a >= 0.0 before sampling refraction/thickness.
+        imageStore(reflectOut, coord, vec4(0.0, 0.0, 0.0, 0.0));
+        imageStore(refractOut, coord, vec4(0.0, 0.0, 0.0, -1.0));
+        return;
+    }
+
+    vec3 pos = reconstructWorld(uv, depth);
+    // Screen-space normal from depth neighbors (finite differences on the
+    // full-res depth). Ripple detail lives in the inline path; the pipeline
+    // path trades it for async half-res tracing (perf §16).
+    vec2 texel = 1.0 / vec2(textureSize(waterDepthTex, 0));
+    float dL = texture(waterDepthTex, uv - vec2(texel.x, 0.0)).r;
+    float dR = texture(waterDepthTex, uv + vec2(texel.x, 0.0)).r;
+    float dD = texture(waterDepthTex, uv - vec2(0.0, texel.y)).r;
+    float dU = texture(waterDepthTex, uv + vec2(0.0, texel.y)).r;
+    vec3 pL = reconstructWorld(uv - vec2(texel.x, 0.0), dL);
+    vec3 pR = reconstructWorld(uv + vec2(texel.x, 0.0), dR);
+    vec3 pD = reconstructWorld(uv - vec2(0.0, texel.y), dD);
+    vec3 pU = reconstructWorld(uv + vec2(0.0, texel.y), dU);
+    vec3 N = normalize(cross(pR - pL, pU - pD));
+    vec3 V = normalize(rt.viewPos.xyz - pos);
+    if (dot(N, V) < 0.0) N = -N;
+
+    float maxReflect = max(rt.distances.x, 1.0);
+    float maxRefract = max(rt.distances.y, 1.0);
+    float ior = clamp(rt.water.x, 1.0, 2.5);
+
+    // Reflection (mask 0xFF: solid proxy boxes; water surface is not in the
+    // BLAS by design, so no self-hit).
+    vec4 reflectValue = vec4(0.0, 0.0, 0.0, 0.0);
+    if (rt.toggles.x > 0.5) {
+        vec3 R = reflect(-V, N);
+        rtPayload = vec4(0.0);
+        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
+            pos + N * 0.05, 0.05, R, maxReflect, 0);
+        reflectValue = vec4(rtPayload.rgb, rtPayload.a >= 0.0 ? 1.0 : 0.0);
+        if (rtPayload.a < 0.0) reflectValue.rgb = rtPayload.rgb; // sky from miss
+    }
+
+    // Refraction (Snell air->water). Miss = deep water: full-path thickness.
+    vec4 refractValue = vec4(0.0, 0.0, 0.0, -1.0);
+    if (rt.toggles.y > 0.5) {
+        vec3 T = refract(-V, N, 1.0 / ior);
+        if (dot(T, T) < 1e-8) T = reflect(-V, N); // TIR fallback
+        T = normalize(T);
+        rtPayload = vec4(0.0);
+        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
+            pos - N * 0.05, 0.05, T, maxRefract, 0);
+        if (rtPayload.a >= 0.0) {
+            // Hit: payload.a is the underwater path length (water surface ->
+            // underwater hit). water.frag applies Beer-Lambert attenuation
+            // T = exp(-absorption * thickness) with the layer coefficients.
+            refractValue = vec4(rtPayload.rgb, rtPayload.a);
+        } else {
+            refractValue = vec4(rtPayload.rgb, maxRefract);
+        }
+    }
+
+    imageStore(reflectOut, coord, reflectValue);
+    imageStore(refractOut, coord, refractValue);
+}

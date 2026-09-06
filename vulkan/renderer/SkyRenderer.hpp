@@ -60,7 +60,7 @@ public:
     Buffer getSkyUniformBuffer() const;
 
 private:
-    // Sphere pipelines (kept for Solid360Renderer cubemap capture)
+    // Sphere pipelines (fullscreen sky uses the offscreen path; retained)
     TrackedHandle<VkPipeline> skyPipeline;
     TrackedHandle<VkPipelineLayout> skyPipelineLayout;
     TrackedHandle<VkPipeline> skyGridPipeline;
@@ -76,7 +76,7 @@ private:
     TrackedHandle<VkPipelineLayout> skyFullscreenGridPipelineLayout;
     TrackedHandle<VkShaderModule> skyFullscreenVertModule;
 
-    // Owned sky sphere and VBO (retained for Solid360Renderer)
+    // Owned sky sphere and VBO
     std::unique_ptr<SkySphere> skySphere;
     VertexBufferObject skyVBO;
 

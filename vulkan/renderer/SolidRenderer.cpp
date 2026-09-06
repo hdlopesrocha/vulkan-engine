@@ -222,8 +222,13 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         VK_SHADER_STAGE_VERTEX_BIT
     );
 
+    // Hybrid RT: the RT variant replaces the 360°-cubemap reflections with
+    // hardware ray queries (same lighting/CSM otherwise). Non-RT hardware
+    // keeps the sky-approximation fallback variant (validation-clean).
+    const char* solidFragPath = app->rayTracingEnabled()
+        ? "shaders/main_rt.frag.spv" : "shaders/main.frag.spv";
     ShaderStage fragmentShader = ShaderStage(
-        app->getOrCreateShaderModule("shaders/main.frag.spv"),
+        app->getOrCreateShaderModule(solidFragPath),
         VK_SHADER_STAGE_FRAGMENT_BIT
     );
 

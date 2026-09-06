@@ -21,7 +21,6 @@
 
 class BrushRenderer;
 class WaterBackFaceRenderer;
-class Solid360Renderer;
 class WireframeRenderer;
 
 class WaterRenderer : public Renderer {
@@ -34,10 +33,11 @@ public:
 
     // Inject the scene sub-renderers the water pass samples from or draws
     // alongside (solid offscreen targets, brush liquid geometry, back-face
-    // depth, 360° reflection cubemap, wireframe overlay). Called once by
-    // SceneRenderer after all sub-renderers are created.
+    // depth, wireframe overlay). Called once by SceneRenderer after all
+    // sub-renderers are created. (The legacy 360° cubemap injector was removed
+    // with Solid360Renderer — water reflections are hardware ray tracing.)
     void setSceneRenderers(SolidRenderer* solid, BrushRenderer* brush,
-                           WaterBackFaceRenderer* backFace, Solid360Renderer* solid360,
+                           WaterBackFaceRenderer* backFace,
                            WireframeRenderer* waterWireframe);
 
     // Full water pass orchestration: updates the water render UBO with the
@@ -89,8 +89,9 @@ public:
     // water IR, inside the same geometry pass (used for brush liquid geometry —
     // brush water renders like main water but lives in its own IndirectRenderer).
     // `overrideWaterDs` (async path) is the caller-owned set-2 descriptor set
-    // (binding 0 = real back-face depth, binding 1 = solid360 cubemap); when null
-    // the per-frame set from prepareSceneTexturesForFrame() is bound instead.
+    // (binding 0 = real back-face depth, bindings 1-2 = RT outputs, binding 3 =
+    // sky); when null the per-frame set from prepareSceneTexturesForFrame() is
+    // bound instead.
     void render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                 VkImageView sceneColorView,
                 VkImageView skyView = VK_NULL_HANDLE,
@@ -131,39 +132,19 @@ public:
     // Get water depth descriptor set (for binding scene depth texture)
     VkDescriptorSet getWaterDepthDescriptorSet(uint32_t frameIndex) const { return (frameIndex < FRAMES) ? waterDepthDescriptorSets[frameIndex] : VK_NULL_HANDLE; }
 
-    // Ensure cubemap reflection resources exist (the cubemap-compatible water
-    // pipeline and its set-2 descriptor set). Idempotent; called lazily from
-    // the solid 360 pass. The real cubemap targets are created in
-    // SceneRenderer::init before first use. Set 2 binds the back-face dummy
-    // depth + a 1x1 cube dummy (binding 1 is never sampled in capture mode).
-    void ensureCubemapResources(VulkanApp* app, VkFormat colorFormat);
-    // Create (once per swapchain color format) the 1x1 cube dummy for
-    // cubemapWaterDS binding 1. Returns the view or VK_NULL_HANDLE.
-    VkImageView ensureDummyCubeView(VulkanApp* app, VkFormat format);
-
-    // Draw water into one solid 360 cubemap face. Must be called INSIDE the face's
-    // command buffer AFTER the solid color pass has ended; begins its own dynamic
-    // rendering instance with LOAD ops so water composites over solid+sky, depth
-    // tested against the prepassed solid depth (no depth writes). The face UBO
-    // carries materialFlags.x == 1 (capture mode), so water.frag skips
-    // reflection/refraction and never samples the cubemap it is rendering into;
-    // set 2 is bound to the back-face dummy depth + a 1x1 cube dummy instead.
-    // `sceneDs0` is the per-face main-layout descriptor set (binding 0 = this
-    // face's UBO slot).
-    void renderWaterIntoCubemap(VkCommandBuffer cmd, VkDescriptorSet sceneDs0,
-                                VkImageView colorView, VkImageView depthView,
-                                uint32_t faceSize,
-                                VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer);
-
     // Get sampler for ImGui texture display
     VkSampler getLinearSampler() const { return linearSampler; }
     
-    // Update the scene textures binding (color + depth + sky) for refraction and edge foam.
+    // Update the scene textures binding (back-face depth + RT outputs + sky).
     // Writes into `ds` (the caller chooses the per-command-buffer set so the set is
     // never shared between the async back-face task and the main command buffer).
-    // `backFaceDepthView` and `cube360View` may be VK_NULL_HANDLE if those targets
-    // are not present; SceneRenderer should pass them when available.
-    void updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, uint32_t frameIndex, VkImageView backFaceDepthView = VK_NULL_HANDLE, VkImageView cube360View = VK_NULL_HANDLE);
+    // Missing RT views fall back to internal 1x1 dummies (never NULL — the
+    // shader statically uses every binding).
+    void updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, uint32_t frameIndex,
+                                     VkImageView backFaceDepthView = VK_NULL_HANDLE,
+                                     VkImageView rtReflectView = VK_NULL_HANDLE,
+                                     VkImageView rtRefractView = VK_NULL_HANDLE,
+                                     VkImageView skyView = VK_NULL_HANDLE);
 
     // Allocate a fresh per-frame scene-texture descriptor set, free the previous
     // one, and update it with the given views. Returns the new set (or
@@ -173,16 +154,19 @@ public:
     // while pending and never needs UPDATE_AFTER_BIND.
     VkDescriptorSet prepareSceneTexturesForFrame(VulkanApp* app, uint32_t frameIndex,
                                                  VkImageView backFaceDepthView = VK_NULL_HANDLE,
-                                                 VkImageView cube360View = VK_NULL_HANDLE);
+                                                 VkImageView rtReflectView = VK_NULL_HANDLE,
+                                                 VkImageView rtRefractView = VK_NULL_HANDLE,
+                                                 VkImageView skyView = VK_NULL_HANDLE);
 
     // Clear per-frame render targets (color/depth) into default values.
     // Call this each frame when water rendering is disabled to avoid sampling
     // stale content from previous frames.
     void clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex);
 
-    // Solid 360° cubemap reflection and back-face rendering are owned by SceneRenderer.
-    // SceneRenderer must call `updateSceneTexturesBinding` to provide any required
-    // views (back-face depth, cubemap/equirect) to WaterRenderer.
+    // Hybrid RT resources (set after SceneRenderer creates them; may be null
+    // when RT is unsupported — the non-async prepare path then binds dummies
+    // for the RT outputs and the sky view passed by the caller).
+    void setRTResources(class RayTracingResources* rt) { rtResources_ = rt; }
 
 private:
 
@@ -236,40 +220,8 @@ private:
     // so the bindings are rewritten unconditionally on every call.
     std::array<VkDescriptorSet, FRAMES> waterDepthDescriptorSets{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
 
-    // Cubemap water pass: dedicated pipeline (swapchain color format so it can
-    // render into the solid 360 cube faces; the main water geometry pipeline
-    // targets R32G32B32A32_SFLOAT and is format-incompatible). The pipeline owns
-    // a layout built from the same 3 set layouts as waterGeometryPipelineLayout,
-    // so descriptor binding stays compatible. The set-2 descriptor set binds
-    // the back-face dummy depth + a 1x1 cube dummy (never sampled in capture
-    // mode; rewritten only when the dummy is recreated on swapchain-format
-    // change), so a single set (not
-    // cube view is recreated on swapchain resize), so a single set (not
-    // per-frame) is sufficient; it lives in its own pool so the
-    // waterDepthDescriptorPool reset on swapchain recreate cannot invalidate it.
-    TrackedHandle<VkPipeline> cubemapWaterPipeline;
-    TrackedHandle<VkPipelineLayout> cubemapWaterPipelineLayout;
-    TrackedHandle<VkDescriptorPool> cubemapWaterDescPool;
-    VkDescriptorSet cubemapWaterDS = VK_NULL_HANDLE;
-    VkFormat cubemapWaterPipelineFormat = VK_FORMAT_UNDEFINED;
-    // Views currently bound into cubemapWaterDS (to detect swapchain-resize
-    // staleness: the real cube view is recreated on resize, so the write-once
-    // set must be rewritten when the handles change).
-    VkImageView cubemapWaterBoundDepthView = VK_NULL_HANDLE;
-    VkImageView cubemapWaterBoundCubeView = VK_NULL_HANDLE;
-    // 1x1 cube-typed dummy bound to cubemapWaterDS binding 1. The capture pass
-    // never samples the cube (face-UBO capture flag skips reflection and
-    // refraction in water.frag), but the binding is statically used so its
-    // descriptor must be validation-legal: the real in-flight cube cannot be
-    // bound (its rendered face is a color attachment while the other layers
-    // are read-only — no single layout matches, VUID-00344). The dummy stays
-    // in SHADER_READ_ONLY_OPTIMAL for the app's lifetime (recreated only when
-    // the swapchain color format changes).
-    VkImage cubemapDummyCubeImage = VK_NULL_HANDLE;
-    VmaAllocation cubemapDummyCubeAllocation = VK_NULL_HANDLE;
-    VkDeviceMemory cubemapDummyCubeMemory = VK_NULL_HANDLE;
-    VkImageView cubemapDummyCubeView = VK_NULL_HANDLE;
-    VkFormat cubemapDummyCubeFormat = VK_FORMAT_UNDEFINED;
+    // NOTE (hybrid RT §12): the cubemap water pass (dedicated pipeline +
+    // set-2 dummy set for solid-360 faces) was deleted with Solid360Renderer.
 
     // Storage buffer (SSBO) for per-layer WaterParamsGPU entries
     Buffer waterParamsBuffer;
@@ -282,11 +234,6 @@ private:
     TrackedHandle<VkSampler> linearSampler;
     TrackedHandle<VkSampler> nearestSampler;
 
-    // Whether a cubemap reflection is currently available (set by SceneRenderer)
-    bool cube360Available = false;
-    // Last cubemap image view provided by SceneRenderer (preserve across updates)
-    VkImageView currentCube360View = VK_NULL_HANDLE;
-
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
 
@@ -297,8 +244,19 @@ private:
     SolidRenderer* solidRenderer_ = nullptr;
     BrushRenderer* brushRenderer_ = nullptr;
     WaterBackFaceRenderer* backFaceRenderer_ = nullptr;
-    Solid360Renderer* solid360Renderer_ = nullptr;
     WireframeRenderer* waterWireframe_ = nullptr;
+    class RayTracingResources* rtResources_ = nullptr;
+
+    // 1x1 dummy views bound when RT outputs/sky are unavailable (never NULL).
+    VkImage dummyRTImage_ = VK_NULL_HANDLE;
+    VmaAllocation dummyRTAlloc_ = VK_NULL_HANDLE;
+    VkDeviceMemory dummyRTMem_ = VK_NULL_HANDLE;
+    VkImageView dummyRTView_ = VK_NULL_HANDLE; // GENERAL layout (RT outputs)
+    VkImage dummySkyImage_ = VK_NULL_HANDLE;
+    VmaAllocation dummySkyAlloc_ = VK_NULL_HANDLE;
+    VkDeviceMemory dummySkyMem_ = VK_NULL_HANDLE;
+    VkImageView dummySkyView_ = VK_NULL_HANDLE; // SHADER_READ layout (sky)
+    void ensureDummyViews(VulkanApp* app);
 
     // Water render time UBO (binding 10)
     Buffer waterRenderUBO_;

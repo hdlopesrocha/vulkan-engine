@@ -643,17 +643,20 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
 
         // Descriptor pool for the per-cascade shadow sets (copies of the shared set
         // with binding 0 redirected at the per-cascade UBO slot). Per set the main
-        // layout has: UBO bindings 0, 6, 10 (3); combined-image-sampler bindings
-        // 1,2,3,4,8,9,11,12,13 (9); storage-buffer bindings 5, 7 (2).
+        // layout has: UBO bindings 0, 6, 10, 17 (4); combined-image-sampler
+        // bindings 1,2,3,4,8,9,12,13,15,16 (10); storage-buffer bindings 5, 7,
+        // 18 (3); acceleration-structure binding 14 (1). Binding 11 (legacy
+        // cubemap) is gone (hybrid RT).
         if (cascadeDescPool_ == VK_NULL_HANDLE) {
             const uint32_t setCount = frameCount * SHADOW_CASCADE_COUNT;
-            VkDescriptorPoolSize ps[3]{};
-            ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;          ps[0].descriptorCount = 3 * setCount;
-            ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[1].descriptorCount = 9 * setCount;
-            ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;         ps[2].descriptorCount = 2 * setCount;
+            VkDescriptorPoolSize ps[4]{};
+            ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;          ps[0].descriptorCount = 4 * setCount;
+            ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[1].descriptorCount = 10 * setCount;
+            ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;         ps[2].descriptorCount = 3 * setCount;
+            ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; ps[3].descriptorCount = 1 * setCount;
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pci.poolSizeCount = 3;
+        pci.poolSizeCount = 4;
         pci.pPoolSizes = ps;
         pci.maxSets = setCount;
         pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
@@ -689,11 +692,14 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
                 app->resources.addDescriptorSet(shadowCascadeSets_[f][c], "ShadowRenderer: cascade shadow DS");
 
                 // Copy the shared shadow set (textures, dummy depth, storage buffers,
-                // cube360, …) then redirect binding 0 at this cascade's UBO slot so the
-                // cascade draws read only their own light-space matrix.
+                // RT bindings, …) then redirect binding 0 at this cascade's UBO slot
+                // so the cascade draws read only their own light-space matrix.
                 // (Binding 0 is overwritten by the DescriptorWriter below, so it is
-                // excluded from the copy list.)
-                for (uint32_t b = 1; b <= 13; ++b) {
+                // excluded from the copy list. Binding 11 skipped: removed with
+                // the legacy cubemap.)
+                static const uint32_t kCopyBindings[] = {
+                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18};
+                for (uint32_t b : kCopyBindings) {
                     VkCopyDescriptorSet cp{};
                     cp.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
                     cp.srcSet = shadowDescriptorSets_[f];

@@ -105,6 +105,34 @@ class VulkanApp {
     bool bufferDeviceAddressSupported = false;
     bool supportsSparseBinding() const { return sparseBufferSupported; }
     bool supportsBufferDeviceAddress() const { return bufferDeviceAddressSupported; }
+    // ── Hybrid ray tracing (raster + RT) ──────────────────────────────────
+    // Feature-detected, never version-checked. When all of
+    // VK_KHR_acceleration_structure + VK_KHR_ray_query are supported AND their
+    // features enabled, ray queries may be used inline in raster shaders
+    // (solid reflections, water RT, selective local shadows). When
+    // VK_KHR_ray_tracing_pipeline is additionally supported, the dedicated RT
+    // pipeline (water reflection/refraction/thickness) is available. When any
+    // piece is missing the renderer falls back to sky/environment sampling —
+    // rasterization, tessellation, displacement, LOD and CSM keep working.
+    bool accelStructSupported = false;
+    bool rayQuerySupported = false;
+    bool rayPipelineSupported = false;
+    bool deferredHostOpsSupported = false;
+    bool rayTracingEnabled() const { return accelStructSupported && rayQuerySupported; }
+    bool rayPipelineEnabled() const { return rayTracingEnabled() && rayPipelineSupported; }
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProps{};
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR accelProps{};
+    // RT extension entry points, resolved after vkCreateDevice when supported.
+    // Null when the corresponding extension was not enabled — callers must
+    // branch on rayTracingEnabled()/rayPipelineEnabled() first.
+    PFN_vkCreateAccelerationStructureKHR fpCreateAccelerationStructureKHR = nullptr;
+    PFN_vkDestroyAccelerationStructureKHR fpDestroyAccelerationStructureKHR = nullptr;
+    PFN_vkGetAccelerationStructureBuildSizesKHR fpGetAccelerationStructureBuildSizesKHR = nullptr;
+    PFN_vkGetAccelerationStructureDeviceAddressKHR fpGetAccelerationStructureDeviceAddressKHR = nullptr;
+    PFN_vkCmdBuildAccelerationStructuresKHR fpCmdBuildAccelerationStructuresKHR = nullptr;
+    PFN_vkCreateRayTracingPipelinesKHR fpCreateRayTracingPipelinesKHR = nullptr;
+    PFN_vkGetRayTracingShaderGroupHandlesKHR fpGetRayTracingShaderGroupHandlesKHR = nullptr;
+    PFN_vkCmdTraceRaysKHR fpCmdTraceRaysKHR = nullptr;
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptorBufferProps{};
     // Extension entry points, resolved after vkCreateDevice when supported.
     PFN_vkGetDescriptorEXT fpGetDescriptorEXT = nullptr;
@@ -121,9 +149,8 @@ class VulkanApp {
     // itself only owns the generic graphics/present/transfer queues.
     // Distinct graphics-family queue handles available for parallel work. Built in
     // createLogicalDevice from all acquired graphics-family queues (deduplicated so
-    // aliased queues are not listed twice). The solid360 cubemap renders each of its
-    // 6 faces on a separate primary command buffer submitted to a different entry of
-    // this vector (round-robin) to overlap the 6x scene rasterization across queues.
+    // aliased queues are not listed twice). Parallel passes submit to different
+    // entries of this vector (round-robin) for parallel graphics work.
     // Its size is 1 when the device exposes only a single graphics queue (no HW
     // parallelism — the faces then run serially on the one queue, still correct).
     std::vector<VkQueue> parallelGraphicsQueues;

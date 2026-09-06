@@ -369,10 +369,6 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
 
         // Renderer-local fallback when VulkanApp has no entry yet.
         if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED) {
-            // Solid 360 (per-face array)
-            if (sceneRenderer && sceneRenderer->solid360Renderer && srcImage == sceneRenderer->solid360Renderer->getCube360DepthImage()) {
-                trackedOld = sceneRenderer->solid360Renderer->getCube360DepthLayout(srcBaseArrayLayer);
-            }
             // Main solid renderer (per-frame depth images)
             if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && solidRenderer) {
                 for (uint32_t f = 0; f < 2; ++f) {
@@ -552,9 +548,6 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
         VkImageLayout finalTrackedLayout = (trackedOld != VK_IMAGE_LAYOUT_UNDEFINED)
                                                ? trackedOld
                                                : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        if (sceneRenderer && sceneRenderer->solid360Renderer && srcImage == sceneRenderer->solid360Renderer->getCube360DepthImage()) {
-            sceneRenderer->solid360Renderer->setCube360DepthLayout(srcBaseArrayLayer, finalTrackedLayout);
-        }
         if (solidRenderer) {
             for (uint32_t f = 0; f < 2; ++f) {
                 if (srcImage == solidRenderer->getDepthImage(f)) {
@@ -627,10 +620,8 @@ RenderTargetsWidget::~RenderTargetsWidget() {
     removeOwnedDesc(solidColorDescriptor, solidColorDescriptorOwned);
     removeOwnedDesc(solidDepthDescriptor, solidDepthDescriptorOwned);
     removeOwnedDesc(waterColorDescriptor, waterColorDescriptorOwned);
-    removeOwnedDesc(solid360Descriptor, solid360DescriptorOwned);
-    removeOwnedDesc(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
-    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
-    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
+    removeOwnedDesc(rtReflectDescriptor, rtReflectDescriptorOwned);
+    removeOwnedDesc(rtRefractDescriptor, rtRefractDescriptorOwned);
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     removeOwnedDesc(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
@@ -751,10 +742,8 @@ void RenderTargetsWidget::cleanup() {
     removeOwnedDesc(solidColorDescriptor, solidColorDescriptorOwned);
     removeOwnedDesc(waterColorDescriptor, waterColorDescriptorOwned);
     removeOwnedDesc(solidDepthDescriptor, solidDepthDescriptorOwned);
-    removeOwnedDesc(solid360Descriptor, solid360DescriptorOwned);
-    removeOwnedDesc(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
-    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
-    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
+    removeOwnedDesc(rtReflectDescriptor, rtReflectDescriptorOwned);
+    removeOwnedDesc(rtRefractDescriptor, rtRefractDescriptorOwned);
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     removeOwnedDesc(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
@@ -767,7 +756,6 @@ void RenderTargetsWidget::cleanup() {
     removeOwnedDesc(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
     removeOwnedDesc(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
     removeOwnedDesc(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
-    cube360EquirectRenderer.cleanup(app);
     // Destroy persistent staging buffers (VulkanApp::createBuffer registers them with resource manager)
     // Unmap persistent staging buffers; if GPU work is pending, defer unmap until safe
     if (stagingReadPtr && app && stagingReadBuffer.memory != VK_NULL_HANDLE) {
@@ -907,17 +895,6 @@ void RenderTargetsWidget::cleanup() {
     }
 }
 
-bool RenderTargetsWidget::isSolid360Preview() const {
-    switch (selectedPreview) {
-        case PreviewTarget::Solid360Cube:
-        case PreviewTarget::Solid360DepthCube:
-        case PreviewTarget::Solid360Equirect:
-            return true;
-        default:
-            return false;
-    }
-}
-
 void RenderTargetsWidget::invalidateImGuiDescriptors() {
     // After ImGui is re-initialized (new DSL), all AddTexture DS created with the old DSL
     // must be freed and cleared. They will be re-created on the next render() call.
@@ -934,10 +911,8 @@ void RenderTargetsWidget::invalidateImGuiDescriptors() {
     freeAndClear(solidColorDescriptor, solidColorDescriptorOwned);
     freeAndClear(solidDepthDescriptor, solidDepthDescriptorOwned);
     freeAndClear(waterColorDescriptor, waterColorDescriptorOwned);
-    freeAndClear(solid360Descriptor, solid360DescriptorOwned);
-    freeAndClear(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
-    for (int i = 0; i < 6; ++i) freeAndClear(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
-    for (int i = 0; i < 6; ++i) freeAndClear(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
+    freeAndClear(rtReflectDescriptor, rtReflectDescriptorOwned);
+    freeAndClear(rtRefractDescriptor, rtRefractDescriptorOwned);
     freeAndClear(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     freeAndClear(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
     freeAndClear(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
@@ -994,35 +969,29 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             }
         } break;
 
-        case PreviewTarget::Solid360Equirect: {
-            cube360EquirectRenderer.render(app, widgetSampler, sceneRenderer->solid360Renderer->getSolid360View());
-            if (cube360EquirectDescriptor == VK_NULL_HANDLE) {
-                cube360EquirectDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, cube360EquirectRenderer.getEquirectView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                cube360EquirectDescriptorOwned = true;
+        // Legacy 360° capture previews (Solid360Cube/DepthCube/Equirect):
+        // the capture was deleted (§12) — no descriptors are created and the
+        // preview pane shows "unavailable". Use RTReflect/RTRefract instead.
+        case PreviewTarget::Solid360Equirect:
+        case PreviewTarget::Solid360Cube:
+        case PreviewTarget::Solid360DepthCube:
+            break;
+
+        case PreviewTarget::RTReflect: {
+            VkImageView v = (sceneRenderer && sceneRenderer->rayTracing)
+                ? sceneRenderer->rayTracing->getReflectionView() : VK_NULL_HANDLE;
+            if (v != VK_NULL_HANDLE && rtReflectDescriptor == VK_NULL_HANDLE) {
+                rtReflectDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, v, VK_IMAGE_LAYOUT_GENERAL);
+                rtReflectDescriptorOwned = true;
             }
         } break;
 
-        case PreviewTarget::Solid360Cube: {
-            uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
-            VkImageView faceView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360FaceView(f) : VK_NULL_HANDLE;
-            if (faceView != VK_NULL_HANDLE && cube360FaceDescriptor[f] == VK_NULL_HANDLE) {
-                cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(widgetSampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                cube360FaceDescriptorOwned[f] = true;
-            }
-        } break;
-
-        case PreviewTarget::Solid360DepthCube: {
-            uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
-            VkImageView depthView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360DepthView(f) : VK_NULL_HANDLE;
-            if (depthView != VK_NULL_HANDLE) {
-                float nearP = 0.1f, farP = 1000.0f;
-                if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                // Linearize the depth for this cubemap face into its own per-face linear target.
-                // The per-face ImGui descriptor is created once inside runLinearizePass.
-                runLinearizePass(app, sceneRenderer->solid360Renderer->getCube360DepthImage(), depthView, widgetSampler, widgetSampler,
-                                 linearCubeFaceDepthView[f],
-                                 cube360FaceDepthDescriptor[f], cube360FaceDepthDescriptorOwned[f],
-                                 static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f, f);
+        case PreviewTarget::RTRefract: {
+            VkImageView v = (sceneRenderer && sceneRenderer->rayTracing)
+                ? sceneRenderer->rayTracing->getRefractionView() : VK_NULL_HANDLE;
+            if (v != VK_NULL_HANDLE && rtRefractDescriptor == VK_NULL_HANDLE) {
+                rtRefractDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, v, VK_IMAGE_LAYOUT_GENERAL);
+                rtRefractDescriptorOwned = true;
             }
         } break;
 
@@ -1231,19 +1200,22 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     }
 
     // Choose a single preview descriptor according to the current selection.
+    // Legacy Solid360* selections show "unavailable" (capture deleted, §12).
     previewDescriptor = VK_NULL_HANDLE;
     switch (selectedPreview) {
         case PreviewTarget::Sky: 
             previewDescriptor = skyDescriptor; 
             break;
-        case PreviewTarget::Solid360Cube: 
-            previewDescriptor = cube360FaceDescriptor[this->selectedCubeFaceIndex]; 
-            break;
+        case PreviewTarget::Solid360Cube:
         case PreviewTarget::Solid360DepthCube:
-            previewDescriptor = cube360FaceDepthDescriptor[this->selectedCubeFaceIndex];
+        case PreviewTarget::Solid360Equirect:
+            previewDescriptor = VK_NULL_HANDLE;
             break;
-        case PreviewTarget::Solid360Equirect: 
-            previewDescriptor = cube360EquirectDescriptor; 
+        case PreviewTarget::RTReflect:
+            previewDescriptor = rtReflectDescriptor;
+            break;
+        case PreviewTarget::RTRefract:
+            previewDescriptor = rtRefractDescriptor;
             break;            
         case PreviewTarget::SolidColor: 
             previewDescriptor = solidColorDescriptor; 
@@ -1365,6 +1337,8 @@ void RenderTargetsWidget::render() {
         "Solid360Cube",
         "Solid360DepthCube",
         "Solid360Equirect",
+        "RTReflect",
+        "RTRefract",
         "SolidColor",
         "SolidDepth",
         "BackFaceColor",

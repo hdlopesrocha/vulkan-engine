@@ -1,12 +1,15 @@
 // Texture bindings for fragment shaders
 // texture arrays: binding 1 = albedo array, 2 = normal array, 3 = height array, 4 = shadow map (cascade 0)
 // Bind into main descriptor set (set = 0)
+// NOTE (hybrid RT): binding 11 (legacy 360° environment cubemap) REMOVED.
+// Solid reflections use hardware ray queries (TLAS, binding 14) with the
+// procedural sky as miss fallback; water uses the RT pipeline outputs
+// (bindings 15/16). See shaders/includes/rt_params.glsl.
 layout(set = 0, binding = 1) uniform sampler2DArray albedoArray;
 layout(set = 0, binding = 2) uniform sampler2DArray normalArray;
 layout(set = 0, binding = 3) uniform sampler2DArray heightArray;
 layout(set = 0, binding = 4) uniform sampler2D shadowMap;
 layout(set = 0, binding = 8) uniform sampler2D shadowMap1;  // cascade 1 (4x ortho0)
 layout(set = 0, binding = 9) uniform sampler2D shadowMap2;  // cascade 2 (16x ortho0)
-layout(set = 0, binding = 11) uniform samplerCube environmentMap;
 layout(set = 0, binding = 12) uniform sampler2DArray roughnessArray;
 layout(set = 0, binding = 13) uniform sampler2DArray aoArray;

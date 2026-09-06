@@ -34,8 +34,8 @@ class World;
 #include "WireframeRenderer.hpp"
 #include "WaterBackFaceRenderer.hpp"
 #include "BrushRenderer.hpp"
-#include "Solid360Renderer.hpp"
 #include "IndirectRenderer.hpp"
+#include "RayTracingResources.hpp"
 #include "../streaming/UploadManager.hpp"   // TerrainStreamer: async streaming orchestration
 #include "../../world/World.hpp"
 
@@ -68,7 +68,12 @@ public:
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     std::unique_ptr<BrushRenderer> brushRenderer;
     std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
-    std::unique_ptr<Solid360Renderer> solid360Renderer;
+    // NOTE (hybrid RT §12): the legacy 360° cubemap capture (Solid360Renderer)
+    // was deleted. Solid reflections and water reflection/refraction are
+    // hardware ray tracing now; CSM is unaffected (see shadowMapper).
+    // Hybrid RT: stable proxy BLAS/TLAS + water RT pipeline + SBT. Owns the
+    // secondary-visibility representation (§6/§21). Null-safe when unsupported.
+    std::unique_ptr<RayTracingResources> rayTracing;
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
     std::unique_ptr<DebugSDFRenderer> debugSDFRenderer;
@@ -159,7 +164,7 @@ public:
     // Step 2/4: (re)write all static set-0 bindings into every frame's
     // descriptor buffer via DescriptorBuffer::writeBuffer/writeImage.
     // No-op when buffers are not ready. Sources that are not yet allocated
-    // (e.g. cubemap before Solid360 init) are skipped.
+    // are skipped.
     void writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArrayManager* textureArrayManager);
     bool hasDescriptorBuffers() const { return descBuffers_.ready; }
     // Step 3: bind frame N's descriptor buffer + set-0 offset. Activates once
@@ -231,6 +236,31 @@ public:
 
     // Runtime introspection helpers for UI/debug
     size_t getTransparentModelCount();
+    // ── Hybrid RT proxy bookkeeping ──────────────────────────────────────
+    // Stable proxy source per main-scene solid chunk, recorded at publish time
+    // from the chunk geometry (world bounds + dominant material). Guarded by
+    // mainSolidChunksMutex. Brush/water chunks are excluded by design (brush =
+    // preview overlay; water surface = ray origins, never targets).
+    struct SolidProxyData {
+        glm::vec3 minp = glm::vec3(0.0f);
+        glm::vec3 maxp = glm::vec3(0.0f);
+        uint32_t materialId = 0;
+    };
+    std::unordered_map<NodeID, SolidProxyData> mainSolidProxyData;
+    // Collect solid-chunk world AABBs + materials into the RT proxy set.
+    // Called on the main thread after publishes/removals (never per-frame when
+    // idle: caller passes false when the batch was empty and no slot aged out).
+    void rebuildProxySet(VulkanApp* app, bool sceneChanged);
+    // Refresh per-frame RT params UBO contents from camera + settings. Handle
+    // stable (written once at init); this only memcpys. Must be called before
+    // raster sampling each frame (main thread, any time before submit).
+    void updateRTParams(VulkanApp* app, const class Settings& settings,
+                        const glm::mat4& invViewProj, const glm::vec3& viewPos,
+                        const glm::vec3& sunDirTo, const glm::vec3& sunColor,
+                        float nearPlane, float farPlane);
+    // Refresh the RT pipeline's per-slot scene views (water depth + sky).
+    // Called at init and on swapchain resize (handles stable otherwise).
+    void refreshRTSceneViews(VulkanApp* app);
 
     // Query whether a model for the given node is already registered
     bool hasModelForNode(Layer layer, NodeID nid) const;
@@ -302,6 +332,12 @@ private:
     // The World owns ChunkManager and all chunk state.
     World* world_ = nullptr;
 
+    // Mirror of the RT TLAS handle for descriptor writes (the TLAS object is
+    // created once and never recreated, so one stored handle serves every
+    // vkUpdateDescriptorSets with a pNext AS chain).
+    VkAccelerationStructureKHR tlasMirror_ = VK_NULL_HANDLE;
+    void writeTlasBinding(VulkanApp* app, VkDescriptorSet dstSet);
+
     // Descriptor-buffer migration: change guard for updateTextureDescriptorSet().
     // Static bindings (texture arrays, shadow maps, materials, water params) are
     // written once at init and re-written only when the underlying resources
@@ -346,11 +382,13 @@ private:
     // buffers are warm mirrors (classic sets stay authoritative); once the
     // main layout flips to DESCRIPTOR_BUFFER_BIT, bindSet0ForFrame() becomes
     // the bind path and classic set-0 writes stop.
+    // NOTE (hybrid RT): offsets cover set-0 bindings 0..18 (binding 11 absent
+    // — legacy cubemap removed). Binding 14 (TLAS) has no warm mirror.
     struct Set0DescriptorBuffers {
         std::vector<Buffer> buffers;                 // one per frame
         std::vector<VkDeviceAddress> addresses;      // device address per frame
         VkDeviceSize setSize = 0;                    // aligned set-0 byte size
-        std::array<VkDeviceSize, 14> bindingOffsets{}; // driver binding offsets
+        std::array<VkDeviceSize, 19> bindingOffsets{}; // driver binding offsets
         bool ready = false;
     };
     Set0DescriptorBuffers descBuffers_;

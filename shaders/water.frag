@@ -1,4 +1,10 @@
-#version 450
+#version 460
+// RT_ENABLED selects the hardware ray-tracing variant (ray queries + RT
+// pipeline outputs). Without it the shader uses the sky-equirect fallback
+// with identical miss baselines (validation-clean on non-RT hardware).
+#ifdef RT_ENABLED
+#extension GL_EXT_ray_query : require
+#endif
 
 #include "includes/locations.glsl"
 
@@ -26,14 +32,46 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 
 // Water offscreen pass inputs (set 2).
-// The water pass is now fully decoupled from the solid pass: it samples only its
-// own back-face depth (for volume thickness) and the solid 360 cubemap (for
-// reflection/refraction). It no longer reads the solid color or depth targets,
-// so it has no dependency on the solid pass and can be recorded/rendered on its
-// own command buffer in parallel with the solid pass. Occlusion against solids is
-// resolved at the composite stage (postprocess.frag).
+// Hybrid RT: the legacy solid-360 cubemap (binding 1) is REMOVED. Reflection /
+// refraction come from hardware ray tracing — either the async RT pipeline
+// outputs (bindings 1/2, 1-frame latency, same-queue ordered) or inline ray
+// queries against the proxy TLAS (set 0, binding 14) with the sky equirect
+// (binding 3) as the miss fallback. The pass stays decoupled from the solid
+// pass (no solid color/depth reads); occlusion resolves at composite time.
 layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex; // back-face depth for volume thickness
-layout(set = 2, binding = 1) uniform samplerCube sceneSkyCube;   // solid 360 cubemap (reflection + refraction)
+layout(set = 2, binding = 1) uniform sampler2D rtReflectTex;   // RT pipeline reflection (rgb, a=valid)
+layout(set = 2, binding = 2) uniform sampler2D rtRefractTex;   // RT pipeline refraction (rgb, a=thickness or -1)
+layout(set = 2, binding = 3) uniform sampler2D skyEquirectTex; // sky for RT miss/fallback
+
+#ifdef RT_ENABLED
+#include "includes/rt_params.glsl"
+layout(set = 0, binding = 14) uniform accelerationStructureEXT rtTlas;
+layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rt; };
+layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]; };
+
+// Trace one water secondary ray through the proxy TLAS.
+// Returns rgb = shaded hit (or sky on miss), a = hitT (or -1 on miss).
+// Macro shadows stay CSM-owned: hits get ambient + sun diffuse only.
+vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, 0xFF,
+        origin, 0.05, dir, tMax);
+    while (rayQueryProceedEXT(rq)) {}
+    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+        vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(normalize(dir))).rgb;
+        return vec4(sky, -1.0);
+    }
+    float hitT = rayQueryGetIntersectionTEXT(rq, true);
+    uint boxIdx = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)) / 12u;
+    RTProxyMetaGLSL meta = rtMetas[boxIdx];
+    vec3 hitPos = origin + dir * hitT;
+    bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
+    vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz, meta.maxAndFlags.xyz, exiting);
+    float ndl = max(dot(boxN, normalize(rt.sunDir.xyz)), 0.0);
+    vec3 color = meta.albedoRough.rgb * (rt.sunColor.rgb * (0.35 + 0.65 * ndl));
+    return vec4(color, hitT);
+}
+#endif
 
 // Near/far planes for linearizing depth – read from UBO passParams (z = near, w = far)
 // so they always match the glm::perspective call on the CPU side.
@@ -52,6 +90,16 @@ float linearizeDepth(float depth) {
 #include "includes/perlin.glsl"
 #include "includes/water_noise.glsl"
 #include "includes/voronoi.glsl"
+
+// Equirectangular UV for a direction (matches postprocess dirToEquirectUV).
+// Local copy so both RT and non-RT variants share the miss/fallback mapping.
+vec2 waterDirToEquirectUV(vec3 dir) {
+    const float PI = 3.14159265358979;
+    vec2 uv;
+    uv.x = atan(dir.z, dir.x) / (2.0 * PI) + 0.5;
+    uv.y = acos(clamp(dir.y, -1.0, 1.0)) / PI;
+    return uv;
+}
 
 void main() {
     // Get water parameters from SSBO indexed by fragment brushIndex
@@ -176,6 +224,17 @@ void main() {
     // Base screen UV already computed at the top of main() and reused above.
     int dbgMode = int(ubo.debugParams.x + 0.5);
 
+    // === HYBRID RT STATE ===
+    // usePipe = sample the async RT pipeline outputs (1-frame latency);
+    // otherwise inline ray queries (no latency) or the sky fallback.
+    // rt.debug.w carries settings.rtWaterPipeline (1=pipeline, 0=inline).
+    bool rtReady = false;
+    bool usePipe = false;
+#ifdef RT_ENABLED
+    rtReady = (rt.debug.y > 0.5);
+    usePipe = rtReady && (rt.debug.w > 0.5);
+#endif
+
     // === PERLIN NOISE-BASED REFRACTION ===
     // Generate refraction distortion from shared FBM helper.
     vec2 refractionNoise = waterRefractionNoise(
@@ -197,65 +256,76 @@ void main() {
                      smoothstep(0.0, 0.1, screenUV.y) * smoothstep(1.0, 0.9, screenUV.y);
     refractionOffset *= edgeFade;
     
-    // Sample refraction from the environment cubemap only. Water no longer reads
-    // the solid color texture, so it is fully decoupled from the solid pass and
-    // can be recorded/rendered on its own command buffer in parallel. The solid
-    // 360 cubemap already contains the captured solid environment, so refraction
-    // still shows nearby solids via the cubemap.
+    // Sample refraction via HARDWARE RAY TRACING (§10: Snell, IOR 1.333).
+    // Path selection: async RT pipeline outputs (half-res, 1-frame latency)
+    // when enabled, else inline ray queries (full-res, no latency), else the
+    // sky equirect. The legacy 360° capture cubemap is removed.
+    // rtThickness carries the RT underwater path length when provided (>= 0).
     vec3 sceneColor = vec3(0.0);
+    float rtThickness = -1.0;
     if (enableRefraction) {
+#ifdef RT_ENABLED
+        float waterIor = clamp(rt.water.x, 1.0, 2.5);
+        float maxRefr = max(rt.distances.y, 1.0);
+#else
+        float waterIor = 1.333333; // approximate index of refraction for water
+        float maxRefr = 300.0;
+#endif
         // Approximate air->water refraction. GLSL `refract` expects the incident
         // vector (eye -> surface), i.e. -viewDir; the result is the true
         // transmitted ray pointing INTO the water toward the underwater scene.
-        float waterIor = 1.333333; // approximate index of refraction for water
-        vec3 refractDir = refract(-viewDir, normal, 1.0 / waterIor);
-        if (length(refractDir) < 1e-5) {
+        vec3 refrRay = refract(-viewDir, normal, 1.0 / waterIor);
+        if (length(refrRay) < 1e-5) {
             // fallback to reflection if total internal reflection occurs
-            refractDir = reflect(-viewDir, normal);
+            refrRay = reflect(-viewDir, normal);
         }
         // Apply Perlin-based angular distortion so refractionStrength visibly
-        // warps the cubemap lookup. The offset is expressed in the surface
-        // tangent frame (T,B) so the distortion follows the wave orientation
-        // and is already modulated by edgeFade above.
-        refractDir = normalize(refractDir + T * refractionOffset.x + B * refractionOffset.y);
-
-        // The solid360 cube faces are captured with INVERTED view directions
-        // (see Solid360Renderer): sampling the cube with direction d returns the
-        // view captured toward -d. Negate the transmitted ray so the lookup lands
-        // on the face holding the underwater scene instead of the opposite one
-        // (same sign convention the reflection lookup below relies on).
-        vec3 sampleDir = -refractDir;
-
-        // Depth-softened refraction LOD: thicker water columns and stronger
-        // volume blur sample deeper (blurrier) mips of the environment cube,
-        // approximating volumetric scattering that a single sharp fetch
-        // cannot reproduce. Range 0..4 matches CUBE360_MIP_LEVELS - 1.
-        float refrLod = clamp(waterThickness * 0.02 + blurRadius * 0.15 * volumeBlurFactor, 0.0, 4.0);
-
-        vec3 cubeColor;
-        // Optional box blur of the refracted cubemap. The original screen-space
-        // blur sampled neighbouring texels around refractedUV; the cubemap path
-        // approximates it by sampling neighbouring directions around sampleDir.
-        if (enableBlur && blurSamples > 1 && blurRadius > 0.01 && volumeBlurFactor > 0.01) {
-            int halfK = blurSamples / 2;
-            vec3 acc = vec3(0.0);
-            float weight = 0.0;
-            // Convert texel radius to angular offset. 0.01 rad per texel is a
-            // heuristic that yields a visible but subtle blur at blurRadius=8.
-            float angularStep = 0.01 * blurRadius;
-            for (int bx = -halfK; bx <= halfK; ++bx) {
-                for (int by = -halfK; by <= halfK; ++by) {
-                    vec3 jittered = normalize(sampleDir + T * float(bx) * angularStep + B * float(by) * angularStep);
-                    acc += textureLod(sceneSkyCube, jittered, refrLod).rgb;
-                    weight += 1.0;
-                }
+        // warps the lookup. The offset is expressed in the surface tangent
+        // frame (T,B) so the distortion follows the wave orientation.
+        refrRay = normalize(refrRay + T * refractionOffset.x + B * refractionOffset.y);
+        bool refrResolved = false;
+#ifdef RT_ENABLED
+        if (usePipe && rt.toggles.y > 0.5) {
+            vec4 pipeRefr = texture(rtRefractTex, screenUV);
+            if (pipeRefr.a >= 0.0) {
+                sceneColor = pipeRefr.rgb;
+                rtThickness = pipeRefr.a;
+                refrResolved = true;
             }
-            cubeColor = acc / max(weight, 1.0);
-        } else {
-            cubeColor = textureLod(sceneSkyCube, sampleDir, refrLod).rgb;
         }
-        sceneColor = cubeColor;
+        if (!refrResolved && rtReady && rt.toggles.y > 0.5) {
+            vec4 hit = rtTraceWater(fragPosWorld - normal * 0.05, refrRay, maxRefr);
+            sceneColor = hit.rgb;
+            // Hit: underwater path length. Miss: deep water (full path).
+            rtThickness = (hit.a >= 0.0) ? hit.a : maxRefr;
+            refrResolved = true;
+        }
+#endif
+        if (!refrResolved) {
+            // Sky fallback (also the non-RT path): refracted sky through the
+            // surface, no thickness (back-face raster method covers thickness).
+            sceneColor = texture(skyEquirectTex, waterDirToEquirectUV(refrRay)).rgb;
+        }
     }
+
+    // === RT THICKNESS + BEER-LAMBERT (§11) ===
+    // Prefer the RT underwater path length (entry=water surface,
+    // exit=underwater hit) over the raster back-face measurement when the RT
+    // thickness toggle produced one. Attenuate the refracted light BEFORE the
+    // tint mix: T = exp(-absorption * thickness).
+    vec3 absorbCoeff = vec3(0.35, 0.12, 0.08);
+    float absorbScale = 1.0;
+#ifdef RT_ENABLED
+    if (rtReady && rt.toggles.z > 0.5 && rtThickness >= 0.0) {
+        waterThickness = rtThickness * max(rt.absorption.a, 0.0);
+        absorbCoeff = rt.absorption.rgb;
+        absorbScale = 1.0; // thickness already scaled above
+    } else {
+        absorbCoeff = rt.absorption.rgb;
+    }
+#endif
+    vec3 transmittance = exp(-absorbCoeff * max(waterThickness * absorbScale, 0.0));
+    sceneColor *= transmittance;
 
     // sceneDepthRaw already sampled once at the top of main() and reused.
     // Sample g-buffer attachments produced by the main pass (if available)
@@ -304,17 +374,32 @@ void main() {
         specularColor += ubo.lightColor.xyz * glitter * glitterIntensity;
     }
     
-    // === REFLECTION ===
-    // The solid360 cube faces are captured inverted (sampling d returns the view
-    // toward -d), so pass the surface->eye view direction straight into reflect()
-    // to land on the correct face — same convention as main.frag's environmentMap.
-    vec3 reflectDir = reflect(viewDir, normal);
+    // === REFLECTION (hardware RT §9) ===
+    // Standard convention: reflect the eye-to-surface incident (-viewDir).
+    // Pipeline outputs (half-res, 1-frame latency) win when enabled and valid;
+    // else inline ray queries; else the sky equirect. No 360 cubemap.
+    vec3 reflectDir = reflect(-viewDir, normal);
 
-    // Wind-roughened water blurs its mirror image: drive the cubemap LOD from
-    // the user blur radius so calm water stays sharp while rough water
-    // samples the smaller mips generated each frame by the 360 pass.
-    float reflLod = clamp(blurRadius * 0.15, 0.0, 4.0);
-    vec3 skyColor = textureLod(sceneSkyCube, reflectDir, reflLod).rgb;
+    vec3 skyColor = vec3(0.0);
+    bool reflResolved = false;
+#ifdef RT_ENABLED
+    if (usePipe && rt.toggles.x > 0.5) {
+        vec4 pipeRefl = texture(rtReflectTex, screenUV);
+        if (pipeRefl.a > 0.5) {
+            skyColor = pipeRefl.rgb;
+            reflResolved = true;
+        }
+    }
+    if (!reflResolved && rtReady && rt.toggles.x > 0.5) {
+        float maxRefl = max(rt.distances.x, 1.0);
+        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), maxRefl);
+        skyColor = hit.rgb;
+        reflResolved = true;
+    }
+#endif
+    if (!reflResolved) {
+        skyColor = texture(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir))).rgb;
+    }
 
     // Uniform reflection toggle: when set, apply reflectionStrength uniformly
     // instead of modulating by Fresnel. This flag is stored in reserved2.w
@@ -553,10 +638,11 @@ void main() {
         outColor = vec4(debugCol, 1.0);
     }
 
-    // Debug mode 33: raw environment cubemap (reflection of view dir) — verifies
-    // the water pass reaches the cubemap it now depends on (no solid color).
+    // Debug mode 33: raw sky equirect (reflection of view dir) — verifies the
+    // water pass reaches the sky fallback it uses for RT misses.
     if (dbgMode == 33) {
-        vec3 sc = texture(sceneSkyCube, reflect(viewDir, normal)).rgb * 0.9;
+        vec3 sc = texture(skyEquirectTex,
+            waterDirToEquirectUV(normalize(reflect(-viewDir, normal)))).rgb;
         outColor = vec4(sc, 1.0);
     }
 
@@ -579,14 +665,14 @@ void main() {
 
     // --- Reflection sampling debug helpers ---
     // Use the global debug mode (ubo.debugParams.x) to visualize reflection
-    // computation steps and cubemap sampling. Helpful to diagnose orientation.
+    // computation steps and RT sampling. Helpful to diagnose orientation.
     if (dbgMode == 37) {
         // Visualize reflection vector (packed to [0,1])
         vec3 vis = reflectDir * 0.5 + 0.5;
         outColor = vec4(vis, 1.0);
     }
     if (dbgMode == 38) {
-        // Show direct cubemap sample
+        // Show RT/sky reflection color actually used by shading
         outColor = vec4(skyColor, 1.0);
     }
 
@@ -632,6 +718,29 @@ void main() {
         float denom = max(wp.causticParams.w, 1.0);
         float v = clamp(waterThickness / denom, 0.0, 1.0);
         outColor = vec4(vec3(v), 1.0);
+    }
+
+    // ── Hybrid RT debug views (settings.rtDebugView mirrors) ──
+    // 50 = RT/pipeline reflection only, 51 = refraction only,
+    // 52 = RT thickness, 53 = Fresnel, 54 = Beer-Lambert transmittance.
+    if (dbgMode == 50) {
+        outColor = vec4(skyColor, 1.0);
+    }
+    if (dbgMode == 51) {
+        outColor = vec4(sceneColor, 1.0);
+    }
+    if (dbgMode == 52) {
+        float thickDenom = 300.0;
+#ifdef RT_ENABLED
+        thickDenom = max(rt.distances.y, 1.0);
+#endif
+        outColor = vec4(vec3(clamp(waterThickness / thickDenom, 0.0, 1.0)), 1.0);
+    }
+    if (dbgMode == 53) {
+        outColor = vec4(vec3(clamp(fresnel, 0.0, 1.0)), 1.0);
+    }
+    if (dbgMode == 54) {
+        outColor = vec4(clamp(transmittance, 0.0, 1.0), 1.0);
     }
 
 

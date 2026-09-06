@@ -92,13 +92,11 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     waterRenderUBOBinding.pImmutableSamplers = nullptr;
     waterRenderUBOBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 
-    // binding 11: 360° environment cubemap sampler for solid-shader reflections
-    VkDescriptorSetLayoutBinding envMapBinding{};
-    envMapBinding.binding = 11;
-    envMapBinding.descriptorCount = 1;
-    envMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    envMapBinding.pImmutableSamplers = nullptr;
-    envMapBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // NOTE (hybrid RT): binding 11 (legacy 360° environment cubemap) was
+    // REMOVED. Solid reflections and water reflection/refraction are now
+    // hardware ray tracing (inline ray queries + water RT pipeline) with the
+    // sky equirect as the miss fallback. The old Solid360 cubemap capture
+    // passes, targets, sync and descriptors are deprecated (see SceneRenderer).
 
     // binding 12: roughness map array
     VkDescriptorSetLayoutBinding roughnessSamplerBinding{};
@@ -116,11 +114,56 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     aoSamplerBinding.pImmutableSamplers = nullptr;
     aoSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 14> bindings = {
+    // ── Hybrid RT bindings (fragment stage: inline ray queries) ──────────
+    // binding 14: TLAS (stable proxy BLAS; ray queries in main.frag/water.frag)
+    VkDescriptorSetLayoutBinding tlasBinding{};
+    tlasBinding.binding = 14;
+    tlasBinding.descriptorCount = 1;
+    tlasBinding.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    tlasBinding.pImmutableSamplers = nullptr;
+    tlasBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 15: RT water reflection output (half-res, sampled by water.frag)
+    VkDescriptorSetLayoutBinding rtReflectBinding{};
+    rtReflectBinding.binding = 15;
+    rtReflectBinding.descriptorCount = 1;
+    rtReflectBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    rtReflectBinding.pImmutableSamplers = nullptr;
+    rtReflectBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 16: RT water refraction + thickness output (rgb=color, a=thickness)
+    VkDescriptorSetLayoutBinding rtRefractBinding{};
+    rtRefractBinding.binding = 16;
+    rtRefractBinding.descriptorCount = 1;
+    rtRefractBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    rtRefractBinding.pImmutableSamplers = nullptr;
+    rtRefractBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 17: RT params UBO (toggles, distances, IOR, absorption, debug)
+    VkDescriptorSetLayoutBinding rtParamsBinding{};
+    rtParamsBinding.binding = 17;
+    rtParamsBinding.descriptorCount = 1;
+    rtParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    rtParamsBinding.pImmutableSamplers = nullptr;
+    rtParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 18: RT proxy metadata (per-box albedo/flags for ray-query hit
+    // shading in main.frag). Same buffer the RT pipeline samples at its set 0/4.
+    VkDescriptorSetLayoutBinding rtMetaBinding{};
+    rtMetaBinding.binding = 18;
+    rtMetaBinding.descriptorCount = 1;
+    rtMetaBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    rtMetaBinding.pImmutableSamplers = nullptr;
+    rtMetaBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Binding numbers are sparse by design: 11 (legacy 360 cubemap) is
+    // intentionally absent.
+    std::array<VkDescriptorSetLayoutBinding, 18> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
         shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
         waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
-        envMapBinding, roughnessSamplerBinding, aoSamplerBinding
+        roughnessSamplerBinding, aoSamplerBinding,
+        tlasBinding, rtReflectBinding, rtRefractBinding, rtParamsBinding, rtMetaBinding
     };
     // Fill the material binding at position 5
     bindings[5].binding = 5;
@@ -129,13 +172,12 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     bindings[5].pImmutableSamplers = nullptr;
     bindings[5].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
-    // Binding flags — enable update-after-bind for binding 11 (cubemap environment map)
-    // so that vkUpdateDescriptorSets can write binding 11 while a command buffer
-    // referencing this descriptor set is still pending (the cubemap view is
-    // recreated on swapchain resize).
-    std::array<VkDescriptorBindingFlags, 14> bindingFlags{};
+    // No update-after-bind bindings remain: the legacy cubemap binding 11
+    // (the only UPDATE_AFTER_BIND binding, for swapchain-resize view churn)
+    // is gone. RT views/TLAS are stable between resizes (rewritten only on
+    // resize/recreate events, never while in flight).
+    std::array<VkDescriptorBindingFlags, 18> bindingFlags{};
     bindingFlags.fill(0);
-    bindingFlags[11] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
 
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};
     bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
@@ -164,9 +206,11 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
         mainDescriptorSets_[i] = app.createDescriptorSet(descriptorSetLayout_);
     }
 
-    // Allocate one static descriptor set for bindings 1-13 (textures, materials, sky,
-    // water params, cubemap). Written once in SceneRenderer::init() and then copied
-    // into per-frame descriptor sets so per-frame updates only touch binding 0 (UBO).
+    // Allocate one static descriptor set for the scene-static bindings
+    // (textures, materials, sky, water params, shadows). Written once in
+    // SceneRenderer::init() and then copied into per-frame descriptor sets so
+    // per-frame updates only touch binding 0 (UBO). RT bindings (14-17) are
+    // written by SceneRenderer alongside (stable handles, resize-only updates).
     staticDescriptorSet_ = app.createDescriptorSet(descriptorSetLayout_);
 
     // Create a separate material descriptor layout used for materials only

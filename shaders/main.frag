@@ -1,5 +1,11 @@
 
-#version 450
+#version 460
+// RT_ENABLED is defined for the main_rt.frag.spv variant (hardware RT path).
+// Without it the shader uses the procedural-sky fallback with identical miss
+// baselines, so non-RT hardware stays validation-clean (no TLAS/ray queries).
+#ifdef RT_ENABLED
+#extension GL_EXT_ray_query : require
+#endif
 #include "includes/locations.glsl"
 
 layout(location = VARY_COLOR) in vec3 fragColor;
@@ -34,6 +40,19 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 #endif
 
 #include "includes/hsv.glsl"
+
+// Hybrid RT declarations (bindings 14/17/18 — TLAS, params, proxy metadata).
+// The TLAS holds the stable solid-proxy boxes; water surface is excluded by
+// design (origins, never targets). Shaders gate all sampling on rt.debug.y
+// (tlasReady): before the first BLAS/TLAS build completes everything falls
+// back to sky/CSM so no invalid acceleration structure is ever traced.
+// Compiled out entirely without RT_ENABLED (non-RT hardware fallback).
+#ifdef RT_ENABLED
+#include "includes/rt_params.glsl"
+layout(set = 0, binding = 14) uniform accelerationStructureEXT rtTlas;
+layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rt; };
+layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]; };
+#endif
 
 // Global toggles
 bool roughnessEnabled = ubo.debugParams.y > 0.5;
@@ -202,7 +221,9 @@ void main() {
     vec3 toLight = -normalize(ubo.lightDir.xyz);
     float NdotL = max(dot(worldNormal, toLight), 0.0);
 
-    // Shadow calculation (skipped for brush pass to avoid self-shadowing)
+    // Shadow calculation (CSM authoritative macro sun-shadow — NEVER replaced
+    // by RT; see §2/§21). RT adds an optional selective local/contact term
+    // below, combined without double-darkening.
     float shadow = 0.0;
 #ifndef BRUSH_PASS
     vec4 adjustedPosLightSpace = fragPosLightSpace;
@@ -215,7 +236,34 @@ void main() {
         }
     }
 #endif
+    // RT local/contact shadows (default OFF — CSM-only is authoritative).
+    // Only where CSM says lit: nearby proxy geometry adds high-frequency
+    // contact occlusion the cascades cannot resolve. CSM-shadowed pixels keep
+    // the CSM result (no double-darkening: combined as independent occluders).
+    // Compiled out without RT_ENABLED (rtLocalShadow stays 0 = CSM-only).
+    float rtLocalShadow = 0.0;
+#if !defined(BRUSH_PASS) && defined(RT_ENABLED)
+    bool rtReady = (rt.debug.y > 0.5);
+    if (rtReady && rt.toggles.w > 0.5 && shadow < 0.5 && NdotL > 0.01) {
+        vec3 sunDir = -normalize(ubo.lightDir.xyz);
+        float shadowDist = max(rt.distances.z, 0.5);
+        rayQueryEXT shadowRQ;
+        rayQueryInitializeEXT(shadowRQ, rtTlas, gl_RayFlagsOpaqueEXT, 0xFF,
+            fragPosWorld + worldNormal * 0.05, 0.05, sunDir, shadowDist);
+        while (rayQueryProceedEXT(shadowRQ)) {}
+        if (rayQueryGetIntersectionTypeEXT(shadowRQ, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+            float hitT = rayQueryGetIntersectionTEXT(shadowRQ, true);
+            // Contact falloff: full occlusion at contact, fading to lit at maxDist.
+            rtLocalShadow = clamp(1.0 - hitT / shadowDist, 0.0, 1.0);
+        }
+    }
+#endif
     float totalShadow = shadow;
+#ifndef BRUSH_PASS
+    // Independent-occluder combine: CSM lit + RT lit = lit; either occluded =
+    // occluded. RT never brightens CSM shadows and never double-darkens.
+    totalShadow = 1.0 - (1.0 - shadow) * (1.0 - clamp(rtLocalShadow, 0.0, 1.0));
+#endif
 
     // Blend material parameters (ambient/specular) by barycentric weights
     vec4 matFlags0 = materials[texIndices.x].materialFlags;
@@ -255,15 +303,13 @@ void main() {
     float spec = (NdotL > 0.0) ? pow(max(dot(viewDir, reflectDir), 0.0), specPower) : 0.0;
     vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * blendedSpec.x;
 
-    // Environment reflection (360° cubemap) — skipped during cubemap capture
-    // (ubo.materialFlags.x is set to 1.0 by the 360 async task to avoid feedback).
-    // Physical model: Schlick Fresnel with a dielectric F0 (0.04) scaled by the
-    // per-material reflectionStrength, plus roughness-driven cubemap LOD so
-    // rough surfaces sample the blurred mips generated each frame by the 360
-    // pass instead of a razor-sharp mirror image. The final mix below is
-    // energy-conserving: lit*(1-k) + env*k with k = strength*Fresnel, so a
-    // strength of 1 gives ~4% reflectance at normal incidence and a full
-    // mirror only at grazing angles.
+    // Environment reflection via HARDWARE RAY TRACING (hybrid RT §7).
+    // The rasterized world position + shading normal seed one secondary ray
+    // through the stable proxy TLAS. On hit the proxy-box material shades the
+    // reflection; on miss the procedural sky is evaluated directly. The old
+    // 360° cubemap capture is removed. Single bounce, roughness-gated and
+    // distance-limited for performance (§16); very rough materials keep the
+    // cheap sky approximation instead of tracing.
     vec3 envReflection = vec3(0.0);
     float blendedRefStrength = 0.0;
     float envFresnelFactor = 0.0;
@@ -272,23 +318,71 @@ void main() {
         float refStrength1 = materials[texIndices.y].tessLevelParams.z;
         float refStrength2 = materials[texIndices.z].tessLevelParams.z;
         blendedRefStrength = refStrength0 * w.x + refStrength1 * w.y + refStrength2 * w.z;
-        // Skip the cubemap fetch on non-reflective surfaces (the mix factor
-        // below collapses to zero, leaving the lit colour untouched).
+        // Skip non-reflective surfaces (the mix factor below collapses to zero).
         if (blendedRefStrength > 1e-4) {
             vec3 reflN = normalize(worldNormal);
             vec3 reflV = normalize(viewDir);
             float cosTheta = clamp(dot(reflN, reflV), 0.0, 1.0);
             float fresnel = 0.04 + 0.96 * pow(1.0 - cosTheta, 5.0);
             float rough = clamp(roughnessValue * roughnessFactor, 0.0, 1.0);
-            // CUBE360_MIP_LEVELS - 1 == 4: fully rough samples the smallest mip.
-            float envLod = rough * 4.0;
-            vec3 envReflectDir = reflect(viewDir, worldNormal);
-            vec3 envColor = textureLod(environmentMap, normalize(envReflectDir), envLod).rgb;
-            // AO darkens the reflected environment; roughness softens (via the
-            // LOD above) and mildly dims it instead of killing it outright.
-            envColor *= aoBlend * (1.0 - rough * 0.5);
-            envReflection = envColor;
+            vec3 reflDir = reflect(-reflV, reflN);
+            // Procedural sky fallback (dielectric F0=0.04 gradient using the
+            // scene sky colors — also the RT miss value, so toggling RT never
+            // pops the miss baseline).
+            vec3 skyApprox = vec3(0.35, 0.5, 0.65);
+#ifdef RT_ENABLED
+            skyApprox = rtProceduralSky(normalize(reflDir), sky.skyHorizon.rgb,
+                                        sky.skyZenith.rgb, sky.skyParams.y);
+#endif
+            skyApprox *= aoBlend * (1.0 - rough * 0.5);
+            vec3 rtColor = skyApprox;
+            // Roughness gate + distance limit + global toggle + TLAS readiness
+            // (ray queries compiled out without RT_ENABLED — sky fallback).
+            float roughThreshold = 0.6;
+#ifdef RT_ENABLED
+            roughThreshold = clamp(rt.distances.w, 0.0, 1.0);
+            bool doRTTrace = (rt.debug.y > 0.5) && rt.toggles.x > 0.5 && rough <= roughThreshold;
+#else
+            bool doRTTrace = false;
+#endif
+            if (doRTTrace) {
+#ifdef RT_ENABLED
+                float selfSkip = max(rt.debug.z, 0.05);
+                vec3 origin = fragPosWorld + reflN * selfSkip;
+                rayQueryEXT rq;
+                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, 0xFF,
+                    origin, 0.05, normalize(reflDir), max(rt.distances.x, 1.0));
+                while (rayQueryProceedEXT(rq)) {}
+                if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+                    float hitT = rayQueryGetIntersectionTEXT(rq, true);
+                    // Own-box guard: proxy boxes are coarse — hits closer than
+                    // selfSkip are the fragment's own chunk, not true scenery.
+                    if (hitT >= selfSkip) {
+                        uint boxIdx = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)) / 12u;
+                        RTProxyMetaGLSL meta = rtMetas[boxIdx];
+                        vec3 hitPos = origin + normalize(reflDir) * hitT;
+                        // Ray queries report front/back via FrontFace (no
+                        // HitKind outside hit shaders); backface = exiting.
+                        bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
+                        vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz,
+                                                meta.maxAndFlags.xyz, exiting);
+                        vec3 toLight = -normalize(ubo.lightDir.xyz);
+                        float ndl = max(dot(boxN, toLight), 0.0);
+                        // Proxy shading reuses the hit box's average albedo;
+                        // macro shadows stay CSM-owned (no RT shadow recompute).
+                        vec3 hitAlbedo = meta.albedoRough.rgb;
+                        rtColor = hitAlbedo * (ubo.lightColor.rgb * (0.35 + 0.65 * ndl));
+                        rtColor *= aoBlend * (1.0 - rough * 0.5);
+                    }
+                }
+#endif
+            }
+            envReflection = rtColor;
             envFresnelFactor = clamp(blendedRefStrength * fresnel, 0.0, 1.0);
+#ifdef RT_ENABLED
+            // RT debug view 57 forces a full mirror (CSM+RT combined inspection).
+            if (int(rt.debug.x + 0.5) == 57) envFresnelFactor = 1.0;
+#endif
         }
     }
 
@@ -560,6 +654,20 @@ void main() {
         // Environment reflection contribution — the cubemap sample weighted
         // by the Fresnel factor actually mixed into the final colour.
         outColor = vec4(envReflection * envFresnelFactor, 1.0);
+        return;
+    }
+    // ── Hybrid RT debug views (also selectable via settings.rtDebugView) ──
+    // 55 = CSM-only shadows, 56 = RT-local-only, 57 = CSM+RT combined shadow.
+    if (debugMode == 55) {
+        outColor = vec4(vec3(shadow), 1.0);
+        return;
+    }
+    if (debugMode == 56) {
+        outColor = vec4(vec3(clamp(rtLocalShadow, 0.0, 1.0)), 1.0);
+        return;
+    }
+    if (debugMode == 57) {
+        outColor = vec4(vec3(totalShadow), 1.0);
         return;
     }
 

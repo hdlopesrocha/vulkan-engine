@@ -1,0 +1,872 @@
+// Hybrid RT: stable AABB-proxy (triangle-box) BLAS/TLAS + water RT pipeline.
+//
+// See RayTracingResources.hpp for the architecture. Key points:
+//  - Proxy = triangle boxes (12 tris/box, 4096 slots), NOT AABB geometries, so
+//    the hit group is a plain TRIANGLES_HIT_GROUP (no intersection shader).
+//  - Face culling disabled on the TLAS instance so camera-in-volume and thin
+//    boxes still hit; hit shaders derive the face normal analytically.
+//  - BLAS is rebuilt (in place, same addresses) only when the staged proxy set
+//    changes, throttled to at most once per 30 frames. TLAS is built once (the
+//    instance references the BLAS by stable device address).
+//  - All barriers use Synchronization2 with short why-comments (AGENTS.md).
+
+#include "RayTracingResources.hpp"
+#include "RendererUtils.hpp"
+#include "../VulkanApp.hpp"
+
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <iostream>
+#include <vector>
+
+// 8 corners + 36 indices (12 tris) per box; winding irrelevant (cull disabled,
+// analytic normals), kept consistent for determinism.
+static constexpr uint32_t kVertsPerBox = 8;
+static constexpr uint32_t kIndicesPerBox = 36;
+static constexpr uint32_t kTrisPerBox = 12;
+static constexpr uint32_t kBoxIndices[kIndicesPerBox] = {
+    0,1,2, 0,2,3, // -Z
+    4,6,5, 4,7,6, // +Z
+    0,4,5, 0,5,1, // -Y
+    3,2,6, 3,6,7, // +Y
+    0,3,7, 0,7,4, // -X
+    1,5,6, 1,6,2, // +X
+};
+
+void RayTracingResources::init(VulkanApp* app, uint32_t width, uint32_t height) {
+    app_ = app;
+    supported_ = app && app->rayTracingEnabled() &&
+        app->fpCreateAccelerationStructureKHR && app->fpCmdBuildAccelerationStructuresKHR;
+    if (!supported_) {
+        std::cerr << "[HybridRT] RT unsupported — raster + CSM fallback (sky for misses)\n";
+        return;
+    }
+    try {
+        createProxyBuffers(app);
+        createAccelStructures(app);
+        createOutputImages(app, width, height);
+        createRTDescriptors(app);
+        createRTPipeline(app); // graceful: pipelineReady_=false when shaders missing
+    } catch (const std::exception& e) {
+        std::cerr << "[HybridRT] init failed (" << e.what() << ") — RT disabled, raster fallback\n";
+        supported_ = false;
+        pipelineReady_ = false;
+    }
+    printf("[HybridRT] init: supported=%d pipeline=%d maxProxies=%u out=%ux%u\n",
+        (int)supported_, (int)pipelineReady_, kMaxProxies, outWidth_, outHeight_);
+}
+
+void RayTracingResources::cleanup(VulkanApp* app) {
+    if (!app) app = app_;
+    destroyRTPipeline(app);
+    destroyOutputImages(app);
+    if (app && app->fpDestroyAccelerationStructureKHR) {
+        if (blas_ != VK_NULL_HANDLE) { app->fpDestroyAccelerationStructureKHR(app->getDevice(), blas_, nullptr); blas_ = VK_NULL_HANDLE; }
+        if (tlas_ != VK_NULL_HANDLE) { app->fpDestroyAccelerationStructureKHR(app->getDevice(), tlas_, nullptr); tlas_ = VK_NULL_HANDLE; }
+    }
+    if (app) {
+        if (blasBuffer_.buffer) app->destroyBuffer(blasBuffer_);
+        if (tlasBuffer_.buffer) app->destroyBuffer(tlasBuffer_);
+        if (blasScratch_.buffer) app->destroyBuffer(blasScratch_);
+        if (tlasScratch_.buffer) app->destroyBuffer(tlasScratch_);
+        if (aabbBuffer_.buffer) app->destroyBuffer(aabbBuffer_);
+        if (metaBuffer_.buffer) app->destroyBuffer(metaBuffer_);
+        if (tlasInstanceBuffer_.buffer) app->destroyBuffer(tlasInstanceBuffer_);
+        if (paramsBuffer_.buffer) app->destroyBuffer(paramsBuffer_);
+        if (sbtBuffer_.buffer) app->destroyBuffer(sbtBuffer_);
+        if (rtSetPool_ != VK_NULL_HANDLE) {
+            app->resources.removeDescriptorPool(rtSetPool_);
+            vkDestroyDescriptorPool(app->getDevice(), rtSetPool_, nullptr);
+            rtSetPool_ = VK_NULL_HANDLE;
+        }
+        if (rtSetLayout_ != VK_NULL_HANDLE) {
+            app->resources.removeDescriptorSetLayout(rtSetLayout_);
+            vkDestroyDescriptorSetLayout(app->getDevice(), rtSetLayout_, nullptr);
+            rtSetLayout_ = VK_NULL_HANDLE;
+        }
+        if (linearSampler_ != VK_NULL_HANDLE) {
+            app->resources.removeSampler(linearSampler_);
+            vkDestroySampler(app->getDevice(), linearSampler_, nullptr);
+            linearSampler_ = VK_NULL_HANDLE;
+        }
+        for (auto& s : rtSets_) s = VK_NULL_HANDLE;
+    }
+    supported_ = false;
+    pipelineReady_ = false;
+}
+
+void RayTracingResources::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height) {
+    if (!supported_) return;
+    destroyOutputImages(app);
+    createOutputImages(app, width, height);
+    writeRTSet(app); // re-point storage-image bindings at the new views
+}
+
+// ── RT descriptors: dedicated per-slot sets ─────────────────────────────
+// Layout (ray-tracing stages only, never mixed into raster pipeline layouts):
+//   0 = TLAS (ACCELERATION_STRUCTURE, RAYGEN)
+//   1 = reflection output (STORAGE_IMAGE, RAYGEN)
+//   2 = refraction+thickness output (STORAGE_IMAGE, RAYGEN)
+//   3 = params UBO (UNIFORM, RAYGEN|MISS|CLOSEST_HIT)
+//   4 = proxy metadata (STORAGE, RAYGEN|CLOSEST_HIT)
+//   5 = water depth, per-slot view (COMBINED_SAMPLER, RAYGEN)
+//   6 = sky equirect, per-slot view (COMBINED_SAMPLER, RAYGEN|MISS)
+void RayTracingResources::createRTDescriptors(VulkanApp* app) {
+    VkDevice device = app->getDevice();
+    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+    auto bind = [&](uint32_t i, VkDescriptorType t, VkShaderStageFlags stages) {
+        bindings[i].binding = i;
+        bindings[i].descriptorType = t;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags = stages;
+    };
+    const VkShaderStageFlags rayStages =
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+    bind(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+    bind(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+    bind(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+    bind(3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, rayStages);
+    bind(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
+    bind(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+    bind(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR);
+    VkDescriptorSetLayoutCreateInfo li{};
+    li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    li.bindingCount = uint32_t(bindings.size());
+    li.pBindings = bindings.data();
+    if (vkCreateDescriptorSetLayout(device, &li, nullptr, &rtSetLayout_) != VK_SUCCESS)
+        throw std::runtime_error("HybridRT: failed to create RT descriptor set layout");
+    app->registerDescriptorSetLayout(rtSetLayout_, "HybridRT: rtSetLayout");
+
+    std::array<VkDescriptorPoolSize, 5> poolSizes{{
+        {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 3},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 6},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12},
+    }};
+    VkDescriptorPoolCreateInfo pi{};
+    pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pi.maxSets = 3;
+    pi.poolSizeCount = uint32_t(poolSizes.size());
+    pi.pPoolSizes = poolSizes.data();
+    if (vkCreateDescriptorPool(device, &pi, nullptr, &rtSetPool_) != VK_SUCCESS)
+        throw std::runtime_error("HybridRT: failed to create RT descriptor pool");
+    app->resources.addDescriptorPool(rtSetPool_, "HybridRT: rtSetPool");
+    std::array<VkDescriptorSetLayout, 3> layouts{rtSetLayout_, rtSetLayout_, rtSetLayout_};
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = rtSetPool_;
+    ai.descriptorSetCount = 3;
+    ai.pSetLayouts = layouts.data();
+    if (vkAllocateDescriptorSets(device, &ai, rtSets_) != VK_SUCCESS)
+        throw std::runtime_error("HybridRT: failed to allocate RT descriptor sets");
+    for (auto s : rtSets_) app->resources.addDescriptorSet(s, "HybridRT: rtSet");
+    writeRTSet(app);
+}
+
+void RayTracingResources::writeRTSet(VulkanApp* app) {
+    if (rtSets_[0] == VK_NULL_HANDLE) return;
+    VkDevice device = app->getDevice();
+    // TLAS may be VK_NULL_HANDLE before the first buildIfNeeded() — the
+    // descriptor write is still recorded (validation allows null AS with
+    // VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND? No — instead skip TLAS writes
+    // until the first build completes; dispatches are no-ops until then
+    // because isPipelineReady() also requires a completed build).
+    const bool haveTlas = (tlas_ != VK_NULL_HANDLE);
+    for (int slot = 0; slot < 3; ++slot) {
+        std::vector<VkWriteDescriptorSet> writes;
+        writes.reserve(7);
+        VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
+        if (haveTlas) {
+            asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+            asInfo.accelerationStructureCount = 1;
+            asInfo.pAccelerationStructures = &tlas_;
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.pNext = &asInfo;
+            w.dstSet = rtSets_[slot];
+            w.dstBinding = 0;
+            w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            writes.push_back(w);
+        }
+        VkDescriptorImageInfo reflectImg{};
+        reflectImg.sampler = VK_NULL_HANDLE;
+        reflectImg.imageView = reflectView_;
+        reflectImg.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkDescriptorImageInfo refractImg{};
+        refractImg.sampler = VK_NULL_HANDLE;
+        refractImg.imageView = refractView_;
+        refractImg.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkDescriptorBufferInfo paramsInfo{paramsBuffer_.buffer, 0, sizeof(RayTracingParams)};
+        VkDescriptorBufferInfo metaInfo{metaBuffer_.buffer, 0, sizeof(RTProxyMeta) * kMaxProxies};
+        // NOTE: water-depth (5) + sky (6) views are per-slot scene targets owned
+        // by WaterRenderer/SkyRenderer; setSceneViews() writes them (init +
+        // resize). Here we write the RT-owned bindings only (0-4).
+        std::vector<VkDescriptorImageInfo> imgInfos;
+        imgInfos.reserve(2);
+        imgInfos.push_back(reflectImg);
+        imgInfos.push_back(refractImg);
+        std::vector<VkDescriptorBufferInfo> bufInfos;
+        bufInfos.reserve(2);
+        bufInfos.push_back(paramsInfo);
+        bufInfos.push_back(metaInfo);
+        for (uint32_t b = 1; b <= 2; ++b) {
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = rtSets_[slot];
+            w.dstBinding = b;
+            w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            w.pImageInfo = &imgInfos[b - 1];
+            writes.push_back(w);
+        }
+        for (uint32_t b = 3; b <= 4; ++b) {
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = rtSets_[slot];
+            w.dstBinding = b;
+            w.descriptorCount = 1;
+            w.descriptorType = (b == 3) ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            w.pBufferInfo = &bufInfos[b - 3];
+            writes.push_back(w);
+        }
+        if (!writes.empty())
+            vkUpdateDescriptorSets(device, uint32_t(writes.size()), writes.data(), 0, nullptr);
+    }
+    // Keep the TLAS binding fresh after the first build (writeRTSet runs at
+    // init before any build, so haveTlas==false then; buildIfNeeded() calls
+    // this again once via ensureTlasWritten_ — see recordBuild tail).
+}
+
+void RayTracingResources::setSceneViews(VulkanApp* app, const VkImageView waterDepthViews[3],
+                                        const VkImageView skyViews[3]) {
+    if (!supported_ || rtSets_[0] == VK_NULL_HANDLE) return;
+    VkDevice device = app->getDevice();
+    // Per-slot sampled views (stable between resizes). Samplers: depth uses
+    // nearest (exact hits, no filtering bleed); sky uses the RT linear sampler.
+    for (int slot = 0; slot < 3; ++slot) {
+        if (waterDepthViews[slot] == VK_NULL_HANDLE || skyViews[slot] == VK_NULL_HANDLE) continue;
+        VkDescriptorImageInfo depthInfo{};
+        depthInfo.sampler = linearSampler_;
+        depthInfo.imageView = waterDepthViews[slot];
+        depthInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDescriptorImageInfo skyInfo{};
+        skyInfo.sampler = linearSampler_;
+        skyInfo.imageView = skyViews[slot];
+        skyInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet writes[2]{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = rtSets_[slot];
+        writes[0].dstBinding = 5;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].pImageInfo = &depthInfo;
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = rtSets_[slot];
+        writes[1].dstBinding = 6;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[1].pImageInfo = &skyInfo;
+        vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    }
+}
+
+void RayTracingResources::createProxyBuffers(VulkanApp* app) {
+    const VkDeviceSize vertBytes = VkDeviceSize(kMaxProxies) * kVertsPerBox * sizeof(float) * 3;
+    const VkDeviceSize idxBytes = VkDeviceSize(kMaxProxies) * kIndicesPerBox * sizeof(uint32_t);
+    // Box soup: host-visible staging (CPU writes on dirty) + device addresses
+    // for BLAS builds. Coherent so memcpy is enough; visibility ordered by the
+    // HOST->ACCEL_BUILD barrier recorded in recordBuild().
+    VkBufferUsageFlags boxUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+        | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    aabbBuffer_ = app->createBuffer(vertBytes + idxBytes, boxUsage,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    // Static index pattern (slot s base vertex s*8), written once — vertex
+    // positions are rewritten on every proxy update.
+    {
+        auto* base = static_cast<char*>(aabbBuffer_.mappedData);
+        auto* idx = reinterpret_cast<uint32_t*>(base + vertBytes);
+        for (uint32_t s = 0; s < kMaxProxies; ++s)
+            for (uint32_t i = 0; i < kIndicesPerBox; ++i)
+                idx[s * kIndicesPerBox + i] = s * kVertsPerBox + kBoxIndices[i];
+        // Degenerate verts initially (zero-area, never hit) for all slots.
+        memset(base, 0, static_cast<size_t>(vertBytes));
+    }
+    VkBufferDeviceAddressInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    ai.buffer = aabbBuffer_.buffer;
+    const VkDeviceAddress boxAddr = vkGetBufferDeviceAddress(app->getDevice(), &ai);
+    aabbAddress_ = boxAddr; // verts at +0, indices at +vertBytes
+    if (boxAddr == 0) throw std::runtime_error("box buffer device address is 0");
+
+    metaBuffer_ = app->createBuffer(sizeof(RTProxyMeta) * kMaxProxies,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    tlasInstanceBuffer_ = app->createBuffer(sizeof(VkAccelerationStructureInstanceKHR),
+        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+        | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    ai.buffer = tlasInstanceBuffer_.buffer;
+    tlasInstanceAddress_ = vkGetBufferDeviceAddress(app->getDevice(), &ai);
+
+    paramsBuffer_ = app->createBuffer(sizeof(RayTracingParams),
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    RayTracingParams defaults{};
+    memcpy(paramsBuffer_.mappedData, &defaults, sizeof(defaults));
+}
+
+void RayTracingResources::createAccelStructures(VulkanApp* app) {
+    VkDevice device = app->getDevice();
+    const uint32_t totalTris = kMaxProxies * kTrisPerBox;
+
+    VkAccelerationStructureGeometryTrianglesDataKHR tris{};
+    tris.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+    tris.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    tris.vertexStride = sizeof(float) * 3;
+    tris.maxVertex = kMaxProxies * kVertsPerBox;
+    tris.indexType = VK_INDEX_TYPE_UINT32;
+    VkAccelerationStructureGeometryKHR geom{};
+    geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    geom.geometry.triangles = tris; // device addresses patched per build (same buffer)
+    geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR; // closest-hit only, no any-hit (perf §16)
+
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
+    buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.geometryCount = 1;
+    buildInfo.pGeometries = &geom;
+
+    VkAccelerationStructureBuildSizesInfoKHR sizes{};
+    sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    app->fpGetAccelerationStructureBuildSizesKHR(device,
+        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &totalTris, &sizes);
+
+    VkBufferUsageFlags asUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
+        | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    blasBuffer_ = app->createBuffer(sizes.accelerationStructureSize, asUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    blasScratch_ = app->createBuffer(std::max(sizes.buildScratchSize, VkDeviceSize(1)), 
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    VkAccelerationStructureCreateInfoKHR blasCI{};
+    blasCI.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    blasCI.buffer = blasBuffer_.buffer;
+    blasCI.size = sizes.accelerationStructureSize;
+    blasCI.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    if (app->fpCreateAccelerationStructureKHR(device, &blasCI, nullptr, &blas_) != VK_SUCCESS)
+        throw std::runtime_error("vkCreateAccelerationStructureKHR (BLAS) failed");
+    VkAccelerationStructureDeviceAddressInfoKHR addrInfo{};
+    addrInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+    addrInfo.accelerationStructure = blas_;
+    blasAddress_ = app->fpGetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
+
+    // TLAS: one instance -> BLAS, identity, full mask, cull disabled (volumes).
+    auto* inst = static_cast<VkAccelerationStructureInstanceKHR*>(tlasInstanceBuffer_.mappedData);
+    memset(inst, 0, sizeof(*inst));
+    inst->transform.matrix[0][0] = 1.0f;
+    inst->transform.matrix[1][1] = 1.0f;
+    inst->transform.matrix[2][2] = 1.0f;
+    inst->instanceCustomIndex = 0;
+    inst->mask = 0xFF;
+    inst->instanceShaderBindingTableRecordOffset = 0;
+    inst->flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+    inst->accelerationStructureReference = blasAddress_;
+
+    VkAccelerationStructureGeometryInstancesDataKHR instances{};
+    instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    instances.arrayOfPointers = VK_FALSE;
+    VkAccelerationStructureGeometryKHR tlasGeom{};
+    tlasGeom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    tlasGeom.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    tlasGeom.geometry.instances = instances; // device address patched per build
+    VkAccelerationStructureBuildGeometryInfoKHR tlasBuild{};
+    tlasBuild.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    tlasBuild.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    tlasBuild.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    tlasBuild.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    tlasBuild.geometryCount = 1;
+    tlasBuild.pGeometries = &tlasGeom;
+    uint32_t onePrimitive = 1;
+    VkAccelerationStructureBuildSizesInfoKHR tlasSizes{};
+    tlasSizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    app->fpGetAccelerationStructureBuildSizesKHR(device,
+        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &tlasBuild, &onePrimitive, &tlasSizes);
+    tlasBuffer_ = app->createBuffer(tlasSizes.accelerationStructureSize, asUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    tlasScratch_ = app->createBuffer(std::max(tlasSizes.buildScratchSize, VkDeviceSize(1)),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkAccelerationStructureCreateInfoKHR tlasCI{};
+    tlasCI.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    tlasCI.buffer = tlasBuffer_.buffer;
+    tlasCI.size = tlasSizes.accelerationStructureSize;
+    tlasCI.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    if (app->fpCreateAccelerationStructureKHR(device, &tlasCI, nullptr, &tlas_) != VK_SUCCESS)
+        throw std::runtime_error("vkCreateAccelerationStructureKHR (TLAS) failed");
+
+    dirty_ = true; // force initial BLAS+TLAS build on first buildIfNeeded()
+}
+
+void RayTracingResources::createOutputImages(VulkanApp* app, uint32_t width, uint32_t height) {
+    outWidth_ = std::max(8u, uint32_t(float(width) * kOutputScale));
+    outHeight_ = std::max(8u, uint32_t(float(height) * kOutputScale));
+    const VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    RendererUtils::createImage2DWithVma(app->getDevice(), app, outWidth_, outHeight_,
+        VK_FORMAT_R16G16B16A16_SFLOAT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+        "HybridRT: reflect output", reflectImage_, reflectAlloc_, reflectMem_, reflectView_);
+    RendererUtils::createImage2DWithVma(app->getDevice(), app, outWidth_, outHeight_,
+        VK_FORMAT_R16G16B16A16_SFLOAT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+        "HybridRT: refract output", refractImage_, refractAlloc_, refractMem_, refractView_);
+    reflectLayout_ = refractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    // UNDEFINED -> GENERAL initial transition. No app helper serves this pair
+    // (transfer/depth-only), so record the barrier directly: fresh images need
+    // no execution dependency (TOP_OF_PIPE, no access masks). Sync init path
+    // may block; never in the frame path.
+    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+        VkImageMemoryBarrier2 barriers[2]{};
+        VkImage imgs[2] = {reflectImage_, refractImage_};
+        for (int i = 0; i < 2; ++i) {
+            barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            barriers[i].srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            barriers[i].srcAccessMask = 0;
+            barriers[i].dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR
+                | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barriers[i].dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[i].image = imgs[i];
+            barriers[i].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        }
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 2;
+        dep.pImageMemoryBarriers = barriers;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    });
+    app->setImageLayoutTracked(reflectImage_, VK_IMAGE_LAYOUT_GENERAL, 0, 1);
+    app->setImageLayoutTracked(refractImage_, VK_IMAGE_LAYOUT_GENERAL, 0, 1);
+    app->setImageLayoutTracked(reflectImage_, VK_IMAGE_LAYOUT_GENERAL, 0, 1);
+    app->setImageLayoutTracked(refractImage_, VK_IMAGE_LAYOUT_GENERAL, 0, 1);
+    reflectLayout_ = refractLayout_ = VK_IMAGE_LAYOUT_GENERAL;
+    if (linearSampler_ == VK_NULL_HANDLE)
+        linearSampler_ = app->createSamplerLinearClamp("HybridRT: linearSampler");
+}
+
+void RayTracingResources::destroyOutputImages(VulkanApp* app) {
+    if (!app) return;
+    VkDevice device = app->getDevice();
+    if (reflectView_ != VK_NULL_HANDLE) {
+        if (app->resources.removeImageView(reflectView_)) vkDestroyImageView(device, reflectView_, nullptr);
+        reflectView_ = VK_NULL_HANDLE;
+    }
+    if (refractView_ != VK_NULL_HANDLE) {
+        if (app->resources.removeImageView(refractView_)) vkDestroyImageView(device, refractView_, nullptr);
+        refractView_ = VK_NULL_HANDLE;
+    }
+    if (reflectImage_ != VK_NULL_HANDLE) { app->destroyImageWithVma(reflectImage_, reflectAlloc_, reflectMem_); reflectImage_ = VK_NULL_HANDLE; }
+    if (refractImage_ != VK_NULL_HANDLE) { app->destroyImageWithVma(refractImage_, refractAlloc_, refractMem_); refractImage_ = VK_NULL_HANDLE; }
+}
+
+void RayTracingResources::setProxies(const std::vector<RTProxyBox>& boxes) {
+    if (!supported_) return;
+    const uint32_t n = std::min<uint32_t>(uint32_t(boxes.size()), kMaxProxies);
+    // Fast path: same count + identical bytes -> no rebuild (avoids BLAS churn
+    // when processPendingMeshes reports no real change).
+    if (n == activeProxyCount_ && n == uint32_t(stagedProxies_.size()) &&
+        (n == 0 || memcmp(stagedProxies_.data(), boxes.data(), n * sizeof(RTProxyBox)) == 0))
+        return;
+    stagedProxies_.assign(boxes.begin(), boxes.begin() + n);
+    activeProxyCount_ = n;
+    dirty_ = true;
+}
+
+bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
+    if (!supported_ || !dirty_ || cmd == VK_NULL_HANDLE) return false;
+    ++frameCounter_;
+    // Throttle: at most one rebuild per 30 frames — chunk bursts (scene load /
+    // brush edits) coalesce into a single build instead of one per publish.
+    // Camera moves / LOD switches never mark dirty, so they never rebuild (§6).
+    if (frameCounter_ - lastBuildFrame_ < 30 && lastBuiltCount_ != UINT32_MAX) return false;
+    const auto t0 = std::chrono::high_resolution_clock::now();
+    const bool built = recordBuild(app, cmd, activeProxyCount_);
+    if (built) {
+        lastBuildFrame_ = frameCounter_;
+        lastBuiltCount_ = activeProxyCount_;
+        dirty_ = false;
+        ++buildCount_;
+        tlasBuilt_ = true;
+        lastBuildMs_ = std::chrono::duration<float, std::milli>(
+            std::chrono::high_resolution_clock::now() - t0).count();
+        // Rare (scene changes only, throttled): one line per rebuild.
+        printf("[HybridRT] BLAS/TLAS rebuild #%u: %u proxies in %.2f ms (CPU record)\n",
+            buildCount_, activeProxyCount_, lastBuildMs_);
+        fflush(stdout);
+    }
+    return built;
+}
+
+bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd, uint32_t count) {
+    VkDevice device = app->getDevice();
+    // 1. Stage box verts + metadata on the host-visible buffers (coherent memcpy).
+    {
+        auto* verts = static_cast<float*>(aabbBuffer_.mappedData);
+        auto* metas = static_cast<RTProxyMeta*>(metaBuffer_.mappedData);
+        for (uint32_t s = 0; s < kMaxProxies; ++s) {
+            float* v = verts + size_t(s) * kVertsPerBox * 3;
+            if (s < count) {
+                const RTProxyBox& b = stagedProxies_[s];
+                const float x0 = b.minp.x, y0 = b.minp.y, z0 = b.minp.z;
+                const float x1 = b.maxp.x, y1 = b.maxp.y, z1 = b.maxp.z;
+                const float c[8][3] = {{x0,y0,z0},{x1,y0,z0},{x1,y1,z0},{x0,y1,z0},
+                                       {x0,y0,z1},{x1,y0,z1},{x1,y1,z1},{x0,y1,z1}};
+                for (int k = 0; k < 8; ++k) { v[k*3+0] = c[k][0]; v[k*3+1] = c[k][1]; v[k*3+2] = c[k][2]; }
+                metas[s].minAndMatId = glm::vec4(b.minp, b.materialId);
+                metas[s].maxAndFlags = glm::vec4(b.maxp, b.flags);
+                metas[s].albedoRough = glm::vec4(b.albedo, b.roughness);
+                metas[s].extra = glm::vec4(0.0f);
+            } else {
+                for (int k = 0; k < 24; ++k) v[k] = 0.0f; // degenerate (never hit)
+                metas[s] = RTProxyMeta{};
+            }
+        }
+    }
+    const VkDeviceSize vertBytes = VkDeviceSize(kMaxProxies) * kVertsPerBox * sizeof(float) * 3;
+    const VkDeviceSize idxBytes = VkDeviceSize(kMaxProxies) * kIndicesPerBox * sizeof(uint32_t);
+
+    // 2. Host writes -> BLAS build inputs (vertex/index/meta/instance buffers).
+    {
+        VkBufferMemoryBarrier2 barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR
+            | VK_ACCESS_2_SHADER_READ_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        // One barrier per buffer (same stage/access; batched in one call below
+        // via three entries — written out explicitly for clarity).
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        VkBufferMemoryBarrier2 barriers[3]{barrier, barrier, barrier};
+        barriers[0].buffer = aabbBuffer_.buffer; barriers[0].offset = 0; barriers[0].size = vertBytes + idxBytes;
+        barriers[1].buffer = metaBuffer_.buffer; barriers[1].offset = 0; barriers[1].size = sizeof(RTProxyMeta) * kMaxProxies;
+        barriers[2].buffer = tlasInstanceBuffer_.buffer; barriers[2].offset = 0; barriers[2].size = sizeof(VkAccelerationStructureInstanceKHR);
+        dep.bufferMemoryBarrierCount = 3;
+        dep.pBufferMemoryBarriers = barriers;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
+
+    // 3. BLAS build (full-capacity triangle soup; inactive slots degenerate).
+    VkAccelerationStructureGeometryTrianglesDataKHR tris{};
+    tris.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+    tris.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    tris.vertexData.deviceAddress = aabbAddress_;
+    tris.vertexStride = sizeof(float) * 3;
+    tris.maxVertex = kMaxProxies * kVertsPerBox;
+    tris.indexType = VK_INDEX_TYPE_UINT32;
+    tris.indexData.deviceAddress = aabbAddress_ + vertBytes;
+    VkAccelerationStructureGeometryKHR geom{};
+    geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    geom.geometry.triangles = tris;
+    geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
+    buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.dstAccelerationStructure = blas_;
+    buildInfo.geometryCount = 1;
+    buildInfo.pGeometries = &geom;
+    VkBufferDeviceAddressInfo scratchAddr{};
+    scratchAddr.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    scratchAddr.buffer = blasScratch_.buffer;
+    buildInfo.scratchData.deviceAddress = vkGetBufferDeviceAddress(device, &scratchAddr);
+    const uint32_t totalTris = kMaxProxies * kTrisPerBox;
+    VkAccelerationStructureBuildRangeInfoKHR range{};
+    range.primitiveCount = totalTris;
+    range.primitiveOffset = 0;
+    range.firstVertex = 0;
+    range.transformOffset = 0;
+    const VkAccelerationStructureBuildRangeInfoKHR* pRange = &range;
+    app->fpCmdBuildAccelerationStructuresKHR(cmd, 1, &buildInfo, &pRange);
+
+    // 4. BLAS write -> TLAS read (first build only matters; later BLAS rebuilds
+    // keep the same device address so the TLAS stays valid, but re-recording
+    // the TLAS build is cheap (1 instance) and keeps validation simple).
+    {
+        VkMemoryBarrier2 barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
+    // Refresh the instance's BLAS reference (stable address, cheap) then build TLAS.
+    {
+        auto* inst = static_cast<VkAccelerationStructureInstanceKHR*>(tlasInstanceBuffer_.mappedData);
+        inst->accelerationStructureReference = blasAddress_;
+        VkAccelerationStructureGeometryInstancesDataKHR instances{};
+        instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+        instances.arrayOfPointers = VK_FALSE;
+        instances.data.deviceAddress = tlasInstanceAddress_;
+        VkAccelerationStructureGeometryKHR tlasGeom{};
+        tlasGeom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        tlasGeom.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+        tlasGeom.geometry.instances = instances;
+        tlasGeom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        VkAccelerationStructureBuildGeometryInfoKHR tlasBuild{};
+        tlasBuild.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+        tlasBuild.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+        tlasBuild.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+        tlasBuild.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        tlasBuild.dstAccelerationStructure = tlas_;
+        tlasBuild.geometryCount = 1;
+        tlasBuild.pGeometries = &tlasGeom;
+        VkBufferDeviceAddressInfo tscratch{};
+        tscratch.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        tscratch.buffer = tlasScratch_.buffer;
+        tlasBuild.scratchData.deviceAddress = vkGetBufferDeviceAddress(device, &tscratch);
+        VkAccelerationStructureBuildRangeInfoKHR trange{};
+        trange.primitiveCount = 1;
+        const VkAccelerationStructureBuildRangeInfoKHR* pTrange = &trange;
+        app->fpCmdBuildAccelerationStructuresKHR(cmd, 1, &tlasBuild, &pTrange);
+    }
+
+    // 5. TLAS write -> ray-tracing / fragment / compute reads (ray queries in
+    // main.frag sample the TLAS from the fragment stage; the water pipeline
+    // reads it from the ray-tracing stage).
+    {
+        VkMemoryBarrier2 barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR
+            | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_SHADER_READ_BIT;
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
+    return true;
+}
+
+void RayTracingResources::updateParams(const RayTracingParams& p) {
+    if (!supported_ || paramsBuffer_.mappedData == nullptr) return;
+    memcpy(paramsBuffer_.mappedData, &p, sizeof(p));
+}
+
+// ── Water RT pipeline (rgen/miss/chit) + SBT ────────────────────────────
+// One raygen (per-pixel reflection+refraction+thickness), one miss (sky
+// equirect), one triangle hit (proxy-box shading + analytic exit thickness).
+// Single bounce, no recursion (perf §16; payloads minimal).
+void RayTracingResources::createRTPipeline(VulkanApp* app) {
+    pipelineReady_ = false;
+    if (!supported_ || !app->rayPipelineEnabled()) {
+        std::cerr << "[HybridRT] ray_tracing_pipeline unavailable — water uses inline ray queries\n";
+        return;
+    }
+    VkDevice device = app->getDevice();
+    VkShaderModule rgen = VK_NULL_HANDLE, miss = VK_NULL_HANDLE, chit = VK_NULL_HANDLE;
+    try {
+        rgen = app->getOrCreateShaderModule("shaders/rt_water.rgen.spv");
+        miss = app->getOrCreateShaderModule("shaders/rt_water.rmiss.spv");
+        chit = app->getOrCreateShaderModule("shaders/rt_water.rchit.spv");
+    } catch (const std::exception& e) {
+        std::cerr << "[HybridRT] RT shaders missing (" << e.what() << ") — water uses inline ray queries\n";
+        return;
+    }
+    if (rgen == VK_NULL_HANDLE || miss == VK_NULL_HANDLE || chit == VK_NULL_HANDLE) {
+        std::cerr << "[HybridRT] RT shader modules null — water uses inline ray queries\n";
+        return;
+    }
+
+    VkPipelineLayoutCreateInfo pli{};
+    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &rtSetLayout_;
+    if (vkCreatePipelineLayout(device, &pli, nullptr, &rtPipelineLayout_) != VK_SUCCESS)
+        throw std::runtime_error("HybridRT: failed to create RT pipeline layout");
+    app->resources.addPipelineLayout(rtPipelineLayout_, "HybridRT: rtPipelineLayout");
+
+    std::array<VkPipelineShaderStageCreateInfo, 3> stages{};
+    auto stage = [&](uint32_t i, VkShaderModule m, VkShaderStageFlagBits s) {
+        stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[i].module = m;
+        stages[i].stage = s;
+        stages[i].pName = "main";
+    };
+    stage(0, rgen, VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+    stage(1, miss, VK_SHADER_STAGE_MISS_BIT_KHR);
+    stage(2, chit, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
+    std::array<VkRayTracingShaderGroupCreateInfoKHR, 3> groups{};
+    for (auto& g : groups) {
+        g.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+        g.generalShader = VK_SHADER_UNUSED_KHR;
+        g.closestHitShader = VK_SHADER_UNUSED_KHR;
+        g.anyHitShader = VK_SHADER_UNUSED_KHR;
+        g.intersectionShader = VK_SHADER_UNUSED_KHR;
+    }
+    groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[0].generalShader = 0;
+    groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[1].generalShader = 1;
+    groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    groups[2].closestHitShader = 2;
+
+    VkRayTracingPipelineCreateInfoKHR pci{};
+    pci.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
+    pci.stageCount = uint32_t(stages.size());
+    pci.pStages = stages.data();
+    pci.groupCount = uint32_t(groups.size());
+    pci.pGroups = groups.data();
+    pci.maxPipelineRayRecursionDepth = 1; // single secondary bounce (§7 default)
+    pci.layout = rtPipelineLayout_;
+    // NULL deferredOperation = blocking compile (init path may block; never in
+    // the frame path). Pipeline cache inherited from the app for faster loads.
+    pci.basePipelineHandle = VK_NULL_HANDLE;
+    if (app->fpCreateRayTracingPipelinesKHR(device, VK_NULL_HANDLE, app->getPipelineCache(),
+            1, &pci, nullptr, &rtPipeline_) != VK_SUCCESS)
+        throw std::runtime_error("HybridRT: vkCreateRayTracingPipelinesKHR failed");
+    app->resources.addPipeline(rtPipeline_, "HybridRT: rtPipeline");
+
+    // SBT: 3 records, each handleSize aligned per rtPipelineProps. Host-visible
+    // + coherent; written once here, made visible by the init-time barrier in
+    // the first dispatch (same-queue ordering covers it: the write completes
+    // before any submit that traces).
+    const auto& props = app->rtPipelineProps;
+    const uint32_t handleSize = props.shaderGroupHandleSize;
+    const uint32_t handleAlign = std::max(1u, props.shaderGroupHandleAlignment);
+    const uint32_t baseAlign = std::max(1u, props.shaderGroupBaseAlignment);
+    auto alignUp = [](uint32_t v, uint32_t a) { return (v + a - 1) & ~(a - 1); };
+    const uint32_t handleStride = alignUp(handleSize, handleAlign);
+    const uint32_t recordStride = alignUp(handleStride, baseAlign);
+    const VkDeviceSize sbtSize = VkDeviceSize(recordStride) * 3;
+    sbtBuffer_ = app->createBuffer(sbtSize,
+        VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    std::vector<uint8_t> handles(size_t(handleSize) * 3);
+    if (app->fpGetRayTracingShaderGroupHandlesKHR(device, rtPipeline_, 0, 3,
+            handles.size(), handles.data()) != VK_SUCCESS)
+        throw std::runtime_error("HybridRT: vkGetRayTracingShaderGroupHandlesKHR failed");
+    auto* dst = static_cast<uint8_t*>(sbtBuffer_.mappedData);
+    memset(dst, 0, size_t(sbtSize));
+    for (int i = 0; i < 3; ++i)
+        memcpy(dst + size_t(i) * recordStride, handles.data() + size_t(i) * handleSize, handleSize);
+    VkBufferDeviceAddressInfo sai{};
+    sai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    sai.buffer = sbtBuffer_.buffer;
+    sbtAddress_ = vkGetBufferDeviceAddress(device, &sai);
+    rgenRegion_ = {sbtAddress_, recordStride, recordStride};
+    missRegion_ = {sbtAddress_ + recordStride, recordStride, recordStride};
+    hitRegion_ = {sbtAddress_ + recordStride * 2, recordStride, recordStride};
+    callableRegion_ = {0, 0, 0};
+    pipelineReady_ = true;
+    printf("[HybridRT] RT pipeline ready (handle=%u stride=%u)\n", handleSize, recordStride);
+}
+
+void RayTracingResources::destroyRTPipeline(VulkanApp* app) {
+    if (!app) return;
+    VkDevice device = app->getDevice();
+    if (rtPipeline_ != VK_NULL_HANDLE) {
+        if (app->resources.removePipeline(rtPipeline_)) vkDestroyPipeline(device, rtPipeline_, nullptr);
+        rtPipeline_ = VK_NULL_HANDLE;
+    }
+    if (rtPipelineLayout_ != VK_NULL_HANDLE) {
+        if (app->resources.removePipelineLayout(rtPipelineLayout_)) vkDestroyPipelineLayout(device, rtPipelineLayout_, nullptr);
+        rtPipelineLayout_ = VK_NULL_HANDLE;
+    }
+    pipelineReady_ = false;
+}
+
+void RayTracingResources::dispatchWaterRT(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIdx,
+                                          const glm::mat4& invViewProj, const glm::vec3& viewPos) {
+    if (!isPipelineReady() || !tlasBuilt_ || cmd == VK_NULL_HANDLE) return;
+    if (reflectImage_ == VK_NULL_HANDLE || refractImage_ == VK_NULL_HANDLE) return;
+    // Stream per-dispatch view state into the shared params UBO (handle stable;
+    // contents memcpy, no descriptor update). Toggles/distances/water come from
+    // the caller's last updateParams(); here we only refresh the view + output
+    // size (resize-safe: dispatch uses the live image extent).
+    if (paramsBuffer_.mappedData) {
+        auto* p = static_cast<RayTracingParams*>(paramsBuffer_.mappedData);
+        p->invViewProj = invViewProj;
+        p->viewPos = glm::vec4(viewPos, 1.0f);
+        p->rtResolution = glm::vec4(float(outWidth_), float(outHeight_),
+            1.0f / float(outWidth_), 1.0f / float(outHeight_));
+    }
+    // Outputs GENERAL -> GENERAL no-op barrier with execution dependency:
+    // the water geometry pass sampled them as SHADER_READ (previous frame's
+    // results) earlier in this same command buffer; the layout transition to
+    // GENERAL for writing is the only hazard (write-after-read, same queue).
+    // Why: same-queue WAR — the fragment reads must complete before traceRays
+    // overwrites the images for next frame.
+    {
+        VkImageMemoryBarrier2 barriers[2]{};
+        for (int i = 0; i < 2; ++i) {
+            barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            barriers[i].srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barriers[i].srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            barriers[i].dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+            barriers[i].dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+            barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            barriers[i].image = (i == 0) ? reflectImage_ : refractImage_;
+            barriers[i].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        }
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 2;
+        dep.pImageMemoryBarriers = barriers;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rtPipeline_);
+    VkDescriptorSet set = rtSets_[frameIdx % 3];
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+        rtPipelineLayout_, 0, 1, &set, 0, nullptr);
+    app->fpCmdTraceRaysKHR(cmd, &rgenRegion_, &missRegion_, &hitRegion_, &callableRegion_,
+        outWidth_, outHeight_, 1);
+    // Write completion -> next frame's fragment sampling (same queue, ordered).
+    // Why: traceRays storage writes must be visible before the next frame's
+    // water fragment shader samples the images (cross-submission, same queue).
+    {
+        VkImageMemoryBarrier2 barriers[2]{};
+        for (int i = 0; i < 2; ++i) {
+            barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            barriers[i].srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+            barriers[i].srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+            barriers[i].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barriers[i].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            barriers[i].image = (i == 0) ? reflectImage_ : refractImage_;
+            barriers[i].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        }
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 2;
+        dep.pImageMemoryBarriers = barriers;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
+}
