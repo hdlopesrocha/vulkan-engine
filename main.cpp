@@ -269,7 +269,6 @@ public:
     float profilePostProcess = 0.0f;
     float profileImGui = 0.0f;
     float profileRTDispatch = 0.0f; // hybrid-RT water pipeline traceRays (slots 20-21)
-    float profileSolid360 = 0.0f;   // legacy (always 0 — 360 capture removed, §12)
     float profileBackface = 0.0f;
     float profileCpuUpdate = 0.0f;
     float profileCpuRecord = 0.0f;
