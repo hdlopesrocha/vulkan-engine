@@ -1068,6 +1068,8 @@ public:
         // Chunks closest to the camera are uploaded first. Drains both the
         // main scene and brush scene entries from the ONE shared queue.
         if (sceneRenderer && !isLoading) {
+            // Hybrid RT: water volumes join the proxy only while water renders.
+            sceneRenderer->rtWaterProxyEnabled = settings.waterEnabled;
             std::deque<SceneRenderer::PendingMeshData> pendingBatch;
             sceneRenderer->drainPendingMeshes(pendingBatch, 16);
             sceneRenderer->processPendingMeshes(this, camera.getPosition(), pendingBatch);

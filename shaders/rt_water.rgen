@@ -76,7 +76,7 @@ void main() {
     if (rt.toggles.x > 0.5) {
         vec3 R = reflect(-V, N);
         rtPayload = vec4(0.0);
-        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
+        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID, 0, 0, 0,
             pos + N * 0.05, 0.05, R, maxReflect, 0);
         reflectValue = vec4(rtPayload.rgb, rtPayload.a >= 0.0 ? 1.0 : 0.0);
         if (rtPayload.a < 0.0) reflectValue.rgb = rtPayload.rgb; // sky from miss
@@ -89,7 +89,7 @@ void main() {
         if (dot(T, T) < 1e-8) T = reflect(-V, N); // TIR fallback
         T = normalize(T);
         rtPayload = vec4(0.0);
-        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
+        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID, 0, 0, 0,
             pos - N * 0.05, 0.05, T, maxRefract, 0);
         if (rtPayload.a >= 0.0) {
             // Hit: payload.a is the underwater path length (water surface ->

@@ -17,7 +17,7 @@ layout(location = 0) rayPayloadInEXT vec4 rtPayload;
 hitAttributeEXT vec3 bary;
 
 void main() {
-    uint boxIdx = uint(gl_PrimitiveID) / 12u;
+    uint boxIdx = rtBoxIndex(uint(gl_PrimitiveID), gl_InstanceCustomIndexEXT);
     RTProxyMetaGLSL meta = metas[boxIdx];
     vec3 hitPos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
     bool exiting = (gl_HitKindEXT == gl_HitKindBackFacingTriangleEXT);

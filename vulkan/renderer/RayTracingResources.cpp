@@ -70,12 +70,15 @@ void RayTracingResources::cleanup(VulkanApp* app) {
     destroyOutputImages(app);
     if (app && app->fpDestroyAccelerationStructureKHR) {
         if (blas_ != VK_NULL_HANDLE) { app->fpDestroyAccelerationStructureKHR(app->getDevice(), blas_, nullptr); blas_ = VK_NULL_HANDLE; }
+        if (blasWater_ != VK_NULL_HANDLE) { app->fpDestroyAccelerationStructureKHR(app->getDevice(), blasWater_, nullptr); blasWater_ = VK_NULL_HANDLE; }
         if (tlas_ != VK_NULL_HANDLE) { app->fpDestroyAccelerationStructureKHR(app->getDevice(), tlas_, nullptr); tlas_ = VK_NULL_HANDLE; }
     }
     if (app) {
         if (blasBuffer_.buffer) app->destroyBuffer(blasBuffer_);
+        if (blasWaterBuffer_.buffer) app->destroyBuffer(blasWaterBuffer_);
         if (tlasBuffer_.buffer) app->destroyBuffer(tlasBuffer_);
         if (blasScratch_.buffer) app->destroyBuffer(blasScratch_);
+        if (waterScratch_.buffer) app->destroyBuffer(waterScratch_);
         if (tlasScratch_.buffer) app->destroyBuffer(tlasScratch_);
         if (aabbBuffer_.buffer) app->destroyBuffer(aabbBuffer_);
         if (metaBuffer_.buffer) app->destroyBuffer(metaBuffer_);
@@ -294,8 +297,10 @@ void RayTracingResources::createProxyBuffers(VulkanApp* app) {
     // input requirement) since VMA placement alone does not guarantee it.
     aabbBuffer_ = app->createBuffer(vertBytes + idxBytes + 16, boxUsage,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    // Static index pattern (slot s base vertex s*8), written once — vertex
-    // positions are rewritten on every proxy update.
+    // Static index patterns, written once — vertex positions are rewritten on
+    // every proxy update. Each BLAS partition uses indices relative to its own
+    // vertex base (solid partition starts at vertex 0, water partition at its
+    // own base), so the two BLAS geometries stay self-contained.
     {
         auto* rawBase = static_cast<char*>(aabbBuffer_.mappedData);
         VkBufferDeviceAddressInfo addrQ{};
@@ -306,9 +311,16 @@ void RayTracingResources::createProxyBuffers(VulkanApp* app) {
         boxBaseDelta_ = alignUpAddr(rawAddr, 16) - rawAddr;
         auto* base = rawBase + boxBaseDelta_;
         auto* idx = reinterpret_cast<uint32_t*>(base + vertBytes);
-        for (uint32_t s = 0; s < kMaxProxies; ++s)
+        // Solid partition: slots [0, kMaxSolidProxies), absolute indices.
+        for (uint32_t s = 0; s < kMaxSolidProxies; ++s)
             for (uint32_t i = 0; i < kIndicesPerBox; ++i)
                 idx[s * kIndicesPerBox + i] = s * kVertsPerBox + kBoxIndices[i];
+        // Water partition: global slots [kWaterProxyStart, kMaxProxies), but
+        // indices relative to the water vertex base (see kWaterVertBase).
+        for (uint32_t w = 0; w < kMaxWaterProxies; ++w)
+            for (uint32_t i = 0; i < kIndicesPerBox; ++i)
+                idx[(kWaterProxyStart + w) * kIndicesPerBox + i] =
+                    w * kVertsPerBox + kBoxIndices[i];
         // Degenerate verts initially (zero-area, never hit) for all slots.
         memset(base, 0, static_cast<size_t>(vertBytes));
     }
@@ -323,7 +335,7 @@ void RayTracingResources::createProxyBuffers(VulkanApp* app) {
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    tlasInstanceBuffer_ = app->createBuffer(sizeof(VkAccelerationStructureInstanceKHR) + 16,
+    tlasInstanceBuffer_ = app->createBuffer(2 * sizeof(VkAccelerationStructureInstanceKHR) + 16,
         VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
         | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -344,51 +356,71 @@ void RayTracingResources::createProxyBuffers(VulkanApp* app) {
 
 void RayTracingResources::createAccelStructures(VulkanApp* app) {
     VkDevice device = app->getDevice();
-    const uint32_t totalTris = kMaxProxies * kTrisPerBox;
+    // Partition byte layout inside the shared box buffer (verts, then indices):
+    const VkDeviceSize kVertStride = sizeof(float) * 3;
+    const VkDeviceSize solidVertBytes = VkDeviceSize(kMaxSolidProxies) * kVertsPerBox * kVertStride;
+    const VkDeviceSize solidIdxBytes = VkDeviceSize(kMaxSolidProxies) * kIndicesPerBox * sizeof(uint32_t);
+    const VkDeviceSize waterVertBase = solidVertBytes;
+    const uint32_t solidTris = kMaxSolidProxies * kTrisPerBox;
+    const uint32_t waterTris = kMaxWaterProxies * kTrisPerBox;
 
-    VkAccelerationStructureGeometryTrianglesDataKHR tris{};
-    tris.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-    tris.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-    tris.vertexStride = sizeof(float) * 3;
-    tris.maxVertex = kMaxProxies * kVertsPerBox;
-    tris.indexType = VK_INDEX_TYPE_UINT32;
-    VkAccelerationStructureGeometryKHR geom{};
-    geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-    geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-    geom.geometry.triangles = tris; // device addresses patched per build (same buffer)
-    geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR; // closest-hit only, no any-hit (perf §16)
-
-    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
-    buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
-    buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-    buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-    buildInfo.geometryCount = 1;
-    buildInfo.pGeometries = &geom;
-
-    VkAccelerationStructureBuildSizesInfoKHR sizes{};
-    sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
-    app->fpGetAccelerationStructureBuildSizesKHR(device,
-        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &totalTris, &sizes);
-
-    VkBufferUsageFlags asUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
-        | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    blasBuffer_ = app->createBuffer(sizes.accelerationStructureSize, asUsage,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    blasScratch_ = app->createBuffer(std::max(sizes.buildScratchSize, VkDeviceSize(1)) + scratchAlign_,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    {
+    auto makeTrisGeom = [&](VkDeviceAddress vertAddr, uint32_t maxVerts,
+                            VkDeviceAddress idxAddr) {
+        VkAccelerationStructureGeometryTrianglesDataKHR tris{};
+        tris.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+        tris.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+        tris.vertexData.deviceAddress = vertAddr;
+        tris.vertexStride = kVertStride;
+        tris.maxVertex = maxVerts;
+        tris.indexType = VK_INDEX_TYPE_UINT32;
+        tris.indexData.deviceAddress = idxAddr;
+        VkAccelerationStructureGeometryKHR geom{};
+        geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        geom.geometry.triangles = tris;
+        geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR; // closest-hit only, no any-hit (perf §16)
+        return geom;
+    };
+    auto querySizes = [&](const VkAccelerationStructureGeometryKHR& geom, uint32_t prims) {
+        VkAccelerationStructureBuildGeometryInfoKHR bi{};
+        bi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+        bi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        bi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+        bi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        bi.geometryCount = 1;
+        bi.pGeometries = &geom;
+        VkAccelerationStructureBuildSizesInfoKHR sizes{};
+        sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+        app->fpGetAccelerationStructureBuildSizesKHR(device,
+            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bi, &prims, &sizes);
+        return sizes;
+    };
+    auto alignedScratch = [&](Buffer& dst, VkDeviceSize need, const char* what) {
+        dst = app->createBuffer(std::max(need, VkDeviceSize(1)) + scratchAlign_,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         // Scratch addresses MUST satisfy minAccelerationStructureScratchOffset-
         // Alignment (VUID-03710); VMA placement alone does not guarantee it, so
         // align up inside the over-allocated buffer.
         VkBufferDeviceAddressInfo addrQ{};
         addrQ.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-        addrQ.buffer = blasScratch_.buffer;
+        addrQ.buffer = dst.buffer;
         const VkDeviceAddress rawScratch = vkGetBufferDeviceAddress(device, &addrQ);
-        if (rawScratch == 0) throw std::runtime_error("BLAS scratch device address is 0");
-        blasScratchAligned_ = alignUpAddr(rawScratch, scratchAlign_);
-    }
+        if (rawScratch == 0) throw std::runtime_error(what);
+        return alignUpAddr(rawScratch, scratchAlign_);
+    };
+
+    VkBufferUsageFlags asUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
+        | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+
+    // Solid BLAS (partition 0).
+    VkAccelerationStructureGeometryKHR solidGeom = makeTrisGeom(
+        aabbAddress_, kMaxSolidProxies * kVertsPerBox,
+        aabbAddress_ + VkDeviceSize(kMaxProxies) * kVertsPerBox * kVertStride);
+    VkAccelerationStructureBuildSizesInfoKHR sizes = querySizes(solidGeom, solidTris);
+    blasBuffer_ = app->createBuffer(sizes.accelerationStructureSize, asUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    blasScratchAligned_ = alignedScratch(blasScratch_, sizes.buildScratchSize, "BLAS scratch device address is 0");
 
     VkAccelerationStructureCreateInfoKHR blasCI{};
     blasCI.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
@@ -402,19 +434,44 @@ void RayTracingResources::createAccelStructures(VulkanApp* app) {
     addrInfo.accelerationStructure = blas_;
     blasAddress_ = app->fpGetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
 
-    // TLAS: one instance -> BLAS, identity, full mask, cull disabled (volumes).
-    // Written at the aligned offset (see instanceDelta_).
+    // Water BLAS (partition 1: self-contained vertex/index ranges).
+    VkAccelerationStructureGeometryKHR waterGeom = makeTrisGeom(
+        aabbAddress_ + waterVertBase, kMaxWaterProxies * kVertsPerBox,
+        aabbAddress_ + VkDeviceSize(kMaxProxies) * kVertsPerBox * kVertStride + solidIdxBytes);
+    VkAccelerationStructureBuildSizesInfoKHR waterSizes = querySizes(waterGeom, waterTris);
+    blasWaterBuffer_ = app->createBuffer(waterSizes.accelerationStructureSize, asUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    const VkDeviceAddress waterScratchAligned = alignedScratch(
+        waterScratch_, waterSizes.buildScratchSize, "Water BLAS scratch device address is 0");
+
+    VkAccelerationStructureCreateInfoKHR blasWaterCI{};
+    blasWaterCI.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    blasWaterCI.buffer = blasWaterBuffer_.buffer;
+    blasWaterCI.size = waterSizes.accelerationStructureSize;
+    blasWaterCI.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    if (app->fpCreateAccelerationStructureKHR(device, &blasWaterCI, nullptr, &blasWater_) != VK_SUCCESS)
+        throw std::runtime_error("vkCreateAccelerationStructureKHR (water BLAS) failed");
+    addrInfo.accelerationStructure = blasWater_;
+    blasWaterAddress_ = app->fpGetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
+    waterScratchAligned_ = waterScratchAligned;
+
+    // TLAS: two instances (solids mask 0x01, water mask 0x02), identity,
+    // cull disabled. Written at the aligned offset (see instanceDelta_).
     auto* inst = reinterpret_cast<VkAccelerationStructureInstanceKHR*>(
         static_cast<char*>(tlasInstanceBuffer_.mappedData) + instanceDelta_);
-    memset(inst, 0, sizeof(*inst));
-    inst->transform.matrix[0][0] = 1.0f;
-    inst->transform.matrix[1][1] = 1.0f;
-    inst->transform.matrix[2][2] = 1.0f;
-    inst->instanceCustomIndex = 0;
-    inst->mask = 0xFF;
-    inst->instanceShaderBindingTableRecordOffset = 0;
-    inst->flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-    inst->accelerationStructureReference = blasAddress_;
+    memset(inst, 0, 2 * sizeof(*inst));
+    inst[0].transform.matrix[0][0] = 1.0f;
+    inst[0].transform.matrix[1][1] = 1.0f;
+    inst[0].transform.matrix[2][2] = 1.0f;
+    inst[0].instanceCustomIndex = 0;
+    inst[0].mask = kMaskSolid;
+    inst[0].instanceShaderBindingTableRecordOffset = 0;
+    inst[0].flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+    inst[0].accelerationStructureReference = blasAddress_;
+    inst[1] = inst[0];
+    inst[1].instanceCustomIndex = 1;
+    inst[1].mask = kMaskWater;
+    inst[1].accelerationStructureReference = blasWaterAddress_;
 
     VkAccelerationStructureGeometryInstancesDataKHR instances{};
     instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
@@ -430,11 +487,11 @@ void RayTracingResources::createAccelStructures(VulkanApp* app) {
     tlasBuild.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     tlasBuild.geometryCount = 1;
     tlasBuild.pGeometries = &tlasGeom;
-    uint32_t onePrimitive = 1;
+    uint32_t twoInstances = 2;
     VkAccelerationStructureBuildSizesInfoKHR tlasSizes{};
     tlasSizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
     app->fpGetAccelerationStructureBuildSizesKHR(device,
-        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &tlasBuild, &onePrimitive, &tlasSizes);
+        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &tlasBuild, &twoInstances, &tlasSizes);
     tlasBuffer_ = app->createBuffer(tlasSizes.accelerationStructureSize, asUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     tlasScratch_ = app->createBuffer(std::max(tlasSizes.buildScratchSize, VkDeviceSize(1)) + scratchAlign_,
@@ -522,16 +579,24 @@ void RayTracingResources::destroyOutputImages(VulkanApp* app) {
     if (refractImage_ != VK_NULL_HANDLE) { app->destroyImageWithVma(refractImage_, refractAlloc_, refractMem_); refractImage_ = VK_NULL_HANDLE; }
 }
 
-void RayTracingResources::setProxies(const std::vector<RTProxyBox>& boxes) {
+void RayTracingResources::setProxies(const std::vector<RTProxyBox>& solids,
+                                     const std::vector<RTProxyBox>& waters) {
     if (!supported_) return;
-    const uint32_t n = std::min<uint32_t>(uint32_t(boxes.size()), kMaxProxies);
-    // Fast path: same count + identical bytes -> no rebuild (avoids BLAS churn
-    // when processPendingMeshes reports no real change).
-    if (n == activeProxyCount_ && n == uint32_t(stagedProxies_.size()) &&
-        (n == 0 || memcmp(stagedProxies_.data(), boxes.data(), n * sizeof(RTProxyBox)) == 0))
+    const uint32_t ns = std::min<uint32_t>(uint32_t(solids.size()), kMaxSolidProxies);
+    const uint32_t nw = std::min<uint32_t>(uint32_t(waters.size()), kMaxWaterProxies);
+    // Fast path: identical bytes -> no rebuild (avoids BLAS churn when the
+    // scene reports no real change).
+    auto same = [](const std::vector<RTProxyBox>& a, const std::vector<RTProxyBox>& b, uint32_t n) {
+        return n == uint32_t(b.size()) &&
+            (n == 0 || memcmp(a.data(), b.data(), n * sizeof(RTProxyBox)) == 0);
+    };
+    if (ns == activeSolidCount_ && nw == activeWaterCount_ &&
+        same(stagedSolids_, solids, ns) && same(stagedWaters_, waters, nw))
         return;
-    stagedProxies_.assign(boxes.begin(), boxes.begin() + n);
-    activeProxyCount_ = n;
+    stagedSolids_.assign(solids.begin(), solids.begin() + ns);
+    stagedWaters_.assign(waters.begin(), waters.begin() + nw);
+    activeSolidCount_ = ns;
+    activeWaterCount_ = nw;
     dirty_ = true;
 }
 
@@ -541,30 +606,31 @@ bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
     // Throttle: at most one rebuild per 30 frames — chunk bursts (scene load /
     // brush edits) coalesce into a single build instead of one per publish.
     // Camera moves / LOD switches never mark dirty, so they never rebuild (§6).
-    if (frameCounter_ - lastBuildFrame_ < 30 && lastBuiltCount_ != UINT32_MAX) return false;
+    if (frameCounter_ - lastBuildFrame_ < 30 && lastBuiltValid_) return false;
     const auto t0 = std::chrono::high_resolution_clock::now();
-    const bool built = recordBuild(app, cmd, activeProxyCount_);
+    const bool built = recordBuild(app, cmd);
     if (built) {
         lastBuildFrame_ = frameCounter_;
-        lastBuiltCount_ = activeProxyCount_;
+        lastBuiltValid_ = true;
         dirty_ = false;
         ++buildCount_;
         tlasBuilt_ = true;
         lastBuildMs_ = std::chrono::duration<float, std::milli>(
             std::chrono::high_resolution_clock::now() - t0).count();
         // Rare (scene changes only, throttled): one line per rebuild.
-        printf("[HybridRT] BLAS/TLAS rebuild #%u: %u proxies in %.2f ms (CPU record)\n",
-            buildCount_, activeProxyCount_, lastBuildMs_);
+        printf("[HybridRT] BLAS/TLAS rebuild #%u: %u solid + %u water proxies in %.2f ms (CPU record)\n",
+            buildCount_, activeSolidCount_, activeWaterCount_, lastBuildMs_);
         fflush(stdout);
     }
     return built;
 }
 
-bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd, uint32_t count) {
+bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
     // Defensive: never feed a zero/misaligned device address to an AS build —
     // that is a fatal validation error (VUID-03710). Skip the build instead;
     // shaders fall back to sky/CSM until a later throttled retry succeeds.
     if (blasScratchAligned_ == 0 || (blasScratchAligned_ % scratchAlign_) != 0 ||
+        waterScratchAligned_ == 0 || (waterScratchAligned_ % scratchAlign_) != 0 ||
         tlasScratchAligned_ == 0 || (tlasScratchAligned_ % scratchAlign_) != 0 ||
         tlasInstanceAddress_ == 0 || (tlasInstanceAddress_ % 16) != 0 ||
         aabbAddress_ == 0 || (aabbAddress_ % 16) != 0) {
@@ -572,35 +638,49 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd, uint3
         if (guardLogs++ < 3) {
             fprintf(stderr,
                 "[HybridRT] AS build skipped: bad device address "
-                "(blasScratch=0x%llx tlasScratch=0x%llx instances=0x%llx boxes=0x%llx align=%llu)\n",
-                (unsigned long long)blasScratchAligned_, (unsigned long long)tlasScratchAligned_,
-                (unsigned long long)tlasInstanceAddress_, (unsigned long long)aabbAddress_,
-                (unsigned long long)scratchAlign_);
+                "(blasScratch=0x%llx waterScratch=0x%llx tlasScratch=0x%llx instances=0x%llx boxes=0x%llx align=%llu)\n",
+                (unsigned long long)blasScratchAligned_, (unsigned long long)waterScratchAligned_,
+                (unsigned long long)tlasScratchAligned_, (unsigned long long)tlasInstanceAddress_,
+                (unsigned long long)aabbAddress_, (unsigned long long)scratchAlign_);
         }
         return false;
     }
     // 1. Stage box verts + metadata on the host-visible buffers (coherent memcpy).
+    // Solids fill slots [0, activeSolidCount_), water volumes global slots
+    // [kWaterProxyStart, kWaterProxyStart + activeWaterCount_); the rest of
+    // each partition stays degenerate (zero-area, never hit).
     {
         auto* verts = reinterpret_cast<float*>(
             static_cast<char*>(aabbBuffer_.mappedData) + boxBaseDelta_);
         auto* metas = static_cast<RTProxyMeta*>(metaBuffer_.mappedData);
-        for (uint32_t s = 0; s < kMaxProxies; ++s) {
-            float* v = verts + size_t(s) * kVertsPerBox * 3;
-            if (s < count) {
-                const RTProxyBox& b = stagedProxies_[s];
-                const float x0 = b.minp.x, y0 = b.minp.y, z0 = b.minp.z;
-                const float x1 = b.maxp.x, y1 = b.maxp.y, z1 = b.maxp.z;
-                const float c[8][3] = {{x0,y0,z0},{x1,y0,z0},{x1,y1,z0},{x0,y1,z0},
-                                       {x0,y0,z1},{x1,y0,z1},{x1,y1,z1},{x0,y1,z1}};
-                for (int k = 0; k < 8; ++k) { v[k*3+0] = c[k][0]; v[k*3+1] = c[k][1]; v[k*3+2] = c[k][2]; }
-                metas[s].minAndMatId = glm::vec4(b.minp, b.materialId);
-                metas[s].maxAndFlags = glm::vec4(b.maxp, b.flags);
-                metas[s].albedoRough = glm::vec4(b.albedo, b.roughness);
-                metas[s].extra = glm::vec4(0.0f);
-            } else {
-                for (int k = 0; k < 24; ++k) v[k] = 0.0f; // degenerate (never hit)
-                metas[s] = RTProxyMeta{};
-            }
+        // Vertex positions live at GLOBAL slots (water verts physically sit in
+        // slots [kWaterProxyStart, kMaxProxies) of the vertex region); only the
+        // BLAS geometries view them as separate partitions. Metadata likewise.
+        auto stageBox = [&](uint32_t slot, const RTProxyBox& b) {
+            float* v = verts + size_t(slot) * kVertsPerBox * 3;
+            const float x0 = b.minp.x, y0 = b.minp.y, z0 = b.minp.z;
+            const float x1 = b.maxp.x, y1 = b.maxp.y, z1 = b.maxp.z;
+            const float c[8][3] = {{x0,y0,z0},{x1,y0,z0},{x1,y1,z0},{x0,y1,z0},
+                                   {x0,y0,z1},{x1,y0,z1},{x1,y1,z1},{x0,y1,z1}};
+            for (int k = 0; k < 8; ++k) { v[k*3+0] = c[k][0]; v[k*3+1] = c[k][1]; v[k*3+2] = c[k][2]; }
+            metas[slot].minAndMatId = glm::vec4(b.minp, b.materialId);
+            metas[slot].maxAndFlags = glm::vec4(b.maxp, b.flags);
+            metas[slot].albedoRough = glm::vec4(b.albedo, b.roughness);
+            metas[slot].extra = glm::vec4(0.0f);
+        };
+        auto zeroBox = [&](uint32_t slot) {
+            float* v = verts + size_t(slot) * kVertsPerBox * 3;
+            for (int k = 0; k < 24; ++k) v[k] = 0.0f; // degenerate (never hit)
+            metas[slot] = RTProxyMeta{};
+        };
+        for (uint32_t s = 0; s < kMaxSolidProxies; ++s) {
+            if (s < activeSolidCount_) stageBox(s, stagedSolids_[s]);
+            else zeroBox(s);
+        }
+        for (uint32_t w = 0; w < kMaxWaterProxies; ++w) {
+            const uint32_t slot = kWaterProxyStart + w;
+            if (w < activeWaterCount_) stageBox(slot, stagedWaters_[w]);
+            else zeroBox(slot);
         }
     }
     const VkDeviceSize vertBytes = VkDeviceSize(kMaxProxies) * kVertsPerBox * sizeof(float) * 3;
@@ -622,49 +702,79 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd, uint3
         VkDependencyInfo dep{};
         dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         VkBufferMemoryBarrier2 barriers[3]{barrier, barrier, barrier};
-        barriers[0].buffer = aabbBuffer_.buffer; barriers[0].offset = 0; barriers[0].size = vertBytes + idxBytes;
+        // Ranges cover the alignment slack (writes land at +delta, delta < 16)
+        // and both TLAS instances.
+        barriers[0].buffer = aabbBuffer_.buffer; barriers[0].offset = 0; barriers[0].size = vertBytes + idxBytes + 16;
         barriers[1].buffer = metaBuffer_.buffer; barriers[1].offset = 0; barriers[1].size = sizeof(RTProxyMeta) * kMaxProxies;
-        barriers[2].buffer = tlasInstanceBuffer_.buffer; barriers[2].offset = 0; barriers[2].size = sizeof(VkAccelerationStructureInstanceKHR);
+        barriers[2].buffer = tlasInstanceBuffer_.buffer; barriers[2].offset = 0; barriers[2].size = 2 * sizeof(VkAccelerationStructureInstanceKHR) + 16;
         dep.bufferMemoryBarrierCount = 3;
         dep.pBufferMemoryBarriers = barriers;
         vkCmdPipelineBarrier2(cmd, &dep);
     }
 
-    // 3. BLAS build (full-capacity triangle soup; inactive slots degenerate).
-    VkAccelerationStructureGeometryTrianglesDataKHR tris{};
-    tris.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-    tris.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-    tris.vertexData.deviceAddress = aabbAddress_;
-    tris.vertexStride = sizeof(float) * 3;
-    tris.maxVertex = kMaxProxies * kVertsPerBox;
-    tris.indexType = VK_INDEX_TYPE_UINT32;
-    tris.indexData.deviceAddress = aabbAddress_ + vertBytes;
-    VkAccelerationStructureGeometryKHR geom{};
-    geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-    geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-    geom.geometry.triangles = tris;
-    geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
-    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
-    buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
-    buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-    buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-    buildInfo.dstAccelerationStructure = blas_;
-    buildInfo.geometryCount = 1;
-    buildInfo.pGeometries = &geom;
-    buildInfo.scratchData.deviceAddress = blasScratchAligned_;
-    const uint32_t totalTris = kMaxProxies * kTrisPerBox;
-    VkAccelerationStructureBuildRangeInfoKHR range{};
-    range.primitiveCount = totalTris;
-    range.primitiveOffset = 0;
-    range.firstVertex = 0;
-    range.transformOffset = 0;
-    const VkAccelerationStructureBuildRangeInfoKHR* pRange = &range;
-    app->fpCmdBuildAccelerationStructuresKHR(cmd, 1, &buildInfo, &pRange);
+    // 3. BLAS builds (one per layer; inactive slots degenerate). Each geometry
+    // views its own partition; both builds share the stable buffer addresses.
+    const VkDeviceSize kVertStride = sizeof(float) * 3;
+    auto makeBuildTris = [&](VkDeviceAddress vertAddr, uint32_t maxVerts,
+                             VkDeviceAddress idxAddr) {
+        VkAccelerationStructureGeometryTrianglesDataKHR t{};
+        t.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+        t.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+        t.vertexData.deviceAddress = vertAddr;
+        t.vertexStride = kVertStride;
+        t.maxVertex = maxVerts;
+        t.indexType = VK_INDEX_TYPE_UINT32;
+        t.indexData.deviceAddress = idxAddr;
+        return t;
+    };
+    auto buildBlas = [&](VkAccelerationStructureKHR dst, VkDeviceAddress scratch,
+                         const VkAccelerationStructureGeometryKHR& g, uint32_t prims) {
+        VkAccelerationStructureBuildGeometryInfoKHR bi{};
+        bi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+        bi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        bi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+        bi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        bi.dstAccelerationStructure = dst;
+        bi.geometryCount = 1;
+        bi.pGeometries = &g;
+        bi.scratchData.deviceAddress = scratch;
+        VkAccelerationStructureBuildRangeInfoKHR r{};
+        r.primitiveCount = prims;
+        r.primitiveOffset = 0;
+        r.firstVertex = 0;
+        r.transformOffset = 0;
+        const VkAccelerationStructureBuildRangeInfoKHR* pr = &r;
+        app->fpCmdBuildAccelerationStructuresKHR(cmd, 1, &bi, &pr);
+    };
+    auto makeGeom = [&](const VkAccelerationStructureGeometryTrianglesDataKHR& t) {
+        VkAccelerationStructureGeometryKHR g{};
+        g.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        g.geometry.triangles = t;
+        g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        return g;
+    };
+    const VkDeviceSize waterVertBase =
+        VkDeviceSize(kMaxSolidProxies) * kVertsPerBox * kVertStride;
+    const VkDeviceSize waterIdxBase =
+        vertBytes + VkDeviceSize(kMaxSolidProxies) * kIndicesPerBox * sizeof(uint32_t);
+    {
+        VkAccelerationStructureGeometryTrianglesDataKHR tris = makeBuildTris(
+            aabbAddress_, kMaxSolidProxies * kVertsPerBox, aabbAddress_ + vertBytes);
+        VkAccelerationStructureGeometryKHR geom = makeGeom(tris);
+        buildBlas(blas_, blasScratchAligned_, geom, kMaxSolidProxies * kTrisPerBox);
+    }
+    {
+        VkAccelerationStructureGeometryTrianglesDataKHR tris = makeBuildTris(
+            aabbAddress_ + waterVertBase, kMaxWaterProxies * kVertsPerBox,
+            aabbAddress_ + waterIdxBase);
+        VkAccelerationStructureGeometryKHR geom = makeGeom(tris);
+        buildBlas(blasWater_, waterScratchAligned_, geom, kMaxWaterProxies * kTrisPerBox);
+    }
 
-    // 4. BLAS write -> TLAS read (first build only matters; later BLAS rebuilds
-    // keep the same device address so the TLAS stays valid, but re-recording
-    // the TLAS build is cheap (1 instance) and keeps validation simple).
+    // 4. BLAS writes -> TLAS read (both BLASes keep stable device addresses, so
+    // the TLAS stays valid; re-recording the TLAS build is cheap (2 instances)
+    // and keeps validation simple).
     {
         VkMemoryBarrier2 barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -678,11 +788,13 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd, uint3
         dep.pMemoryBarriers = &barrier;
         vkCmdPipelineBarrier2(cmd, &dep);
     }
-    // Refresh the instance's BLAS reference (stable address, cheap) then build TLAS.
+    // Refresh both instances' BLAS references (stable addresses, cheap) then
+    // build TLAS.
     {
         auto* inst = reinterpret_cast<VkAccelerationStructureInstanceKHR*>(
             static_cast<char*>(tlasInstanceBuffer_.mappedData) + instanceDelta_);
-        inst->accelerationStructureReference = blasAddress_;
+        inst[0].accelerationStructureReference = blasAddress_;
+        inst[1].accelerationStructureReference = blasWaterAddress_;
         VkAccelerationStructureGeometryInstancesDataKHR instances{};
         instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
         instances.arrayOfPointers = VK_FALSE;
@@ -702,7 +814,7 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd, uint3
         tlasBuild.pGeometries = &tlasGeom;
         tlasBuild.scratchData.deviceAddress = tlasScratchAligned_;
         VkAccelerationStructureBuildRangeInfoKHR trange{};
-        trange.primitiveCount = 1;
+        trange.primitiveCount = 2;
         const VkAccelerationStructureBuildRangeInfoKHR* pTrange = &trange;
         app->fpCmdBuildAccelerationStructuresKHR(cmd, 1, &tlasBuild, &pTrange);
     }

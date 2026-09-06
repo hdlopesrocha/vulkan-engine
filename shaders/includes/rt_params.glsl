@@ -24,6 +24,20 @@ struct RTProxyMetaGLSL {
     vec4 extra;
 };
 
+// Proxy layout: solid boxes occupy metadata slots [0, RT_WATER_BOX_START),
+// water volumes [RT_WATER_BOX_START, ...). The TLAS carries one instance per
+// layer (custom index 0 = solid, 1 = water); instance masks select layers per
+// ray type (solids see all, water-originated rays see solids only).
+const uint RT_WATER_BOX_START = 3584u;
+const uint RT_RAY_MASK_SOLID = 0x01u;
+const uint RT_RAY_MASK_WATER = 0x02u;
+const uint RT_RAY_MASK_ALL = 0x03u;
+
+// Global metadata index for a triangle hit (primitiveID is per-BLAS local).
+uint rtBoxIndex(uint primitiveId, uint instanceCustomIndex) {
+    return primitiveId / 12u + (instanceCustomIndex == 1u ? RT_WATER_BOX_START : 0u);
+}
+
 // Schlick Fresnel with dielectric base reflectance.
 float rtSchlickFresnel(float cosTheta, float f0) {
     return f0 + (1.0 - f0) * pow(1.0 - clamp(cosTheta, 0.0, 1.0), 5.0);

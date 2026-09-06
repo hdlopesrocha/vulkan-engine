@@ -52,9 +52,12 @@ layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]
 // Trace one water secondary ray through the proxy TLAS.
 // Returns rgb = shaded hit (or sky on miss), a = hitT (or -1 on miss).
 // Macro shadows stay CSM-owned: hits get ambient + sun diffuse only.
+// Water-originated rays trace with the solid-only mask: the water surface
+// itself is not in the solid BLAS (origins, never targets), and the water
+// BLAS is skipped to avoid self-hits.
 vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax) {
     rayQueryEXT rq;
-    rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, 0xFF,
+    rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID,
         origin, 0.05, dir, tMax);
     while (rayQueryProceedEXT(rq)) {}
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -62,7 +65,8 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax) {
         return vec4(sky, -1.0);
     }
     float hitT = rayQueryGetIntersectionTEXT(rq, true);
-    uint boxIdx = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)) / 12u;
+    uint boxIdx = rtBoxIndex(uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)),
+                             rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
     RTProxyMetaGLSL meta = rtMetas[boxIdx];
     vec3 hitPos = origin + dir * hitT;
     bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);

@@ -237,16 +237,21 @@ public:
     // Runtime introspection helpers for UI/debug
     size_t getTransparentModelCount();
     // ── Hybrid RT proxy bookkeeping ──────────────────────────────────────
-    // Stable proxy source per main-scene solid chunk, recorded at publish time
-    // from the chunk geometry (world bounds + dominant material). Guarded by
-    // mainSolidChunksMutex. Brush/water chunks are excluded by design (brush =
-    // preview overlay; water surface = ray origins, never targets).
+    // Stable proxy source per main-scene chunk, recorded at publish time from
+    // the chunk geometry (world bounds + dominant material). Guarded by
+    // mainSolidChunksMutex. Opaque chunks feed the solid BLAS; transparent
+    // (water) chunks feed the water BLAS so solid reflections see water.
+    // Brush chunks excluded (preview overlay, not scene).
     struct SolidProxyData {
         glm::vec3 minp = glm::vec3(0.0f);
         glm::vec3 maxp = glm::vec3(0.0f);
         uint32_t materialId = 0;
     };
     std::unordered_map<NodeID, SolidProxyData> mainSolidProxyData;
+    std::unordered_map<NodeID, SolidProxyData> mainWaterProxyData;
+    // When false, water chunks are excluded from the proxy (e.g. water hidden).
+    // Set from the frame settings before processPendingMeshes runs.
+    bool rtWaterProxyEnabled = true;
     // Collect solid-chunk world AABBs + materials into the RT proxy set.
     // Called on the main thread after publishes/removals (never per-frame when
     // idle: caller passes false when the batch was empty and no slot aged out).

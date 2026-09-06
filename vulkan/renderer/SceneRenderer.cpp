@@ -1328,17 +1328,21 @@ size_t SceneRenderer::publishPendingMeshes(
 
         onChunkPublished(layer, nid, slotIdx, lod.version, isBrush);
 
-        // Hybrid RT: record the proxy source of main-scene solid chunks
-        // (world bounds + dominant material for proxy hit shading via the
-        // Materials SSBO). Brush/water excluded by design (see rebuildProxySet).
-        if (layer == LAYER_OPAQUE && !isBrush && !lod.geom.vertices.empty()) {
+        // Hybrid RT: record the proxy source of main-scene chunks (world bounds
+        // + dominant material). Opaque chunks feed the solid BLAS; transparent
+        // (water) chunks feed the water BLAS so solid reflections see water.
+        // Brush chunks excluded (preview overlay, not scene).
+        if (!isBrush && !lod.geom.vertices.empty()) {
             std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
             SolidProxyData pd;
             pd.minp = cubeMin;
             pd.maxp = cubeMax;
             pd.materialId = static_cast<uint32_t>(
                 std::max(0, lod.geom.vertices[0].brushIndex));
-            mainSolidProxyData[nid] = pd;
+            if (layer == LAYER_OPAQUE)
+                mainSolidProxyData[nid] = pd;
+            else
+                mainWaterProxyData[nid] = pd;
         }
 
         // Generate vegetation for every published grass chunk (lod.lod is the
@@ -1803,21 +1807,27 @@ void SceneRenderer::refreshRTSceneViews(VulkanApp* app) {
 
 void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
     if (!rayTracing || !rayTracing->isSupported()) return;
-    // Fingerprint the proxy-source registry (count + bounds/material hash).
+    // Fingerprint both proxy-source registries (count + bounds/material hash).
     // Camera moves, LOD band switches and tessellation changes never touch
-    // this map, so they never mark the proxy dirty (§6). O(N), N ~= chunks.
+    // these maps, so they never mark the proxy dirty (§6). O(N), N ~= chunks.
     uint64_t fp = 0;
     size_t count = 0;
+    const bool wantWater = rtWaterProxyEnabled;
     {
         std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
-        count = mainSolidProxyData.size();
-        for (const auto& kv : mainSolidProxyData) {
-            const SolidProxyData& d = kv.second;
-            fp += uint64_t(d.materialId) * 1000003ull
-                + uint64_t(std::bit_cast<uint32_t>(d.minp.x)) * 31ull
-                + uint64_t(std::bit_cast<uint32_t>(d.maxp.x));
-        }
+        auto hashMap = [&](const std::unordered_map<NodeID, SolidProxyData>& m) {
+            for (const auto& kv : m) {
+                const SolidProxyData& d = kv.second;
+                fp += uint64_t(d.materialId) * 1000003ull
+                    + uint64_t(std::bit_cast<uint32_t>(d.minp.x)) * 31ull
+                    + uint64_t(std::bit_cast<uint32_t>(d.maxp.x));
+            }
+        };
+        hashMap(mainSolidProxyData);
+        if (wantWater) hashMap(mainWaterProxyData);
+        count = mainSolidProxyData.size() + (wantWater ? mainWaterProxyData.size() : 0);
         fp ^= uint64_t(count) * 0x9e3779b97f4a7c15ull;
+        fp ^= wantWater ? 0x12345678ull : 0u;
     }
     static thread_local uint64_t lastFp = 0;
     static thread_local size_t lastCount = 0;
@@ -1825,29 +1835,50 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
     lastFp = fp;
     lastCount = count;
 
-    std::vector<RTProxyBox> boxes;
-    boxes.reserve(count);
+    // Fixed water tint for proxy hit shading (a water chunk's brush index
+    // addresses water params, not scene materials, so store the tint directly).
+    constexpr glm::vec3 kWaterProxyAlbedo(0.03f, 0.10f, 0.14f);
+    std::vector<RTProxyBox> solids;
+    std::vector<RTProxyBox> waters;
     {
         std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
-        // GC entries for erased chunks (publish map is authoritative).
+        // GC entries for erased chunks (publish maps are authoritative).
         for (auto it = mainSolidProxyData.begin(); it != mainSolidProxyData.end(); ) {
             if (mainSolidChunks.find(it->first) == mainSolidChunks.end())
                 it = mainSolidProxyData.erase(it);
             else ++it;
         }
-        for (const auto& kv : mainSolidProxyData) {
-            const SolidProxyData& d = kv.second;
-            if (!(d.maxp.x > d.minp.x && d.maxp.y > d.minp.y && d.maxp.z > d.minp.z))
-                continue; // degenerate
-            RTProxyBox b{};
-            b.minp = d.minp;
-            b.maxp = d.maxp;
-            b.materialId = static_cast<float>(d.materialId);
-            b.flags = 0.0f; // solid (water excluded by design)
-            boxes.push_back(b);
+        for (auto it = mainWaterProxyData.begin(); it != mainWaterProxyData.end(); ) {
+            if (mainLiquidChunks.find(it->first) == mainLiquidChunks.end())
+                it = mainWaterProxyData.erase(it);
+            else ++it;
+        }
+        auto pack = [&](const std::unordered_map<NodeID, SolidProxyData>& m,
+                        std::vector<RTProxyBox>& out, bool isWater) {
+            for (const auto& kv : m) {
+                const SolidProxyData& d = kv.second;
+                if (!(d.maxp.x > d.minp.x && d.maxp.y > d.minp.y && d.maxp.z > d.minp.z))
+                    continue; // degenerate
+                RTProxyBox b{};
+                b.minp = d.minp;
+                b.maxp = d.maxp;
+                b.materialId = static_cast<float>(d.materialId);
+                b.flags = isWater ? 1.0f : 0.0f;
+                if (isWater) {
+                    b.albedo = kWaterProxyAlbedo;
+                    b.roughness = 0.15f;
+                }
+                out.push_back(b);
+            }
+        };
+        solids.reserve(mainSolidProxyData.size());
+        pack(mainSolidProxyData, solids, false);
+        if (wantWater) {
+            waters.reserve(mainWaterProxyData.size());
+            pack(mainWaterProxyData, waters, true);
         }
     }
-    rayTracing->setProxies(boxes);
+    rayTracing->setProxies(solids, waters);
 }
 
 void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,

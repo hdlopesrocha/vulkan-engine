@@ -248,7 +248,7 @@ void main() {
         vec3 sunDir = -normalize(ubo.lightDir.xyz);
         float shadowDist = max(rt.distances.z, 0.5);
         rayQueryEXT shadowRQ;
-        rayQueryInitializeEXT(shadowRQ, rtTlas, gl_RayFlagsOpaqueEXT, 0xFF,
+        rayQueryInitializeEXT(shadowRQ, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_ALL,
             fragPosWorld + worldNormal * 0.05, 0.05, sunDir, shadowDist);
         while (rayQueryProceedEXT(shadowRQ)) {}
         if (rayQueryGetIntersectionTypeEXT(shadowRQ, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -350,7 +350,7 @@ void main() {
                 float selfSkip = max(rt.debug.z, 0.05);
                 vec3 origin = fragPosWorld + reflN * selfSkip;
                 rayQueryEXT rq;
-                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, 0xFF,
+                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_ALL,
                     origin, 0.05, normalize(reflDir), max(rt.distances.x, 1.0));
                 while (rayQueryProceedEXT(rq)) {}
                 if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -358,7 +358,9 @@ void main() {
                     // Own-box guard: proxy boxes are coarse — hits closer than
                     // selfSkip are the fragment's own chunk, not true scenery.
                     if (hitT >= selfSkip) {
-                        uint boxIdx = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)) / 12u;
+                        uint boxIdx = rtBoxIndex(
+                            uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)),
+                            rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
                         RTProxyMetaGLSL meta = rtMetas[boxIdx];
                         vec3 hitPos = origin + normalize(reflDir) * hitT;
                         // Ray queries report front/back via FrontFace (no

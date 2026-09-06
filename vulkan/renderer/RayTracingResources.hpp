@@ -75,8 +75,18 @@ struct RayTracingParams {
 
 class RayTracingResources {
 public:
-    static constexpr uint32_t kMaxProxies = 4096;
+    static constexpr uint32_t kMaxSolidProxies = 3584;
+    static constexpr uint32_t kWaterProxyStart = 3584; // water boxes live in slots [3584, 4096)
+    static constexpr uint32_t kMaxWaterProxies = 512;
+    static constexpr uint32_t kMaxProxies = 4096; // total box slots (solids + water)
     static constexpr float kOutputScale = 0.5f; // half-res RT outputs (perf, §16)
+
+    // TLAS instance masks: solid rays see everything, water-originated rays
+    // see solids only (the water surface is never a target for its own rays —
+    // no self-hits). RT shadows use both (shoreline contact).
+    static constexpr uint32_t kMaskSolid = 0x01;
+    static constexpr uint32_t kMaskWater = 0x02;
+    static constexpr uint32_t kMaskAll = 0x03;
 
     RayTracingResources() = default;
     ~RayTracingResources() = default;
@@ -90,13 +100,17 @@ public:
 
     bool isSupported() const { return supported_; }
     bool isPipelineReady() const { return supported_ && pipelineReady_; }
-    uint32_t proxyCount() const { return activeProxyCount_; }
+    uint32_t proxyCount() const { return activeSolidCount_ + activeWaterCount_; }
+    uint32_t solidProxyCount() const { return activeSolidCount_; }
+    uint32_t waterProxyCount() const { return activeWaterCount_; }
 
-    // Stage a new proxy set (chunk bounds from the scene). Copies to the
-    // host-visible staging copy immediately; the GPU BLAS/TLAS rebuild is
+    // Stage new proxy sets (chunk bounds from the scene). Copies to the
+    // host-visible staging copies immediately; the GPU BLAS/TLAS rebuild is
     // deferred to buildIfNeeded() (throttled, in-frame, sync2-barriered).
-    // Cheap: memcmp-guarded, no GPU work when unchanged.
-    void setProxies(const std::vector<RTProxyBox>& boxes);
+    // Cheap: memcmp-guarded, no GPU work when unchanged. Solids occupy slots
+    // [0, kMaxSolidProxies), water volumes [kWaterProxyStart, kMaxProxies).
+    void setProxies(const std::vector<RTProxyBox>& solids,
+                    const std::vector<RTProxyBox>& waters);
 
     // Rebuild BLAS/TLAS when dirty and throttle allows. Records barriers +
     // builds into cmd (any graphics/compute queue). Returns true when a build
@@ -146,7 +160,7 @@ private:
     void createRTDescriptors(VulkanApp* app);
     void createRTPipeline(VulkanApp* app);
     void destroyRTPipeline(VulkanApp* app);
-    bool recordBuild(VulkanApp* app, VkCommandBuffer cmd, uint32_t count);
+    bool recordBuild(VulkanApp* app, VkCommandBuffer cmd);
     void writeRTSet(VulkanApp* app);
 
     bool supported_ = false;
@@ -166,35 +180,45 @@ private:
     }
     VkDeviceSize scratchAlign_ = 256; // from accelProps (set in init)
     VkDeviceAddress blasScratchAligned_ = 0;
+    VkDeviceAddress waterScratchAligned_ = 0;
     VkDeviceAddress tlasScratchAligned_ = 0;
     VkDeviceSize boxBaseDelta_ = 0;   // aabbBuffer_: verts at +delta, indices at +delta+vertBytes
     VkDeviceSize instanceDelta_ = 0;  // tlasInstanceBuffer_: instance at +delta
 
     // Proxy staging (host-visible, coherent) + device addresses for builds.
-    Buffer aabbBuffer_{}; // VkAabbPositionsKHR array (device address, build input)
+    // One shared box/metadata store: solids in slots [0, kMaxSolidProxies),
+    // water volumes in [kWaterProxyStart, kMaxProxies). Each BLAS references
+    // its own partition (self-contained vertex/index ranges).
+    Buffer aabbBuffer_{}; // box-triangle soup (device address, build input)
     Buffer metaBuffer_{}; // RTProxyMeta array (storage, hit shading)
-    Buffer tlasInstanceBuffer_{}; // single VkAccelerationStructureInstanceKHR
+    Buffer tlasInstanceBuffer_{}; // 2x VkAccelerationStructureInstanceKHR
     VkDeviceAddress aabbAddress_ = 0;
     VkDeviceAddress tlasInstanceAddress_ = 0;
 
-    std::vector<RTProxyBox> stagedProxies_;
+    std::vector<RTProxyBox> stagedSolids_;
+    std::vector<RTProxyBox> stagedWaters_;
     bool dirty_ = true;
-    uint32_t activeProxyCount_ = 0;
-    uint32_t lastBuiltCount_ = UINT32_MAX;
+    uint32_t activeSolidCount_ = 0;
+    uint32_t activeWaterCount_ = 0;
+    bool lastBuiltValid_ = false;
     uint64_t lastBuildFrame_ = 0;
     uint64_t frameCounter_ = 0;
     float lastBuildMs_ = 0.0f;
     uint32_t buildCount_ = 0;
     bool tlasBuilt_ = false; // set after the first BLAS+TLAS build completes
 
-    // Acceleration structures + scratch.
+    // Acceleration structures + scratch (one BLAS per layer + TLAS).
     VkAccelerationStructureKHR blas_ = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR blasWater_ = VK_NULL_HANDLE;
     VkAccelerationStructureKHR tlas_ = VK_NULL_HANDLE;
     Buffer blasBuffer_{};
+    Buffer blasWaterBuffer_{};
     Buffer tlasBuffer_{};
     Buffer blasScratch_{};
+    Buffer waterScratch_{};
     Buffer tlasScratch_{};
     VkDeviceAddress blasAddress_ = 0;
+    VkDeviceAddress blasWaterAddress_ = 0;
 
     // Water RT outputs (single pair, half-res, GENERAL during dispatch,
     // SHADER_READ_ONLY otherwise) + sampler.
