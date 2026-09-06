@@ -20,8 +20,8 @@ CFLAGS = $(if $(filter debug,$(BUILD)),-std=c++23 -O0 -g -DDEBUG,-std=c++23 -O3 
 # stale objects with mismatched layouts — a proven source of heap corruption
 # and phantom validation errors in this codebase.
 DEPFLAGS = -MMD -MP
-DEPS := $(OBJS:.o=.d)
--include $(DEPS)
+# NOTE: DEPS/-include live after OBJS is defined (see below); placing the
+# include earlier expands to empty and silently disables header tracking.
 
 # Use vendored Vulkan 1.4 SDK headers (LunarG SDK include/), then pkg-config for
 # GLFW and the Vulkan loader. The vulkan headers are listed first so they shadow
@@ -74,6 +74,12 @@ SERVER_OBJS := $(filter-out $(OBJ_DIR)/main.o $(OBJ_DIR)/vulkan/%.o $(OBJ_DIR)/w
 # Server-specific link flags: now include glfw and vulkan libs for ImGui backends
 SERVER_LIBS := $(LIBS)
 SERVER_INCLUDES := -isystem third_party/imgui -isystem third_party/imgui/backends -I/usr/include/stb
+
+# Header dependencies generated per-TU by -MMD -MP (see DEPFLAGS above).
+# MUST stay after OBJS is defined; otherwise the list expands empty and
+# header edits silently leave stale objects (mismatched class layouts).
+DEPS := $(OBJS:.o=.d)
+-include $(DEPS)
 
 
 # Automatically find all shader source files in shaders/ with known extensions
