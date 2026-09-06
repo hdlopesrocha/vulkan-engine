@@ -219,7 +219,16 @@ void SettingsWidget::render() {
             "Scene Depth (early UV, linearized)",
             "Effective Back Depth (min, linearized)",
             "Water Thickness (normalized)",
-            "Reflection Factor (env map)"
+            "Reflection Factor (env map)",
+            "RT Reflection Only",
+            "RT Refraction Only",
+            "RT Thickness",
+            "Fresnel",
+            "Absorption (Beer-Lambert)",
+            "CSM Shadows Only",
+            "RT Local Shadows Only",
+            "CSM + RT Combined Shadow",
+            "Tessellation Level Heat"
         };
         int current = settings.debugMode;
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {

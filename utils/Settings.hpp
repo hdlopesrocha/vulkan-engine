@@ -52,8 +52,8 @@ public:
     int maxTargetLod = 16;
 
     // Tessellation
-    bool tessellationEnabled = false;
-    bool shadowTessellationEnabled = false;
+    bool tessellationEnabled = true; // user-enabled (was default false)
+    bool shadowTessellationEnabled = true;
     bool adaptiveTessellation = true;
     float tessellationFactor = 1.0f;
     float tessMaxDistance = 512.0f;

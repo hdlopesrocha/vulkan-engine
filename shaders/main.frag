@@ -18,6 +18,7 @@ layout(location = VARY_LOCALPOS) in vec3 fragPosWorldNotDisplaced;
 layout(location = VARY_TEXWEIGHTS) in vec3 fragTexWeights;
 layout(location = VARY_HSV) in vec3 fragHSV;
 layout(location = VARY_SHARPNORMAL) in vec3 fragSharpNormal; // face normal computed in TES (sharp)
+layout(location = VARY_DEBUG) in vec3 fragTessLevel; // tessellation level heat (tesc output /16, debug 60)
 
 #include "includes/ubo.glsl"
 
@@ -670,6 +671,17 @@ void main() {
     }
     if (debugMode == 57) {
         outColor = vec4(vec3(totalShadow), 1.0);
+        return;
+    }
+    // ── Tessellation-level heatmap (tess levels / 16: black = 1 inactive,
+    // blue→green→red = increasing subdivision). Proves per-fragment which
+    // materials/dstances actually subdivide.
+    if (debugMode == 58) {
+        float t = clamp(fragTessLevel.x, 0.0, 4.0);
+        vec3 heat = mix(vec3(0.0), vec3(0.0, 0.0, 1.0), clamp(t * 4.0, 0.0, 1.0));
+        heat = mix(heat, vec3(0.0, 1.0, 0.0), clamp((t - 0.25) * 4.0, 0.0, 1.0));
+        heat = mix(heat, vec3(1.0, 0.0, 0.0), clamp((t - 0.5) * 2.0, 0.0, 1.0));
+        outColor = vec4(heat, 1.0);
         return;
     }
 

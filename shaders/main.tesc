@@ -25,6 +25,7 @@ layout(location = VARY_LOCALPOS) out vec3 tc_fragLocalPos[];
 layout(location = VARY_LOCALNORMAL) out vec3 tc_fragLocalNormal[];
 layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
 layout(location = VARY_HSV) out vec3 tc_fragHSV[];
+layout(location = VARY_DEBUG) out vec3 tc_fragTessLevel[];
 
 
 // Compute tessellation factor for a single edge.  All inputs come from the
@@ -116,6 +117,12 @@ void main() {
     float outer1 = computeEdgeTess(p2, p0, pc_inBrushIndex[2], pc_inBrushIndex[0]);
     float outer2 = computeEdgeTess(p0, p1, pc_inBrushIndex[0], pc_inBrushIndex[1]);
     float inner  = max(max(outer0, outer1), outer2);
+
+    // Tessellation-level debug feed (debug mode 60): per-corner max edge level
+    // normalized by 16 (typical maxLevel). The TES interpolates it like any
+    // other varying so the fragment shader sees a smooth heatmap.
+    float cornerLevel = max(max(outer0, outer1), max(outer2, inner)) / 16.0;
+    tc_fragTessLevel[gl_InvocationID] = vec3(clamp(cornerLevel, 0.0, 4.0));
 
     gl_TessLevelOuter[0] = outer0;
     gl_TessLevelOuter[1] = outer1;
