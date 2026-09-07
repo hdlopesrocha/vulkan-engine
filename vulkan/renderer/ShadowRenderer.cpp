@@ -842,7 +842,8 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
     const uint32_t f = frameIdx % VulkanApp::MAX_FRAMES_IN_FLIGHT;
     if (f >= shadowCascadeSets_.size())
         throw std::runtime_error("ShadowRenderer: frame slot out of range for cascade sets");
-    (void)mainUniformBuffer; // Parallel path uses per-cascade shadowUBO_ slots, never the shared main UBO.
+    // mainUniformBuffer is restored to uboStatic by the final blur CB below
+    // (GPU timeline, ordered before solid/water via finalSignal).
 
     // Shadows disabled: forward the timeline with an empty CB (waits
     // waitSemaphore, signals finalSignal) so downstream passes never block.
@@ -914,6 +915,45 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
     // this re-dispatch the water pass's drawPrepared reads count=0 (no water).
     if (liquidRenderer_)
         liquidRenderer_->getIndirectRenderer().prepareCull(blurCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, nullptr, /*doCascade=*/false, /*doMain=*/true, false, 0, 1);
+
+    // ── 4. Restore the shared main UBO (GPU timeline) ──
+    // The main command buffer deliberately does NOT memcpy uboStatic (that
+    // would race the GPU reads); instead this final shadow CB — which the
+    // solid/water passes already wait on via finalSignal — copies it from the
+    // staging restore slot. Without this, mainUniformBuffer would hold stale
+    // data whenever shadows are enabled (tessellation control, view, light
+    // and shadow matrices all stream through this buffer).
+    if (mainUniformBuffer.buffer != VK_NULL_HANDLE &&
+        frameIdx < uboStagingBuffers_.size() &&
+        uboStagingBuffers_[frameIdx].buffer != VK_NULL_HANDLE) {
+        constexpr VkDeviceSize kRestoreOffset =
+            VkDeviceSize(SHADOW_CASCADE_COUNT) * sizeof(UniformObject);
+        memcpy(uboStagingBuffers_[frameIdx].map(kRestoreOffset), &uboStatic, sizeof(UniformObject));
+        VkBufferCopy restoreCopy{kRestoreOffset, 0, sizeof(UniformObject)};
+        vkCmdCopyBuffer(blurCmd, uboStagingBuffers_[frameIdx].buffer,
+                        mainUniformBuffer.buffer, 1, &restoreCopy);
+        VkBufferMemoryBarrier2 memBarrier{};
+        memBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+        memBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        memBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        memBarrier.buffer = mainUniformBuffer.buffer;
+        memBarrier.offset = 0;
+        memBarrier.size = sizeof(UniformObject);
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 1;
+        depInfo.pBufferMemoryBarriers = &memBarrier;
+        vkCmdPipelineBarrier2(blurCmd, &depInfo);
+    }
 
     std::vector<VkSemaphore> cascadeDoneWait(SHADOW_CASCADE_COUNT);
     for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) cascadeDoneWait[c] = semCascadeDone_[f][c];
