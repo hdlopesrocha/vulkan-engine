@@ -321,18 +321,22 @@ void main() {
     }
 
     // === RT THICKNESS + BEER-LAMBERT (§11) ===
-    // Prefer the RT underwater path length (entry=water surface,
-    // exit=underwater hit) over the raster back-face measurement when the RT
-    // thickness toggle produced one. Attenuate the refracted light BEFORE the
-    // tint mix: T = exp(-absorption * thickness).
+    // Thickness source priority: the RASTER back-face measurement is the true
+    // water column and — built from shared boundary vertices — is continuous
+    // across chunk borders. The RT underwater path length is only a fallback
+    // for fragments where the back face measured no bottom.
+    //
+    // Why not always prefer RT: each solid proxy box has a FLAT top per chunk,
+    // so neighbouring boxes report stepped hitT values along their shared
+    // faces. In shallow water those steps land inside the tint ramp and print
+    // the proxy grid onto the water as filled tiles ("overlayed chunks").
+    // Attenuate the refracted light BEFORE the tint mix:
+    // T = exp(-absorption * thickness).
     //
     // Deep-water handling: a refraction ray that misses the terrestrial
-    // proxies is marked RT_DEEP_WATER. Its Beer-Lambert path length is the
-    // full maxRefract (300), which would black out to ~e^-105 — instead we
-    // substitute the deep-water tint as the base color and skip the
-    // attenuation, so unresolved distant water stays visibly tinted. This also
-    // removes the per-chunk seams that appeared where neighbouring proxy boxes
-    // produced different (hit, miss) classification at their borders.
+    // proxies is marked RT_DEEP_WATER. It substitutes the deep-water tint as
+    // the base color (never attenuated to black), keeping the raster thickness
+    // when a real bottom was measured.
     vec3 absorbCoeff = vec3(0.35, 0.12, 0.08);
     float absorbScale = 1.0;
     bool rtDeepMiss = false;
@@ -343,13 +347,21 @@ void main() {
 #ifdef RT_ENABLED
     if (rtReady && rt.toggles.z > 0.5 && rtThickness >= 0.0) {
         rtDeepMiss = (rtThickness >= RT_DEEP_WATER);
-        // For the deep-miss marker use the full path as a proxy thickness so
-        // depth-dependent effects (caustics, debug views) keep a sane value.
-        waterThickness = (rtDeepMiss ? maxRefr : rtThickness)
-            * max(rt.absorption.a, 0.0);
         absorbCoeff = rt.absorption.rgb;
-        absorbScale = 1.0; // thickness already scaled above
-        if (rtDeepMiss) sceneColor = deepTint;
+        absorbScale = 1.0;
+        if (rtDeepMiss) {
+            sceneColor = deepTint;
+            // No raster bottom: keep the full path as a proxy thickness so
+            // depth-dependent effects (caustics, debug views) stay sane.
+            if (!hasValidBackFace)
+                waterThickness = maxRefr * max(rt.absorption.a, 0.0);
+            // else: raster back-face thickness stands (continuous, true depth).
+        } else if (!hasValidBackFace) {
+            // RT hit length is the only depth signal available.
+            // (Already capped at rt.water.y upstream: rgen + rtTraceWater.)
+            waterThickness = rtThickness * max(rt.absorption.a, 0.0);
+        }
+        // else: raster back-face thickness stands (continuous, true depth).
     } else {
         absorbCoeff = rt.absorption.rgb;
     }
