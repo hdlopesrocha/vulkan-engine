@@ -93,11 +93,17 @@ void main() {
             pos - N * 0.05, 0.05, T, maxRefract, 0);
         if (rtPayload.a >= 0.0) {
             // Hit: payload.a is the underwater path length (water surface ->
-            // underwater hit). water.frag applies Beer-Lambert attenuation
-            // T = exp(-absorption * thickness) with the layer coefficients.
-            refractValue = vec4(rtPayload.rgb, rtPayload.a);
+            // underwater hit). Cap it at rt.water.y so Beer-Lambert in
+            // water.frag never computes a transmittance < ~e^-3 for a resolved
+            // hit (far underwater pixels would otherwise black out).
+            float cap = max(rt.water.y, 0.0);
+            refractValue = vec4(rtPayload.rgb, min(rtPayload.a, cap));
         } else {
-            refractValue = vec4(rtPayload.rgb, maxRefract);
+            // Miss = ray exited the TLAS unresolved (deep water beyond the
+            // proxies). Carry the sky + the deep-water marker; water.frag
+            // replaces the far path with the deep tint instead of attenuating
+            // the sky to black.
+            refractValue = vec4(rtPayload.rgb, RT_DEEP_WATER);
         }
     }
 

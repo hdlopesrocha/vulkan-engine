@@ -80,6 +80,7 @@ public:
     bool rtWaterPipeline = true; // water via async RT pipeline outputs (off = inline ray queries)
     float rtMaxReflectDist = 500.0f;  // reflection ray Tmax (world units)
     float rtMaxRefractDist = 300.0f;  // refraction ray Tmax (also deep-water thickness)
+    float rtMaxWaterThickness = 6.0f; // clamp for RT hit thickness (kills far-hit blackouts)
     float rtMaxShadowDist = 12.0f;    // local shadow ray Tmax (contact range only)
     float rtRoughnessThreshold = 0.6f;// roughness above this skips RT reflections (env approx)
     float rtWaterIOR = 1.333f;        // physical water IOR

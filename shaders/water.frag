@@ -62,7 +62,8 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax) {
     while (rayQueryProceedEXT(rq)) {}
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
         vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(normalize(dir))).rgb;
-        return vec4(sky, -1.0);
+        // Deep-water marker, not -1: refuses the maxRefract over-attenuation.
+        return vec4(sky, RT_DEEP_WATER);
     }
     float hitT = rayQueryGetIntersectionTEXT(rq, true);
     uint boxIdx = rtBoxIndex(uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)),
@@ -73,7 +74,9 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax) {
     vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz, meta.maxAndFlags.xyz, exiting);
     float ndl = max(dot(boxN, normalize(rt.sunDir.xyz)), 0.0);
     vec3 color = meta.albedoRough.rgb * (rt.sunColor.rgb * (0.35 + 0.65 * ndl));
-    return vec4(color, hitT);
+    // Cap the reported underwater length at rt.water.y (Beer-Lambert guard).
+    float cap = max(rt.water.y, 0.0);
+    return vec4(color, min(hitT, cap));
 }
 #endif
 
@@ -267,13 +270,17 @@ void main() {
     // rtThickness carries the RT underwater path length when provided (>= 0).
     vec3 sceneColor = vec3(0.0);
     float rtThickness = -1.0;
+#ifndef RT_ENABLED
+    float waterIor = 1.333333; // approximate index of refraction for water
+    float maxRefr = 300.0;
+#else
+    // Shared refraction constants (also read by the Beer-Lambert block below:
+    // the deep-water marker substitutes maxRefr as a caustic/viz thickness).
+    float maxRefr = max(rt.distances.y, 1.0);
+#endif
     if (enableRefraction) {
 #ifdef RT_ENABLED
         float waterIor = clamp(rt.water.x, 1.0, 2.5);
-        float maxRefr = max(rt.distances.y, 1.0);
-#else
-        float waterIor = 1.333333; // approximate index of refraction for water
-        float maxRefr = 300.0;
 #endif
         // Approximate air->water refraction. GLSL `refract` expects the incident
         // vector (eye -> surface), i.e. -viewDir; the result is the true
@@ -300,8 +307,9 @@ void main() {
         if (!refrResolved && rtReady && rt.toggles.y > 0.5) {
             vec4 hit = rtTraceWater(fragPosWorld - normal * 0.05, refrRay, maxRefr);
             sceneColor = hit.rgb;
-            // Hit: underwater path length. Miss: deep water (full path).
-            rtThickness = (hit.a >= 0.0) ? hit.a : maxRefr;
+            // a >= 0 always from rtTraceWater: capped path length on hit, or
+            // RT_DEEP_WATER marker on miss (deep, unresolved water).
+            rtThickness = hit.a;
             refrResolved = true;
         }
 #endif
@@ -317,19 +325,41 @@ void main() {
     // exit=underwater hit) over the raster back-face measurement when the RT
     // thickness toggle produced one. Attenuate the refracted light BEFORE the
     // tint mix: T = exp(-absorption * thickness).
+    //
+    // Deep-water handling: a refraction ray that misses the terrestrial
+    // proxies is marked RT_DEEP_WATER. Its Beer-Lambert path length is the
+    // full maxRefract (300), which would black out to ~e^-105 — instead we
+    // substitute the deep-water tint as the base color and skip the
+    // attenuation, so unresolved distant water stays visibly tinted. This also
+    // removes the per-chunk seams that appeared where neighbouring proxy boxes
+    // produced different (hit, miss) classification at their borders.
     vec3 absorbCoeff = vec3(0.35, 0.12, 0.08);
     float absorbScale = 1.0;
+    bool rtDeepMiss = false;
+    // Water tint colors from UBO (declared here — the deep-miss path needs
+    // them, and the tint composition below reuses them).
+    vec3 deepTint = wp.deepColor.rgb;
+    vec3 shallowTint = wp.shallowColor.rgb;
 #ifdef RT_ENABLED
     if (rtReady && rt.toggles.z > 0.5 && rtThickness >= 0.0) {
-        waterThickness = rtThickness * max(rt.absorption.a, 0.0);
+        rtDeepMiss = (rtThickness >= RT_DEEP_WATER);
+        // For the deep-miss marker use the full path as a proxy thickness so
+        // depth-dependent effects (caustics, debug views) keep a sane value.
+        waterThickness = (rtDeepMiss ? maxRefr : rtThickness)
+            * max(rt.absorption.a, 0.0);
         absorbCoeff = rt.absorption.rgb;
         absorbScale = 1.0; // thickness already scaled above
+        if (rtDeepMiss) sceneColor = deepTint;
     } else {
         absorbCoeff = rt.absorption.rgb;
     }
 #endif
-    vec3 transmittance = exp(-absorbCoeff * max(waterThickness * absorbScale, 0.0));
-    sceneColor *= transmittance;
+    // Clamp the optical thickness so transmittance never falls below ~e^-4:
+    // resolves the black-box artifact for large measured thicknesses (deep
+    // hits, high absorptionScale) without removing the depth gradient.
+    vec3 transmittance = exp(-min(absorbCoeff * max(waterThickness * absorbScale, 0.0),
+                                  vec3(4.0)));
+    if (!rtDeepMiss) sceneColor *= transmittance;
 
     // sceneDepthRaw already sampled once at the top of main() and reused.
     // Sample g-buffer attachments produced by the main pass (if available)
@@ -422,9 +452,7 @@ void main() {
     float shadow = 0.0;
     
     // === WATER COLOR COMPOSITION ===
-    // Water tint colors from UBO
-    vec3 deepTint = wp.deepColor.rgb;
-    vec3 shallowTint = wp.shallowColor.rgb;
+    // Water tint colors from UBO (declared in the Beer-Lambert block above).
 
 
     // Caustic parameters

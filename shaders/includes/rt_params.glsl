@@ -6,7 +6,7 @@
 struct RayTracingParamsGLSL {
     vec4 toggles;      // x=reflections y=refractions z=thickness w=localShadows
     vec4 distances;    // x=maxReflect y=maxRefract z=maxShadowDist w=roughnessThreshold
-    vec4 water;        // x=IOR
+    vec4 water;        // x=IOR, y=maxWaterThickness (hit clamp), zw reserved
     vec4 absorption;   // rgb=Beer-Lambert coeff, a=thicknessScale
     vec4 debug;        // x=RT debug view, y=tlasReady, z=selfSkipDist, w=useWaterPipeline
     mat4 invViewProj;
@@ -32,6 +32,13 @@ const uint RT_WATER_BOX_START = 3584u;
 const uint RT_RAY_MASK_SOLID = 0x01u;
 const uint RT_RAY_MASK_WATER = 0x02u;
 const uint RT_RAY_MASK_ALL = 0x03u;
+
+// Refraction "deep water" sentinel. A ray that misses the terrestrial proxies
+// has still travelled through the water volume (unresolved exit); encoding it
+// as an in-band path length (maxRefract) over-attenuates Beer-Lambert to
+// black. This marker lets water.frag substitute the deep-water tint instead
+// (see SceneRenderer::updateRTParams / rtMaxWaterThickness).
+const float RT_DEEP_WATER = 1e30;
 
 // Global metadata index for a triangle hit (primitiveID is per-BLAS local).
 uint rtBoxIndex(uint primitiveId, uint instanceCustomIndex) {
