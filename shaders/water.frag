@@ -80,7 +80,7 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction) {
     bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
     vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz, meta.maxAndFlags.xyz, exiting);
     float ndl = max(dot(boxN, normalize(rt.sunDir.xyz)), 0.0);
-    vec3 color = meta.albedoRough.rgb * (rt.sunColor.rgb * (0.35 + 0.65 * ndl));
+    vec3 color = meta.albedoRough.rgb * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
     if (!refraction) {
         // Reflection ignores thickness: feather coarse hits toward sky.
         return vec4(mix(color, sky, f), -1.0);
@@ -387,11 +387,12 @@ void main() {
         absorbCoeff = rt.absorption.rgb;
     }
 #endif
-    // Clamp the optical thickness so transmittance never falls below ~e^-4:
-    // resolves the black-box artifact for large measured thicknesses (deep
-    // hits, high absorptionScale) without removing the depth gradient.
+    // Clamp the optical thickness so transmittance never falls below ~e^-2.5:
+    // deep hits stay readable dark teal instead of blacking out, while the
+    // depth gradient is preserved. (Shallow and mid ranges never reach the
+    // clamp, so their look is unchanged.)
     vec3 transmittance = exp(-min(absorbCoeff * max(waterThickness * absorbScale, 0.0),
-                                  vec3(4.0)));
+                                  vec3(2.5)));
     if (!rtDeepMiss) sceneColor *= transmittance;
 
     // sceneDepthRaw already sampled once at the top of main() and reused.

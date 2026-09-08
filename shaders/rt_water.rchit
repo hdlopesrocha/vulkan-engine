@@ -25,9 +25,12 @@ void main() {
     vec3 sunDir = normalize(rt.sunDir.xyz);
     float ndl = max(dot(N, sunDir), 0.0);
     vec3 albedo = meta.albedoRough.rgb;
-    // Ambient + sun diffuse. Shadows stay CSM-owned (§2/§21): RT hits do not
-    // recompute the macro sun-shadow solution.
-    vec3 color = albedo * (rt.sunColor.rgb * (0.35 + 0.65 * ndl));
+    // Ambient + sun diffuse, plus a fixed sky-ambient fill so upward-facing
+    // underwater surfaces keep plausible brightness instead of crushing to
+    // black under Beer-Lambert (proxy albedo has no sky light otherwise).
+    // Shadows stay CSM-owned (§2/§21): RT hits do not recompute the macro
+    // sun-shadow solution.
+    vec3 color = albedo * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
     // Coarse boxes (huge flat tops in the far field) cannot resolve shallow
     // detail. Report the raw hit plus a feather factor; rgen blends toward
     // deep/sky smoothly so box-size contours never print as razor lines.
