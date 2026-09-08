@@ -17,6 +17,7 @@ class World;
 #include "../../math/BoundingCubeHasher.hpp"
 #include <unordered_map>
 #include <array>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <deque>
@@ -108,6 +109,13 @@ public:
     // Mutex protecting all chunk maps (solid, transparent, brush) and mesh operations
     std::recursive_mutex mainSolidChunksMutex;
     std::recursive_mutex mainLiquidChunksMutex;
+
+    // Texture arrays (owned by main): per-layer albedo averages feed the RT
+    // proxy albedo. Set once in init(); read on the render thread.
+    TextureArrayManager* textureArrays_ = nullptr;
+    // Set by the texture allocation listener (any thread); consumed on the
+    // render thread in processPendingMeshes to refresh RT proxy albedos.
+    std::atomic<bool> proxyAlbedoRefresh_{false};
 
     // ── Chunk tracking ──
     // Track model ids for transparent/water meshes so we can remove them if erased/updated

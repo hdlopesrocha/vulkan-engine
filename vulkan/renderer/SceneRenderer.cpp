@@ -253,6 +253,8 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         std::cerr << "[SceneRenderer::init] app is nullptr!" << std::endl;
         return;
     }
+    // Keep the texture arrays for RT proxy albedo lookups (per-layer averages).
+    textureArrays_ = textureArrayManager;
 
     // Initialize the async streaming orchestrator. It is the ONLY transfer
     // engine: solid/water incremental chunk uploads route through it (32
@@ -747,6 +749,10 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     if (textureArrayManager) {
         textureArrayManager->addAllocationListener([this, app, textureArrayManager]() {
             this->updateTextureDescriptorSet(app, textureArrayManager);
+            // Texture (re)allocation changed the per-layer albedo averages:
+            // refresh RT proxy albedos on the render thread (flag consumed in
+            // processPendingMeshes; setProxies dedupes when nothing changed).
+            this->proxyAlbedoRefresh_.store(true, std::memory_order_relaxed);
         });
     }
     mainLiquidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
@@ -1529,7 +1535,10 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
 
     // Hybrid RT: stage fresh proxy boxes when publishes happened this frame
     // (fingerprint dedupes pure camera/LOD frames at O(N) integer cost).
-    rebuildProxySet(app, chunksPublished > 0);
+    // A pending texture-driven albedo refresh forces a repack as well.
+    const bool albedoRefresh =
+        proxyAlbedoRefresh_.exchange(false, std::memory_order_relaxed);
+    rebuildProxySet(app, chunksPublished > 0 || albedoRefresh);
 }
 
 void SceneRenderer::ageOutPendingDeletes(uint32_t curFrame, IndirectRenderer& solidIR, IndirectRenderer& waterIR) {
@@ -1867,6 +1876,14 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                 if (isWater) {
                     b.albedo = kWaterProxyAlbedo;
                     b.roughness = 0.15f;
+                } else if (textureArrays_) {
+                    // Real per-material average albedo (linear) so secondary
+                    // rays return plausible terrain colors instead of flat
+                    // gray. This dissolves the gray-vs-sky rectangular tiles
+                    // in grazing water reflections/refractions into natural
+                    // scene variation.
+                    const auto avg = textureArrays_->albedoAverage(d.materialId);
+                    b.albedo = glm::vec3(avg[0], avg[1], avg[2]);
                 }
                 out.push_back(b);
             }
