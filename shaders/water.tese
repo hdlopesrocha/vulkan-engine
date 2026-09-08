@@ -146,18 +146,26 @@ void main() {
     if (volumeBumpRate > 0.0 && haveScreen) {
         float backFaceDepthRaw = texture(waterBackDepthTex, screenUV).r;
 
-        mat4 invVP = ubo.invViewProjection;
-        vec4 backFaceWorldH = invVP * vec4(screenUV * 2.0 - 1.0, backFaceDepthRaw, 1.0);
-        vec3 backFaceWorld = backFaceWorldH.xyz / backFaceWorldH.w;
+        // No bottom rendered (open/deep water or unmodeled far field): keep
+        // full amplitude. An unmeasured bottom is not a shallow one — zeroing
+        // the waves here turns distant water into a flat mirror with a razor
+        // edge at the validity boundary (grazing Fresnel amplifies the
+        // normal-field discontinuity enormously). Only a MEASURED thin sheet
+        // calms the waves.
+        if (backFaceDepthRaw < 0.9999) {
+            mat4 invVP = ubo.invViewProjection;
+            vec4 backFaceWorldH = invVP * vec4(screenUV * 2.0 - 1.0, backFaceDepthRaw, 1.0);
+            vec3 backFaceWorld = backFaceWorldH.xyz / backFaceWorldH.w;
 
-        vec3 worldFrontPos = pos;
-        vec3 worldRayDir = normalize(worldFrontPos - ubo.viewPos.xyz);
-        float backFaceThickness = max(dot(backFaceWorld - worldFrontPos, worldRayDir), 0.0);
-        const float kMinVolumeThickness = 0.05;
-        bool hasValidBackFace = (backFaceDepthRaw < 0.9999) && (backFaceThickness > kMinVolumeThickness);
-        float waterThickness = hasValidBackFace ? backFaceThickness : 0.0;
+            vec3 worldFrontPos = pos;
+            vec3 worldRayDir = normalize(worldFrontPos - ubo.viewPos.xyz);
+            float backFaceThickness = max(dot(backFaceWorld - worldFrontPos, worldRayDir), 0.0);
+            const float kMinVolumeThickness = 0.05;
+            bool hasValidBackFace = backFaceThickness > kMinVolumeThickness;
+            float waterThickness = hasValidBackFace ? backFaceThickness : 0.0;
 
-        bumpAmp *= (1.0 - exp(-waterThickness * volumeBumpRate));
+            bumpAmp *= (1.0 - exp(-waterThickness * volumeBumpRate));
+        }
     }
 
     // Calculate wave displacement and its analytic spatial gradient using 4D
