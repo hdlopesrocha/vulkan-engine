@@ -1901,6 +1901,18 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
             waters.reserve(mainWaterProxyData.size());
             pack(mainWaterProxyData, waters, true);
         }
+        { // Rare (repacks only): pack composition. Coarse ancestors are
+            // filtered, so this also fingerprints whether the frontier-only
+            // proxy set is active in a given binary.
+            static size_t lastKept = SIZE_MAX;
+            const size_t kept = solids.size() + waters.size();
+            if (kept != lastKept) {
+                lastKept = kept;
+                printf("[HybridRT] proxy pack: %zu solid + %zu water boxes (frontier only)\n",
+                    solids.size(), waters.size());
+                fflush(stdout);
+            }
+        }
     }
     rayTracing->setProxies(solids, waters);
 }
