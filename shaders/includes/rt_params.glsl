@@ -55,10 +55,13 @@ const float RT_DEEP_THICKNESS = 64.0;
 // Coarse-box feather factor: 0 for fine boxes (use the hit as-is), ramping
 // to 1 for boxes that cannot resolve shallow detail. Blending (instead of a
 // hard switch) guarantees box-size contours never print as razor lines.
+// Linear ramp (not smoothstep): constant slope minimizes the worst step
+// between adjacent box sizes; the ramp spans the whole 12..96 m band so the
+// dominant 30|60 m LOD frontier crosses it gradually.
 float rtCoarseFeather(float footprint, float limit) {
-    float lo = max(limit * 0.5, 1.0);
-    float hi = max(limit * 1.5, lo + 1.0);
-    return smoothstep(lo, hi, footprint);
+    float lo = max(limit * 0.25, 1.0);
+    float hi = max(limit * 2.0, lo + 1.0);
+    return clamp((footprint - lo) / max(hi - lo, 1e-6), 0.0, 1.0);
 }
 // Global metadata index for a triangle hit (primitiveID is per-BLAS local).
 uint rtBoxIndex(uint primitiveId, uint instanceCustomIndex) {
