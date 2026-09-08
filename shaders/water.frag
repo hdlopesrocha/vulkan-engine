@@ -50,25 +50,36 @@ layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rt; };
 layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]; };
 
 // Trace one water secondary ray through the proxy TLAS.
-// Returns rgb = shaded hit (or sky on miss), a = hitT (or -1 on miss).
+// refraction=true: returns rgb = shaded hit (or sky on miss), a = hitT
+//   (capped at rt.water.y) or RT_DEEP_WATER on miss/coarse hit (deep water).
+// refraction=false: returns rgb = shaded hit or sky on miss/coarse hit
+//   (a is unused by the reflection consumer).
 // Macro shadows stay CSM-owned: hits get ambient + sun diffuse only.
 // Water-originated rays trace with the solid-only mask: the water surface
 // itself is not in the solid BLAS (origins, never targets), and the water
 // BLAS is skipped to avoid self-hits.
-vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax) {
+vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction) {
     rayQueryEXT rq;
     rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID,
         origin, 0.05, dir, tMax);
     while (rayQueryProceedEXT(rq)) {}
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
         vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(normalize(dir))).rgb;
-        // Deep-water marker, not -1: refuses the maxRefract over-attenuation.
-        return vec4(sky, RT_DEEP_WATER);
+        // Deep-water marker (refraction) or plain sky (reflection).
+        return refraction ? vec4(sky, RT_DEEP_WATER) : vec4(sky, -1.0);
     }
     float hitT = rayQueryGetIntersectionTEXT(rq, true);
     uint boxIdx = rtBoxIndex(uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)),
                              rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
     RTProxyMetaGLSL meta = rtMetas[boxIdx];
+    // Coarse boxes cannot resolve shallow detail (same rule as rchit):
+    // refraction treats them as deep water, reflection as sky.
+    float footprint = meta.extra.x;
+    float coarseLimit = max(rt.water.z, 1.0);
+    if (footprint > coarseLimit) {
+        vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(normalize(dir))).rgb;
+        return refraction ? vec4(sky, RT_DEEP_WATER) : vec4(sky, -1.0);
+    }
     vec3 hitPos = origin + dir * hitT;
     bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
     vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz, meta.maxAndFlags.xyz, exiting);
@@ -305,7 +316,7 @@ void main() {
             }
         }
         if (!refrResolved && rtReady && rt.toggles.y > 0.5) {
-            vec4 hit = rtTraceWater(fragPosWorld - normal * 0.05, refrRay, maxRefr);
+            vec4 hit = rtTraceWater(fragPosWorld - normal * 0.05, refrRay, maxRefr, true);
             sceneColor = hit.rgb;
             // a >= 0 always from rtTraceWater: capped path length on hit, or
             // RT_DEEP_WATER marker on miss (deep, unresolved water).
@@ -345,6 +356,14 @@ void main() {
     vec3 deepTint = wp.deepColor.rgb;
     vec3 shallowTint = wp.shallowColor.rgb;
 #ifdef RT_ENABLED
+    // Hash-dither resolved RT hit lengths (±0.3 m). Per-chunk flat box tops
+    // quantize the true depth into steps; undithered, those steps print as
+    // terrace bands. Dithered they degrade to grain, which reads as water
+    // noise. Miss marker and "no RT" (-1) are never touched.
+    if (rtReady && rt.toggles.z > 0.5 && rtThickness >= 0.0 && rtThickness < RT_DEEP_WATER) {
+        float h = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+        rtThickness = max(rtThickness + (h - 0.5) * 0.6, 0.0);
+    }
     if (rtReady && rt.toggles.z > 0.5 && rtThickness >= 0.0) {
         rtDeepMiss = (rtThickness >= RT_DEEP_WATER);
         absorbCoeff = rt.absorption.rgb;
@@ -438,7 +457,7 @@ void main() {
     }
     if (!reflResolved && rtReady && rt.toggles.x > 0.5) {
         float maxRefl = max(rt.distances.x, 1.0);
-        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), maxRefl);
+        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), maxRefl, false);
         skyColor = hit.rgb;
         reflResolved = true;
     }

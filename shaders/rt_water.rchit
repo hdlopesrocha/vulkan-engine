@@ -28,5 +28,11 @@ void main() {
     // Ambient + sun diffuse. Shadows stay CSM-owned (§2/§21): RT hits do not
     // recompute the macro sun-shadow solution.
     vec3 color = albedo * (rt.sunColor.rgb * (0.35 + 0.65 * ndl));
-    rtPayload = vec4(color, gl_HitTEXT);
+    // Coarse boxes (huge flat tops in the far field) cannot resolve shallow
+    // detail: their hitT would terrace. Report the deep-water marker instead;
+    // rgen maps it per ray type (refraction -> deep tint, reflection -> sky).
+    float footprint = meta.extra.x;
+    float coarseLimit = max(rt.water.z, 1.0);
+    float thick = (footprint > coarseLimit) ? RT_DEEP_WATER : gl_HitTEXT;
+    rtPayload = vec4(color, thick);
 }

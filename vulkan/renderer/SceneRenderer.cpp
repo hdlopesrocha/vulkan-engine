@@ -1929,7 +1929,8 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
                            settings.rtLocalShadows ? 1.0f : 0.0f);
     p.distances = glm::vec4(settings.rtMaxReflectDist, settings.rtMaxRefractDist,
                              settings.rtMaxShadowDist, settings.rtRoughnessThreshold);
-    p.water = glm::vec4(settings.rtWaterIOR, settings.rtMaxWaterThickness, 0.0f, 0.0f);
+    p.water = glm::vec4(settings.rtWaterIOR, settings.rtMaxWaterThickness,
+                         settings.rtCoarseBoxSize, 0.0f);
     p.absorption = glm::vec4(settings.rtAbsorption[0], settings.rtAbsorption[1],
                              settings.rtAbsorption[2], settings.rtAbsorptionScale);
     p.debug = glm::vec4(static_cast<float>(settings.rtDebugView),

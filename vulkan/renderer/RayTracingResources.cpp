@@ -666,7 +666,11 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
             metas[slot].minAndMatId = glm::vec4(b.minp, b.materialId);
             metas[slot].maxAndFlags = glm::vec4(b.maxp, b.flags);
             metas[slot].albedoRough = glm::vec4(b.albedo, b.roughness);
-            metas[slot].extra = glm::vec4(0.0f);
+            // Horizontal footprint lets shaders distrust coarse boxes: a box
+            // tens of meters wide cannot resolve shallow-water detail, so
+            // water refraction/reflection treat such hits as deep/sky.
+            const float footprint = std::max(b.maxp.x - b.minp.x, b.maxp.z - b.minp.z);
+            metas[slot].extra = glm::vec4(std::max(footprint, 0.0f), 0.0f, 0.0f, 0.0f);
         };
         auto zeroBox = [&](uint32_t slot) {
             float* v = verts + size_t(slot) * kVertsPerBox * 3;

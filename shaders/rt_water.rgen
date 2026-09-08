@@ -78,8 +78,15 @@ void main() {
         rtPayload = vec4(0.0);
         traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID, 0, 0, 0,
             pos + N * 0.05, 0.05, R, maxReflect, 0);
-        reflectValue = vec4(rtPayload.rgb, rtPayload.a >= 0.0 ? 1.0 : 0.0);
-        if (rtPayload.a < 0.0) reflectValue.rgb = rtPayload.rgb; // sky from miss
+        if (rtPayload.a >= RT_DEEP_WATER) {
+            // Coarse-box hit (see rchit): unreliable for detail — use the sky
+            // directly and mark valid (saves the inline fallback trace).
+            vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(normalize(R))).rgb;
+            reflectValue = vec4(sky, 1.0);
+        } else {
+            reflectValue = vec4(rtPayload.rgb, rtPayload.a >= 0.0 ? 1.0 : 0.0);
+            if (rtPayload.a < 0.0) reflectValue.rgb = rtPayload.rgb; // sky from miss
+        }
     }
 
     // Refraction (Snell air->water). Miss = deep water: full-path thickness.
@@ -91,7 +98,11 @@ void main() {
         rtPayload = vec4(0.0);
         traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID, 0, 0, 0,
             pos - N * 0.05, 0.05, T, maxRefract, 0);
-        if (rtPayload.a >= 0.0) {
+        if (rtPayload.a >= RT_DEEP_WATER) {
+            // Coarse-box hit: same deep handling as a miss (pass the marker
+            // through — do NOT clamp it to maxWaterThickness).
+            refractValue = vec4(rtPayload.rgb, RT_DEEP_WATER);
+        } else if (rtPayload.a >= 0.0) {
             // Hit: payload.a is the underwater path length (water surface ->
             // underwater hit). Cap it at rt.water.y so Beer-Lambert in
             // water.frag never computes a transmittance < ~e^-3 for a resolved

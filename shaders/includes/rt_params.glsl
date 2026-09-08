@@ -6,7 +6,7 @@
 struct RayTracingParamsGLSL {
     vec4 toggles;      // x=reflections y=refractions z=thickness w=localShadows
     vec4 distances;    // x=maxReflect y=maxRefract z=maxShadowDist w=roughnessThreshold
-    vec4 water;        // x=IOR, y=maxWaterThickness (hit clamp), zw reserved
+    vec4 water;        // x=IOR, y=maxWaterThickness (hit clamp), z=coarseBoxSize (deep/sky fallback), w reserved
     vec4 absorption;   // rgb=Beer-Lambert coeff, a=thicknessScale
     vec4 debug;        // x=RT debug view, y=tlasReady, z=selfSkipDist, w=useWaterPipeline
     mat4 invViewProj;
@@ -21,7 +21,7 @@ struct RTProxyMetaGLSL {
     vec4 minAndMatId;  // xyz=AABB min, w=material id
     vec4 maxAndFlags;  // xyz=AABB max, w=flags
     vec4 albedoRough;  // rgb=avg albedo, a=roughness
-    vec4 extra;
+    vec4 extra;        // x=horizontal footprint (max x/z extent, for coarse-box fallback), yzw reserved
 };
 
 // Proxy layout: solid boxes occupy metadata slots [0, RT_WATER_BOX_START),
