@@ -468,6 +468,32 @@ void main() {
         skyColor = texture(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir))).rgb;
     }
 
+    // === AERIAL DETAIL FADE (§10/§11) ===
+    // Blend ray-traced detail toward analytic fallbacks with fragment distance.
+    // Proxy boxes are per-chunk flats: beyond the near field their tops,
+    // footprints and hit/miss classification imprint box-shaped steps onto
+    // refraction color, reflection color and thickness — and every such step
+    // is a potential razor line (LOD frontiers are straight, full-width and
+    // camera-following). Distance is continuous, so fading by distance cannot
+    // create edges by construction; it only removes them. Near field (<120 m,
+    // where boxes are tightest) keeps pixel-identical RT detail; far field
+    // converges to deep tint + sky, i.e. honest aerial perspective. Debug
+    // views below read the pre-fade snapshots.
+    vec3 dbgSceneColor = sceneColor;
+    vec3 dbgReflColor = skyColor;
+    {
+        const float fadeStart = 120.0;
+        const float fadeEnd = 400.0;
+        float fragDist = length(fragPosWorld - ubo.viewPos.xyz);
+        float detailFade = smoothstep(fadeStart, fadeEnd, fragDist);
+        if (detailFade > 0.0) {
+            vec3 skyRef = texture(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir))).rgb;
+            skyColor = mix(skyColor, skyRef, detailFade);
+            sceneColor = mix(sceneColor, deepTint, detailFade);
+            waterThickness = mix(waterThickness, maxRefr, detailFade);
+        }
+    }
+
     // Uniform reflection toggle: when set, apply reflectionStrength uniformly
     // instead of modulating by Fresnel. This flag is stored in reserved2.w
     // (see WaterParamsGPU.reserved2.w).
@@ -788,11 +814,12 @@ void main() {
     // ── Hybrid RT debug views (settings.rtDebugView mirrors) ──
     // 50 = RT/pipeline reflection only, 51 = refraction only,
     // 52 = RT thickness, 53 = Fresnel, 54 = Beer-Lambert transmittance.
+    // 50/51 read the pre-aerial-fade snapshots so diagnostics show raw RT.
     if (dbgMode == 50) {
-        outColor = vec4(skyColor, 1.0);
+        outColor = vec4(dbgReflColor, 1.0);
     }
     if (dbgMode == 51) {
-        outColor = vec4(sceneColor, 1.0);
+        outColor = vec4(dbgSceneColor, 1.0);
     }
     if (dbgMode == 52) {
         float thickDenom = 300.0;
