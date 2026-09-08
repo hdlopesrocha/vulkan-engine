@@ -1345,6 +1345,7 @@ size_t SceneRenderer::publishPendingMeshes(
             pd.maxp = cubeMax;
             pd.materialId = static_cast<uint32_t>(
                 std::max(0, lod.geom.vertices[0].brushIndex));
+            pd.rung = static_cast<uint32_t>(lod.lod);
             if (layer == LAYER_OPAQUE)
                 mainSolidProxyData[nid] = pd;
             else
@@ -1868,6 +1869,12 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                 const SolidProxyData& d = kv.second;
                 if (!(d.maxp.x > d.minp.x && d.maxp.y > d.minp.y && d.maxp.z > d.minp.z))
                     continue; // degenerate
+                // Frontier (finest rung) boxes only. Coarse ancestors nest
+                // over them with huge flat tops; letting them into the TLAS
+                // prints terraces + giant rectangles onto far-field water
+                // (and costs BLAS memory). Far rays then cleanly miss to
+                // sky / deep-water tint instead.
+                if (d.rung > 0) continue;
                 RTProxyBox b{};
                 b.minp = d.minp;
                 b.maxp = d.maxp;

@@ -254,6 +254,11 @@ public:
         glm::vec3 minp = glm::vec3(0.0f);
         glm::vec3 maxp = glm::vec3(0.0f);
         uint32_t materialId = 0;
+        // 0-based band rung at publish (0 = frontier/finest). Coarse ancestors
+        // (rung > 0) nest over the fine boxes and must be EXCLUDED from the
+        // proxy set: their huge flat tops would otherwise dominate refraction
+        // hits (terraces + giant rectangles) in the far field.
+        uint32_t rung = 0;
     };
     std::unordered_map<NodeID, SolidProxyData> mainSolidProxyData;
     std::unordered_map<NodeID, SolidProxyData> mainWaterProxyData;
