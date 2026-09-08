@@ -481,6 +481,10 @@ void main() {
     // views below read the pre-fade snapshots.
     vec3 dbgSceneColor = sceneColor;
     vec3 dbgReflColor = skyColor;
+    // Translucency (final alpha) must use the TRUE local thickness, not the
+    // faded one: the fade inflates distant shallows toward deep, which would
+    // force distant shores opaque. Snapshot before fading.
+    float thicknessForAlpha = waterThickness;
     {
         const float fadeStart = 120.0;
         const float fadeEnd = 400.0;
@@ -706,7 +710,7 @@ void main() {
     // deep water stays opaque. Driven by the Transparency slider so 1.0 gives
     // crystal shallows and 0.0 restores legacy fully-opaque water. Capture
     // mode keeps alpha 1 (no solid backdrop is composited there).
-    float thicknessFrac = clamp(waterThickness / 3.0, 0.0, 1.0); // ~3 m -> opaque
+    float thicknessFrac = clamp(thicknessForAlpha / 3.0, 0.0, 1.0); // ~3 m -> opaque
     float alpha = mix(1.0, thicknessFrac, clamp(transparency, 0.0, 1.0));
     if (captureMode) alpha = 1.0;
     outColor = vec4(waterColor, alpha);
