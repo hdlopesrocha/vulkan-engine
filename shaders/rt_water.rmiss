@@ -11,10 +11,11 @@
 layout(set = 0, binding = 3) uniform RTBlock { RayTracingParamsGLSL rt; };
 layout(set = 0, binding = 6) uniform sampler2D skyEquirectTex;
 
-layout(location = 0) rayPayloadInEXT vec4 rtPayload;
+layout(location = 0) rayPayloadInEXT RTPayload rtPayload;
 
 void main() {
     vec3 dir = normalize(gl_WorldRayDirectionEXT);
     vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(dir)).rgb;
-    rtPayload = vec4(sky, -1.0); // -1 marks miss; rgen maps it per-ray
+    rtPayload.data = vec4(sky, -1.0); // -1 marks miss; rgen maps it per-ray
+    rtPayload.coarseF = 0.0; // nothing to feather on miss
 }

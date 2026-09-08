@@ -24,9 +24,12 @@ layout(set = 0, binding = 4) readonly buffer ProxyMeta { RTProxyMetaGLSL metas[]
 layout(set = 0, binding = 5) uniform sampler2D waterDepthTex;
 layout(set = 0, binding = 6) uniform sampler2D skyEquirectTex;
 
-// Shared payload: rgb=hit color (or sky on miss), a=hitT (or -1 on miss).
-// The refraction trace reinterprets a miss (a<0) as full-path deep water.
-layout(location = 0) rayPayloadEXT vec4 rtPayload;
+// Shared payload (single struct: SPIR-V allows only one incoming payload
+// variable per entry point). data.rgb=hit color (or sky on miss),
+// data.a=hitT (or -1 on miss); coarseF feathers coarse-box hits toward
+// sky/deep in rgen. The refraction trace reinterprets a miss (a<0) as
+// full-path deep water.
+layout(location = 0) rayPayloadEXT RTPayload rtPayload;
 
 vec3 reconstructWorld(vec2 uv, float depth) {
     vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
@@ -75,17 +78,16 @@ void main() {
     vec4 reflectValue = vec4(0.0, 0.0, 0.0, 0.0);
     if (rt.toggles.x > 0.5) {
         vec3 R = reflect(-V, N);
-        rtPayload = vec4(0.0);
+        rtPayload.data = vec4(0.0);
+        rtPayload.coarseF = 0.0;
         traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID, 0, 0, 0,
             pos + N * 0.05, 0.05, R, maxReflect, 0);
-        if (rtPayload.a >= RT_DEEP_WATER) {
-            // Coarse-box hit (see rchit): unreliable for detail — use the sky
-            // directly and mark valid (saves the inline fallback trace).
-            vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(normalize(R))).rgb;
-            reflectValue = vec4(sky, 1.0);
+        vec3 skyR = texture(skyEquirectTex, rtDirToEquirectUV(normalize(R))).rgb;
+        if (rtPayload.data.a < 0.0) {
+            reflectValue = vec4(skyR, 0.0); // miss: sky, inline fallback stays
         } else {
-            reflectValue = vec4(rtPayload.rgb, rtPayload.a >= 0.0 ? 1.0 : 0.0);
-            if (rtPayload.a < 0.0) reflectValue.rgb = rtPayload.rgb; // sky from miss
+            // Feather coarse hits toward sky so box-size contours never print.
+            reflectValue = vec4(mix(rtPayload.data.rgb, skyR, clamp(rtPayload.coarseF, 0.0, 1.0)), 1.0);
         }
     }
 
@@ -95,26 +97,27 @@ void main() {
         vec3 T = refract(-V, N, 1.0 / ior);
         if (dot(T, T) < 1e-8) T = reflect(-V, N); // TIR fallback
         T = normalize(T);
-        rtPayload = vec4(0.0);
+        rtPayload.data = vec4(0.0);
+        rtPayload.coarseF = 0.0;
         traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID, 0, 0, 0,
             pos - N * 0.05, 0.05, T, maxRefract, 0);
-        if (rtPayload.a >= RT_DEEP_WATER) {
-            // Coarse-box hit: same deep handling as a miss (pass the marker
-            // through — do NOT clamp it to maxWaterThickness).
-            refractValue = vec4(rtPayload.rgb, RT_DEEP_WATER);
-        } else if (rtPayload.a >= 0.0) {
+        if (rtPayload.data.a >= 0.0) {
             // Hit: payload.a is the underwater path length (water surface ->
             // underwater hit). Cap it at rt.water.y so Beer-Lambert in
             // water.frag never computes a transmittance < ~e^-3 for a resolved
-            // hit (far underwater pixels would otherwise black out).
+            // hit (far underwater pixels would otherwise black out), then
+            // feather coarse hits toward deep thickness so box-size contours
+            // never print as terrace bands.
             float cap = max(rt.water.y, 0.0);
-            refractValue = vec4(rtPayload.rgb, min(rtPayload.a, cap));
+            float t = min(rtPayload.data.a, cap);
+            t = mix(t, RT_DEEP_THICKNESS, clamp(rtPayload.coarseF, 0.0, 1.0));
+            refractValue = vec4(rtPayload.data.rgb, t);
         } else {
             // Miss = ray exited the TLAS unresolved (deep water beyond the
             // proxies). Carry the sky + the deep-water marker; water.frag
             // replaces the far path with the deep tint instead of attenuating
             // the sky to black.
-            refractValue = vec4(rtPayload.rgb, RT_DEEP_WATER);
+            refractValue = vec4(rtPayload.data.rgb, RT_DEEP_WATER);
         }
     }
 

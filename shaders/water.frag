@@ -51,9 +51,10 @@ layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]
 
 // Trace one water secondary ray through the proxy TLAS.
 // refraction=true: returns rgb = shaded hit (or sky on miss), a = hitT
-//   (capped at rt.water.y) or RT_DEEP_WATER on miss/coarse hit (deep water).
-// refraction=false: returns rgb = shaded hit or sky on miss/coarse hit
-//   (a is unused by the reflection consumer).
+//   (capped at rt.water.y, feathered toward deep for coarse boxes) or
+//   RT_DEEP_WATER on miss (deep water).
+// refraction=false: returns rgb = shaded hit feathered toward sky for coarse
+//   boxes (or sky on miss/coarse); a is unused by the reflection consumer.
 // Macro shadows stay CSM-owned: hits get ambient + sun diffuse only.
 // Water-originated rays trace with the solid-only mask: the water surface
 // itself is not in the solid BLAS (origins, never targets), and the water
@@ -63,8 +64,8 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction) {
     rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID,
         origin, 0.05, dir, tMax);
     while (rayQueryProceedEXT(rq)) {}
+    vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(normalize(dir))).rgb;
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
-        vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(normalize(dir))).rgb;
         // Deep-water marker (refraction) or plain sky (reflection).
         return refraction ? vec4(sky, RT_DEEP_WATER) : vec4(sky, -1.0);
     }
@@ -72,22 +73,23 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction) {
     uint boxIdx = rtBoxIndex(uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)),
                              rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
     RTProxyMetaGLSL meta = rtMetas[boxIdx];
-    // Coarse boxes cannot resolve shallow detail (same rule as rchit):
-    // refraction treats them as deep water, reflection as sky.
-    float footprint = meta.extra.x;
-    float coarseLimit = max(rt.water.z, 1.0);
-    if (footprint > coarseLimit) {
-        vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(normalize(dir))).rgb;
-        return refraction ? vec4(sky, RT_DEEP_WATER) : vec4(sky, -1.0);
-    }
+    // Coarse boxes cannot resolve shallow detail (same rule as rchit): feather
+    // toward deep/sky so box-size contours never print as razor lines.
+    float f = rtCoarseFeather(meta.extra.x, rt.water.z);
     vec3 hitPos = origin + dir * hitT;
     bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
     vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz, meta.maxAndFlags.xyz, exiting);
     float ndl = max(dot(boxN, normalize(rt.sunDir.xyz)), 0.0);
     vec3 color = meta.albedoRough.rgb * (rt.sunColor.rgb * (0.35 + 0.65 * ndl));
-    // Cap the reported underwater length at rt.water.y (Beer-Lambert guard).
+    if (!refraction) {
+        // Reflection ignores thickness: feather coarse hits toward sky.
+        return vec4(mix(color, sky, f), -1.0);
+    }
+    // Cap the reported underwater length at rt.water.y (Beer-Lambert guard),
+    // then feather coarse hits toward deep thickness.
     float cap = max(rt.water.y, 0.0);
-    return vec4(color, min(hitT, cap));
+    float t = mix(min(hitT, cap), RT_DEEP_THICKNESS, f);
+    return vec4(color, t);
 }
 #endif
 

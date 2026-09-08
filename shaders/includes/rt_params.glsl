@@ -17,8 +17,15 @@ struct RayTracingParamsGLSL {
     vec4 sunColor;
 };
 
-struct RTProxyMetaGLSL {
-    vec4 minAndMatId;  // xyz=AABB min, w=material id
+// Shared ray payload (rgen + rmiss + rchit). MUST stay a single variable:
+// SPIR-V allows at most one IncomingRayPayloadKHR per entry point
+// (VUID-StandaloneSpirv-IncomingRayPayloadKHR-04700).
+struct RTPayload {
+    vec4 data;     // rgb=hit color (or sky on miss), a=hitT (or -1 on miss)
+    float coarseF; // 0=fine box (use hit as-is), 1=coarse (feather to deep/sky)
+};
+
+struct RTProxyMetaGLSL {    vec4 minAndMatId;  // xyz=AABB min, w=material id
     vec4 maxAndFlags;  // xyz=AABB max, w=flags
     vec4 albedoRough;  // rgb=avg albedo, a=roughness
     vec4 extra;        // x=horizontal footprint (max x/z extent, for coarse-box fallback), yzw reserved
@@ -40,6 +47,19 @@ const uint RT_RAY_MASK_ALL = 0x03u;
 // (see SceneRenderer::updateRTParams / rtMaxWaterThickness).
 const float RT_DEEP_WATER = 1e30;
 
+// Reference thickness used when a coarse proxy hit is feathered toward deep:
+// large enough to saturate Beer-Lambert to its floor and the tint to full,
+// so coarse boxes read as deep water instead of terracing.
+const float RT_DEEP_THICKNESS = 64.0;
+
+// Coarse-box feather factor: 0 for fine boxes (use the hit as-is), ramping
+// to 1 for boxes that cannot resolve shallow detail. Blending (instead of a
+// hard switch) guarantees box-size contours never print as razor lines.
+float rtCoarseFeather(float footprint, float limit) {
+    float lo = max(limit * 0.5, 1.0);
+    float hi = max(limit * 1.5, lo + 1.0);
+    return smoothstep(lo, hi, footprint);
+}
 // Global metadata index for a triangle hit (primitiveID is per-BLAS local).
 uint rtBoxIndex(uint primitiveId, uint instanceCustomIndex) {
     return primitiveId / 12u + (instanceCustomIndex == 1u ? RT_WATER_BOX_START : 0u);

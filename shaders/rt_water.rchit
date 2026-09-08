@@ -13,7 +13,7 @@
 layout(set = 0, binding = 3) uniform RTBlock { RayTracingParamsGLSL rt; };
 layout(set = 0, binding = 4) readonly buffer ProxyMeta { RTProxyMetaGLSL metas[]; };
 
-layout(location = 0) rayPayloadInEXT vec4 rtPayload;
+layout(location = 0) rayPayloadInEXT RTPayload rtPayload;
 hitAttributeEXT vec3 bary;
 
 void main() {
@@ -29,10 +29,8 @@ void main() {
     // recompute the macro sun-shadow solution.
     vec3 color = albedo * (rt.sunColor.rgb * (0.35 + 0.65 * ndl));
     // Coarse boxes (huge flat tops in the far field) cannot resolve shallow
-    // detail: their hitT would terrace. Report the deep-water marker instead;
-    // rgen maps it per ray type (refraction -> deep tint, reflection -> sky).
-    float footprint = meta.extra.x;
-    float coarseLimit = max(rt.water.z, 1.0);
-    float thick = (footprint > coarseLimit) ? RT_DEEP_WATER : gl_HitTEXT;
-    rtPayload = vec4(color, thick);
+    // detail. Report the raw hit plus a feather factor; rgen blends toward
+    // deep/sky smoothly so box-size contours never print as razor lines.
+    rtPayload.coarseF = rtCoarseFeather(meta.extra.x, rt.water.z);
+    rtPayload.data = vec4(color, gl_HitTEXT);
 }
