@@ -536,9 +536,14 @@ void main() {
     // This reduces color influence when the front and back faces are nearly coincident.
     float thicknessAttenuation = smoothstep(0.0, max(0.005, tintDepthScale * 0.25), waterThickness);
 
-    // Blend scene color with water tint based on both the depth-based fade (depthFade)
-    // and the measured volume. The `waterTint` parameter scales overall tint strength.
-    float tintBlend = clamp(depthFade * waterTint * volumeFactor * thicknessAttenuation, 0.0, 0.85);
+// Blend scene color with water tint based on both the depth-based fade (depthFade)
+// and the measured volume. The `waterTint` parameter scales overall tint strength.
+// `transparency` (params1.z, Water widget slider) caps how much tint may cover
+// the refraction: 1 = crystal clear (bottom fully visible), 0 = fully
+// tintable. At defaults (0.7) the cap is 0.3, matching the previous effective
+// range, so existing looks are preserved while the slider comes alive.
+    float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
+    float tintBlend = clamp(depthFade * waterTint * volumeFactor * thicknessAttenuation, 0.0, tintMax);
     vec3 refractedColor = mix(sceneColor, waterTintColor, tintBlend);
     
     // Mix refracted color with reflection. By default, use Fresnel weighting
