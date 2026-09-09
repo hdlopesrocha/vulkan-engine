@@ -30,9 +30,7 @@ public:
         ImGui::SliderFloat("Roughness threshold", &settings.rtRoughnessThreshold, 0.0f, 1.0f, "%.2f");
         ImGui::SliderFloat("Self-skip dist", &settings.rtSelfSkipDist, 0.0f, 15.0f, "%.2f");
         ImGui::Separator();
-        ImGui::SliderFloat("Water IOR", &settings.rtWaterIOR, 1.0f, 1.6f, "%.3f");
-        ImGui::SliderFloat3("Absorption (RGB)", settings.rtAbsorption, 0.0f, 2.0f, "%.3f");
-        ImGui::SliderFloat("Absorption scale", &settings.rtAbsorptionScale, 0.0f, 4.0f, "%.2f");
+        ImGui::TextWrapped("Water look (IOR, absorption, depth cap, shore fade) lives in Water Settings, per water layer.");
         ImGui::Separator();
         // RT debug views drive rt.debug.x (RT pipeline + raster RT branches).
         const char* rtViews[] = {"Off", "50 Reflect-only", "51 Refract-only", "52 Thickness",

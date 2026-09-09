@@ -4,6 +4,8 @@
 // Water rendering parameters (CPU-side)
 struct WaterParams {
     float waveSpeed = 0.5f;
+    // LEGACY (no effect, kept for layout/API stability): never uploaded to
+    // the GPU — shaders use a neutral 1.0. Use Wave Height / Noise Scale.
     float waveScale = 0.03f;
     float refractionStrength = 0.03f;
     float fresnelPower = 5.0f;
@@ -17,6 +19,15 @@ struct WaterParams {
     float noiseScale = 0.4f;
     float waterTint = 0.3f;
     float noiseTimeSpeed = 1.0f;
+
+    // Refraction / absorption — per-layer water look. Single source of truth:
+    // the former global RT duplicates (Water IOR, Absorption RGB/scale, Max
+    // water thickness) were removed so these are tweaked here, per water layer.
+    float ior = 1.333f;              // index of refraction for Snell air<->water
+    glm::vec3 absorption = glm::vec3(0.35f, 0.12f, 0.08f); // Beer-Lambert RGB coefficients
+    float absorptionScale = 1.0f;    // thickness multiplier for absorption
+    float maxThickness = 6.0f;       // clamp for RT hit thickness (kills far-hit blackouts)
+    float shoreFadeDepth = 0.25f;    // water depth (m) over which the shoreline fades from fully transparent
 
     // Reflection / specular controls
     float reflectionStrength = 0.6f;  // How much reflection mixes into the surface [0..1]
@@ -35,16 +46,19 @@ struct WaterParams {
     // Feature toggles
     bool enableReflection = true;
     bool enableRefraction = true;
+    // LEGACY (no effect): the PCF scene-color blur was removed when the water
+    // pass was decoupled from the solid pass (no scene texture to blur).
     bool enableBlur = true;
     // If true, apply `reflectionStrength` uniformly across the surface
     // instead of modulating by Fresnel. Useful for debugging or stylized looks.
     bool uniformReflection = false;
 
-    // PCF-style scene-color blur
+    // LEGACY (no effect, see enableBlur): blur kernel parameters.
     float blurRadius = 8.0f;    // texel radius of blur kernel
     int   blurSamples = 4;      // number of blur taps per axis (NxN kernel)
 
     // Volume depth-based effect transitions
+    // LEGACY (no effect, see enableBlur): blur has no implementation.
     float volumeBlurRate = 0.004f;   // exponential rate: blur ramps with water thickness
     float volumeBumpRate = 0.05f;  // exponential rate: bump ramps with water thickness
     // Tessellation parameters (noise-adaptive water surface)

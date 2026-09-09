@@ -272,7 +272,12 @@ public:
     // Refresh per-frame RT params UBO contents from camera + settings. Handle
     // stable (written once at init); this only memcpys. Must be called before
     // raster sampling each frame (main thread, any time before submit).
+    // waterLook feeds the layer-unaware async pipeline path (rgen IOR + hit
+    // cap, miss absorption): pass water layer 0 — the inline path already
+    // reads each fragment's own layer directly, so WaterParams stays the
+    // single source of truth for water look.
     void updateRTParams(VulkanApp* app, const class Settings& settings,
+                        const struct WaterParams& waterLook,
                         const glm::mat4& invViewProj, const glm::vec3& viewPos,
                         const glm::vec3& sunDirTo, const glm::vec3& sunColor,
                         float nearPlane, float farPlane);

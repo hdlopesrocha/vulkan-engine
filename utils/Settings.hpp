@@ -80,13 +80,14 @@ public:
     bool rtWaterPipeline = true; // water via async RT pipeline outputs (off = inline ray queries)
     float rtMaxReflectDist = 500.0f;  // reflection ray Tmax (world units)
     float rtMaxRefractDist = 300.0f;  // refraction ray Tmax (also deep-water thickness)
-    float rtMaxWaterThickness = 6.0f; // clamp for RT hit thickness (kills far-hit blackouts)
     float rtCoarseBoxSize = 48.0f;  // proxy boxes wider than this are "coarse": unreliable for refraction detail, treated as deep water/sky
     float rtMaxShadowDist = 12.0f;    // local shadow ray Tmax (contact range only)
     float rtRoughnessThreshold = 0.6f;// roughness above this skips RT reflections (env approx)
-    float rtWaterIOR = 1.333f;        // physical water IOR
-    float rtAbsorption[3] = {0.35f, 0.12f, 0.08f}; // Beer-Lambert RGB coefficients
-    float rtAbsorptionScale = 1.0f;   // thickness multiplier for absorption viz/tuning
+    // NOTE: water look (IOR, Beer-Lambert absorption, thickness cap) lives in
+    // WaterParams per water layer (Water Settings widget). The RT params UBO
+    // still carries copies for the layer-unaware async pipeline path, synced
+    // from water layer 0 in SceneRenderer::updateRTParams — there is only one
+    // place to tweak them.
     float rtSelfSkipDist = 2.0f;      // ignore proxy hits closer than this (own-box guard)
     // RT debug views (0=off; also drives ubo.debugParams extensions in shaders):
     //  50=RT reflection only, 51=RT refraction only, 52=thickness,

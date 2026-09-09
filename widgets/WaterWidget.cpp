@@ -37,7 +37,6 @@ void WaterWidget::render() {
         // Wave settings
         if (ImGui::CollapsingHeader("Wave Animation", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::SliderFloat("Wave Speed", &layerParams.waveSpeed, 0.0f, 2.0f);
-            ImGui::SliderFloat("Wave Scale", &layerParams.waveScale, 0.001f, 0.1f);
             ImGui::SliderFloat("Wave Height", &layerParams.bumpAmplitude, 0.0f, 256.0f);
             ImGui::SliderFloat("Wave Depth Transition", &layerParams.waveDepthTransition, 0.0f, 100.0f, "%.1f");
             ImGuiHelpers::SetTooltipIfHovered("Distance (world units) over which waves ramp from zero to full height.\n0 = disabled (no depth-based attenuation).");
@@ -69,6 +68,16 @@ void WaterWidget::render() {
             ImGui::SliderFloat("Refraction Strength", &layerParams.refractionStrength, 0.0f, 0.5f);
             ImGui::SliderFloat("Transparency", &layerParams.transparency, 0.0f, 1.0f);
             ImGui::SliderFloat("Water Tint", &layerParams.waterTint, 0.0f, 1.0f);
+            ImGui::SliderFloat("Water IOR", &layerParams.ior, 1.0f, 1.6f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Index of refraction for Snell air<->water bending (physical water = 1.333).");
+            ImGui::SliderFloat3("Absorption (RGB)", &layerParams.absorption.x, 0.0f, 2.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Beer-Lambert absorption coefficients: how fast refracted light fades with water depth.");
+            ImGui::SliderFloat("Absorption Scale", &layerParams.absorptionScale, 0.0f, 4.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Thickness multiplier for absorption (tuning).");
+            ImGui::SliderFloat("Max Thickness", &layerParams.maxThickness, 0.5f, 20.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Clamp for RT hit thickness: kills far-hit blackouts, keeps deep ground visible.");
+            ImGui::SliderFloat("Shore Fade Depth", &layerParams.shoreFadeDepth, 0.0f, 2.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Water depth over which the shoreline fades from fully transparent (waterline shows the bottom with no water color).");
         }
 
         // Color settings
@@ -96,26 +105,10 @@ void WaterWidget::render() {
             ImGui::SetItemTooltip("Brightness of sun glitter sparkles on the water surface.");
         }
 
-        // Blur settings
-        if (ImGui::CollapsingHeader("Underwater Blur", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Checkbox("Enable Blur", &layerParams.enableBlur);
-            ImGui::SetItemTooltip("Apply a PCF box-blur to the refracted scene color\nfor a soft underwater look.");
-            if (layerParams.enableBlur) {
-                ImGui::SliderFloat("Blur Radius", &layerParams.blurRadius, 0.5f, 8.0f, "%.1f");
-                ImGuiHelpers::SetTooltipIfHovered("Texel radius of the blur kernel.\nLarger values produce a wider blur.");
-                ImGui::SliderInt("Blur Samples", &layerParams.blurSamples, 1, 8);
-                ImGuiHelpers::SetTooltipIfHovered("Half-size of the NxN blur kernel.\nHigher values are smoother but more expensive.");
-            }
-        }
-
         // Water volume depth-based effects
         if (ImGui::CollapsingHeader("Water Volume", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::TextWrapped("Blur and bump amplitude ramp up with water volume thickness "
+            ImGui::TextWrapped("Bump amplitude ramps up with water volume thickness "
                                "(back-face depth minus front-face depth).");
-            ImGui::SliderFloat("Volume Blur Rate", &layerParams.volumeBlurRate, 0.0f, 1.0f, "%.3f");
-            ImGuiHelpers::SetTooltipIfHovered("Exponential rate for blur increase with water thickness.\n"
-                                  "0 = no depth-based blur modulation (full blur everywhere).\n"
-                                  "Higher = blur reaches max faster with depth.");
             ImGui::SliderFloat("Volume Bump Rate", &layerParams.volumeBumpRate, 0.0f, 1.0f, "%.3f");
             ImGuiHelpers::SetTooltipIfHovered("Exponential rate for bump/wave amplitude increase with water thickness.\n"
                                   "0 = no depth-based bump modulation (full bump everywhere).\n"

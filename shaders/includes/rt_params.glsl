@@ -44,7 +44,7 @@ const uint RT_RAY_MASK_ALL = 0x03u;
 // has still travelled through the water volume (unresolved exit); encoding it
 // as an in-band path length (maxRefract) over-attenuates Beer-Lambert to
 // black. This marker lets water.frag substitute the deep-water tint instead
-// (see SceneRenderer::updateRTParams / rtMaxWaterThickness).
+// (see water.frag Beer-Lambert: per-layer WaterParams absorption).
 const float RT_DEEP_WATER = 1e30;
 
 // Reference thickness used when a coarse proxy hit is feathered toward deep:

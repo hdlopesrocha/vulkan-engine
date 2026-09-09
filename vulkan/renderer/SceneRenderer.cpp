@@ -1969,6 +1969,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
 }
 
 void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
+                                   const WaterParams& waterLook,
                                    const glm::mat4& invViewProj, const glm::vec3& viewPos,
                                    const glm::vec3& sunDirTo, const glm::vec3& sunColor,
                                    float nearPlane, float farPlane) {
@@ -1980,10 +1981,12 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
                            settings.rtLocalShadows ? 1.0f : 0.0f);
     p.distances = glm::vec4(settings.rtMaxReflectDist, settings.rtMaxRefractDist,
                              settings.rtMaxShadowDist, settings.rtRoughnessThreshold);
-    p.water = glm::vec4(settings.rtWaterIOR, settings.rtMaxWaterThickness,
+    // Pipeline-path water look mirrors water layer 0 (rgen has no layer id).
+    // The sampled inline path reads each fragment's own WaterParams instead.
+    p.water = glm::vec4(waterLook.ior, waterLook.maxThickness,
                          settings.rtCoarseBoxSize, 0.0f);
-    p.absorption = glm::vec4(settings.rtAbsorption[0], settings.rtAbsorption[1],
-                             settings.rtAbsorption[2], settings.rtAbsorptionScale);
+    p.absorption = glm::vec4(waterLook.absorption[0], waterLook.absorption[1],
+                             waterLook.absorption[2], waterLook.absorptionScale);
     p.debug = glm::vec4(static_cast<float>(settings.rtDebugView),
                         rayTracing->tlasBuilt() ? 1.0f : 0.0f,
                         settings.rtSelfSkipDist,

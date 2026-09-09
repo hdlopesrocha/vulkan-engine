@@ -84,6 +84,8 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
     gpu.causticColor = glm::vec4(p.causticColor, 0.0f);
     gpu.causticParams = glm::vec4(p.causticScale, p.causticIntensity, p.causticPower, p.causticDepthScale);
     gpu.causticExtraParams = glm::vec4(p.causticLineScale, p.causticLineMix, static_cast<float>(p.causticType), p.causticVelocity);
+    gpu.absorptionParams = glm::vec4(p.absorption, p.absorptionScale);
+    gpu.refractionParams = glm::vec4(p.ior, p.maxThickness, p.shoreFadeDepth, 0.0f);
     gpu.reserved3 = glm::vec4(0.0f); // legacy cubemap-available flag (removed with Solid360)
     gpu.tessParams = glm::vec4(p.tessNearDist, p.tessFarDist, p.tessMinLevel, p.tessMaxLevel);
 
@@ -909,6 +911,8 @@ void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& 
         gpu.causticColor = glm::vec4(p.causticColor, 0.0f);
         gpu.causticParams = glm::vec4(p.causticScale, p.causticIntensity, p.causticPower, p.causticDepthScale);
         gpu.causticExtraParams = glm::vec4(p.causticLineScale, p.causticLineMix, static_cast<float>(p.causticType), p.causticVelocity);
+        gpu.absorptionParams = glm::vec4(p.absorption, p.absorptionScale);
+        gpu.refractionParams = glm::vec4(p.ior, p.maxThickness, p.shoreFadeDepth, 0.0f);
         gpu.reserved3 = glm::vec4(0.0f); // legacy cubemap-available flag (removed with Solid360)
         gpu.tessParams = glm::vec4(p.tessNearDist, p.tessFarDist, p.tessMinLevel, p.tessMaxLevel);
         return gpu;

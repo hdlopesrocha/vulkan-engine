@@ -1338,7 +1338,11 @@ public:
         // recorded — GPU ordering (samplers wait tlCull, builds precede its
         // signal) makes same-frame sampling safe.
         if (sceneRenderer && sceneRenderer->rayTracing) {
-            sceneRenderer->updateRTParams(this, settings, uboStatic.invViewProjection,
+            // Pipeline-path water look mirrors water layer 0 (rgen has no
+            // layer id); the sampled inline path reads per-fragment layers.
+            static const WaterParams kDefaultWaterLook{};
+            const WaterParams& waterLook = waterParams.empty() ? kDefaultWaterLook : waterParams[0];
+            sceneRenderer->updateRTParams(this, settings, waterLook, uboStatic.invViewProjection,
                 glm::vec3(uboStatic.viewPos), -glm::vec3(uboStatic.lightDir),
                 glm::vec3(uboStatic.lightColor), settings.nearPlane, settings.farPlane);
         }

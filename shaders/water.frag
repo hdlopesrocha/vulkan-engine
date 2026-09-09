@@ -53,15 +53,16 @@ layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]
 
 // Trace one water secondary ray through the proxy TLAS.
 // refraction=true: returns rgb = shaded hit (or sky on miss), a = hitT
-//   (capped at rt.water.y, feathered toward deep for coarse boxes) or
+//   (capped at thickCap, feathered toward deep for coarse boxes) or
 //   RT_DEEP_WATER on miss (deep water).
 // refraction=false: returns rgb = shaded hit feathered toward sky for coarse
-//   boxes (or sky on miss/coarse); a is unused by the reflection consumer.
+//   boxes (or sky on miss/coarse); a is unused by the reflection consumer
+//   (pass thickCap 0.0).
 // Macro shadows stay CSM-owned: hits get ambient + sun diffuse only.
 // Water-originated rays trace with the solid-only mask: the water surface
 // itself is not in the solid BLAS (origins, never targets), and the water
 // BLAS is skipped to avoid self-hits.
-vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction) {
+vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thickCap) {
     rayQueryEXT rq;
     // Refraction rays start AT the water surface and go down: tMin must be
     // tiny (1 cm) so shoreline shallows (<5 cm deep) still hit the lake bottom
@@ -107,9 +108,9 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction) {
         // Reflection ignores thickness: feather coarse hits toward sky.
         return vec4(mix(color, sky, f), -1.0);
     }
-    // Cap the reported underwater length at rt.water.y (Beer-Lambert guard),
-    // then feather coarse hits toward deep thickness.
-    float cap = max(rt.water.y, 0.0);
+    // Cap the reported underwater length at the per-layer thickness cap
+    // (Beer-Lambert guard), then feather coarse hits toward deep thickness.
+    float cap = max(thickCap, 0.0);
     float t = mix(min(hitT, cap), RT_DEEP_THICKNESS, f);
     return vec4(color, t);
 }
@@ -163,16 +164,12 @@ void main() {
     float specularPowerParam = wp.params3.w;
     float glitterIntensity = wp.deepColor.w;
 
-    // Feature toggles and blur parameters
+    // Feature toggles
     bool enableReflection = wp.reserved1.x > 0.5;
     bool enableRefraction = wp.reserved1.y > 0.5;
     // During 360 cubemap capture, skip reflection/refraction to avoid feedback.
     const bool captureMode = ubo.materialFlags.x > 0.5;
     if (captureMode) { enableReflection = false; enableRefraction = false; }
-    bool enableBlur       = wp.reserved1.z > 0.5;
-    float blurRadius      = wp.reserved1.w;
-    int   blurSamples     = max(int(wp.reserved2.x), 1);
-    float volumeBlurRate  = wp.reserved2.y;
 
     // Apply noise time speed
     float animTime = time * noiseTimeSpeed;
@@ -218,11 +215,6 @@ void main() {
     bool hasValidBackFace = (backFaceDepthRaw < 0.9999) && (backFaceThickness > kMinVolumeThickness);
     float waterThickness  = hasValidBackFace ? backFaceThickness : 0.0;
 
-    // Depth-based modulation factors (exponential ramp)
-        float volumeBlurFactor = (volumeBlurRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBlurRate)) : 1.0;
-        blurRadius *= volumeBlurFactor;
-    
-    
     // Common bump parameters.
     float eps = 0.5;
 
@@ -303,25 +295,27 @@ void main() {
                      smoothstep(0.0, 0.1, screenUV.y) * smoothstep(1.0, 0.9, screenUV.y);
     refractionOffset *= edgeFade;
     
-    // Sample refraction via HARDWARE RAY TRACING (§10: Snell, IOR 1.333).
+    // Sample refraction via HARDWARE RAY TRACING (§10: Snell).
     // Path selection: async RT pipeline outputs (half-res, 1-frame latency)
     // when enabled, else inline ray queries (full-res, no latency), else the
     // sky equirect. The legacy 360° capture cubemap is removed.
     // rtThickness carries the RT underwater path length when provided (>= 0).
+    // Water look (IOR, absorption, thickness cap) comes from the per-layer
+    // water params — the single source of truth (no RT-global duplicates).
     vec3 sceneColor = vec3(0.0);
     float rtThickness = -1.0;
-#ifndef RT_ENABLED
-    float waterIor = 1.333333; // approximate index of refraction for water
-    float maxRefr = 300.0;
-#else
-    // Shared refraction constants (also read by the Beer-Lambert block below:
+    float waterIor = clamp(wp.refractionParams.x, 1.0, 2.5);
+    float refrThickCap = max(wp.refractionParams.y, 0.0);
+    vec3 absorbCoeff = wp.absorptionParams.rgb;
+    float absorbScaleBase = max(wp.absorptionParams.a, 0.0);
+#ifdef RT_ENABLED
+    // Shared ray constant (also read by the Beer-Lambert block below:
     // the deep-water marker substitutes maxRefr as a caustic/viz thickness).
     float maxRefr = max(rt.distances.y, 1.0);
+#else
+    float maxRefr = 300.0;
 #endif
     if (enableRefraction) {
-#ifdef RT_ENABLED
-        float waterIor = clamp(rt.water.x, 1.0, 2.5);
-#endif
         // Approximate air->water refraction. GLSL `refract` expects the incident
         // vector (eye -> surface), i.e. -viewDir; the result is the true
         // transmitted ray pointing INTO the water toward the underwater scene.
@@ -350,7 +344,7 @@ void main() {
             // down pushes shallow origins inside/below the lake-bottom slab and
             // misses the ground underneath. tMin (1 cm, inside rtTraceWater)
             // is the only self-guard, and the solid-only mask excludes water.
-            vec4 hit = rtTraceWater(fragPosWorld, refrRay, maxRefr, true);
+            vec4 hit = rtTraceWater(fragPosWorld, refrRay, maxRefr, true, refrThickCap);
             sceneColor = hit.rgb;
             // a >= 0 always from rtTraceWater: capped path length on hit, or
             // RT_DEEP_WATER marker on miss (deep, unresolved water).
@@ -381,9 +375,10 @@ void main() {
     // Deep-water handling: a refraction ray that misses the terrestrial
     // proxies is marked RT_DEEP_WATER. It substitutes the deep-water tint as
     // the base color (never attenuated to black), keeping the raster thickness
-    // when a real bottom was measured.
-    vec3 absorbCoeff = vec3(0.35, 0.12, 0.08);
-    float absorbScale = 1.0;
+    // when a real bottom was measured. Absorption comes from the per-layer
+    // water params (single source of truth); rt.* carries only ray-technical
+    // state (toggles, distances, coarse size).
+    float absorbScale = absorbScaleBase;
     bool rtDeepMiss = false;
     // Water tint colors from UBO (declared here — the deep-miss path needs
     // them, and the tint composition below reuses them).
@@ -400,28 +395,25 @@ void main() {
     }
     if (rtReady && rt.toggles.z > 0.5 && rtThickness >= 0.0) {
         rtDeepMiss = (rtThickness >= RT_DEEP_WATER);
-        absorbCoeff = rt.absorption.rgb;
-        absorbScale = 1.0;
         if (rtDeepMiss) {
             sceneColor = deepTint;
             // No raster bottom: keep the full path as a proxy thickness so
             // depth-dependent effects (caustics, debug views) stay sane.
             if (!hasValidBackFace)
-                waterThickness = maxRefr * max(rt.absorption.a, 0.0);
+                waterThickness = maxRefr * absorbScaleBase;
             // else: raster back-face thickness stands (continuous, true depth).
         } else if (!hasValidBackFace) {
             // RT hit length is the only depth signal available.
-            // (Already capped at rt.water.y upstream: rgen + rtTraceWater.)
-            waterThickness = rtThickness * max(rt.absorption.a, 0.0);
+            // (Already capped at refrThickCap upstream: rgen + rtTraceWater.)
+            waterThickness = rtThickness * absorbScaleBase;
         } else {
             // Raster back-face thickness stands (continuous, true depth), but
-            // clamp it to the RT hit cap: unbounded deep columns attenuate to
-            // black and hide the ground, while capped ones keep it visible and
-            // stay consistent with RT hits. Shallow columns never reach it.
-            waterThickness = min(waterThickness, max(rt.water.y, 0.0));
+            // clamp it to the per-layer hit cap: unbounded deep columns
+            // attenuate to black and hide the ground, while capped ones keep
+            // it visible and stay consistent with RT hits. Shallow columns
+            // never reach it.
+            waterThickness = min(waterThickness, refrThickCap);
         }
-    } else {
-        absorbCoeff = rt.absorption.rgb;
     }
 #endif
     // Clamp the optical thickness so transmittance never falls below ~e^-2.5:
@@ -446,10 +438,17 @@ void main() {
     float backFaceDiff = max(backFaceLinear - frontFaceLinear, 0.0);
     float depthDiff = hasValidBackFace ? backFaceDiff : 0.0;
     
-    // Depth-based color fade (deeper = more tinted)
+    // Depth-based color fade (deeper = more tinted). Uses the best available
+    // depth signal: the smooth raster backface diff where a real volume was
+    // measured, else the RT thickness fallback — otherwise Water Tint / Depth
+    // Falloff could never affect flat heightfield water (no backface, so
+    // depthDiff is 0 there). Both signals collapse to 0 at the shoreline, so
+    // the fade (like alpha) vanishes at the waterline. RT steps arrive
+    // pre-dithered as grain, the same tradeoff Beer-Lambert already accepts.
     float depthFalloff = wp.waveParams.w;
     if (depthFalloff <= 0.0) depthFalloff = 0.02;
-    float depthFade = 1.0 - exp(-depthDiff * depthFalloff);
+    float tintDepth = max(depthDiff, waterThickness);
+    float depthFade = 1.0 - exp(-tintDepth * depthFalloff);
     
     // === FRESNEL EFFECT ===
     // Schlick approximation anchored at the physical air->water base
@@ -497,7 +496,7 @@ void main() {
     }
     if (!reflResolved && rtReady && rt.toggles.x > 0.5) {
         float maxRefl = max(rt.distances.x, 1.0);
-        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), maxRefl, false);
+        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), maxRefl, false, 0.0);
         skyColor = hit.rgb;
         reflResolved = true;
     }
@@ -565,27 +564,21 @@ void main() {
     float causticVelocity = wp.causticExtraParams.w;
     float causticAnimTime = animTime * causticVelocity;
 
-    // Compute a volume-based factor from measured water thickness.
-    // Use causticParams.w (depth-scale) as a per-layer reference distance; if unset,
-    // fall back to a small stable value so division is safe.
+    // Tint color ramps shallow → deep with measured water thickness around the
+    // per-layer reference distance (Caustic Depth Scale doubles as the depth
+    // reference here). depthFade above already forces the blend to 0 at the
+    // shoreline, so shallowTint never paints the waterline.
     float tintDepthScale = max(wp.causticParams.w, 0.0001);
-    float volumeFactor = 1.0f;
+    float volumeFactor = 1.0 - exp(-waterThickness / tintDepthScale);
 
     // Water tint color transitions from shallow → deep depending on volume.
     vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
 
-    // Attenuate tint effect when the measured thickness is very small (near zero).
-    // This reduces color influence when the front and back faces are nearly coincident.
-    float thicknessAttenuation = smoothstep(0.0, max(0.005, tintDepthScale * 0.25), waterThickness);
-
-// Blend scene color with water tint based on both the depth-based fade (depthFade)
-// and the measured volume. The `waterTint` parameter scales overall tint strength.
-// `transparency` (params1.z, Water widget slider) caps how much tint may cover
-// the refraction: 1 = crystal clear (bottom fully visible), 0 = fully
-// tintable. At defaults (0.7) the cap is 0.3, matching the previous effective
-// range, so existing looks are preserved while the slider comes alive.
+// Blend scene color with water tint: depthFade (Depth Falloff over the best
+// depth signal) sets the amount, Water Tint scales it, Transparency caps it
+// (1 = crystal clear keeps the refracted bottom, 0 = fully tintable).
     float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
-    float tintBlend = clamp(depthFade * waterTint * volumeFactor * thicknessAttenuation, 0.0, tintMax);
+    float tintBlend = clamp(depthFade * waterTint, 0.0, tintMax);
     vec3 refractedColor = mix(sceneColor, waterTintColor, tintBlend);
     
     // Mix refracted color with reflection. By default, use Fresnel weighting
@@ -748,8 +741,18 @@ void main() {
     // deep water stays opaque. Driven by the Transparency slider so 1.0 gives
     // crystal shallows and 0.0 restores legacy fully-opaque water. Capture
     // mode keeps alpha 1 (no solid backdrop is composited there).
+    // Shoreline fade: zero-depth water is no water. When a real depth signal
+    // exists (raster volume or RT hit), force fully transparent AT the
+    // waterline so the shore shows the bottom with no water color, ramping to
+    // the normal depth-driven alpha over shoreFadeDepth meters. Without any
+    // depth signal (non-RT flat water reports 0 everywhere) the fade is
+    // skipped so the water stays visible via the transparency floor above.
     float thicknessFrac = clamp(thicknessForAlpha / 3.0, 0.0, 1.0); // ~3 m -> opaque
     float alpha = mix(1.0, thicknessFrac, clamp(transparency, 0.0, 1.0));
+    float shoreWidth = max(wp.refractionParams.z, 0.0);
+    if (thicknessForAlpha > 1e-4 && shoreWidth > 1e-6) {
+        alpha *= smoothstep(0.0, shoreWidth, thicknessForAlpha);
+    }
     if (captureMode) alpha = 1.0;
     outColor = vec4(waterColor, alpha);
 
