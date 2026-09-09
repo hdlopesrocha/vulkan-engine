@@ -394,8 +394,13 @@ void main() {
             // RT hit length is the only depth signal available.
             // (Already capped at rt.water.y upstream: rgen + rtTraceWater.)
             waterThickness = rtThickness * max(rt.absorption.a, 0.0);
+        } else {
+            // Raster back-face thickness stands (continuous, true depth), but
+            // clamp it to the RT hit cap: unbounded deep columns attenuate to
+            // black and hide the ground, while capped ones keep it visible and
+            // stay consistent with RT hits. Shallow columns never reach it.
+            waterThickness = min(waterThickness, max(rt.water.y, 0.0));
         }
-        // else: raster back-face thickness stands (continuous, true depth).
     } else {
         absorbCoeff = rt.absorption.rgb;
     }
