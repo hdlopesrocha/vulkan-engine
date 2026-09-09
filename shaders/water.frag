@@ -258,14 +258,19 @@ void main() {
     int dbgMode = int(ubo.debugParams.x + 0.5);
 
     // === HYBRID RT STATE ===
-    // usePipe = sample the async RT pipeline outputs (1-frame latency);
-    // otherwise inline ray queries (no latency) or the sky fallback.
-    // rt.debug.w carries settings.rtWaterPipeline (1=pipeline, 0=inline).
+    // Always inline ray queries (full-res, current frame, analytic normals,
+    // textured hits). The async pipeline outputs (half-res, 1-frame latency,
+    // depth-faceted normals) lag a full frame behind: at low frame rates that
+    // staleness pastes previous-frame sky/terrain at wrong screen positions
+    // (stale color blocks), and the pipeline/inline validity split prints its
+    // own boundary. Inline dominates on quality everywhere (tracing itself is
+    // ~0.2 ms); the pipeline dispatch is retained but no longer sampled.
+    // rt.debug.w carries settings.rtWaterPipeline (kept for tooling).
     bool rtReady = false;
     bool usePipe = false;
 #ifdef RT_ENABLED
     rtReady = (rt.debug.y > 0.5);
-    usePipe = rtReady && (rt.debug.w > 0.5);
+    usePipe = false;
 #endif
 
     // === PERLIN NOISE-BASED REFRACTION ===
