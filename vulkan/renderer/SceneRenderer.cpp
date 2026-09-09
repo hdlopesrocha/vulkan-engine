@@ -1338,13 +1338,55 @@ size_t SceneRenderer::publishPendingMeshes(
         // + dominant material). Opaque chunks feed the solid BLAS; transparent
         // (water) chunks feed the water BLAS so solid reflections see water.
         // Brush chunks excluded (preview overlay, not scene).
+        // NOTE (refraction fix): the proxy box MUST tightly enclose the actual
+        // mesh surface, not the emitting octree cell. Cell cubes are full
+        // volumes (tens of meters) whose faces sit at cell boundaries far from
+        // the true terrain: a refraction ray from the water surface then starts
+        // INSIDE the solid box and reports the cell-boundary exit (wrong
+        // thickness, wrong XZ offset, side-face shading) instead of the lake
+        // bottom underneath. Tight vertex bounds make each proxy a thin slab
+        // around the true surface, so the refracted ray hits the top face at
+        // the real underwater point with ground-related color/thickness.
         if (!isBrush && !lod.geom.vertices.empty()) {
             std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
             SolidProxyData pd;
-            pd.minp = cubeMin;
-            pd.maxp = cubeMax;
-            pd.materialId = static_cast<uint32_t>(
-                std::max(0, lod.geom.vertices[0].brushIndex));
+            {
+                glm::vec3 tmin = lod.geom.vertices[0].position;
+                glm::vec3 tmax = tmin;
+                // Dominant material (mode of brushIndex) so the proxy average
+                // represents the chunk's actual ground cover, not just corner 0.
+                std::unordered_map<int, uint32_t> matHist;
+                matHist.reserve(8);
+                int bestMat = lod.geom.vertices[0].brushIndex;
+                uint32_t bestCount = 0;
+                for (const auto& v : lod.geom.vertices) {
+                    const glm::vec3& p = v.position;
+                    tmin.x = std::min(tmin.x, p.x);
+                    tmin.y = std::min(tmin.y, p.y);
+                    tmin.z = std::min(tmin.z, p.z);
+                    tmax.x = std::max(tmax.x, p.x);
+                    tmax.y = std::max(tmax.y, p.y);
+                    tmax.z = std::max(tmax.z, p.z);
+                    uint32_t c = ++matHist[v.brushIndex];
+                    if (c > bestCount) { bestCount = c; bestMat = v.brushIndex; }
+                }
+                // Small padding: keeps thin/flat surfaces non-degenerate and
+                // covers GPU TES displacement (which the CPU mesh does not see).
+                constexpr float kProxyPad = 0.15f;
+                tmin -= glm::vec3(kProxyPad);
+                tmax += glm::vec3(kProxyPad);
+                // Clamp inside the emitting cell so a displaced outlier can
+                // never bloat the proxy back into a full-cell volume.
+                tmin.x = std::max(tmin.x, cubeMin.x);
+                tmin.y = std::max(tmin.y, cubeMin.y);
+                tmin.z = std::max(tmin.z, cubeMin.z);
+                tmax.x = std::min(tmax.x, cubeMax.x);
+                tmax.y = std::min(tmax.y, cubeMax.y);
+                tmax.z = std::min(tmax.z, cubeMax.z);
+                pd.minp = tmin;
+                pd.maxp = tmax;
+                pd.materialId = static_cast<uint32_t>(std::max(0, bestMat));
+            }
             pd.rung = static_cast<uint32_t>(lod.lod);
             if (layer == LAYER_OPAQUE)
                 mainSolidProxyData[nid] = pd;
@@ -1828,9 +1870,18 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
         auto hashMap = [&](const std::unordered_map<NodeID, SolidProxyData>& m) {
             for (const auto& kv : m) {
                 const SolidProxyData& d = kv.second;
+                // Hash the FULL tight bounds + material + rung: Y/Z-only edits
+                // (brush height strokes, water level shifts) must dirty the
+                // TLAS, otherwise refraction keeps sampling the pre-edit lake
+                // bottom (stale color unrelated to the surface underneath).
                 fp += uint64_t(d.materialId) * 1000003ull
                     + uint64_t(std::bit_cast<uint32_t>(d.minp.x)) * 31ull
-                    + uint64_t(std::bit_cast<uint32_t>(d.maxp.x));
+                    + uint64_t(std::bit_cast<uint32_t>(d.minp.y)) * 37ull
+                    + uint64_t(std::bit_cast<uint32_t>(d.minp.z)) * 41ull
+                    + uint64_t(std::bit_cast<uint32_t>(d.maxp.x)) * 43ull
+                    + uint64_t(std::bit_cast<uint32_t>(d.maxp.y)) * 47ull
+                    + uint64_t(std::bit_cast<uint32_t>(d.maxp.z)) * 53ull
+                    + uint64_t(d.rung) * 59ull;
             }
         };
         hashMap(mainSolidProxyData);

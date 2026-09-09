@@ -63,8 +63,17 @@ layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]
 // BLAS is skipped to avoid self-hits.
 vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction) {
     rayQueryEXT rq;
+    // Refraction rays start AT the water surface and go down: tMin must be
+    // tiny (1 cm) so shoreline shallows (<5 cm deep) still hit the lake bottom
+    // underneath instead of missing to deep-water tint. The old 5 cm tMin
+    // (plus a 5 cm below-surface origin bias) imposed a ~10 cm minimum depth,
+    // so every shallow pixel returned sky/deep color unrelated to the ground
+    // below. Reflection keeps the 5 cm tMin (self-hit guard, origin biased
+    // above the surface at the call site). Water is never a ray target (solid
+    // mask), so no self-hit risk for refraction.
+    float tMin = refraction ? 0.01 : 0.05;
     rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID,
-        origin, 0.05, dir, tMax);
+        origin, tMin, dir, tMax);
     while (rayQueryProceedEXT(rq)) {}
     vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(normalize(dir))).rgb;
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -336,7 +345,12 @@ void main() {
             }
         }
         if (!refrResolved && rtReady && rt.toggles.y > 0.5) {
-            vec4 hit = rtTraceWater(fragPosWorld - normal * 0.05, refrRay, maxRefr, true);
+            // Origin AT the surface (no below-surface bias): with tight proxy
+            // slabs the surface sits outside (above) the solid box, so biasing
+            // down pushes shallow origins inside/below the lake-bottom slab and
+            // misses the ground underneath. tMin (1 cm, inside rtTraceWater)
+            // is the only self-guard, and the solid-only mask excludes water.
+            vec4 hit = rtTraceWater(fragPosWorld, refrRay, maxRefr, true);
             sceneColor = hit.rgb;
             // a >= 0 always from rtTraceWater: capped path length on hit, or
             // RT_DEEP_WATER marker on miss (deep, unresolved water).

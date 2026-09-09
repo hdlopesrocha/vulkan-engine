@@ -21,18 +21,22 @@
 #include <iostream>
 #include <vector>
 
-// 8 corners + 36 indices (12 tris) per box; winding irrelevant (cull disabled,
-// analytic normals), kept consistent for determinism.
+// 8 corners + 36 indices (12 tris) per box. Winding MUST be outward (CCW
+// from outside): cull is disabled so all faces hit, but ray queries and the
+// closest-hit shader use FrontFace/HitKind to distinguish entry (frontface)
+// from exit (backface). Inward winding inverts that test, flipping every
+// analytic box normal inward and darkening all RT refraction/reflection
+// (ndl == 0 for top faces). Reversed to outward 2026-09-09.
 static constexpr uint32_t kVertsPerBox = 8;
 static constexpr uint32_t kIndicesPerBox = 36;
 static constexpr uint32_t kTrisPerBox = 12;
 static constexpr uint32_t kBoxIndices[kIndicesPerBox] = {
-    0,1,2, 0,2,3, // -Z
-    4,6,5, 4,7,6, // +Z
-    0,4,5, 0,5,1, // -Y
-    3,2,6, 3,6,7, // +Y
-    0,3,7, 0,7,4, // -X
-    1,5,6, 1,6,2, // +X
+    0,2,1, 0,3,2, // -Z (outward -Z)
+    4,5,6, 4,6,7, // +Z (outward +Z)
+    0,5,4, 0,1,5, // -Y (outward -Y)
+    3,6,2, 3,7,6, // +Y (outward +Y)
+    0,7,3, 0,4,7, // -X (outward -X)
+    1,6,5, 1,2,6, // +X (outward +X)
 };
 
 void RayTracingResources::init(VulkanApp* app, uint32_t width, uint32_t height) {

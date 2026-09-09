@@ -92,6 +92,10 @@ void main() {
     }
 
     // Refraction (Snell air->water). Miss = deep water: full-path thickness.
+    // Origin AT the surface with a 1 cm tMin (not 5 cm below with 5 cm tMin):
+    // the tight solid slabs sit just below the surface, so the old bias + tMin
+    // imposed a ~10 cm minimum depth and every shoreline shallow missed to
+    // deep/sky color unrelated to the lake bottom underneath.
     vec4 refractValue = vec4(0.0, 0.0, 0.0, -1.0);
     if (rt.toggles.y > 0.5) {
         vec3 T = refract(-V, N, 1.0 / ior);
@@ -100,7 +104,7 @@ void main() {
         rtPayload.data = vec4(0.0);
         rtPayload.coarseF = 0.0;
         traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID, 0, 0, 0,
-            pos - N * 0.05, 0.05, T, maxRefract, 0);
+            pos, 0.01, T, maxRefract, 0);
         if (rtPayload.data.a >= 0.0) {
             // Hit: payload.a is the underwater path length (water surface ->
             // underwater hit). Cap it at rt.water.y so Beer-Lambert in
