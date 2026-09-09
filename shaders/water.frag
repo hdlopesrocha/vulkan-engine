@@ -28,6 +28,8 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 // Use the same UBO as main shader
 #include "includes/ubo.glsl"
 #include "includes/textures.glsl"
+#include "includes/tbn.glsl"
+#include "includes/triplanar.glsl"
 #include "includes/shadows.glsl"
 
 
@@ -80,7 +82,18 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction) {
     bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
     vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz, meta.maxAndFlags.xyz, exiting);
     float ndl = max(dot(boxN, normalize(rt.sunDir.xyz)), 0.0);
-    vec3 color = meta.albedoRough.rgb * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
+    // Textured hit albedo: triplanar sample at the hit point with the box
+    // face normal, so refracted/reflected terrain reads as real textured
+    // ground (not flat proxy averages). Weights mirror main.frag.
+    int hitMat = int(meta.minAndMatId.w + 0.5);
+    vec3 triW = abs(boxN);
+    float twt = ubo.triplanarSettings.x;
+    vec3 wwt = max(vec3(0.0), triW - vec3(twt));
+    float wwe = max(1.0, ubo.triplanarSettings.y);
+    wwt = pow(wwt, vec3(wwe));
+    triW = wwt / (wwt.x + wwt.y + wwt.z + 1e-6);
+    vec3 hitAlbedo = computeTriplanarAlbedo(hitPos, triW, hitMat, boxN);
+    vec3 color = hitAlbedo * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
     if (!refraction) {
         // Reflection ignores thickness: feather coarse hits toward sky.
         return vec4(mix(color, sky, f), -1.0);
