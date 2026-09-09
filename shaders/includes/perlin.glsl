@@ -211,17 +211,20 @@ vec4 perlinNoise4DGrad(vec4 p) {
     float nx111 = mix(n0111, n1111, u.x);
     vec4  gx111 = mix(g0111, g1111, u.x); gx111.x += (n1111 - n0111) * du.x;
 
-    // Interpolate along y (axis 1)
-    float nxy00 = mix(nx000, nx010, u.y);
-    vec4  gxy00 = mix(gx000, gx010, u.y); gxy00.y += (nx010 - nx000) * du.y;
-    float nxy01 = mix(nx001, nx011, u.y);
-    vec4  gxy01 = mix(gx001, gx011, u.y); gxy01.y += (nx011 - nx001) * du.y;
-    float nxy10 = mix(nx100, nx110, u.y);
-    vec4  gxy10 = mix(gx100, gx110, u.y); gxy10.y += (nx110 - nx100) * du.y;
-    float nxy11 = mix(nx101, nx111, u.y);
-    vec4  gxy11 = mix(gx101, gx111, u.y); gxy11.y += (nx111 - nx101) * du.y;
+    // Interpolate along y (axis 1) — pairs must differ ONLY in y, with the
+    // Hermite correction applied to the y gradient component (same pairing
+    // as perlinNoise4D; the previous revision mixed z-pairs here, swapping
+    // the y/z axes of both value and gradient).
+    float nxy00 = mix(nx000, nx100, u.y);
+    vec4  gxy00 = mix(gx000, gx100, u.y); gxy00.y += (nx100 - nx000) * du.y;
+    float nxy01 = mix(nx001, nx101, u.y);
+    vec4  gxy01 = mix(gx001, gx101, u.y); gxy01.y += (nx101 - nx001) * du.y;
+    float nxy10 = mix(nx010, nx110, u.y);
+    vec4  gxy10 = mix(gx010, gx110, u.y); gxy10.y += (nx110 - nx010) * du.y;
+    float nxy11 = mix(nx011, nx111, u.y);
+    vec4  gxy11 = mix(gx011, gx111, u.y); gxy11.y += (nx111 - nx011) * du.y;
 
-    // Interpolate along z (axis 2)
+    // Interpolate along z (axis 2) — pairs must differ ONLY in z.
     float nxyz0 = mix(nxy00, nxy10, u.z);
     vec4  gxyz0 = mix(gxy00, gxy10, u.z); gxyz0.z += (nxy10 - nxy00) * du.z;
     float nxyz1 = mix(nxy01, nxy11, u.z);
