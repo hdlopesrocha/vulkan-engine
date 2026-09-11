@@ -76,7 +76,10 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID,
         origin, tMin, dir, tMax);
     while (rayQueryProceedEXT(rq)) {}
-    vec3 sky = texture(skyEquirectTex, rtDirToEquirectUV(normalize(dir))).rgb;
+    // Explicit LOD: reachable under per-fragment control flow (pipe validity
+    // / toggles / hit-vs-miss differ per pixel), where implicit-LOD texture()
+    // has undefined derivatives.
+    vec3 sky = textureLod(skyEquirectTex, rtDirToEquirectUV(normalize(dir)), 0.0).rgb;
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
         // Deep-water marker (refraction) or plain sky (reflection).
         return refraction ? vec4(sky, RT_DEEP_WATER) : vec4(sky, -1.0);
@@ -102,7 +105,11 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     float wwe = max(1.0, ubo.triplanarSettings.y);
     wwt = pow(wwt, vec3(wwe));
     triW = wwt / (wwt.x + wwt.y + wwt.z + 1e-6);
-    vec3 hitAlbedo = computeTriplanarAlbedo(hitPos, triW, hitMat, boxN);
+    // Explicit LOD: this helper runs under per-fragment control flow (pipe
+    // validity / toggles / hit-vs-miss differ per pixel), where implicit-LOD
+    // texture() has undefined derivatives. LOD from hit distance is stable.
+    float hitLod = clamp(log2(1.0 + hitT * 0.02), 0.0, 4.0);
+    vec3 hitAlbedo = computeTriplanarAlbedoLod(hitPos, triW, hitMat, boxN, hitLod);
     vec3 color = hitAlbedo * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
     if (!refraction) {
         // Reflection ignores thickness: feather coarse hits toward sky.
@@ -259,19 +266,16 @@ void main() {
     int dbgMode = int(ubo.debugParams.x + 0.5);
 
     // === HYBRID RT STATE ===
-    // Always inline ray queries (full-res, current frame, analytic normals,
-    // textured hits). The async pipeline outputs (half-res, 1-frame latency,
-    // depth-faceted normals) lag a full frame behind: at low frame rates that
-    // staleness pastes previous-frame sky/terrain at wrong screen positions
-    // (stale color blocks), and the pipeline/inline validity split prints its
-    // own boundary. Inline dominates on quality everywhere (tracing itself is
-    // ~0.2 ms); the pipeline dispatch is retained but no longer sampled.
-    // rt.debug.w carries settings.rtWaterPipeline (kept for tooling).
+    // Async pipeline outputs (half-res, 1-frame latency) are sampled first
+    // when settings.rtWaterPipeline is on (rt.debug.w), with inline ray
+    // queries (full-res, current frame, analytic normals) as the fallback for
+    // invalid pipe texels and as the primary path when the pipeline is off.
+    // rt.debug.w carries settings.rtWaterPipeline.
     bool rtReady = false;
     bool usePipe = false;
 #ifdef RT_ENABLED
     rtReady = (rt.debug.y > 0.5);
-    usePipe = false;
+    usePipe = rtReady && (rt.debug.w > 0.5);
 #endif
 
     // === PERLIN NOISE-BASED REFRACTION ===
@@ -331,7 +335,9 @@ void main() {
         bool refrResolved = false;
 #ifdef RT_ENABLED
         if (usePipe && rt.toggles.y > 0.5) {
-            vec4 pipeRefr = texture(rtRefractTex, screenUV);
+            // Half-res single-mip pipeline output: explicit LOD 0 (also safe
+            // under the per-fragment pipe-validity branch).
+            vec4 pipeRefr = textureLod(rtRefractTex, screenUV, 0.0);
             if (pipeRefr.a >= 0.0) {
                 sceneColor = pipeRefr.rgb;
                 rtThickness = pipeRefr.a;
@@ -355,7 +361,8 @@ void main() {
         if (!refrResolved) {
             // Sky fallback (also the non-RT path): refracted sky through the
             // surface, no thickness (back-face raster method covers thickness).
-            sceneColor = texture(skyEquirectTex, waterDirToEquirectUV(refrRay)).rgb;
+            // Explicit LOD: this fallback runs under per-fragment control flow.
+            sceneColor = textureLod(skyEquirectTex, waterDirToEquirectUV(refrRay), 0.0).rgb;
         }
     }
 
@@ -455,7 +462,11 @@ void main() {
     // reflectance F0 = 0.02: looking straight down reflects ~2% of the
     // environment, grazing angles approach a full mirror. fresnelPower
     // (default 5 = standard Schlick) shapes the transition curve.
-    float fresnelCurve = pow(1.0 - max(dot(viewDir, normal), 0.0), clamp(fresnelPower, 1.0, 8.0));
+    // NOTE: dot() is clamped ABOVE as well: two normalized vectors can dot
+    // to 1.0000001 in floating point, and pow(negative, x) is undefined
+    // (NaN on most drivers) — which used to black out calm top-down water
+    // where dot(viewDir, normal) rounds to exactly ~1.0.
+    float fresnelCurve = pow(1.0 - clamp(dot(viewDir, normal), 0.0, 1.0), clamp(fresnelPower, 1.0, 8.0));
     float fresnel = clamp(0.02 + 0.98 * fresnelCurve, 0.0, 1.0);
     
     // === SPECULAR LIGHTING (Perlin noise-based) ===
@@ -488,21 +499,21 @@ void main() {
     bool reflResolved = false;
 #ifdef RT_ENABLED
     if (usePipe && rt.toggles.x > 0.5) {
-        vec4 pipeRefl = texture(rtReflectTex, screenUV);
+        vec4 pipeRefl = textureLod(rtReflectTex, screenUV, 0.0);
         if (pipeRefl.a > 0.5) {
             skyColor = pipeRefl.rgb;
             reflResolved = true;
         }
     }
     if (!reflResolved && rtReady && rt.toggles.x > 0.5) {
-        float maxRefl = max(rt.distances.x, 1.0);
-        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), maxRefl, false, 0.0);
+        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), RT_NO_LIMIT, false, 0.0);
         skyColor = hit.rgb;
         reflResolved = true;
     }
 #endif
     if (!reflResolved) {
-        skyColor = texture(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir))).rgb;
+        // Explicit LOD: per-fragment fallback branch (see refraction above).
+        skyColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
     }
 
     // === AERIAL DETAIL FADE (§10/§11) ===
@@ -528,7 +539,8 @@ void main() {
         float fragDist = length(fragPosWorld - ubo.viewPos.xyz);
         float detailFade = smoothstep(fadeStart, fadeEnd, fragDist);
         if (detailFade > 0.0) {
-            vec3 skyRef = texture(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir))).rgb;
+            // Explicit LOD: detailFade varies per fragment (distance-based).
+            vec3 skyRef = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
             skyColor = mix(skyColor, skyRef, detailFade);
             sceneColor = mix(sceneColor, deepTint, detailFade);
             waterThickness = mix(waterThickness, maxRefr, detailFade);
@@ -586,6 +598,9 @@ void main() {
     // enabled, use `reflectionStrength` directly so reflection appears
     // across all pixels uniformly (useful for debugging/stylized look).
     vec3 waterColor;
+    // Mirror presence for the translucency below: the Fresnel surface mirror
+    // lives at the interface, not in the volume.
+    float mirrorPresence = 0.0;
     if (captureMode) {
         // 360 capture: no env feedback. Use the base tint so water is not
         // black (refraction/reflection are disabled, leaving sceneColor zero).
@@ -593,6 +608,7 @@ void main() {
     } else if (enableReflection) {
         float reflMix = uniformReflection ? reflectionStrength : (fresnel * reflectionStrength);
         waterColor = mix(refractedColor, skyColor, reflMix);
+        mirrorPresence = clamp(reflMix, 0.0, 1.0);
     } else {
         waterColor = refractedColor;
     }
@@ -749,6 +765,11 @@ void main() {
     // skipped so the water stays visible via the transparency floor above.
     float thicknessFrac = clamp(thicknessForAlpha / 3.0, 0.0, 1.0); // ~3 m -> opaque
     float alpha = mix(1.0, thicknessFrac, clamp(transparency, 0.0, 1.0));
+    // The Fresnel surface mirror is not volume translucency: a strong mirror
+    // (grazing angles) must composite even where the water is thin, or
+    // shallows and puddles lose their sky entirely (real puddles mirror!).
+    // Top-down views are unaffected (mirrorPresence ≈ 0 there).
+    alpha = max(alpha, mirrorPresence);
     float shoreWidth = max(wp.refractionParams.z, 0.0);
     if (thicknessForAlpha > 1e-4 && shoreWidth > 1e-6) {
         alpha *= smoothstep(0.0, shoreWidth, thicknessForAlpha);

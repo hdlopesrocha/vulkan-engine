@@ -18,7 +18,10 @@ struct MaterialProperties {
     
     float specularStrength = 0.5f;
     float shininess = 32.0f;
-    float reflectionStrength = 0.0f;
+    // Physical Fresnel mirror by default (dielectric F0 ≈ 0.04: ~4% at normal
+    // incidence, full mirror at grazing). 0 disables reflections entirely —
+    // flat surfaces with the old 0 default could never reflect via RT.
+    float reflectionStrength = 1.0f;
 
     // Triplanar mapping toggle and per-material UV scales (disabled by default)
     bool triplanar = true;

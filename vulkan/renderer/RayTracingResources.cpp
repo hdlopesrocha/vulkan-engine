@@ -517,7 +517,8 @@ void RayTracingResources::createAccelStructures(VulkanApp* app) {
     if (app->fpCreateAccelerationStructureKHR(device, &tlasCI, nullptr, &tlas_) != VK_SUCCESS)
         throw std::runtime_error("vkCreateAccelerationStructureKHR (TLAS) failed");
 
-    dirty_ = true; // force initial BLAS+TLAS build on first buildIfNeeded()
+    dirty_ = true; // consider a BLAS+TLAS build on the first buildIfNeeded()
+                   // (skipped while the proxy set is still empty — see above)
 }
 
 void RayTracingResources::createOutputImages(VulkanApp* app, uint32_t width, uint32_t height) {
@@ -607,6 +608,14 @@ void RayTracingResources::setProxies(const std::vector<RTProxyBox>& solids,
 bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
     if (!supported_ || !dirty_ || cmd == VK_NULL_HANDLE) return false;
     ++frameCounter_;
+    // Never waste the initial build on an empty proxy set: an empty TLAS
+    // helps nobody, yet it would flip tlasBuilt_ on, so shaders spend the
+    // whole scene-load window tracing empty space (every ray misses, hence
+    // visibly "no reflections" right when users look). dirty_ stays set, so
+    // the first populated build fires immediately once boxes arrive (the
+    // throttle below already exempts it via !lastBuiltValid_).
+    const bool haveBoxes = (activeSolidCount_ + activeWaterCount_) > 0;
+    if (!haveBoxes && !lastBuiltValid_) return false;
     // Throttle: at most one rebuild per 30 frames — chunk bursts (scene load /
     // brush edits) coalesce into a single build instead of one per publish.
     // Camera moves / LOD switches never mark dirty, so they never rebuild (§6).
@@ -618,7 +627,10 @@ bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
         lastBuiltValid_ = true;
         dirty_ = false;
         ++buildCount_;
-        tlasBuilt_ = true;
+        // tlasReady means "TLAS has content": a set emptied later (scene
+        // cleared) drops back to the sky/CSM fallback instead of tracing
+        // empty space.
+        tlasBuilt_ = haveBoxes;
         lastBuildMs_ = std::chrono::duration<float, std::milli>(
             std::chrono::high_resolution_clock::now() - t0).count();
         // Rare (scene changes only, throttled): one line per rebuild.

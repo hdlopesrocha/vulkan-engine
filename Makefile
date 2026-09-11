@@ -225,12 +225,15 @@ release: BUILD = release
 release: all
 
 .PHONY: run run-debug valgrind callgrind
-run:
+# NOTE: run/run-debug DEPEND on the build (all/debug) so stale binaries or
+# shaders can never be launched by accident — a bare `make run`.refreshes
+# everything first (AGENTS.md documents these as "build + run").
+run: all
 	@echo "Running app from $(OUT_DIR)/"
 	@mkdir -p logs
 	@cd $(OUT_DIR) && ./app 2>&1 | tee ../logs/run.log
 
-run-debug:
+run-debug: debug
 	@echo "Running debug build from $(OUT_DIR)/"
 	@mkdir -p logs
 	@cd $(OUT_DIR) && ./app 2>&1 | tee ../logs/run.log

@@ -308,8 +308,9 @@ void main() {
     // The rasterized world position + shading normal seed one secondary ray
     // through the stable proxy TLAS. On hit the proxy-box material shades the
     // reflection; on miss the procedural sky is evaluated directly. The old
-    // 360° cubemap capture is removed. Single bounce, roughness-gated and
-    // distance-limited for performance (§16); very rough materials keep the
+    // 360° cubemap capture is removed. Single bounce, roughness-gated for
+    // performance (§16); reflection rays are uncapped (RT_NO_LIMIT) so
+    // distant scenery still mirrors. Very rough materials keep the
     // cheap sky approximation instead of tracing.
     vec3 envReflection = vec3(0.0);
     float blendedRefStrength = 0.0;
@@ -352,7 +353,7 @@ void main() {
                 vec3 origin = fragPosWorld + reflN * selfSkip;
                 rayQueryEXT rq;
                 rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_ALL,
-                    origin, 0.05, normalize(reflDir), max(rt.distances.x, 1.0));
+                    origin, 0.05, normalize(reflDir), RT_NO_LIMIT);
                 while (rayQueryProceedEXT(rq)) {}
                 if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
                     float hitT = rayQueryGetIntersectionTEXT(rq, true);
@@ -371,9 +372,34 @@ void main() {
                                                 meta.maxAndFlags.xyz, exiting);
                         vec3 toLight = -normalize(ubo.lightDir.xyz);
                         float ndl = max(dot(boxN, toLight), 0.0);
-                        // Proxy shading reuses the hit box's average albedo;
-                        // macro shadows stay CSM-owned (no RT shadow recompute).
-                        vec3 hitAlbedo = meta.albedoRough.rgb;
+                        // Textured hit albedo (mirrors water.frag rtTraceWater):
+                        // triplanar sample at the hit point with the box face
+                        // normal, so reflections read as real textured ground
+                        // instead of flat proxy averages. MUST use the
+                        // explicit-LOD variant: this block runs under
+                        // per-fragment control flow (roughness gate, hitT
+                        // guard), where implicit-LOD texture() has undefined
+                        // derivatives (black/garbage reflections + validation
+                        // errors). The LOD is estimated from the hit distance
+                        // (stable, no derivatives needed). Water proxies carry
+                        // a water-layer index (not a scene material), so the
+                        // layer is clamped and their flat proxy albedo is
+                        // selected afterwards instead.
+                        int hitMat = int(meta.minAndMatId.w + 0.5);
+                        int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
+                        vec3 triW = abs(boxN);
+                        float twt = ubo.triplanarSettings.x;
+                        vec3 wwt = max(vec3(0.0), triW - vec3(twt));
+                        float wwe = max(1.0, ubo.triplanarSettings.y);
+                        wwt = pow(wwt, vec3(wwe));
+                        triW = wwt / (wwt.x + wwt.y + wwt.z + 1e-6);
+                        float hitLod = clamp(log2(1.0 + hitT * 0.02), 0.0, 4.0);
+                        vec3 texAlbedo = computeTriplanarAlbedoLod(
+                            hitPos, triW, clamp(hitMat, 0, maxLayer), boxN, hitLod);
+                        vec3 hitAlbedo = mix(texAlbedo, meta.albedoRough.rgb,
+                                             step(0.5, meta.maxAndFlags.w));
+                        // Proxy shading reuses the hit albedo; macro shadows
+                        // stay CSM-owned (no RT shadow recompute).
                         rtColor = hitAlbedo * (ubo.lightColor.rgb * (0.35 + 0.65 * ndl));
                         rtColor *= aoBlend * (1.0 - rough * 0.5);
                     }

@@ -40,6 +40,15 @@ const uint RT_RAY_MASK_SOLID = 0x01u;
 const uint RT_RAY_MASK_WATER = 0x02u;
 const uint RT_RAY_MASK_ALL = 0x03u;
 
+// Reflection rays are UNCAPPED by design: mirror targets can sit anywhere
+// in the scene (grazing rays travel far before hitting), and the proxy TLAS
+// holds only a few thousand boxes, so traversal cost stays bounded without
+// a Tmax. The bound below is the far-plane scale (default far is 8092 m):
+// nothing renderable exists beyond it, while 1e30-style infinities risk
+// traversal precision issues on some drivers. Refraction/shadow rays keep
+// their tighter limits (physical caps, not LOD).
+const float RT_NO_LIMIT = 10000.0;
+
 // Refraction "deep water" sentinel. A ray that misses the terrestrial proxies
 // has still travelled through the water volume (unresolved exit); encoding it
 // as an in-band path length (maxRefract) over-attenuates Beer-Lambert to

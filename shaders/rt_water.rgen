@@ -69,12 +69,12 @@ void main() {
     vec3 V = normalize(rt.viewPos.xyz - pos);
     if (dot(N, V) < 0.0) N = -N;
 
-    float maxReflect = max(rt.distances.x, 1.0);
+    float maxReflect = RT_NO_LIMIT; // reflections are uncapped (see rt_params.glsl)
     float maxRefract = max(rt.distances.y, 1.0);
     float ior = clamp(rt.water.x, 1.0, 2.5);
 
-    // Reflection (mask 0xFF: solid proxy boxes; water surface is not in the
-    // BLAS by design, so no self-hit).
+    // Reflection (solid-only mask: the water surface is not in the solid
+    // BLAS by design, and the water BLAS is skipped to avoid self-hits).
     vec4 reflectValue = vec4(0.0, 0.0, 0.0, 0.0);
     if (rt.toggles.x > 0.5) {
         vec3 R = reflect(-V, N);

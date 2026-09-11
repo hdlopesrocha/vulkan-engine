@@ -88,7 +88,12 @@ public:
     // still carries copies for the layer-unaware async pipeline path, synced
     // from water layer 0 in SceneRenderer::updateRTParams — there is only one
     // place to tweak them.
-    float rtSelfSkipDist = 2.0f;      // ignore proxy hits closer than this (own-box guard)
+    // Proxies are thin tight slabs (vertex bounds ±0.15 m pad), so the ray
+    // origin (biased along the shading normal) clears the fragment's own box
+    // well below a meter; grazing rays then stay low enough to hit nearby
+    // thin slabs instead of flying over them to sky. The old 2.0 m default
+    // dated from full-cell-volume proxies and blinded flat-terrain mirrors.
+    float rtSelfSkipDist = 0.5f;      // ignore proxy hits closer than this (own-box guard)
     // RT debug views (0=off; also drives ubo.debugParams extensions in shaders):
     //  50=RT reflection only, 51=RT refraction only, 52=thickness,
     //  53=Fresnel, 54=absorption, 55=CSM-only, 56=RT-local-only, 57=CSM+RT combined

@@ -28,7 +28,31 @@ vec3 computeTriplanarAlbedoUVs(in vec3 triW, in int brushIndex, in vec2 uvX, in 
     return cX * triW.x + cY * triW.y + cZ * triW.z;
 }
 
+// Sample albedo using precomputed triplanar UVs with an explicit mip level.
+// textureLod needs no screen-space derivatives, so this is the ONLY variant
+// that is safe inside non-uniform control flow (ray-query hit blocks gated
+// on per-fragment roughness / hit distance). Implicit-LOD texture() there is
+// undefined behavior (garbage albedo + derivative-uniformity validation
+// errors on most drivers).
+vec3 computeTriplanarAlbedoUVsLod(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ, in float lod) {
+    vec3 cX = triW.x > 0.0 ? textureLod(albedoArray, vec3(uvX, float(brushIndex)), lod).rgb : vec3(0.0);
+    vec3 cY = triW.y > 0.0 ? textureLod(albedoArray, vec3(uvY, float(brushIndex)), lod).rgb : vec3(0.0);
+    vec3 cZ = triW.z > 0.0 ? textureLod(albedoArray, vec3(uvZ, float(brushIndex)), lod).rgb : vec3(0.0);
+
+    return cX * triW.x + cY * triW.y + cZ * triW.z;
+}
+
+// Explicit-LOD entry point (computes UVs internally). See above for when to
+// prefer this over computeTriplanarAlbedo.
+vec3 computeTriplanarAlbedoLod(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN, in float lod) {
+    vec2 uvX, uvY, uvZ;
+    computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
+    return computeTriplanarAlbedoUVsLod(triW, brushIndex, uvX, uvY, uvZ, lod);
+}
+
 // Sample albedo using triplanar blending weights (computes UVs internally).
+// Implicit LOD: only safe under uniform control flow (primary surface
+// shading). Ray-query hit blocks must use computeTriplanarAlbedoLod.
 vec3 computeTriplanarAlbedo(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN) {
     vec2 uvX, uvY, uvZ;
     computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
