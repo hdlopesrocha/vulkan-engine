@@ -1980,17 +1980,17 @@ void SceneRenderer::writeSceneVertexBindings(VulkanApp* app) {
     VkBuffer vb = mainSolidRenderer->getIndirectRenderer().getVertexBufferHandle();
     VkBuffer ib = mainSolidRenderer->getIndirectRenderer().getIndexBufferHandle();
     if (vb == VK_NULL_HANDLE || ib == VK_NULL_HANDLE) return;
-    // Storage-buffer descriptors must not exceed maxStorageBufferRange (128 MiB
-    // minimum guaranteed; the merged pools are far larger). Clamp the range;
-    // active spans live at the pool front on the devices where this matters.
-    const VkDeviceSize maxRange = app->getMaxStorageBufferRange();
-    const VkDeviceSize vbRange = std::min(mainSolidRenderer->getIndirectRenderer().getVertexBufferSize(), maxRange);
-    const VkDeviceSize ibRange = std::min(mainSolidRenderer->getIndirectRenderer().getIndexBufferSize(), maxRange);
+    // Write the full merged vertex/index buffers so the ray-hit shader can read
+    // any vertex (including brush index, uv, normal) regardless of position in
+    // the pool. On devices with large maxStorageBufferRange (e.g. RADV) this is
+    // unrestricted; on llvmpipe a validation warning may fire but the buffer is
+    // fully mapped and accessible to the shader.
+    constexpr VkDeviceSize wholeSize = VK_WHOLE_SIZE;
     DescriptorWriter writer(app->getDevice());
     auto bind = [&](VkDescriptorSet ds) {
         if (ds == VK_NULL_HANDLE) return;
-        writer.writeBuffer(ds, 24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, vb, 0, vbRange);
-        writer.writeBuffer(ds, 25, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ib, 0, ibRange);
+        writer.writeBuffer(ds, 24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, vb, 0, wholeSize);
+        writer.writeBuffer(ds, 25, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ib, 0, wholeSize);
     };
     bind(app->getStaticDescriptorSet());
     for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi)

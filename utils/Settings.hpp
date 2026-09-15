@@ -93,7 +93,7 @@ public:
     // well below a meter; grazing rays then stay low enough to hit nearby
     // thin slabs instead of flying over them to sky. The old 2.0 m default
     // dated from full-cell-volume proxies and blinded flat-terrain mirrors.
-    float rtSelfSkipDist = 0.5f;      // ignore proxy hits closer than this (own-box guard)
+    float rtSelfSkipDist = 0.05f;     // ignore proxy hits closer than this (own-box guard)
     // RT debug views (0=off; also drives ubo.debugParams extensions in shaders):
     //  50=RT reflection only, 51=RT refraction only, 52=thickness,
     //  53=Fresnel, 54=absorption, 55=CSM-only, 56=RT-local-only, 57=CSM+RT combined

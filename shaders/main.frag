@@ -428,10 +428,10 @@ void main() {
                 // Opaque mirrors (low-poly spheres/boxes) are tessellated with
                 // large flat triangles: a grazing reflection ray can re-enter a
                 // neighbouring triangle just above the interpolated surface and
-                // "reflect" the object itself (triangle-soup look). A 1 m
-                // origin bias clears those numerical self-hits without moving
+                // "reflect" the object itself (triangle-soup look). A 5 cm
+                // origin bias clears numerical self-hits without moving
                 // terrain reflections meaningfully.
-                float selfSkip = max(rt.debug.z, 1.0);
+                float selfSkip = rt.debug.z;
                 vec3 origin = fragPosWorld + reflN * selfSkip;
                 rayQueryEXT rq;
                 // Trace the real chunk triangles (scene instance) so reflected

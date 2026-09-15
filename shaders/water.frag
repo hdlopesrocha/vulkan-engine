@@ -444,7 +444,7 @@ void main() {
     bool usePipe = false;
 #ifdef RT_ENABLED
     rtReady = (rt.debug.y > 0.5);
-    usePipe = rtReady && (rt.debug.w > 0.5);
+    
 #endif
 
     // === PERLIN NOISE-BASED REFRACTION ===
