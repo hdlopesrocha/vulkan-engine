@@ -66,6 +66,7 @@ struct RayTracingParams {
     glm::vec4 absorption = glm::vec4(0.35f, 0.12f, 0.08f, 1.0f); // rgb=Beer-Lambert coeff, a=thicknessScale (mirrored from water layer 0; inline path reads WaterParams)
     glm::vec4 debug = glm::vec4(0.0f); // x=RT debug view, y=tlasReady, z=selfSkip, w=useWaterPipeline
     glm::mat4 invViewProj = glm::mat4(1.0f);
+    glm::mat4 prevViewProj = glm::mat4(1.0f); // previous frame's view-projection (temporal SSR reprojection)
     glm::vec4 viewPos = glm::vec4(0.0f);
     glm::vec4 rtResolution = glm::vec4(0.0f); // xy=dispatch size, zw=1/size
     glm::vec4 clipPlanes = glm::vec4(0.1f, 8092.0f, 0.0f, 0.0f); // x=near, y=far
@@ -75,11 +76,15 @@ struct RayTracingParams {
 
 class RayTracingResources {
 public:
-    static constexpr uint32_t kMaxSolidProxies = 3584;
-    static constexpr uint32_t kWaterProxyStart = 3584; // water boxes live in slots [3584, 4096)
+    static constexpr uint32_t kMaxSolidProxies = 16384; // one box per 4x4 height-grid cell per chunk
+    static constexpr uint32_t kWaterProxyStart = 16384; // water boxes live in slots [16384, 16896)
     static constexpr uint32_t kMaxWaterProxies = 512;
-    static constexpr uint32_t kMaxProxies = 4096; // total box slots (solids + water)
+    static constexpr uint32_t kMaxProxies = 16896; // total box slots (solids + water)
     static constexpr float kOutputScale = 0.5f; // half-res RT outputs (perf, §16)
+    // Per-frame RT param slots (must match VulkanApp::MAX_FRAMES_IN_FLIGHT):
+    // each in-flight frame reads its own params, so the camera matrices the
+    // shaders see always match the frame that recorded them.
+    static constexpr uint32_t kParamFrames = 3;
 
     // TLAS instance masks: solid rays see everything, water-originated rays
     // see solids only (the water surface is never a target for its own rays —
@@ -87,6 +92,12 @@ public:
     static constexpr uint32_t kMaskSolid = 0x01;
     static constexpr uint32_t kMaskWater = 0x02;
     static constexpr uint32_t kMaskAll = 0x03;
+    // Real scene-geometry instance (exact chunk triangles for reflections).
+    static constexpr uint32_t kMaskScene = 0x04;
+    static constexpr uint32_t kSceneInstanceIndex = 2;
+    // Scene lookup buffers are preallocated at init (no resize), sized for the
+    // maximum number of concurrently active geometry spans.
+    static constexpr uint32_t kMaxSceneGeoms = 4096;
 
     RayTracingResources() = default;
     ~RayTracingResources() = default;
@@ -112,6 +123,27 @@ public:
     void setProxies(const std::vector<RTProxyBox>& solids,
                     const std::vector<RTProxyBox>& waters);
 
+    // Real scene geometry for reflection rays: one entry per active chunk,
+    // referencing the raster mesh's vertex/index spans in the shared merged
+    // buffers (device addresses computed by the caller). Rebuilt alongside the
+    // proxies; reflection rays then hit the real triangles so mirror positions
+    // match the scene exactly. `albedo` is the chunk's average linear color for
+    // hit shading (the AS carries no material data).
+    struct SceneTriGeometry {
+        VkDeviceAddress vertexAddress = 0; // chunk's first vertex (already offset)
+        VkDeviceAddress indexAddress = 0;  // chunk's first index (already offset)
+        uint32_t vertexCount = 0;
+        uint32_t indexCount = 0;
+        uint32_t baseVertex = 0;  // element offset into the merged vertex pool
+        uint32_t firstIndex = 0;  // element offset into the merged index pool
+        glm::vec4 albedo = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
+    };
+    void setSceneGeometry(std::vector<SceneTriGeometry> geoms);
+    uint32_t sceneGeometryCount() const { return uint32_t(sceneGeoms_.size()); }
+    VkBuffer getSceneGeomPrimBaseBuffer() const { return scenePrimBaseBuffer_.buffer; }
+    VkBuffer getSceneGeomInfoBuffer() const { return sceneGeomInfoBuffer_.buffer; }
+    VkBuffer getSceneGeomMetaBuffer() const { return sceneMetaBuffer_.buffer; }
+
     // Rebuild BLAS/TLAS when dirty and throttle allows. Records barriers +
     // builds into cmd (any graphics/compute queue). Returns true when a build
     // was recorded. Never blocks the CPU; never called when !supported_.
@@ -128,13 +160,16 @@ public:
                          const glm::mat4& invViewProj, const glm::vec3& viewPos);
 
     // Per-frame UBO stream (toggles/distances/water/absorption/debug/view).
-    // Handle stable; contents memcpy (coherent, no descriptor update).
-    void updateParams(const RayTracingParams& p);
+    // Writes only the frame's own slot: with MAX_FRAMES_IN_FLIGHT slots the
+    // in-flight frames can never observe another frame's camera matrices.
+    void updateParams(const RayTracingParams& p, uint32_t frameIndex);
 
     // Accessors for descriptor wiring (SceneRenderer writes these into set 0;
     // handles stable after init except TLAS on capacity-grow recreate).
     VkAccelerationStructureKHR getTLAS() const { return tlas_; }
-    VkBuffer getParamsBuffer() const { return paramsBuffer_.buffer; }
+    VkBuffer getParamsBuffer(uint32_t frameIndex = 0) const {
+        return paramsBuffers_[frameIndex % kParamFrames].buffer;
+    }
     VkBuffer getMetaBuffer() const { return metaBuffer_.buffer; }
     VkImageView getReflectionView() const { return reflectView_; }
     VkImageView getRefractionView() const { return refractView_; }
@@ -153,6 +188,9 @@ public:
                        const VkImageView skyViews[3]);
 
 private:
+    // Build the real scene-geometry BLAS + stage its shader lookup buffers.
+    // Records into cmd; no-op when sceneBlasDirty_ is clear.
+    bool recordSceneBlas(VulkanApp* app, VkCommandBuffer cmd);
     void createProxyBuffers(VulkanApp* app);
     void createAccelStructures(VulkanApp* app);
     void createOutputImages(VulkanApp* app, uint32_t width, uint32_t height);
@@ -245,7 +283,29 @@ private:
     VkDescriptorSet rtSets_[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkDescriptorSet getRTSet() const { return rtSets_[0]; }
     VkDescriptorSet getRTSetForFrame(uint32_t f) const { return rtSets_[f % 3]; }
-    Buffer paramsBuffer_{};
+    Buffer paramsBuffers_[kParamFrames]{};
+
+    // ── Real scene-geometry BLAS (reflection rays) ────────────────────────
+    // One geometry per active chunk, referencing the raster mesh's spans in
+    // the shared merged vertex/index buffers. Rebuilt with the proxies when
+    // chunks change; traced with kMaskScene. primBase[i] = first primitive of
+    // geometry i (binary-searched in the shader); meta[i] = average albedo.
+    std::vector<SceneTriGeometry> sceneGeoms_;
+    Buffer sceneBlasBuffer_{};
+    VkAccelerationStructureKHR sceneBlas_ = VK_NULL_HANDLE;
+    VkDeviceAddress sceneBlasAddress_ = 0;
+    Buffer sceneScratch_{};
+    VkDeviceSize sceneScratchSize_ = 0;
+    VkDeviceSize sceneBlasSize_ = 0;
+    Buffer scenePrimBaseBuffer_{};
+    // Per-geometry uvec4 {baseVertex, firstIndex, primBase, 0} so hit shading can
+    // fetch the real triangle attributes (position/normal) from the merged
+    // vertex/index buffers via barycentrics.
+    Buffer sceneGeomInfoBuffer_{};
+    Buffer sceneMetaBuffer_{};
+    uint32_t scenePrimBaseCapacity_ = 0; // in uints
+    uint32_t sceneMetaCapacity_ = 0;     // in vec4s
+    bool sceneBlasDirty_ = false;
 
     // RT pipeline + SBT.
     VkPipeline rtPipeline_ = VK_NULL_HANDLE;

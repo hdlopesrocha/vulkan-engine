@@ -86,8 +86,9 @@ void main() {
         if (rtPayload.data.a < 0.0) {
             reflectValue = vec4(skyR, 0.0); // miss: sky, inline fallback stays
         } else {
-            // Feather coarse hits toward sky so box-size contours never print.
-            reflectValue = vec4(mix(rtPayload.data.rgb, skyR, clamp(rtPayload.coarseF, 0.0, 1.0)), 1.0);
+            // Reflection keeps the proxy hit as-is (no coarse feather): a
+            // mirror must show the scenery even when it is far away.
+            reflectValue = vec4(rtPayload.data.rgb, 1.0);
         }
     }
 

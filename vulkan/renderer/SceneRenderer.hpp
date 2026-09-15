@@ -254,6 +254,11 @@ public:
         glm::vec3 minp = glm::vec3(0.0f);
         glm::vec3 maxp = glm::vec3(0.0f);
         uint32_t materialId = 0;
+        // 4x4 max-height grid over the XZ bounds (row-major, gz*4+gx). Proxy
+        // boxes are emitted per grid cell so secondary rays follow the real
+        // terrain shape instead of one flat box top per chunk; reflection
+        // positions then match the surface to ~cell/4 instead of cell size.
+        std::array<float, 16> hgrid = {};
         // 0-based band rung at publish (0 = frontier/finest). Coarse ancestors
         // (rung > 0) nest over the fine boxes and must be EXCLUDED from the
         // proxy set: their huge flat tops would otherwise dominate refraction
@@ -284,6 +289,33 @@ public:
     // Refresh the RT pipeline's per-slot scene views (water depth + sky).
     // Called at init and on swapchain resize (handles stable otherwise).
     void refreshRTSceneViews(VulkanApp* app);
+
+    // ── Hybrid solid SSR (bindings 19/20) ─────────────────────────────────
+    // main.frag resolves solid reflections against the real rendered scene by
+    // marching the *previous* frame's solid color/depth. Each per-frame main
+    // descriptor set is bound once to the solid views of the slot it does NOT
+    // render into, so the feedback loop (sampling the color attachment being
+    // written) never happens and no per-frame descriptor updates are needed.
+    // The solid pass waits on the previous frame's tlSolid value, so the source
+    // images are complete and visible before the ray march samples them.
+    VkSampler ssrColorSampler = VK_NULL_HANDLE;
+    VkSampler ssrDepthSampler = VK_NULL_HANDLE;
+    glm::mat4 prevViewProj_ = glm::mat4(1.0f);
+    // Last submitted real-geometry span set: chunk re-uploads move the packed
+    // spans even when the proxy bounds/material stay identical, so the scene
+    // BLAS must refresh on span changes, not only on proxy changes.
+    std::vector<IndirectRenderer::RTGeometrySpan> lastSceneSpans_;
+    // Last known LoD band inputs (mirror the raster cull in rebuildProxySet).
+    glm::vec3 lastBandCamPos_ = glm::vec3(0.0f);
+    float lastBandLodBias_ = 8.0f;
+    int lastBandMaxLod_ = 16;
+    void initSSRSamplers(VulkanApp* app);
+    void writeSSRBindings(VulkanApp* app);
+    void destroySSRSamplers(VulkanApp* app);
+    // Bind the merged vertex/index pools (24/25) for real-triangle hit shading.
+    // Must run after IndirectRenderer::initSlots created the buffers (called
+    // from initSlottedMode while the device is idle — no in-flight frames).
+    void writeSceneVertexBindings(VulkanApp* app);
 
     // Query whether a model for the given node is already registered
     bool hasModelForNode(Layer layer, NodeID nid) const;

@@ -411,7 +411,11 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     //   1 = RT pipeline reflection output (GENERAL layout, 1-frame latency)
     //   2 = RT pipeline refraction + thickness output (GENERAL layout)
     //   3 = Sky equirect (RT miss fallback + non-RT path)
-    std::array<VkDescriptorSetLayoutBinding, 4> sceneBindings{};
+    //   4 = Solid pass HDR color (screen-space reflection refinement)
+    //   5 = Solid pass depth (SSR march + occlusion test)
+    //   6 = Vegetation color (reflection lookup — grass/billboards)
+    //   7 = Vegetation depth (front test for the vegetation layer)
+    std::array<VkDescriptorSetLayoutBinding, 8> sceneBindings{};
 
     // Water back-face depth (binding 0) — for water volume thickness.
     // Also sampled by the tessellation evaluation shader (VUID 07988).
@@ -442,8 +446,37 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     sceneBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     sceneBindings[3].pImmutableSamplers = nullptr;
 
-    VkDescriptorBindingFlags bindingFlags[4] = {
-        0, 0, 0, 0
+    // Solid pass HDR color (binding 4) — SSR hit color (linear, pre-tonemap).
+    sceneBindings[4].binding = 4;
+    sceneBindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sceneBindings[4].descriptorCount = 1;
+    sceneBindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[4].pImmutableSamplers = nullptr;
+
+    // Solid pass depth (binding 5) — SSR march target + occlusion test.
+    sceneBindings[5].binding = 5;
+    sceneBindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sceneBindings[5].descriptorCount = 1;
+    sceneBindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[5].pImmutableSamplers = nullptr;
+
+    // Vegetation color (binding 6) — reflection lookup over the grass layer.
+    sceneBindings[6].binding = 6;
+    sceneBindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sceneBindings[6].descriptorCount = 1;
+    sceneBindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[6].pImmutableSamplers = nullptr;
+
+    // Vegetation depth (binding 7) — vegetation is used only when in front of
+    // the reflected hit point.
+    sceneBindings[7].binding = 7;
+    sceneBindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sceneBindings[7].descriptorCount = 1;
+    sceneBindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[7].pImmutableSamplers = nullptr;
+
+    VkDescriptorBindingFlags bindingFlags[8] = {
+        0, 0, 0, 0, 0, 0, 0, 0
     };
 
     DescriptorAllocator descAlloc{device, app};
@@ -806,7 +839,9 @@ void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t 
 void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, uint32_t frameIndex,
                                                VkImageView backFaceDepthView,
                                                VkImageView rtReflectView, VkImageView rtRefractView,
-                                               VkImageView skyView) {
+                                               VkImageView skyView,
+                                               VkImageView solidColorView, VkImageView solidDepthView,
+                                               VkImageView vegColorView, VkImageView vegDepthView) {
     if (ds == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return;
     }
@@ -817,16 +852,19 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
     // Every binding is statically used by water.frag — never leave NULL.
     // Missing RT outputs (unsupported/disabled) bind 1x1 GENERAL dummies
     // (valid flag 0 / thickness -1 → shader takes the sky/inline path);
-    // missing sky binds a 1x1 SHADER_READ dummy.
+    // missing sky binds a 1x1 SHADER_READ dummy. Missing solid targets bind
+    // the same SHADER_READ dummy: depth reads as 1.0 → SSR never hits.
     VkImageView effReflect = (rtReflectView != VK_NULL_HANDLE) ? rtReflectView : dummyRTView_;
     VkImageView effRefract = (rtRefractView != VK_NULL_HANDLE) ? rtRefractView : dummyRTView_;
     VkImageView effSky = (skyView != VK_NULL_HANDLE) ? skyView : dummySkyView_;
+    VkImageView effSolidColor = (solidColorView != VK_NULL_HANDLE) ? solidColorView : dummySkyView_;
+    VkImageView effSolidDepth = (solidDepthView != VK_NULL_HANDLE) ? solidDepthView : dummySkyView_;
     if (backFaceDepthView == VK_NULL_HANDLE || effReflect == VK_NULL_HANDLE ||
         effRefract == VK_NULL_HANDLE || effSky == VK_NULL_HANDLE) {
         return;
     }
 
-    std::array<VkDescriptorImageInfo, 4> imageInfos{};
+    std::array<VkDescriptorImageInfo, 8> imageInfos{};
 
     // Water back-face depth (binding 0). Nearest filtering: no interpolation
     // across geometry edges.
@@ -848,6 +886,28 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
     imageInfos[3].imageView = effSky;
     imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+    // Solid pass color/depth (bindings 4-5): the solid pass ends with both
+    // images in SHADER_READ_ONLY_OPTIMAL (endPass barriers), so SSR samples
+    // them directly. Linear sampler for the color (upscale-safe), nearest for
+    // the depth (no interpolation across silhouettes).
+    imageInfos[4].sampler = linearSampler;
+    imageInfos[4].imageView = effSolidColor;
+    imageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfos[5].sampler = nearestSampler;
+    imageInfos[5].imageView = effSolidDepth;
+    imageInfos[5].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Vegetation color/depth (bindings 6-7). Missing targets bind the 1x1 sky
+    // dummy: its depth reads as 1.0, so the vegetation layer is simply absent.
+    VkImageView effVegColor = (vegColorView != VK_NULL_HANDLE) ? vegColorView : dummySkyView_;
+    VkImageView effVegDepth = (vegDepthView != VK_NULL_HANDLE) ? vegDepthView : dummySkyView_;
+    imageInfos[6].sampler = linearSampler;
+    imageInfos[6].imageView = effVegColor;
+    imageInfos[6].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfos[7].sampler = nearestSampler;
+    imageInfos[7].imageView = effVegDepth;
+    imageInfos[7].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
     // Descriptor-buffer style update: rewrite the bindings unconditionally.
     // No write cache, no set allocation/free, no deferred destruction — the
     // per-frame set is allocated once (see prepareSceneTexturesForFrame) and
@@ -856,7 +916,7 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
     // vkUpdateDescriptorSets below is the fallback until the layout carries
     // VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT.
     DescriptorWriter writer(app->getDevice());
-    for (uint32_t i = 0; i < 4; ++i) {
+    for (uint32_t i = 0; i < 8; ++i) {
         writer.writeImage(ds, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                           imageInfos[i].sampler, imageInfos[i].imageView,
                           imageInfos[i].imageLayout);
@@ -868,7 +928,11 @@ VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint
                                                             VkImageView backFaceDepthView,
                                                             VkImageView rtReflectView,
                                                             VkImageView rtRefractView,
-                                                            VkImageView skyView) {
+                                                            VkImageView skyView,
+                                                            VkImageView solidColorView,
+                                                            VkImageView solidDepthView,
+                                                            VkImageView vegColorView,
+                                                            VkImageView vegDepthView) {
     if (app == nullptr || waterDepthDescriptorPool == VK_NULL_HANDLE ||
         waterDepthDescriptorSetLayout == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return VK_NULL_HANDLE;
@@ -888,7 +952,8 @@ VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint
     }
 
     updateSceneTexturesBinding(app, waterDepthDescriptorSets[frameIndex], frameIndex,
-                               backFaceDepthView, rtReflectView, rtRefractView, skyView);
+                               backFaceDepthView, rtReflectView, rtRefractView, skyView,
+                               solidColorView, solidDepthView, vegColorView, vegDepthView);
     return waterDepthDescriptorSets[frameIndex];
 }
 
@@ -1083,7 +1148,12 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
             wRefl = rtResources_->getReflectionView();
             wRefr = rtResources_->getRefractionView();
         }
-        prepareSceneTexturesForFrame(app, frameIdx, wBack, wRefl, wRefr, skyView);
+        // Non-async path: vegetation targets are not reachable from here
+        // (they belong to the app's frame graph); bind null → dummy (no veg).
+        prepareSceneTexturesForFrame(app, frameIdx, wBack, wRefl, wRefr, skyView,
+                                     solidRenderer_ ? solidRenderer_->getColorView(frameIdx) : VK_NULL_HANDLE,
+                                     solidRenderer_ ? solidRenderer_->getDepthView(frameIdx) : VK_NULL_HANDLE,
+                                     VK_NULL_HANDLE, VK_NULL_HANDLE);
     }
 
     // Scene textures were already bound before the async back-face task was

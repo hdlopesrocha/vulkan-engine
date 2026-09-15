@@ -13,6 +13,7 @@
 #include "RayTracingResources.hpp"
 #include "RendererUtils.hpp"
 #include "../VulkanApp.hpp"
+#include "../../math/Vertex.hpp"
 
 #include <array>
 #include <chrono>
@@ -78,16 +79,27 @@ void RayTracingResources::cleanup(VulkanApp* app) {
         if (tlas_ != VK_NULL_HANDLE) { app->fpDestroyAccelerationStructureKHR(app->getDevice(), tlas_, nullptr); tlas_ = VK_NULL_HANDLE; }
     }
     if (app) {
+        if (sceneBlas_ != VK_NULL_HANDLE) {
+            app->fpDestroyAccelerationStructureKHR(app->getDevice(), sceneBlas_, nullptr);
+            sceneBlas_ = VK_NULL_HANDLE;
+        }
+        sceneBlasAddress_ = 0;
         if (blasBuffer_.buffer) app->destroyBuffer(blasBuffer_);
         if (blasWaterBuffer_.buffer) app->destroyBuffer(blasWaterBuffer_);
+        if (sceneBlasBuffer_.buffer) app->destroyBuffer(sceneBlasBuffer_);
         if (tlasBuffer_.buffer) app->destroyBuffer(tlasBuffer_);
         if (blasScratch_.buffer) app->destroyBuffer(blasScratch_);
         if (waterScratch_.buffer) app->destroyBuffer(waterScratch_);
+        if (sceneScratch_.buffer) app->destroyBuffer(sceneScratch_);
         if (tlasScratch_.buffer) app->destroyBuffer(tlasScratch_);
         if (aabbBuffer_.buffer) app->destroyBuffer(aabbBuffer_);
         if (metaBuffer_.buffer) app->destroyBuffer(metaBuffer_);
+        if (scenePrimBaseBuffer_.buffer) app->destroyBuffer(scenePrimBaseBuffer_);
+        if (sceneGeomInfoBuffer_.buffer) app->destroyBuffer(sceneGeomInfoBuffer_);
+        if (sceneMetaBuffer_.buffer) app->destroyBuffer(sceneMetaBuffer_);
         if (tlasInstanceBuffer_.buffer) app->destroyBuffer(tlasInstanceBuffer_);
-        if (paramsBuffer_.buffer) app->destroyBuffer(paramsBuffer_);
+        for (auto& pb : paramsBuffers_)
+            if (pb.buffer) app->destroyBuffer(pb);
         if (sbtBuffer_.buffer) app->destroyBuffer(sbtBuffer_);
         if (rtSetPool_ != VK_NULL_HANDLE) {
             app->resources.removeDescriptorPool(rtSetPool_);
@@ -215,7 +227,7 @@ void RayTracingResources::writeRTSet(VulkanApp* app) {
         refractImg.sampler = VK_NULL_HANDLE;
         refractImg.imageView = refractView_;
         refractImg.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        VkDescriptorBufferInfo paramsInfo{paramsBuffer_.buffer, 0, sizeof(RayTracingParams)};
+        VkDescriptorBufferInfo paramsInfo{paramsBuffers_[slot].buffer, 0, sizeof(RayTracingParams)};
         VkDescriptorBufferInfo metaInfo{metaBuffer_.buffer, 0, sizeof(RTProxyMeta) * kMaxProxies};
         // NOTE: water-depth (5) + sky (6) views are per-slot scene targets owned
         // by WaterRenderer/SkyRenderer; setSceneViews() writes them (init +
@@ -339,7 +351,7 @@ void RayTracingResources::createProxyBuffers(VulkanApp* app) {
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    tlasInstanceBuffer_ = app->createBuffer(2 * sizeof(VkAccelerationStructureInstanceKHR) + 16,
+    tlasInstanceBuffer_ = app->createBuffer(3 * sizeof(VkAccelerationStructureInstanceKHR) + 16,
         VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
         | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -351,11 +363,14 @@ void RayTracingResources::createProxyBuffers(VulkanApp* app) {
         tlasInstanceAddress_ = rawInst + instanceDelta_;
     }
 
-    paramsBuffer_ = app->createBuffer(sizeof(RayTracingParams),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    RayTracingParams defaults{};
-    memcpy(paramsBuffer_.mappedData, &defaults, sizeof(defaults));
+    for (uint32_t f = 0; f < kParamFrames; ++f) {
+        paramsBuffers_[f] = app->createBuffer(sizeof(RayTracingParams),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        RayTracingParams defaults{};
+        if (paramsBuffers_[f].mappedData)
+            memcpy(paramsBuffers_[f].mappedData, &defaults, sizeof(defaults));
+    }
 }
 
 void RayTracingResources::createAccelStructures(VulkanApp* app) {
@@ -459,11 +474,13 @@ void RayTracingResources::createAccelStructures(VulkanApp* app) {
     blasWaterAddress_ = app->fpGetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
     waterScratchAligned_ = waterScratchAligned;
 
-    // TLAS: two instances (solids mask 0x01, water mask 0x02), identity,
-    // cull disabled. Written at the aligned offset (see instanceDelta_).
+    // TLAS: three instances (solids mask 0x01, water mask 0x02, real scene
+    // triangles mask 0x04), identity, cull disabled. Written at the aligned
+    // offset (see instanceDelta_). Instance 2 (scene) is only added to the
+    // build once its BLAS exists; the TLAS is sized for three regardless.
     auto* inst = reinterpret_cast<VkAccelerationStructureInstanceKHR*>(
         static_cast<char*>(tlasInstanceBuffer_.mappedData) + instanceDelta_);
-    memset(inst, 0, 2 * sizeof(*inst));
+    memset(inst, 0, 3 * sizeof(*inst));
     inst[0].transform.matrix[0][0] = 1.0f;
     inst[0].transform.matrix[1][1] = 1.0f;
     inst[0].transform.matrix[2][2] = 1.0f;
@@ -476,6 +493,25 @@ void RayTracingResources::createAccelStructures(VulkanApp* app) {
     inst[1].instanceCustomIndex = 1;
     inst[1].mask = kMaskWater;
     inst[1].accelerationStructureReference = blasWaterAddress_;
+    inst[2] = inst[0];
+    inst[2].instanceCustomIndex = 2;
+    inst[2].mask = kMaskScene;
+    inst[2].accelerationStructureReference = 0; // patched on the first scene build
+
+    // Shader lookup buffers for the scene instance (preallocated, no resize):
+    // [0] = geometry count, [1..N] = first primitive of each geometry, and one
+    // vec4 average albedo per geometry.
+    scenePrimBaseBuffer_ = app->createBuffer((kMaxSceneGeoms + 1) * sizeof(uint32_t),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    sceneMetaBuffer_ = app->createBuffer(kMaxSceneGeoms * sizeof(glm::vec4),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (scenePrimBaseBuffer_.mappedData)
+        static_cast<uint32_t*>(scenePrimBaseBuffer_.mappedData)[0] = 0; // empty
+    sceneGeomInfoBuffer_ = app->createBuffer(kMaxSceneGeoms * sizeof(glm::uvec4),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     VkAccelerationStructureGeometryInstancesDataKHR instances{};
     instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
@@ -491,11 +527,11 @@ void RayTracingResources::createAccelStructures(VulkanApp* app) {
     tlasBuild.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     tlasBuild.geometryCount = 1;
     tlasBuild.pGeometries = &tlasGeom;
-    uint32_t twoInstances = 2;
+    uint32_t maxInstances = 3;
     VkAccelerationStructureBuildSizesInfoKHR tlasSizes{};
     tlasSizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
     app->fpGetAccelerationStructureBuildSizesKHR(device,
-        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &tlasBuild, &twoInstances, &tlasSizes);
+        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &tlasBuild, &maxInstances, &tlasSizes);
     tlasBuffer_ = app->createBuffer(tlasSizes.accelerationStructureSize, asUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     tlasScratch_ = app->createBuffer(std::max(tlasSizes.buildScratchSize, VkDeviceSize(1)) + scratchAlign_,
@@ -603,6 +639,140 @@ void RayTracingResources::setProxies(const std::vector<RTProxyBox>& solids,
     activeSolidCount_ = ns;
     activeWaterCount_ = nw;
     dirty_ = true;
+}
+
+void RayTracingResources::setSceneGeometry(std::vector<SceneTriGeometry> geoms) {
+    if (!supported_) return;
+    if (geoms.size() > kMaxSceneGeoms) geoms.resize(kMaxSceneGeoms);
+    sceneGeoms_ = std::move(geoms);
+    sceneBlasDirty_ = true;
+    dirty_ = true; // force the throttled build path even if the proxies matched
+}
+
+bool RayTracingResources::recordSceneBlas(VulkanApp* app, VkCommandBuffer cmd) {
+    if (!sceneBlasDirty_) return false;
+    sceneBlasDirty_ = false;
+    if (sceneGeoms_.empty()) return false;
+    VkDevice device = app->getDevice();
+    const uint32_t n = uint32_t(sceneGeoms_.size());
+
+    // CPU-side geometry + range arrays (one geometry per active chunk).
+    std::vector<VkAccelerationStructureGeometryKHR> geoms(n);
+    std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges(n);
+    std::vector<uint32_t> primCounts(n);
+    uint32_t* primBase = scenePrimBaseBuffer_.mappedData
+        ? static_cast<uint32_t*>(scenePrimBaseBuffer_.mappedData) : nullptr;
+    glm::uvec4* geomInfo = sceneGeomInfoBuffer_.mappedData
+        ? static_cast<glm::uvec4*>(sceneGeomInfoBuffer_.mappedData) : nullptr;
+    glm::vec4* meta = sceneMetaBuffer_.mappedData
+        ? static_cast<glm::vec4*>(sceneMetaBuffer_.mappedData) : nullptr;
+    uint32_t prim = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        const SceneTriGeometry& s = sceneGeoms_[i];
+        VkAccelerationStructureGeometryTrianglesDataKHR t{};
+        t.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+        t.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+        t.vertexData.deviceAddress = s.vertexAddress;
+        t.vertexStride = sizeof(Vertex);
+        t.maxVertex = s.vertexCount > 0 ? s.vertexCount - 1 : 0;
+        t.indexType = VK_INDEX_TYPE_UINT32;
+        t.indexData.deviceAddress = s.indexAddress;
+        VkAccelerationStructureGeometryKHR g{};
+        g.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        g.geometry.triangles = t;
+        g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        geoms[i] = g;
+        const uint32_t pc = s.indexCount / 3;
+        ranges[i].primitiveCount = pc;
+        ranges[i].primitiveOffset = 0;
+        ranges[i].firstVertex = 0;
+        ranges[i].transformOffset = 0;
+        primCounts[i] = pc;
+        if (primBase) primBase[1 + i] = prim;
+        if (geomInfo) geomInfo[i] = glm::uvec4(s.baseVertex, s.firstIndex, prim, 0u);
+        if (meta) meta[i] = s.albedo;
+        prim += pc;
+    }
+    if (primBase) primBase[0] = n;
+    if (prim == 0) return false;
+
+    VkAccelerationStructureBuildGeometryInfoKHR bi{};
+    bi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    bi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    bi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    bi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    bi.geometryCount = n;
+    bi.pGeometries = geoms.data();
+
+    VkAccelerationStructureBuildSizesInfoKHR sizes{};
+    sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    app->fpGetAccelerationStructureBuildSizesKHR(device,
+        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bi, primCounts.data(), &sizes);
+
+    const VkBufferUsageFlags asUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
+        | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    if (sceneBlas_ == VK_NULL_HANDLE || sizes.accelerationStructureSize > sceneBlasSize_) {
+        // Retire the previous AS/buffer only after all in-flight submissions
+        // complete: frames recorded earlier still reference the old TLAS, whose
+        // instances point at the old BLAS address. Destroying it immediately
+        // left those frames tracing freed memory — visible as corrupted
+        // reflection geometry/stipple right after a rebuild.
+        if (sceneBlas_ != VK_NULL_HANDLE || sceneBlasBuffer_.buffer) {
+            VkAccelerationStructureKHR oldAs = sceneBlas_;
+            Buffer oldBuf = sceneBlasBuffer_;
+            VulkanApp* cap = app;
+            app->deferDestroyUntilAllPending([cap, oldAs, oldBuf]() mutable {
+                if (oldAs != VK_NULL_HANDLE)
+                    cap->fpDestroyAccelerationStructureKHR(cap->getDevice(), oldAs, nullptr);
+                if (oldBuf.buffer) cap->destroyBuffer(oldBuf);
+            });
+            sceneBlas_ = VK_NULL_HANDLE;
+            sceneBlasBuffer_ = {};
+        }
+        sceneBlasBuffer_ = app->createBuffer(sizes.accelerationStructureSize, asUsage,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VkAccelerationStructureCreateInfoKHR ci{};
+        ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+        ci.buffer = sceneBlasBuffer_.buffer;
+        ci.size = sizes.accelerationStructureSize;
+        ci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        if (app->fpCreateAccelerationStructureKHR(device, &ci, nullptr, &sceneBlas_) != VK_SUCCESS)
+            throw std::runtime_error("vkCreateAccelerationStructureKHR (scene BLAS) failed");
+        VkAccelerationStructureDeviceAddressInfoKHR addrInfo{};
+        addrInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+        addrInfo.accelerationStructure = sceneBlas_;
+        sceneBlasAddress_ = app->fpGetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
+        sceneBlasSize_ = sizes.accelerationStructureSize;
+    }
+    if (sceneScratch_.buffer == VK_NULL_HANDLE ||
+        sizes.buildScratchSize + scratchAlign_ > sceneScratchSize_) {
+        // Same deferred retire as the AS buffer: an in-flight build may still
+        // be using the old scratch.
+        if (sceneScratch_.buffer) {
+            Buffer oldScratch = sceneScratch_;
+            VulkanApp* cap = app;
+            app->deferDestroyUntilAllPending([cap, oldScratch]() mutable {
+                if (oldScratch.buffer) cap->destroyBuffer(oldScratch);
+            });
+            sceneScratch_ = {};
+        }
+        sceneScratch_ = app->createBuffer(sizes.buildScratchSize + scratchAlign_,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        sceneScratchSize_ = sizes.buildScratchSize + scratchAlign_;
+    }
+    VkBufferDeviceAddressInfo scratchAddrQ{};
+    scratchAddrQ.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    scratchAddrQ.buffer = sceneScratch_.buffer;
+    VkDeviceAddress scratchAddr = alignUpAddr(
+        vkGetBufferDeviceAddress(device, &scratchAddrQ), scratchAlign_);
+
+    bi.dstAccelerationStructure = sceneBlas_;
+    bi.scratchData.deviceAddress = scratchAddr;
+    const VkAccelerationStructureBuildRangeInfoKHR* pr = ranges.data();
+    app->fpCmdBuildAccelerationStructuresKHR(cmd, 1, &bi, &pr);
+    return true;
 }
 
 bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
@@ -721,13 +891,18 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
         // via three entries — written out explicitly for clarity).
         VkDependencyInfo dep{};
         dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        VkBufferMemoryBarrier2 barriers[3]{barrier, barrier, barrier};
+        VkBufferMemoryBarrier2 barriers[6]{barrier, barrier, barrier, barrier, barrier, barrier};
         // Ranges cover the alignment slack (writes land at +delta, delta < 16)
-        // and both TLAS instances.
+        // and all TLAS instances.
         barriers[0].buffer = aabbBuffer_.buffer; barriers[0].offset = 0; barriers[0].size = vertBytes + idxBytes + 16;
         barriers[1].buffer = metaBuffer_.buffer; barriers[1].offset = 0; barriers[1].size = sizeof(RTProxyMeta) * kMaxProxies;
-        barriers[2].buffer = tlasInstanceBuffer_.buffer; barriers[2].offset = 0; barriers[2].size = 2 * sizeof(VkAccelerationStructureInstanceKHR) + 16;
-        dep.bufferMemoryBarrierCount = 3;
+        barriers[2].buffer = tlasInstanceBuffer_.buffer; barriers[2].offset = 0; barriers[2].size = 3 * sizeof(VkAccelerationStructureInstanceKHR) + 16;
+        // Real-scene lookup buffers (host-written prim bases + per-chunk albedo)
+        // are read by the fragment shader after the build.
+        barriers[3].buffer = scenePrimBaseBuffer_.buffer; barriers[3].offset = 0; barriers[3].size = VK_WHOLE_SIZE;
+        barriers[4].buffer = sceneMetaBuffer_.buffer; barriers[4].offset = 0; barriers[4].size = VK_WHOLE_SIZE;
+        barriers[5].buffer = sceneGeomInfoBuffer_.buffer; barriers[5].offset = 0; barriers[5].size = VK_WHOLE_SIZE;
+        dep.bufferMemoryBarrierCount = 6;
         dep.pBufferMemoryBarriers = barriers;
         vkCmdPipelineBarrier2(cmd, &dep);
     }
@@ -791,9 +966,19 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
         VkAccelerationStructureGeometryKHR geom = makeGeom(tris);
         buildBlas(blasWater_, waterScratchAligned_, geom, kMaxWaterProxies * kTrisPerBox);
     }
+    // 3b. Real scene-geometry BLAS (exact chunk triangles for reflection rays).
+    // Built together with the proxies when chunks change.
+    const bool sceneBuilt = recordSceneBlas(app, cmd);
+    if (sceneBuilt) {
+        static uint32_t sceneBuildCount = 0;
+        printf("[HybridRT] scene BLAS rebuild #%u: %zu chunks, %.2f MB\n",
+            ++sceneBuildCount, sceneGeoms_.size(),
+            double(sceneBlasSize_) / (1024.0 * 1024.0));
+        fflush(stdout);
+    }
 
-    // 4. BLAS writes -> TLAS read (both BLASes keep stable device addresses, so
-    // the TLAS stays valid; re-recording the TLAS build is cheap (2 instances)
+    // 4. BLAS writes -> TLAS read (all BLASes keep stable device addresses, so
+    // the TLAS stays valid; re-recording the TLAS build is cheap (≤3 instances)
     // and keeps validation simple).
     {
         VkMemoryBarrier2 barrier{};
@@ -808,13 +993,17 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
         dep.pMemoryBarriers = &barrier;
         vkCmdPipelineBarrier2(cmd, &dep);
     }
-    // Refresh both instances' BLAS references (stable addresses, cheap) then
-    // build TLAS.
+    // Refresh the BLAS references (stable addresses, cheap) then build TLAS.
+    // The real-scene instance is only added once its BLAS exists, so the TLAS
+    // never references a null acceleration structure.
     {
         auto* inst = reinterpret_cast<VkAccelerationStructureInstanceKHR*>(
             static_cast<char*>(tlasInstanceBuffer_.mappedData) + instanceDelta_);
         inst[0].accelerationStructureReference = blasAddress_;
         inst[1].accelerationStructureReference = blasWaterAddress_;
+        const bool haveScene = (sceneBlas_ != VK_NULL_HANDLE && sceneBlasAddress_ != 0);
+        if (haveScene)
+            inst[2].accelerationStructureReference = sceneBlasAddress_;
         VkAccelerationStructureGeometryInstancesDataKHR instances{};
         instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
         instances.arrayOfPointers = VK_FALSE;
@@ -834,7 +1023,7 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
         tlasBuild.pGeometries = &tlasGeom;
         tlasBuild.scratchData.deviceAddress = tlasScratchAligned_;
         VkAccelerationStructureBuildRangeInfoKHR trange{};
-        trange.primitiveCount = 2;
+        trange.primitiveCount = haveScene ? 3u : 2u;
         const VkAccelerationStructureBuildRangeInfoKHR* pTrange = &trange;
         app->fpCmdBuildAccelerationStructuresKHR(cmd, 1, &tlasBuild, &pTrange);
     }
@@ -859,9 +1048,11 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
     return true;
 }
 
-void RayTracingResources::updateParams(const RayTracingParams& p) {
-    if (!supported_ || paramsBuffer_.mappedData == nullptr) return;
-    memcpy(paramsBuffer_.mappedData, &p, sizeof(p));
+void RayTracingResources::updateParams(const RayTracingParams& p, uint32_t frameIndex) {
+    if (!supported_) return;
+    Buffer& slot = paramsBuffers_[frameIndex % kParamFrames];
+    if (slot.mappedData == nullptr) return;
+    memcpy(slot.mappedData, &p, sizeof(p));
 }
 
 // ── Water RT pipeline (rgen/miss/chit) + SBT ────────────────────────────
@@ -996,12 +1187,13 @@ void RayTracingResources::dispatchWaterRT(VulkanApp* app, VkCommandBuffer cmd, u
                                           const glm::mat4& invViewProj, const glm::vec3& viewPos) {
     if (!isPipelineReady() || !tlasBuilt_ || cmd == VK_NULL_HANDLE) return;
     if (reflectImage_ == VK_NULL_HANDLE || refractImage_ == VK_NULL_HANDLE) return;
-    // Stream per-dispatch view state into the shared params UBO (handle stable;
-    // contents memcpy, no descriptor update). Toggles/distances/water come from
-    // the caller's last updateParams(); here we only refresh the view + output
-    // size (resize-safe: dispatch uses the live image extent).
-    if (paramsBuffer_.mappedData) {
-        auto* p = static_cast<RayTracingParams*>(paramsBuffer_.mappedData);
+    // Stream per-dispatch view state into this frame's params UBO (handle
+    // stable; contents memcpy, no descriptor update). Toggles/distances/water
+    // come from the caller's last updateParams(); here we only refresh the
+    // view + output size (resize-safe: dispatch uses the live image extent).
+    Buffer& paramSlot = paramsBuffers_[frameIdx % kParamFrames];
+    if (paramSlot.mappedData) {
+        auto* p = static_cast<RayTracingParams*>(paramSlot.mappedData);
         p->invViewProj = invViewProj;
         p->viewPos = glm::vec4(viewPos, 1.0f);
         p->rtResolution = glm::vec4(float(outWidth_), float(outHeight_),

@@ -44,24 +44,40 @@ layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex; // back-face d
 layout(set = 2, binding = 1) uniform sampler2D rtReflectTex;   // RT pipeline reflection (rgb, a=valid)
 layout(set = 2, binding = 2) uniform sampler2D rtRefractTex;   // RT pipeline refraction (rgb, a=thickness or -1)
 layout(set = 2, binding = 3) uniform sampler2D skyEquirectTex; // sky for RT miss/fallback
+// Screen-space reflection refinement: the solid pass HDR color/depth. The RT
+// proxy reflection is precise for on-screen scenery, blocky elsewhere; SSR
+// resolves the near field per pixel and the proxy result fills the rest.
+layout(set = 2, binding = 4) uniform sampler2D solidSceneColorTex;
+layout(set = 2, binding = 5) uniform sampler2D solidSceneDepthTex;
+// Vegetation layer (grass billboards / impostors): reflections must show the
+// grass the way the composite does, otherwise grass-covered hills mirror as
+// bare dirt. Binding 6 = color (alpha = coverage), 7 = depth.
+layout(set = 2, binding = 6) uniform sampler2D vegColorTex;
+layout(set = 2, binding = 7) uniform sampler2D vegDepthTex;
 
 #ifdef RT_ENABLED
 #include "includes/rt_params.glsl"
 layout(set = 0, binding = 14) uniform accelerationStructureEXT rtTlas;
 layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rt; };
 layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]; };
+// Real scene-geometry reflection lookups (see main.frag): rtScenePrimBase[0] =
+// geometry count, [1..N] = first primitive per geometry; rtSceneAlbedo = chunk
+// average colors.
+layout(set = 0, binding = 21) readonly buffer RTScenePrimBase { uint rtScenePrimBase[]; };
+layout(set = 0, binding = 22) readonly buffer RTSceneAlbedo { vec4 rtSceneAlbedo[]; };
+layout(set = 0, binding = 23) readonly buffer RTSceneGeomInfo { uvec4 rtSceneGeomInfo[]; };
+layout(set = 0, binding = 24) readonly buffer RTSceneVerts { float rtSceneVerts[]; };
+layout(set = 0, binding = 25) readonly buffer RTSceneIndices { uint rtSceneIndices[]; };
+#include "includes/rt_scene_sample.glsl"
 
-// Trace one water secondary ray through the proxy TLAS.
-// refraction=true: returns rgb = shaded hit (or sky on miss), a = hitT
-//   (capped at thickCap, feathered toward deep for coarse boxes) or
-//   RT_DEEP_WATER on miss (deep water).
-// refraction=false: returns rgb = shaded hit feathered toward sky for coarse
-//   boxes (or sky on miss/coarse); a is unused by the reflection consumer
-//   (pass thickCap 0.0).
+// Trace one water secondary ray.
+// refraction=true: rays trace the proxy volumes (the boxes are the thickness
+//   reference); returns rgb = shaded hit (or sky on miss), a = hitT (capped at
+//   thickCap, feathered toward deep for coarse boxes) or RT_DEEP_WATER on miss.
+// refraction=false: rays trace the real chunk triangles (scene instance) so
+//   mirror positions match the scene; returns rgb = shaded hit (or sky on
+//   miss) with a = 1 on a hit, 0 on a miss.
 // Macro shadows stay CSM-owned: hits get ambient + sun diffuse only.
-// Water-originated rays trace with the solid-only mask: the water surface
-// itself is not in the solid BLAS (origins, never targets), and the water
-// BLAS is skipped to avoid self-hits.
 vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thickCap) {
     rayQueryEXT rq;
     // Refraction rays start AT the water surface and go down: tMin must be
@@ -73,7 +89,8 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // above the surface at the call site). Water is never a ray target (solid
     // mask), so no self-hit risk for refraction.
     float tMin = refraction ? 0.01 : 0.05;
-    rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID,
+    const uint rayMask = refraction ? RT_RAY_MASK_SOLID : RT_RAY_MASK_SCENE;
+    rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, rayMask,
         origin, tMin, dir, tMax);
     while (rayQueryProceedEXT(rq)) {}
     // Explicit LOD: reachable under per-fragment control flow (pipe validity
@@ -81,17 +98,108 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // has undefined derivatives.
     vec3 sky = textureLod(skyEquirectTex, rtDirToEquirectUV(normalize(dir)), 0.0).rgb;
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
-        // Deep-water marker (refraction) or plain sky (reflection).
-        return refraction ? vec4(sky, RT_DEEP_WATER) : vec4(sky, -1.0);
+        // Deep-water marker (refraction) or plain sky (reflection miss).
+        return refraction ? vec4(sky, RT_DEEP_WATER) : vec4(sky, 0.0);
     }
     float hitT = rayQueryGetIntersectionTEXT(rq, true);
+    vec3 hitPos = origin + dir * hitT;
+
+    if (!refraction &&
+        rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) == RT_SCENE_INSTANCE) {
+        // Real triangle hit: shade with the owning chunk's average albedo.
+        const uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
+        const uint n = rtScenePrimBase[0];
+        uint lo = 0u, hi = n;
+        while (lo + 1u < hi) {
+            uint mid = (lo + hi) >> 1u;
+            if (rtScenePrimBase[1u + mid] <= prim) lo = mid; else hi = mid;
+        }
+        // Screen-space color lookup FIRST: sample this frame's solid render at
+        // the reflected hit point so the mirror shows the terrain exactly as
+        // it appears on screen (mixed ground cover, shadows, detail) instead
+        // of the chunk's single dominant-material sample (a flat dirt blob).
+        // The water pass runs after the solid pass, so the targets are current.
+        {
+            const float nearP = ubo.passParams.z;
+            const float farP = ubo.passParams.w;
+            vec4 hc = ubo.invViewProjection * vec4(hitPos, 1.0);
+            if (hc.w > 0.001) {
+                vec2 huv = hc.xy / hc.w * 0.5 + 0.5;
+                if (huv.x >= 0.0 && huv.x <= 1.0 && huv.y >= 0.0 && huv.y <= 1.0) {
+                    float hd = textureLod(solidSceneDepthTex, huv, 0.0).r;
+                    if (hd < 1.0) {
+                        float sceneEye = (nearP * farP) / (farP - hd * (farP - nearP));
+                        if (abs(hc.w - sceneEye) < max(2.0, sceneEye * 0.02)) {
+                            vec3 hitColor = textureLod(solidSceneColorTex, huv, 0.0).rgb;
+                            // Composite the vegetation layer exactly like
+                            // postprocess.frag: use it when it sits in front of
+                            // the reflected surface (else grass-covered hills
+                            // would mirror as bare terrain).
+                            float hitNdcZ = hc.z / hc.w;
+                            float vegD = textureLod(vegDepthTex, huv, 0.0).r;
+                            vec4 vegC = textureLod(vegColorTex, huv, 0.0);
+                            if (vegC.a > 0.0 && !(hitNdcZ < vegD)) {
+                                hitColor = mix(hitColor, vegC.rgb, vegC.a);
+                            }
+                            return vec4(hitColor, 1.0);
+                        }
+                    }
+                }
+            }
+        }
+        // Off-screen fallback: real interpolated triangle normal (see
+        // main.frag) for relief and correct shading; albedo is the triplanar
+        // sample at the true hit position, blended to the chunk average with
+        // distance.
+        uvec4 gi = rtSceneGeomInfo[lo];
+        uint localPrim = prim - rtScenePrimBase[1u + lo];
+        const uint kVertStride = 16u;
+        uint i0 = rtSceneIndices[gi.y + localPrim * 3u + 0u] + gi.x;
+        uint i1 = rtSceneIndices[gi.y + localPrim * 3u + 1u] + gi.x;
+        uint i2 = rtSceneIndices[gi.y + localPrim * 3u + 2u] + gi.x;
+        vec3 n0 = vec3(rtSceneVerts[i0 * kVertStride + 8u],
+                       rtSceneVerts[i0 * kVertStride + 9u],
+                       rtSceneVerts[i0 * kVertStride + 10u]);
+        vec3 n1 = vec3(rtSceneVerts[i1 * kVertStride + 8u],
+                       rtSceneVerts[i1 * kVertStride + 9u],
+                       rtSceneVerts[i1 * kVertStride + 10u]);
+        vec3 n2 = vec3(rtSceneVerts[i2 * kVertStride + 8u],
+                       rtSceneVerts[i2 * kVertStride + 9u],
+                       rtSceneVerts[i2 * kVertStride + 10u]);
+        vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+        vec3 hitN = normalize(n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y);
+        if (dot(hitN, dir) > 0.0) hitN = -hitN;
+        int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
+        // Real painted material at this triangle (Vertex float offset 11 =
+        // brushIndex). The proxy registry only knows the chunk's DOMINANT
+        // brush, which loses the ground-cover mix painted per vertex — the
+        // main source of "wrong textures" in reflections.
+        // brushIndex is an int stored in the float-typed vertex pool: read its
+        // bit pattern (reading it as a float yields a denormal, decoding to 0).
+        const int matId = clamp(floatBitsToInt(rtSceneVerts[i0 * kVertStride + 11u]), 0, maxLayer);
+        // Exact raster texture lookup: the three corner materials are
+        // compressed into unique slots and blended by the hit barycentrics
+        // (main.tesc + main.frag). This is what fixes "dirt where grass
+        // should be" at material boundaries inside triangles.
+        vec3 albedo = rtSceneSampleReflectionAlbedo(i0, i1, i2, bary, hitPos, hitN, maxLayer);
+        // Full shading for the reflected hit: real texture albedo, the real
+        // interpolated normal, sun diffuse (CSM shadowed) + sky ambient — the
+        // mirror must show lit scenery, not a flat fill.
+        vec3 toSun = normalize(rt.sunDir.xyz);
+        float ndl = max(dot(hitN, toSun), 0.0);
+        float hitShadow = ShadowCalculation(
+            ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
+        vec3 color = albedo * (rt.sunColor.rgb * ndl * (1.0 - hitShadow)
+                               + vec3(0.09, 0.12, 0.15));
+        return vec4(color, 1.0);
+    }
+
     uint boxIdx = rtBoxIndex(uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)),
                              rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
     RTProxyMetaGLSL meta = rtMetas[boxIdx];
     // Coarse boxes cannot resolve shallow detail (same rule as rchit): feather
     // toward deep/sky so box-size contours never print as razor lines.
     float f = rtCoarseFeather(meta.extra.x, rt.water.z);
-    vec3 hitPos = origin + dir * hitT;
     bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
     vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz, meta.maxAndFlags.xyz, exiting);
     float ndl = max(dot(boxN, normalize(rt.sunDir.xyz)), 0.0);
@@ -110,10 +218,15 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // texture() has undefined derivatives. LOD from hit distance is stable.
     float hitLod = clamp(log2(1.0 + hitT * 0.02), 0.0, 4.0);
     vec3 hitAlbedo = computeTriplanarAlbedoLod(hitPos, triW, hitMat, boxN, hitLod);
+    // Distant proxy hits: triplanar LOD sampling reaches minified mips that
+    // alias into stipple on far surfaces. Blend to the proxy's averaged albedo
+    // with distance so far reflections/refractions stay smooth.
+    hitAlbedo = mix(hitAlbedo, meta.albedoRough.rgb,
+                    clamp((hitT - 80.0) / 320.0, 0.0, 1.0));
     vec3 color = hitAlbedo * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
     if (!refraction) {
-        // Reflection ignores thickness: feather coarse hits toward sky.
-        return vec4(mix(color, sky, f), -1.0);
+        // Proxy fallback (only reached if the scene instance had no triangle).
+        return vec4(color, 1.0);
     }
     // Cap the reported underwater length at the per-layer thickness cap
     // (Beer-Lambert guard), then feather coarse hits toward deep thickness.
@@ -135,6 +248,62 @@ float linearizeDepth(float depth) {
     float nearPlane = ubo.passParams.z;
     float farPlane  = ubo.passParams.w;
     return (nearPlane * farPlane) / (farPlane - depth * (farPlane - nearPlane));
+}
+
+// Screen-space reflection march over the solid pass depth (set 2, binding 5).
+// Returns hit color in rgb and a confidence in a (0 = no usable hit). The ray
+// is projected with the camera inverse view-projection (the water pass runs
+// after the solid pass, so this frame's targets are current). Marching front
+// to back, the first depth crossing is the first real intersection, so any
+// crossing counts as a hit and a binary search refines it — this is
+// step-size independent, unlike a thin thickness window. Covers up to ~2 km
+// so distant mirrors (the polished spheres) reflect on-screen scenery at the
+// right positions instead of the flat proxy boxes. `eyeDir` is the unit
+// vector from the surface to the camera: rays nearly tangent to the view
+// direction are where screen-space marching is least reliable, so they fade.
+vec4 traceSSR(vec3 origin, vec3 dir, vec3 eyeDir) {
+    float nearP = ubo.passParams.z;
+    float farP  = ubo.passParams.w;
+    float facing = clamp(abs(dot(dir, eyeDir)), 0.0, 1.0);
+    float prevT = 0.0;
+    float t = 0.25;
+    for (int i = 0; i < 64; ++i) {
+        // Near field: 1 m steps (thin silhouettes); far field: 13% geometric
+        // growth so the remaining steps reach ~4 km without huge near steps.
+        t += (i < 20) ? 1.0 : max(2.0, t * 0.13);
+        vec3 P = origin + dir * t;
+        vec4 clip = ubo.invViewProjection * vec4(P, 1.0);
+        if (clip.w <= 0.001 || clip.w > farP * 2.0) break;
+        vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
+        float d = textureLod(solidSceneDepthTex, uv, 0.0).r;
+        if (d < 1.0) {
+            float sceneEye = (nearP * farP) / (farP - d * (farP - nearP));
+            float rayEye = clip.w; // GLM perspective: clip.w == eye depth
+            if (rayEye > sceneEye + 0.05) {
+                // First crossing: refine with a binary search (5 iterations).
+                float lo = prevT, hi = t;
+                for (int j = 0; j < 5; ++j) {
+                    float mid = 0.5 * (lo + hi);
+                    vec4 cm = ubo.invViewProjection * vec4(origin + dir * mid, 1.0);
+                    vec2 uvm = cm.xy / cm.w * 0.5 + 0.5;
+                    float dm = textureLod(solidSceneDepthTex, uvm, 0.0).r;
+                    float em = (nearP * farP) / (farP - dm * (farP - nearP));
+                    if (cm.w > em) { hi = mid; uv = uvm; rayEye = cm.w; sceneEye = em; }
+                    else lo = mid;
+                }
+                float edge = smoothstep(0.0, 0.06, uv.x) * smoothstep(0.0, 0.06, 1.0 - uv.x)
+                           * smoothstep(0.0, 0.06, uv.y) * smoothstep(0.0, 0.06, 1.0 - uv.y);
+                // Crossings further behind the surface are less certain
+                // (ray nearly parallel to it): soften instead of hard-cutting.
+                float gapFade = 1.0 - clamp((rayEye - sceneEye) / max(1.0, sceneEye * 0.25), 0.0, 0.5);
+                return vec4(textureLod(solidSceneColorTex, uv, 0.0).rgb,
+                            edge * gapFade * smoothstep(0.03, 0.35, facing));
+            }
+        }
+        prevT = t;
+    }
+    return vec4(0.0);
 }
 
 #include "includes/perlin.glsl"
@@ -498,17 +667,22 @@ void main() {
     vec3 skyColor = vec3(0.0);
     bool reflResolved = false;
 #ifdef RT_ENABLED
-    if (usePipe && rt.toggles.x > 0.5) {
+    // Inline first: it traces the real chunk triangles, so mirror positions
+    // match the scene. The async pipeline output (proxy boxes) is only a
+    // fallback when the scene instance has no triangle along the ray.
+    if (rtReady && rt.toggles.x > 0.5) {
+        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), RT_NO_LIMIT, false, 0.0);
+        if (hit.a > 0.5) {
+            skyColor = hit.rgb;
+            reflResolved = true;
+        }
+    }
+    if (!reflResolved && usePipe && rt.toggles.x > 0.5) {
         vec4 pipeRefl = textureLod(rtReflectTex, screenUV, 0.0);
         if (pipeRefl.a > 0.5) {
             skyColor = pipeRefl.rgb;
             reflResolved = true;
         }
-    }
-    if (!reflResolved && rtReady && rt.toggles.x > 0.5) {
-        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), RT_NO_LIMIT, false, 0.0);
-        skyColor = hit.rgb;
-        reflResolved = true;
     }
 #endif
     if (!reflResolved) {
@@ -516,17 +690,20 @@ void main() {
         skyColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
     }
 
+    // (Screen-space refinement removed: the inline trace above hits the real
+    // chunk triangles directly, so a depth-march pass is redundant.)
+
     // === AERIAL DETAIL FADE (§10/§11) ===
-    // Blend ray-traced detail toward analytic fallbacks with fragment distance.
-    // Proxy boxes are per-chunk flats: beyond the near field their tops,
-    // footprints and hit/miss classification imprint box-shaped steps onto
-    // refraction color, reflection color and thickness — and every such step
-    // is a potential razor line (LOD frontiers are straight, full-width and
+    // Refraction/thickness fade: proxy boxes are per-chunk flats, so beyond
+    // the near field their tops and hit/miss classification imprint box-shaped
+    // steps onto refraction color and thickness — and every such step is a
+    // potential razor line (LOD frontiers are straight, full-width and
     // camera-following). Distance is continuous, so fading by distance cannot
     // create edges by construction; it only removes them. Near field (<120 m,
     // where boxes are tightest) keeps pixel-identical RT detail; far field
-    // converges to deep tint + sky, i.e. honest aerial perspective. Debug
-    // views below read the pre-fade snapshots.
+    // converges to deep tint, i.e. honest aerial perspective.
+    // Reflection is NOT faded: a mirror must keep reflecting the scenery no
+    // matter how far the water pixel is from the camera.
     vec3 dbgSceneColor = sceneColor;
     vec3 dbgReflColor = skyColor;
     // Translucency (final alpha) must use the TRUE local thickness, not the
@@ -539,9 +716,6 @@ void main() {
         float fragDist = length(fragPosWorld - ubo.viewPos.xyz);
         float detailFade = smoothstep(fadeStart, fadeEnd, fragDist);
         if (detailFade > 0.0) {
-            // Explicit LOD: detailFade varies per fragment (distance-based).
-            vec3 skyRef = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
-            skyColor = mix(skyColor, skyRef, detailFade);
             sceneColor = mix(sceneColor, deepTint, detailFade);
             waterThickness = mix(waterThickness, maxRefr, detailFade);
         }
@@ -606,7 +780,13 @@ void main() {
         // black (refraction/reflection are disabled, leaving sceneColor zero).
         waterColor = waterTintColor;
     } else if (enableReflection) {
-        float reflMix = uniformReflection ? reflectionStrength : (fresnel * reflectionStrength);
+        // Reflection Strength is the mirror amount: 1 = full mirror at every
+        // angle (polished spheres), 0 = physical Fresnel-only water. Fresnel
+        // still shapes partial strengths so low values keep the grazing
+        // falloff instead of popping a flat reflection over the whole surface.
+        float reflMix = uniformReflection
+            ? reflectionStrength
+            : mix(fresnel, 1.0, clamp(reflectionStrength, 0.0, 1.0));
         waterColor = mix(refractedColor, skyColor, reflMix);
         mirrorPresence = clamp(reflMix, 0.0, 1.0);
     } else {

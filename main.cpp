@@ -1876,7 +1876,20 @@ public:
                 // (tlBrushSolid); tlCull is transitively implied by both, so it is
                 // dropped. tlSolid is not registered for the composite (implied by
                 // tlBrushLiquid via Water).
-                app->submitCommandBufferAsyncToQueue(solidCmd, app->getSolidQueue(), &tlSolid, {tlShadow, tlBrushSolid}, false, {}, {v, v}, v, {}, false);
+                //
+                // Solid SSR: main.frag samples the *previous* frame's solid
+                // color/depth (bindings 19/20), so the solid CB additionally
+                // waits on tlSolid@(v-1) — the previous frame's solid pass must
+                // have completed before its images are marched.
+                {
+                    std::vector<VkSemaphore> solidWaitSemaphores = {tlShadow, tlBrushSolid};
+                    std::vector<uint64_t> solidWaitValues = {v, v};
+                    if (v > 0) {
+                        solidWaitSemaphores.push_back(tlSolid);
+                        solidWaitValues.push_back(v - 1);
+                    }
+                    app->submitCommandBufferAsyncToQueue(solidCmd, app->getSolidQueue(), &tlSolid, solidWaitSemaphores, false, {}, solidWaitValues, v, {}, false);
+                }
                 this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
             });
             // Join the solid task before the main (composite) command buffer is recorded
@@ -2238,7 +2251,7 @@ public:
                             // rewritten every task; flags mirror the renderer's async
                             // pool (the water-depth layout has no UPDATE_AFTER_BIND
                             // bindings, so none is required here).
-                            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 };
+                            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10 };
                             VkDescriptorPoolCreateInfo pci{};
                             pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
                             pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -2256,7 +2269,11 @@ public:
                             }
                         }
                         if (slot.waterDs != VK_NULL_HANDLE) {
-                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs, frameIdx, bfBack, bfRefl, bfRefr, bfSky);
+                            VkImageView bfSolid = this->sceneRenderer->mainSolidRenderer ? this->sceneRenderer->mainSolidRenderer->getColorView(frameIdx) : VK_NULL_HANDLE;
+                            VkImageView bfDepth = this->sceneRenderer->mainSolidRenderer ? this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE;
+                            VkImageView bfVegC = this->sceneRenderer->vegetationRenderer ? this->sceneRenderer->vegetationRenderer->getVegColorView(frameIdx) : VK_NULL_HANDLE;
+                            VkImageView bfVegD = this->sceneRenderer->vegetationRenderer ? this->sceneRenderer->vegetationRenderer->getVegDepthView(frameIdx) : VK_NULL_HANDLE;
+                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs, frameIdx, bfBack, bfRefl, bfRefr, bfSky, bfSolid, bfDepth, bfVegC, bfVegD);
                             asyncWaterDs = slot.waterDs;
                         }
                     }
@@ -2307,7 +2324,7 @@ public:
                     // back-face depth can be bound at binding 0 (the back-face pass used
                     // a different set with binding 0 patched to the dummy depth).
                     if (slot.waterDs2 == VK_NULL_HANDLE && slot.poolW == VK_NULL_HANDLE) {
-                        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 };
+                        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10 };
                         VkDescriptorPoolCreateInfo pci{};
                         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
                         pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
@@ -2328,7 +2345,14 @@ public:
                     if (slot.waterDs2 != VK_NULL_HANDLE) {
                         VkImageView wsky = (this->sceneRenderer->skyRenderer)
                             ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-                        this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, frameIdx, wBack, wRefl, wRefr, wsky);
+                        // SSR source: the solid pass color/depth for this frame.
+                        // The water task waits on tlSolid, and the solid pass
+                        // ends both images in SHADER_READ_ONLY_OPTIMAL.
+                        VkImageView wSolid = this->sceneRenderer->mainSolidRenderer ? this->sceneRenderer->mainSolidRenderer->getColorView(frameIdx) : VK_NULL_HANDLE;
+                        VkImageView wSolidDepth = this->sceneRenderer->mainSolidRenderer ? this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE;
+                        VkImageView wVegC = this->sceneRenderer->vegetationRenderer ? this->sceneRenderer->vegetationRenderer->getVegColorView(frameIdx) : VK_NULL_HANDLE;
+                        VkImageView wVegD = this->sceneRenderer->vegetationRenderer ? this->sceneRenderer->vegetationRenderer->getVegDepthView(frameIdx) : VK_NULL_HANDLE;
+                        this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, frameIdx, wBack, wRefl, wRefr, wsky, wSolid, wSolidDepth, wVegC, wVegD);
                         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                             vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
                         this->sceneRenderer->mainLiquidRenderer->renderPass(this, cmd, frameIdx,
@@ -2374,7 +2398,10 @@ public:
                 // tlShadow / tlBrushSolid are transitively implied — dropped.
                 // Signal tlWater@v; tlWater is NOT registered for the composite
                 // (it is implied by tlBrushLiquid).
-                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater, {tlSolid, tlSky}, false, {}, {v, v}, v, {}, false);
+                // Wait on the vegetation pass too: water.frag's reflection
+                // lookup samples the vegetation color/depth targets, which are
+                // written on the vegetation queue and signaled by tlVeg@v.
+                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater, {tlSolid, tlSky, tlVeg}, false, {}, {v, v, v}, v, {}, false);
 
                 // Brush-liquid overlay: re-enter the water geometry pass on its own
                 // queue, AFTER the main water pass completes (semWater), and draw the

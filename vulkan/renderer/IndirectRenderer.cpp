@@ -115,8 +115,16 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
         barriers[count].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
         barriers[count].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
         barriers[count].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        barriers[count].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-        barriers[count].dstAccessMask = dstAccess;
+        // Acceleration-structure builds read the merged vertex/index buffers as
+        // build inputs (real-geometry reflection BLAS) in the same command
+        // buffer, so the destination must cover the build stage too.
+        barriers[count].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
+            | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
+            | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        barriers[count].dstAccessMask = dstAccess | VK_ACCESS_2_SHADER_READ_BIT
+            | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
         barriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[count].buffer = buf;
@@ -1915,16 +1923,23 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     // These are created ONCE and never rebuilt. Individual slots are updated
     // in-place without touching other slots or the buffer layout.
 
-    // Vertex buffer (device-local)
+    // Vertex buffer (device-local). SHADER_DEVICE_ADDRESS + AS build-input
+    // usage feed the real-geometry reflection BLAS (see recordSceneBlas).
     VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
     vertexBuffer = app->createBuffer(vertexBufferSize,
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+            | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+            | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+            | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // Index buffer (device-local)
     VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
     indexBuffer = app->createBuffer(indexBufferSize,
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+            | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+            | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+            | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // Indirect buffer (host-visible, persistently mapped for per-slot writes).

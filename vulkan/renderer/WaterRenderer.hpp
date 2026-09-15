@@ -144,7 +144,11 @@ public:
                                      VkImageView backFaceDepthView = VK_NULL_HANDLE,
                                      VkImageView rtReflectView = VK_NULL_HANDLE,
                                      VkImageView rtRefractView = VK_NULL_HANDLE,
-                                     VkImageView skyView = VK_NULL_HANDLE);
+                                     VkImageView skyView = VK_NULL_HANDLE,
+                                     VkImageView solidColorView = VK_NULL_HANDLE,
+                                     VkImageView solidDepthView = VK_NULL_HANDLE,
+                                     VkImageView vegColorView = VK_NULL_HANDLE,
+                                     VkImageView vegDepthView = VK_NULL_HANDLE);
 
     // Allocate a fresh per-frame scene-texture descriptor set, free the previous
     // one, and update it with the given views. Returns the new set (or
@@ -156,7 +160,11 @@ public:
                                                  VkImageView backFaceDepthView = VK_NULL_HANDLE,
                                                  VkImageView rtReflectView = VK_NULL_HANDLE,
                                                  VkImageView rtRefractView = VK_NULL_HANDLE,
-                                                 VkImageView skyView = VK_NULL_HANDLE);
+                                                 VkImageView skyView = VK_NULL_HANDLE,
+                                                 VkImageView solidColorView = VK_NULL_HANDLE,
+                                                 VkImageView solidDepthView = VK_NULL_HANDLE,
+                                                 VkImageView vegColorView = VK_NULL_HANDLE,
+                                                 VkImageView vegDepthView = VK_NULL_HANDLE);
 
     // Clear per-frame render targets (color/depth) into default values.
     // Call this each frame when water rendering is disabled to avoid sampling

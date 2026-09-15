@@ -10,6 +10,7 @@ struct RayTracingParamsGLSL {
     vec4 absorption;   // rgb=Beer-Lambert coeff, a=thicknessScale
     vec4 debug;        // x=RT debug view, y=tlasReady, z=selfSkipDist, w=useWaterPipeline
     mat4 invViewProj;
+    mat4 prevViewProj; // previous frame's view-projection (temporal SSR reprojection)
     vec4 viewPos;
     vec4 rtResolution; // xy=size, zw=1/size
     vec4 clipPlanes;   // x=near, y=far
@@ -35,10 +36,14 @@ struct RTProxyMetaGLSL {    vec4 minAndMatId;  // xyz=AABB min, w=material id
 // water volumes [RT_WATER_BOX_START, ...). The TLAS carries one instance per
 // layer (custom index 0 = solid, 1 = water); instance masks select layers per
 // ray type (solids see all, water-originated rays see solids only).
-const uint RT_WATER_BOX_START = 3584u;
+const uint RT_WATER_BOX_START = 16384u;
 const uint RT_RAY_MASK_SOLID = 0x01u;
 const uint RT_RAY_MASK_WATER = 0x02u;
 const uint RT_RAY_MASK_ALL = 0x03u;
+// Real scene-geometry instance (exact chunk triangles): reflection rays trace
+// this instead of the proxy boxes so mirror positions match the scene.
+const uint RT_RAY_MASK_SCENE = 0x04u;
+const uint RT_SCENE_INSTANCE = 2u;
 
 // Reflection rays are UNCAPPED by design: mirror targets can sit anywhere
 // in the scene (grazing rays travel far before hitting), and the proxy TLAS

@@ -156,14 +156,77 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     rtMetaBinding.pImmutableSamplers = nullptr;
     rtMetaBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    // binding 19: previous-frame solid HDR color (screen-space reflection
+    // refinement in main.frag — precise mirror samples of the real scene).
+    VkDescriptorSetLayoutBinding ssrColorBinding{};
+    ssrColorBinding.binding = 19;
+    ssrColorBinding.descriptorCount = 1;
+    ssrColorBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ssrColorBinding.pImmutableSamplers = nullptr;
+    ssrColorBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 20: previous-frame solid depth (SSR march + occlusion test).
+    VkDescriptorSetLayoutBinding ssrDepthBinding{};
+    ssrDepthBinding.binding = 20;
+    ssrDepthBinding.descriptorCount = 1;
+    ssrDepthBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ssrDepthBinding.pImmutableSamplers = nullptr;
+    ssrDepthBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 21: real scene-geometry primitive bases ([0]=count, [1..N]=first
+    // primitive of geometry i) for the reflection BLAS (binary search).
+    VkDescriptorSetLayoutBinding scenePrimBaseBinding{};
+    scenePrimBaseBinding.binding = 21;
+    scenePrimBaseBinding.descriptorCount = 1;
+    scenePrimBaseBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    scenePrimBaseBinding.pImmutableSamplers = nullptr;
+    scenePrimBaseBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 22: per-geometry average albedo (vec4 per chunk) for shading
+    // real-geometry reflection hits.
+    VkDescriptorSetLayoutBinding sceneMetaBinding{};
+    sceneMetaBinding.binding = 22;
+    sceneMetaBinding.descriptorCount = 1;
+    sceneMetaBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    sceneMetaBinding.pImmutableSamplers = nullptr;
+    sceneMetaBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 23: per-geometry {baseVertex, firstIndex, primBase, 0} for real
+    // triangle attribute fetches in hit shading.
+    VkDescriptorSetLayoutBinding sceneGeomInfoBinding{};
+    sceneGeomInfoBinding.binding = 23;
+    sceneGeomInfoBinding.descriptorCount = 1;
+    sceneGeomInfoBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    sceneGeomInfoBinding.pImmutableSamplers = nullptr;
+    sceneGeomInfoBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 24: merged vertex pool (float array; Vertex stride 16 floats,
+    // position 0-2, normal 8-10) read by hit shading.
+    VkDescriptorSetLayoutBinding sceneVertsBinding{};
+    sceneVertsBinding.binding = 24;
+    sceneVertsBinding.descriptorCount = 1;
+    sceneVertsBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    sceneVertsBinding.pImmutableSamplers = nullptr;
+    sceneVertsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 25: merged index pool (uint per index).
+    VkDescriptorSetLayoutBinding sceneIndicesBinding{};
+    sceneIndicesBinding.binding = 25;
+    sceneIndicesBinding.descriptorCount = 1;
+    sceneIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    sceneIndicesBinding.pImmutableSamplers = nullptr;
+    sceneIndicesBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     // Binding numbers are sparse by design: 11 (legacy 360 cubemap) is
     // intentionally absent.
-    std::array<VkDescriptorSetLayoutBinding, 18> bindings = {
+    std::array<VkDescriptorSetLayoutBinding, 25> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
         shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
         waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
         roughnessSamplerBinding, aoSamplerBinding,
-        tlasBinding, rtReflectBinding, rtRefractBinding, rtParamsBinding, rtMetaBinding
+        tlasBinding, rtReflectBinding, rtRefractBinding, rtParamsBinding, rtMetaBinding,
+        ssrColorBinding, ssrDepthBinding, scenePrimBaseBinding, sceneMetaBinding,
+        sceneGeomInfoBinding, sceneVertsBinding, sceneIndicesBinding
     };
     // Fill the material binding at position 5
     bindings[5].binding = 5;
@@ -176,7 +239,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     // (the only UPDATE_AFTER_BIND binding, for swapchain-resize view churn)
     // is gone. RT views/TLAS are stable between resizes (rewritten only on
     // resize/recreate events, never while in flight).
-    std::array<VkDescriptorBindingFlags, 18> bindingFlags{};
+    std::array<VkDescriptorBindingFlags, 25> bindingFlags{};
     bindingFlags.fill(0);
 
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};

@@ -10,6 +10,7 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <algorithm>
 #include <cstdint>
 
 #include <array>
@@ -379,6 +380,63 @@ public:
             if (kv.second.active) std::forward<F>(visitor)(kv.second);
         }
     }
+
+    // ── Real-geometry ray tracing (hybrid RT scene BLAS) ──────────────────
+    // One span per active mesh into the shared merged element pools. The
+    // acceleration structure build references the merged buffers directly (no
+    // data copies): index values are relative to the chunk's baseVertex, and
+    // vertexBuffer uses Vertex stride (position at offset 0).
+    struct RTGeometrySpan {
+        uint32_t chunkId = 0;      // NodeID (joins the proxy material registry)
+        uint32_t baseVertex = 0;
+        uint32_t vertexCount = 0;
+        uint32_t firstIndex = 0;
+        uint32_t indexCount = 0;
+        bool operator==(const RTGeometrySpan& o) const {
+            return chunkId == o.chunkId && baseVertex == o.baseVertex &&
+                   vertexCount == o.vertexCount && firstIndex == o.firstIndex &&
+                   indexCount == o.indexCount;
+        }
+    };
+    // Snapshot the active spans (thread-safe). Call only when chunks changed
+    // or the camera drove a fresh rebuild. The spans are filtered by the SAME
+    // LoD band the raster cull uses (distance / (baseCell * lodBias), baseCell
+    // = cellSize / 2^rung, clamped to the ladder depth), so exactly one rung
+    // survives per column — the reflections mirror the raster's detail
+    // schedule (fine near the camera, coarse far) with no overlapping LODs.
+    void copyRTGeometrySpans(std::vector<RTGeometrySpan>& out,
+                             glm::vec3 camPos, float lodBias, int maxTargetLod) const {
+        std::lock_guard<std::recursive_mutex> guard(mutex);
+        out.clear();
+        out.reserve(meshes.size());
+        const int maxLevel = std::max(1, std::min(maxLodLevel_, maxTargetLod));
+        for (const auto& kv : meshes) {
+            const MeshInfo& m = kv.second;
+            if (!m.active || !m.level_.allocated) continue;
+            if (m.level_.vertexCount == 0 || m.level_.indexCount < 3) continue;
+            const int level = m.level_.level;
+            const float cellSize = m.level_.boundsMax.x - m.level_.boundsMin.x;
+            if (cellSize <= 0.0f) continue;
+            const glm::vec3 center = 0.5f * (glm::vec3(m.level_.boundsMin) + glm::vec3(m.level_.boundsMax));
+            // Mirrors indirect.comp: baseCell = cellSize / 2^rung; selected =
+            // clamp(floor(dist / (baseCell * lodBias)), 0, maxLevel).
+            const float baseCell = cellSize / exp2(float(std::max(level, 0)));
+            const float band = glm::distance(camPos, center) / (baseCell * lodBias);
+            const int selected = std::clamp(int(std::floor(band)), 0, maxLevel);
+            if (selected != level) continue;
+            RTGeometrySpan s;
+            s.chunkId = m.id;
+            s.baseVertex = m.level_.baseVertex;
+            s.vertexCount = m.level_.vertexCount;
+            s.firstIndex = m.level_.firstIndex;
+            s.indexCount = m.level_.indexCount;
+            out.push_back(s);
+        }
+    }
+    VkBuffer getVertexBufferHandle() const { return vertexBuffer.buffer; }
+    VkBuffer getIndexBufferHandle() const { return indexBuffer.buffer; }
+    VkDeviceSize getVertexBufferSize() const { return VkDeviceSize(vertexCapacity) * sizeof(Vertex); }
+    VkDeviceSize getIndexBufferSize() const { return VkDeviceSize(indexCapacity) * sizeof(uint32_t); }
 
 private:
     // Real ladder depth of the tree (set via setMaxLodLevel from

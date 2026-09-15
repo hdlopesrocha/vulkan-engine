@@ -53,7 +53,83 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 layout(set = 0, binding = 14) uniform accelerationStructureEXT rtTlas;
 layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rt; };
 layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]; };
+// Real scene-geometry reflection lookups: rtScenePrimBase[0] = geometry count,
+// [1..N] = first primitive of geometry i (binary-searched for a hit's owner);
+// rtSceneAlbedo[i] = that chunk's average albedo.
+layout(set = 0, binding = 21) readonly buffer RTScenePrimBase { uint rtScenePrimBase[]; };
+layout(set = 0, binding = 22) readonly buffer RTSceneAlbedo { vec4 rtSceneAlbedo[]; };
+// Real triangle attributes for hit shading: geometry bases, the merged vertex
+// pool (Vertex = 16 floats: position 0-2, normal 8-10) and the index pool.
+layout(set = 0, binding = 23) readonly buffer RTSceneGeomInfo { uvec4 rtSceneGeomInfo[]; };
+layout(set = 0, binding = 24) readonly buffer RTSceneVerts { float rtSceneVerts[]; };
+layout(set = 0, binding = 25) readonly buffer RTSceneIndices { uint rtSceneIndices[]; };
+#include "includes/rt_scene_sample.glsl"
 #endif
+
+// Screen-space reflection refinement (set 0, bindings 19/20): the *previous*
+// frame's solid HDR color/depth. The proxy ray query gives plausible but
+// blocky reflections; where the reflected point is on screen, marching the
+// real depth buffer and sampling the real color resolves a precise mirror.
+layout(set = 0, binding = 19) uniform sampler2D ssrColorTex;
+layout(set = 0, binding = 20) uniform sampler2D ssrDepthTex;
+
+// March `dir` from `origin` against the previous frame's solid depth, using the
+// previous frame's view-projection so camera motion does not stipple the hit
+// test. Returns rgb = reflected scene color, a = confidence (0 = no usable
+// hit). Falls back to the proxy/sky result for off-screen occluded rays.
+// Marching front to back, the first depth crossing is the first real
+// intersection, so any crossing counts as a hit and a binary search refines
+// it (step-size independent); the self-UV guard rejects the reflector's own
+// surface. `eyeDir` is the unit vector from the surface to the camera: rays
+// nearly tangent to the view direction (silhouettes) are where screen-space
+// marching is least reliable, so they fade out.
+vec4 traceSSR(vec3 origin, vec3 dir, vec3 eyeDir, mat4 prevVP, vec2 selfUV) {
+    float nearP = ubo.passParams.z;
+    float farP  = ubo.passParams.w;
+    float facing = clamp(abs(dot(dir, eyeDir)), 0.0, 1.0);
+    float prevT = 0.0;
+    float t = 0.25;
+    for (int i = 0; i < 64; ++i) {
+        // Near field: 1 m steps (thin silhouettes); far field: 13% geometric
+        // growth so the remaining steps reach ~4 km without huge near steps.
+        t += (i < 20) ? 1.0 : max(2.0, t * 0.13);
+        vec3 P = origin + dir * t;
+        vec4 clip = prevVP * vec4(P, 1.0);
+        if (clip.w <= 0.001 || clip.w > farP * 2.0) break;
+        vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
+        float d = textureLod(ssrDepthTex, uv, 0.0).r;
+        if (d < 1.0) {
+            float sceneEye = (nearP * farP) / (farP - d * (farP - nearP));
+            float rayEye = clip.w; // GLM perspective: clip.w == eye depth
+            if (rayEye > sceneEye + 0.05 && distance(uv, selfUV) > 0.02) {
+                // First crossing: refine with a binary search (5 iterations).
+                float lo = prevT, hi = t;
+                for (int j = 0; j < 5; ++j) {
+                    float mid = 0.5 * (lo + hi);
+                    vec4 cm = prevVP * vec4(origin + dir * mid, 1.0);
+                    vec2 uvm = cm.xy / cm.w * 0.5 + 0.5;
+                    float dm = textureLod(ssrDepthTex, uvm, 0.0).r;
+                    float em = (nearP * farP) / (farP - dm * (farP - nearP));
+                    if (cm.w > em) { hi = mid; uv = uvm; rayEye = cm.w; sceneEye = em; }
+                    else lo = mid;
+                }
+                // The refined UV may have moved back next to the fragment (a
+                // grazing ray that never truly left its own surface): reject.
+                if (distance(uv, selfUV) < 0.02) { prevT = t; continue; }
+                float edge = smoothstep(0.0, 0.06, uv.x) * smoothstep(0.0, 0.06, 1.0 - uv.x)
+                           * smoothstep(0.0, 0.06, uv.y) * smoothstep(0.0, 0.06, 1.0 - uv.y);
+                // Crossings further behind the surface are less certain
+                // (ray nearly parallel to it): soften instead of hard-cutting.
+                float gapFade = 1.0 - clamp((rayEye - sceneEye) / max(1.0, sceneEye * 0.25), 0.0, 0.5);
+                return vec4(textureLod(ssrColorTex, uv, 0.0).rgb,
+                            edge * gapFade * smoothstep(0.03, 0.35, facing));
+            }
+        }
+        prevT = t;
+    }
+    return vec4(0.0);
+}
 
 // Global toggles
 bool roughnessEnabled = ubo.debugParams.y > 0.5;
@@ -349,65 +425,136 @@ void main() {
 #endif
             if (doRTTrace) {
 #ifdef RT_ENABLED
-                float selfSkip = max(rt.debug.z, 0.05);
+                // Opaque mirrors (low-poly spheres/boxes) are tessellated with
+                // large flat triangles: a grazing reflection ray can re-enter a
+                // neighbouring triangle just above the interpolated surface and
+                // "reflect" the object itself (triangle-soup look). A 1 m
+                // origin bias clears those numerical self-hits without moving
+                // terrain reflections meaningfully.
+                float selfSkip = max(rt.debug.z, 1.0);
                 vec3 origin = fragPosWorld + reflN * selfSkip;
                 rayQueryEXT rq;
-                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_ALL,
+                // Trace the real chunk triangles (scene instance) so reflected
+                // geometry sits at its true position; the proxy boxes remain
+                // for water refraction/thickness only.
+                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SCENE,
                     origin, 0.05, normalize(reflDir), RT_NO_LIMIT);
                 while (rayQueryProceedEXT(rq)) {}
                 if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
                     float hitT = rayQueryGetIntersectionTEXT(rq, true);
-                    // Own-box guard: proxy boxes are coarse — hits closer than
-                    // selfSkip are the fragment's own chunk, not true scenery.
-                    if (hitT >= selfSkip) {
-                        uint boxIdx = rtBoxIndex(
-                            uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)),
-                            rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
-                        RTProxyMetaGLSL meta = rtMetas[boxIdx];
+                    // Own-surface guard: hits closer than selfSkip are the
+                    // reflector's own triangles, not true scenery.
+                    if (hitT >= selfSkip &&
+                        rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) == RT_SCENE_INSTANCE) {
+                        const uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
+                        // Binary-search the geometry owning this primitive
+                        // (primitive ranges are consecutive; see primBase[]).
+                        const uint n = rtScenePrimBase[0];
+                        uint lo = 0u, hi = n;
+                        while (lo + 1u < hi) {
+                            uint mid = (lo + hi) >> 1u;
+                            if (rtScenePrimBase[1u + mid] <= prim) lo = mid; else hi = mid;
+                        }
+                        // Real interpolated triangle normal from the merged
+                        // vertex pool (Vertex stride 16 floats: position 0-2,
+                        // normal 8-10) via the hit barycentrics.
                         vec3 hitPos = origin + normalize(reflDir) * hitT;
-                        // Ray queries report front/back via FrontFace (no
-                        // HitKind outside hit shaders); backface = exiting.
-                        bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
-                        vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz,
-                                                meta.maxAndFlags.xyz, exiting);
-                        vec3 toLight = -normalize(ubo.lightDir.xyz);
-                        float ndl = max(dot(boxN, toLight), 0.0);
-                        // Textured hit albedo (mirrors water.frag rtTraceWater):
-                        // triplanar sample at the hit point with the box face
-                        // normal, so reflections read as real textured ground
-                        // instead of flat proxy averages. MUST use the
-                        // explicit-LOD variant: this block runs under
-                        // per-fragment control flow (roughness gate, hitT
-                        // guard), where implicit-LOD texture() has undefined
-                        // derivatives (black/garbage reflections + validation
-                        // errors). The LOD is estimated from the hit distance
-                        // (stable, no derivatives needed). Water proxies carry
-                        // a water-layer index (not a scene material), so the
-                        // layer is clamped and their flat proxy albedo is
-                        // selected afterwards instead.
-                        int hitMat = int(meta.minAndMatId.w + 0.5);
+                        // Screen-space color lookup first: sample the previous
+                        // frame's solid render at the reflected hit point so
+                        // the mirror shows the terrain as rendered (ground
+                        // cover mix, shadows, detail) instead of one flat
+                        // dominant-material sample.
+                        bool ssHit = false;
+                        {
+                            vec4 hc = rt.prevViewProj * vec4(hitPos, 1.0);
+                            if (hc.w > 0.001) {
+                                vec2 huv = hc.xy / hc.w * 0.5 + 0.5;
+                                if (huv.x >= 0.0 && huv.x <= 1.0 && huv.y >= 0.0 && huv.y <= 1.0) {
+                                    float hd = textureLod(ssrDepthTex, huv, 0.0).r;
+                                    if (hd < 1.0) {
+                                        float nearP = ubo.passParams.z;
+                                        float farP = ubo.passParams.w;
+                                        float sceneEye = (nearP * farP) / (farP - hd * (farP - nearP));
+                                        if (abs(hc.w - sceneEye) < max(2.0, sceneEye * 0.02)) {
+                                            rtColor = textureLod(ssrColorTex, huv, 0.0).rgb * aoBlend;
+                                            ssHit = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (!ssHit) {
+                        uvec4 gi = rtSceneGeomInfo[lo];
+                        uint localPrim = prim - rtScenePrimBase[1u + lo];
+                        const uint kVertStride = 16u;
+                        uint i0 = rtSceneIndices[gi.y + localPrim * 3u + 0u] + gi.x;
+                        uint i1 = rtSceneIndices[gi.y + localPrim * 3u + 1u] + gi.x;
+                        uint i2 = rtSceneIndices[gi.y + localPrim * 3u + 2u] + gi.x;
+                        vec3 n0 = vec3(rtSceneVerts[i0 * kVertStride + 8u],
+                                       rtSceneVerts[i0 * kVertStride + 9u],
+                                       rtSceneVerts[i0 * kVertStride + 10u]);
+                        vec3 n1 = vec3(rtSceneVerts[i1 * kVertStride + 8u],
+                                       rtSceneVerts[i1 * kVertStride + 9u],
+                                       rtSceneVerts[i1 * kVertStride + 10u]);
+                        vec3 n2 = vec3(rtSceneVerts[i2 * kVertStride + 8u],
+                                       rtSceneVerts[i2 * kVertStride + 9u],
+                                       rtSceneVerts[i2 * kVertStride + 10u]);
+                        vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+                        vec3 hitN = normalize(n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y);
+                        if (dot(hitN, reflDir) > 0.0) hitN = -hitN; // face the incoming ray
+                        // Real painted material at this triangle (Vertex float
+                        // offset 11 = brushIndex): the proxy registry only
+                        // knows the chunk's DOMINANT brush, which loses the
+                        // ground-cover mix painted per vertex.
                         int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
-                        vec3 triW = abs(boxN);
-                        float twt = ubo.triplanarSettings.x;
-                        vec3 wwt = max(vec3(0.0), triW - vec3(twt));
-                        float wwe = max(1.0, ubo.triplanarSettings.y);
-                        wwt = pow(wwt, vec3(wwe));
-                        triW = wwt / (wwt.x + wwt.y + wwt.z + 1e-6);
-                        float hitLod = clamp(log2(1.0 + hitT * 0.02), 0.0, 4.0);
-                        vec3 texAlbedo = computeTriplanarAlbedoLod(
-                            hitPos, triW, clamp(hitMat, 0, maxLayer), boxN, hitLod);
-                        vec3 hitAlbedo = mix(texAlbedo, meta.albedoRough.rgb,
-                                             step(0.5, meta.maxAndFlags.w));
-                        // Proxy shading reuses the hit albedo; macro shadows
-                        // stay CSM-owned (no RT shadow recompute).
-                        rtColor = hitAlbedo * (ubo.lightColor.rgb * (0.35 + 0.65 * ndl));
+                        // brushIndex is an int stored in the float-typed vertex pool: read its
+                        // bit pattern (reading it as a float yields a denormal, decoding to 0).
+                        const int matId = clamp(floatBitsToInt(rtSceneVerts[i0 * kVertStride + 11u]), 0, maxLayer);
+                        // Exact raster texture lookup: three corner materials
+                        // compressed into unique slots and blended by the hit
+                        // barycentrics (main.tesc + main.frag) — fixes wrong
+                        // material identity at in-triangle boundaries.
+                        vec3 hitAlbedo = rtSceneSampleReflectionAlbedo(
+                            i0, i1, i2, bary, hitPos, hitN, maxLayer);
+                        // Macro shadows stay CSM-owned (no RT shadow recompute).
+                        // The sky ambient fill matches water.frag's hit shading
+                        // so reflections read as lit scenery, not dark plates.
+                        // Full shading for the reflected hit: real texture
+                        // albedo, real interpolated normal, sun diffuse (CSM
+                        // shadowed) + sky ambient.
+                        vec3 toLight = -normalize(ubo.lightDir.xyz);
+                        float ndl = max(dot(hitN, toLight), 0.0);
+                        float hitShadow = ShadowCalculation(
+                            ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
+                        rtColor = hitAlbedo * (ubo.lightColor.rgb * ndl * (1.0 - hitShadow)
+                                               + vec3(0.09, 0.12, 0.15));
                         rtColor *= aoBlend * (1.0 - rough * 0.5);
+                        } // !ssHit
                     }
                 }
 #endif
             }
+            // SSR refinement: where the reflected scene is on screen, the
+            // previous frame's real color/depth resolve the mirror per pixel;
+            // the proxy/sky result above stays the fallback for the rest.
+#ifdef RT_ENABLED
+            {
+                vec4 selfClip = rt.prevViewProj * vec4(fragPosWorld, 1.0);
+                if (selfClip.w > 0.001) {
+                    vec2 selfUV = selfClip.xy / selfClip.w * 0.5 + 0.5;
+                    vec4 ssr = traceSSR(fragPosWorld + reflN * 0.05, normalize(reflDir),
+                                        normalize(reflV), rt.prevViewProj, selfUV);
+                    if (ssr.a > 0.0) rtColor = mix(rtColor, ssr.rgb, ssr.a);
+                }
+            }
+#endif
             envReflection = rtColor;
-            envFresnelFactor = clamp(blendedRefStrength * fresnel, 0.0, 1.0);
+            // Mirror amount: reflectionStrength is the target mirror level
+            // (1 = full mirror at every angle, 0 = no reflection). Fresnel
+            // still shapes partial strengths so low values keep the grazing
+            // falloff instead of a flat sheen over the whole surface.
+            envFresnelFactor = clamp(
+                mix(fresnel, 1.0, clamp(blendedRefStrength, 0.0, 1.0)), 0.0, 1.0);
 #ifdef RT_ENABLED
             // RT debug view 57 forces a full mirror (CSM+RT combined inspection).
             if (int(rt.debug.x + 0.5) == 57) envFresnelFactor = 1.0;

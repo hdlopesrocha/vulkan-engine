@@ -84,6 +84,7 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (app) {
         streamer.destroy();
     }
+    destroySSRSamplers(app);
     // Hybrid RT teardown (acceleration structures + pipeline + outputs) while
     // the device is alive. RT descriptors in set 0 dangle after this, but the
     // device is being torn down anyway (shutdown path only).
@@ -220,6 +221,9 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         // handles changed above, so refresh the RT scene views too.
         if (rayTracing && rayTracing->isSupported()) refreshRTSceneViews(app);
     }
+    // Solid SSR sources are new handles after the solid render targets above
+    // were recreated; re-point bindings 19/20 (resize is idle-safe).
+    writeSSRBindings(app);
 }
 
 SceneRenderer::SceneRenderer() :
@@ -378,7 +382,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     std::vector<VkDescriptorImageInfo> writesImg;
     std::vector<VkDescriptorBufferInfo> writesBuf;
     writesImg.reserve(12);  // max image descriptors: 5 texture arrays + 3 shadow maps + 2 RT outputs (+1 spare; MUST exceed the emplace count — writes[] stores raw pImageInfo pointers into this vector, so any reallocation dangles them)
-    writesBuf.reserve(6);  // materials SSBO + water params + water render UBO + RT params + RT meta (+1 spare; same no-realloc requirement as writesImg)
+    writesBuf.reserve(8);  // materials SSBO + water params + water render UBO + RT params + RT meta + scene prim bases + scene albedo (+1 spare; same no-realloc requirement as writesImg)
 
     // Helper to add image write if valid. dstSet is set to the static descriptor set
     // so the accumulated writes serve as a template for the static set.
@@ -562,6 +566,45 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             rtMetaWrite.pBufferInfo = &rtMetaInfo;
             writes.push_back(rtMetaWrite);
         }
+        // Real scene-geometry reflection lookups (bindings 21/22): contents are
+        // host-updated per rebuild; the descriptors are stable (preallocated
+        // buffers, never resized).
+        if (rayTracing->getSceneGeomPrimBaseBuffer() != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo& primBaseInfo = writesBuf.emplace_back(
+                rayTracing->getSceneGeomPrimBaseBuffer(), 0, VK_WHOLE_SIZE);
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = staticDs;
+            w.dstBinding = 21;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            w.descriptorCount = 1;
+            w.pBufferInfo = &primBaseInfo;
+            writes.push_back(w);
+        }
+        if (rayTracing->getSceneGeomMetaBuffer() != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo& sceneMetaInfo = writesBuf.emplace_back(
+                rayTracing->getSceneGeomMetaBuffer(), 0, VK_WHOLE_SIZE);
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = staticDs;
+            w.dstBinding = 22;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            w.descriptorCount = 1;
+            w.pBufferInfo = &sceneMetaInfo;
+            writes.push_back(w);
+        }
+        if (rayTracing->getSceneGeomInfoBuffer() != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo& sceneGeomInfo = writesBuf.emplace_back(
+                rayTracing->getSceneGeomInfoBuffer(), 0, VK_WHOLE_SIZE);
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = staticDs;
+            w.dstBinding = 23;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            w.descriptorCount = 1;
+            w.pBufferInfo = &sceneGeomInfo;
+            writes.push_back(w);
+        }
     }
 
     // ── Static descriptor set ──
@@ -641,6 +684,13 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             writer.flush();
         }
     }
+
+    // ── Solid SSR source bindings (19/20) ─────────────────────────────────
+    // Per-frame main sets sample the previous slot's solid color/depth for
+    // precise screen-space reflections. Written after the static→main copies
+    // above so the copies (which don't carry 19/20) cannot clobber them.
+    initSSRSamplers(app);
+    writeSSRBindings(app);
 
     // ── Descriptor buffers (Phase 1, step 1–2) ────────────────────────────
     // Allocate 3 host-visible descriptor buffers and populate every static
@@ -1386,6 +1436,20 @@ size_t SceneRenderer::publishPendingMeshes(
                 pd.minp = tmin;
                 pd.maxp = tmax;
                 pd.materialId = static_cast<uint32_t>(std::max(0, bestMat));
+                // 4x4 max-height grid: proxy boxes per cell follow the chunk's
+                // real silhouette, so reflected secondaries land on the true
+                // surface instead of a single flat box top.
+                constexpr int kGrid = 4;
+                const float cellW = std::max((tmax.x - tmin.x) / float(kGrid), 1e-3f);
+                const float cellD = std::max((tmax.z - tmin.z) / float(kGrid), 1e-3f);
+                pd.hgrid.fill(tmin.y);
+                for (const auto& v : lod.geom.vertices) {
+                    const glm::vec3& p = v.position;
+                    int gx = std::clamp(int((p.x - tmin.x) / cellW), 0, kGrid - 1);
+                    int gz = std::clamp(int((p.z - tmin.z) / cellD), 0, kGrid - 1);
+                    float& h = pd.hgrid[gz * kGrid + gx];
+                    h = std::max(h, p.y);
+                }
             }
             pd.rung = static_cast<uint32_t>(lod.lod);
             if (layer == LAYER_OPAQUE)
@@ -1660,6 +1724,9 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
     mainLiquidRenderer->getIndirectRenderer().initSlots(app, maxWaterChunks,
                                                         static_cast<uint32_t>(waterVertBytes),
                                                         static_cast<uint32_t>(waterIdxBytes));
+    // Bind the merged pools for real-triangle hit shading (bindings 24/25).
+    // The device is idle here (init), so the classic set rewrite is safe.
+    writeSceneVertexBindings(app);
 
     // Validate the worst-case reservation once at init (slotted-mode
     // ensureCapacity is a pure check — it asserts instead of growing).
@@ -1857,6 +1924,117 @@ void SceneRenderer::refreshRTSceneViews(VulkanApp* app) {
     rayTracing->setSceneViews(app, waterDepths, skyViews);
 }
 
+void SceneRenderer::initSSRSamplers(VulkanApp* app) {
+    if (!app) return;
+    if (ssrColorSampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo ci{};
+        ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        ci.magFilter = VK_FILTER_LINEAR;
+        ci.minFilter = VK_FILTER_LINEAR;
+        ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        ci.maxLod = 0.0f;
+        if (vkCreateSampler(app->getDevice(), &ci, nullptr, &ssrColorSampler) != VK_SUCCESS) {
+            ssrColorSampler = VK_NULL_HANDLE;
+        } else {
+            app->resources.addSampler(ssrColorSampler, "SceneRenderer: ssrColorSampler");
+        }
+    }
+    if (ssrDepthSampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo ci{};
+        ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        ci.magFilter = VK_FILTER_NEAREST;
+        ci.minFilter = VK_FILTER_NEAREST;
+        ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        ci.maxLod = 0.0f;
+        if (vkCreateSampler(app->getDevice(), &ci, nullptr, &ssrDepthSampler) != VK_SUCCESS) {
+            ssrDepthSampler = VK_NULL_HANDLE;
+        } else {
+            app->resources.addSampler(ssrDepthSampler, "SceneRenderer: ssrDepthSampler");
+        }
+    }
+}
+
+void SceneRenderer::destroySSRSamplers(VulkanApp* app) {
+    if (!app) return;
+    VkDevice device = app->getDevice();
+    if (ssrColorSampler != VK_NULL_HANDLE) {
+        if (app->resources.removeSampler(ssrColorSampler))
+            vkDestroySampler(device, ssrColorSampler, nullptr);
+        ssrColorSampler = VK_NULL_HANDLE;
+    }
+    if (ssrDepthSampler != VK_NULL_HANDLE) {
+        if (app->resources.removeSampler(ssrDepthSampler))
+            vkDestroySampler(device, ssrDepthSampler, nullptr);
+        ssrDepthSampler = VK_NULL_HANDLE;
+    }
+}
+
+void SceneRenderer::writeSceneVertexBindings(VulkanApp* app) {
+    if (!app || !mainSolidRenderer) return;
+    VkBuffer vb = mainSolidRenderer->getIndirectRenderer().getVertexBufferHandle();
+    VkBuffer ib = mainSolidRenderer->getIndirectRenderer().getIndexBufferHandle();
+    if (vb == VK_NULL_HANDLE || ib == VK_NULL_HANDLE) return;
+    // Storage-buffer descriptors must not exceed maxStorageBufferRange (128 MiB
+    // minimum guaranteed; the merged pools are far larger). Clamp the range;
+    // active spans live at the pool front on the devices where this matters.
+    const VkDeviceSize maxRange = app->getMaxStorageBufferRange();
+    const VkDeviceSize vbRange = std::min(mainSolidRenderer->getIndirectRenderer().getVertexBufferSize(), maxRange);
+    const VkDeviceSize ibRange = std::min(mainSolidRenderer->getIndirectRenderer().getIndexBufferSize(), maxRange);
+    DescriptorWriter writer(app->getDevice());
+    auto bind = [&](VkDescriptorSet ds) {
+        if (ds == VK_NULL_HANDLE) return;
+        writer.writeBuffer(ds, 24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, vb, 0, vbRange);
+        writer.writeBuffer(ds, 25, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ib, 0, ibRange);
+    };
+    bind(app->getStaticDescriptorSet());
+    for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi)
+        bind(app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi)));
+    writer.flush();
+}
+
+void SceneRenderer::writeSSRBindings(VulkanApp* app) {
+    if (!app || !mainSolidRenderer) return;
+    if (ssrColorSampler == VK_NULL_HANDLE || ssrDepthSampler == VK_NULL_HANDLE) return;
+    const uint32_t nsrc = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    if (nsrc == 0) return;
+    DescriptorWriter writer(app->getDevice());
+    auto bind = [&](VkDescriptorSet ds, uint32_t slot) {
+        if (ds == VK_NULL_HANDLE) return;
+        // Set `slot` renders into slot `slot`'s solid images; sample the
+        // previous frame's images, which live in (slot - 1) mod nsrc.
+        const uint32_t src = (slot + nsrc - 1u) % nsrc;
+        VkImageView c = mainSolidRenderer->getColorView(src);
+        VkImageView d = mainSolidRenderer->getDepthView(src);
+        if (c == VK_NULL_HANDLE || d == VK_NULL_HANDLE) return;
+        writer.writeImage(ds, 19, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          ssrColorSampler, c, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        writer.writeImage(ds, 20, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          ssrDepthSampler, d, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    };
+    for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi)
+        bind(app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi)), static_cast<uint32_t>(fi));
+    // Keep the static set valid too (it may be bound by passes that don't touch
+    // bindings 19/20; slot 0 views are always a legal image).
+    bind(app->getStaticDescriptorSet(), 0);
+    // Per-frame RT params (binding 17): each main set reads its own slot's
+    // camera matrices, so in-flight frames never see another frame's view.
+    if (rayTracing && rayTracing->isSupported()) {
+        for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi) {
+            VkDescriptorSet ds = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
+            VkBuffer pb = rayTracing->getParamsBuffer(static_cast<uint32_t>(fi));
+            if (ds == VK_NULL_HANDLE || pb == VK_NULL_HANDLE) continue;
+            writer.writeBuffer(ds, 17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, pb, 0, sizeof(RayTracingParams));
+        }
+    }
+    writer.flush();
+}
+
 void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
     if (!rayTracing || !rayTracing->isSupported()) return;
     // Fingerprint both proxy-source registries (count + bounds/material hash).
@@ -1892,6 +2070,48 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
     }
     static thread_local uint64_t lastFp = 0;
     static thread_local size_t lastCount = 0;
+    {
+        // ── Real scene geometry refresh ────────────────────────────────────
+        // Chunk re-uploads move the packed vertex/index spans even when the
+        // proxy bounds/material fingerprint is unchanged. Refresh the scene
+        // BLAS inputs whenever the span set actually differs, so reflections
+        // never trace spans that newer chunks reclaimed (stale geometry =
+        // wrong positions AND wrong per-vertex brushIndex textures).
+        if (mainSolidRenderer && textureArrays_) {
+            VkBuffer vb = mainSolidRenderer->getIndirectRenderer().getVertexBufferHandle();
+            VkBuffer ib = mainSolidRenderer->getIndirectRenderer().getIndexBufferHandle();
+            std::vector<IndirectRenderer::RTGeometrySpan> spans;
+            mainSolidRenderer->getIndirectRenderer().copyRTGeometrySpans(
+                spans, lastBandCamPos_, lastBandLodBias_, lastBandMaxLod_);
+            if (vb != VK_NULL_HANDLE && ib != VK_NULL_HANDLE && spans != lastSceneSpans_) {
+                lastSceneSpans_ = spans;
+                std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
+                VkBufferDeviceAddressInfo q{};
+                q.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+                q.buffer = vb;
+                const VkDeviceAddress vaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
+                q.buffer = ib;
+                const VkDeviceAddress iaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
+                std::vector<RayTracingResources::SceneTriGeometry> geoms;
+                geoms.reserve(spans.size());
+                for (const auto& s : spans) {
+                    RayTracingResources::SceneTriGeometry g;
+                    g.vertexAddress = vaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
+                    g.indexAddress = iaddr + VkDeviceAddress(s.firstIndex) * sizeof(uint32_t);
+                    g.vertexCount = s.vertexCount;
+                    g.indexCount = s.indexCount;
+                    g.baseVertex = s.baseVertex;
+                    g.firstIndex = s.firstIndex;
+                    auto it = mainSolidProxyData.find(s.chunkId);
+                    const uint32_t mat = (it != mainSolidProxyData.end()) ? it->second.materialId : 0u;
+                    const auto avg = textureArrays_->albedoAverage(mat);
+                    g.albedo = glm::vec4(avg[0], avg[1], avg[2], float(mat));
+                    geoms.push_back(g);
+                }
+                rayTracing->setSceneGeometry(std::move(geoms));
+            }
+        }
+    }
     if (!sceneChanged && fp == lastFp && count == lastCount) return;
     lastFp = fp;
     lastCount = count;
@@ -1916,34 +2136,88 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
         }
         auto pack = [&](const std::unordered_map<NodeID, SolidProxyData>& m,
                         std::vector<RTProxyBox>& out, bool isWater) {
+            // All visible LOD rungs are packed: each proxy is clamped inside
+            // its own octree cell, so different rungs stay disjoint and a
+            // reflection ray hits the same LOD the rasterizer draws. Packing
+            // only the finest rung left every mid/far reflection with no TLAS
+            // geometry to hit, so distant mirrors (polished water spheres)
+            // collapsed to the flat sky fallback. Sort by rung so that if the
+            // slot budget truncates, the finest (closest) boxes survive.
+            std::vector<std::pair<uint32_t, const SolidProxyData*>> sorted;
+            sorted.reserve(m.size());
             for (const auto& kv : m) {
                 const SolidProxyData& d = kv.second;
                 if (!(d.maxp.x > d.minp.x && d.maxp.y > d.minp.y && d.maxp.z > d.minp.z))
                     continue; // degenerate
-                // Frontier (finest rung) boxes only. Coarse ancestors nest
-                // over them with huge flat tops; letting them into the TLAS
-                // prints terraces + giant rectangles onto far-field water
-                // (and costs BLAS memory). Far rays then cleanly miss to
-                // sky / deep-water tint instead.
-                if (d.rung > 0) continue;
-                RTProxyBox b{};
-                b.minp = d.minp;
-                b.maxp = d.maxp;
-                b.materialId = static_cast<float>(d.materialId);
-                b.flags = isWater ? 1.0f : 0.0f;
+                sorted.emplace_back(d.rung, &d);
+            }
+            std::sort(sorted.begin(), sorted.end(),
+                      [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (const auto& [rung, dp] : sorted) {
+                (void)rung;
+                const SolidProxyData& d = *dp;
+                glm::vec3 chunkMin = d.minp;
+                glm::vec3 chunkMax = d.maxp;
+                // Grazing secondary rays (the reflected horizon) can slip
+                // between neighbouring chunk boxes when their AABB tops differ:
+                // they thread the vertical gap and stipple the sky/terrain
+                // boundary. Solid boxes tile their cells in X/Z, so extending
+                // each one downward closes those gaps with continuous side
+                // walls. Water boxes keep their true bounds (thickness).
+                if (!isWater) chunkMin.y -= 512.0f;
+
+                auto proxyAlbedo = [&](RTProxyBox& b) {
+                    if (isWater) {
+                        b.albedo = kWaterProxyAlbedo;
+                        b.roughness = 0.15f;
+                    } else if (textureArrays_) {
+                        // Real per-material average albedo (linear) so
+                        // secondary rays return plausible terrain colors
+                        // instead of flat gray.
+                        const auto avg = textureArrays_->albedoAverage(d.materialId);
+                        b.albedo = glm::vec3(avg[0], avg[1], avg[2]);
+                    }
+                };
+
                 if (isWater) {
-                    b.albedo = kWaterProxyAlbedo;
-                    b.roughness = 0.15f;
-                } else if (textureArrays_) {
-                    // Real per-material average albedo (linear) so secondary
-                    // rays return plausible terrain colors instead of flat
-                    // gray. This dissolves the gray-vs-sky rectangular tiles
-                    // in grazing water reflections/refractions into natural
-                    // scene variation.
-                    const auto avg = textureArrays_->albedoAverage(d.materialId);
-                    b.albedo = glm::vec3(avg[0], avg[1], avg[2]);
+                    // Water volumes keep one box: they are thickness volumes,
+                    // not heightfields.
+                    RTProxyBox b{};
+                    b.minp = chunkMin;
+                    b.maxp = chunkMax;
+                    b.materialId = static_cast<float>(d.materialId);
+                    b.flags = 1.0f;
+                    proxyAlbedo(b);
+                    out.push_back(b);
+                    continue;
                 }
-                out.push_back(b);
+
+                // Solid chunks: one box per 4x4 height-grid cell so secondary
+                // rays hit the chunk's real silhouette (reflection positions
+                // match the terrain surface within ~cell/4 instead of one flat
+                // box top per chunk).
+                constexpr int kGrid = 4;
+                const float w = chunkMax.x - chunkMin.x;
+                const float dep = chunkMax.z - chunkMin.z;
+                const float cw = w / float(kGrid);
+                const float cd = dep / float(kGrid);
+                const float floorY = chunkMin.y;
+                for (int gz = 0; gz < kGrid; ++gz) {
+                    for (int gx = 0; gx < kGrid; ++gx) {
+                        const float h = d.hgrid[gz * kGrid + gx];
+                        if (h <= d.minp.y) continue; // empty cell
+                        RTProxyBox b{};
+                        b.minp = glm::vec3(chunkMin.x + cw * float(gx), floorY,
+                                           chunkMin.z + cd * float(gz));
+                        b.maxp = glm::vec3((gx == kGrid - 1) ? chunkMax.x : b.minp.x + cw,
+                                           h,
+                                           (gz == kGrid - 1) ? chunkMax.z : b.minp.z + cd);
+                        b.materialId = static_cast<float>(d.materialId);
+                        b.flags = 0.0f;
+                        proxyAlbedo(b);
+                        out.push_back(b);
+                    }
+                }
             }
         };
         solids.reserve(mainSolidProxyData.size());
@@ -1952,14 +2226,14 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
             waters.reserve(mainWaterProxyData.size());
             pack(mainWaterProxyData, waters, true);
         }
-        { // Rare (repacks only): pack composition. Coarse ancestors are
-            // filtered, so this also fingerprints whether the frontier-only
-            // proxy set is active in a given binary.
+        { // Rare (repacks only): pack composition. All rungs are packed now,
+            // so this also fingerprints whether the all-rung proxy set is
+            // active in a given binary.
             static size_t lastKept = SIZE_MAX;
             const size_t kept = solids.size() + waters.size();
             if (kept != lastKept) {
                 lastKept = kept;
-                printf("[HybridRT] proxy pack: %zu solid + %zu water boxes (frontier only)\n",
+                printf("[HybridRT] proxy pack: %zu solid + %zu water boxes (all rungs)\n",
                     solids.size(), waters.size());
                 fflush(stdout);
             }
@@ -1992,10 +2266,20 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
                         settings.rtSelfSkipDist,
                         settings.rtWaterPipeline ? 1.0f : 0.0f);
     p.invViewProj = invViewProj;
+    // Temporal SSR: expose the previous frame's view-projection so solid
+    // reflections can reproject into the previous frame's color/depth instead
+    // of hammering it with the current camera (which stipples while moving).
+    p.prevViewProj = prevViewProj_;
+    prevViewProj_ = glm::inverse(invViewProj);
+    // LoD band inputs for the scene-geometry snapshot (same values the raster
+    // cull uses; consumed on the next rebuild).
+    lastBandCamPos_ = viewPos;
+    lastBandLodBias_ = settings.lodBias;
+    lastBandMaxLod_ = settings.maxTargetLod;
     p.viewPos = glm::vec4(viewPos, 1.0f);
     p.rtResolution = glm::vec4(0.0f);
     p.clipPlanes = glm::vec4(nearPlane, farPlane, 0.0f, 0.0f);
     p.sunDir = glm::vec4(sunDirTo, 0.0f);
     p.sunColor = glm::vec4(sunColor, 1.0f);
-    rayTracing->updateParams(p);
+    rayTracing->updateParams(p, app->getCurrentFrame());
 }

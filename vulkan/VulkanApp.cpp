@@ -5994,7 +5994,7 @@ void VulkanApp::createLogicalDevice() {
 
     // Create main descriptor pool immediately after device creation
     // (choose reasonable default counts for UBOs and samplers)
-    createDescriptorPool(32, 128);
+    createDescriptorPool(32, 192);
 
     // retrieve queue handles. If we requested multiple queues from the
     // graphics family, obtain them; otherwise fall back to the main
