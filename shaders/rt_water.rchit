@@ -12,6 +12,7 @@
 
 layout(set = 0, binding = 3) uniform RTBlock { RayTracingParamsGLSL rt; };
 layout(set = 0, binding = 4) readonly buffer ProxyMeta { RTProxyMetaGLSL metas[]; };
+layout(set = 0, binding = 6) uniform sampler2D skyEquirectTex;
 
 layout(location = 0) rayPayloadInEXT RTPayload rtPayload;
 hitAttributeEXT vec3 bary;
@@ -25,6 +26,26 @@ void main() {
     vec3 sunDir = normalize(rt.sunDir.xyz);
     float ndl = max(dot(N, sunDir), 0.0);
     vec3 albedo = meta.albedoRough.rgb;
+    // Water proxies (flags=1): the flat tint alone is near-black — a water
+    // surface mostly reflects the SKY (Fresnel grows toward grazing), so
+    // blend it in for visibility (mirrors main.frag/water.frag).
+    vec3 dir = normalize(gl_WorldRayDirectionEXT);
+    if (meta.maxAndFlags.w > 0.5) {
+        // Own-body guard: a box containing the ray origin is the fragment's
+        // own lake surface (the ray starts inside it) — a flat water surface
+        // reflects the sky, not itself.
+        vec3 o = gl_WorldRayOriginEXT;
+        bool ownBody = (o.x >= meta.minAndMatId.x && o.x <= meta.maxAndFlags.x &&
+                        o.z >= meta.minAndMatId.z && o.z <= meta.maxAndFlags.z);
+        vec3 skyR = texture(skyEquirectTex, rtDirToEquirectUV(dir)).rgb;
+        if (ownBody) {
+            albedo = skyR;
+        } else {
+            float fres = rtSchlickFresnel(clamp(dot(N, -dir), 0.0, 1.0), 0.02);
+            float wSky = clamp(fres * 1.5 + 0.5, 0.0, 1.0);
+            albedo = mix(albedo, skyR, wSky);
+        }
+    }
     // Ambient + sun diffuse, plus a fixed sky-ambient fill so upward-facing
     // underwater surfaces keep plausible brightness instead of crushing to
     // black under Beer-Lambert (proxy albedo has no sky light otherwise).

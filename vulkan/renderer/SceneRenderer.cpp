@@ -1436,6 +1436,35 @@ size_t SceneRenderer::publishPendingMeshes(
                 pd.minp = tmin;
                 pd.maxp = tmax;
                 pd.materialId = static_cast<uint32_t>(std::max(0, bestMat));
+                if (layer == LAYER_TRANSPARENT) {
+                    // Water reflection proxy: thin slab at the lake surface.
+                    // The water mesh is a flat lake top + terrain-contact
+                    // walls, so the raw vertex bounds span from the lake
+                    // bottom to terrain tops — a box that swallows the whole
+                    // scene. Reflection rays then always hit terrain (closer)
+                    // before the box's distant faces, so water never shows up
+                    // in reflections. Clamp Y to a thin band around the
+                    // dominant (modal) vertex height = the lake surface.
+                    std::unordered_map<int, uint32_t> yHist;
+                    yHist.reserve(64);
+                    for (const auto& v : lod.geom.vertices)
+                        ++yHist[static_cast<int>(v.position.y)];
+                    int bestY = 0;
+                    uint32_t bestYC = 0;
+                    for (const auto& kv : yHist)
+                        if (kv.second > bestYC) { bestYC = kv.second; bestY = kv.first; }
+                    const float surf = static_cast<float>(bestY);
+                    pd.minp.y = surf - 3.0f;
+                    // Extend well ABOVE the surface so the reflection rays
+                    // that pass over the lake (rising only a few degrees per
+                    // chunk) still catch the water slab instead of flying
+                    // past to the far shore / sky. The water.frag own-cell
+                    // rejection keeps the fragment's own cell from
+                    // self-hitting; the rchit own-body guard does the same
+                    // for the pipeline path.
+                    pd.maxp.y = surf + 150.0f;
+                    pd.hgrid.fill(surf);
+                }
                 // 4x4 max-height grid: proxy boxes per cell follow the chunk's
                 // real silhouette, so reflected secondaries land on the true
                 // surface instead of a single flat box top.
@@ -2093,7 +2122,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                 q.buffer = ib;
                 const VkDeviceAddress iaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
                 std::vector<RayTracingResources::SceneTriGeometry> geoms;
-                geoms.reserve(spans.size());
+                geoms.reserve(spans.size() + 64);
                 for (const auto& s : spans) {
                     RayTracingResources::SceneTriGeometry g;
                     g.vertexAddress = vaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
@@ -2107,6 +2136,37 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     const auto avg = textureArrays_->albedoAverage(mat);
                     g.albedo = glm::vec4(avg[0], avg[1], avg[2], float(mat));
                     geoms.push_back(g);
+                }
+                // Water chunks: append the real water MESH (transparent layer)
+                // to the scene BLAS so reflections hit the actual water surface
+                // triangles (accurate positions, no proxy boxes). The
+                // waterChunk flag routes hit shading to the water look (sky
+                // reflection + tint) instead of the terrain albedo lookup.
+                if (mainLiquidRenderer) {
+                    VkBuffer wvb = mainLiquidRenderer->getIndirectRenderer().getVertexBufferHandle();
+                    VkBuffer wib = mainLiquidRenderer->getIndirectRenderer().getIndexBufferHandle();
+                    std::vector<IndirectRenderer::RTGeometrySpan> wspan;
+                    mainLiquidRenderer->getIndirectRenderer().copyRTGeometrySpans(
+                        wspan, lastBandCamPos_, lastBandLodBias_, lastBandMaxLod_);
+                    if (wvb != VK_NULL_HANDLE && wib != VK_NULL_HANDLE && !wspan.empty()) {
+                        VkBufferDeviceAddressInfo wq{};
+                        wq.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+                        wq.buffer = wvb;
+                        const VkDeviceAddress wvaddr = vkGetBufferDeviceAddress(app->getDevice(), &wq);
+                        wq.buffer = wib;
+                        const VkDeviceAddress wiaddr = vkGetBufferDeviceAddress(app->getDevice(), &wq);
+                        for (const auto& s : wspan) {
+                            RayTracingResources::SceneTriGeometry g;
+                            g.vertexAddress = wvaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
+                            g.indexAddress = wiaddr + VkDeviceAddress(s.firstIndex) * sizeof(uint32_t);
+                            g.vertexCount = s.vertexCount;
+                            g.indexCount = s.indexCount;
+                            g.baseVertex = s.baseVertex;
+                            g.firstIndex = s.firstIndex;
+                            g.waterChunk = true;
+                            geoms.push_back(g);
+                        }
+                    }
                 }
                 rayTracing->setSceneGeometry(std::move(geoms));
             }

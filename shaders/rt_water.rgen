@@ -73,14 +73,16 @@ void main() {
     float maxRefract = max(rt.distances.y, 1.0);
     float ior = clamp(rt.water.x, 1.0, 2.5);
 
-    // Reflection (solid-only mask: the water surface is not in the solid
-    // BLAS by design, and the water BLAS is skipped to avoid self-hits).
+    // Reflection: solid proxies + water proxies so the water surface itself
+    // shows up in reflected water. Refraction stays solid-only (underwater
+    // targets).
     vec4 reflectValue = vec4(0.0, 0.0, 0.0, 0.0);
     if (rt.toggles.x > 0.5) {
         vec3 R = reflect(-V, N);
         rtPayload.data = vec4(0.0);
         rtPayload.coarseF = 0.0;
-        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID, 0, 0, 0,
+        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT,
+            RT_RAY_MASK_SOLID | RT_RAY_MASK_WATER, 0, 0, 0,
             pos + N * 0.05, 0.05, R, maxReflect, 0);
         vec3 skyR = texture(skyEquirectTex, rtDirToEquirectUV(normalize(R))).rgb;
         if (rtPayload.data.a < 0.0) {

@@ -78,7 +78,8 @@ layout(set = 0, binding = 25) readonly buffer RTSceneIndices { uint rtSceneIndic
 //   mirror positions match the scene; returns rgb = shaded hit (or sky on
 //   miss) with a = 1 on a hit, 0 on a miss.
 // Macro shadows stay CSM-owned: hits get ambient + sun diffuse only.
-vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thickCap) {
+vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thickCap,
+                  vec3 fragPos) {
     rayQueryEXT rq;
     // Refraction rays start AT the water surface and go down: tMin must be
     // tiny (1 cm) so shoreline shallows (<5 cm deep) still hit the lake bottom
@@ -89,10 +90,37 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // above the surface at the call site). Water is never a ray target (solid
     // mask), so no self-hit risk for refraction.
     float tMin = refraction ? 0.01 : 0.05;
-    const uint rayMask = refraction ? RT_RAY_MASK_SOLID : RT_RAY_MASK_SCENE;
-    rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, rayMask,
+    // Reflection traces the SCENE instance (real terrain + the real water
+    // mesh appended to the scene BLAS, flagged in geomInfo.w) AND the water
+    // proxy walls (extending above the surface) so the shallow reflection
+    // rays that pass over the lake still catch the water. The water BLAS is
+    // non-opaque so water hits surface as candidates: the fragment's OWN
+    // cell is rejected (flat water reflects sky, not itself) and traversal
+    // continues to distant water / terrain / sky. Refraction keeps the
+    // opaque flag + solid mask (underwater targets).
+    const uint rayMask = refraction ? RT_RAY_MASK_SOLID : (RT_RAY_MASK_SCENE | RT_RAY_MASK_WATER);
+    rayQueryInitializeEXT(rq, rtTlas, refraction ? gl_RayFlagsOpaqueEXT : 0, rayMask,
         origin, tMin, dir, tMax);
-    while (rayQueryProceedEXT(rq)) {}
+    if (refraction) {
+        while (rayQueryProceedEXT(rq)) {}
+    } else {
+        while (rayQueryProceedEXT(rq)) {
+            // Candidate triangle type = 1 (GLSL_EXT_ray_query enum).
+            if (rayQueryGetIntersectionTypeEXT(rq, false) == 1) {
+                if (rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false) == 1u) {
+                    uint bIdx = rtBoxIndex(uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false)), 1u);
+                    RTProxyMetaGLSL m = rtMetas[bIdx];
+                    // Reject ONLY the box that CONTAINS this fragment (its own
+                    // cell): the ray origin is inside it. Every OTHER water
+                    // box — same lake at a distance, other lakes — is accepted.
+                    bool ownCell = (fragPos.x >= m.minAndMatId.x && fragPos.x <= m.maxAndFlags.x &&
+                                    fragPos.z >= m.minAndMatId.z && fragPos.z <= m.maxAndFlags.z);
+                    if (ownCell) continue;
+                }
+                rayQueryConfirmIntersectionEXT(rq);
+            }
+        }
+    }
     // Explicit LOD: reachable under per-fragment control flow (pipe validity
     // / toggles / hit-vs-miss differ per pixel), where implicit-LOD texture()
     // has undefined derivatives.
@@ -171,6 +199,21 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
         vec3 hitN = normalize(n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y);
         if (dot(hitN, dir) > 0.0) hitN = -hitN;
+        // Water chunk marker (geomInfo.w): the real water mesh is in the scene
+        // BLAS — a water surface reflecting another water surface. Shade it as
+        // water (sky reflection + tint); its brushIndex addresses water
+        // params, not scene materials.
+        if (gi.w > 0u) {
+            vec3 toSun = normalize(rt.sunDir.xyz);
+            float ndl = max(dot(hitN, toSun), 0.0);
+            float viewDot = clamp(dot(hitN, -normalize(dir)), 0.0, 1.0);
+            float fres = rtSchlickFresnel(viewDot, 0.02);
+            float wSky = clamp(fres * 1.5 + 0.5, 0.0, 1.0);
+            vec3 tint = vec3(0.03, 0.10, 0.14)
+                * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
+            vec3 waterColor = mix(tint, sky, wSky);
+            return vec4(waterColor, 1.0);
+        }
         int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
         // Real painted material at this triangle (Vertex float offset 11 =
         // brushIndex). The proxy registry only knows the chunk's DOMINANT
@@ -220,6 +263,10 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // texture() has undefined derivatives. LOD from hit distance is stable.
     float hitLod = clamp(log2(1.0 + hitT * 0.02), 0.0, 4.0);
     vec3 hitAlbedo = computeTriplanarAlbedoLod(hitPos, triW, hitMat, boxN, hitLod);
+    // Water proxies carry a water-layer index (not a scene material) plus the
+    // fixed water tint in their average albedo (flags=1): use the flat tint,
+    // never triplanar-sample the water layer from albedoArray.
+    hitAlbedo = mix(hitAlbedo, meta.albedoRough.rgb, step(0.5, meta.maxAndFlags.w));
     // Distant proxy hits: triplanar LOD sampling reaches minified mips that
     // alias into stipple on far surfaces. Blend to the proxy's averaged albedo
     // with distance so far reflections/refractions stay smooth.
@@ -227,6 +274,17 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
                     clamp((hitT - 80.0) / 320.0, 0.0, 1.0));
     vec3 color = hitAlbedo * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
     if (!refraction) {
+        // Water proxies (flags=1): the flat tint alone is nearly black — a
+        // water surface mostly reflects the SKY (Fresnel grows toward
+        // grazing), so blend it in for visibility (mirrors what main.frag
+        // does for mirror-reflected water).
+        if (meta.maxAndFlags.w > 0.5) {
+            float fres = rtSchlickFresnel(clamp(dot(boxN, -normalize(dir)), 0.0, 1.0), 0.02);
+            // At least 50% sky so the reflected water surface is clearly
+            // visible (the raw proxy tint alone is near-black).
+            float wSky = clamp(fres * 1.5 + 0.5, 0.0, 1.0);
+            color = mix(color, sky, wSky);
+        }
         // Proxy fallback (only reached if the scene instance had no triangle).
         return vec4(color, 1.0);
     }
@@ -521,7 +579,7 @@ void main() {
             // down pushes shallow origins inside/below the lake-bottom slab and
             // misses the ground underneath. tMin (1 cm, inside rtTraceWater)
             // is the only self-guard, and the solid-only mask excludes water.
-            vec4 hit = rtTraceWater(fragPosWorld, refrRay, maxRefr, true, refrThickCap);
+            vec4 hit = rtTraceWater(fragPosWorld, refrRay, maxRefr, true, refrThickCap, fragPosWorld);
             sceneColor = hit.rgb;
             // a >= 0 always from rtTraceWater: capped path length on hit, or
             // RT_DEEP_WATER marker on miss (deep, unresolved water).
@@ -673,7 +731,7 @@ void main() {
     // match the scene. The async pipeline output (proxy boxes) is only a
     // fallback when the scene instance has no triangle along the ray.
     if (rtReady && rt.toggles.x > 0.5) {
-        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), RT_NO_LIMIT, false, 0.0);
+        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), RT_NO_LIMIT, false, 0.0, fragPosWorld);
         if (hit.a > 0.5) {
             skyColor = hit.rgb;
             reflResolved = true;

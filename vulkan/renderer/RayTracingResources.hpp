@@ -137,6 +137,10 @@ public:
         uint32_t baseVertex = 0;  // element offset into the merged vertex pool
         uint32_t firstIndex = 0;  // element offset into the merged index pool
         glm::vec4 albedo = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
+        // Water chunk marker: the geometry's brushIndex addresses water
+        // params, not scene materials — hit shading must use the water look
+        // (sky reflection + tint) instead of the terrain albedo lookup.
+        bool waterChunk = false;
     };
     void setSceneGeometry(std::vector<SceneTriGeometry> geoms);
     uint32_t sceneGeometryCount() const { return uint32_t(sceneGeoms_.size()); }

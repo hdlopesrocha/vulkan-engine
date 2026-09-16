@@ -414,6 +414,12 @@ void main() {
 #endif
             skyApprox *= aoBlend * (1.0 - rough * 0.5);
             vec3 rtColor = skyApprox;
+            // Set when the ray-query resolved the reflection to a WATER proxy:
+            // the SSR refinement samples the previous frame's SOLID render,
+            // which contains the lake BOTTOM terrain (water is a transparent
+            // pass), so it would overwrite the water surface tint with the
+            // underwater ground — "water not visible in the reflection".
+            bool waterHit = false;
             // Roughness gate + distance limit + global toggle + TLAS readiness
             // (ray queries compiled out without RT_ENABLED — sky fallback).
             float roughThreshold = 0.6;
@@ -435,17 +441,56 @@ void main() {
                 vec3 origin = fragPosWorld + reflN * selfSkip;
                 rayQueryEXT rq;
                 // Trace the real chunk triangles (scene instance) so reflected
-                // geometry sits at its true position; the proxy boxes remain
-                // for water refraction/thickness only.
-                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SCENE,
+                // geometry sits at its true position; the water proxy boxes
+                // (mask WATER) are included so the water surface shows up in
+                // reflections too. Solid proxies stay excluded (real triangles
+                // win where they exist).
+                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT,
+                    RT_RAY_MASK_SCENE | RT_RAY_MASK_WATER,
                     origin, 0.05, normalize(reflDir), RT_NO_LIMIT);
                 while (rayQueryProceedEXT(rq)) {}
                 if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
                     float hitT = rayQueryGetIntersectionTEXT(rq, true);
                     // Own-surface guard: hits closer than selfSkip are the
                     // reflector's own triangles, not true scenery.
-                    if (hitT >= selfSkip &&
-                        rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) == RT_SCENE_INSTANCE) {
+                    if (hitT >= selfSkip) {
+                        const uint inst = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+                        if (inst == 1u) {
+                            // Water proxy hit: mirror shows the water surface.
+                            // Water boxes carry the fixed water tint in their
+                            // average albedo (their materialId addresses water
+                            // params, not scene materials), so shade that flat
+                            // tint with the box-face normal like water.frag.
+                            vec3 hitPos = origin + normalize(reflDir) * hitT;
+                            uint boxIdx = rtBoxIndex(
+                                uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)), inst);
+                            RTProxyMetaGLSL meta = rtMetas[boxIdx];
+                            bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
+                            vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz,
+                                                    meta.maxAndFlags.xyz, exiting);
+                            vec3 toLight = -normalize(ubo.lightDir.xyz);
+                            float ndl = max(dot(boxN, toLight), 0.0);
+                            // A water surface mostly reflects the SKY (Fresnel
+                            // grows toward grazing), with its tint at near-
+                            // normal incidence. The raw proxy tint alone is
+                            // near-black, so blend the sky along the reflected
+                            // direction in — that's what makes the lake
+                            // visible in the mirror.
+                            vec3 skyR = rtProceduralSky(normalize(reflDir),
+                                sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
+                            float viewDot = clamp(dot(boxN, -normalize(reflDir)), 0.0, 1.0);
+                            float fres = rtSchlickFresnel(viewDot, 0.02);
+                            // At least 50% sky so the reflected water surface
+                            // is clearly visible (the raw proxy tint alone is
+                            // near-black).
+                            float wSky = clamp(fres * 1.5 + 0.5, 0.0, 1.0);
+                            vec3 tint = meta.albedoRough.rgb
+                                * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
+                                   + vec3(0.09, 0.12, 0.15));
+                            rtColor = mix(tint, skyR, wSky);
+                            rtColor *= aoBlend * (1.0 - rough * 0.5);
+                            waterHit = true;
+                        } else if (inst == RT_SCENE_INSTANCE) {
                         // The primitive index is LOCAL to the hit geometry
                         // (per GLSL_EXT_ray_query: "the index of the primitive
                         // within the geometry of the BLAS"). The geometry index
@@ -522,6 +567,25 @@ void main() {
                         vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
                         vec3 hitN = normalize(n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y);
                         if (dot(hitN, reflDir) > 0.0) hitN = -hitN; // face the incoming ray
+                        // Water chunk marker (geomInfo.w): the real water mesh
+                        // is in the scene BLAS; shade it as water (sky
+                        // reflection + tint), never the terrain albedo lookup
+                        // (a water chunk's brushIndex addresses water params).
+                        if (gi.w > 0u) {
+                            vec3 skyR = rtProceduralSky(normalize(reflDir),
+                                sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
+                            vec3 toLight = -normalize(ubo.lightDir.xyz);
+                            float ndl = max(dot(hitN, toLight), 0.0);
+                            float viewDot = clamp(dot(hitN, -normalize(reflDir)), 0.0, 1.0);
+                            float fres = rtSchlickFresnel(viewDot, 0.02);
+                            float wSky = clamp(fres * 1.5 + 0.5, 0.0, 1.0);
+                            vec3 tint = vec3(0.03, 0.10, 0.14)
+                                * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
+                                   + vec3(0.09, 0.12, 0.15));
+                            rtColor = mix(tint, skyR, wSky);
+                            rtColor *= aoBlend * (1.0 - rough * 0.5);
+                            waterHit = true;
+                        } else {
                         // Real painted material at this triangle (Vertex float
                         // offset 11 = brushIndex): the proxy registry only
                         // knows the chunk's DOMINANT brush, which loses the
@@ -549,16 +613,18 @@ void main() {
                         rtColor = hitAlbedo * (ubo.lightColor.rgb * ndl * (1.0 - hitShadow)
                                                + vec3(0.09, 0.12, 0.15));
                         rtColor *= aoBlend * (1.0 - rough * 0.5);
+                        } // terrain else
                         } // !ssHit
                     }
                 }
+            }
 #endif
             }
             // SSR refinement: where the reflected scene is on screen, the
             // previous frame's real color/depth resolve the mirror per pixel;
             // the proxy/sky result above stays the fallback for the rest.
 #ifdef RT_ENABLED
-            {
+            if (!waterHit) {
                 vec4 selfClip = rt.prevViewProj * vec4(fragPosWorld, 1.0);
                 if (selfClip.w > 0.001) {
                     vec2 selfUV = selfClip.xy / selfClip.w * 0.5 + 0.5;

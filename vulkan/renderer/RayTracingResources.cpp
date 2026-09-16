@@ -156,7 +156,8 @@ void RayTracingResources::createRTDescriptors(VulkanApp* app) {
     bind(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
     bind(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_RAYGEN_BIT_KHR);
     bind(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR);
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR
+            | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR); // rchit samples sky for water-proxy reflections
     VkDescriptorSetLayoutCreateInfo li{};
     li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     li.bindingCount = uint32_t(bindings.size());
@@ -690,7 +691,7 @@ bool RayTracingResources::recordSceneBlas(VulkanApp* app, VkCommandBuffer cmd) {
         ranges[i].transformOffset = 0;
         primCounts[i] = pc;
         if (primBase) primBase[1 + i] = prim;
-        if (geomInfo) geomInfo[i] = glm::uvec4(s.baseVertex, s.firstIndex, prim, 0u);
+        if (geomInfo) geomInfo[i] = glm::uvec4(s.baseVertex, s.firstIndex, prim, s.waterChunk ? 1u : 0u);
         if (meta) meta[i] = s.albedo;
         prim += pc;
     }
@@ -963,7 +964,12 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
         VkAccelerationStructureGeometryTrianglesDataKHR tris = makeBuildTris(
             aabbAddress_ + waterVertBase, kMaxWaterProxies * kVertsPerBox,
             aabbAddress_ + waterIdxBase);
+        // Water boxes are NON-OPAQUE: water.frag reflection rays surface them
+        // as ray-query candidates so the fragment's own (same-height) water
+        // body can be rejected (flat water reflects sky, not itself) while
+        // distant water bodies stay visible in reflections.
         VkAccelerationStructureGeometryKHR geom = makeGeom(tris);
+        geom.flags = 0;
         buildBlas(blasWater_, waterScratchAligned_, geom, kMaxWaterProxies * kTrisPerBox);
     }
     // 3b. Real scene-geometry BLAS (exact chunk triangles for reflection rays).
