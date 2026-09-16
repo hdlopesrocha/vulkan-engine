@@ -431,7 +431,10 @@ void main() {
             float roughThreshold = 0.6;
 #ifdef RT_ENABLED
             roughThreshold = clamp(rt.distances.w, 0.0, 1.0);
-            bool doRTTrace = (rt.debug.y > 0.5) && rt.toggles.x > 0.5 && rough <= roughThreshold;
+            // Inverted material convention: high value = smooth/reflective.
+            // Trace when the value is above the threshold (reflective half).
+            bool doRTTrace = (rt.debug.y > 0.5) && rt.toggles.x > 0.5
+                && rough >= (1.0 - roughThreshold);
 #else
             bool doRTTrace = false;
 #endif
@@ -652,11 +655,10 @@ void main() {
             // reflection, progressively replacing it with stale content.)
 #endif
             envReflection = rtColor;
-            // The rasterized material roughness controls the reflectivity:
-            // smooth (rough ≈ 0) = full mirror, rough (≈ 1) = matte lit color
-            // only. The RT roughness gate above already skips the trace for
-            // very rough surfaces; this factor fades the result smoothly.
-            envFresnelFactor = 1.0 - clamp(rough, 0.0, 1.0);
+            // The material's rasterized roughness value IS the reflectivity
+            // (the material convention is inverted: 1.0 = smooth/reflective,
+            // 0 = matte). The RT gate above traces when the value is high.
+            envFresnelFactor = clamp(rough, 0.0, 1.0);
         }
     }
 
