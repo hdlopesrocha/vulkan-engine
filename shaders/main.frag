@@ -553,49 +553,11 @@ void main() {
                         // vertex pool (Vertex stride 16 floats: position 0-2,
                         // normal 8-10) via the hit barycentrics.
                         vec3 hitPos = origin + normalize(reflDir) * hitT;
-                        // Screen-space color lookup first: sample the previous
-                        // frame's solid render at the reflected hit point so
-                        // the mirror shows the terrain as rendered (ground
-                        // cover mix, shadows, detail) instead of one flat
-                        // dominant-material sample.
-                        bool ssHit = false;
+                        // (Screen-space color lookup removed: it pasted the
+                        // previous frame's solid render — including the sky —
+                        // over the accurate RT reflection. The ray-query
+                        // shading below is the real reflection.)
                         {
-                            vec4 hc = rt.prevViewProj * vec4(hitPos, 1.0);
-                            if (hc.w > 0.001) {
-                                vec2 huv = hc.xy / hc.w * 0.5 + 0.5;
-                                if (huv.x >= 0.0 && huv.x <= 1.0 && huv.y >= 0.0 && huv.y <= 1.0) {
-                                    float hd = textureLod(ssrDepthTex, huv, 0.0).r;
-                                    if (hd < 1.0) {
-                                        float nearP = ubo.passParams.z;
-                                        float farP = ubo.passParams.w;
-                                        float sceneEye = (nearP * farP) / (farP - hd * (farP - nearP));
-                                        // Reprojection-confidence gate: while
-                                        // the camera moves, a different surface
-                                        // can sit at a similar depth in the
-                                        // previous frame (2 m / 2% tolerance is
-                                        // too permissive) and SSR would paste
-                                        // its wrong color → flicker. Tighten
-                                        // the depth match AND fade SSR out by
-                                        // how far the hit point moved between
-                                        // the previous and current views; the
-                                        // accurate ray-query albedo takes over.
-                                        float depthTol = max(0.4, sceneEye * 0.006);
-                                        if (abs(hc.w - sceneEye) < depthTol) {
-                                            vec4 cc = ubo.viewProjection * vec4(hitPos, 1.0);
-                                            vec2 cuv = (cc.w > 0.001)
-                                                ? cc.xy / cc.w * 0.5 + 0.5 : huv;
-                                            float reprojDist = distance(cuv, huv);
-                                            float conf = 1.0 - smoothstep(0.02, 0.10, reprojDist);
-                                            if (conf > 0.05) {
-                                                rtColor = textureLod(ssrColorTex, huv, 0.0).rgb * aoBlend;
-                                                ssHit = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if (!ssHit) {
                         uvec4 gi = rtSceneGeomInfo[lo];
                         // prim is already local to this geometry (ray-query
                         // semantics) — do NOT subtract the cumulative base.
@@ -705,25 +667,10 @@ void main() {
             // previous frame's real color/depth resolve the mirror per pixel;
             // the proxy/sky result above stays the fallback for the rest.
 #ifdef RT_ENABLED
-            if (!waterHit) {
-                vec4 selfClip = rt.prevViewProj * vec4(fragPosWorld, 1.0);
-                if (selfClip.w > 0.001) {
-                    vec2 selfUV = selfClip.xy / selfClip.w * 0.5 + 0.5;
-                    vec4 ssr = traceSSR(fragPosWorld + reflN * 0.05, normalize(reflDir),
-                                        normalize(reflV), rt.prevViewProj, selfUV);
-                    if (ssr.a > 0.0) {
-                        // Motion fade: how far THIS fragment moved between the
-                        // previous and current views. Static camera → ~0 → the
-                        // previous frame's color is a faithful reflection.
-                        // Moving camera → grows → previous-frame data is stale
-                        // (wrong texture paste) → fade to the ray-query albedo.
-                        vec4 sc = ubo.viewProjection * vec4(fragPosWorld, 1.0);
-                        vec2 sUV = (sc.w > 0.001) ? sc.xy / sc.w * 0.5 + 0.5 : selfUV;
-                        float motionFade = 1.0 - smoothstep(0.02, 0.12, distance(sUV, selfUV));
-                        rtColor = mix(rtColor, ssr.rgb, ssr.a * motionFade);
-                    }
-                }
-            }
+            // (Screen-space refinement removed: the inline ray query hits the
+            // real geometry and shades it accurately. The previous-frame SSR
+            // pasted the old solid render — including the sky — on top of the
+            // reflection, progressively replacing it with stale content.)
 #endif
             envReflection = rtColor;
             // Full-strength reflection: the RT reflection is not faded by
