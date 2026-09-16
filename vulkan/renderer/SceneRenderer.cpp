@@ -2370,13 +2370,20 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     // so the reflection must cover the same chunks the raster draws. When the
     // selected spans change (camera crossed a band frontier), rebuild the
     // scene geometry — otherwise chunks the raster shows are missing from the
-    // reflection (sky holes). O(active meshes), rebuild only on change.
+    // reflection (sky holes). Throttled to every 10 frames so rapid camera
+    // movement coalesces the expensive rebuild; the reflection catches up
+    // within a few frames. O(active meshes) comparison per frame.
     if (mainSolidRenderer && textureArrays_) {
         std::vector<IndirectRenderer::RTGeometrySpan> spans;
         mainSolidRenderer->getIndirectRenderer().copyRTGeometrySpans(
             spans, lastBandCamPos_, lastBandLodBias_, lastBandMaxLod_);
         if (spans != lastSceneSpans_) {
-            rebuildProxySet(app, false);
+            static thread_local uint32_t lastSceneRebuild = 0;
+            const uint32_t curFrame = app ? app->getCurrentFrame() : 0;
+            if (curFrame - lastSceneRebuild >= 10) {
+                lastSceneRebuild = curFrame;
+                rebuildProxySet(app, false);
+            }
         }
     }
     p.viewPos = glm::vec4(viewPos, 1.0f);

@@ -439,7 +439,7 @@ void RayTracingResources::createAccelStructures(VulkanApp* app) {
         aabbAddress_ + VkDeviceSize(kMaxProxies) * kVertsPerBox * kVertStride);
     VkAccelerationStructureBuildSizesInfoKHR sizes = querySizes(solidGeom, solidTris);
     blasBuffer_ = app->createBuffer(sizes.accelerationStructureSize, asUsage,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, /*zeroInit=*/false);
     blasScratchAligned_ = alignedScratch(blasScratch_, sizes.buildScratchSize, "BLAS scratch device address is 0");
 
     VkAccelerationStructureCreateInfoKHR blasCI{};
@@ -732,7 +732,7 @@ bool RayTracingResources::recordSceneBlas(VulkanApp* app, VkCommandBuffer cmd) {
             sceneBlasBuffer_ = {};
         }
         sceneBlasBuffer_ = app->createBuffer(sizes.accelerationStructureSize, asUsage,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, /*zeroInit=*/false);
         VkAccelerationStructureCreateInfoKHR ci{};
         ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
         ci.buffer = sceneBlasBuffer_.buffer;
@@ -760,7 +760,7 @@ bool RayTracingResources::recordSceneBlas(VulkanApp* app, VkCommandBuffer cmd) {
         }
         sceneScratch_ = app->createBuffer(sizes.buildScratchSize + scratchAlign_,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, /*zeroInit=*/false);
         sceneScratchSize_ = sizes.buildScratchSize + scratchAlign_;
     }
     VkBufferDeviceAddressInfo scratchAddrQ{};
