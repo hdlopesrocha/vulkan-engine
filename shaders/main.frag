@@ -478,16 +478,13 @@ void main() {
                             // visible in the mirror.
                             vec3 skyR = rtProceduralSky(normalize(reflDir),
                                 sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
-                            float viewDot = clamp(dot(boxN, -normalize(reflDir)), 0.0, 1.0);
-                            float fres = rtSchlickFresnel(viewDot, 0.02);
-                            // At least 50% sky so the reflected water surface
-                            // is clearly visible (the raw proxy tint alone is
-                            // near-black).
-                            float wSky = clamp(fres * 1.5 + 0.5, 0.0, 1.0);
+                            // Transparent water look: the water's own tint
+                            // dominates, with a hint of sky so it never reads
+                            // flat-black. No recursive reflection/refraction.
                             vec3 tint = meta.albedoRough.rgb
                                 * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
                                    + vec3(0.09, 0.12, 0.15));
-                            rtColor = mix(tint, skyR, wSky);
+                            rtColor = mix(tint, skyR, 0.2);
                             rtColor *= aoBlend * (1.0 - rough * 0.5);
                             waterHit = true;
                         } else if (inst == RT_SCENE_INSTANCE) {
@@ -572,17 +569,19 @@ void main() {
                         // reflection + tint), never the terrain albedo lookup
                         // (a water chunk's brushIndex addresses water params).
                         if (gi.w > 0u) {
-                            vec3 skyR = rtProceduralSky(normalize(reflDir),
-                                sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
                             vec3 toLight = -normalize(ubo.lightDir.xyz);
                             float ndl = max(dot(hitN, toLight), 0.0);
-                            float viewDot = clamp(dot(hitN, -normalize(reflDir)), 0.0, 1.0);
-                            float fres = rtSchlickFresnel(viewDot, 0.02);
-                            float wSky = clamp(fres * 1.5 + 0.5, 0.0, 1.0);
-                            vec3 tint = vec3(0.03, 0.10, 0.14)
+                            // Reflected water: transparent water look — the
+                            // water's own tint (from the layer's shallow/deep
+                            // colors via rtSceneAlbedo), not a recursive
+                            // reflection/refraction. A hint of sky keeps it
+                            // from reading flat-black at night.
+                            vec3 tint = rtSceneAlbedo[lo].rgb
                                 * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
                                    + vec3(0.09, 0.12, 0.15));
-                            rtColor = mix(tint, skyR, wSky);
+                            vec3 skyR = rtProceduralSky(normalize(reflDir),
+                                sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
+                            rtColor = mix(tint, skyR, 0.2);
                             rtColor *= aoBlend * (1.0 - rough * 0.5);
                             waterHit = true;
                         } else {

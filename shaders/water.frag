@@ -206,12 +206,13 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         if (gi.w > 0u) {
             vec3 toSun = normalize(rt.sunDir.xyz);
             float ndl = max(dot(hitN, toSun), 0.0);
-            float viewDot = clamp(dot(hitN, -normalize(dir)), 0.0, 1.0);
-            float fres = rtSchlickFresnel(viewDot, 0.02);
-            float wSky = clamp(fres * 1.5 + 0.5, 0.0, 1.0);
-            vec3 tint = vec3(0.03, 0.10, 0.14)
+            // Reflected water: transparent water look — the water's own tint
+            // (from the layer's shallow/deep colors via rtSceneAlbedo), not a
+            // recursive reflection/refraction. A hint of sky keeps it from
+            // reading flat-black at night.
+            vec3 tint = rtSceneAlbedo[lo].rgb
                 * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
-            vec3 waterColor = mix(tint, sky, wSky);
+            vec3 waterColor = mix(tint, sky, 0.2);
             return vec4(waterColor, 1.0);
         }
         int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
@@ -276,14 +277,11 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     if (!refraction) {
         // Water proxies (flags=1): the flat tint alone is nearly black — a
         // water surface mostly reflects the SKY (Fresnel grows toward
-        // grazing), so blend it in for visibility (mirrors what main.frag
-        // does for mirror-reflected water).
+        // for mirror-reflected water).
         if (meta.maxAndFlags.w > 0.5) {
-            float fres = rtSchlickFresnel(clamp(dot(boxN, -normalize(dir)), 0.0, 1.0), 0.02);
-            // At least 50% sky so the reflected water surface is clearly
-            // visible (the raw proxy tint alone is near-black).
-            float wSky = clamp(fres * 1.5 + 0.5, 0.0, 1.0);
-            color = mix(color, sky, wSky);
+            // Transparent water look: the water's own tint dominates, with a
+            // hint of sky. No recursive reflection/refraction.
+            color = mix(color, sky, 0.2);
         }
         // Proxy fallback (only reached if the scene instance had no triangle).
         return vec4(color, 1.0);

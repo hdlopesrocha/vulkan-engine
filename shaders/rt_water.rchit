@@ -41,9 +41,9 @@ void main() {
         if (ownBody) {
             albedo = skyR;
         } else {
-            float fres = rtSchlickFresnel(clamp(dot(N, -dir), 0.0, 1.0), 0.02);
-            float wSky = clamp(fres * 1.5 + 0.5, 0.0, 1.0);
-            albedo = mix(albedo, skyR, wSky);
+            // Transparent water look: the water's own tint dominates, with a
+            // hint of sky. No recursive reflection/refraction.
+            albedo = mix(albedo, skyR, 0.2);
         }
     }
     // Ambient + sun diffuse, plus a fixed sky-ambient fill so upward-facing

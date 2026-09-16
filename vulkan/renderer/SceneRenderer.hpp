@@ -113,6 +113,9 @@ public:
     // Texture arrays (owned by main): per-layer albedo averages feed the RT
     // proxy albedo. Set once in init(); read on the render thread.
     TextureArrayManager* textureArrays_ = nullptr;
+    // Representative water surface tint (from the water layer's shallow/deep
+    // colors) used to shade reflected water in RT hit shading.
+    glm::vec3 waterReflectionTint_ = glm::vec3(0.03f, 0.10f, 0.14f);
     // Set by the texture allocation listener (any thread); consumed on the
     // render thread in processPendingMeshes to refresh RT proxy albedos.
     std::atomic<bool> proxyAlbedoRefresh_{false};

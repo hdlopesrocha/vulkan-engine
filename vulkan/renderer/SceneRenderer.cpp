@@ -260,6 +260,17 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Keep the texture arrays for RT proxy albedo lookups (per-layer averages).
     textureArrays_ = textureArrayManager;
 
+    // Representative water surface tint for reflected water: the water's own
+    // shallow→deep mix (the surface-visible color), so reflected water reads
+    // with the actual water color instead of a hardcoded blue. Falls back to
+    // the fixed tint when no water layer is provided.
+    {
+        const WaterParams& wp = waterParams.empty() ? WaterParams{} : waterParams[0];
+        const glm::vec3 shallow = wp.shallowColor;
+        const glm::vec3 deep = wp.deepColor;
+        waterReflectionTint_ = mix(shallow, deep, 0.35f);
+    }
+
     // Initialize the async streaming orchestrator. It is the ONLY transfer
     // engine: solid/water incremental chunk uploads route through it (32
     // concurrent 4 MiB staging slots, no per-frame cap). slotSize =
@@ -2164,6 +2175,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                             g.baseVertex = s.baseVertex;
                             g.firstIndex = s.firstIndex;
                             g.waterChunk = true;
+                            g.albedo = glm::vec4(waterReflectionTint_, 1.0f);
                             geoms.push_back(g);
                         }
                     }
@@ -2228,7 +2240,10 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
 
                 auto proxyAlbedo = [&](RTProxyBox& b) {
                     if (isWater) {
-                        b.albedo = kWaterProxyAlbedo;
+                        // Actual water surface tint (shallow/deep mix from the
+                        // water layer), not a hardcoded blue — so reflected
+                        // water carries the real water color.
+                        b.albedo = waterReflectionTint_;
                         b.roughness = 0.15f;
                     } else if (textureArrays_) {
                         // Real per-material average albedo (linear) so
