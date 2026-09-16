@@ -682,13 +682,7 @@ bool RayTracingResources::recordSceneBlas(VulkanApp* app, VkCommandBuffer cmd) {
         g.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
         g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
         g.geometry.triangles = t;
-        // NON-OPAQUE: solid reflection rays surface every triangle as a
-        // ray-query candidate so the shader can reject the reflector's OWN
-        // displaced surface (self-hits) and continue to the real reflection.
-        // Paths that need opaque handling pass gl_RayFlagsOpaqueEXT in the
-        // ray query (shadow rays, water marker path), which forces opaque
-        // regardless of the geometry flag.
-        g.flags = 0;
+        g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
         geoms[i] = g;
         const uint32_t pc = s.indexCount / 3;
         ranges[i].primitiveCount = pc;
