@@ -789,8 +789,9 @@ bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
     if (!haveBoxes && !lastBuiltValid_) return false;
     // Throttle: at most one rebuild per 30 frames — chunk bursts (scene load /
     // brush edits) coalesce into a single build instead of one per publish.
-    // Camera moves / LOD switches never mark dirty, so they never rebuild (§6).
-    if (frameCounter_ - lastBuildFrame_ < 30 && lastBuiltValid_) return false;
+    // The scene BLAS is exempt: its spans follow the camera LoD bands, so it
+    // must rebuild promptly when they change (missing reflection chunks).
+    if (frameCounter_ - lastBuildFrame_ < 30 && lastBuiltValid_ && !sceneBlasDirty_) return false;
     const auto t0 = std::chrono::high_resolution_clock::now();
     const bool built = recordBuild(app, cmd);
     if (built) {

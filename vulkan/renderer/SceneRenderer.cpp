@@ -2366,6 +2366,19 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     lastBandCamPos_ = viewPos;
     lastBandLodBias_ = settings.lodBias;
     lastBandMaxLod_ = settings.maxTargetLod;
+    // Per-frame scene BLAS refresh: the LoD band selection follows the camera,
+    // so the reflection must cover the same chunks the raster draws. When the
+    // selected spans change (camera crossed a band frontier), rebuild the
+    // scene geometry — otherwise chunks the raster shows are missing from the
+    // reflection (sky holes). O(active meshes), rebuild only on change.
+    if (mainSolidRenderer && textureArrays_) {
+        std::vector<IndirectRenderer::RTGeometrySpan> spans;
+        mainSolidRenderer->getIndirectRenderer().copyRTGeometrySpans(
+            spans, lastBandCamPos_, lastBandLodBias_, lastBandMaxLod_);
+        if (spans != lastSceneSpans_) {
+            rebuildProxySet(app, false);
+        }
+    }
     p.viewPos = glm::vec4(viewPos, 1.0f);
     p.rtResolution = glm::vec4(0.0f);
     p.clipPlanes = glm::vec4(nearPlane, farPlane, 0.0f, 0.0f);
