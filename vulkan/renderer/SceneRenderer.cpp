@@ -2367,23 +2367,26 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     lastBandLodBias_ = settings.lodBias;
     lastBandMaxLod_ = settings.maxTargetLod;
     // Per-frame scene BLAS refresh: the LoD band selection follows the camera,
-    // so the reflection must cover the same chunks the raster draws. When the
-    // selected spans change (camera crossed a band frontier), rebuild the
-    // scene geometry — otherwise chunks the raster shows are missing from the
-    // reflection (sky holes). Throttled to every 10 frames so rapid camera
-    // movement coalesces the expensive rebuild; the reflection catches up
-    // within a few frames. O(active meshes) comparison per frame.
+    // so the reflection must cover the same chunks the raster draws. The
+    // expensive rebuild (hundreds of MB of AS + proxies) is deferred until the
+    // selection SETTLES — it rebuilds once, right after the camera stops
+    // moving. While moving, the previous BLAS stays (transiently stale);
+    // rebuilding every few frames under movement saturated the iGPU and
+    // caused GPUVM faults (device lost). O(active meshes) comparison/frame.
     if (mainSolidRenderer && textureArrays_) {
         std::vector<IndirectRenderer::RTGeometrySpan> spans;
         mainSolidRenderer->getIndirectRenderer().copyRTGeometrySpans(
             spans, lastBandCamPos_, lastBandLodBias_, lastBandMaxLod_);
-        if (spans != lastSceneSpans_) {
-            static thread_local uint32_t lastSceneRebuild = 0;
-            const uint32_t curFrame = app ? app->getCurrentFrame() : 0;
-            if (curFrame - lastSceneRebuild >= 10) {
-                lastSceneRebuild = curFrame;
-                rebuildProxySet(app, false);
-            }
+        static thread_local std::vector<IndirectRenderer::RTGeometrySpan> lastFrameSpans;
+        static thread_local bool selectionChanging = false;
+        const bool changed = (spans != lastFrameSpans);
+        lastFrameSpans = spans;
+        if (changed) {
+            selectionChanging = true;
+        } else if (selectionChanging) {
+            // The selection stopped changing (camera settled): rebuild once.
+            selectionChanging = false;
+            rebuildProxySet(app, false);
         }
     }
     p.viewPos = glm::vec4(viewPos, 1.0f);
