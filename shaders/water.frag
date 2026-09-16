@@ -323,6 +323,13 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
                 // moves → ndl flickers.
                 * (rt.sunColor.rgb * (0.55 + 0.45 * max(dot(vec3(0.0, 1.0, 0.0), normalize(rt.sunDir.xyz)), 0.0))
                    + vec3(0.09, 0.12, 0.15));
+            // Soft top edge: rays that graze the wall's top alternate between
+            // hitting the wall (water) and passing over it (sky) as the
+            // camera moves — a hard switch that flickers. Fade toward the sky
+            // near the top so the boundary is continuous.
+            float topFade = smoothstep(
+                meta.maxAndFlags.y - 15.0, meta.maxAndFlags.y, hitPos.y);
+            color = mix(color, sky, topFade);
         }
         // Proxy fallback (only reached if the scene instance had no triangle).
         return vec4(color, 1.0);

@@ -499,9 +499,18 @@ void main() {
                             float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
                             vec3 skyR = rtProceduralSky(normalize(reflDir),
                                 sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
-                            rtColor = mix(skyR * transmittance, waterTintColor, tintBlend)
+                            vec3 waterColor = mix(skyR * transmittance, waterTintColor, tintBlend)
                                 * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
                                    + vec3(0.09, 0.12, 0.15));
+                            // Soft top edge: rays that graze the wall's top
+                            // alternate between hitting the wall (water) and
+                            // passing over it (sky) as the camera moves — a
+                            // hard switch that flickers. Fade the water color
+                            // toward the sky near the top so the boundary is
+                            // continuous.
+                            float topFade = smoothstep(
+                                meta.maxAndFlags.y - 15.0, meta.maxAndFlags.y, hitPos.y);
+                            rtColor = mix(waterColor, skyR, topFade);
                             rtColor *= aoBlend * (1.0 - rough * 0.5);
                             waterHit = true;
                         } else if (inst == RT_SCENE_INSTANCE) {

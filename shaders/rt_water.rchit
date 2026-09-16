@@ -48,6 +48,13 @@ void main() {
             // Transparent water look: the water's own tint dominates, with a
             // hint of sky. No recursive reflection/refraction.
             albedo = mix(albedo, skyR, 0.2);
+            // Soft top edge: rays that graze the wall's top alternate between
+            // hitting the wall (water) and passing over it (sky) as the
+            // camera moves — a hard switch that flickers. Fade toward the sky
+            // near the top so the boundary is continuous.
+            float topFade = smoothstep(
+                meta.maxAndFlags.y - 15.0, meta.maxAndFlags.y, hitPos.y);
+            albedo = mix(albedo, skyR, topFade);
         }
     }
     // Ambient + sun diffuse, plus a fixed sky-ambient fill so upward-facing
