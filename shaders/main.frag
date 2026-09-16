@@ -487,12 +487,16 @@ void main() {
                             float tintDepthScale = max(wp.causticParams.w, 0.0001);
                             float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
                             vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+                            vec3 transmittance = exp(-min(
+                                wp.absorptionParams.rgb
+                                    * max(thickness * wp.absorptionParams.a, 0.0),
+                                vec3(2.5)));
                             float depthFade = 1.0 - exp(-thickness * depthFalloff);
                             float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
                             float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
                             vec3 skyR = rtProceduralSky(normalize(reflDir),
                                 sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
-                            rtColor = mix(skyR, waterTintColor, tintBlend)
+                            rtColor = mix(skyR * transmittance, waterTintColor, tintBlend)
                                 * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
                                    + vec3(0.09, 0.12, 0.15));
                             rtColor *= aoBlend * (1.0 - rough * 0.5);
@@ -596,6 +600,13 @@ void main() {
                             float tintDepthScale = max(wp.causticParams.w, 0.0001);
                             float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
                             vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+                            // Beer-Lambert absorption (water.frag): the sky seen
+                            // through the transparent water is attenuated by the
+                            // water column.
+                            vec3 transmittance = exp(-min(
+                                wp.absorptionParams.rgb
+                                    * max(thickness * wp.absorptionParams.a, 0.0),
+                                vec3(2.5)));
                             float depthFade = 1.0 - exp(-thickness * depthFalloff);
                             float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
                             float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
@@ -603,7 +614,7 @@ void main() {
                                 sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
                             vec3 toLight = -normalize(ubo.lightDir.xyz);
                             float ndl = max(dot(hitN, toLight), 0.0);
-                            vec3 waterColor = mix(skyR, waterTintColor, tintBlend)
+                            vec3 waterColor = mix(skyR * transmittance, waterTintColor, tintBlend)
                                 * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
                                    + vec3(0.09, 0.12, 0.15));
                             rtColor = waterColor;

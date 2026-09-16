@@ -262,14 +262,20 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // Representative water surface tint for reflected water: computed with the
     // water's OWN params (shallow/deep colors, caustic depth scale, max
-    // thickness) using the exact water.frag formula, so reflected water
-    // carries the real water color — no hardcoded values.
+    // thickness, absorption) using the exact water.frag formula, so reflected
+    // water carries the real water color — no hardcoded values.
     {
         const WaterParams& wp = waterParams.empty() ? WaterParams{} : waterParams[0];
         const float thickness = std::max(wp.maxThickness, 0.0f);
         const float tintDepthScale = std::max(wp.causticDepthScale, 0.0001f);
         const float volumeFactor = 1.0f - std::exp(-thickness / tintDepthScale);
-        waterReflectionTint_ = glm::mix(wp.shallowColor, wp.deepColor, volumeFactor);
+        glm::vec3 waterTintColor = glm::mix(wp.shallowColor, wp.deepColor, volumeFactor);
+        // Beer-Lambert absorption (water.frag): the tint seen through the
+        // water column is attenuated.
+        const glm::vec3 transmittance = glm::exp(-glm::min(
+            wp.absorption * std::max(thickness * wp.absorptionScale, 0.0f),
+            glm::vec3(2.5f)));
+        waterReflectionTint_ = waterTintColor * transmittance;
     }
 
     // Initialize the async streaming orchestrator. It is the ONLY transfer

@@ -219,12 +219,15 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             float tintDepthScale = max(wp.causticParams.w, 0.0001);
             float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
             vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+            vec3 transmittance = exp(-min(
+                wp.absorptionParams.rgb * max(thickness * wp.absorptionParams.a, 0.0),
+                vec3(2.5)));
             float depthFade = 1.0 - exp(-thickness * depthFalloff);
             float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
             float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
             vec3 toSun = normalize(rt.sunDir.xyz);
             float ndl = max(dot(hitN, toSun), 0.0);
-            vec3 waterColor = mix(sky, waterTintColor, tintBlend)
+            vec3 waterColor = mix(sky * transmittance, waterTintColor, tintBlend)
                 * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
             return vec4(waterColor, 1.0);
         }
@@ -305,10 +308,13 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             float tintDepthScale = max(wp.causticParams.w, 0.0001);
             float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
             vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+            vec3 transmittance = exp(-min(
+                wp.absorptionParams.rgb * max(thickness * wp.absorptionParams.a, 0.0),
+                vec3(2.5)));
             float depthFade = 1.0 - exp(-thickness * depthFalloff);
             float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
             float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
-            color = mix(sky, waterTintColor, tintBlend)
+            color = mix(sky * transmittance, waterTintColor, tintBlend)
                 * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
         }
         // Proxy fallback (only reached if the scene instance had no triangle).
