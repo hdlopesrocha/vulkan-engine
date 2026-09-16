@@ -437,15 +437,12 @@ void main() {
 #endif
             if (doRTTrace) {
 #ifdef RT_ENABLED
-                // Opaque mirrors (low-poly spheres/boxes) are tessellated with
-                // large flat triangles: a grazing reflection ray can re-enter a
-                // The BLAS holds the UNDISPLACED CPU mesh, but this fragment sits on the
-                // TES-displaced surface. Bias the origin by the local
-                // displacement magnitude (capped so nearby real reflections
-                // are never skipped) to clear the reflector's own surface.
-                float dispLen = length(fragPosWorld - fragPosWorldNotDisplaced);
-                float selfSkip = max(rt.debug.z, min(dispLen, 1.5) + 0.1);
-                vec3 origin = fragPosWorld + reflN * selfSkip;
+                // The BLAS holds the UNDISPLACED CPU mesh — use the undisplaced
+                // position + base normal so the ray starts on the BLAS surface.
+                // A small bias clears it; no displacement-dependent bias is
+                // needed (the BLAS itself must not displace, per design).
+                float selfSkip = max(rt.debug.z, 0.15);
+                vec3 origin = fragPosWorldNotDisplaced + reflN * selfSkip;
                 rayQueryEXT rq;
                 rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT,
                     RT_RAY_MASK_SCENE | RT_RAY_MASK_WATER,
