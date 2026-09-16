@@ -2366,6 +2366,29 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     lastBandCamPos_ = viewPos;
     lastBandLodBias_ = settings.lodBias;
     lastBandMaxLod_ = settings.maxTargetLod;
+    // The scene BLAS holds the LoD-band-selected chunks from the last
+    // chunk-change rebuild. As the camera moves, the raster's per-frame band
+    // selection drifts, so chunks the raster shows may not be in the BLAS —
+    // missing from the reflection. When the selection STOPS changing (camera
+    // settled), refresh the BLAS spans ONCE so the reflection covers the
+    // chunks the raster draws. Bounded: the single AS buffer is reused and
+    // the build is throttled (30 frames), so no per-frame rebuild churn.
+    if (mainSolidRenderer && textureArrays_) {
+        std::vector<IndirectRenderer::RTGeometrySpan> spans;
+        mainSolidRenderer->getIndirectRenderer().copyRTGeometrySpans(
+            spans, lastBandCamPos_, lastBandLodBias_, lastBandMaxLod_);
+        static thread_local std::vector<IndirectRenderer::RTGeometrySpan> lastFrameSpans;
+        static thread_local bool selectionChanging = false;
+        const bool changed = (spans != lastFrameSpans);
+        lastFrameSpans = spans;
+        if (changed) {
+            selectionChanging = true;
+        } else if (selectionChanging) {
+            // The selection stopped changing (camera settled): rebuild once.
+            selectionChanging = false;
+            rebuildProxySet(app, false);
+        }
+    }
     p.viewPos = glm::vec4(viewPos, 1.0f);
     p.rtResolution = glm::vec4(0.0f);
     p.clipPlanes = glm::vec4(nearPlane, farPlane, 0.0f, 0.0f);
