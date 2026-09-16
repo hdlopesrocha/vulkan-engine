@@ -442,49 +442,33 @@ void main() {
                 // The BLAS holds the UNDISPLACED CPU mesh, but this fragment sits on the
                 // TES-displaced surface. The scene BLAS is built NON-OPAQUE so
                 // every hit surfaces as a candidate: reject the reflector's
-                // OWN displaced surface (hits close to the origin whose
-                // normal is nearly parallel to the fragment's) and confirm the
-                // first real reflection — nearby scenery is never skipped.
+                // OWN displaced surface and confirm the first real reflection.
+                // A self-hit sits on the SAME geometry as the closest scene
+                // candidate (the reflector's own chunk) AND close to the
+                // origin; real scenery — even nearby — is a different chunk
+                // (or farther), so it is never skipped.
                 float dispLen = length(fragPosWorld - fragPosWorldNotDisplaced);
-                float selfHitDist = max(dispLen * 2.0, 1.5);
-                vec3 fragN = normalize(fragNormal);
+                float selfHitDist = max(dispLen, 1.0);
                 float selfSkip = rt.debug.z;
                 vec3 origin = fragPosWorld + reflN * selfSkip;
                 rayQueryEXT rq;
                 rayQueryInitializeEXT(rq, rtTlas, 0,
                     RT_RAY_MASK_SCENE | RT_RAY_MASK_WATER,
                     origin, 0.05, normalize(reflDir), RT_NO_LIMIT);
+                int selfGeom = -1;
+                bool firstSceneCand = true;
                 while (rayQueryProceedEXT(rq)) {
                     if (rayQueryGetIntersectionTypeEXT(rq, false) == 1) {
                         float candT = rayQueryGetIntersectionTEXT(rq, false);
                         if (candT < 0.05) continue; // numerical, too close
                         const uint cinst = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false));
-                        bool selfHit = false;
-                        if (cinst == RT_SCENE_INSTANCE && candT < selfHitDist) {
-                            // Fetch the candidate triangle normal: the
-                            // reflector's own displaced surface is nearly
-                            // parallel to the fragment's normal.
-                            const uint cprim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false));
-                            const uint clo = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, false));
-                            uvec4 cgi = rtSceneGeomInfo[clo];
-                            uint ci0 = rtSceneIndices[cgi.y + cprim * 3u + 0u] + cgi.x;
-                            uint ci1 = rtSceneIndices[cgi.y + cprim * 3u + 1u] + cgi.x;
-                            uint ci2 = rtSceneIndices[cgi.y + cprim * 3u + 2u] + cgi.x;
-                            vec2 cbary = rayQueryGetIntersectionBarycentricsEXT(rq, false);
-                            vec3 cn0 = vec3(rtSceneVerts[ci0 * 16u + 8u],
-                                            rtSceneVerts[ci0 * 16u + 9u],
-                                            rtSceneVerts[ci0 * 16u + 10u]);
-                            vec3 cn1 = vec3(rtSceneVerts[ci1 * 16u + 8u],
-                                            rtSceneVerts[ci1 * 16u + 9u],
-                                            rtSceneVerts[ci1 * 16u + 10u]);
-                            vec3 cn2 = vec3(rtSceneVerts[ci2 * 16u + 8u],
-                                            rtSceneVerts[ci2 * 16u + 9u],
-                                            rtSceneVerts[ci2 * 16u + 10u]);
-                            vec3 candN = normalize(cn0 * (1.0 - cbary.x - cbary.y)
-                                                 + cn1 * cbary.x + cn2 * cbary.y);
-                            if (abs(dot(candN, fragN)) > 0.85) selfHit = true;
+                        if (cinst == RT_SCENE_INSTANCE) {
+                            const uint cgeo = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, false));
+                            if (firstSceneCand) { selfGeom = int(cgeo); firstSceneCand = false; }
+                            // Same geometry as the closest scene hit AND close
+                            // to the origin → the reflector's own surface.
+                            if (int(cgeo) == selfGeom && candT < selfHitDist) continue;
                         }
-                        if (selfHit) continue; // reflector's own surface → next
                         rayQueryConfirmIntersectionEXT(rq);
                     }
                 }
