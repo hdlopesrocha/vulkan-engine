@@ -260,15 +260,16 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Keep the texture arrays for RT proxy albedo lookups (per-layer averages).
     textureArrays_ = textureArrayManager;
 
-    // Representative water surface tint for reflected water: the water's own
-    // shallow→deep mix (the surface-visible color), so reflected water reads
-    // with the actual water color instead of a hardcoded blue. Falls back to
-    // the fixed tint when no water layer is provided.
+    // Representative water surface tint for reflected water: computed with the
+    // water's OWN params (shallow/deep colors, caustic depth scale, max
+    // thickness) using the exact water.frag formula, so reflected water
+    // carries the real water color — no hardcoded values.
     {
         const WaterParams& wp = waterParams.empty() ? WaterParams{} : waterParams[0];
-        const glm::vec3 shallow = wp.shallowColor;
-        const glm::vec3 deep = wp.deepColor;
-        waterReflectionTint_ = mix(shallow, deep, 0.35f);
+        const float thickness = std::max(wp.maxThickness, 0.0f);
+        const float tintDepthScale = std::max(wp.causticDepthScale, 0.0001f);
+        const float volumeFactor = 1.0f - std::exp(-thickness / tintDepthScale);
+        waterReflectionTint_ = glm::mix(wp.shallowColor, wp.deepColor, volumeFactor);
     }
 
     // Initialize the async streaming orchestrator. It is the ONLY transfer

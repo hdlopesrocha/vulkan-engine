@@ -470,21 +470,31 @@ void main() {
                                                     meta.maxAndFlags.xyz, exiting);
                             vec3 toLight = -normalize(ubo.lightDir.xyz);
                             float ndl = max(dot(boxN, toLight), 0.0);
-                            // A water surface mostly reflects the SKY (Fresnel
-                            // grows toward grazing), with its tint at near-
-                            // normal incidence. The raw proxy tint alone is
-                            // near-black, so blend the sky along the reflected
-                            // direction in — that's what makes the lake
-                            // visible in the mirror.
+                            // Transparent water look computed from the water's
+                            // OWN params (water.frag formula): tint =
+                            // mix(shallow, deep, volume) blended over the sky
+                            // by waterTint*transparency. No recursive
+                            // reflection/refraction. The proxy meta carries
+                            // the water layer id in minAndMatId.w.
+                            int wLayer = clamp(int(meta.minAndMatId.w + 0.5), 0, 31);
+                            WaterParamsGPU wp = waterParams[wLayer];
+                            vec3 shallowTint = wp.shallowColor.rgb;
+                            vec3 deepTint = wp.deepColor.rgb;
+                            float waterTintStr = wp.params2.x;
+                            float transparency = wp.params1.z;
+                            float depthFalloff = wp.waveParams.w;
+                            float thickness = max(wp.refractionParams.y, 0.0);
+                            float tintDepthScale = max(wp.causticParams.w, 0.0001);
+                            float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
+                            vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+                            float depthFade = 1.0 - exp(-thickness * depthFalloff);
+                            float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
+                            float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
                             vec3 skyR = rtProceduralSky(normalize(reflDir),
                                 sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
-                            // Transparent water look: the water's own tint
-                            // dominates, with a hint of sky so it never reads
-                            // flat-black. No recursive reflection/refraction.
-                            vec3 tint = meta.albedoRough.rgb
+                            rtColor = mix(skyR, waterTintColor, tintBlend)
                                 * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
                                    + vec3(0.09, 0.12, 0.15));
-                            rtColor = mix(tint, skyR, 0.2);
                             rtColor *= aoBlend * (1.0 - rough * 0.5);
                             waterHit = true;
                         } else if (inst == RT_SCENE_INSTANCE) {
@@ -569,19 +579,34 @@ void main() {
                         // reflection + tint), never the terrain albedo lookup
                         // (a water chunk's brushIndex addresses water params).
                         if (gi.w > 0u) {
-                            vec3 toLight = -normalize(ubo.lightDir.xyz);
-                            float ndl = max(dot(hitN, toLight), 0.0);
-                            // Reflected water: transparent water look — the
-                            // water's own tint (from the layer's shallow/deep
-                            // colors via rtSceneAlbedo), not a recursive
-                            // reflection/refraction. A hint of sky keeps it
-                            // from reading flat-black at night.
-                            vec3 tint = rtSceneAlbedo[lo].rgb
-                                * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
-                                   + vec3(0.09, 0.12, 0.15));
+                            // Reflected water: transparent water look computed
+                            // from the water's OWN params (water.frag formula):
+                            // tint = mix(shallow, deep, volume) blended over
+                            // the sky by waterTint*transparency. No recursive
+                            // reflection/refraction.
+                            int wLayer = clamp(
+                                floatBitsToInt(rtSceneVerts[i0 * kVertStride + 11u]), 0, 31);
+                            WaterParamsGPU wp = waterParams[wLayer];
+                            vec3 shallowTint = wp.shallowColor.rgb;
+                            vec3 deepTint = wp.deepColor.rgb;
+                            float waterTintStr = wp.params2.x;
+                            float transparency = wp.params1.z;
+                            float depthFalloff = wp.waveParams.w;
+                            float thickness = max(wp.refractionParams.y, 0.0);
+                            float tintDepthScale = max(wp.causticParams.w, 0.0001);
+                            float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
+                            vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+                            float depthFade = 1.0 - exp(-thickness * depthFalloff);
+                            float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
+                            float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
                             vec3 skyR = rtProceduralSky(normalize(reflDir),
                                 sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
-                            rtColor = mix(tint, skyR, 0.2);
+                            vec3 toLight = -normalize(ubo.lightDir.xyz);
+                            float ndl = max(dot(hitN, toLight), 0.0);
+                            vec3 waterColor = mix(skyR, waterTintColor, tintBlend)
+                                * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
+                                   + vec3(0.09, 0.12, 0.15));
+                            rtColor = waterColor;
                             rtColor *= aoBlend * (1.0 - rough * 0.5);
                             waterHit = true;
                         } else {

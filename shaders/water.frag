@@ -204,15 +204,28 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         // water (sky reflection + tint); its brushIndex addresses water
         // params, not scene materials.
         if (gi.w > 0u) {
+            // Reflected water: transparent water look computed from the
+            // water's OWN params (water.frag formula): tint = mix(shallow,
+            // deep, volume) blended over the sky by waterTint*transparency.
+            // No recursive reflection/refraction.
+            int wLayer = clamp(floatBitsToInt(rtSceneVerts[i0 * kVertStride + 11u]), 0, 31);
+            WaterParamsGPU wp = waterParams[wLayer];
+            vec3 shallowTint = wp.shallowColor.rgb;
+            vec3 deepTint = wp.deepColor.rgb;
+            float waterTintStr = wp.params2.x;
+            float transparency = wp.params1.z;
+            float depthFalloff = wp.waveParams.w;
+            float thickness = max(wp.refractionParams.y, 0.0);
+            float tintDepthScale = max(wp.causticParams.w, 0.0001);
+            float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
+            vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+            float depthFade = 1.0 - exp(-thickness * depthFalloff);
+            float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
+            float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
             vec3 toSun = normalize(rt.sunDir.xyz);
             float ndl = max(dot(hitN, toSun), 0.0);
-            // Reflected water: transparent water look — the water's own tint
-            // (from the layer's shallow/deep colors via rtSceneAlbedo), not a
-            // recursive reflection/refraction. A hint of sky keeps it from
-            // reading flat-black at night.
-            vec3 tint = rtSceneAlbedo[lo].rgb
+            vec3 waterColor = mix(sky, waterTintColor, tintBlend)
                 * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
-            vec3 waterColor = mix(tint, sky, 0.2);
             return vec4(waterColor, 1.0);
         }
         int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
@@ -275,13 +288,28 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
                     clamp((hitT - 80.0) / 320.0, 0.0, 1.0));
     vec3 color = hitAlbedo * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
     if (!refraction) {
-        // Water proxies (flags=1): the flat tint alone is nearly black — a
-        // water surface mostly reflects the SKY (Fresnel grows toward
-        // for mirror-reflected water).
+        // Water proxies (flags=1): transparent water look computed from the
+        // water's OWN params (water.frag formula): tint = mix(shallow, deep,
+        // volume) blended over the sky by waterTint*transparency. No
+        // recursive reflection/refraction. The proxy meta carries the water
+        // layer id in minAndMatId.w.
         if (meta.maxAndFlags.w > 0.5) {
-            // Transparent water look: the water's own tint dominates, with a
-            // hint of sky. No recursive reflection/refraction.
-            color = mix(color, sky, 0.2);
+            int wLayer = clamp(int(meta.minAndMatId.w + 0.5), 0, 31);
+            WaterParamsGPU wp = waterParams[wLayer];
+            vec3 shallowTint = wp.shallowColor.rgb;
+            vec3 deepTint = wp.deepColor.rgb;
+            float waterTintStr = wp.params2.x;
+            float transparency = wp.params1.z;
+            float depthFalloff = wp.waveParams.w;
+            float thickness = max(wp.refractionParams.y, 0.0);
+            float tintDepthScale = max(wp.causticParams.w, 0.0001);
+            float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
+            vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+            float depthFade = 1.0 - exp(-thickness * depthFalloff);
+            float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
+            float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
+            color = mix(sky, waterTintColor, tintBlend)
+                * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
         }
         // Proxy fallback (only reached if the scene instance had no triangle).
         return vec4(color, 1.0);
