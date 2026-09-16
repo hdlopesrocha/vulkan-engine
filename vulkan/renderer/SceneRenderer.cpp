@@ -2128,9 +2128,8 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
             VkBuffer vb = mainSolidRenderer->getIndirectRenderer().getVertexBufferHandle();
             VkBuffer ib = mainSolidRenderer->getIndirectRenderer().getIndexBufferHandle();
             std::vector<IndirectRenderer::RTGeometrySpan> spans;
-            // Camera-independent: every active chunk, so the BLAS is rebuilt
-            // only when the chunk set changes (never on camera moves).
-            mainSolidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(spans);
+            mainSolidRenderer->getIndirectRenderer().copyRTGeometrySpans(
+                spans, lastBandCamPos_, lastBandLodBias_, lastBandMaxLod_);
             if (vb != VK_NULL_HANDLE && ib != VK_NULL_HANDLE && spans != lastSceneSpans_) {
                 lastSceneSpans_ = spans;
                 std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
@@ -2165,7 +2164,8 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     VkBuffer wvb = mainLiquidRenderer->getIndirectRenderer().getVertexBufferHandle();
                     VkBuffer wib = mainLiquidRenderer->getIndirectRenderer().getIndexBufferHandle();
                     std::vector<IndirectRenderer::RTGeometrySpan> wspan;
-                    mainLiquidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(wspan);
+                    mainLiquidRenderer->getIndirectRenderer().copyRTGeometrySpans(
+                        wspan, lastBandCamPos_, lastBandLodBias_, lastBandMaxLod_);
                     if (wvb != VK_NULL_HANDLE && wib != VK_NULL_HANDLE && !wspan.empty()) {
                         VkBufferDeviceAddressInfo wq{};
                         wq.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
