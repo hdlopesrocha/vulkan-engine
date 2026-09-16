@@ -534,7 +534,10 @@ void main() {
                             float topFade = smoothstep(
                                 meta.maxAndFlags.y - 15.0, meta.maxAndFlags.y, hitPos.y);
                             rtColor = mix(waterColor, skyR, topFade);
-                            rtColor *= aoBlend * (1.0 - rough * 0.5);
+                            // A mirror's reflection is not occluded by AO nor dimmed by the
+                            // surface roughness (the RT roughness gate already
+                            // handles scatter): the reflection is full-strength.
+                            rtColor *= 1.0;
                             waterHit = true;
                         } else if (inst == RT_SCENE_INSTANCE) {
                         // The primitive index is LOCAL to the hit geometry
@@ -655,7 +658,10 @@ void main() {
                                 * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
                                    + vec3(0.09, 0.12, 0.15));
                             rtColor = waterColor;
-                            rtColor *= aoBlend * (1.0 - rough * 0.5);
+                            // A mirror's reflection is not occluded by AO nor dimmed by the
+                            // surface roughness (the RT roughness gate already
+                            // handles scatter): the reflection is full-strength.
+                            rtColor *= 1.0;
                             waterHit = true;
                         } else {
                         // Real painted material at this triangle (Vertex float
@@ -684,7 +690,10 @@ void main() {
                             ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
                         rtColor = hitAlbedo * (ubo.lightColor.rgb * ndl * (1.0 - hitShadow)
                                                + vec3(0.09, 0.12, 0.15));
-                        rtColor *= aoBlend * (1.0 - rough * 0.5);
+                        // A mirror's reflection is not occluded by AO nor dimmed by the
+                            // surface roughness (the RT roughness gate already
+                            // handles scatter): the reflection is full-strength.
+                            rtColor *= 1.0;
                         } // terrain else
                         } // !ssHit
                     }
