@@ -726,16 +726,10 @@ void main() {
             }
 #endif
             envReflection = rtColor;
-            // Mirror amount: reflectionStrength is the target mirror level
-            // (1 = full mirror at every angle, 0 = no reflection). Fresnel
-            // still shapes partial strengths so low values keep the grazing
-            // falloff instead of a flat sheen over the whole surface.
-            envFresnelFactor = clamp(
-                mix(fresnel, 1.0, clamp(blendedRefStrength, 0.0, 1.0)), 0.0, 1.0);
-#ifdef RT_ENABLED
-            // RT debug view 57 forces a full mirror (CSM+RT combined inspection).
-            if (int(rt.debug.x + 0.5) == 57) envFresnelFactor = 1.0;
-#endif
+            // Full-strength reflection: the RT reflection is not faded by
+            // Fresnel or the material's reflectionStrength — a reflective
+            // surface shows the full reflection.
+            envFresnelFactor = 1.0;
         }
     }
 
