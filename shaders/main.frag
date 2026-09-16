@@ -475,9 +475,27 @@ void main() {
                                         float nearP = ubo.passParams.z;
                                         float farP = ubo.passParams.w;
                                         float sceneEye = (nearP * farP) / (farP - hd * (farP - nearP));
-                                        if (abs(hc.w - sceneEye) < max(2.0, sceneEye * 0.02)) {
-                                            rtColor = textureLod(ssrColorTex, huv, 0.0).rgb * aoBlend;
-                                            ssHit = true;
+                                        // Reprojection-confidence gate: while
+                                        // the camera moves, a different surface
+                                        // can sit at a similar depth in the
+                                        // previous frame (2 m / 2% tolerance is
+                                        // too permissive) and SSR would paste
+                                        // its wrong color → flicker. Tighten
+                                        // the depth match AND fade SSR out by
+                                        // how far the hit point moved between
+                                        // the previous and current views; the
+                                        // accurate ray-query albedo takes over.
+                                        float depthTol = max(0.4, sceneEye * 0.006);
+                                        if (abs(hc.w - sceneEye) < depthTol) {
+                                            vec4 cc = ubo.viewProjection * vec4(hitPos, 1.0);
+                                            vec2 cuv = (cc.w > 0.001)
+                                                ? cc.xy / cc.w * 0.5 + 0.5 : huv;
+                                            float reprojDist = distance(cuv, huv);
+                                            float conf = 1.0 - smoothstep(0.02, 0.10, reprojDist);
+                                            if (conf > 0.05) {
+                                                rtColor = textureLod(ssrColorTex, huv, 0.0).rgb * aoBlend;
+                                                ssHit = true;
+                                            }
                                         }
                                     }
                                 }
@@ -546,7 +564,17 @@ void main() {
                     vec2 selfUV = selfClip.xy / selfClip.w * 0.5 + 0.5;
                     vec4 ssr = traceSSR(fragPosWorld + reflN * 0.05, normalize(reflDir),
                                         normalize(reflV), rt.prevViewProj, selfUV);
-                    if (ssr.a > 0.0) rtColor = mix(rtColor, ssr.rgb, ssr.a);
+                    if (ssr.a > 0.0) {
+                        // Motion fade: how far THIS fragment moved between the
+                        // previous and current views. Static camera → ~0 → the
+                        // previous frame's color is a faithful reflection.
+                        // Moving camera → grows → previous-frame data is stale
+                        // (wrong texture paste) → fade to the ray-query albedo.
+                        vec4 sc = ubo.viewProjection * vec4(fragPosWorld, 1.0);
+                        vec2 sUV = (sc.w > 0.001) ? sc.xy / sc.w * 0.5 + 0.5 : selfUV;
+                        float motionFade = 1.0 - smoothstep(0.02, 0.12, distance(sUV, selfUV));
+                        rtColor = mix(rtColor, ssr.rgb, ssr.a * motionFade);
+                    }
                 }
             }
 #endif
