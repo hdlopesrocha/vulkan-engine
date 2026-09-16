@@ -398,13 +398,7 @@ void main() {
         blendedRefStrength = refStrength0 * w.x + refStrength1 * w.y + refStrength2 * w.z;
         // Skip non-reflective surfaces (the mix factor below collapses to zero).
         if (blendedRefStrength > 1e-4) {
-            // Use the GEOMETRIC normal of the displaced surface for the
-            // reflection ray: the normal-mapped worldNormal carries per-pixel
-            // detail that scatters RT rays — parts of the (displaced) surface
-            // then reflect the sky instead of the scene. geomN is computed
-            // from the displaced fragment positions, so it matches the
-            // displaced geometry the raster draws.
-            vec3 reflN = normalize(geomN);
+            vec3 reflN = normalize(worldNormal);
             vec3 reflV = normalize(viewDir);
             float cosTheta = clamp(dot(reflN, reflV), 0.0, 1.0);
             float fresnel = 0.04 + 0.96 * pow(1.0 - cosTheta, 5.0);
@@ -438,16 +432,12 @@ void main() {
             if (doRTTrace) {
 #ifdef RT_ENABLED
                 // Opaque mirrors (low-poly spheres/boxes) are tessellated with
-                // The fragment is DISPLACED from the BLAS surface (the BLAS holds the
-                // undisplaced CPU mesh). A fragment displaced below the base
-                // mesh would start its ray INSIDE the BLAS and immediately
-                // self-hit → parts of the displaced surface lose the
-                // reflection. Bias the origin by the local displacement
-                // magnitude (+ margin) so the ray always starts above the
-                // BLAS surface: fragPosWorldNotDisplaced is the undisplaced
-                // position the TES interpolates.
-                float dispLen = length(fragPosWorld - fragPosWorldNotDisplaced);
-                float selfSkip = max(rt.debug.z, dispLen + 0.2);
+                // large flat triangles: a grazing reflection ray can re-enter a
+                // neighbouring triangle just above the interpolated surface and
+                // "reflect" the object itself (triangle-soup look). A 5 cm
+                // origin bias clears numerical self-hits without moving
+                // terrain reflections meaningfully.
+                float selfSkip = rt.debug.z;
                 vec3 origin = fragPosWorld + reflN * selfSkip;
                 rayQueryEXT rq;
                 // Trace the real chunk triangles (scene instance) so reflected
