@@ -2128,8 +2128,10 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
             VkBuffer vb = mainSolidRenderer->getIndirectRenderer().getVertexBufferHandle();
             VkBuffer ib = mainSolidRenderer->getIndirectRenderer().getIndexBufferHandle();
             std::vector<IndirectRenderer::RTGeometrySpan> spans;
-            mainSolidRenderer->getIndirectRenderer().copyRTGeometrySpans(
-                spans, lastBandCamPos_, lastBandLodBias_, lastBandMaxLod_);
+            // Camera-independent: every active chunk, so the BLAS is rebuilt
+            // only when the chunk set changes (never on camera moves) and the
+            // reflection covers ALL chunks the raster draws.
+            mainSolidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(spans);
             if (vb != VK_NULL_HANDLE && ib != VK_NULL_HANDLE && spans != lastSceneSpans_) {
                 lastSceneSpans_ = spans;
                 std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
@@ -2164,8 +2166,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     VkBuffer wvb = mainLiquidRenderer->getIndirectRenderer().getVertexBufferHandle();
                     VkBuffer wib = mainLiquidRenderer->getIndirectRenderer().getIndexBufferHandle();
                     std::vector<IndirectRenderer::RTGeometrySpan> wspan;
-                    mainLiquidRenderer->getIndirectRenderer().copyRTGeometrySpans(
-                        wspan, lastBandCamPos_, lastBandLodBias_, lastBandMaxLod_);
+                    mainLiquidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(wspan);
                     if (wvb != VK_NULL_HANDLE && wib != VK_NULL_HANDLE && !wspan.empty()) {
                         VkBufferDeviceAddressInfo wq{};
                         wq.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
@@ -2366,29 +2367,6 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     lastBandCamPos_ = viewPos;
     lastBandLodBias_ = settings.lodBias;
     lastBandMaxLod_ = settings.maxTargetLod;
-    // The scene BLAS holds the LoD-band-selected chunks from the last
-    // chunk-change rebuild. As the camera moves, the raster's per-frame band
-    // selection drifts, so chunks the raster shows may not be in the BLAS —
-    // missing from the reflection. When the selection STOPS changing (camera
-    // settled), refresh the BLAS spans ONCE so the reflection covers the
-    // chunks the raster draws. Bounded: the single AS buffer is reused and
-    // the build is throttled (30 frames), so no per-frame rebuild churn.
-    if (mainSolidRenderer && textureArrays_) {
-        std::vector<IndirectRenderer::RTGeometrySpan> spans;
-        mainSolidRenderer->getIndirectRenderer().copyRTGeometrySpans(
-            spans, lastBandCamPos_, lastBandLodBias_, lastBandMaxLod_);
-        static thread_local std::vector<IndirectRenderer::RTGeometrySpan> lastFrameSpans;
-        static thread_local bool selectionChanging = false;
-        const bool changed = (spans != lastFrameSpans);
-        lastFrameSpans = spans;
-        if (changed) {
-            selectionChanging = true;
-        } else if (selectionChanging) {
-            // The selection stopped changing (camera settled): rebuild once.
-            selectionChanging = false;
-            rebuildProxySet(app, false);
-        }
-    }
     p.viewPos = glm::vec4(viewPos, 1.0f);
     p.rtResolution = glm::vec4(0.0f);
     p.clipPlanes = glm::vec4(nearPlane, farPlane, 0.0f, 0.0f);
