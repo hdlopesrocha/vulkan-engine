@@ -713,12 +713,13 @@ bool RayTracingResources::recordSceneBlas(VulkanApp* app, VkCommandBuffer cmd) {
 
     const VkBufferUsageFlags asUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
         | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    if (sceneBlas_ == VK_NULL_HANDLE || sizes.accelerationStructureSize > sceneBlasSize_) {
-        // Retire the previous AS/buffer only after all in-flight submissions
-        // complete: frames recorded earlier still reference the old TLAS, whose
-        // instances point at the old BLAS address. Destroying it immediately
-        // left those frames tracing freed memory — visible as corrupted
-        // reflection geometry/stipple right after a rebuild.
+    {
+        // ALWAYS allocate a fresh AS/buffer for the scene BLAS: the rebuild
+        // must never overwrite the buffer in place — in-flight frames still
+        // reference the previous TLAS, whose instances point at the old BLAS
+        // address. Tracing a buffer that is being rebuilt is a GPU fault
+        // (device lost). Retire the previous AS/buffer only after all
+        // in-flight submissions complete, then build into the new one.
         if (sceneBlas_ != VK_NULL_HANDLE || sceneBlasBuffer_.buffer) {
             VkAccelerationStructureKHR oldAs = sceneBlas_;
             Buffer oldBuf = sceneBlasBuffer_;
