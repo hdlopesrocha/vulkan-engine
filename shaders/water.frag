@@ -107,13 +107,13 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     if (!refraction &&
         rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) == RT_SCENE_INSTANCE) {
         // Real triangle hit: shade with the owning chunk's average albedo.
+        // The primitive index is LOCAL to the hit geometry (GLSL_EXT_ray_query
+        // semantics); the geometry index comes from the ray query directly.
+        // A cumulative primBase binary search would map local indices onto the
+        // wrong chunk for every geometry after the first (corrupting
+        // brushIndex/UV/normal reads → wrong textures in reflections).
         const uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
-        const uint n = rtScenePrimBase[0];
-        uint lo = 0u, hi = n;
-        while (lo + 1u < hi) {
-            uint mid = (lo + hi) >> 1u;
-            if (rtScenePrimBase[1u + mid] <= prim) lo = mid; else hi = mid;
-        }
+        const uint lo = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true));
         // Screen-space color lookup FIRST: sample this frame's solid render at
         // the reflected hit point so the mirror shows the terrain exactly as
         // it appears on screen (mixed ground cover, shadows, detail) instead
@@ -152,7 +152,9 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         // sample at the true hit position, blended to the chunk average with
         // distance.
         uvec4 gi = rtSceneGeomInfo[lo];
-        uint localPrim = prim - rtScenePrimBase[1u + lo];
+        // prim is already local to this geometry (ray-query semantics) — do
+        // NOT subtract the cumulative base.
+        uint localPrim = prim;
         const uint kVertStride = 16u;
         uint i0 = rtSceneIndices[gi.y + localPrim * 3u + 0u] + gi.x;
         uint i1 = rtSceneIndices[gi.y + localPrim * 3u + 1u] + gi.x;

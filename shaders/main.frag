@@ -446,15 +446,15 @@ void main() {
                     // reflector's own triangles, not true scenery.
                     if (hitT >= selfSkip &&
                         rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) == RT_SCENE_INSTANCE) {
+                        // The primitive index is LOCAL to the hit geometry
+                        // (per GLSL_EXT_ray_query: "the index of the primitive
+                        // within the geometry of the BLAS"). The geometry index
+                        // comes from the ray query directly — never binary
+                        // search cumulative primBase (that maps local indices
+                        // onto the wrong chunk for every geometry after the
+                        // first, corrupting brushIndex/UV/normal reads).
                         const uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
-                        // Binary-search the geometry owning this primitive
-                        // (primitive ranges are consecutive; see primBase[]).
-                        const uint n = rtScenePrimBase[0];
-                        uint lo = 0u, hi = n;
-                        while (lo + 1u < hi) {
-                            uint mid = (lo + hi) >> 1u;
-                            if (rtScenePrimBase[1u + mid] <= prim) lo = mid; else hi = mid;
-                        }
+                        const uint lo = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true));
                         // Real interpolated triangle normal from the merged
                         // vertex pool (Vertex stride 16 floats: position 0-2,
                         // normal 8-10) via the hit barycentrics.
@@ -485,7 +485,9 @@ void main() {
                         }
                         if (!ssHit) {
                         uvec4 gi = rtSceneGeomInfo[lo];
-                        uint localPrim = prim - rtScenePrimBase[1u + lo];
+                        // prim is already local to this geometry (ray-query
+                        // semantics) — do NOT subtract the cumulative base.
+                        uint localPrim = prim;
                         const uint kVertStride = 16u;
                         uint i0 = rtSceneIndices[gi.y + localPrim * 3u + 0u] + gi.x;
                         uint i1 = rtSceneIndices[gi.y + localPrim * 3u + 1u] + gi.x;
