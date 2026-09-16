@@ -439,11 +439,17 @@ void main() {
 #ifdef RT_ENABLED
                 // Opaque mirrors (low-poly spheres/boxes) are tessellated with
                 // large flat triangles: a grazing reflection ray can re-enter a
-                // neighbouring triangle just above the interpolated surface and
-                // "reflect" the object itself (triangle-soup look). A 5 cm
-                // origin bias clears numerical self-hits without moving
-                // terrain reflections meaningfully.
-                float selfSkip = rt.debug.z;
+                // The BLAS holds the UNDISPLACED CPU mesh, but this fragment sits on the
+                // TES-displaced surface. The displacement can push the
+                // fragment below the base mesh (ray origin inside the BLAS →
+                // immediate self-hit) or leave the neighbouring displaced
+                // bumps in the ray's path (grazing rays clip them). Bias the
+                // origin along the surface normal by the local displacement
+                // magnitude (+ margin) so the ray always starts clear of the
+                // reflector's own displaced surface. fragPosWorldNotDisplaced
+                // is the TES-interpolated undisplaced position.
+                float dispLen = length(fragPosWorld - fragPosWorldNotDisplaced);
+                float selfSkip = max(rt.debug.z, dispLen + 0.2);
                 vec3 origin = fragPosWorld + reflN * selfSkip;
                 rayQueryEXT rq;
                 // Trace the real chunk triangles (scene instance) so reflected
