@@ -433,6 +433,26 @@ public:
             out.push_back(s);
         }
     }
+    // Camera-independent variant for the RT scene BLAS: includes EVERY active
+    // chunk (all resident LoD levels), so the BLAS is rebuilt only when the
+    // chunk set changes — never when the camera moves.
+    void copyAllRTGeometrySpans(std::vector<RTGeometrySpan>& out) const {
+        std::lock_guard<std::recursive_mutex> guard(mutex);
+        out.clear();
+        out.reserve(meshes.size());
+        for (const auto& kv : meshes) {
+            const MeshInfo& m = kv.second;
+            if (!m.active || !m.level_.allocated) continue;
+            if (m.level_.vertexCount == 0 || m.level_.indexCount < 3) continue;
+            RTGeometrySpan s;
+            s.chunkId = m.id;
+            s.baseVertex = m.level_.baseVertex;
+            s.vertexCount = m.level_.vertexCount;
+            s.firstIndex = m.level_.firstIndex;
+            s.indexCount = m.level_.indexCount;
+            out.push_back(s);
+        }
+    }
     VkBuffer getVertexBufferHandle() const { return vertexBuffer.buffer; }
     VkBuffer getIndexBufferHandle() const { return indexBuffer.buffer; }
     VkDeviceSize getVertexBufferSize() const { return VkDeviceSize(vertexCapacity) * sizeof(Vertex); }
