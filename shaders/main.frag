@@ -652,10 +652,11 @@ void main() {
             // reflection, progressively replacing it with stale content.)
 #endif
             envReflection = rtColor;
-            // Full-strength reflection: the RT reflection is not faded by
-            // Fresnel or the material's reflectionStrength — a reflective
-            // surface shows the full reflection.
-            envFresnelFactor = 1.0;
+            // The rasterized material roughness controls the reflectivity:
+            // smooth (rough ≈ 0) = full mirror, rough (≈ 1) = matte lit color
+            // only. The RT roughness gate above already skips the trace for
+            // very rough surfaces; this factor fades the result smoothly.
+            envFresnelFactor = 1.0 - clamp(rough, 0.0, 1.0);
         }
     }
 
