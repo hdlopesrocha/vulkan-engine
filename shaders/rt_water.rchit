@@ -24,7 +24,11 @@ void main() {
     bool exiting = (gl_HitKindEXT == gl_HitKindBackFacingTriangleEXT);
     vec3 N = rtBoxNormal(hitPos, meta.minAndMatId.xyz, meta.maxAndFlags.xyz, exiting);
     vec3 sunDir = normalize(rt.sunDir.xyz);
-    float ndl = max(dot(N, sunDir), 0.0);
+    // Constant UP normal for water lighting: the box-face normal varies
+    // between the wall's side/top faces per-hit → ndl flickers.
+    float ndl = (meta.maxAndFlags.w > 0.5)
+        ? max(dot(vec3(0.0, 1.0, 0.0), sunDir), 0.0)
+        : max(dot(N, sunDir), 0.0);
     vec3 albedo = meta.albedoRough.rgb;
     // Water proxies (flags=1): the flat tint alone is near-black — a water
     // surface mostly reflects the SKY (Fresnel grows toward grazing), so

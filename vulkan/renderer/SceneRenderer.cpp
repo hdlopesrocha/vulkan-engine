@@ -2182,7 +2182,15 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                             g.baseVertex = s.baseVertex;
                             g.firstIndex = s.firstIndex;
                             g.waterChunk = true;
-                            g.albedo = glm::vec4(waterReflectionTint_, 1.0f);
+                            // albedo.w = the water LAYER index (chunk
+                            // dominant, stable per chunk) so hit shading reads
+                            // a consistent layer — per-vertex brushIndex can
+                            // vary within a triangle and would flicker the
+                            // water color.
+                            auto wit = mainWaterProxyData.find(s.chunkId);
+                            const float wLayer = (wit != mainWaterProxyData.end())
+                                ? static_cast<float>(wit->second.materialId) : 0.0f;
+                            g.albedo = glm::vec4(waterReflectionTint_, wLayer);
                             geoms.push_back(g);
                         }
                     }

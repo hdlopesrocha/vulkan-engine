@@ -469,7 +469,10 @@ void main() {
                             vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz,
                                                     meta.maxAndFlags.xyz, exiting);
                             vec3 toLight = -normalize(ubo.lightDir.xyz);
-                            float ndl = max(dot(boxN, toLight), 0.0);
+                            // Constant UP normal for the water lighting: the
+                            // box-face normal varies between the wall's side
+                            // and top faces as the ray moves → ndl flickers.
+                            float ndl = max(dot(vec3(0.0, 1.0, 0.0), toLight), 0.0);
                             // Transparent water look computed from the water's
                             // OWN params (water.frag formula): tint =
                             // mix(shallow, deep, volume) blended over the sky
@@ -588,8 +591,10 @@ void main() {
                             // tint = mix(shallow, deep, volume) blended over
                             // the sky by waterTint*transparency. No recursive
                             // reflection/refraction.
-                            int wLayer = clamp(
-                                floatBitsToInt(rtSceneVerts[i0 * kVertStride + 11u]), 0, 31);
+                            // Stable water layer id: chunk-dominant, carried in
+                            // rtSceneAlbedo[lo].w (per-vertex brushIndex can
+                            // vary within a triangle → color flicker).
+                            int wLayer = clamp(int(rtSceneAlbedo[lo].w + 0.5), 0, 31);
                             WaterParamsGPU wp = waterParams[wLayer];
                             vec3 shallowTint = wp.shallowColor.rgb;
                             vec3 deepTint = wp.deepColor.rgb;

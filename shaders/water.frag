@@ -208,7 +208,10 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             // water's OWN params (water.frag formula): tint = mix(shallow,
             // deep, volume) blended over the sky by waterTint*transparency.
             // No recursive reflection/refraction.
-            int wLayer = clamp(floatBitsToInt(rtSceneVerts[i0 * kVertStride + 11u]), 0, 31);
+            // Stable water layer id: chunk-dominant, carried in
+            // rtSceneAlbedo[lo].w (per-vertex brushIndex can vary within a
+            // triangle → color flicker).
+            int wLayer = clamp(int(rtSceneAlbedo[lo].w + 0.5), 0, 31);
             WaterParamsGPU wp = waterParams[wLayer];
             vec3 shallowTint = wp.shallowColor.rgb;
             vec3 deepTint = wp.deepColor.rgb;
@@ -315,7 +318,11 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
             float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
             color = mix(sky * transmittance, waterTintColor, tintBlend)
-                * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
+                // Constant UP normal for the water lighting: the box-face
+                // normal varies between the wall's side/top faces as the ray
+                // moves → ndl flickers.
+                * (rt.sunColor.rgb * (0.55 + 0.45 * max(dot(vec3(0.0, 1.0, 0.0), normalize(rt.sunDir.xyz)), 0.0))
+                   + vec3(0.09, 0.12, 0.15));
         }
         // Proxy fallback (only reached if the scene instance had no triangle).
         return vec4(color, 1.0);
