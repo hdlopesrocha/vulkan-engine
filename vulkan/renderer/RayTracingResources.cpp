@@ -787,12 +787,11 @@ bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
     // throttle below already exempts it via !lastBuiltValid_).
     const bool haveBoxes = (activeSolidCount_ + activeWaterCount_) > 0;
     if (!haveBoxes && !lastBuiltValid_) return false;
-    // Throttle: at most one rebuild per 30 frames — chunk bursts (scene load /
+    // Throttle: at most one rebuild per 10 frames — chunk bursts (scene load /
     // brush edits) coalesce into a single build instead of one per publish.
-    // The scene BLAS is exempt: it holds the reflected geometry and must
-    // show newly published chunks promptly, otherwise parts are missing in
-    // the reflection.
-    if (frameCounter_ - lastBuildFrame_ < 30 && lastBuiltValid_ && !sceneBlasDirty_) return false;
+    // This still shows newly published chunks promptly (within ~0.5s) while
+    // avoiding the per-frame allocation churn that exhausted the iGPU.
+    if (frameCounter_ - lastBuildFrame_ < 10 && lastBuiltValid_) return false;
     const auto t0 = std::chrono::high_resolution_clock::now();
     const bool built = recordBuild(app, cmd);
     if (built) {
