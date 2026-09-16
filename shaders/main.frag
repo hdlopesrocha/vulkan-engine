@@ -435,17 +435,45 @@ void main() {
                 vec3 origin = fragPosWorld + reflN * selfSkip;
                 rayQueryEXT rq;
                 // Trace the real chunk triangles (scene instance) so reflected
-                // geometry sits at its true position; the proxy boxes remain
-                // for water refraction/thickness only.
-                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SCENE,
+                // geometry sits at its true position; the water proxy boxes
+                // (mask WATER) are included so the water surface shows up in
+                // reflections too. Solid proxies stay excluded (real triangles
+                // win where they exist).
+                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT,
+                    RT_RAY_MASK_SCENE | RT_RAY_MASK_WATER,
                     origin, 0.05, normalize(reflDir), RT_NO_LIMIT);
                 while (rayQueryProceedEXT(rq)) {}
                 if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
                     float hitT = rayQueryGetIntersectionTEXT(rq, true);
                     // Own-surface guard: hits closer than selfSkip are the
                     // reflector's own triangles, not true scenery.
-                    if (hitT >= selfSkip &&
-                        rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) == RT_SCENE_INSTANCE) {
+                    if (hitT >= selfSkip) {
+                        const uint inst = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+                        if (inst == 1u) {
+                            // Water proxy hit: mirror shows the water surface.
+                            // Water boxes carry the fixed water tint in their
+                            // average albedo (their materialId addresses water
+                            // params, not scene materials), so shade that flat
+                            // tint with the box-face normal like water.frag.
+                            vec3 hitPos = origin + normalize(reflDir) * hitT;
+                            uint boxIdx = rtBoxIndex(
+                                uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)), inst);
+                            RTProxyMetaGLSL meta = rtMetas[boxIdx];
+                            bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
+                            vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz,
+                                                    meta.maxAndFlags.xyz, exiting);
+                            vec3 toLight = -normalize(ubo.lightDir.xyz);
+                            float ndl = max(dot(boxN, toLight), 0.0);
+                            // Grazing Fresnel lift so the reflected water reads
+                            // brighter toward the horizon (mirror of water look).
+                            float fres = rtSchlickFresnel(
+                                clamp(dot(boxN, -normalize(reflDir)), 0.0, 1.0), 0.02);
+                            rtColor = meta.albedoRough.rgb
+                                * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
+                                   + vec3(0.09, 0.12, 0.15))
+                                * (0.5 + 0.5 * fres);
+                            rtColor *= aoBlend * (1.0 - rough * 0.5);
+                        } else if (inst == RT_SCENE_INSTANCE) {
                         // The primitive index is LOCAL to the hit geometry
                         // (per GLSL_EXT_ray_query: "the index of the primitive
                         // within the geometry of the BLAS"). The geometry index
@@ -552,6 +580,7 @@ void main() {
                         } // !ssHit
                     }
                 }
+            }
 #endif
             }
             // SSR refinement: where the reflected scene is on screen, the
