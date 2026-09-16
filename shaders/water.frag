@@ -89,9 +89,7 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // above the surface at the call site). Water is never a ray target (solid
     // mask), so no self-hit risk for refraction.
     float tMin = refraction ? 0.01 : 0.05;
-    // Reflection also includes the water proxy boxes so a water surface
-    // reflects other water bodies (lakes, rivers), not just terrain.
-    const uint rayMask = refraction ? RT_RAY_MASK_SOLID : (RT_RAY_MASK_SCENE | RT_RAY_MASK_WATER);
+    const uint rayMask = refraction ? RT_RAY_MASK_SOLID : RT_RAY_MASK_SCENE;
     rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, rayMask,
         origin, tMin, dir, tMax);
     while (rayQueryProceedEXT(rq)) {}
@@ -222,10 +220,6 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // texture() has undefined derivatives. LOD from hit distance is stable.
     float hitLod = clamp(log2(1.0 + hitT * 0.02), 0.0, 4.0);
     vec3 hitAlbedo = computeTriplanarAlbedoLod(hitPos, triW, hitMat, boxN, hitLod);
-    // Water proxies carry a water-layer index (not a scene material) plus the
-    // fixed water tint in their average albedo (flags=1): use the flat tint,
-    // never triplanar-sample the water layer from albedoArray.
-    hitAlbedo = mix(hitAlbedo, meta.albedoRough.rgb, step(0.5, meta.maxAndFlags.w));
     // Distant proxy hits: triplanar LOD sampling reaches minified mips that
     // alias into stipple on far surfaces. Blend to the proxy's averaged albedo
     // with distance so far reflections/refractions stay smooth.
