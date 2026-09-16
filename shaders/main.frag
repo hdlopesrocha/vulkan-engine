@@ -398,7 +398,13 @@ void main() {
         blendedRefStrength = refStrength0 * w.x + refStrength1 * w.y + refStrength2 * w.z;
         // Skip non-reflective surfaces (the mix factor below collapses to zero).
         if (blendedRefStrength > 1e-4) {
-            vec3 reflN = normalize(worldNormal);
+            // Use the smooth surface normal for the reflection ray: the
+            // normal-mapped worldNormal carries per-pixel detail that scatters
+            // RT rays (parts of the surface reflect the sky instead of the
+            // scene), while the displaced derivative normal would warp the
+            // reflection along every displacement bump. fragNormal is the
+            // interpolated base-surface normal — clean and stable.
+            vec3 reflN = normalize(fragNormal);
             vec3 reflV = normalize(viewDir);
             float cosTheta = clamp(dot(reflN, reflV), 0.0, 1.0);
             float fresnel = 0.04 + 0.96 * pow(1.0 - cosTheta, 5.0);
