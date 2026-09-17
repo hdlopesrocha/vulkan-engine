@@ -48,8 +48,8 @@ void SettingsWidget::render() {
     // Resizable. Only the horizontal scrollbar is kept: vertical overflow is
     // handled by flowing sections into new columns, and the mouse wheel never
     // scrolls vertically (NoScrollWithMouse).
-    ImGui::SetNextWindowPos(ImVec2(32, 32), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(420, 600), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1280, 720), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(320, 300), ImVec2(FLT_MAX, FLT_MAX));
     ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen,
         ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -57,68 +57,14 @@ void SettingsWidget::render() {
 
     // ---- Sections: each must be self-contained (header + controls) so it can
     // ---- be moved as a whole into another column when the current one fills up.
+    // ---- Order is deliberate: everyday render controls first, advanced/debug
+    // ---- last. Tiny related groups are merged (Display & Performance, Input)
+    // ---- and the oversized Hybrid RT block is split, so every block is
+    // ---- similarly sized and columns pack without big empty gaps.
     std::vector<std::function<void()>> sections;
     sections.reserve(13);
 
-    // 0: Shadow Effects
-    sections.emplace_back([this]() {
-        ImGui::Text("Shadow Effects");
-        ColSeparator();
-        if (ImGui::Checkbox("Enable Shadows", &settings.enableShadows)) {
-
-        }
-        TooltipOnHover("Globally enable or disable all shadowing");
-        if (ImGui::Button("Dump Shadow Depth")) {
-            if (onDumpShadowDepth) onDumpShadowDepth();
-        }
-        TooltipOnHover("Write shadow depth PGM for debugging");
-        if (shadowParams) {
-            FieldLabel("Base Ortho Size", "Shadow camera orthographic size for the base cascade");
-            ImGui::SetNextItemWidth(kSettingsColWidth);
-            ImGui::SliderFloat("##Base Ortho Size", &shadowParams->orthoSize, 10.0f, 2048.0f, "%.0f");
-            TooltipOnHover("Shadow camera orthographic size for the base cascade");
-            for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
-                ImGui::Text("  Cascade %d", i);
-            }
-        }
-    });
-
-    // 1: Performance
-    sections.emplace_back([this]() {
-        ImGui::Text("Performance");
-        ColSeparator();
-        if (ImGui::Checkbox("V-Sync (MAILBOX/FIFO)", &settings.vsyncEnabled)) {
-            // Will be read by VulkanApp to recreate swapchain with different present mode
-        }
-        TooltipOnHover("When disabled, uses IMMEDIATE mode for uncapped FPS (may cause tearing)");
-    });
-
-    // 2: Camera
-    sections.emplace_back([this]() {
-        ImGui::Text("Camera");
-        ColSeparator();
-        FieldLabel("Near Plane", "Near clip plane distance (affects depth precision)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::DragFloat("##Near Plane", &settings.nearPlane, 0.01f, 0.001f, 100.0f, "%.3f");
-        TooltipOnHover("Near clip plane distance (affects depth precision)");
-        FieldLabel("Far Plane", "Far clip plane distance (view distance)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::DragFloat("##Far Plane", &settings.farPlane, 10.0f, 100.0f, 100000.0f, "%.1f");
-        TooltipOnHover("Far clip plane distance (view distance)");
-    });
-
-    // 3: Vegetation Impostors
-    sections.emplace_back([this]() {
-        ImGui::Text("Vegetation Impostors");
-        ColSeparator();
-        FieldLabel("Impostor Distance", "Beyond this distance vegetation is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::DragFloat("##Impostor Distance", &settings.impostorDistance, 5.0f, 0.0f, 5000.0f, "%.0f m");
-        TooltipOnHover("Beyond this distance vegetation is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
-        if (settings.impostorDistance < 0.0f) settings.impostorDistance = 0.0f;
-    });
-
-    // 4: Rendering
+    // 0: Rendering (core toggles — most used)
     sections.emplace_back([this]() {
         ImGui::Text("Rendering");
         ColSeparator();
@@ -148,76 +94,150 @@ void SettingsWidget::render() {
         TooltipOnHover("Globally enable/disable ambient occlusion mapping");
     });
 
-    // 5: Input
+    // 1: Hybrid RT toggles (raster owns primary, CSM macro shadows,
+    // RT secondary visibility)
     sections.emplace_back([this]() {
-        ImGui::Text("Input");
+        ImGui::Text("Hybrid RT");
         ColSeparator();
-        if (ImGui::Checkbox("Flip keyboard rotation axes", &settings.flipKeyboardRotation)) {
-            // toggled
+        ImGui::TextWrapped("Raster=primary, CSM=macro shadows, RT=secondary (reflections, refraction, thickness, contact).");
+        if (ImGui::Checkbox("RT reflections", &settings.rtReflections)) {
         }
-        TooltipOnHover("Invert yaw/pitch directions for keyboard rotation controls");
-        if (ImGui::Checkbox("Flip gamepad rotation axes", &settings.flipGamepadRotation)) {
-            // toggled
+        TooltipOnHover("Solid + water RT reflections (sky on miss/off)");
+        if (ImGui::Checkbox("RT refractions", &settings.rtRefractions)) {
         }
-        TooltipOnHover("Invert yaw/pitch directions for gamepad right-stick");
+        TooltipOnHover("Water refraction via Snell IOR");
+        if (ImGui::Checkbox("RT water thickness", &settings.rtThickness)) {
+        }
+        TooltipOnHover("RT water thickness + Beer-Lambert absorption");
+        if (ImGui::Checkbox("RT local/contact shadows (augment CSM)", &settings.rtLocalShadows)) {
+        }
+        TooltipOnHover("Selective RT contact shadows augmenting CSM (off = CSM-only, recommended)");
+        if (ImGui::Checkbox("Water via RT pipeline (off = inline queries)", &settings.rtWaterPipeline)) {
+        }
+        TooltipOnHover("Water via async RT pipeline outputs (off = inline ray queries)");
     });
 
-    // 6: Input Sensitivity
+    // 2: RT Distances (split out so the RT block packs into columns)
     sections.emplace_back([this]() {
-        ImGui::Text("Input Sensitivity");
+        ImGui::Text("RT Distances");
         ColSeparator();
-        FieldLabel("Move Speed", "Movement speed in units/second used by keyboard and gamepad");
+        FieldLabel("Max reflect dist", "Reflection ray Tmax (world units)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Move Speed", &settings.moveSpeed, 0.1f, 20.0f, "%.2f");
-        TooltipOnHover("Movement speed in units/second used by keyboard and gamepad");
-        FieldLabel("Angular Speed (deg/s)", "Angular rotation speed in degrees/second used by keyboard and gamepad");
+        ImGui::SliderFloat("##Max reflect dist", &settings.rtMaxReflectDist, 10.0f, 2000.0f, "%.0f");
+        TooltipOnHover("Reflection ray Tmax (world units)");
+        FieldLabel("Max refract dist", "Refraction ray Tmax (also deep-water thickness)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Angular Speed (deg/s)", &settings.angularSpeedDeg, 1.0f, 360.0f, "%.0f");
-        TooltipOnHover("Angular rotation speed in degrees/second used by keyboard and gamepad");
+        ImGui::SliderFloat("##Max refract dist", &settings.rtMaxRefractDist, 10.0f, 1000.0f, "%.0f");
+        TooltipOnHover("Refraction ray Tmax (also deep-water thickness)");
+        FieldLabel("Max contact dist", "Local shadow ray Tmax (contact range only)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Max contact dist", &settings.rtMaxShadowDist, 1.0f, 60.0f, "%.1f");
+        TooltipOnHover("Local shadow ray Tmax (contact range only)");
+        FieldLabel("Roughness threshold", "Roughness above this skips RT reflections (env approx)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Roughness threshold", &settings.rtRoughnessThreshold, 0.0f, 1.0f, "%.2f");
+        TooltipOnHover("Roughness above this skips RT reflections (env approx)");
+        FieldLabel("Self-skip dist", "Ignore proxy hits closer than this (own-box guard)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Self-skip dist", &settings.rtSelfSkipDist, 0.0f, 15.0f, "%.2f");
+        TooltipOnHover("Ignore proxy hits closer than this (own-box guard)");
     });
 
-    // 7: Tessellation
+    // 3: RT Ray Budget
     sections.emplace_back([this]() {
-        ImGui::Text("Tessellation");
+        ImGui::Text("RT Ray Budget");
         ColSeparator();
-        if (ImGui::Checkbox("Enable Tessellation", &settings.tessellationEnabled)) {
-            // toggled globally
-        }
-        TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
-        if (ImGui::Checkbox("Enable Shadow Tessellation", &settings.shadowTessellationEnabled)) {
-            // toggled globally
-        }
-        TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
-        if (ImGui::Checkbox("Adaptive Tessellation", &settings.adaptiveTessellation)) {
-        }
-        TooltipOnHover("Enable camera-distance driven tessellation level");
-        FieldLabel("Tessellation Factor", "Multiplies per-material min/max tess levels globally");
+        ImGui::TextWrapped("Ray budget (2-4x fewer inline rays, no visible change):");
+        FieldLabel("Ray scale", "0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
+        const char* rayScales[] = {"Full-rate (reference)", "Checkerboard half-rate"};
+        int rayIdx = (settings.rtRayScale == 1) ? 1 : 0;
         ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Tessellation Factor", &settings.tessellationFactor, 0.0f, 8.0f, "%.2f");
-        TooltipOnHover("Multiplies per-material min/max tess levels globally");
-        FieldLabel("Tess Min Distance", nullptr);
+        if (ImGui::Combo("##Ray scale", &rayIdx, rayScales, 2)) {
+            settings.rtRayScale = (rayIdx == 1) ? 1 : 0;
+        }
+        TooltipOnHover("0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
+        FieldLabel("Ray contrib min", "Skip the inline ray when the lobe contribution is below this");
         ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Tess Min Distance", &settings.tessMinDistance, 1.0f, 2048.0f, "%.1f");
-        FieldLabel("Tess Max Distance", nullptr);
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Tess Max Distance", &settings.tessMaxDistance, 1.0f, 2048.0f, "%.1f");
+        ImGui::SliderFloat("##Ray contrib min", &settings.rtRayContribMin, 0.0f, 0.2f, "%.3f");
+        TooltipOnHover("Skip the inline ray when the lobe contribution is below this");
+        if (ImGui::Checkbox("Water single-ray (Fresnel xor, off = dual reference)", &settings.rtSingleRay)) {
+        }
+        TooltipOnHover("Water traces reflection XOR refraction stochastically (probability = Fresnel mix) instead of always both");
+
+        ImGui::TextWrapped("Water look (IOR, absorption, depth cap, shore fade) lives in Water Settings, per water layer.");
+        ImGui::TextWrapped("CSM stays authoritative: keep RT local shadows OFF unless inspecting contact detail. Proxy BLAS is coarse by design — never use RT for macro terrain shadows.");
     });
 
-    // 8: Triplanar Mapping
+    // 4: Display & Performance (merged: presentation controls in one place)
     sections.emplace_back([this]() {
-        ImGui::Text("Triplanar Mapping");
+        ImGui::Text("Display & Performance");
         ColSeparator();
-        FieldLabel("Triplanar Threshold", "? (dead-zone before blending)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Triplanar Threshold", &settings.triplanarThreshold, 0.0f, 0.5f, "%.3f");
-        TooltipOnHover("? (dead-zone before blending)");
-        FieldLabel("Triplanar Exponent", "? (>1 = steeper)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Triplanar Exponent", &settings.triplanarExponent, 1.0f, 12.0f, "%.2f");
-        TooltipOnHover("? (>1 = steeper)");
+        if (ImGui::Checkbox("V-Sync (MAILBOX/FIFO)", &settings.vsyncEnabled)) {
+            // Will be read by VulkanApp to recreate swapchain with different present mode
+        }
+        TooltipOnHover("When disabled, uses IMMEDIATE mode for uncapped FPS (may cause tearing)");
+        if (ImGui::Checkbox("Wireframe Mode", &settings.wireframeMode)) {
+            // toggle wireframe rendering
+        }
+        TooltipOnHover("Render meshes in wireframe (requires GPU support)");
+        if (ImGui::Checkbox("Water Wireframe", &settings.waterWireframeMode)) {
+            // toggle water wireframe only
+        }
+        TooltipOnHover("Render water surface in white wireframe");
+        if (ImGui::Button("Reset to Defaults")) {
+            resetToDefaults();
+        }
     });
 
-    // 9: Level of Detail
+    // 5: Shadow Effects
+    sections.emplace_back([this]() {
+        ImGui::Text("Shadow Effects");
+        ColSeparator();
+        if (ImGui::Checkbox("Enable Shadows", &settings.enableShadows)) {
+
+        }
+        TooltipOnHover("Globally enable or disable all shadowing");
+        if (ImGui::Button("Dump Shadow Depth")) {
+            if (onDumpShadowDepth) onDumpShadowDepth();
+        }
+        TooltipOnHover("Write shadow depth PGM for debugging");
+        if (shadowParams) {
+            FieldLabel("Base Ortho Size", "Shadow camera orthographic size for the base cascade");
+            ImGui::SetNextItemWidth(kSettingsColWidth);
+            ImGui::SliderFloat("##Base Ortho Size", &shadowParams->orthoSize, 10.0f, 2048.0f, "%.0f");
+            TooltipOnHover("Shadow camera orthographic size for the base cascade");
+            for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
+                ImGui::Text("  Cascade %d", i);
+            }
+        }
+    });
+
+    // 6: Camera
+    sections.emplace_back([this]() {
+        ImGui::Text("Camera");
+        ColSeparator();
+        FieldLabel("Near Plane", "Near clip plane distance (affects depth precision)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::DragFloat("##Near Plane", &settings.nearPlane, 0.01f, 0.001f, 100.0f, "%.3f");
+        TooltipOnHover("Near clip plane distance (affects depth precision)");
+        FieldLabel("Far Plane", "Far clip plane distance (view distance)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::DragFloat("##Far Plane", &settings.farPlane, 10.0f, 100.0f, 100000.0f, "%.1f");
+        TooltipOnHover("Far clip plane distance (view distance)");
+    });
+
+    // 7: Vegetation Impostors
+    sections.emplace_back([this]() {
+        ImGui::Text("Vegetation Impostors");
+        ColSeparator();
+        FieldLabel("Impostor Distance", "Beyond this distance vegetation is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::DragFloat("##Impostor Distance", &settings.impostorDistance, 5.0f, 0.0f, 5000.0f, "%.0f m");
+        TooltipOnHover("Beyond this distance vegetation is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
+        if (settings.impostorDistance < 0.0f) settings.impostorDistance = 0.0f;
+    });
+
+    // 8: Level of Detail
     sections.emplace_back([this]() {
         ImGui::Text("Level of Detail");
         ColSeparator();
@@ -252,103 +272,70 @@ void SettingsWidget::render() {
             "unlimited (chunk ladders rarely exceed ~5 levels).");
     });
 
-    // 10: Display Mode
+    // 9: Tessellation
     sections.emplace_back([this]() {
-        ImGui::Text("Display Mode");
+        ImGui::Text("Tessellation");
         ColSeparator();
-        if (ImGui::Button("Reset to Defaults")) {
-            resetToDefaults();
+        if (ImGui::Checkbox("Enable Tessellation", &settings.tessellationEnabled)) {
+            // toggled globally
         }
-        if (ImGui::Checkbox("Wireframe Mode", &settings.wireframeMode)) {
-            // toggle wireframe rendering
+        TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
+        if (ImGui::Checkbox("Enable Shadow Tessellation", &settings.shadowTessellationEnabled)) {
+            // toggled globally
         }
-        TooltipOnHover("Render meshes in wireframe (requires GPU support)");
-        if (ImGui::Checkbox("Water Wireframe", &settings.waterWireframeMode)) {
-            // toggle water wireframe only
+        TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
+        if (ImGui::Checkbox("Adaptive Tessellation", &settings.adaptiveTessellation)) {
         }
-        TooltipOnHover("Render water surface in white wireframe");
+        TooltipOnHover("Enable camera-distance driven tessellation level");
+        FieldLabel("Tessellation Factor", "Multiplies per-material min/max tess levels globally");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Tessellation Factor", &settings.tessellationFactor, 0.0f, 8.0f, "%.2f");
+        TooltipOnHover("Multiplies per-material min/max tess levels globally");
+        FieldLabel("Tess Min Distance", nullptr);
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Tess Min Distance", &settings.tessMinDistance, 1.0f, 2048.0f, "%.1f");
+        FieldLabel("Tess Max Distance", nullptr);
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Tess Max Distance", &settings.tessMaxDistance, 1.0f, 2048.0f, "%.1f");
     });
 
-    // 11: Hybrid RT (migrated from HybridRTWidget — sole owner of RT controls:
-    // raster owns primary, CSM macro shadows, RT secondary visibility)
+    // 10: Triplanar Mapping
     sections.emplace_back([this]() {
-        ImGui::Text("Hybrid RT");
+        ImGui::Text("Triplanar Mapping");
         ColSeparator();
-        ImGui::TextWrapped("Raster=primary, CSM=macro shadows, RT=secondary (reflections, refraction, thickness, contact).");
-        if (ImGui::Checkbox("RT reflections", &settings.rtReflections)) {
-        }
-        TooltipOnHover("Solid + water RT reflections (sky on miss/off)");
-        if (ImGui::Checkbox("RT refractions", &settings.rtRefractions)) {
-        }
-        TooltipOnHover("Water refraction via Snell IOR");
-        if (ImGui::Checkbox("RT water thickness", &settings.rtThickness)) {
-        }
-        TooltipOnHover("RT water thickness + Beer-Lambert absorption");
-        if (ImGui::Checkbox("RT local/contact shadows (augment CSM)", &settings.rtLocalShadows)) {
-        }
-        TooltipOnHover("Selective RT contact shadows augmenting CSM (off = CSM-only, recommended)");
-        if (ImGui::Checkbox("Water via RT pipeline (off = inline queries)", &settings.rtWaterPipeline)) {
-        }
-        TooltipOnHover("Water via async RT pipeline outputs (off = inline ray queries)");
-
-        FieldLabel("Max reflect dist", "Reflection ray Tmax (world units)");
+        FieldLabel("Triplanar Threshold", "? (dead-zone before blending)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Max reflect dist", &settings.rtMaxReflectDist, 10.0f, 2000.0f, "%.0f");
-        TooltipOnHover("Reflection ray Tmax (world units)");
-        FieldLabel("Max refract dist", "Refraction ray Tmax (also deep-water thickness)");
+        ImGui::SliderFloat("##Triplanar Threshold", &settings.triplanarThreshold, 0.0f, 0.5f, "%.3f");
+        TooltipOnHover("? (dead-zone before blending)");
+        FieldLabel("Triplanar Exponent", "? (>1 = steeper)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Max refract dist", &settings.rtMaxRefractDist, 10.0f, 1000.0f, "%.0f");
-        TooltipOnHover("Refraction ray Tmax (also deep-water thickness)");
-        FieldLabel("Max contact dist", "Local shadow ray Tmax (contact range only)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Max contact dist", &settings.rtMaxShadowDist, 1.0f, 60.0f, "%.1f");
-        TooltipOnHover("Local shadow ray Tmax (contact range only)");
-        FieldLabel("Roughness threshold", "Roughness above this skips RT reflections (env approx)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Roughness threshold", &settings.rtRoughnessThreshold, 0.0f, 1.0f, "%.2f");
-        TooltipOnHover("Roughness above this skips RT reflections (env approx)");
-        FieldLabel("Self-skip dist", "Ignore proxy hits closer than this (own-box guard)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Self-skip dist", &settings.rtSelfSkipDist, 0.0f, 15.0f, "%.2f");
-        TooltipOnHover("Ignore proxy hits closer than this (own-box guard)");
-
-        ImGui::TextWrapped("Ray budget (2-4x fewer inline rays, no visible change):");
-        FieldLabel("Ray scale", "0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
-        const char* rayScales[] = {"Full-rate (reference)", "Checkerboard half-rate"};
-        int rayIdx = (settings.rtRayScale == 1) ? 1 : 0;
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        if (ImGui::Combo("##Ray scale", &rayIdx, rayScales, 2)) {
-            settings.rtRayScale = (rayIdx == 1) ? 1 : 0;
-        }
-        TooltipOnHover("0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
-        FieldLabel("Ray contrib min", "Skip the inline ray when the lobe contribution is below this");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Ray contrib min", &settings.rtRayContribMin, 0.0f, 0.2f, "%.3f");
-        TooltipOnHover("Skip the inline ray when the lobe contribution is below this");
-        if (ImGui::Checkbox("Water single-ray (Fresnel xor, off = dual reference)", &settings.rtSingleRay)) {
-        }
-        TooltipOnHover("Water traces reflection XOR refraction stochastically (probability = Fresnel mix) instead of always both");
-
-        ImGui::TextWrapped("Water look (IOR, absorption, depth cap, shore fade) lives in Water Settings, per water layer.");
-        // RT debug views drive rt.debug.x (RT pipeline + raster RT branches).
-        const char* rtViews[] = {"Off", "50 Reflect-only", "51 Refract-only", "52 Thickness",
-                                 "53 Fresnel", "54 Absorption", "55 CSM-only", "56 RT-local-only",
-                                 "57 CSM+RT combined", "59 Ray mask", "60 Depth source"};
-        const int rtVals[] = {0, 50, 51, 52, 53, 54, 55, 56, 57, 59, 60};
-        int rtIdx = 0;
-        for (int i = 0; i < 11; ++i) if (settings.rtDebugView == rtVals[i]) rtIdx = i;
-        FieldLabel("RT debug view", "RT debug views (0=off); any view except 59/60 forces full-quality reference rays");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        if (ImGui::Combo("##RT debug view", &rtIdx, rtViews, 11)) {
-            settings.rtDebugView = rtVals[rtIdx];
-            // Mirror into the raster debugMode so solid AND water show it.
-            if (settings.rtDebugView != 0) settings.debugMode = settings.rtDebugView;
-        }
-        TooltipOnHover("Raster debugMode also selects views 50-57 for solid+water.");
-        ImGui::TextWrapped("CSM stays authoritative: keep RT local shadows OFF unless inspecting contact detail. Proxy BLAS is coarse by design — never use RT for macro terrain shadows.");
+        ImGui::SliderFloat("##Triplanar Exponent", &settings.triplanarExponent, 1.0f, 12.0f, "%.2f");
+        TooltipOnHover("? (>1 = steeper)");
     });
 
-    // 12: Debug Visualisation
+    // 11: Input (merged: axes + sensitivity)
+    sections.emplace_back([this]() {
+        ImGui::Text("Input");
+        ColSeparator();
+        if (ImGui::Checkbox("Flip keyboard rotation axes", &settings.flipKeyboardRotation)) {
+            // toggled
+        }
+        TooltipOnHover("Invert yaw/pitch directions for keyboard rotation controls");
+        if (ImGui::Checkbox("Flip gamepad rotation axes", &settings.flipGamepadRotation)) {
+            // toggled
+        }
+        TooltipOnHover("Invert yaw/pitch directions for gamepad right-stick");
+        FieldLabel("Move Speed", "Movement speed in units/second used by keyboard and gamepad");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Move Speed", &settings.moveSpeed, 0.1f, 20.0f, "%.2f");
+        TooltipOnHover("Movement speed in units/second used by keyboard and gamepad");
+        FieldLabel("Angular Speed (deg/s)", "Angular rotation speed in degrees/second used by keyboard and gamepad");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Angular Speed (deg/s)", &settings.angularSpeedDeg, 1.0f, 360.0f, "%.0f");
+        TooltipOnHover("Angular rotation speed in degrees/second used by keyboard and gamepad");
+    });
+
+    // 12: Debug Visualisation (advanced — last)
     sections.emplace_back([this]() {
         ImGui::Text("Debug Visualisation");
         ColSeparator();
@@ -408,31 +395,34 @@ void SettingsWidget::render() {
             "Front-face Depth (linearized)",
             "Back-face Depth (linearized)",
             "Water Thickness (normalized)",
-            // Misc (RT views 50-57/59-60 live only in the Hybrid RT section above;
-            // debugMode IDs go straight to the GPU, so this combo maps values)
-            "Tessellation Level Heat"
+            // RT views (50-57, 59-60 drive rt.debug.x; any view except 59/60
+            // also forces full-quality reference rays — see SceneRenderer).
+            // IDs go straight to the GPU, so index == value (0-60 in order).
+            "RT Reflection Only",
+            "RT Refraction Only",
+            "RT Thickness",
+            "Fresnel",
+            "Absorption (Beer-Lambert)",
+            "CSM Shadows Only",
+            "RT Local Shadows Only",
+            "CSM + RT Combined Shadow",
+            "Tessellation Level Heat",
+            "Ray Mask",
+            "Depth Source"
         };
-        // GPU IDs for the entries above: 0-49 in order, then 58.
-        const int debugVals[] = {
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
-            10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-            20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
-            30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
-            40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
-            58
-        };
-        static_assert(IM_ARRAYSIZE(debugItems) == IM_ARRAYSIZE(debugVals), "debug combo items/values out of sync");
-        int current = 0;
-        for (int i = 0; i < IM_ARRAYSIZE(debugVals); ++i) {
-            if (settings.debugMode == debugVals[i]) { current = i; break; }
-        }
+        static_assert(IM_ARRAYSIZE(debugItems) == 61, "debug combo must cover IDs 0-60");
+        // Clamp stale/out-of-range IDs instead of indexing out of bounds.
+        int current = settings.debugMode;
+        if (current < 0 || current >= IM_ARRAYSIZE(debugItems)) current = 0;
         // Index shown in the header so no SameLine widget is needed (narrow-column safe).
-        // Note: values driven from the Hybrid RT section (50-57/59-60) keep
-        // working on the GPU; the header below still shows the true ID.
         ImGui::Text("Debug Mode (%d)", settings.debugMode);
         ImGui::SetNextItemWidth(kSettingsColWidth);
         if (ImGui::Combo("##Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
-            settings.debugMode = debugVals[current];
+            settings.debugMode = current;
+            // Single owner of both IDs: raster shows the view via debugMode,
+            // the RT pipeline via rtDebugView (0 = normal RT rendering).
+            const bool isRtView = (current >= 50 && current <= 57) || current == 59 || current == 60;
+            settings.rtDebugView = isRtView ? current : 0;
         }
 
         if (ImGui::Checkbox("Show Mesh Bounding Boxes", &settings.showBoundingBoxes)) {
@@ -446,22 +436,26 @@ void SettingsWidget::render() {
         TooltipOnHover("Render leaf-node cube faces colored by SDF sign; frustum-culled on the GPU via indirect.comp (only visible cubes are drawn)");
     });
 
-    // ---- Multi-column flow: fill each column top-to-bottom using the last
-    // ---- frame's measured section heights; when the next section would
-    // ---- overflow the visible height, start a new column. Order is preserved.
-    // ---- Columns use a fixed minimum width; if they exceed the window width
-    // ---- the window scrolls horizontally (HorizontalScrollbar flag above).
+    // ---- Packing: best-fit over the last frame's measured section heights.
+    // ---- Sections are visited in importance order; each goes into the fullest
+    // ---- column that still fits it, so leftover gaps get filled instead of
+    // ---- stranding empty column space. New columns open only when nothing
+    // ---- fits; overflow scrolls horizontally (fixed 256px columns).
     const int n = static_cast<int>(sections.size());
     static std::vector<float> cachedH;
     if (static_cast<int>(cachedH.size()) != n) {
-        // First frame estimates; tall sections get larger guesses so the
-        // initial column split is close to the measured one.
-        cachedH.assign(n, 160.0f);
-        if (n > 0) cachedH[0] = 190.0f;
-        if (n > 4) cachedH[4] = 230.0f;
-        if (n > 7) cachedH[7] = 240.0f;
-        if (n > 11) cachedH[11] = 560.0f;
-        if (n > 12) cachedH[12] = 210.0f;
+        // First frame estimates; refined by measurement from frame 2 on.
+        cachedH.assign(n, 170.0f);
+        cachedH[0] = 190.0f;   // Rendering
+        cachedH[1] = 230.0f;   // Hybrid RT toggles
+        cachedH[2] = 300.0f;   // RT Distances
+        cachedH[3] = 240.0f;   // RT Ray Budget
+        cachedH[4] = 210.0f;   // Display & Performance
+        cachedH[5] = 190.0f;   // Shadow Effects
+        cachedH[8] = 180.0f;   // Level of Detail
+        cachedH[9] = 260.0f;   // Tessellation
+        cachedH[11] = 280.0f;  // Input
+        cachedH[12] = 230.0f;  // Debug Visualisation
     }
 
     float availW = ImGui::GetContentRegionAvail().x;
@@ -477,19 +471,28 @@ void SettingsWidget::render() {
     // scrolling handles overflow instead of squeezing columns.
     constexpr float kSectionGap = 8.0f;
     std::vector<int> colOf(n, 0);
-    int nCols = 1;
-    float curH = 0.0f;
+    std::vector<float> colH(1, 0.0f);
     for (int i = 0; i < n; ++i) {
-        float h = cachedH[i] > 1.0f ? cachedH[i] : 160.0f;
-        // Fill current column as much as possible; overflow -> new column.
-        if (curH > 0.0f && curH + h > flowH) {
-            ++nCols;
-            curH = 0.0f;
+        const float h = cachedH[i] > 1.0f ? cachedH[i] : 170.0f;
+        // Tightest column that fits wins; empty columns always accept so a
+        // section taller than the window still lands somewhere sane.
+        int best = -1;
+        float bestRem = 1e30f;
+        for (int c = 0; c < static_cast<int>(colH.size()); ++c) {
+            const float rem = flowH - colH[c];
+            if ((colH[c] <= 0.0f || rem >= h) && rem - h < bestRem) {
+                best = c;
+                bestRem = rem - h;
+            }
         }
-        colOf[i] = nCols - 1;
-        curH += h + kSectionGap;
+        if (best < 0) {
+            best = static_cast<int>(colH.size());
+            colH.emplace_back(0.0f);
+        }
+        colOf[i] = best;
+        colH[best] += h + kSectionGap;
     }
-    if (nCols > n) nCols = n;
+    const int nCols = static_cast<int>(colH.size());
 
     auto renderSectionMeasured = [&](int idx, bool firstInColumn) {
         if (!firstInColumn) {
