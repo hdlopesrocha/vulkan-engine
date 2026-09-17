@@ -16,6 +16,7 @@ class World;
 #include "../../math/Vertex.hpp"
 #include "../../math/BoundingCubeHasher.hpp"
 #include <unordered_map>
+#include <unordered_set>
 #include <array>
 #include <atomic>
 #include <memory>
@@ -311,6 +312,14 @@ public:
     // Raw water span set, same change-detection role as lastSceneSpans_
     // (without it the scene BLAS would rebuild every 30 frames when idle).
     std::vector<IndirectRenderer::RTGeometrySpan> lastWaterSpans_;
+    // Chunk ids (truncated NodeIDs — the same domain as
+    // RTGeometrySpan::chunkId) surviving the non-overlapping filter, per
+    // layer. The proxy packer drops entries outside these sets so coarse
+    // ancestor boxes never overlay fine ones for refraction/shadow rays
+    // (same LOD-overlap class as the scene BLAS was). Empty = unrestricted
+    // (predates the first refresh — pack everything, no holes).
+    std::unordered_set<uint32_t> keptSolidProxyIds_;
+    std::unordered_set<uint32_t> keptWaterProxyIds_;
     // Last known LoD band inputs (mirror the raster cull in rebuildProxySet).
     glm::vec3 lastBandCamPos_ = glm::vec3(0.0f);
     float lastBandLodBias_ = 8.0f;

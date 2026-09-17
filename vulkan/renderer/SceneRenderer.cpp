@@ -2158,6 +2158,15 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                 std::vector<IndirectRenderer::RTGeometrySpan> filtered, wfiltered;
                 if (solidok) IndirectRenderer::filterNonOverlappingSpans(lastSceneSpans_, filtered);
                 if (waterok) IndirectRenderer::filterNonOverlappingSpans(lastWaterSpans_, wfiltered);
+                // Surviving mesh ids per layer: the proxy packer below drops
+                // entries outside these sets (coarse ancestors), so proxy
+                // boxes never overlay the fine surface for refraction/shadow
+                // rays. Refreshed together with the filtered lists, hence
+                // always consistent with them.
+                keptSolidProxyIds_.clear();
+                for (const auto& s : filtered) keptSolidProxyIds_.insert(s.chunkId);
+                keptWaterProxyIds_.clear();
+                for (const auto& s : wfiltered) keptWaterProxyIds_.insert(s.chunkId);
                 std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
                 VkBufferDeviceAddressInfo q{};
                 q.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
@@ -2244,26 +2253,35 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
             else ++it;
         }
         auto pack = [&](const std::unordered_map<NodeID, SolidProxyData>& m,
-                        std::vector<RTProxyBox>& out, bool isWater) {
-            // All visible LOD rungs are packed: each proxy is clamped inside
-            // its own octree cell, so different rungs stay disjoint and a
-            // reflection ray hits the same LOD the rasterizer draws. Packing
-            // only the finest rung left every mid/far reflection with no TLAS
-            // geometry to hit, so distant mirrors (polished water spheres)
-            // collapsed to the flat sky fallback. Sort by rung so that if the
-            // slot budget truncates, the finest (closest) boxes survive.
-            std::vector<std::pair<uint32_t, const SolidProxyData*>> sorted;
+                        std::vector<RTProxyBox>& out, bool isWater,
+                        const std::unordered_set<uint32_t>& keep) {
+            // Only proxies whose mesh survived the non-overlapping scene
+            // filter are packed: each proxy is clamped inside its own octree
+            // cell, but coarser ancestor rungs still nest OVER the fine ones,
+            // so a downward refraction ray hits the coarse flat top first and
+            // inherits its dominant material (wrong texture) and stepped
+            // height (terraces). Finest-available per region never leaves
+            // holes (a region with only coarse rungs keeps them), unlike a
+            // global finest-rung cut which starved mid/far reflections. Sort
+            // by rung so that if the slot budget truncates, the finest
+            // (closest) boxes survive. An empty keep-set predates the first
+            // refresh: pack everything (legacy behavior, no holes).
+            struct Entry { uint32_t rung; const SolidProxyData* d; NodeID nid; };
+            std::vector<Entry> sorted;
             sorted.reserve(m.size());
             for (const auto& kv : m) {
                 const SolidProxyData& d = kv.second;
                 if (!(d.maxp.x > d.minp.x && d.maxp.y > d.minp.y && d.maxp.z > d.minp.z))
                     continue; // degenerate
-                sorted.emplace_back(d.rung, &d);
+                sorted.push_back(Entry{d.rung, &d, kv.first});
             }
             std::sort(sorted.begin(), sorted.end(),
-                      [](const auto& a, const auto& b) { return a.first < b.first; });
-            for (const auto& [rung, dp] : sorted) {
+                      [](const Entry& a, const Entry& b) { return a.rung < b.rung; });
+            for (const auto& [rung, dp, nid] : sorted) {
                 (void)rung;
+                // NodeIDs share the truncated 32-bit domain of
+                // RTGeometrySpan::chunkId (see addMeshSlotted callers).
+                if (!keep.empty() && !keep.count(static_cast<uint32_t>(nid))) continue;
                 const SolidProxyData& d = *dp;
                 glm::vec3 chunkMin = d.minp;
                 glm::vec3 chunkMax = d.maxp;
@@ -2333,14 +2351,14 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
             }
         };
         solids.reserve(mainSolidProxyData.size());
-        pack(mainSolidProxyData, solids, false);
+        pack(mainSolidProxyData, solids, false, keptSolidProxyIds_);
         if (wantWater) {
             waters.reserve(mainWaterProxyData.size());
-            pack(mainWaterProxyData, waters, true);
+            pack(mainWaterProxyData, waters, true, keptWaterProxyIds_);
         }
-        { // Rare (repacks only): pack composition. All rungs are packed now,
-            // so this also fingerprints whether the all-rung proxy set is
-            // active in a given binary.
+        { // Rare (repacks only): pack composition. Only surviving (finest per
+            // nested region) rungs are packed now, so this also fingerprints
+            // whether the filtered proxy set is active in a given binary.
             static size_t lastKept = SIZE_MAX;
             const size_t kept = solids.size() + waters.size();
             if (kept != lastKept) {
