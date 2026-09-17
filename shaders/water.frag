@@ -31,6 +31,7 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 #include "includes/tbn.glsl"
 #include "includes/triplanar.glsl"
 #include "includes/shadows.glsl"
+#include "includes/common.glsl"
 
 
 // Water offscreen pass inputs (set 2).

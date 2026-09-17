@@ -1480,7 +1480,7 @@ size_t SceneRenderer::publishPendingMeshes(
                     // rejection keeps the fragment's own cell from
                     // self-hitting; the rchit own-body guard does the same
                     // for the pipeline path.
-                    pd.maxp.y = surf + 150.0f;
+                    pd.maxp.y = surf + 3.0f;
                     pd.hgrid.fill(surf);
                 }
                 // 4x4 max-height grid: proxy boxes per cell follow the chunk's

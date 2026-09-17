@@ -67,3 +67,53 @@ float sampleHeightTriplanarW(vec3 worldPos, vec3 normal, vec3 w, int brushIndex)
 float sampleHeightTriplanar(vec3 worldPos, vec3 normal, int brushIndex) {
     return sampleHeightTriplanarW(worldPos, normal, computeTriplanarWeights(normal), brushIndex);
 }
+
+// Explicit-LOD twins of sampleHeight / sampleHeightTriplanarW for use inside
+// non-uniform control flow (ray-query hit blocks), where implicit-LOD
+// texture() has undefined derivatives. Math is identical to the variants
+// above; lod should come from hit distance
+// (e.g. clamp(log2(1.0 + hitT * 0.02), 0.0, 4.0)).
+float sampleHeightLod(vec2 texCoords, int brushIndex, float lod) {
+    vec2 tc = texCoords;
+    if (materials[brushIndex].mappingParams.z > 0.5) {
+        tc.y = 1.0 - tc.y;
+    }
+    if (materials[brushIndex].normalParams.z > 0.5) {
+        tc.x = 1.0 - tc.x;
+    }
+    float h = textureLod(heightArray, vec3(tc, float(brushIndex)), lod).r;
+    return clamp(h, 0.0, 1.0);
+}
+
+float sampleHeightTriplanarWLod(vec3 worldPos, vec3 normal, vec3 w, int brushIndex, float lod) {
+    vec2 scale = vec2(materials[brushIndex].triplanarParams.x, materials[brushIndex].triplanarParams.y);
+    if (materials[brushIndex].mappingParams.z > 0.5) {
+        scale.y = -scale.y;
+    }
+    if (materials[brushIndex].normalParams.z > 0.5) {
+        scale.x = -scale.x;
+    }
+
+    float hX = 0.0;
+    float hY = 0.0;
+    float hZ = 0.0;
+
+    // UV math must match computeTriplanarUVs() in triplanar.glsl so height and albedo align
+    if (w.x > 0.0) {
+        vec2 uvX = (normal.x >= 0.0) ? vec2(-worldPos.z, -worldPos.y) : vec2(worldPos.z, -worldPos.y);
+        hX = textureLod(heightArray, vec3(uvX * scale, float(brushIndex)), lod).r;
+    }
+
+    if (w.y > 0.0) {
+        vec2 uvY = (normal.y >= 0.0) ? vec2(worldPos.x, worldPos.z) : vec2(worldPos.x, -worldPos.z);
+        hY = textureLod(heightArray, vec3(uvY * scale, float(brushIndex)), lod).r;
+    }
+
+    if (w.z > 0.0) {
+        vec2 uvZ = (normal.z >= 0.0) ? vec2(worldPos.x, -worldPos.y) : vec2(-worldPos.x, -worldPos.y);
+        hZ = textureLod(heightArray, vec3(uvZ * scale, float(brushIndex)), lod).r;
+    }
+
+    float h = hX * w.x + hY * w.y + hZ * w.z;
+    return clamp(h, 0.0, 1.0);
+}

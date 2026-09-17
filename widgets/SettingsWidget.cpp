@@ -2,7 +2,7 @@
 #include "components/ImGuiHelpers.hpp"
 
 SettingsWidget::SettingsWidget(Settings& settingsRef, ShadowParams* shadowParams_) : Widget("Settings", u8"\uf013"), settings(settingsRef), shadowParams(shadowParams_) {
-    isOpen = true;
+    isOpen = false;
 }
 
 void SettingsWidget::resetToDefaults() {

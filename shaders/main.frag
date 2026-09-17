@@ -444,8 +444,17 @@ void main() {
                 float selfSkip = max(rt.debug.z, 0.15);
                 vec3 origin = fragPosWorldNotDisplaced + reflN * selfSkip;
                 rayQueryEXT rq;
+                // Mirror reflections trace the real scene-geometry instance
+                // ONLY (exact chunk triangles, including the real water mesh
+                // via the waterChunk flag below). The water proxy boxes are
+                // deliberately excluded: they are coarse thickness slabs whose
+                // side walls stick up above the lake surface while neighbouring
+                // chunks leave vertical gaps — grazing mirror rays either slam
+                // into a wall (a flat water block, faded to sky at the top,
+                // where distant terrain should be) or thread a gap (sky leak),
+                // printing chunk-sized shards and cracks across the reflection.
                 rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT,
-                    RT_RAY_MASK_SCENE | RT_RAY_MASK_WATER,
+                    RT_RAY_MASK_SCENE,
                     origin, 0.05, normalize(reflDir), RT_NO_LIMIT);
                 while (rayQueryProceedEXT(rq)) {}
                 if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -453,69 +462,10 @@ void main() {
                     // Own-surface guard: hits closer than selfSkip are the
                     // reflector's own triangles, not true scenery.
                     if (hitT >= selfSkip) {
+                        // Mask-selected: only the real scene-geometry instance can
+                        // report hits (see the SCENE-only mask above).
                         const uint inst = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
-                        if (inst == 1u) {
-                            // Water proxy hit: mirror shows the water surface.
-                            // Water boxes carry the fixed water tint in their
-                            // average albedo (their materialId addresses water
-                            // params, not scene materials), so shade that flat
-                            // tint with the box-face normal like water.frag.
-                            vec3 hitPos = origin + normalize(reflDir) * hitT;
-                            uint boxIdx = rtBoxIndex(
-                                uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)), inst);
-                            RTProxyMetaGLSL meta = rtMetas[boxIdx];
-                            bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
-                            vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz,
-                                                    meta.maxAndFlags.xyz, exiting);
-                            vec3 toLight = -normalize(ubo.lightDir.xyz);
-                            // Constant UP normal for the water lighting: the
-                            // box-face normal varies between the wall's side
-                            // and top faces as the ray moves → ndl flickers.
-                            float ndl = max(dot(vec3(0.0, 1.0, 0.0), toLight), 0.0);
-                            // Transparent water look computed from the water's
-                            // OWN params (water.frag formula): tint =
-                            // mix(shallow, deep, volume) blended over the sky
-                            // by waterTint*transparency. No recursive
-                            // reflection/refraction. The proxy meta carries
-                            // the water layer id in minAndMatId.w.
-                            int wLayer = clamp(int(meta.minAndMatId.w + 0.5), 0, 31);
-                            WaterParamsGPU wp = waterParams[wLayer];
-                            vec3 shallowTint = wp.shallowColor.rgb;
-                            vec3 deepTint = wp.deepColor.rgb;
-                            float waterTintStr = wp.params2.x;
-                            float transparency = wp.params1.z;
-                            float depthFalloff = wp.waveParams.w;
-                            float thickness = max(wp.refractionParams.y, 0.0);
-                            float tintDepthScale = max(wp.causticParams.w, 0.0001);
-                            float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
-                            vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
-                            vec3 transmittance = exp(-min(
-                                wp.absorptionParams.rgb
-                                    * max(thickness * wp.absorptionParams.a, 0.0),
-                                vec3(2.5)));
-                            float depthFade = 1.0 - exp(-thickness * depthFalloff);
-                            float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
-                            float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
-                            vec3 skyR = rtProceduralSky(normalize(reflDir),
-                                sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
-                            vec3 waterColor = mix(skyR * transmittance, waterTintColor, tintBlend)
-                                * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
-                                   + vec3(0.09, 0.12, 0.15));
-                            // Soft top edge: rays that graze the wall's top
-                            // alternate between hitting the wall (water) and
-                            // passing over it (sky) as the camera moves — a
-                            // hard switch that flickers. Fade the water color
-                            // toward the sky near the top so the boundary is
-                            // continuous.
-                            float topFade = smoothstep(
-                                meta.maxAndFlags.y - 15.0, meta.maxAndFlags.y, hitPos.y);
-                            rtColor = mix(waterColor, skyR, topFade);
-                            // A mirror's reflection is not occluded by AO nor dimmed by the
-                            // surface roughness (the RT roughness gate already
-                            // handles scatter): the reflection is full-strength.
-                            rtColor *= 1.0;
-                            waterHit = true;
-                        } else if (inst == RT_SCENE_INSTANCE) {
+                        if (inst == RT_SCENE_INSTANCE) {
                         // The primitive index is LOCAL to the hit geometry
                         // (per GLSL_EXT_ray_query: "the index of the primitive
                         // within the geometry of the BLAS"). The geometry index
@@ -539,20 +489,40 @@ void main() {
                         // semantics) — do NOT subtract the cumulative base.
                         uint localPrim = prim;
                         const uint kVertStride = 16u;
-                        uint i0 = rtSceneIndices[gi.y + localPrim * 3u + 0u] + gi.x;
-                        uint i1 = rtSceneIndices[gi.y + localPrim * 3u + 1u] + gi.x;
-                        uint i2 = rtSceneIndices[gi.y + localPrim * 3u + 2u] + gi.x;
-                        vec3 n0 = vec3(rtSceneVerts[i0 * kVertStride + 8u],
-                                       rtSceneVerts[i0 * kVertStride + 9u],
-                                       rtSceneVerts[i0 * kVertStride + 10u]);
-                        vec3 n1 = vec3(rtSceneVerts[i1 * kVertStride + 8u],
-                                       rtSceneVerts[i1 * kVertStride + 9u],
-                                       rtSceneVerts[i1 * kVertStride + 10u]);
-                        vec3 n2 = vec3(rtSceneVerts[i2 * kVertStride + 8u],
-                                       rtSceneVerts[i2 * kVertStride + 9u],
-                                       rtSceneVerts[i2 * kVertStride + 10u]);
                         vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
-                        vec3 hitN = normalize(n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y);
+                        // Real water mesh (gi.w): shade with a constant UP
+                        // normal. Bindings 24/25 address the SOLID vertex
+                        // pools while water vertices live in the WATER pools,
+                        // so fetching here would light the water with another
+                        // chunk's normals (faceted shards). Water is a
+                        // heightfield, so UP matches the surface.
+                        vec3 hitN = vec3(0.0, 1.0, 0.0);
+                        uint i0 = 0u, i1 = 0u, i2 = 0u;
+                        if (gi.w == 0u) {
+                            i0 = rtSceneIndices[gi.y + localPrim * 3u + 0u] + gi.x;
+                            i1 = rtSceneIndices[gi.y + localPrim * 3u + 1u] + gi.x;
+                            i2 = rtSceneIndices[gi.y + localPrim * 3u + 2u] + gi.x;
+                            vec3 n0 = vec3(rtSceneVerts[i0 * kVertStride + 8u],
+                                           rtSceneVerts[i0 * kVertStride + 9u],
+                                           rtSceneVerts[i0 * kVertStride + 10u]);
+                            vec3 n1 = vec3(rtSceneVerts[i1 * kVertStride + 8u],
+                                           rtSceneVerts[i1 * kVertStride + 9u],
+                                           rtSceneVerts[i1 * kVertStride + 10u]);
+                            vec3 n2 = vec3(rtSceneVerts[i2 * kVertStride + 8u],
+                                           rtSceneVerts[i2 * kVertStride + 9u],
+                                           rtSceneVerts[i2 * kVertStride + 10u]);
+                            hitN = normalize(n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y);
+                        }
+                        if (gi.w == 0u) {
+                            // Displaced-surface refinement: the BLAS holds the
+                            // undisplaced base mesh while the raster draws the
+                            // TES-displaced surface. Replay the displacement
+                            // at the hit so albedo/shadow lookups land on the
+                            // rendered surface instead of its low-poly ghost.
+                            // hitN is still unflipped here, matching TES.
+                            float hitLod = clamp(log2(1.0 + hitT * 0.02), 0.0, 4.0);
+                            hitPos += rtDisplaceHit(i0, i1, i2, bary, hitPos, hitN, hitLod);
+                        }
                         if (dot(hitN, reflDir) > 0.0) hitN = -hitN; // face the incoming ray
                         // Water chunk marker (geomInfo.w): the real water mesh
                         // is in the scene BLAS; shade it as water (sky
