@@ -392,10 +392,14 @@ public:
         uint32_t vertexCount = 0;
         uint32_t firstIndex = 0;
         uint32_t indexCount = 0;
+        int32_t level = 0;         // 0-based LoD rung (0 = finest published rung)
+        glm::vec3 spanMin = glm::vec3(0.0f); // emitting cell bounds (nesting test)
+        glm::vec3 spanMax = glm::vec3(0.0f);
         bool operator==(const RTGeometrySpan& o) const {
             return chunkId == o.chunkId && baseVertex == o.baseVertex &&
                    vertexCount == o.vertexCount && firstIndex == o.firstIndex &&
-                   indexCount == o.indexCount;
+                   indexCount == o.indexCount && level == o.level &&
+                   spanMin == o.spanMin && spanMax == o.spanMax;
         }
     };
     // Snapshot the active spans (thread-safe). Call only when chunks changed
@@ -430,6 +434,9 @@ public:
             s.vertexCount = m.level_.vertexCount;
             s.firstIndex = m.level_.firstIndex;
             s.indexCount = m.level_.indexCount;
+            s.level = level;
+            s.spanMin = glm::vec3(m.level_.boundsMin);
+            s.spanMax = glm::vec3(m.level_.boundsMax);
             out.push_back(s);
         }
     }
@@ -450,7 +457,72 @@ public:
             s.vertexCount = m.level_.vertexCount;
             s.firstIndex = m.level_.firstIndex;
             s.indexCount = m.level_.indexCount;
+            s.level = m.level_.level;
+            s.spanMin = glm::vec3(m.level_.boundsMin);
+            s.spanMax = glm::vec3(m.level_.boundsMax);
             out.push_back(s);
+        }
+    }
+    // Pure CPU filter: from a raw span snapshot, keep only the finest resident
+    // rung per nested region so different LoDs never overlap in the RT scene
+    // BLAS. Every surface node with chunkLod>0 along each root path publishes
+    // its own mesh, so coarser ancestor rungs spatially overlap their finer
+    // descendants — feeding all of them to the BLAS overlays LOD0 with LODN
+    // in reflections (the raster hides this via its per-chunk band gate; ray
+    // queries have no such filter). Dropping every span that encloses an
+    // already-kept smaller span leaves exactly one rung per region: the
+    // finest available (a region with only coarse rungs keeps its coarse
+    // rung — no holes). Camera moves never change the result (no BLAS
+    // rebuilds for LoD); call only when the raw set changed (O(n^2) worst
+    // case, n ~= active chunks, off the hot path).
+    static void filterNonOverlappingSpans(const std::vector<RTGeometrySpan>& in,
+                                          std::vector<RTGeometrySpan>& out) {
+        struct Cand {
+            RTGeometrySpan s;
+            float vol = 0.0f;
+        };
+        std::vector<Cand> cands;
+        cands.reserve(in.size());
+        for (const auto& s : in) {
+            const glm::vec3 d = s.spanMax - s.spanMin;
+            if (!(d.x > 0.0f && d.y > 0.0f && d.z > 0.0f)) continue; // degenerate
+            cands.push_back(Cand{s, d.x * d.y * d.z});
+        }
+        // Smallest volume first (finer rungs use smaller cells), ties broken
+        // by rung: the first span kept per nest is its finest rung. Every
+        // later nestmate is a coarser ancestor that CONTAINS an already-kept
+        // finer span, so it is dropped. Disjoint spans never contain each
+        // other, so all survive regardless of order; partially overlapping
+        // spans (not expected from octree nesting) are conservatively kept.
+        std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) {
+            if (a.vol != b.vol) return a.vol < b.vol;
+            return a.s.level < b.s.level;
+        });
+        // Nested octree bounds are dyadic-exact; the epsilon only absorbs float
+        // noise. It cannot merge disjoint neighbours: containment requires ALL
+        // six planes, and a neighbour always protrudes on at least one axis.
+        constexpr float eps = 1e-3f; // world units (m)
+        std::vector<const Cand*> kept;
+        kept.reserve(cands.size());
+        out.clear();
+        out.reserve(cands.size());
+        for (const auto& a : cands) {
+            bool enclosesKept = false;
+            for (const Cand* k : kept) {
+                if (a.s.spanMin.x - eps <= k->s.spanMin.x &&
+                    a.s.spanMin.y - eps <= k->s.spanMin.y &&
+                    a.s.spanMin.z - eps <= k->s.spanMin.z &&
+                    k->s.spanMax.x <= a.s.spanMax.x + eps &&
+                    k->s.spanMax.y <= a.s.spanMax.y + eps &&
+                    k->s.spanMax.z <= a.s.spanMax.z + eps) {
+                    enclosesKept = true;
+                    break;
+                }
+            }
+            if (!enclosesKept) {
+                kept.push_back(&a);
+                out.push_back(a.s);
+            }
         }
     }
     VkBuffer getVertexBufferHandle() const { return vertexBuffer.buffer; }

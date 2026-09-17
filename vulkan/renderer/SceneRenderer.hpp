@@ -308,6 +308,9 @@ public:
     // spans even when the proxy bounds/material stay identical, so the scene
     // BLAS must refresh on span changes, not only on proxy changes.
     std::vector<IndirectRenderer::RTGeometrySpan> lastSceneSpans_;
+    // Raw water span set, same change-detection role as lastSceneSpans_
+    // (without it the scene BLAS would rebuild every 30 frames when idle).
+    std::vector<IndirectRenderer::RTGeometrySpan> lastWaterSpans_;
     // Last known LoD band inputs (mirror the raster cull in rebuildProxySet).
     glm::vec3 lastBandCamPos_ = glm::vec3(0.0f);
     float lastBandLodBias_ = 8.0f;

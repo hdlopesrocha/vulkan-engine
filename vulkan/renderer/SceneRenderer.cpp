@@ -2128,22 +2128,55 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
             VkBuffer vb = mainSolidRenderer->getIndirectRenderer().getVertexBufferHandle();
             VkBuffer ib = mainSolidRenderer->getIndirectRenderer().getIndexBufferHandle();
             std::vector<IndirectRenderer::RTGeometrySpan> spans;
-            // Camera-independent: every active chunk, so the BLAS is rebuilt
-            // only when the chunk set changes (never on camera moves) and the
-            // reflection covers ALL chunks the raster draws.
+            // Camera-independent raw snapshot (all resident rungs): the BLAS
+            // is rebuilt only when the chunk set changes (never on camera
+            // moves). The O(n^2) overlap filter below runs only when this
+            // raw set actually differs.
             mainSolidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(spans);
-            if (vb != VK_NULL_HANDLE && ib != VK_NULL_HANDLE && spans != lastSceneSpans_) {
-                lastSceneSpans_ = spans;
+            // Water snapshot up front so either layer can trigger the joint
+            // refresh below (the scene BLAS holds both in one geometry list).
+            VkBuffer wvb = VK_NULL_HANDLE, wib = VK_NULL_HANDLE;
+            std::vector<IndirectRenderer::RTGeometrySpan> wspan;
+            if (mainLiquidRenderer) {
+                wvb = mainLiquidRenderer->getIndirectRenderer().getVertexBufferHandle();
+                wib = mainLiquidRenderer->getIndirectRenderer().getIndexBufferHandle();
+                mainLiquidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(wspan);
+            }
+            const bool solidok = vb != VK_NULL_HANDLE && ib != VK_NULL_HANDLE;
+            const bool waterok = wvb != VK_NULL_HANDLE && wib != VK_NULL_HANDLE;
+            const bool solidChanged = solidok && spans != lastSceneSpans_;
+            // Change-detected like the solid path: without it the scene BLAS
+            // would be flagged dirty on every frame and rebuilt every 30
+            // frames even when the scene is idle.
+            const bool waterChanged = waterok && wspan != lastWaterSpans_;
+            if (solidChanged || waterChanged) {
+                if (solidChanged) lastSceneSpans_ = spans;
+                if (waterChanged) lastWaterSpans_ = wspan;
+                // Non-overlapping: only the finest resident rung per nested
+                // region survives, so LOD0 is never overlaid with LODN in
+                // the reflection.
+                std::vector<IndirectRenderer::RTGeometrySpan> filtered, wfiltered;
+                if (solidok) IndirectRenderer::filterNonOverlappingSpans(lastSceneSpans_, filtered);
+                if (waterok) IndirectRenderer::filterNonOverlappingSpans(lastWaterSpans_, wfiltered);
                 std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
                 VkBufferDeviceAddressInfo q{};
                 q.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-                q.buffer = vb;
-                const VkDeviceAddress vaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
-                q.buffer = ib;
-                const VkDeviceAddress iaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
+                VkDeviceAddress vaddr = 0, iaddr = 0, wvaddr = 0, wiaddr = 0;
+                if (solidok) {
+                    q.buffer = vb;
+                    vaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
+                    q.buffer = ib;
+                    iaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
+                }
+                if (waterok) {
+                    q.buffer = wvb;
+                    wvaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
+                    q.buffer = wib;
+                    wiaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
+                }
                 std::vector<RayTracingResources::SceneTriGeometry> geoms;
-                geoms.reserve(spans.size() + 64);
-                for (const auto& s : spans) {
+                geoms.reserve(filtered.size() + wfiltered.size() + 64);
+                for (const auto& s : filtered) {
                     RayTracingResources::SceneTriGeometry g;
                     g.vertexAddress = vaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
                     g.indexAddress = iaddr + VkDeviceAddress(s.firstIndex) * sizeof(uint32_t);
@@ -2162,39 +2195,27 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                 // triangles (accurate positions, no proxy boxes). The
                 // waterChunk flag routes hit shading to the water look (sky
                 // reflection + tint) instead of the terrain albedo lookup.
-                if (mainLiquidRenderer) {
-                    VkBuffer wvb = mainLiquidRenderer->getIndirectRenderer().getVertexBufferHandle();
-                    VkBuffer wib = mainLiquidRenderer->getIndirectRenderer().getIndexBufferHandle();
-                    std::vector<IndirectRenderer::RTGeometrySpan> wspan;
-                    mainLiquidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(wspan);
-                    if (wvb != VK_NULL_HANDLE && wib != VK_NULL_HANDLE && !wspan.empty()) {
-                        VkBufferDeviceAddressInfo wq{};
-                        wq.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-                        wq.buffer = wvb;
-                        const VkDeviceAddress wvaddr = vkGetBufferDeviceAddress(app->getDevice(), &wq);
-                        wq.buffer = wib;
-                        const VkDeviceAddress wiaddr = vkGetBufferDeviceAddress(app->getDevice(), &wq);
-                        for (const auto& s : wspan) {
-                            RayTracingResources::SceneTriGeometry g;
-                            g.vertexAddress = wvaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
-                            g.indexAddress = wiaddr + VkDeviceAddress(s.firstIndex) * sizeof(uint32_t);
-                            g.vertexCount = s.vertexCount;
-                            g.indexCount = s.indexCount;
-                            g.baseVertex = s.baseVertex;
-                            g.firstIndex = s.firstIndex;
-                            g.waterChunk = true;
-                            // albedo.w = the water LAYER index (chunk
-                            // dominant, stable per chunk) so hit shading reads
-                            // a consistent layer — per-vertex brushIndex can
-                            // vary within a triangle and would flicker the
-                            // water color.
-                            auto wit = mainWaterProxyData.find(s.chunkId);
-                            const float wLayer = (wit != mainWaterProxyData.end())
-                                ? static_cast<float>(wit->second.materialId) : 0.0f;
-                            g.albedo = glm::vec4(waterReflectionTint_, wLayer);
-                            geoms.push_back(g);
-                        }
-                    }
+                // Runs on every joint refresh (not only when water changed)
+                // so a solid-only refresh never drops the water geometries.
+                for (const auto& s : wfiltered) {
+                    RayTracingResources::SceneTriGeometry g;
+                    g.vertexAddress = wvaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
+                    g.indexAddress = wiaddr + VkDeviceAddress(s.firstIndex) * sizeof(uint32_t);
+                    g.vertexCount = s.vertexCount;
+                    g.indexCount = s.indexCount;
+                    g.baseVertex = s.baseVertex;
+                    g.firstIndex = s.firstIndex;
+                    g.waterChunk = true;
+                    // albedo.w = the water LAYER index (chunk
+                    // dominant, stable per chunk) so hit shading reads
+                    // a consistent layer — per-vertex brushIndex can
+                    // vary within a triangle and would flicker the
+                    // water color.
+                    auto wit = mainWaterProxyData.find(s.chunkId);
+                    const float wLayer = (wit != mainWaterProxyData.end())
+                        ? static_cast<float>(wit->second.materialId) : 0.0f;
+                    g.albedo = glm::vec4(waterReflectionTint_, wLayer);
+                    geoms.push_back(g);
                 }
                 rayTracing->setSceneGeometry(std::move(geoms));
             }

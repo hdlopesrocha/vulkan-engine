@@ -513,16 +513,6 @@ void main() {
                                            rtSceneVerts[i2 * kVertStride + 10u]);
                             hitN = normalize(n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y);
                         }
-                        if (gi.w == 0u) {
-                            // Displaced-surface refinement: the BLAS holds the
-                            // undisplaced base mesh while the raster draws the
-                            // TES-displaced surface. Replay the displacement
-                            // at the hit so albedo/shadow lookups land on the
-                            // rendered surface instead of its low-poly ghost.
-                            // hitN is still unflipped here, matching TES.
-                            float hitLod = clamp(log2(1.0 + hitT * 0.02), 0.0, 4.0);
-                            hitPos += rtDisplaceHit(i0, i1, i2, bary, hitPos, hitN, hitLod);
-                        }
                         if (dot(hitN, reflDir) > 0.0) hitN = -hitN; // face the incoming ray
                         // Water chunk marker (geomInfo.w): the real water mesh
                         // is in the scene BLAS; shade it as water (sky
