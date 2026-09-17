@@ -26,6 +26,7 @@
 #include "vulkan/ubo/UniformObject.hpp"
 #include "vulkan/ubo/SkyUniform.hpp"
 #include "vulkan/VulkanApp.hpp"
+#include "vulkan/PublishTarget.hpp"
 #include "vulkan/renderer/SceneRenderer.hpp"
 #include "vulkan/renderer/SceneDescriptorLayout.hpp"
 #include "vulkan/renderer/SceneQueues.hpp"
@@ -106,27 +107,6 @@
 // Everything that differs between a space (solid vs water, main vs brush)
 // lives in this one struct so build() has no space-type branching — the four
 // call sites below only fill in a few fields each.
-struct PublishTarget {
-    // Where finished meshes are queued for main-thread GPU upload. ONE shared
-    // queue for every stream (main solid/water + brush solid/water); each
-    // entry is keyed by its emitting octree node id and carries its own
-    // single LoDMesh (no ladder structures anywhere).
-    std::unordered_map<NodeID, SceneRenderer::PendingMeshData>& meshData;
-    std::mutex& queueMutex;
-    // Chunk registry whose entries are removed on delete (solid/transparent vs brush).
-    std::unordered_map<NodeID, Model3DVersion>& chunks;
-    // Mutex guarding [chunks] (per-space, chosen by the caller).
-    std::recursive_mutex& chunksMutex;
-    // IndirectRenderer owning the meshes (removeMeshSlotted).
-    IndirectRenderer& indirect;
-    // Deferred slot-registry on delete (solid/water) — only used when
-    // chunkManaged + slotted mode.
-    std::unordered_map<NodeID, SceneRenderer::PendingDeleteEntry>& deferredSlots;
-    // True → main scene: ChunkManager state machine + SDF debug markers +
-    // slot deferral on delete. False → brush scene: dedicated brush maps / IR.
-    bool chunkManaged;
-};
-
 std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(SceneRenderer* renderer, VulkanApp* app, Scene* scene,
               Layer layer, float minSize, ThreadPool* genPool, const PublishTarget& target) {
 
