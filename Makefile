@@ -249,7 +249,7 @@ clean:
 	rm -rf $(OUT_DIR)
 	# Remove generated SPIR-V files in shaders/ (if present)
 	-rm -f $(SPVS)
-	rm pipeline_cache.bin
+	rm -f pipeline_cache.bin
 	
 debug: BUILD = debug
 debug: all

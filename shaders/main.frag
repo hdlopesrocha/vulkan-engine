@@ -638,15 +638,11 @@ void main() {
         outColor = vec4(nm * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 3) {
+    if (debugMode == 8) {
         outColor = vec4(uv.x, uv.y, 0.0, 1.0);
         return;
     }
-    if (debugMode == 4) {
-        outColor = vec4(N * 0.5 + 0.5, 1.0);
-        return;
-    }
-    if (debugMode == 5) {
+    if (debugMode == 9) {
         vec3 ra0 = texture(albedoArray, vec3(uv, float(texIndices.x))).rgb;
         vec3 ra1 = texture(albedoArray, vec3(uv, float(texIndices.y))).rgb;
         vec3 ra2 = texture(albedoArray, vec3(uv, float(texIndices.z))).rgb;
@@ -654,7 +650,7 @@ void main() {
         outColor = vec4(rawAlbedo, 1.0);
         return;
     }
-    if (debugMode == 6) {
+    if (debugMode == 12) {
         vec3 rn0 = texture(normalArray, vec3(uv, float(texIndices.x))).rgb;
         vec3 rn1 = texture(normalArray, vec3(uv, float(texIndices.y))).rgb;
         vec3 rn2 = texture(normalArray, vec3(uv, float(texIndices.z))).rgb;
@@ -662,7 +658,7 @@ void main() {
         outColor = vec4(rawNormalTex, 1.0);
         return;
     }
-    if (debugMode == 7) {
+    if (debugMode == 13) {
         float h0 = texture(heightArray, vec3(uv, float(texIndices.x))).r;
         float h1 = texture(heightArray, vec3(uv, float(texIndices.y))).r;
         float h2 = texture(heightArray, vec3(uv, float(texIndices.z))).r;
@@ -670,35 +666,35 @@ void main() {
         outColor = vec4(vec3(h), 1.0);
         return;
     }
-    if (debugMode == 8) {
+    if (debugMode == 16) {
         outColor = vec4(NdotL, totalShadow, 0.0, 1.0);
         return;
     }
-    if (debugMode == 9) {
+    if (debugMode == 3) {
         vec3 normalToShow = normalize(cross(dFdy(fragPosWorld), dFdx(fragPosWorld)));
         outColor = vec4(normalToShow * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 10) {
+    if (debugMode == 32) {
         vec3 tl = normalize(toLight);
         outColor = vec4(tl * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 11) {
+    if (debugMode == 31) {
         outColor = vec4(vec3(NdotL), 1.0);
         return;
     }
-    if (debugMode == 12) {
+    if (debugMode == 33) {
         outColor = vec4(shadow, 0.0, totalShadow, 1.0);
         return;
     }
-    if (debugMode == 13) {
+    if (debugMode == 7) {
         // Visualize triplanar blend weights RGB (X/Y/Z projections)
         outColor = vec4(triW, 1.0);
         return;
     }
 
-    if (debugMode == 14) {
+    if (debugMode == 20) {
         // Map each corner brushIndex to a distinct color from a small palette, then blend by barycentric weights
         const int PALETTE_SIZE = 16;
         const vec3 palette[PALETTE_SIZE] = vec3[](
@@ -728,13 +724,13 @@ void main() {
         return;
     }
 
-    if (debugMode == 15) {
+    if (debugMode == 21) {
         // Visualize barycentric weights directly as RGB
         outColor = vec4(clamp(w, 0.0, 1.0), 1.0);
         return;
     }
 
-    if (debugMode == 16) {
+    if (debugMode == 10) {
         // Show the raw albedo samples for each corner packed into RGB (a0.r, a1.r, a2.r)
         vec3 a0 = texture(albedoArray, vec3(uv, float(texIndices.x))).rgb;
         vec3 a1 = texture(albedoArray, vec3(uv, float(texIndices.y))).rgb;
@@ -743,7 +739,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 17) {
+    if (debugMode == 11) {
         // Visualize triplanar-sampled albedo blended across the three material indices
         vec3 ta0 = computeTriplanarAlbedo(fragPosWorld, triW, texIndices.x, N);
         vec3 ta1 = computeTriplanarAlbedo(fragPosWorld, triW, texIndices.y, N);
@@ -753,7 +749,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 18) {
+    if (debugMode == 17) {
         // Show per-projection triplanar heights for each corner packed into RGB
         vec2 tScale = vec2(materials[texIndices.x].triplanarParams.x, 
                             materials[texIndices.x].triplanarParams.y);
@@ -765,7 +761,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 19) {
+    if (debugMode == 18) {
         // Show difference between UV-blended height and triplanar-blended height (abs difference)
         float h_uv0 = texture(heightArray, vec3(uv, float(texIndices.x))).r;
         float h_uv1 = texture(heightArray, vec3(uv, float(texIndices.y))).r;
@@ -780,7 +776,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 20) {
+    if (debugMode == 5) {
         // Visualize triplanar-sampled normal blended across the three material indices
         vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, texIndices.x, geomN, N);
         vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, texIndices.y, geomN, N);
@@ -791,7 +787,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 21) {
+    if (debugMode == 6) {
         // Show per-projection triplanar normals for the first material packed into RGB
         vec3 nX = computeTriplanarNormal(fragPosWorld, vec3(1.0, 0.0, 0.0), texIndices.x, geomN, N);
         vec3 nY = computeTriplanarNormal(fragPosWorld, vec3(0.0, 1.0, 0.0), texIndices.x, geomN, N);
@@ -801,7 +797,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 22) {
+    if (debugMode == 14) {
         // Visualize triplanar-sampled bump (height) blended across the three material indices
         float b0 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.x);
         float b1 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.y);
@@ -811,7 +807,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 23) {
+    if (debugMode == 15) {
         // Show per-projection triplanar heights using sampleHeightTriplanar for the first material packed into RGB
         float ph0x = sampleHeightTriplanar(fragPosWorld, vec3(1.0, 0.0, 0.0), texIndices.x);
         float ph0y = sampleHeightTriplanar(fragPosWorld, vec3(0.0, 1.0, 0.0), texIndices.x);
@@ -820,7 +816,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 24) {
+    if (debugMode == 19) {
         // Show difference between UV-blended height and triplanar-blended height using worldNormal (abs difference)
         float h_uv0 = texture(heightArray, vec3(uv, float(texIndices.x))).r;
         float h_uv1 = texture(heightArray, vec3(uv, float(texIndices.y))).r;
@@ -835,7 +831,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 25) {
+    if (debugMode == 22) {
         // Visualize triplanar UV for X projection (first material)
         vec2 uvX, uvY, uvZ;
         computeTriplanarUVs(fragPosWorld, texIndices.x, N, uvX, uvY, uvZ);
@@ -843,7 +839,7 @@ void main() {
         outColor = vec4(show.x, show.y, 0.0, 1.0);
         return;
     }
-    if (debugMode == 26) {
+    if (debugMode == 23) {
         // Visualize triplanar UV for Y projection (first material)
         vec2 uvX, uvY, uvZ;
         computeTriplanarUVs(fragPosWorld, texIndices.x, N, uvX, uvY, uvZ);
@@ -851,7 +847,7 @@ void main() {
         outColor = vec4(show.x, show.y, 0.0, 1.0);
         return;
     }
-    if (debugMode == 27) {
+    if (debugMode == 24) {
         // Visualize triplanar UV for Z projection (first material)
         vec2 uvX, uvY, uvZ;
         computeTriplanarUVs(fragPosWorld, texIndices.x, N, uvX, uvY, uvZ);
@@ -860,45 +856,45 @@ void main() {
         return;
     }
 
-    if (debugMode == 28) {
+    if (debugMode == 25) {
         tripNormal0 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, texIndices.x, geomN, N);
         outColor = vec4(normalize(tripNormal0) * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 29) {
+    if (debugMode == 26) {
         tripNormal1 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, texIndices.y, geomN, N);
         outColor = vec4(normalize(tripNormal1) * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 30) {
+    if (debugMode == 27) {
         tripNormal2 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, texIndices.z, geomN, N);
         outColor = vec4(normalize(tripNormal2) * 0.5 + 0.5, 1.0);
         return;
     }
 
-    if (debugMode == 31) {
+    if (debugMode == 4) {
         // Visualize TES-provided face normal (sharp per-triangle normal computed in tessellation evaluation shader)
         vec3 s = normalize(fragSharpNormal);
         outColor = vec4(s * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 32) {
+    if (debugMode == 28) {
         outColor = vec4(vec3(roughnessValue), 1.0);
         return;
     }
-    if (debugMode == 33) {
-        outColor = vec4(vec3(ambientOcclusion), 1.0);
-        return;
-    }
-    if (debugMode == 59) {
+    if (debugMode == 29) {
         // Material roughness actually driving the mirror mix: raw map sample
-        // (mode 32) times the per-material roughness factor, clamped — black
+        // (mode 28) times the per-material roughness factor, clamped — black
         // = full mirror, white = matte. Stays black when roughness maps are
         // globally disabled.
         outColor = vec4(vec3(clamp(roughnessValue * roughnessFactor, 0.0, 1.0)), 1.0);
         return;
     }
-    if (debugMode == 49) {
+    if (debugMode == 30) {
+        outColor = vec4(vec3(ambientOcclusion), 1.0);
+        return;
+    }
+    if (debugMode == 34) {
         // Environment reflection contribution — the cubemap sample weighted
         // by the Fresnel factor actually mixed into the final colour.
         outColor = vec4(envReflection * envFresnelFactor, 1.0);

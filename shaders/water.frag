@@ -954,7 +954,7 @@ void main() {
     // (intensity ≈ 0) and we are not visualizing them in a debug mode. This
     // avoids hundreds of redundant 4D-noise evaluations per deep-water fragment
     // with zero visual change where caustics are off.
-    bool causticDebugMode = (dbgMode >= 39 && dbgMode <= 42);
+    bool causticDebugMode = (dbgMode >= 42 && dbgMode <= 45);
     if (causticIntensity > 0.001 || causticDebugMode) {
 
     // Reuse the refraction noise already computed above (same fragPos, same
@@ -1068,8 +1068,8 @@ void main() {
     if (captureMode) alpha = 1.0;
     outColor = vec4(waterColor, alpha);
 
-    // Debug: visual displacement color when debug mode set to 32 ("Water Displacement")
-    if (dbgMode == 32) {
+    // Debug: visual displacement color when debug mode set to 38 ("Water Displacement")
+    if (dbgMode == 38) {
         // Prefer tessellation-provided debug value when available (fragDebug).
         // But also compute a per-fragment approximation of the bump displacement so the debug
         // mode works even when tessellation is disabled.
@@ -1099,27 +1099,27 @@ void main() {
         outColor = vec4(debugCol, 1.0);
     }
 
-    // Debug mode 33: raw sky equirect (reflection of view dir) — verifies the
+    // Debug mode 39: raw sky equirect (reflection of view dir) — verifies the
     // water pass reaches the sky fallback it uses for RT misses.
-    if (dbgMode == 33) {
+    if (dbgMode == 39) {
         vec3 sc = texture(skyEquirectTex,
             waterDirToEquirectUV(normalize(reflect(-viewDir, normal)))).rgb;
         outColor = vec4(sc, 1.0);
     }
 
-    // Debug mode 34: screen UV — verifies correct clip → UV conversion.
-    if (dbgMode == 34) {
+    // Debug mode 35: screen UV — verifies correct clip → UV conversion.
+    if (dbgMode == 35) {
         outColor = vec4(screenUV, 0.0, 1.0);
     }
 
 
-   // Debug mode 35: water noise
-    if (int(ubo.debugParams.x) == 35) {
+   // Debug mode 36: water noise
+    if (int(ubo.debugParams.x) == 36) {
         outColor = vec4(refractionNoise, 0.5 + 0.5 * (refractionNoise.x - refractionNoise.y), 1.0);
     }
 
-    // Debug mode 36: final displaced normal used by shading.
-    if (int(ubo.debugParams.x) == 36) {
+    // Debug mode 37: final displaced normal used by shading.
+    if (int(ubo.debugParams.x) == 37) {
         vec3 n = normalize(normal);
         outColor = vec4(n * 0.5 + 0.5, 1.0);
     }
@@ -1127,55 +1127,55 @@ void main() {
     // --- Reflection sampling debug helpers ---
     // Use the global debug mode (ubo.debugParams.x) to visualize reflection
     // computation steps and RT sampling. Helpful to diagnose orientation.
-    if (dbgMode == 37) {
+    if (dbgMode == 40) {
         // Visualize reflection vector (packed to [0,1])
         vec3 vis = reflectDir * 0.5 + 0.5;
         outColor = vec4(vis, 1.0);
     }
-    if (dbgMode == 38) {
+    if (dbgMode == 41) {
         // Show RT/sky reflection color actually used by shading
         outColor = vec4(skyColor, 1.0);
     }
 
-    if (dbgMode == 39) {
+    if (dbgMode == 42) {
         vec3 maps = vec3(clamp(caustFront, 0.0, 1.0), clamp(caustBack, 0.0, 1.0), clamp(mix(caustFront, caustBack, depthInfluence), 0.0, 1.0));
         outColor = vec4(maps, 1.0);
     }
-    if (dbgMode == 40) {
+    if (dbgMode == 43) {
         vec3 maps = vec3(clamp(lineFrontRaw, 0.0, 1.0), clamp(lineBackRaw, 0.0, 1.0), clamp(lineCombined, 0.0, 1.0));
         outColor = vec4(maps, 1.0);
     }
-    if (dbgMode == 41) {
+    if (dbgMode == 44) {
         vec3 maps = vec3(clamp(cloudFinal, 0.0, 1.0), clamp(lineFinal, 0.0, 1.0), clamp(caustRaw, 0.0, 1.0));
         outColor = vec4(maps, 1.0);
     }
-    if (dbgMode == 42) {
+    if (dbgMode == 45) {
         outColor = vec4(vec3(clamp(caustic, 0.0, 1.0)), 1.0);
     }
 
-    // --- Water thickness / depth debug modes (43..48) ---
+    // --- Water thickness / depth debug modes (46..49) ---
     // 43: Back-face raw depth (texture sample)
-    if (dbgMode == 43) {
+    if (dbgMode == 46) {
         outColor = vec4(vec3(backFaceDepthRaw), 1.0);
     }
     // 44: Front-face linear depth (normalized to [0,1])
-    if (dbgMode == 44) {
+    if (dbgMode == 47) {
         float nearP = ubo.passParams.z;
         float farP = ubo.passParams.w;
         float v = clamp((frontFaceLinear - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
         outColor = vec4(vec3(v), 1.0);
     }
     // 45: Back-face linear depth (normalized to [0,1])
-    if (dbgMode == 45) {
+    if (dbgMode == 48) {
         float nearP = ubo.passParams.z;
         float farP = ubo.passParams.w;
         float v = clamp((backFaceLinear - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
         outColor = vec4(vec3(v), 1.0);
     }
     // 46: Water thickness (normalized by per-layer caustic depth scale or 1.0)
-    // (Former debug modes 46/47 showed solid scene depth, which water no longer
-    // samples; they have been removed.)
-    if (dbgMode == 46) {
+    // (Ancient modes 46/47 showed solid scene depth, which water no longer
+    // samples; long removed — 46..49 are water depth/thickness now.)
+    if (dbgMode == 49) {
         float denom = max(wp.causticParams.w, 1.0);
         float v = clamp(waterThickness / denom, 0.0, 1.0);
         outColor = vec4(vec3(v), 1.0);
