@@ -230,8 +230,13 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
             vec3 toSun = normalize(rt.sunDir.xyz);
             float ndl = max(dot(hitN, toSun), 0.0);
+            // CSM shadow at the reflected hit, like the terrain branch below:
+            // without it a shadowed lake still reflects fully lit in mirrors
+            // and other water surfaces.
+            float hitShadow = ShadowCalculation(
+                ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
             vec3 waterColor = mix(sky * transmittance, waterTintColor, tintBlend)
-                * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
+                * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) * (1.0 - hitShadow) + vec3(0.09, 0.12, 0.15));
             return vec4(waterColor, 1.0);
         }
         int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);

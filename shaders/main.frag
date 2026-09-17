@@ -552,8 +552,13 @@ void main() {
                                 sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
                             vec3 toLight = -normalize(ubo.lightDir.xyz);
                             float ndl = max(dot(hitN, toLight), 0.0);
+                            // CSM shadow at the reflected hit, like the terrain
+                            // branch below: without it a lake in mountain shadow
+                            // still reflects fully lit inside mirrors.
+                            float hitShadow = ShadowCalculation(
+                                ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
                             vec3 waterColor = mix(skyR * transmittance, waterTintColor, tintBlend)
-                                * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl)
+                                * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl) * (1.0 - hitShadow)
                                    + vec3(0.09, 0.12, 0.15));
                             rtColor = waterColor;
                             // A mirror's reflection is not occluded by AO nor dimmed by the

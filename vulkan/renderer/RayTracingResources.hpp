@@ -295,6 +295,27 @@ private:
     // chunks change; traced with kMaskScene. primBase[i] = first primitive of
     // geometry i (binary-searched in the shader); meta[i] = average albedo.
     std::vector<SceneTriGeometry> sceneGeoms_;
+    // Staging layout (bytes) for the fragment-read lookup buffers below.
+    // With 3 frames in flight, a CPU memcpy straight into those buffers at
+    // record time lands while older frames still trace the PREVIOUS BLAS
+    // generation — they would shade with the new generation's metadata
+    // (wrong chunks/materials = 1-2 frames of corrupted reflections after
+    // every rebuild). New contents are therefore memcpy'd here and published
+    // with vkCmdCopyBuffer ordered in-stream (same-queue FIFO keeps older
+    // frames' reads before the copies, §5 keeps frame-N fragments after).
+    // Safe to reuse across builds: rebuilds are >=30 frames apart, the
+    // in-flight window is 3, so every copy executes long before the staging
+    // range is overwritten.
+    static constexpr VkDeviceSize kStageProxyMetaSize = VkDeviceSize(kMaxProxies) * sizeof(RTProxyMeta);
+    static constexpr VkDeviceSize kStagePrimBaseSize = VkDeviceSize(kMaxSceneGeoms + 1) * sizeof(uint32_t);
+    static constexpr VkDeviceSize kStageGeomInfoSize = VkDeviceSize(kMaxSceneGeoms) * sizeof(glm::uvec4);
+    static constexpr VkDeviceSize kStageSceneMetaSize = VkDeviceSize(kMaxSceneGeoms) * sizeof(glm::vec4);
+    static constexpr VkDeviceSize kStageProxyMetaOff = 0;
+    static constexpr VkDeviceSize kStagePrimBaseOff = kStageProxyMetaOff + kStageProxyMetaSize;
+    static constexpr VkDeviceSize kStageGeomInfoOff = kStagePrimBaseOff + kStagePrimBaseSize;
+    static constexpr VkDeviceSize kStageSceneMetaOff = kStageGeomInfoOff + kStageGeomInfoSize;
+    static constexpr VkDeviceSize kStageTotalSize = kStageSceneMetaOff + kStageSceneMetaSize;
+    Buffer lookupStaging_{};
     Buffer sceneBlasBuffer_{};
     VkAccelerationStructureKHR sceneBlas_ = VK_NULL_HANDLE;
     VkDeviceAddress sceneBlasAddress_ = 0;

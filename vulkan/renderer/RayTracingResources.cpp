@@ -94,6 +94,7 @@ void RayTracingResources::cleanup(VulkanApp* app) {
         if (tlasScratch_.buffer) app->destroyBuffer(tlasScratch_);
         if (aabbBuffer_.buffer) app->destroyBuffer(aabbBuffer_);
         if (metaBuffer_.buffer) app->destroyBuffer(metaBuffer_);
+        if (lookupStaging_.buffer) app->destroyBuffer(lookupStaging_);
         if (scenePrimBaseBuffer_.buffer) app->destroyBuffer(scenePrimBaseBuffer_);
         if (sceneGeomInfoBuffer_.buffer) app->destroyBuffer(sceneGeomInfoBuffer_);
         if (sceneMetaBuffer_.buffer) app->destroyBuffer(sceneMetaBuffer_);
@@ -348,8 +349,20 @@ void RayTracingResources::createProxyBuffers(VulkanApp* app) {
     aabbAddress_ = alignUpAddr(boxAddr, 16); // verts at +delta, indices at +delta+vertBytes
     if (aabbAddress_ == 0) throw std::runtime_error("box buffer device address is 0");
 
+    // Device-local: fragment-read (hit shading) while older frames may still
+    // trace the previous BLAS generation, so new contents travel via
+    // lookupStaging_ + in-stream copies (see the member comment). TRANSFER_DST
+    // feeds those copies; the handle stays stable, so no descriptor rewrite.
     metaBuffer_ = app->createBuffer(sizeof(RTProxyMeta) * kMaxProxies,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+            | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    // Persistent host-visible staging for the fragment-read lookup buffers
+    // (proxy meta + scene prim bases/geom info/albedo). Written on CPU at
+    // record time, published with vkCmdCopyBuffer ordered in-stream.
+    lookupStaging_ = app->createBuffer(kStageTotalSize,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     tlasInstanceBuffer_ = app->createBuffer(3 * sizeof(VkAccelerationStructureInstanceKHR) + 16,
@@ -501,18 +514,22 @@ void RayTracingResources::createAccelStructures(VulkanApp* app) {
 
     // Shader lookup buffers for the scene instance (preallocated, no resize):
     // [0] = geometry count, [1..N] = first primitive of each geometry, and one
-    // vec4 average albedo per geometry.
+    // vec4 average albedo per geometry. Device-local + staged like the proxy
+    // metadata above (fragment-read across in-flight BLAS generations). The
+    // initial [0]=0 write is unnecessary: shaders gate all sampling on
+    // tlasReady, which stays 0 until the first build publishes real contents.
     scenePrimBaseBuffer_ = app->createBuffer((kMaxSceneGeoms + 1) * sizeof(uint32_t),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+            | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     sceneMetaBuffer_ = app->createBuffer(kMaxSceneGeoms * sizeof(glm::vec4),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (scenePrimBaseBuffer_.mappedData)
-        static_cast<uint32_t*>(scenePrimBaseBuffer_.mappedData)[0] = 0; // empty
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+            | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     sceneGeomInfoBuffer_ = app->createBuffer(kMaxSceneGeoms * sizeof(glm::uvec4),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+            | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     VkAccelerationStructureGeometryInstancesDataKHR instances{};
     instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
@@ -652,6 +669,10 @@ void RayTracingResources::setSceneGeometry(std::vector<SceneTriGeometry> geoms) 
 
 bool RayTracingResources::recordSceneBlas(VulkanApp* app, VkCommandBuffer cmd) {
     if (!sceneBlasDirty_) return false;
+    // Bail before clearing sceneBlasDirty_ when staging is unavailable so the
+    // update is retried on a later throttled build instead of being lost.
+    // (Unreachable when supported: createProxyBuffers throws without staging.)
+    if (!lookupStaging_.mappedData) return false;
     sceneBlasDirty_ = false;
     if (sceneGeoms_.empty()) return false;
     VkDevice device = app->getDevice();
@@ -661,12 +682,12 @@ bool RayTracingResources::recordSceneBlas(VulkanApp* app, VkCommandBuffer cmd) {
     std::vector<VkAccelerationStructureGeometryKHR> geoms(n);
     std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges(n);
     std::vector<uint32_t> primCounts(n);
-    uint32_t* primBase = scenePrimBaseBuffer_.mappedData
-        ? static_cast<uint32_t*>(scenePrimBaseBuffer_.mappedData) : nullptr;
-    glm::uvec4* geomInfo = sceneGeomInfoBuffer_.mappedData
-        ? static_cast<glm::uvec4*>(sceneGeomInfoBuffer_.mappedData) : nullptr;
-    glm::vec4* meta = sceneMetaBuffer_.mappedData
-        ? static_cast<glm::vec4*>(sceneMetaBuffer_.mappedData) : nullptr;
+    // Staged shader-lookup writes (see lookupStaging_): the device buffers are
+    // fragment-read by in-flight frames tracing the previous BLAS generation,
+    // so new contents are memcpy'd here and copied in-stream below (§3b/§5).
+    uint32_t* primBase = static_cast<uint32_t*>(lookupStaging_.map(kStagePrimBaseOff));
+    glm::uvec4* geomInfo = static_cast<glm::uvec4*>(lookupStaging_.map(kStageGeomInfoOff));
+    glm::vec4* meta = static_cast<glm::vec4*>(lookupStaging_.map(kStageSceneMetaOff));
     uint32_t prim = 0;
     for (uint32_t i = 0; i < n; ++i) {
         const SceneTriGeometry& s = sceneGeoms_[i];
@@ -834,14 +855,26 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
         }
         return false;
     }
-    // 1. Stage box verts + metadata on the host-visible buffers (coherent memcpy).
+    // 1. Stage box verts (direct into the host-visible box buffer — they feed
+    // only the BLAS builds below) + proxy metadata (into lookupStaging_ — the
+    // device meta buffer is fragment-read across in-flight generations, so it
+    // is published via §3c copies instead).
     // Solids fill slots [0, activeSolidCount_), water volumes global slots
     // [kWaterProxyStart, kWaterProxyStart + activeWaterCount_); the rest of
     // each partition stays degenerate (zero-area, never hit).
     {
         auto* verts = reinterpret_cast<float*>(
             static_cast<char*>(aabbBuffer_.mappedData) + boxBaseDelta_);
-        auto* metas = static_cast<RTProxyMeta*>(metaBuffer_.mappedData);
+        // Proxy metadata is fragment-read (hit shading) while in-flight
+        // frames may still trace the previous BLAS generation: stage the new
+        // contents here and copy them to the device buffer below, ordered
+        // after all prior frames in the same queue (§2/§5 barriers). Direct
+        // host writes would corrupt those frames' reflections for 1-2 frames
+        // after every rebuild (periodic flicker with a still camera).
+        // (Box verts stay direct: they feed only the BLAS builds below,
+        // which the §2 barrier already orders.)
+        auto* metas = static_cast<RTProxyMeta*>(lookupStaging_.map(kStageProxyMetaOff));
+        if (!metas) return false;
         // Vertex positions live at GLOBAL slots (water verts physically sit in
         // slots [kWaterProxyStart, kMaxProxies) of the vertex region); only the
         // BLAS geometries view them as separate partitions. Metadata likewise.
@@ -879,7 +912,12 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
     const VkDeviceSize vertBytes = VkDeviceSize(kMaxProxies) * kVertsPerBox * sizeof(float) * 3;
     const VkDeviceSize idxBytes = VkDeviceSize(kMaxProxies) * kIndicesPerBox * sizeof(uint32_t);
 
-    // 2. Host writes -> BLAS build inputs (vertex/index/meta/instance buffers).
+    // 2. Host writes -> GPU reads. Direct-written inputs (box verts/indices,
+    // TLAS instances) feed the BLAS/TLAS builds below; the staged lookup
+    // contents (proxy meta + scene prim bases/geom info/albedo, written above
+    // and in recordSceneBlas) feed the vkCmdCopyBuffer publishes in §3b, so
+    // the staging range gets a HOST -> TRANSFER dependency while the rest
+    // keeps HOST -> ACCEL_BUILD.
     {
         VkBufferMemoryBarrier2 barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
@@ -890,22 +928,17 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
             | VK_ACCESS_2_SHADER_READ_BIT;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        // One barrier per buffer (same stage/access; batched in one call below
-        // via three entries — written out explicitly for clarity).
-        VkDependencyInfo dep{};
-        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        VkBufferMemoryBarrier2 barriers[6]{barrier, barrier, barrier, barrier, barrier, barrier};
         // Ranges cover the alignment slack (writes land at +delta, delta < 16)
         // and all TLAS instances.
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        VkBufferMemoryBarrier2 barriers[3]{barrier, barrier, barrier};
         barriers[0].buffer = aabbBuffer_.buffer; barriers[0].offset = 0; barriers[0].size = vertBytes + idxBytes + 16;
-        barriers[1].buffer = metaBuffer_.buffer; barriers[1].offset = 0; barriers[1].size = sizeof(RTProxyMeta) * kMaxProxies;
-        barriers[2].buffer = tlasInstanceBuffer_.buffer; barriers[2].offset = 0; barriers[2].size = 3 * sizeof(VkAccelerationStructureInstanceKHR) + 16;
-        // Real-scene lookup buffers (host-written prim bases + per-chunk albedo)
-        // are read by the fragment shader after the build.
-        barriers[3].buffer = scenePrimBaseBuffer_.buffer; barriers[3].offset = 0; barriers[3].size = VK_WHOLE_SIZE;
-        barriers[4].buffer = sceneMetaBuffer_.buffer; barriers[4].offset = 0; barriers[4].size = VK_WHOLE_SIZE;
-        barriers[5].buffer = sceneGeomInfoBuffer_.buffer; barriers[5].offset = 0; barriers[5].size = VK_WHOLE_SIZE;
-        dep.bufferMemoryBarrierCount = 6;
+        barriers[1].buffer = tlasInstanceBuffer_.buffer; barriers[1].offset = 0; barriers[1].size = 3 * sizeof(VkAccelerationStructureInstanceKHR) + 16;
+        barriers[2].buffer = lookupStaging_.buffer; barriers[2].offset = 0; barriers[2].size = kStageTotalSize;
+        barriers[2].dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        barriers[2].dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        dep.bufferMemoryBarrierCount = 3;
         dep.pBufferMemoryBarriers = barriers;
         vkCmdPipelineBarrier2(cmd, &dep);
     }
@@ -985,6 +1018,28 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
         fflush(stdout);
     }
 
+    // 3c. Publish the staged lookup contents to the device buffers in-stream.
+    // Same-queue FIFO executes older in-flight frames (tracing the previous
+    // BLAS generation) before these copies, and §5 keeps frame-N fragments
+    // after them — no host write ever lands under a live reader. The proxy
+    // metadata is rewritten on every build (§1 above); the scene lookups
+    // only when the scene BLAS was rebuilt.
+    {
+        auto copyStaged = [&](VkDeviceSize srcOff, const Buffer& dst, VkDeviceSize size) {
+            VkBufferCopy region{};
+            region.srcOffset = srcOff;
+            region.dstOffset = 0;
+            region.size = size;
+            vkCmdCopyBuffer(cmd, lookupStaging_.buffer, dst.buffer, 1, &region);
+        };
+        copyStaged(kStageProxyMetaOff, metaBuffer_, kStageProxyMetaSize);
+        if (sceneBuilt) {
+            copyStaged(kStagePrimBaseOff, scenePrimBaseBuffer_, kStagePrimBaseSize);
+            copyStaged(kStageGeomInfoOff, sceneGeomInfoBuffer_, kStageGeomInfoSize);
+            copyStaged(kStageSceneMetaOff, sceneMetaBuffer_, kStageSceneMetaSize);
+        }
+    }
+
     // 4. BLAS writes -> TLAS read (all BLASes keep stable device addresses, so
     // the TLAS stays valid; re-recording the TLAS build is cheap (≤3 instances)
     // and keeps validation simple).
@@ -1036,14 +1091,17 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
         app->fpCmdBuildAccelerationStructuresKHR(cmd, 1, &tlasBuild, &pTrange);
     }
 
-    // 5. TLAS write -> ray-tracing / fragment / compute reads (ray queries in
-    // main.frag sample the TLAS from the fragment stage; the water pipeline
-    // reads it from the ray-tracing stage).
+    // 5. TLAS write + lookup publishes -> ray-tracing / fragment / compute
+    // reads (ray queries in main.frag sample the TLAS from the fragment
+    // stage; the water pipeline reads it from the ray-tracing stage; both
+    // read the lookup buffers staged in §3c).
     {
         VkMemoryBarrier2 barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-        barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR
+            | VK_PIPELINE_STAGE_2_COPY_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR
+            | VK_ACCESS_2_TRANSFER_WRITE_BIT;
         barrier.dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR
             | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_SHADER_READ_BIT;
