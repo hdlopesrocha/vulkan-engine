@@ -78,7 +78,7 @@ public:
     void setCullFrame(uint32_t frameIndex);
 
     // Brush scene chunk tracking (separate from main scene). Public because the
-    // space-change lambdas built by main.cpp read/write them directly.
+    // space-change lambdas built by MyApp.cpp read/write them directly.
     std::unordered_map<NodeID, Model3DVersion> solidChunks;
     std::unordered_map<NodeID, Model3DVersion> transparentChunks;
     std::unordered_map<NodeID, Model3DVersion> pendingOldSolidChunks;

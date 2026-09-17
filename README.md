@@ -191,7 +191,7 @@ Every primitive and effect has a `Wrapped*` variant, allowing arbitrary SDF tree
 
 | Path | Description |
 |------|-------------|
-| `main.cpp` | Entry point (`MyApp` extends `VulkanApp`) |
+| `MyApp.cpp` | Entry point (`MyApp` extends `VulkanApp`) |
 | `server.cpp` | Headless server entry point |
 | `vulkan/` | Vulkan setup, resource management, renderers |
 | `vulkan/renderer/` | SceneRenderer, SolidRenderer, SkyRenderer, WaterRenderer, ShadowRenderer, VegetationRenderer, IndirectRenderer, PostProcessRenderer, and more |

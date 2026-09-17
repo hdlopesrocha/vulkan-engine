@@ -33,15 +33,6 @@ public:
     ~SceneLoaderCallback() = default;
 
 
-    virtual void action(
-        Octree &opaqueLayer, 
-        const Octree::OctreeNodeDataHandler& opaqueUpdateHandler, 
-        const Octree::OctreeNodeDataHandler& opaqueDeleteHandler, 
-        Octree &transparentLayer, 
-        const Octree::OctreeNodeDataHandler& transparentUpdateHandler, 
-        const Octree::OctreeNodeDataHandler& transparentDeleteHandler
-    ) = 0;
-
     virtual void loadScene(
         Octree &opaqueLayer, 
         Octree::OctreeNodeDataHandler &opaqueUpdateHandler,
@@ -59,7 +50,6 @@ class Scene {
 public:
     Scene() = default;
     ~Scene() = default;
-    virtual void action(SceneLoaderCallback& callback, const Octree::OctreeNodeDataHandler opaqueUpdateHandler, const Octree::OctreeNodeDataHandler opaqueDeleteHandler, const Octree::OctreeNodeDataHandler transparentUpdateHandler, const Octree::OctreeNodeDataHandler transparentDeleteHandler) = 0;
     virtual void loadScene(SceneLoaderCallback& callback, const Octree::OctreeNodeDataHandler opaqueUpdateHandler, const Octree::OctreeNodeDataHandler opaqueDeleteHandler, const Octree::OctreeNodeDataHandler transparentUpdateHandler, const Octree::OctreeNodeDataHandler transparentDeleteHandler) = 0;
     virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride = nullptr) = 0;
     // Collect SDF debug cubes the same way requestModel3D collects meshes: the

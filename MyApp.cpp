@@ -3592,12 +3592,6 @@ void MyApp::action() {
     // Wait for the GPU to finish all in-flight work before clearing GPU resources
     deviceWaitIdle();
 
-    MainSceneLoader loader;
-    world->scene().action(loader,
-        mainSolidCollector.updateHandler, mainSolidCollector.deleteHandler,
-        mainLiquidCollector.updateHandler, mainLiquidCollector.deleteHandler
-    );
-    std::cout << "[MyApp::action] Octree construction complete\n";
 
     // Tessellate chunks in a background thread. Solid and water are handled on
     // separate threads so both layers tessellate truly in parallel (water no

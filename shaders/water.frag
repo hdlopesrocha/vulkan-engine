@@ -70,16 +70,16 @@ layout(set = 0, binding = 24) readonly buffer RTSceneVerts { float rtSceneVerts[
 layout(set = 0, binding = 25) readonly buffer RTSceneIndices { uint rtSceneIndices[]; };
 #include "includes/rt_scene_sample.glsl"
 
-// Trace one water secondary ray.
-// refraction=true: rays trace the proxy volumes (the boxes are the thickness
-//   reference); returns rgb = shaded hit (or sky on miss), a = hitT (capped at
-//   thickCap, feathered toward deep for coarse boxes) or RT_DEEP_WATER on miss.
-// refraction=false: rays trace the real chunk triangles (scene instance) so
-//   mirror positions match the scene; returns rgb = shaded hit (or sky on
-//   miss) with a = 1 on a hit, 0 on a miss.
+// Trace one water secondary ray. Both paths trace the real scene-geometry
+// instance (exact chunk triangles, water mesh flagged in geomInfo.w).
+// refraction=true: downward Snell ray resolving the lake-bottom color from
+//   the exact hit triangle (per-vertex materials, CSM shadowed) instead of
+//   the proxy dominant-material approximation; a = underwater path length
+//   (capped at thickCap) or RT_DEEP_WATER on miss.
+// refraction=false: mirror ray resolving the reflected scene the same way;
+//   a = 1 on a hit, 0 on a miss.
 // Macro shadows stay CSM-owned: hits get ambient + sun diffuse only.
-vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thickCap,
-                  vec3 fragPos) {
+vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thickCap) {
     rayQueryEXT rq;
     // Refraction rays start AT the water surface and go down: tMin must be
     // tiny (1 cm) so shoreline shallows (<5 cm deep) still hit the lake bottom
@@ -87,40 +87,20 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // (plus a 5 cm below-surface origin bias) imposed a ~10 cm minimum depth,
     // so every shallow pixel returned sky/deep color unrelated to the ground
     // below. Reflection keeps the 5 cm tMin (self-hit guard, origin biased
-    // above the surface at the call site). Water is never a ray target (solid
-    // mask), so no self-hit risk for refraction.
+    // above the surface at the call site). The ray may still graze its own
+    // water mesh, but that geometry sits behind the origin (t < tMin).
     float tMin = refraction ? 0.01 : 0.05;
-    // Reflection traces the SCENE instance (real terrain + the real water
-    // mesh appended to the scene BLAS, flagged in geomInfo.w) AND the water
-    // proxy walls (extending above the surface) so the shallow reflection
-    // rays that pass over the lake still catch the water. The water BLAS is
-    // non-opaque so water hits surface as candidates: the fragment's OWN
-    // cell is rejected (flat water reflects sky, not itself) and traversal
-    // continues to distant water / terrain / sky. Refraction keeps the
-    // opaque flag + solid mask (underwater targets).
-    const uint rayMask = refraction ? RT_RAY_MASK_SOLID : (RT_RAY_MASK_SCENE | RT_RAY_MASK_WATER);
-    rayQueryInitializeEXT(rq, rtTlas, refraction ? gl_RayFlagsOpaqueEXT : 0, rayMask,
+    // Both paths trace the real scene-geometry instance only (exact chunk
+    // triangles, including the real water mesh flagged in geomInfo.w): proxy
+    // boxes are excluded like in main.frag (their coarse flat tops imprint
+    // the dominant material and stepped heights on refraction hits). Both
+    // stay opaque and cull ray-front faces so only rasterizer-visible
+    // triangles report (scene meshes wind CW-outward for the BACK+CW
+    // rasterizer; ray-front is fixed CCW).
+    rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT |
+        gl_RayFlagsCullFrontFacingTrianglesEXT, RT_RAY_MASK_SCENE,
         origin, tMin, dir, tMax);
-    if (refraction) {
-        while (rayQueryProceedEXT(rq)) {}
-    } else {
-        while (rayQueryProceedEXT(rq)) {
-            // Candidate triangle type = 1 (GLSL_EXT_ray_query enum).
-            if (rayQueryGetIntersectionTypeEXT(rq, false) == 1) {
-                if (rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false) == 1u) {
-                    uint bIdx = rtBoxIndex(uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false)), 1u);
-                    RTProxyMetaGLSL m = rtMetas[bIdx];
-                    // Reject ONLY the box that CONTAINS this fragment (its own
-                    // cell): the ray origin is inside it. Every OTHER water
-                    // box — same lake at a distance, other lakes — is accepted.
-                    bool ownCell = (fragPos.x >= m.minAndMatId.x && fragPos.x <= m.maxAndFlags.x &&
-                                    fragPos.z >= m.minAndMatId.z && fragPos.z <= m.maxAndFlags.z);
-                    if (ownCell) continue;
-                }
-                rayQueryConfirmIntersectionEXT(rq);
-            }
-        }
-    }
+    while (rayQueryProceedEXT(rq)) {}
     // Explicit LOD: reachable under per-fragment control flow (pipe validity
     // / toggles / hit-vs-miss differ per pixel), where implicit-LOD texture()
     // has undefined derivatives.
@@ -131,9 +111,12 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     }
     float hitT = rayQueryGetIntersectionTEXT(rq, true);
     vec3 hitPos = origin + dir * hitT;
+    // Underwater length cap (Beer-Lambert guard), shared by all hit returns
+    // below (the old coarse-box feather toward deep is obsolete: exact
+    // triangles need no terracing workarounds).
+    float cap = max(thickCap, 0.0);
 
-    if (!refraction &&
-        rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) == RT_SCENE_INSTANCE) {
+    if (rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) == RT_SCENE_INSTANCE) {
         // Real triangle hit: shade with the owning chunk's average albedo.
         // The primitive index is LOCAL to the hit geometry (GLSL_EXT_ray_query
         // semantics); the geometry index comes from the ray query directly.
@@ -169,7 +152,9 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
                             if (vegC.a > 0.0 && !(hitNdcZ < vegD)) {
                                 hitColor = mix(hitColor, vegC.rgb, vegC.a);
                             }
-                            return vec4(hitColor, 1.0);
+                            // Refraction reports the underwater path length as
+                            // thickness (capped); reflection reports a plain hit.
+                            return vec4(hitColor, refraction ? min(hitT, cap) : 1.0);
                         }
                     }
                 }
@@ -237,9 +222,14 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
                 ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
             vec3 waterColor = mix(sky * transmittance, waterTintColor, tintBlend)
                 * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) * (1.0 - hitShadow) + vec3(0.09, 0.12, 0.15));
-            return vec4(waterColor, 1.0);
+            return vec4(waterColor, refraction ? min(hitT, cap) : 1.0);
         }
         int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
+        // Distance-based texture LOD (this helper runs under per-fragment
+        // control flow where implicit-LOD texture() is undefined): refraction
+        // looks down at possibly distant bottoms, so clamp shimmer there.
+        // Reflections keep 0.0 to match main.frag exactly.
+        float hitLod = refraction ? clamp(log2(1.0 + hitT * 0.02), 0.0, 4.0) : 0.0;
         // Real painted material at this triangle (Vertex float offset 11 =
         // brushIndex). The proxy registry only knows the chunk's DOMINANT
         // brush, which loses the ground-cover mix painted per vertex — the
@@ -251,99 +241,24 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         // compressed into unique slots and blended by the hit barycentrics
         // (main.tesc + main.frag). This is what fixes "dirt where grass
         // should be" at material boundaries inside triangles.
-        vec3 albedo = rtSceneSampleReflectionAlbedo(i0, i1, i2, bary, hitPos, hitN, maxLayer);
-        // Full shading for the reflected hit: real texture albedo, the real
-        // interpolated normal, sun diffuse (CSM shadowed) + sky ambient — the
-        // mirror must show lit scenery, not a flat fill.
+        vec3 albedo = rtSceneSampleReflectionAlbedo(i0, i1, i2, bary, hitPos, hitN, maxLayer, hitLod);
+        // Full shading for the hit: real texture albedo, the real
+        // interpolated normal, sun diffuse (CSM shadowed) + sky ambient.
+        // Refraction and reflection share it: both show lit scenery, not a
+        // flat fill.
         vec3 toSun = normalize(rt.sunDir.xyz);
         float ndl = max(dot(hitN, toSun), 0.0);
         float hitShadow = ShadowCalculation(
             ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
         vec3 color = albedo * (rt.sunColor.rgb * ndl * (1.0 - hitShadow)
                                + vec3(0.09, 0.12, 0.15));
-        return vec4(color, 1.0);
+        return vec4(color, refraction ? min(hitT, cap) : 1.0);
     }
 
-    uint boxIdx = rtBoxIndex(uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)),
-                             rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
-    RTProxyMetaGLSL meta = rtMetas[boxIdx];
-    // Coarse boxes cannot resolve shallow detail (same rule as rchit): feather
-    // toward deep/sky so box-size contours never print as razor lines.
-    float f = rtCoarseFeather(meta.extra.x, rt.water.z);
-    bool exiting = !rayQueryGetIntersectionFrontFaceEXT(rq, true);
-    vec3 boxN = rtBoxNormal(hitPos, meta.minAndMatId.xyz, meta.maxAndFlags.xyz, exiting);
-    float ndl = max(dot(boxN, normalize(rt.sunDir.xyz)), 0.0);
-    // Textured hit albedo: triplanar sample at the hit point with the box
-    // face normal, so refracted/reflected terrain reads as real textured
-    // ground (not flat proxy averages). Weights mirror main.frag.
-    int hitMat = int(meta.minAndMatId.w + 0.5);
-    vec3 triW = abs(boxN);
-    float twt = ubo.triplanarSettings.x;
-    vec3 wwt = max(vec3(0.0), triW - vec3(twt));
-    float wwe = max(1.0, ubo.triplanarSettings.y);
-    wwt = pow(wwt, vec3(wwe));
-    triW = wwt / (wwt.x + wwt.y + wwt.z + 1e-6);
-    // Explicit LOD: this helper runs under per-fragment control flow (pipe
-    // validity / toggles / hit-vs-miss differ per pixel), where implicit-LOD
-    // texture() has undefined derivatives. LOD from hit distance is stable.
-    float hitLod = clamp(log2(1.0 + hitT * 0.02), 0.0, 4.0);
-    vec3 hitAlbedo = computeTriplanarAlbedoLod(hitPos, triW, hitMat, boxN, hitLod);
-    // Water proxies carry a water-layer index (not a scene material) plus the
-    // fixed water tint in their average albedo (flags=1): use the flat tint,
-    // never triplanar-sample the water layer from albedoArray.
-    hitAlbedo = mix(hitAlbedo, meta.albedoRough.rgb, step(0.5, meta.maxAndFlags.w));
-    // Distant proxy hits: triplanar LOD sampling reaches minified mips that
-    // alias into stipple on far surfaces. Blend to the proxy's averaged albedo
-    // with distance so far reflections/refractions stay smooth.
-    hitAlbedo = mix(hitAlbedo, meta.albedoRough.rgb,
-                    clamp((hitT - 80.0) / 320.0, 0.0, 1.0));
-    vec3 color = hitAlbedo * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
-    if (!refraction) {
-        // Water proxies (flags=1): transparent water look computed from the
-        // water's OWN params (water.frag formula): tint = mix(shallow, deep,
-        // volume) blended over the sky by waterTint*transparency. No
-        // recursive reflection/refraction. The proxy meta carries the water
-        // layer id in minAndMatId.w.
-        if (meta.maxAndFlags.w > 0.5) {
-            int wLayer = clamp(int(meta.minAndMatId.w + 0.5), 0, 31);
-            WaterParamsGPU wp = waterParams[wLayer];
-            vec3 shallowTint = wp.shallowColor.rgb;
-            vec3 deepTint = wp.deepColor.rgb;
-            float waterTintStr = wp.params2.x;
-            float transparency = wp.params1.z;
-            float depthFalloff = wp.waveParams.w;
-            float thickness = max(wp.refractionParams.y, 0.0);
-            float tintDepthScale = max(wp.causticParams.w, 0.0001);
-            float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
-            vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
-            vec3 transmittance = exp(-min(
-                wp.absorptionParams.rgb * max(thickness * wp.absorptionParams.a, 0.0),
-                vec3(2.5)));
-            float depthFade = 1.0 - exp(-thickness * depthFalloff);
-            float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
-            float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
-            color = mix(sky * transmittance, waterTintColor, tintBlend)
-                // Constant UP normal for the water lighting: the box-face
-                // normal varies between the wall's side/top faces as the ray
-                // moves → ndl flickers.
-                * (rt.sunColor.rgb * (0.55 + 0.45 * max(dot(vec3(0.0, 1.0, 0.0), normalize(rt.sunDir.xyz)), 0.0))
-                   + vec3(0.09, 0.12, 0.15));
-            // Soft top edge: rays that graze the wall's top alternate between
-            // hitting the wall (water) and passing over it (sky) as the
-            // camera moves — a hard switch that flickers. Fade toward the sky
-            // near the top so the boundary is continuous.
-            float topFade = smoothstep(
-                meta.maxAndFlags.y - 15.0, meta.maxAndFlags.y, hitPos.y);
-            color = mix(color, sky, topFade);
-        }
-        // Proxy fallback (only reached if the scene instance had no triangle).
-        return vec4(color, 1.0);
-    }
-    // Cap the reported underwater length at the per-layer thickness cap
-    // (Beer-Lambert guard), then feather coarse hits toward deep thickness.
-    float cap = max(thickCap, 0.0);
-    float t = mix(min(hitT, cap), RT_DEEP_THICKNESS, f);
-    return vec4(color, t);
+    // Unreachable with the current masks (both paths select the scene
+    // instance only), but keep a well-defined miss-shaped fallback so a
+    // future mask change cannot fall out of a non-void function.
+    return refraction ? vec4(sky, RT_DEEP_WATER) : vec4(sky, 0.0);
 }
 #endif
 
@@ -588,6 +503,10 @@ void main() {
     // water params — the single source of truth (no RT-global duplicates).
     vec3 sceneColor = vec3(0.0);
     float rtThickness = -1.0;
+    // True when rtThickness below came from an exact scene-triangle hit
+    // (not a proxy average): the hash dither against proxy terracing must
+    // not touch it.
+    bool rtThickFromScene = false;
     float waterIor = clamp(wp.refractionParams.x, 1.0, 2.5);
     float refrThickCap = max(wp.refractionParams.y, 0.0);
     vec3 absorbCoeff = wp.absorptionParams.rgb;
@@ -629,12 +548,20 @@ void main() {
             // slabs the surface sits outside (above) the solid box, so biasing
             // down pushes shallow origins inside/below the lake-bottom slab and
             // misses the ground underneath. tMin (1 cm, inside rtTraceWater)
-            // is the only self-guard, and the solid-only mask excludes water.
-            vec4 hit = rtTraceWater(fragPosWorld, refrRay, maxRefr, true, refrThickCap, fragPosWorld);
+            // is the only self-guard.
+            // Bound the scene ray by the measured depth when the back face
+            // saw a bottom (tight BVH range around the exact hit); otherwise
+            // a multiple of the layer's max-thickness cap — anything deeper
+            // reads as deep water by design. Misses keep the DEEP marker.
+            float refrSceneTMax = hasValidBackFace
+                ? (backFaceThickness * 1.5 + 2.0)
+                : min(maxRefr, max(refrThickCap * 3.0, 8.0));
+            vec4 hit = rtTraceWater(fragPosWorld, refrRay, refrSceneTMax, true, refrThickCap);
             sceneColor = hit.rgb;
             // a >= 0 always from rtTraceWater: capped path length on hit, or
             // RT_DEEP_WATER marker on miss (deep, unresolved water).
             rtThickness = hit.a;
+            rtThickFromScene = true;
             refrResolved = true;
         }
 #endif
@@ -675,8 +602,10 @@ void main() {
     // Hash-dither resolved RT hit lengths (±0.3 m). Per-chunk flat box tops
     // quantize the true depth into steps; undithered, those steps print as
     // terrace bands. Dithered they degrade to grain, which reads as water
-    // noise. Miss marker and "no RT" (-1) are never touched.
-    if (rtReady && rt.toggles.z > 0.5 && rtThickness >= 0.0 && rtThickness < RT_DEEP_WATER) {
+    // noise. Miss marker and "no RT" (-1) are never touched. Skipped for
+    // exact scene-triangle hits (rtThickFromScene): dithering those would
+    // reintroduce the noise the exact geometry just removed.
+    if (rtReady && rt.toggles.z > 0.5 && !rtThickFromScene && rtThickness >= 0.0 && rtThickness < RT_DEEP_WATER) {
         float h = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
         rtThickness = max(rtThickness + (h - 0.5) * 0.6, 0.0);
     }
@@ -782,7 +711,7 @@ void main() {
     // match the scene. The async pipeline output (proxy boxes) is only a
     // fallback when the scene instance has no triangle along the ray.
     if (rtReady && rt.toggles.x > 0.5) {
-        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), RT_NO_LIMIT, false, 0.0, fragPosWorld);
+        vec4 hit = rtTraceWater(fragPosWorld + normal * 0.05, normalize(reflectDir), RT_NO_LIMIT, false, 0.0);
         if (hit.a > 0.5) {
             skyColor = hit.rgb;
             reflResolved = true;

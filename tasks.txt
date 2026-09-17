@@ -56,7 +56,7 @@ set 1 (main.vert = set 0, depth_only.frag = set 0). Bind only set 0
 
 vulkan/renderer/SceneRenderer.cpp:340 shadowPass signature includes
 VkDescriptorSet mainDescriptorSet but the body never uses it (binds
-shadowDescriptorSets[idx] instead). Call site: main.cpp:934.
+shadowDescriptorSets[idx] instead). Call site: MyApp.cpp:934.
 
 ## Verified live (no action)
 
@@ -67,7 +67,7 @@ shadowDescriptorSets[idx] instead). Call site: main.cpp:934.
   - cube360ComputeDs/cube360WaterComputeDs: bound via
     IndirectRenderer::prepareCullWithDescriptor from Solid360Renderer.cpp:418
   - per-frame water depth sets (prepareSceneTexturesForFrame) + async per-task
-    sets (main.cpp) — intentionally non-shared
+    sets (MyApp.cpp) — intentionally non-shared
   - TextureMixer compute sets, ShadowRenderer blur sets, DebugSDF/DebugCube
     sets, PostProcessRenderer set 0, SkyRenderer set 0
   - RenderTargetsWidget linearizeDescriptorSet: single persistent set reused

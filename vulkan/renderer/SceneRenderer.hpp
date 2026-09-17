@@ -336,7 +336,7 @@ public:
     bool hasModelForNode(Layer layer, NodeID nid) const;
 
     // The solid/water AND brush space-change lambdas are constructed by the
-    // app (main.cpp) — they need world state, chunk management and debug
+    // app (MyApp.cpp) — they need world state, chunk management and debug
     // markers. No make* handler factories remain here.
 
     // Resize offscreen resources when the swapchain changes

@@ -213,14 +213,6 @@ void LocalScene::loadScene(SceneLoaderCallback& callback, Octree::OctreeNodeData
     double elapsed = std::chrono::duration<double>(endTime - startTime).count();
     std::cout << "LocalScene::loadScene Ok! " << std::to_string(elapsed) << "s"  << std::endl;
 }
-void LocalScene::action(SceneLoaderCallback& callback, Octree::OctreeNodeDataHandler opaqueUpdateHandler, Octree::OctreeNodeDataHandler opaqueDeleteHandler, Octree::OctreeNodeDataHandler transparentUpdateHandler, Octree::OctreeNodeDataHandler transparentDeleteHandler) {
-    std::cout << "LocalScene::action() " << std::endl;
-    auto startTime = std::chrono::steady_clock::now();
-    callback.action(opaqueOctree, opaqueUpdateHandler, opaqueDeleteHandler, transparentOctree, transparentUpdateHandler, transparentDeleteHandler);
-    auto endTime = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(endTime - startTime).count();
-    std::cout << "LocalScene::action Ok! " << std::to_string(elapsed) << "s"  << std::endl;
-}
 
 void LocalScene::save(const std::string& filePath, const Settings* settings) {
     OctreeFile opaqueSaver(&opaqueOctree, "opaque");

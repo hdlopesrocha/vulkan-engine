@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../math/TexturePainter.hpp"
+#include "../math/BrushMode.hpp"
 
 class LandBrush : public TexturePainter {
 	int underground;

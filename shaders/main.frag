@@ -453,8 +453,12 @@ void main() {
                 // into a wall (a flat water block, faded to sky at the top,
                 // where distant terrain should be) or thread a gap (sky leak),
                 // printing chunk-sized shards and cracks across the reflection.
-                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT,
-                    RT_RAY_MASK_SCENE,
+                // Cull ray-front faces: scene triangles wind CW-outward (the
+                // rasterizer draws them with BACK+CW culling), and ray-front
+                // is fixed CCW — so this keeps exactly the rasterizer-visible
+                // faces and skips inward faces the main pass would cull.
+                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT |
+                    gl_RayFlagsCullFrontFacingTrianglesEXT, RT_RAY_MASK_SCENE,
                     origin, 0.05, normalize(reflDir), RT_NO_LIMIT);
                 while (rayQueryProceedEXT(rq)) {}
                 if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -580,7 +584,7 @@ void main() {
                         // barycentrics (main.tesc + main.frag) — fixes wrong
                         // material identity at in-triangle boundaries.
                         vec3 hitAlbedo = rtSceneSampleReflectionAlbedo(
-                            i0, i1, i2, bary, hitPos, hitN, maxLayer);
+                            i0, i1, i2, bary, hitPos, hitN, maxLayer, 0.0);
                         // Macro shadows stay CSM-owned (no RT shadow recompute).
                         // The sky ambient fill matches water.frag's hit shading
                         // so reflections read as lit scenery, not dark plates.

@@ -142,7 +142,7 @@ void SceneRenderer::cleanup(VulkanApp* app) {
 
 // Propagate the shared per-frame command state tracker to every renderer that
 // only records on the main thread (mirrors the pre-interface wiring in
-// main.cpp). backFaceRenderer and the water IndirectRenderer stay unwired:
+// MyApp.cpp). backFaceRenderer and the water IndirectRenderer stay unwired:
 // the async back-face task records them on a separate thread and keeping
 // cmdState=nullptr avoids a data race on frameCmdState.
 void SceneRenderer::setCmdState(CommandBufferState* state) {
@@ -1133,7 +1133,7 @@ SceneRenderer::StaticTextureSignature SceneRenderer::currentStaticSignature(Text
 // change guard below additionally makes repeated calls with unchanged resources
 // a no-op, so steady state issues 0 vkUpdateDescriptorSets calls. Per-frame UBO
 // contents are streamed via host memcpy into the already-bound UBO buffers
-// (main.cpp preRenderPass) or vkCmdCopyBuffer (shadow cascades) — never via
+// (MyApp.cpp preRenderPass) or vkCmdCopyBuffer (shadow cascades) — never via
 // descriptor updates — so the GPU timeline overlaps descriptor-buffer-friendly
 // uploads with compute. When VulkanApp::useDescriptorBuffer() is true, the
 // static writes go to the per-frame descriptor buffers first (direct

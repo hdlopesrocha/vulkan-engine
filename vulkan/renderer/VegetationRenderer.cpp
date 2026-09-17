@@ -337,7 +337,7 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
     // merged dispatch writes billboard/impostor commands in place) plus the
     // per-chunk veg metadata (so it can build the binding-9 table keyed by solid
     // draw entry). The actual GPU dispatch happens inside solidIR->prepareCull,
-    // which runs AFTER this call in the frame (see main.cpp ordering).
+    // which runs AFTER this call in the frame (see MyApp.cpp ordering).
     if (solidIR) {
         solidIR->setVegetationCullData(compactedCmdBuffers, visibleCountBuffers,
                                        impostorCompactBuffers, impostorCountBuffers);

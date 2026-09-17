@@ -37,7 +37,7 @@ Compiler is `g++` (`-std=c++23 -pthread`). Dependencies via `pkg-config`: glfw3,
 
 ## Architecture
 
-Two entry points: `main.cpp` (class `MyApp` extends `VulkanApp`) and `server.cpp` (headless).
+Two entry points: `MyApp.cpp` (class `MyApp` extends `VulkanApp`) and `server.cpp` (headless).
 
 - `vulkan/` — Vulkan setup, resource management, renderers (`vulkan/renderer/`)
 - `vulkan/renderer/` — SceneRenderer (orchestrator), SolidRenderer, SkyRenderer, WaterRenderer (tessellation), ShadowRenderer (cascaded shadow maps), VegetationRenderer (GPU), IndirectRenderer (GPU frustum culling), PostProcessRenderer, ImpostorCapture, DebugCubeRenderer, DebugSDFRenderer, WireframeRenderer, WaterBackFaceRenderer, Solid360Renderer, CubeToEquirectRenderer

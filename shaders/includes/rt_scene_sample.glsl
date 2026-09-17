@@ -5,10 +5,11 @@
 //
 // Requires: rtSceneVerts (float pool, Vertex stride 16 floats: pos 0-2,
 // uv 6-7, normal 8-10, brushIndex 11 int bits), albedoArray, materials[],
-// computeTriplanarAlbedoLod.
+// computeTriplanarAlbedoLod. lod is the explicit texture LOD (reflections
+// pass 0.0; refraction passes a distance-based LOD against shimmer).
 
 vec3 rtSceneSampleReflectionAlbedo(uint i0, uint i1, uint i2, vec2 bary,
-                                   vec3 hitPos, vec3 hitN, int maxLayer) {
+                                   vec3 hitPos, vec3 hitN, int maxLayer, float lod) {
     const uint kVertStride = 16u;
     // Corner brush indices (int bit patterns in the float pool).
     int bm0 = floatBitsToInt(rtSceneVerts[i0 * kVertStride + 11u]);
@@ -38,8 +39,8 @@ vec3 rtSceneSampleReflectionAlbedo(uint i0, uint i1, uint i2, vec2 bary,
     if (um0 >= 0 && blendW.x > 1e-5) {
         int m = clamp(um0, 0, maxLayer);
         vec3 c = (materials[m].triplanarParams.z > 0.5)
-            ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, 0.0)
-            : textureLod(albedoArray, vec3(uvInt, float(m)), 0.0).rgb;
+            ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, lod)
+            : textureLod(albedoArray, vec3(uvInt, float(m)), lod).rgb;
         acc += c * blendW.x;
         accW += blendW.x;
     }
@@ -47,8 +48,8 @@ vec3 rtSceneSampleReflectionAlbedo(uint i0, uint i1, uint i2, vec2 bary,
     if (um1 >= 0 && blendW.y > 1e-5) {
         int m = clamp(um1, 0, maxLayer);
         vec3 c = (materials[m].triplanarParams.z > 0.5)
-            ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, 0.0)
-            : textureLod(albedoArray, vec3(uvInt, float(m)), 0.0).rgb;
+            ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, lod)
+            : textureLod(albedoArray, vec3(uvInt, float(m)), lod).rgb;
         acc += c * blendW.y;
         accW += blendW.y;
     }
@@ -56,14 +57,14 @@ vec3 rtSceneSampleReflectionAlbedo(uint i0, uint i1, uint i2, vec2 bary,
     if (um2 >= 0 && blendW.z > 1e-5) {
         int m = clamp(um2, 0, maxLayer);
         vec3 c = (materials[m].triplanarParams.z > 0.5)
-            ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, 0.0)
-            : textureLod(albedoArray, vec3(uvInt, float(m)), 0.0).rgb;
+            ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, lod)
+            : textureLod(albedoArray, vec3(uvInt, float(m)), lod).rgb;
         acc += c * blendW.z;
         accW += blendW.z;
     }
     if (accW <= 1e-5) {
         // All-underground corner case: raster falls back to material 0.
-        return textureLod(albedoArray, vec3(uvInt, 0.0), 0.0).rgb;
+        return textureLod(albedoArray, vec3(uvInt, 0.0), lod).rgb;
     }
     return acc / max(accW, 1e-5);
 }

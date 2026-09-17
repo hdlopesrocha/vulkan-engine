@@ -52,6 +52,7 @@
 #include "LandBrush.hpp"
 #include "SimpleBrush.hpp"
 #include "WaterBrush.hpp"
+#include "NormalBrush.hpp"
 
 
 class MainSceneLoader : public SceneLoaderCallback {
@@ -63,16 +64,6 @@ public:
     Simplifier simplifier = Simplifier(0.95f, 0.2f, true);
     MainSceneLoader() {};
     ~MainSceneLoader() = default;
-    void action(
-        Octree &opaqueLayer, 
-        const Octree::OctreeNodeDataHandler& opaqueUpdateHandler, 
-        const Octree::OctreeNodeDataHandler& opaqueDeleteHandler, 
-        Octree &transparentLayer, 
-        const Octree::OctreeNodeDataHandler& transparentUpdateHandler, 
-        const Octree::OctreeNodeDataHandler& transparentDeleteHandler
-    ) {
-
-    }
 
     void loadScene(
         Octree &opaqueLayer, 
@@ -327,8 +318,13 @@ public:
             waterBox.setMin(mapBox.getMin() + glm::vec3(bias));
             waterBox.setMaxY(0);
             waterBox.setMinY(mapBox.getMinY()*0.5f);
+            NormalBrush waterBrush = NormalBrush(
+                0, 
+                glm::vec3(0.5f, 0.5f, 0.5f), 
+                glm::vec3(0.0f, 1.0f, 0.0f)
+            );
             OctreeDifferenceFunction function(&opaqueLayer, waterBox, bias);
-            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
+            transparentLayer.apply(AddSignedDistanceOperation(), function, model, waterBrush, minSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
     
         {

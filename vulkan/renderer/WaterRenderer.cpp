@@ -1157,7 +1157,7 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
     }
 
     // Scene textures were already bound before the async back-face task was
-    // launched (see main.cpp), so we must NOT call updateSceneTexturesBinding here.
+    // launched (see MyApp.cpp), so we must NOT call updateSceneTexturesBinding here.
     // Calling it after the async tasks submit their command buffers would update a
     // descriptor set that is already referenced by a pending command buffer
     // (VUID-vkUpdateDescriptorSets-None-03047).

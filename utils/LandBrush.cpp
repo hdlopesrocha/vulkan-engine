@@ -1,5 +1,4 @@
 #include "LandBrush.hpp"
-#include "../math/BrushMode.hpp"
 
 LandBrush::LandBrush() {
     this->underground = DISCARD_BRUSH_INDEX;
