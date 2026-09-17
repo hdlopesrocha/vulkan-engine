@@ -228,7 +228,8 @@ void SettingsWidget::render() {
             "CSM Shadows Only",
             "RT Local Shadows Only",
             "CSM + RT Combined Shadow",
-            "Tessellation Level Heat"
+            "Tessellation Level Heat",
+            "Material Roughness (map x factor)"
         };
         int current = settings.debugMode;
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {

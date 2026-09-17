@@ -614,11 +614,15 @@ void main() {
             // reflection, progressively replacing it with stale content.)
 #endif
             envReflection = rtColor;
-            // The rasterized material roughness controls the reflectivity:
-            // smooth (rough ≈ 0) = full mirror, rough (≈ 1) = matte lit color
-            // only. The RT roughness gate above already skips the trace for
-            // very rough surfaces; this factor fades the result smoothly.
-            envFresnelFactor = 1.0 - clamp(rough, 0.0, 1.0);
+            // Reflectivity: the material's reflectionStrength lerps between a
+            // physical Fresnel mirror (0) and a full mirror at every angle
+            // (1) — same convention as the water reflectionStrength — shaped
+            // by the Schlick Fresnel term, then faded by the rasterized
+            // material roughness (smooth ≈ full mirror, rough ≈ matte lit
+            // color only). The RT roughness gate above already skips the trace
+            // for very rough surfaces; this factor fades the result smoothly.
+            envFresnelFactor = mix(fresnel, 1.0, clamp(blendedRefStrength, 0.0, 1.0))
+                * (1.0 - clamp(rough, 0.0, 1.0));
         }
     }
 
@@ -884,6 +888,14 @@ void main() {
     }
     if (debugMode == 33) {
         outColor = vec4(vec3(ambientOcclusion), 1.0);
+        return;
+    }
+    if (debugMode == 59) {
+        // Material roughness actually driving the mirror mix: raw map sample
+        // (mode 32) times the per-material roughness factor, clamped — black
+        // = full mirror, white = matte. Stays black when roughness maps are
+        // globally disabled.
+        outColor = vec4(vec3(clamp(roughnessValue * roughnessFactor, 0.0, 1.0)), 1.0);
         return;
     }
     if (debugMode == 49) {

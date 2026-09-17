@@ -36,7 +36,12 @@ struct MaterialProperties {
     bool normalSwapXZ = false;  // swap R/B channels (X/Z) if true
         // default: legacy invert behavior for backward compatibility
 
-    float roughnessFactor = 0.5f;
+    // Multiplier on the sampled roughness texture [0..1]. Neutral default is
+    // 1.0 (full texture range): lower values compress every material toward a
+    // mirror finish (at 0.5 even a fully rough texture can only reach 50%
+    // matte), for both the RT mirror mix and the specular exponent in
+    // main.frag. Tune per material in the texture viewer.
+    float roughnessFactor = 1.0f;
     float aoFactor = 1.0f;
     bool useAO = true;
 };

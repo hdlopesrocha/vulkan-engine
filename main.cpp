@@ -257,7 +257,7 @@ public:
     std::array<VkQueryPool, MAX_FRAMES_IN_FLIGHT> queryPools = {};
     bool queryPoolReady[MAX_FRAMES_IN_FLIGHT] = {};
     float timestampPeriod = 0.0f;
-    bool profilingEnabled = false;
+    bool profilingEnabled = true;
     float profileShadow = 0.0f;
     float profileMainCull = 0.0f;
     float profileBrush = 0.0f;
