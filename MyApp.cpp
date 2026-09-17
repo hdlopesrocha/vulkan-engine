@@ -33,7 +33,6 @@
 #include "vulkan/renderer/RendererUtils.hpp"
 #include "utils/LocalScene.hpp"
 #include "widgets/SettingsWidget.hpp"
-#include "widgets/HybridRTWidget.hpp"
 #include "widgets/SkyWidget.hpp"
 #include "widgets/SkySettings.hpp"
 #include "widgets/WaterWidget.hpp"
@@ -259,7 +258,6 @@ public:
     UniformObject uboStatic = {};
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     std::shared_ptr<SettingsWidget> settingsWidget;
-    std::shared_ptr<HybridRTWidget> hybridRTWidget;
     std::shared_ptr<SkyWidget> skyWidget;
     std::shared_ptr<WaterWidget> waterWidget;
     std::shared_ptr<RenderTargetsWidget> renderTargetsWidget;
@@ -826,7 +824,6 @@ public:
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
         // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings, &shadowParams);
-        hybridRTWidget = std::make_shared<HybridRTWidget>(settings);
         // Water UI uses the application-owned water params vector and updates GPU state explicitly.
         waterWidget = std::make_shared<WaterWidget>(sceneRenderer->mainLiquidRenderer.get(), &waterParams);
 
@@ -864,7 +861,6 @@ public:
         widgetManager.addWidget(controllerParametersWidget);
         widgetManager.addWidget(gamepadWidget);
         widgetManager.addWidget(settingsWidget);
-        widgetManager.addWidget(hybridRTWidget);
         widgetManager.addWidget(lightWidget);
         widgetManager.addWidget(skyWidget);
         widgetManager.addWidget(waterWidget);

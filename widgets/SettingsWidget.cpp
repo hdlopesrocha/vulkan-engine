@@ -58,7 +58,7 @@ void SettingsWidget::render() {
     // ---- Sections: each must be self-contained (header + controls) so it can
     // ---- be moved as a whole into another column when the current one fills up.
     std::vector<std::function<void()>> sections;
-    sections.reserve(12);
+    sections.reserve(13);
 
     // 0: Shadow Effects
     sections.emplace_back([this]() {
@@ -269,7 +269,86 @@ void SettingsWidget::render() {
         TooltipOnHover("Render water surface in white wireframe");
     });
 
-    // 11: Debug Visualisation
+    // 11: Hybrid RT (migrated from HybridRTWidget — sole owner of RT controls:
+    // raster owns primary, CSM macro shadows, RT secondary visibility)
+    sections.emplace_back([this]() {
+        ImGui::Text("Hybrid RT");
+        ColSeparator();
+        ImGui::TextWrapped("Raster=primary, CSM=macro shadows, RT=secondary (reflections, refraction, thickness, contact).");
+        if (ImGui::Checkbox("RT reflections", &settings.rtReflections)) {
+        }
+        TooltipOnHover("Solid + water RT reflections (sky on miss/off)");
+        if (ImGui::Checkbox("RT refractions", &settings.rtRefractions)) {
+        }
+        TooltipOnHover("Water refraction via Snell IOR");
+        if (ImGui::Checkbox("RT water thickness", &settings.rtThickness)) {
+        }
+        TooltipOnHover("RT water thickness + Beer-Lambert absorption");
+        if (ImGui::Checkbox("RT local/contact shadows (augment CSM)", &settings.rtLocalShadows)) {
+        }
+        TooltipOnHover("Selective RT contact shadows augmenting CSM (off = CSM-only, recommended)");
+        if (ImGui::Checkbox("Water via RT pipeline (off = inline queries)", &settings.rtWaterPipeline)) {
+        }
+        TooltipOnHover("Water via async RT pipeline outputs (off = inline ray queries)");
+
+        FieldLabel("Max reflect dist", "Reflection ray Tmax (world units)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Max reflect dist", &settings.rtMaxReflectDist, 10.0f, 2000.0f, "%.0f");
+        TooltipOnHover("Reflection ray Tmax (world units)");
+        FieldLabel("Max refract dist", "Refraction ray Tmax (also deep-water thickness)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Max refract dist", &settings.rtMaxRefractDist, 10.0f, 1000.0f, "%.0f");
+        TooltipOnHover("Refraction ray Tmax (also deep-water thickness)");
+        FieldLabel("Max contact dist", "Local shadow ray Tmax (contact range only)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Max contact dist", &settings.rtMaxShadowDist, 1.0f, 60.0f, "%.1f");
+        TooltipOnHover("Local shadow ray Tmax (contact range only)");
+        FieldLabel("Roughness threshold", "Roughness above this skips RT reflections (env approx)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Roughness threshold", &settings.rtRoughnessThreshold, 0.0f, 1.0f, "%.2f");
+        TooltipOnHover("Roughness above this skips RT reflections (env approx)");
+        FieldLabel("Self-skip dist", "Ignore proxy hits closer than this (own-box guard)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Self-skip dist", &settings.rtSelfSkipDist, 0.0f, 15.0f, "%.2f");
+        TooltipOnHover("Ignore proxy hits closer than this (own-box guard)");
+
+        ImGui::TextWrapped("Ray budget (2-4x fewer inline rays, no visible change):");
+        FieldLabel("Ray scale", "0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
+        const char* rayScales[] = {"Full-rate (reference)", "Checkerboard half-rate"};
+        int rayIdx = (settings.rtRayScale == 1) ? 1 : 0;
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        if (ImGui::Combo("##Ray scale", &rayIdx, rayScales, 2)) {
+            settings.rtRayScale = (rayIdx == 1) ? 1 : 0;
+        }
+        TooltipOnHover("0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
+        FieldLabel("Ray contrib min", "Skip the inline ray when the lobe contribution is below this");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Ray contrib min", &settings.rtRayContribMin, 0.0f, 0.2f, "%.3f");
+        TooltipOnHover("Skip the inline ray when the lobe contribution is below this");
+        if (ImGui::Checkbox("Water single-ray (Fresnel xor, off = dual reference)", &settings.rtSingleRay)) {
+        }
+        TooltipOnHover("Water traces reflection XOR refraction stochastically (probability = Fresnel mix) instead of always both");
+
+        ImGui::TextWrapped("Water look (IOR, absorption, depth cap, shore fade) lives in Water Settings, per water layer.");
+        // RT debug views drive rt.debug.x (RT pipeline + raster RT branches).
+        const char* rtViews[] = {"Off", "50 Reflect-only", "51 Refract-only", "52 Thickness",
+                                 "53 Fresnel", "54 Absorption", "55 CSM-only", "56 RT-local-only",
+                                 "57 CSM+RT combined", "59 Ray mask", "60 Depth source"};
+        const int rtVals[] = {0, 50, 51, 52, 53, 54, 55, 56, 57, 59, 60};
+        int rtIdx = 0;
+        for (int i = 0; i < 11; ++i) if (settings.rtDebugView == rtVals[i]) rtIdx = i;
+        FieldLabel("RT debug view", "RT debug views (0=off); any view except 59/60 forces full-quality reference rays");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        if (ImGui::Combo("##RT debug view", &rtIdx, rtViews, 11)) {
+            settings.rtDebugView = rtVals[rtIdx];
+            // Mirror into the raster debugMode so solid AND water show it.
+            if (settings.rtDebugView != 0) settings.debugMode = settings.rtDebugView;
+        }
+        TooltipOnHover("Raster debugMode also selects views 50-57 for solid+water.");
+        ImGui::TextWrapped("CSM stays authoritative: keep RT local shadows OFF unless inspecting contact detail. Proxy BLAS is coarse by design — never use RT for macro terrain shadows.");
+    });
+
+    // 12: Debug Visualisation
     sections.emplace_back([this]() {
         ImGui::Text("Debug Visualisation");
         ColSeparator();
@@ -329,23 +408,31 @@ void SettingsWidget::render() {
             "Front-face Depth (linearized)",
             "Back-face Depth (linearized)",
             "Water Thickness (normalized)",
-            // Hybrid RT & misc (50-58, shared with the RT widget)
-            "RT Reflection Only",
-            "RT Refraction Only",
-            "RT Thickness",
-            "Fresnel",
-            "Absorption (Beer-Lambert)",
-            "CSM Shadows Only",
-            "RT Local Shadows Only",
-            "CSM + RT Combined Shadow",
+            // Misc (RT views 50-57/59-60 live only in the Hybrid RT section above;
+            // debugMode IDs go straight to the GPU, so this combo maps values)
             "Tessellation Level Heat"
         };
-        int current = settings.debugMode;
+        // GPU IDs for the entries above: 0-49 in order, then 58.
+        const int debugVals[] = {
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+            10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+            20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+            30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+            40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+            58
+        };
+        static_assert(IM_ARRAYSIZE(debugItems) == IM_ARRAYSIZE(debugVals), "debug combo items/values out of sync");
+        int current = 0;
+        for (int i = 0; i < IM_ARRAYSIZE(debugVals); ++i) {
+            if (settings.debugMode == debugVals[i]) { current = i; break; }
+        }
         // Index shown in the header so no SameLine widget is needed (narrow-column safe).
+        // Note: values driven from the Hybrid RT section (50-57/59-60) keep
+        // working on the GPU; the header below still shows the true ID.
         ImGui::Text("Debug Mode (%d)", settings.debugMode);
         ImGui::SetNextItemWidth(kSettingsColWidth);
         if (ImGui::Combo("##Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
-            settings.debugMode = current;
+            settings.debugMode = debugVals[current];
         }
 
         if (ImGui::Checkbox("Show Mesh Bounding Boxes", &settings.showBoundingBoxes)) {
@@ -373,7 +460,8 @@ void SettingsWidget::render() {
         if (n > 0) cachedH[0] = 190.0f;
         if (n > 4) cachedH[4] = 230.0f;
         if (n > 7) cachedH[7] = 240.0f;
-        if (n > 11) cachedH[11] = 210.0f;
+        if (n > 11) cachedH[11] = 560.0f;
+        if (n > 12) cachedH[12] = 210.0f;
     }
 
     float availW = ImGui::GetContentRegionAvail().x;
