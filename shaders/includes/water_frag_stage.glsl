@@ -39,7 +39,7 @@ layout(location = VARY_HSV) in vec3 fragHSV;
 // runs only for invalid pipe texels (or when the pipeline is off). Ray
 // budget (rt.rayParams): checkerboard half-rate + Fresnel stochastic
 // reflection-xor + contribution gate, each applied only where the pipe
-// covers the pixel; any rt.debug view except 59-61 forces full-rate
+// covers the pixel; any rt.debug view except 59-62 forces full-rate
 // dual-trace reference.
 // The pass stays decoupled from the solid pass (no solid color/depth reads
 // except the in-trace exact-hit reproject); occlusion resolves at composite.

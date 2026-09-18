@@ -366,11 +366,11 @@ void shadeSolidSurface() {
             float contrib = clamp(blendedRefStrength, 0.0, 1.0) * fresnel
                 * (1.0 - clamp(rough, 0.0, 1.0));
             float contribMin = clamp(rt.rayParams.y, 0.0, 1.0);
-            // Views 59-61 visualize the budgeted behavior itself, so they
+            // Views 59-62 visualize the budgeted behavior itself, so they
             // must not force reference (otherwise the counters could never
             // show the live behavior).
             bool refMode = (rt.debug.x != 0.0)
-                && (rt.debug.x < 58.5 || rt.debug.x > 61.5);
+                && (rt.debug.x < 58.5 || rt.debug.x > 63.5);
             bool checkerOn = (rt.rayParams.x > 0.5) && !refMode;
             // Checkerboard only claims pixels that survived every other gate
             // (else gated pixels would misreport as half-rate in view 59).
@@ -517,9 +517,16 @@ void shadeSolidSurface() {
                             // still reflects fully lit inside mirrors.
                             float hitShadow = ShadowCalculation(
                                 ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
-                            vec3 waterColor = mix(skyR * transmittance, waterTintColor, tintBlend)
+                            // Sky (surface mirror) stays unlit; only the
+                            // volume tint takes NdotL/shadow. Multiplying the
+                            // whole mix by the sun term turned reflected water
+                            // near-black where the hit was shadowed/grazing —
+                            // the dark band along the shoreline.
+                            vec3 skyPart = skyR * transmittance;
+                            vec3 litTint = waterTintColor
                                 * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl) * (1.0 - hitShadow)
                                    + vec3(0.09, 0.12, 0.15));
+                            vec3 waterColor = mix(skyPart, litTint, tintBlend);
                             rtColor = waterColor;
                             // A mirror's reflection is not occluded by AO nor dimmed by the
                             // surface roughness (the RT roughness gate already
@@ -551,8 +558,11 @@ void shadeSolidSurface() {
                         float ndl = max(dot(hitN, toLight), 0.0);
                         float hitShadow = ShadowCalculation(
                             ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
+                        // Albedo-scaled sky ambient (raster convention), not
+                        // a dark constant: grazing/off-screen terrain hits in
+                        // mirrors no longer read as near-black plates.
                         rtColor = hitAlbedo * (ubo.lightColor.rgb * ndl * (1.0 - hitShadow)
-                                               + vec3(0.09, 0.12, 0.15));
+                                               + vec3(0.26));
                         // A mirror's reflection is not occluded by AO nor dimmed by the
                             // surface roughness (the RT roughness gate already
                             // handles scatter): the reflection is full-strength.

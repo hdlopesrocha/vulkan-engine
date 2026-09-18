@@ -71,7 +71,7 @@ vec4 rtRasterBottom(vec3 O, vec3 S, vec2 suv) {
 //   (forward culled, reverse culled, forward unculled); a = 1 on a hit,
 //   0 on a miss.
 // Macro shadows stay CSM-owned: hits get ambient + sun diffuse only.
-vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thickCap) {
+vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thickCap, float waterMinHit) {
     rayQueryEXT rq;
     // Refraction rays start AT the displaced water surface and go down.
     // tMin stays tiny (1 cm): the filtered pass skips water-mesh candidates,
@@ -177,14 +177,28 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             haveHit = true;
         }
     } else {
+    // Stage 1: forward ray (cull front faces). For reflection, a water-mesh
+    // hit closer than waterMinHit is the reflector's own / nearby surface —
+    // the BLAS water plane is flat and coplanar per chunk, so a rippled
+    // normal that tips the mirror ray slightly down hits it immediately and
+    // shades the water as if it reflected itself (flat sky where scenery is
+    // due: the "reflection missing at the shore" report). Skip it; the
+    // later stages can still find real scenery. Distant water (a lake across
+    // the valley), i.e. beyond the threshold, stays a valid reflector.
     if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT &&
         rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) == RT_SCENE_INSTANCE) {
-        hitT = rayQueryGetIntersectionTEXT(rq, true);
-        prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
-        lo = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true));
-        hitBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
-        haveHit = true;
-    } else {
+        float tC = rayQueryGetIntersectionTEXT(rq, true);
+        uint loC = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true));
+        bool selfWater = (!refraction) && (rtSceneGeomInfo[loC].w != 0u) && (tC < waterMinHit);
+        if (!selfWater) {
+            hitT = tC;
+            prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
+            lo = loC;
+            hitBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+            haveHit = true;
+        }
+    }
+    if (!haveHit) {
         // Opposite-direction validation of the local column (reflection;
         // refraction uses the filtered pass above). Water is allowed beyond
         // the same dead zone the forward tMin enforces (5.5 cm > 5 cm bias
@@ -202,7 +216,7 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             uint lo2 = uint(rayQueryGetIntersectionGeometryIndexEXT(rq2, true));
             float fwdT = backSpan - rayQueryGetIntersectionTEXT(rq2, true);
             bool waterOk = (rtSceneGeomInfo[lo2].w == 0u)
-                || (!refraction && fwdT > 0.055);
+                || (!refraction && fwdT >= waterMinHit);
             if (waterOk && fwdT >= 0.0) {
                 hitT = fwdT;
                 prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq2, true));
@@ -228,8 +242,9 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             if (rayQueryGetIntersectionTypeEXT(rq3, true) != gl_RayQueryCommittedIntersectionNoneEXT &&
                 rayQueryGetIntersectionInstanceCustomIndexEXT(rq3, true) == RT_SCENE_INSTANCE) {
                 uint lo3 = uint(rayQueryGetIntersectionGeometryIndexEXT(rq3, true));
-                if (rtSceneGeomInfo[lo3].w == 0u || !refraction) {
-                    hitT = rayQueryGetIntersectionTEXT(rq3, true);
+                float tC3 = rayQueryGetIntersectionTEXT(rq3, true);
+                if (rtSceneGeomInfo[lo3].w == 0u || (!refraction && tC3 >= waterMinHit)) {
+                    hitT = tC3;
                     prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq3, true));
                     lo = lo3;
                     hitBary = rayQueryGetIntersectionBarycentricsEXT(rq3, true);
@@ -348,7 +363,38 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             float waterTintStr = wp.params2.x;
             float transparency = wp.params1.z;
             float depthFalloff = wp.waveParams.w;
+            // LOCAL water column at the hit, not the layer max: a refraction
+            // ray that crossed a wave crest (or a nearby water surface) must
+            // shade at THAT depth; a mirror that hit the neighbouring shallow
+            // water must show shallow water. The old max-thickness constant
+            // (6 m) painted every water-mesh hit with the deep tint — the
+            // dark band along the shoreline and around wave crests.
+            //  - refraction: the returned thickness is min(hitT, cap) — use
+            //    exactly that for the color too.
+            //  - reflection: the hit is the REFLECTOR, so hitT is the
+            //    distance to it, not a column. Estimate the reflector's own
+            //    column from the raster bottom behind the hit (same rule as
+            //    every other thickness source; no bottom -> keep the layer
+            //    max, i.e. distant deep water).
             float thickness = max(wp.refractionParams.y, 0.0);
+            if (refraction) {
+                thickness = min(hitT, cap);
+            } else {
+                vec4 hcw = ubo.viewProjection * vec4(hitPos, 1.0);
+                if (hcw.w > 0.001) {
+                    vec2 huw = hcw.xy / hcw.w * 0.5 + 0.5;
+                    if (huw.x >= 0.0 && huw.x <= 1.0 && huw.y >= 0.0 && huw.y <= 1.0) {
+                        const float nearW = ubo.passParams.z;
+                        const float farW = ubo.passParams.w;
+                        float hsd = textureLod(solidSceneDepthTex, huw, 0.0).r;
+                        if (hsd < 1.0) {
+                            float solidEyeW = (nearW * farW) / (farW - hsd * (farW - nearW));
+                            float gapW = solidEyeW - hcw.w;
+                            if (gapW >= 0.0) thickness = min(gapW, thickness);
+                        }
+                    }
+                }
+            }
             float tintDepthScale = max(wp.causticParams.w, 0.0001);
             float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
             vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
@@ -365,8 +411,17 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             // and other water surfaces.
             float hitShadow = ShadowCalculation(
                 ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
-            vec3 waterColor = mix(sky * transmittance, waterTintColor, tintBlend)
-                * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) * (1.0 - hitShadow) + vec3(0.09, 0.12, 0.15));
+            // The sky component of a water surface is a SURFACE mirror, not
+            // volume scattering: it must not be multiplied by NdotL/shadow.
+            // Applying the sun term to the whole mix turned water hits
+            // near-black wherever the hit was shadowed or grazing — the dark
+            // band along the shoreline in the mirror. Only the volume tint
+            // (scattering) takes the lighting.
+            vec3 skyPart = sky * transmittance;
+            vec3 litTint = waterTintColor
+                * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) * (1.0 - hitShadow)
+                   + vec3(0.09, 0.12, 0.15));
+            vec3 waterColor = mix(skyPart, litTint, tintBlend);
             return vec4(waterColor, refraction ? min(hitT, cap) : 1.0);
         }
         int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
@@ -395,8 +450,11 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         float ndl = max(dot(hitN, toSun), 0.0);
         float hitShadow = ShadowCalculation(
             ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
+        // Sky ambient scaled by the hit albedo (the raster's convention is
+        // albedo * ambient): the old dark constant left grazing/off-screen
+        // hits near-black — the mirror darkening near the shore.
         vec3 color = albedo * (rt.sunColor.rgb * ndl * (1.0 - hitShadow)
-                               + vec3(0.09, 0.12, 0.15));
+                               + vec3(0.26));
         return vec4(color, refraction ? min(hitT, cap) : 1.0);
     }
 
@@ -434,7 +492,10 @@ float linearizeDepth(float depth) {
 vec4 traceSSR(vec3 origin, vec3 dir, vec3 eyeDir) {
     float nearP = ubo.passParams.z;
     float farP  = ubo.passParams.w;
-    float facing = clamp(abs(dot(dir, eyeDir)), 0.0, 1.0);
+    // No facing fade here: water's reflection misses are exactly the
+    // grazing, near-parallel rays that the old smoothstep discarded — the
+    // shoreline case this march now serves. The edge and gap fades still
+    // guard screen-border and depth-uncertain crosses.
     float prevT = 0.0;
     float t = 0.25;
     for (int i = 0; i < 64; ++i) {
@@ -472,7 +533,7 @@ vec4 traceSSR(vec3 origin, vec3 dir, vec3 eyeDir) {
                 // (ray nearly parallel to it): soften instead of hard-cutting.
                 float gapFade = 1.0 - clamp((rayEye - sceneEye) / max(1.0, sceneEye * 0.25), 0.0, 0.5);
                 return vec4(textureLod(solidSceneColorTex, uv, 0.0).rgb,
-                            edge * gapFade * smoothstep(0.03, 0.35, facing));
+                            edge * gapFade);
             }
         }
         prevT = t;
@@ -689,7 +750,7 @@ void shadeWaterSurface() {
     // (Schlick-weighted) to save a ray on hits. A missed first ray always
     // recovers the other lobe (bottom via zero-cost raster recovery, mirror
     // via a real ray), so no pixel ends with two empty lobes ("just
-    // tinted"). Reference mode (any rt.debug view except 59-61, the
+    // tinted"). Reference mode (any rt.debug view except 59-62, the
     // diagnostic masks themselves) forces dual-trace + full-rate.
     float hash01 = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
     bool waterRefMode = false;
@@ -697,10 +758,10 @@ void shadeWaterSurface() {
     bool waterChecker = false;
     float waterContribMin = 0.02;
 #ifdef RT_ENABLED
-    // Views 59-61 visualize the budgeted behavior itself, so they must not
+    // Views 59-62 visualize the budgeted behavior itself, so they must not
     // force reference (otherwise the counters could never show the live cut).
     waterRefMode = (rt.debug.x != 0.0)
-        && (rt.debug.x < 58.5 || rt.debug.x > 61.5);
+        && (rt.debug.x < 58.5 || rt.debug.x > 63.5);
     waterSingleRay = (rt.rayParams.z > 0.5) && !waterRefMode;
     waterContribMin = clamp(rt.rayParams.y, 0.0, 1.0);
     waterChecker = (rt.rayParams.x > 0.5) && !waterRefMode
@@ -802,7 +863,7 @@ void shadeWaterSurface() {
             // filtered pass skips water candidates, so the tMin self-guard
             // only needs to clear coplanar touch — and the reported length
             // is the visible water column, not base-to-bottom.
-            vec4 hit = rtTraceWater(fragPosWorld, refrRay, refrSceneTMax, true, refrThickCap);
+            vec4 hit = rtTraceWater(fragPosWorld, refrRay, refrSceneTMax, true, refrThickCap, 0.0);
             sceneColor = hit.rgb;
             // a >= 0 always from rtTraceWater: capped path length on hit, or
             // RT_DEEP_WATER marker on miss (deep, unresolved water). Only a
@@ -1090,37 +1151,25 @@ void shadeWaterSurface() {
     vec3 skyColor = vec3(0.0);
     bool reflResolved = false;
 #ifdef RT_ENABLED
-    // Sample the pipe first (one cheap tap) so the budget gate below can
-    // tell covered pixels (pipe valid) from uncovered ones. The pipe color
-    // is only USED if the inline ray does not run or misses.
-    vec3 pipeReflCol = vec3(0.0);
-    bool pipeReflValid = false;
+    // Reflection source: the INLINE exact-triangle ray only. The async proxy
+    // pipeline's reflection is never used as the color — its flat-sky/slab
+    // output at the shoreline was the "reflection missing at the shore"
+    // report, and the migration plan deletes the pipeline in Phase 3. The
+    // pipe texel is still sampled so view 59 keeps reporting pipe coverage.
     if (usePipe && rt.toggles.x > 0.5) {
         vec4 pipeRefl = textureLod(rtReflectTex, screenUV, 0.0);
-        if (pipeRefl.a > 0.5) {
-            pipeReflCol = pipeRefl.rgb;
-            pipeReflValid = true;
-        }
+        if (pipeRefl.a > 0.5) reflMaskDbg = 2.0;
     }
-    // Budget gate: single-ray xor + checkerboard half-rate (strong mirrors
-    // exempt) + negligible-lobe skip. Skips apply ONLY when the pipe covers
-    // the pixel — an uncovered skip would replace an exact hit with sky, a
-    // visible regression. Covered skips reuse the pipe; uncovered pixels
-    // always trace (when ready/toggled), so exact reflections are never
-    // sacrificed for the budget. Miss-recovery (bottomEmpty) traces
-    // regardless of xor/checker — a guarantee, not a saving — but keeps the
-    // contribution gate (negligible lobes stay skipped) and never overrides
-    // reference mode. Never black.
-    bool reflXorSkip = !wantReflInline && pipeReflValid;
-    bool reflCheckerEff = reflCheckerSkip && pipeReflValid;
-    bool reflBudgetSkip = reflXorSkip || reflCheckerEff
-        || (reflContribEst < waterContribMin);
+    // Budget: only the negligible-contribution gate remains for reflection.
+    // A skipped mirror is a missing mirror (exactly the shore bug), so the
+    // xor/checkerboard cuts no longer apply to the reflection lobe: every
+    // pixel that can trace does trace. Reference mode clears the gate.
+    bool reflBudgetSkip = (reflContribEst < waterContribMin);
     if (waterRefMode) reflBudgetSkip = false;
-    bool reflRecover = bottomEmpty && enableReflection && !waterRefMode
-        && reflContribEst >= waterContribMin;
     bool reflDidTrace = false;
     vec4 reflHit = vec4(0.0);
-    if ((!reflBudgetSkip || reflRecover) && rtReady && rt.toggles.x > 0.5) {
+    vec3 reflOrigin = vec3(0.0);
+    if (!reflBudgetSkip && rtReady && rt.toggles.x > 0.5) {
         // Origin on the UNDISPLACED base surface, biased along the base
         // normal (mirrors main.frag): the BLAS holds the undisplaced CPU
         // mesh, so tracing from the displaced (tessellated wave) surface
@@ -1134,27 +1183,36 @@ void shadeWaterSurface() {
         // rippled normal (sparkle detail is unaffected).
         vec3 reflBaseN = normalize(fragBaseNormal);
         if (dot(reflBaseN, viewDir) < 0.0) reflBaseN = -reflBaseN;
-        reflHit = rtTraceWater(fragBasePos.xyz + reflBaseN * 0.05, normalize(reflectDir), RT_NO_LIMIT, false, 0.0);
+        // Origin on the VISIBLE displaced surface (not the base plane): near
+        // the shore the base plane can sit under the bank, and an
+        // underground origin hits terrain backfaces/self-water and paints
+        // bogus reflections. The self-water distance guard below replaces
+        // the old base-plane trick for keeping the reflector's own surface
+        // out of the result.
+        reflOrigin = fragPosWorld + reflBaseN * 0.05;
+        float reflWaterMinHit = length(fragPosWorld - fragBasePos.xyz) + 2.0;
+        reflHit = rtTraceWater(reflOrigin, normalize(reflectDir), RT_NO_LIMIT, false, 0.0, reflWaterMinHit);
         reflDidTrace = true;
         if (reflHit.a > 0.5) {
             skyColor = reflHit.rgb;
             reflResolved = true;
             reflMaskDbg = 3.0;
         }
-        // Miss: fall through to pipe/sky below (the trace's own sky equals
-        // the fallback sky; the pipe may still hold a proxy hit the exact
-        // triangles missed).
-    }
-    if (!reflResolved && pipeReflValid) {
-        skyColor = pipeReflCol;
-        reflResolved = true;
-        reflMaskDbg = 2.0;
     }
     if (!reflResolved && reflDidTrace) {
-        // Traced, missed, no pipe cover: sky (same value the trace saw).
-        skyColor = reflHit.rgb;
+        // Inline miss: screen-space fallback over this frame's solid render,
+        // so grazing rays that slip over the undisplaced BLAS still show the
+        // reflected scenery (the bank at the waterline) instead of flat sky.
+        // Shallow near-parallel rays are exactly what the march resolves.
+        vec4 ssr = traceSSR(reflOrigin, normalize(reflectDir), normalize(viewDir));
+        if (ssr.a > 0.02) {
+            skyColor = ssr.rgb;
+            reflMaskDbg = 3.0;
+        } else {
+            skyColor = reflHit.rgb; // trace's own sky (miss baseline)
+            reflMaskDbg = 3.0;
+        }
         reflResolved = true;
-        reflMaskDbg = 3.0;
     } else if (!reflResolved && rtReady && rt.toggles.x > 0.5 && reflBudgetSkip) {
         reflMaskDbg = 4.0;
     }
@@ -1609,6 +1667,18 @@ void shadeWaterSurface() {
             bidCol = clamp(0.5 + 0.5 * cos(6.2831853 * (hh + vec3(0.0, 0.33, 0.67))), 0.0, 1.0);
         }
         outColor = vec4(bidCol, 1.0);
+    }
+    if (dbgMode == 62) {
+        // Water composition terms: R = tintBlend (water tint dominance),
+        // G = mirrorPresence (reflection mix), B = thickness / layer cap.
+        // Localizes a shore band: if the band is water-shading-driven it
+        // appears as a distinct band in one of these channels; if all three
+        // are smooth across it, the band comes from the sampled content
+        // (bottom/reflection color) or the alpha fade, not the mix weights.
+        float thickN = clamp(waterThickness / max(refrThickCap, 1.0), 0.0, 1.0);
+        outColor = vec4(clamp(tintBlend, 0.0, 1.0),
+                        clamp(mirrorPresence, 0.0, 1.0),
+                        thickN, 1.0);
     }
 
 

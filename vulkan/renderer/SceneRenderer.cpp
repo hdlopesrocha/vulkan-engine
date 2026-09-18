@@ -2413,11 +2413,11 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     p.sunColor = glm::vec4(sunColor, 1.0f);
     // Ray-budget A/B: any debug view forces the reference path (full-rate +
     // dual-trace) so diagnostics/screenshots show full quality; otherwise honor
-    // the runtime toggles. Views 59-61 are the budget/depth/brush masks
-    // themselves and must stay budgeted, or the counters could never show
-    // the live behavior. Keeps the null-TLAS skip path (debug.y) unchanged.
+    // the runtime toggles. Views 59-62 are the budget/depth/brush/compose
+    // masks themselves and must stay budgeted, or the counters could never
+    // show the live behavior. Keeps the null-TLAS skip path (debug.y) unchanged.
     const int dbgV = settings.rtDebugView;
-    const bool refMode = (dbgV != 0 && dbgV != 59 && dbgV != 60 && dbgV != 61);
+    const bool refMode = (dbgV != 0 && dbgV != 59 && dbgV != 60 && dbgV != 61 && dbgV != 62);
     p.rayParams = glm::vec4(refMode ? 0.0f : static_cast<float>(settings.rtRayScale),
                             settings.rtRayContribMin,
                             (settings.rtSingleRay && !refMode) ? 1.0f : 0.0f,

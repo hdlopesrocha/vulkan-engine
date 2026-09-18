@@ -414,9 +414,10 @@ void SettingsWidget::render() {
             "Tessellation Level Heat",
             "Ray Mask",
             "Depth Source",
-            "Water Brush Id"
+            "Water Brush Id",
+            "Water Compose"
         };
-        static_assert(IM_ARRAYSIZE(debugItems) == 62, "debug combo must cover IDs 0-61");
+        static_assert(IM_ARRAYSIZE(debugItems) == 63, "debug combo must cover IDs 0-62");
         // Clamp stale/out-of-range IDs instead of indexing out of bounds.
         int current = settings.debugMode;
         if (current < 0 || current >= IM_ARRAYSIZE(debugItems)) current = 0;
@@ -427,8 +428,8 @@ void SettingsWidget::render() {
             settings.debugMode = current;
             // Single owner of both IDs: raster shows the view via debugMode,
             // the RT pipeline via rtDebugView (0 = normal RT rendering).
-            // 59-61 are pure diagnostics (no reference forcing downstream).
-            const bool isRtView = (current >= 50 && current <= 57) || (current >= 59 && current <= 61);
+            // 59-62 are pure diagnostics (no reference forcing downstream).
+            const bool isRtView = (current >= 50 && current <= 57) || (current >= 59 && current <= 62);
             settings.rtDebugView = isRtView ? current : 0;
         }
 

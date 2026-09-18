@@ -29,11 +29,14 @@ void main() {
     float ndl = (meta.maxAndFlags.w > 0.5)
         ? max(dot(vec3(0.0, 1.0, 0.0), sunDir), 0.0)
         : max(dot(N, sunDir), 0.0);
-    vec3 albedo = meta.albedoRough.rgb;
-    // Water proxies (flags=1): the flat tint alone is near-black — a water
-    // surface mostly reflects the SKY (Fresnel grows toward grazing), so
-    // blend it in for visibility (mirrors main.frag/water.frag).
+    vec3 tint = meta.albedoRough.rgb;
+    // Water proxies (flags=1): blend the SKY into the flat tint (Fresnel grows
+    // toward grazing). The sky part is a SURFACE mirror and must NOT be
+    // multiplied by the sun term — sunlighting the whole mix turned proxies
+    // near-black in shadow/grazing, the dark band along the shoreline.
     vec3 dir = normalize(gl_WorldRayDirectionEXT);
+    vec3 skyR = vec3(0.0);
+    float skyMix = 0.0;
     if (meta.maxAndFlags.w > 0.5) {
         // Own-body guard: a box containing the ray origin is the fragment's
         // own lake surface (the ray starts inside it) — a flat water surface
@@ -41,28 +44,30 @@ void main() {
         vec3 o = gl_WorldRayOriginEXT;
         bool ownBody = (o.x >= meta.minAndMatId.x && o.x <= meta.maxAndFlags.x &&
                         o.z >= meta.minAndMatId.z && o.z <= meta.maxAndFlags.z);
-        vec3 skyR = texture(skyEquirectTex, rtDirToEquirectUV(dir)).rgb;
+        skyR = texture(skyEquirectTex, rtDirToEquirectUV(dir)).rgb;
         if (ownBody) {
-            albedo = skyR;
+            skyMix = 1.0;
         } else {
             // Transparent water look: the water's own tint dominates, with a
             // hint of sky. No recursive reflection/refraction.
-            albedo = mix(albedo, skyR, 0.2);
+            skyMix = 0.2;
             // Soft top edge: rays that graze the wall's top alternate between
             // hitting the wall (water) and passing over it (sky) as the
             // camera moves — a hard switch that flickers. Fade toward the sky
             // near the top so the boundary is continuous.
             float topFade = smoothstep(
                 meta.maxAndFlags.y - 15.0, meta.maxAndFlags.y, hitPos.y);
-            albedo = mix(albedo, skyR, topFade);
+            skyMix = mix(skyMix, 1.0, topFade);
         }
     }
-    // Ambient + sun diffuse, plus a fixed sky-ambient fill so upward-facing
-    // underwater surfaces keep plausible brightness instead of crushing to
-    // black under Beer-Lambert (proxy albedo has no sky light otherwise).
+    // Ambient + sun diffuse, plus a sky-ambient fill scaled like the raster's
+    // (albedo * ambient) so reflections read as lit scenery, not dark plates.
     // Shadows stay CSM-owned (§2/§21): RT hits do not recompute the macro
     // sun-shadow solution.
-    vec3 color = albedo * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.09, 0.12, 0.15));
+    vec3 litTint = tint * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.26));
+    vec3 color = (meta.maxAndFlags.w > 0.5)
+        ? mix(litTint, skyR, clamp(skyMix, 0.0, 1.0))
+        : litTint;
     // Coarse boxes (huge flat tops in the far field) cannot resolve shallow
     // detail. Report the raw hit plus a feather factor; rgen blends toward
     // deep/sky smoothly so box-size contours never print as razor lines.
