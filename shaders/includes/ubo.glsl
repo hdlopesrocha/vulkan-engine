@@ -50,7 +50,7 @@ layout(set = 0, binding = 6) uniform SkyUBO {
 } sky;
 
 layout(set = 0, binding = 10) uniform WaterRenderUBO {
-    vec4 timeParams;
+    vec4 timeParams; // x=waterTime, y=water refraction allowed, z=water reflection allowed, w=unused
 } waterRenderUBO;
 
 

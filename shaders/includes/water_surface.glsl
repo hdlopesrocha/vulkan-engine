@@ -584,13 +584,14 @@ void shadeWaterSurface() {
     // Feature toggles
     bool enableReflection = wp.reserved1.x > 0.5;
     bool enableRefraction = wp.reserved1.y > 0.5;
-#ifdef RT_ENABLED
-    // The global refraction toggle disables the raster fallback too: with RT
-    // refractions off the water must not keep sampling a Snell-bent, Perlin-
-    // distorted sky (which still read as refraction). Water reflections keep
-    // their sky fallback (the mirror is still a mirror without the RT ray).
-    enableRefraction = enableRefraction && (rt.toggles.y > 0.5);
-#endif
+    // Global ray-path gates from Settings, delivered via the water render UBO
+    // so they apply in BOTH fragment variants (the non-RT variant has no `rt`
+    // block). Refraction off must mean NO refraction at all — including the
+    // Snell/Perlin sky fallback that previously kept rendering.
+    enableRefraction = enableRefraction && (waterRenderUBO.timeParams.y > 0.5);
+    // Reflection stays ON with the RT ray off: the mirror falls back to the
+    // sky equirect (sky-only reflection), which is the requested raster
+    // behavior. The ray itself is gated at the trace site (`rt.rayParams.w`).
     // During 360 cubemap capture, skip reflection/refraction to avoid feedback.
     const bool captureMode = ubo.materialFlags.x > 0.5;
     if (captureMode) { enableReflection = false; enableRefraction = false; }
@@ -1488,6 +1489,9 @@ void shadeWaterSurface() {
     // skipped so the water stays visible via the transparency floor above.
     float thicknessFrac = clamp(thicknessForAlpha / 3.0, 0.0, 1.0); // ~3 m -> opaque
     float alpha = mix(1.0, thicknessFrac, clamp(transparency, 0.0, 1.0));
+    // Refraction off keeps the surface TRANSPARENT: the (undistorted) solid
+    // bottom must stay visible through the water via the composite alpha
+    // blend. Only the refraction distortion/Snell path is disabled above.
     // The Fresnel surface mirror is not volume translucency: a strong mirror
     // (grazing angles) must composite even where the water is thin, or
     // shallows and puddles lose their sky entirely (real puddles mirror!).

@@ -2331,8 +2331,14 @@ public:
                     const bool waterRtNeeded =
                         (settings.rtWaterReflections && anyLayerRefl) ||
                         (settings.rtRefractions && anyLayerRefr);
-                    if (this->sceneRenderer->mainLiquidRenderer)
+                    if (this->sceneRenderer->mainLiquidRenderer) {
                         this->sceneRenderer->mainLiquidRenderer->setRtShadingEnabled(waterRtNeeded);
+                        // Global path gates delivered via the water render UBO:
+                        // they apply in both fragment variants, so "refraction
+                        // off" really disables the sky fallback too.
+                        this->sceneRenderer->mainLiquidRenderer->setRtFeatureFlags(
+                            settings.rtWaterReflections, settings.rtRefractions);
+                    }
 
                     if (slot.waterDs2 != VK_NULL_HANDLE) {
                         VkImageView wsky = (this->sceneRenderer->skyRenderer)

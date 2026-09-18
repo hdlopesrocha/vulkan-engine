@@ -260,7 +260,9 @@ void WaterWidget::render() {
         ImGui::Text("Refraction");
         ColSeparator();
         CheckboxField("Enable Refraction", &layerParams.enableRefraction,
-            "Toggle Perlin noise-based refraction distortion on the underwater scene.");
+            "Toggle Perlin noise-based refraction distortion on the underwater scene.\n"
+            "Off = no distortion/Snell look: the water stays transparent and the\n"
+            "solid bottom renders through it undistorted.");
         SliderFloatField("Refraction Strength", &layerParams.refractionStrength, 0.0f, 0.5f);
         SliderFloatField("Transparency", &layerParams.transparency, 0.0f, 1.0f);
         SliderFloatField("Water Tint", &layerParams.waterTint, 0.0f, 1.0f);

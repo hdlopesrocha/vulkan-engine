@@ -1368,6 +1368,22 @@ void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint3
     endWaterGeometryPassWithDepth(cmd, frameIndex);
 }
 
+void WaterRenderer::setRtFeatureFlags(bool reflections, bool refractions) {
+    rtReflectionsEnabled_ = reflections;
+    rtRefractionsEnabled_ = refractions;
+    // Write through immediately (read-modify-write keeps the time): the
+    // water-in-main path renders without calling renderPass(), so it relies
+    // on these flags already being in the UBO.
+    if (waterRenderUBO_.buffer == VK_NULL_HANDLE) return;
+    void* data = waterRenderUBO_.map(0);
+    if (data) {
+        auto* ubo = static_cast<WaterRenderUBO*>(data);
+        ubo->timeParams.y = refractions ? 1.0f : 0.0f;
+        ubo->timeParams.z = reflections ? 1.0f : 0.0f;
+    }
+    waterRenderUBO_.unmap();
+}
+
 void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
                                bool waterWireframeEnabled, float waterTime, VkImageView skyView,
                                VkDescriptorSet overrideWaterDs, bool drawBrushLiquid) {
@@ -1376,10 +1392,14 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
         return;
     }
 
-    // Update the water render UBO with the active layer time value.
+    // Update the water render UBO with the active layer time value and the
+    // global ray-path gates (readable from both fragment variants).
     if (waterRenderUBO_.buffer != VK_NULL_HANDLE) {
         WaterRenderUBO renderUbo{};
-        renderUbo.timeParams = glm::vec4(waterTime, 0.0f, 0.0f, 0.0f);
+        renderUbo.timeParams = glm::vec4(waterTime,
+                                         rtRefractionsEnabled_ ? 1.0f : 0.0f,
+                                         rtReflectionsEnabled_ ? 1.0f : 0.0f,
+                                         0.0f);
         void* data = nullptr;
         data = waterRenderUBO_.map(0);
         memcpy(data, &renderUbo, sizeof(WaterRenderUBO));
