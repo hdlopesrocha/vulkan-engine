@@ -110,7 +110,8 @@ void SettingsWidget::render() {
                        "Per-material 'Enable Reflection' still gates each water layer.");
         if (ImGui::Checkbox("RT refractions", &settings.rtRefractions)) {
         }
-        TooltipOnHover("Water refraction via Snell IOR (the same ray also carries RT thickness).");
+        TooltipOnHover("Water refraction via Snell IOR (the same ray also carries RT thickness).\n"
+                       "Off = NO water refraction at all: the sky-fallback bent ray is disabled too.");
         if (ImGui::Checkbox("RT water thickness", &settings.rtThickness)) {
         }
         TooltipOnHover("Use the refraction ray's path length as water thickness + Beer-Lambert absorption.\n"

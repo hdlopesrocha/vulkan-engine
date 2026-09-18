@@ -584,6 +584,13 @@ void shadeWaterSurface() {
     // Feature toggles
     bool enableReflection = wp.reserved1.x > 0.5;
     bool enableRefraction = wp.reserved1.y > 0.5;
+#ifdef RT_ENABLED
+    // The global refraction toggle disables the raster fallback too: with RT
+    // refractions off the water must not keep sampling a Snell-bent, Perlin-
+    // distorted sky (which still read as refraction). Water reflections keep
+    // their sky fallback (the mirror is still a mirror without the RT ray).
+    enableRefraction = enableRefraction && (rt.toggles.y > 0.5);
+#endif
     // During 360 cubemap capture, skip reflection/refraction to avoid feedback.
     const bool captureMode = ubo.materialFlags.x > 0.5;
     if (captureMode) { enableReflection = false; enableRefraction = false; }
