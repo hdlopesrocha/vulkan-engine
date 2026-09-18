@@ -43,8 +43,8 @@ void WaterWidget::render() {
             ImGuiHelpers::SetTooltipIfHovered("Overall vertical amplitude of the wave displacement (world units).");
             ImGui::SliderFloat("Wave Speed", &layerParams.waveSpeed, 0.0f, 30.0f, "%.2f");
             ImGuiHelpers::SetTooltipIfHovered("Deep-water phase speed of the primary swell (m/s).");
-            ImGui::SliderFloat("Wave Frequency", &layerParams.waveFrequency, 0.001f, 1.0f, "%.4f");
-            ImGuiHelpers::SetTooltipIfHovered("Primary swell spatial frequency (rad/m). Wavelength = 2*pi/frequency.");
+            ImGui::SliderFloat("Wave Period", &layerParams.wavePeriod, 5.0f, 500.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Primary swell wavelength (world units). Larger = longer, slower waves.");
             ImGui::SliderFloat("Shore Direction (deg)", &layerParams.shoreWaveAngle, 0.0f, 360.0f, "%.1f");
             ImGuiHelpers::SetTooltipIfHovered("FALLBACK wave propagation direction toward the shore.\n"
                                               "The shader normally derives the local shore direction from the\n"
@@ -57,7 +57,8 @@ void WaterWidget::render() {
                                               "0 = disable the gradient and always use the fixed Shore Direction angle.");
             ImGui::Separator();
             ImGui::Text("Cross swell (breaks up the crest lines)");
-            ImGui::SliderFloat("Cross Frequency", &layerParams.crossWaveFrequency, 0.001f, 2.0f, "%.4f");
+            ImGui::SliderFloat("Cross Period", &layerParams.crossWavePeriod, 2.0f, 250.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Cross train wavelength (world units).");
             ImGui::SliderFloat("Cross Speed", &layerParams.crossWaveSpeed, 0.0f, 30.0f, "%.2f");
             ImGui::SliderFloat("Cross Amplitude", &layerParams.crossWaveAmplitude, 0.0f, 2.0f, "%.2f");
             ImGui::SliderFloat("Cross Phase Offset", &layerParams.crossWavePhase, -256.0f, 256.0f, "%.1f");
@@ -98,6 +99,11 @@ void WaterWidget::render() {
             ImGuiHelpers::SetTooltipIfHovered("Amplitude decay exponent between the breaker line and the shallow zone.");
             ImGui::SliderFloat("Line Wave Amplitude", &layerParams.waveLineAmplitude, 0.0f, 1.0f, "%.3f");
             ImGuiHelpers::SetTooltipIfHovered("Residual shore line wave height fraction below the shallow zone.");
+            ImGui::SliderFloat("Height Falloff", &layerParams.waveHeightFalloff, 0.0f, 4.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Global depth taper of the wave height for ALL waves:\n"
+                                              "pow(depth / Zone Deep, falloff), so the height decreases\n"
+                                              "from full in the deep zone to 0 at the waterline.\n"
+                                              "0 = disabled (the zone envelope alone shapes the height).");
             ImGui::SliderFloat("Breaker Amplitude", &layerParams.breakerAmplitude, 0.0f, 3.0f, "%.2f");
             ImGuiHelpers::SetTooltipIfHovered("Extra crest height concentrated at the breaker line.");
             ImGui::SliderFloat("Breaker Width", &layerParams.breakerWidth, 0.1f, 128.0f, "%.1f");
@@ -118,7 +124,8 @@ void WaterWidget::render() {
         // ── Organic calm patches ──
         if (ImGui::CollapsingHeader("Organic Mask")) {
             ImGui::TextWrapped("Low-frequency noise mask: in calm patches the wave amplitude can drop to zero.");
-            ImGui::SliderFloat("Mask Scale", &layerParams.waveMaskScale, 0.0f, 0.2f, "%.4f");
+            ImGui::SliderFloat("Mask Period", &layerParams.waveMaskPeriod, 10.0f, 2000.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Calm-patch feature period (world units). Larger = broader patches.");
             ImGui::SliderFloat("Mask Threshold", &layerParams.waveMaskThreshold, 0.0f, 1.0f, "%.3f");
             ImGui::SliderFloat("Mask Softness", &layerParams.waveMaskSoftness, 0.0f, 1.0f, "%.3f");
             ImGui::SliderFloat("Mask Speed", &layerParams.waveMaskSpeed, 0.0f, 1.0f, "%.3f");
@@ -134,6 +141,17 @@ void WaterWidget::render() {
             ImGui::SliderFloat("Trail Lag", &layerParams.foamTrailPhase, 0.0f, 2.0f, "%.3f");
             ImGuiHelpers::SetTooltipIfHovered("Lag of the trailing foam band behind the ridged crest\n"
                                               "(ridge-feature units; 1 = one crest feature).");
+            ImGui::SliderFloat("Foam Edge", &layerParams.foamEdge, 0.0f, 1.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Hardness of the foam mask edges.\n"
+                                              "0 = soft gradients, 1 = hard, well-defined foam edges.");
+            ImGui::SliderFloat("Foam Coverage", &layerParams.foamCoverage, 0.0f, 1.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Global foam coverage multiplier (lighter/airier foam < 1).");
+            ImGui::SliderFloat("Foam Shore Speed", &layerParams.foamShoreSpeed, 0.0f, 1.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Foam advection speed factor at the shoreline (1 = same as\n"
+                                              "the breaker). Foam races off the curl and slows near shore.");
+            ImGui::SliderFloat("Foam Lag Growth", &layerParams.foamLagGrowth, 0.0f, 6.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("How much the trailing foam falls behind the lip as the wave\n"
+                                              "approaches the shore.");
             ImGui::SliderFloat("Foam Decay", &layerParams.foamDecay, 0.0f, 0.5f, "%.4f");
             ImGuiHelpers::SetTooltipIfHovered("Foam extinction per meter below the breaker line.");
             ImGui::SliderFloat("Shore Foam", &layerParams.foamShoreAmount, 0.0f, 1.0f, "%.3f");
@@ -145,8 +163,13 @@ void WaterWidget::render() {
             ImGui::SliderFloat("Contact Opacity", &layerParams.foamContactAlpha, 0.0f, 1.0f, "%.3f");
             ImGuiHelpers::SetTooltipIfHovered("Minimum composite opacity forced for the contact line so the\n"
                                               "last water pixels still render foam.");
+            ImGui::SliderFloat("Contact Pulse Floor", &layerParams.foamContactFloor, 0.0f, 1.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Residual contact-foam strength between incoming crests.\n"
+                                              "0 = the line fully retreats and arrives with each wave,\n"
+                                              "1 = continuous line.");
             ImGui::Separator();
-            ImGui::SliderFloat("Foam Noise Scale", &layerParams.foamNoiseScale, 0.0f, 2.0f, "%.3f");
+            ImGui::SliderFloat("Foam Noise Period", &layerParams.foamNoisePeriod, 1.0f, 200.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Foam breakup feature period (world units).");
             ImGui::SliderFloat("Foam Noise Speed", &layerParams.foamNoiseSpeed, 0.0f, 2.0f, "%.3f");
             ImGui::SliderFloat("Foam Noise Amount", &layerParams.foamNoiseAmount, 0.0f, 1.0f, "%.3f");
             ImGui::SliderFloat("Foam Mask Floor", &layerParams.foamMaskFloor, 0.0f, 1.0f, "%.3f");
@@ -156,7 +179,9 @@ void WaterWidget::render() {
 
         // ── Noise detail (chop + refraction + specular) ──
         if (ImGui::CollapsingHeader("Noise Detail")) {
-            ImGui::SliderFloat("Noise Scale", &layerParams.noiseScale, 0.01f, 4.0f, "%.3f");
+            ImGui::SliderFloat("Noise Period", &layerParams.noisePeriod, 0.25f, 100.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Chop/refraction/specular noise feature period (world units).\n"
+                                              "Larger = broader noise, 0 = disabled.");
             ImGui::SliderInt("Noise Octaves", &layerParams.noiseOctaves, 1, 8);
             ImGui::SliderFloat("Noise Persistence", &layerParams.noisePersistence, 0.1f, 0.9f);
             ImGui::SliderFloat("Noise Lacunarity", &layerParams.noiseLacunarity, 1.0f, 4.0f);

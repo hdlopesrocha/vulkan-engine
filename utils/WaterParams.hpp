@@ -19,7 +19,9 @@ struct WaterParams {
     int noiseOctaves = 4;
     float noisePersistence = 0.5f;
     float noiseLacunarity = 2.0f;
-    float noiseScale = 0.4f;
+    // Noise feature PERIOD in world units (the shader converts to spatial
+    // scale = 1 / period when packing to the GPU). Larger = broader features.
+    float noisePeriod = 2.5f;
     float waterTint = 0.3f;
     float noiseTimeSpeed = 1.0f;
 
@@ -113,7 +115,7 @@ struct WaterParams {
     float zoneShallowDepth = 32.0f; // below : line wave decaying to 0 at shore
 
     // Swell shape
-    float waveFrequency = 0.10f;    // primary swell (rad/m): ~63 m wavelength
+    float wavePeriod = 62.83f;      // primary swell wavelength (world units)
     float waveSharpDeep = 2.5f;     // crest sharpness in deep water
     float waveSharpBreak = 4.5f;    // crest sharpness at the break line
     float waveSharpShallow = 1.5f;  // crest sharpness in the shore band
@@ -121,6 +123,11 @@ struct WaterParams {
     float waveShoalSpeed = 0.6f;    // celerity drop with depth [0..1]
     float waveShallowDecay = 1.5f;  // amplitude decay exponent, break -> shallow
     float waveLineAmplitude = 0.25f;// residual line-wave height fraction
+    // Global depth taper of the wave HEIGHT for every component (trains, chop
+    // and curl): pow(clamp(depth / zoneDeepDepth, 0, 1), falloff) so the
+    // height falls monotonically from the deep zone down to 0 at the shore.
+    // 0 = disabled (the zone envelope alone shapes the height).
+    float waveHeightFalloff = 1.0f;
     float breakerAmplitude = 0.6f;  // extra crest height at the break line
     float breakerWidth = 10.0f;     // depth half-width of the breaker bump
     // Curly plunging-breaker shape (active only where the wave is breaking):
@@ -146,7 +153,7 @@ struct WaterParams {
     // Second shoreward train (different scale/speed; breaks up the crest
     // lines). It reuses the SAME shore movement as the primary train — the
     // phase offset just shifts it along the shore direction.
-    float crossWaveFrequency = 0.21f;
+    float crossWavePeriod = 29.91f; // cross train wavelength (world units)
     float crossWaveSpeed = 4.5f;
     float crossWaveAmplitude = 0.4f;
     float crossWavePhase = 0.0f;    // offset along the shore direction (world units)
@@ -165,30 +172,45 @@ struct WaterParams {
 
     // Organic amplitude mask: low-frequency noise that can remove waves
     // entirely in patches (some places stay calm).
-    float waveMaskScale = 0.002f;
+    float waveMaskPeriod = 500.0f;
     float waveMaskThreshold = 0.5f;
     float waveMaskSoftness = 0.18f;
-    float waveMaskSpeed = 1.0f;
+    float waveMaskSpeed = 0.05f;
 
     // Foam (whitewater) look
     float foamCrestThreshold = 0.65f; // crest height where foam appears
     float foamTrailPhase = 1.0f;      // phase lag of the trailing foam band
-    float foamDecay = 0.03f;          // foam extinction per meter below break
+    float foamDecay = 1.0f/1024.0f;          // foam extinction per meter below break
     float foamColorAmount = 0.9f;     // max foam color mix
-    float foamNoiseScale = 0.25f;     // broken-up texture scale
+    float foamNoisePeriod = 16.0f;    // texture feature period (world units)
     float foamNoiseSpeed = 0.15f;     // texture advection speed
-    float foamNoiseAmount = 0.6f;     // how strongly noise breaks the foam
-    float foamShoreAmount = 0.5f;     // persistent foam line near the shore
+    float foamNoiseAmount = 0.8f;     // how strongly noise breaks the foam
+    float foamShoreAmount = 0.75f;     // persistent foam line near the shore
     // Shoreline contact foam: the final line where the water meets the solid.
     // Peaks at zero depth and falls off over foamContactWidth; the fragment
     // stage forces the composite alpha up for it so the last visible water
     // pixels still render the line.
-    float foamContactWidth = 4.0f;    // depth falloff band (world units)
+    float foamContactWidth = 8.0f;    // depth falloff band (world units)
     float foamContactAmount = 1.0f;   // line strength [0..1]
     float foamContactAlpha = 0.85f;   // minimum composite opacity of the line
+    // The contact line arrives in waves: each crest pushes it up the shore and
+    // it recedes between them. Residual strength kept between crests
+    // (0 = fully retreats, 1 = continuous line).
+    float foamContactFloor = 0.15f;
     float foamMaskFloor = 0.35f;      // foam left where the wave mask is 0
-    float foamDiffuseFloor = 0.25f;   // ambient foam lighting floor
-    float foamAmbient = 0.08f;        // constant ambient added to foam
+    // Foam shape / motion:
+    //  - edge: 0 = soft gradients, 1 = hard, well-defined foam edges
+    //  - coverage: global foam coverage multiplier (lighter foam < 1)
+    //  - shoreSpeed: foam advection speed factor at the shoreline (1 at the
+    //    breaker): foam races off the curl, then slows as it nears the shore
+    //  - lagGrowth: how much the trailing foam falls behind the lip as the
+    //    wave approaches the shore
+    float foamEdge = 0.65f;
+    float foamCoverage = 0.65f;
+    float foamShoreSpeed = 0.25f;
+    float foamLagGrowth = 1.5f;
+    float foamDiffuseFloor = 0.4f;    // ambient foam lighting floor
+    float foamAmbient = 0.12f;        // constant ambient added to foam
     glm::vec3 foamColor = glm::vec3(1.0f);
 
     // Deep-ocean tint: third color stop reached beyond oceanColorStart

@@ -632,7 +632,7 @@ public:
             wp.enableRefraction = false;
             wp.noiseOctaves = 0;
             wp.waveScale = 0.0f;
-            wp.noiseScale = 0.0f;
+            wp.noisePeriod = 0.0f;
             wp.deepColor = glm::vec3(0.0f, 0.0f, 0.0f);
             wp.causticColor = glm::vec3(1.0f, 1.0f, 1.0f);
             wp.shallowColor = glm::vec3(1.0f, 1.0f, 1.0f);
@@ -2382,7 +2382,18 @@ public:
                         // DEPTH_STENCIL_ATTACHMENT (VUID layout mismatch)).
                         // Outputs feed NEXT frame's water shading (1-frame
                         // latency, same-queue ordered). Own timestamps (20-21).
-                        if (this->sceneRenderer->rayTracing &&
+                        // Skip the whole dispatch when no water material has RT
+                        // reflection or refraction enabled: the outputs would be
+                        // sampled by nobody (per-layer toggles gate the lobes).
+                        bool waterRtNeeded = false;
+                        for (const WaterParams& wp : waterParams) {
+                            if (wp.enableReflection || wp.enableRefraction) {
+                                waterRtNeeded = true;
+                                break;
+                            }
+                        }
+                        if (waterRtNeeded &&
+                            this->sceneRenderer->rayTracing &&
                             this->sceneRenderer->rayTracing->isPipelineReady() &&
                             settings.rtWaterPipeline && settings.waterEnabled) {
                             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)

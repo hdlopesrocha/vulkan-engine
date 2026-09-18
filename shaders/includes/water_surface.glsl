@@ -1156,8 +1156,9 @@ void shadeWaterSurface() {
     // pipeline's reflection is never used as the color — its flat-sky/slab
     // output at the shoreline was the "reflection missing at the shore"
     // report, and the migration plan deletes the pipeline in Phase 3. The
-    // pipe texel is still sampled so DEBUG_MODE_RAY_MASK keeps reporting pipe coverage.
-    if (usePipe && rt.toggles.x > 0.5) {
+    // pipe texel is still sampled so DEBUG_MODE_RAY_MASK keeps reporting pipe
+    // coverage — but only while the layer's Reflection toggle is on.
+    if (enableReflection && usePipe && rt.toggles.x > 0.5) {
         vec4 pipeRefl = textureLod(rtReflectTex, screenUV, 0.0);
         if (pipeRefl.a > 0.5) reflMaskDbg = 2.0;
     }
@@ -1165,12 +1166,14 @@ void shadeWaterSurface() {
     // A skipped mirror is a missing mirror (exactly the shore bug), so the
     // xor/checkerboard cuts no longer apply to the reflection lobe: every
     // pixel that can trace does trace. Reference mode clears the gate.
+    // The per-layer Reflection toggle disables the lobe entirely: no pipe
+    // sample, no inline ray, no SSR fallback (capture mode forces it off too).
     bool reflBudgetSkip = (reflContribEst < waterContribMin);
     if (waterRefMode) reflBudgetSkip = false;
     bool reflDidTrace = false;
     vec4 reflHit = vec4(0.0);
     vec3 reflOrigin = vec3(0.0);
-    if (!reflBudgetSkip && rtReady && rt.toggles.x > 0.5) {
+    if (enableReflection && !reflBudgetSkip && rtReady && rt.toggles.x > 0.5) {
         // Origin on the UNDISPLACED base surface, biased along the base
         // normal (mirrors main.frag): the BLAS holds the undisplaced CPU
         // mesh, so tracing from the displaced (tessellated wave) surface

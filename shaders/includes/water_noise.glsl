@@ -127,6 +127,15 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     float zShallow = clamp(wp.waveZones.z, 0.0, zBreak);
     float d = (depth < 0.0) ? zDeep : max(depth, 0.0);
 
+    // Global depth taper of the wave HEIGHT: full in the deep zone, falling
+    // monotonically to 0 at the waterline, applied to EVERY component (both
+    // ridged trains, the chop and the curl). 0 disables it so the zone
+    // envelope alone shapes the height.
+    float heightFalloff = max(wp.waveBreaker.w, 0.0);
+    float heightTaper = (heightFalloff > 0.0)
+        ? pow(clamp(d / zDeep, 0.0, 1.0), heightFalloff)
+        : 1.0;
+
     // ── Thickness zones: amplitude, crest sharpness, shoaling celerity and
     //    breaker activity. ──
     float env;         // amplitude envelope
@@ -283,7 +292,7 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         gxz += chopAmount * chopGrad;
     }
 
-    float finalAmp = amp * env * mask;
+    float finalAmp = amp * env * mask * heightTaper;
     f.height = finalAmp * h;
     f.grad = vec3(finalAmp * gxz.x, 0.0, finalAmp * gxz.y);
 
@@ -291,27 +300,41 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     //    fades with depth; a residual line survives on the shallow band until
     //    the line wave reaches the waterline. ──
     if (withFoam && wp.waveToggles.y > 0.5) {
-        float thr = clamp(wp.foamParams.x, 0.0, 0.999);
+        float thr = clamp(wp.foamParams.x, 0.0, 0.98);
         float trailPhase = wp.foamParams.y;
-        // Crest coverage = ridged value. The trailing band is a first-order
-        // lag of the ridge behind the crest along the propagation direction
-        // (uses the analytic along-shore slope, no extra noise evaluation).
-        // Foam rides the leaning lip: use the skewed crest profiles so the
-        // whitewater sits on the curled face, peaking at the break line.
+        float lagGrowth = max(wp.foamShape.w, 0.0);
+        // Defined foam edges: the threshold window narrows with Edge hardness.
+        float edgeW = mix(0.35, 0.01, clamp(wp.foamShape.x, 0.0, 1.0));
+        float thrHi = max(min(thr + edgeW, 1.0), thr + 1e-3);
+
+        // Foam sits AFTER the curled lip: the trailing band is a first-order
+        // lag of the SKEWED crest profile behind the crest, along the shore
+        // direction, and the lag grows as the wave approaches the shore so the
+        // foam falls behind (decelerates). Gradients are the analytic
+        // d(prof)/dx = 2*ds*g, so no extra noise evaluation is needed.
         float crest = clamp(0.5 + 0.5 * max(prof1, prof2), 0.0, 1.0);
-        float trail1 = clamp(r1.x - dot(g1, shoreDir) * (trailPhase / k1), 0.0, 1.0);
-        float trail2 = clamp(r2.x - dot(g2, shoreDir) * (trailPhase / k2), 0.0, 1.0);
-        float trail = max(trail1, trail2);
-        float whitecap = smoothstep(thr, 1.0, crest) * breaking;
-        float trailing = smoothstep(thr, 1.0, trail) * breaking * breaking;
+        float lag1 = (trailPhase / k1) * (1.0 + lagGrowth * shoreBand);
+        float lag2 = (trailPhase / k2) * (1.0 + lagGrowth * shoreBand);
+        float trailProf1 = clamp(prof1 - dot(2.0 * ds1 * g1, shoreDir) * lag1, -1.0, 1.0);
+        float trailProf2 = clamp(prof2 - dot(2.0 * ds2 * g2, shoreDir) * lag2, -1.0, 1.0);
+        float trail = max(0.5 + 0.5 * trailProf1, 0.5 + 0.5 * trailProf2);
+
+        float whitecap = smoothstep(thr, thrHi, crest) * breaking;
+        float trailing = smoothstep(thr, thrHi, trail) * breaking * breaking;
         float foam = max(whitecap, trailing);
         // Shoreline contact foam: the final line where the water meets the
-        // solid. It peaks at zero depth (the last point of contact) and falls
-        // off over the configured width; the foam noise/mask break it up
-        // below, and the fragment stage forces the composite alpha up for it
-        // so the last water pixels render the line.
-        float contact = (1.0 - smoothstep(0.0, max(wp.foamContact.x, 1e-3), d))
-                      * clamp(wp.foamContact.y, 0.0, 1.0);
+        // solid. It arrives IN WAVES: each incoming crest pushes the line
+        // further up the shore (wider band) and strengthens it, then it
+        // recedes to the configured floor between crests. The foam noise/mask
+        // break it up below, and the fragment stage forces the composite alpha
+        // up for it so the last water pixels render the line.
+        float contactWave = max(crest, trail);
+        float contactPulse = mix(clamp(wp.foamContact.w, 0.0, 1.0), 1.0,
+                                 smoothstep(thr, thrHi, contactWave));
+        float contactWidth = max(wp.foamContact.x, 1e-3) * (0.5 + 0.5 * contactWave);
+        float contact = (1.0 - smoothstep(0.0, contactWidth, d))
+                      * clamp(wp.foamContact.y, 0.0, 1.0)
+                      * contactPulse;
         if (d < zBreak) {
             // Extinction with distance below the break line.
             foam *= exp(-(zBreak - d) * max(wp.foamParams.z, 0.0));
@@ -320,11 +343,15 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
             float shoreFade = (d < zShallow)
                 ? clamp(d / max(zShallow, 1e-3), 0.0, 1.0) : 1.0;
             foam = max(foam, wp.foamNoise.w * shoreBand * shoreFade *
-                smoothstep(thr, 1.0, trail));
+                smoothstep(thr, thrHi, trail));
         }
-        // Broken-up foam texture, advected with the same shore movement.
+        // Broken-up foam texture. The foam advects at its own speed profile:
+        // fast at/after the curl, decaying toward the shore (foamShoreSpeed),
+        // so whitewater races off the breaker and slows as it runs up.
         if (wp.foamNoise.z > 0.0) {
-            float fn = waterFbmNoise(xyz - shoreDrift, wp.foamNoise.x, time, wp.foamNoise.y,
+            float foamSpeedRel = mix(1.0, clamp(wp.foamShape.z, 0.0, 1.0), shoreBand);
+            vec3 foamDrift = shoreDir3 * (c1 * speedFactor * foamSpeedRel * time);
+            float fn = waterFbmNoise(xyz - foamDrift, wp.foamNoise.x, time, wp.foamNoise.y,
                                      int(max(wp.params2.z, 1.0)), wp.params2.w,
                                      wp.params3.y, vec3(37.0)) * 0.5 + 0.5;
             float fnMix = mix(1.0, fn, clamp(wp.foamNoise.z, 0.0, 1.0));
@@ -335,6 +362,10 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         float maskMix = mix(clamp(wp.foamExtra.x, 0.0, 1.0), 1.0, mask);
         foam *= maskMix;
         contact *= maskMix;
+        // Lighter foam: global coverage multiplier (translucency/airiness).
+        float coverage = clamp(wp.foamShape.y, 0.0, 1.0);
+        foam *= coverage;
+        contact *= coverage;
         f.contact = clamp(contact, 0.0, 1.0);
         f.foam = clamp(max(foam, f.contact), 0.0, 1.0);
     }

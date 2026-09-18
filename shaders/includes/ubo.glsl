@@ -79,14 +79,15 @@ struct WaterParamsGPU {
     vec4 waveShoal;        // x=speed shoal, y=shallow decay, z=line amplitude, w=breaker width
     vec4 waveComponent1;   // x=frequency(rad/m), y=speed(m/s), z=amplitude, w=unused
     vec4 waveComponent2;   // x=cross frequency, y=cross speed, z=cross amp, w=cross phase offset along shore (world units)
-    vec4 waveBreaker;      // x=breaker amplitude, y=chop amount, z=whitecap onset, w=unused
+    vec4 waveBreaker;      // x=breaker amplitude, y=chop amount, z=whitecap onset, w=height falloff exponent
     vec4 waveCurl;         // x=breaker lip skew, y=breaker crest-line hook, zw=unused
     vec4 waveWarp;         // x=crest phase warp(feature units), y=crest amp variation, z=ridge stretch(along/across), w=shore gradient step(texels)
     vec4 waveMask;         // x=scale, y=threshold, z=softness, w=time speed
     vec4 foamParams;       // x=crest threshold, y=trail phase, z=decay/m, w=color amount
     vec4 foamNoise;        // x=scale, y=time speed, z=noise amount, w=shore amount
     vec4 foamExtra;        // x=mask floor, y=diffuse floor, z=ambient, w=unused
-    vec4 foamContact;      // x=contact width(world), y=contact amount, z=contact alpha, w=unused
+    vec4 foamContact;      // x=contact width(world), y=contact amount, z=contact alpha, w=contact pulse floor
+    vec4 foamShape;        // x=edge hardness, y=coverage, z=shore speed factor, w=trail lag growth
     vec4 foamColor;        // rgb=foam color, a=unused
     vec4 oceanColor;       // rgb=deep ocean color, a=ocean tint start depth
     vec4 oceanParams;      // x=ocean depth scale, yzw=unused
