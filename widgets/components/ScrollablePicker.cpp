@@ -4,7 +4,7 @@
 
 namespace ImGuiComponents {
 
-bool ScrollableTexturePicker(const char* id, size_t count, size_t &currentIndex, std::function<ImTextureID(size_t)> getTexture, float thumb, int rows, bool centerOnSelection, bool showTooltip) {
+bool ScrollableTexturePicker(const char* id, size_t count, size_t &currentIndex, std::function<ImTextureID(size_t)> getTexture, float thumb, int rows, bool centerOnSelection, bool showTooltip, float width) {
     if (count == 0) return false;
     bool changed = false;
 
@@ -12,7 +12,7 @@ bool ScrollableTexturePicker(const char* id, size_t count, size_t &currentIndex,
     const float vpad = 8.0f;
     float childH = thumb * std::max(1, rows) + vpad;
     // No horizontal scrollbar by default; items will wrap into rows
-    ImGui::BeginChild(id, ImVec2(0, childH), false, ImGuiWindowFlags_None);
+    ImGui::BeginChild(id, ImVec2(width, childH), false, ImGuiWindowFlags_None);
 
     // compute how many items fit per row based on available width (use item spacing)
     float availX = ImGui::GetContentRegionAvail().x;

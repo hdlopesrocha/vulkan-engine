@@ -14,7 +14,8 @@ namespace ImGuiComponents {
 // - thumb: thumbnail size in pixels (square)
 // - centerOnSelection: if true, the picker will try to keep the selected item centered (may override user scroll)
 // - showTooltip: if true, show a tooltip with the index when hovering
+// - width: explicit child width (0 = fill the remaining window width)
 // Returns true if the selection changed.
-bool ScrollableTexturePicker(const char* id, size_t count, size_t &currentIndex, std::function<ImTextureID(size_t)> getTexture, float thumb = 48.0f, int rows = 1, bool centerOnSelection = false, bool showTooltip = true);
+bool ScrollableTexturePicker(const char* id, size_t count, size_t &currentIndex, std::function<ImTextureID(size_t)> getTexture, float thumb = 48.0f, int rows = 1, bool centerOnSelection = false, bool showTooltip = true, float width = 0.0f);
 
 } // namespace ImGuiComponents
