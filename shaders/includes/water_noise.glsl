@@ -129,15 +129,18 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
 
     // Global depth taper of the wave HEIGHT: full in the deep zone, falling
     // monotonically to 0 at the waterline, applied to EVERY component (both
-    // ridged trains, the chop and the curl). 0 disables it so the zone
-    // envelope alone shapes the height.
+    // ridged trains, the chop and the curl). The smoothstep base gives a
+    // zero-slope fade at BOTH ends, so there is no visible seam where the
+    // taper starts (a raw pow() had a slope jump at zDeep). 0 disables it.
     float heightFalloff = max(wp.waveBreaker.w, 0.0);
     float heightTaper = (heightFalloff > 0.0)
-        ? pow(clamp(d / zDeep, 0.0, 1.0), heightFalloff)
+        ? pow(smoothstep(0.0, zDeep, d), heightFalloff)
         : 1.0;
 
     // ── Thickness zones: amplitude, crest sharpness, shoaling celerity and
-    //    breaker activity. ──
+    //    breaker activity. Every parameter is interpolated with a smoothstep,
+    //    so both the value AND its slope match across zDeep, zBreak and
+    //    zShallow — the fades between zones have no visible seams. ──
     float env;         // amplitude envelope
     float sharp;       // crest sharpness
     float speedFactor; // phase-speed multiplier (1 = deep water)
@@ -154,27 +157,29 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     } else if (d >= zBreak) {
         // Shoaling band: the wave gains height and gets sharper as it
         // approaches the break line; whitecaps ignite toward the end.
-        float t = (zDeep - d) / tBreakDeep;
+        float t = clamp((zDeep - d) / tBreakDeep, 0.0, 1.0);
         float e = t * t * (3.0 - 2.0 * t);
         env = mix(1.0, 1.0 + wp.waveShape.w, e);
-        sharp = mix(wp.waveShape.x, wp.waveShape.y, t);
-        speedFactor = mix(1.0, 1.0 - wp.waveShoal.x, t);
+        sharp = mix(wp.waveShape.x, wp.waveShape.y, e);
+        speedFactor = mix(1.0, 1.0 - wp.waveShoal.x, e);
         breaking = smoothstep(wp.waveBreaker.z, 1.0, t);
         shoreBand = 0.0;
     } else if (d >= zShallow) {
         // After the crash: amplitude decays shoreward, foam rides and fades.
-        float t = (zBreak - d) / tShallowBreak;
+        float t = clamp((zBreak - d) / tShallowBreak, 0.0, 1.0);
+        float e = t * t * (3.0 - 2.0 * t);
         float breakEnv = 1.0 + wp.waveShape.w;
         env = mix(breakEnv, wp.waveShoal.z,
-                  pow(clamp(t, 0.0, 1.0), max(wp.waveShoal.y, 1e-3)));
-        sharp = mix(wp.waveShape.y, wp.waveShape.z, t);
+                  pow(e, max(wp.waveShoal.y, 1e-3)));
+        sharp = mix(wp.waveShape.y, wp.waveShape.z, e);
         speedFactor = 1.0 - wp.waveShoal.x;
-        breaking = 1.0 - t;
-        shoreBand = t;
+        breaking = 1.0 - e;
+        shoreBand = e;
     } else {
         // Residual "line" wave that ends at the waterline (d -> 0).
-        float t = d / max(zShallow, 1e-3);
-        env = wp.waveShoal.z * clamp(t, 0.0, 1.0);
+        float t = clamp(d / max(zShallow, 1e-3), 0.0, 1.0);
+        float e = t * t * (3.0 - 2.0 * t);
+        env = wp.waveShoal.z * e;
         sharp = wp.waveShape.z;
         speedFactor = 1.0 - wp.waveShoal.x;
         breaking = 0.0;
