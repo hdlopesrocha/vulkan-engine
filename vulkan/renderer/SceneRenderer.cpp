@@ -2393,6 +2393,10 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     // thickness alone cannot trace (it rides the refraction ray).
     rayTracing->setRuntimeEnabled(settings.rtReflections || settings.rtWaterReflections
                                   || settings.rtRefractions || settings.rtLocalShadows);
+    // Solid color pass: bind the non-RT fragment variant while neither solid
+    // RT path (reflections / local shadows) is enabled.
+    if (mainSolidRenderer)
+        mainSolidRenderer->setRtShadingEnabled(settings.rtReflections || settings.rtLocalShadows);
     RayTracingParams p{};
     p.toggles = glm::vec4(settings.rtReflections ? 1.0f : 0.0f,
                            settings.rtRefractions ? 1.0f : 0.0f,

@@ -59,8 +59,15 @@ public:
     void setDepthLayout(uint32_t frameIndex, VkImageLayout layout) {
         if (frameIndex < solidDepthImageLayouts.size()) solidDepthImageLayouts[frameIndex] = layout;
     }
-    VkPipeline getGraphicsPipeline() const { return graphicsPipeline; }
+    VkPipeline getGraphicsPipeline() const { return activeGraphicsPipeline(); }
     VkPipelineLayout getGraphicsPipelineLayout() const { return graphicsPipelineLayout; }
+
+    // Runtime RT-shading selector (solid reflections / local shadows). With
+    // both off, the cheap non-RT fragment variant is bound instead of the
+    // ray-query shader, so raster-only configurations never pay its register
+    // pressure/occupancy cost. Both variants are built at init.
+    void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
+    bool rtShadingEnabled() const { return rtShadingEnabled_; }
 
     // Deferred depth test: draw only depth (no color)
     void drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet);
@@ -79,6 +86,17 @@ public:
 
 private:
     
+    // Active solid color pipeline variant (RT fragment while RT shading is on
+    // and the RT variant exists; otherwise the non-RT variant).
+    VkPipeline activeGraphicsPipeline() const {
+        return (rtShadingEnabled_ && graphicsPipelineRt != VK_NULL_HANDLE)
+            ? graphicsPipelineRt.handle : graphicsPipeline.handle;
+    }
+    VkPipeline activeDeferredColorPipeline() const {
+        return (rtShadingEnabled_ && deferredColorPipelineRt != VK_NULL_HANDLE)
+            ? deferredColorPipelineRt.handle : deferredColorPipeline.handle;
+    }
+
     IndirectRenderer indirectRenderer;
     TrackedHandle<VkPipeline> graphicsPipeline;
     TrackedHandle<VkPipelineLayout> graphicsPipelineLayout;
@@ -90,6 +108,11 @@ private:
     TrackedHandle<VkPipelineLayout> deferredDepthPipelineLayout;
     TrackedHandle<VkPipeline> deferredColorPipeline;
     TrackedHandle<VkPipelineLayout> deferredColorPipelineLayout;
+    // RT fragment-shader variants (same configs/layouts; bound only while
+    // solid RT paths are enabled).
+    TrackedHandle<VkPipeline> graphicsPipelineRt;
+    TrackedHandle<VkPipeline> deferredColorPipelineRt;
+    bool rtShadingEnabled_ = true;
     // Brush color pipeline (alpha blending enabled)
     TrackedHandle<VkPipeline> brushDeferredColorPipeline;
     TrackedHandle<VkPipelineLayout> brushDeferredColorPipelineLayout;

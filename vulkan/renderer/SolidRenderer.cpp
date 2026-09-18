@@ -222,13 +222,18 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         VK_SHADER_STAGE_VERTEX_BIT
     );
 
-    // Hybrid RT: the RT variant replaces the 360°-cubemap reflections with
-    // hardware ray queries (same lighting/CSM otherwise). Non-RT hardware
-    // keeps the sky-approximation fallback variant (validation-clean).
-    const char* solidFragPath = app->rayTracingEnabled()
-        ? "shaders/main_rt.frag.spv" : "shaders/main.frag.spv";
+    // Hybrid RT: BOTH fragment variants are built up front — the RT one
+    // (inline ray queries) and the non-RT one (sky-approximation fallback).
+    // The runtime selector binds whichever matches the enabled solid RT paths
+    // (reflections / local shadows), so a raster-only configuration never
+    // pays the ray-query shader's register/occupancy cost.
     ShaderStage fragmentShader = ShaderStage(
-        app->getOrCreateShaderModule(solidFragPath),
+        app->getOrCreateShaderModule("shaders/main.frag.spv"),
+        VK_SHADER_STAGE_FRAGMENT_BIT
+    );
+    ShaderStage fragmentShaderRt = ShaderStage(
+        app->rayTracingEnabled()
+            ? app->getOrCreateShaderModule("shaders/main_rt.frag.spv") : VK_NULL_HANDLE,
         VK_SHADER_STAGE_FRAGMENT_BIT
     );
 
@@ -266,6 +271,26 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     );
     graphicsPipeline = pipeline;
     graphicsPipelineLayout = layout;
+
+    // RT variant of the main solid pipeline (same config; the layout is a
+    // matching duplicate and the bind sites keep using graphicsPipelineLayout).
+    if (fragmentShaderRt.info.module != VK_NULL_HANDLE) {
+        auto [rtPipeline, rtLayout] = app->createGraphicsPipeline(
+            {
+                vertexShader.info,
+                tescShader.info,
+                teseShader.info,
+                fragmentShaderRt.info
+            },
+            std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+            vk_layouts::defaultAttributes(),
+            setLayouts,
+            nullptr,
+            cfg
+        );
+        graphicsPipelineRt = rtPipeline;
+        (void)rtLayout;
+    }
 
     GraphicsPipelineConfig depthCfg{};
     depthCfg.colorWrite = false;
@@ -323,6 +348,19 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         );
         deferredColorPipeline = cp;
         deferredColorPipelineLayout = cl;
+
+        // RT variant of the deferred/forward color pipeline (same config).
+        if (fragmentShaderRt.info.module != VK_NULL_HANDLE) {
+            auto [rtCp, rtCl] = app->createGraphicsPipeline(
+                { vertexShader.info, tescShader.info, teseShader.info, fragmentShaderRt.info },
+                std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+                vk_layouts::defaultAttributes(),
+                setLayouts, nullptr,
+                dcCfg
+            );
+            deferredColorPipelineRt = rtCp;
+            (void)rtCl;
+        }
     }
     {
         // Brush pipeline does not need set=1 (brush depth textures)
@@ -383,6 +421,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     teseShader.info.module = VK_NULL_HANDLE;
     tescShader.info.module = VK_NULL_HANDLE;
     fragmentShader.info.module = VK_NULL_HANDLE;
+    fragmentShaderRt.info.module = VK_NULL_HANDLE;
     vertexShader.info.module = VK_NULL_HANDLE;
 }
 
@@ -393,12 +432,12 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     }
     
     VkPipelineLayout usedLayout = graphicsPipelineLayout;
-    if (graphicsPipeline == VK_NULL_HANDLE) {
+    if (activeGraphicsPipeline() == VK_NULL_HANDLE) {
         std::cerr << "[SolidRenderer::draw] graphicsPipeline is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
-    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, graphicsPipeline);
-    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, activeGraphicsPipeline());
+    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, activeGraphicsPipeline());
 
     // Bind descriptor set 0: main UBO/samplers (perTextureDescriptorSet)
     // and set 1: brush depth textures (brushDepthSet) for PAINT mode.
@@ -456,9 +495,9 @@ void SolidRenderer::drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* appArg,
 }
 
 void SolidRenderer::drawColor(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet descSet, VkDescriptorSet brushDepthSet) {
-    if (!appArg || deferredColorPipeline == VK_NULL_HANDLE) return;
-    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, deferredColorPipeline);
-    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipeline);
+    if (!appArg || activeDeferredColorPipeline() == VK_NULL_HANDLE) return;
+    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, activeDeferredColorPipeline());
+    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, activeDeferredColorPipeline());
     if (descSet != VK_NULL_HANDLE) {
         VkDescriptorSet bindSets[2] = { descSet, brushDepthSet };
         uint32_t bindCount = (brushDepthSet != VK_NULL_HANDLE) ? 2 : 1;
@@ -480,9 +519,9 @@ void SolidRenderer::drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet desc
 }
 
 void SolidRenderer::drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect, VkDescriptorSet brushDepthSet) {
-    if (deferredColorPipeline == VK_NULL_HANDLE) return;
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, deferredColorPipeline);
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipeline);
+    if (activeDeferredColorPipeline() == VK_NULL_HANDLE) return;
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, activeDeferredColorPipeline());
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeDeferredColorPipeline());
     if (descSet != VK_NULL_HANDLE) {
         VkDescriptorSet bindSets[2] = { descSet, brushDepthSet };
         uint32_t bindCount = (brushDepthSet != VK_NULL_HANDLE) ? 2 : 1;
