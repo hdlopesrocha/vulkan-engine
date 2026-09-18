@@ -4,14 +4,15 @@ MAKE_JOBS ?= 8
 
 # Success/error jingles. The mp3s live in sounds/ and are played on build
 # completion and after a run exits. The first available player wins; if none
-# is installed the sounds are silently skipped.
+# is installed the sounds are silently skipped. Playback is asynchronous
+# (nohup + &) so the build/run never waits for the jingle to finish.
 SOUND_DIR := $(CURDIR)/sounds
 define PLAY_SOUND
 { f="$(SOUND_DIR)/$(1).mp3"; if [ -f "$$f" ]; then \
-    if command -v mpv >/dev/null 2>&1; then mpv --really-quiet --no-video "$$f" >/dev/null 2>&1; \
-    elif command -v ffplay >/dev/null 2>&1; then ffplay -nodisp -autoexit -loglevel quiet "$$f" >/dev/null 2>&1; \
-    elif command -v mpg123 >/dev/null 2>&1; then mpg123 -q "$$f" >/dev/null 2>&1; \
-    elif command -v cvlc >/dev/null 2>&1; then cvlc --play-and-exit --intf dummy "$$f" >/dev/null 2>&1; \
+    if command -v mpv >/dev/null 2>&1; then nohup mpv --really-quiet --no-video "$$f" >/dev/null 2>&1 & \
+    elif command -v ffplay >/dev/null 2>&1; then nohup ffplay -nodisp -autoexit -loglevel quiet "$$f" >/dev/null 2>&1 & \
+    elif command -v mpg123 >/dev/null 2>&1; then nohup mpg123 -q "$$f" >/dev/null 2>&1 & \
+    elif command -v cvlc >/dev/null 2>&1; then nohup cvlc --play-and-exit --intf dummy "$$f" >/dev/null 2>&1 & \
     fi; \
 fi; }
 endef
@@ -203,6 +204,7 @@ endef
 # a successful one plays the success jingle. BUILD is forwarded explicitly so
 # `make debug` / `make release` keep their target-specific configuration.
 all:
+	@$(call PLAY_SOUND,start)
 	@$(MAKE) --no-print-directory _all BUILD=$(BUILD) \
 		|| { $(call PLAY_SOUND,error); exit 1; }
 	@$(call PLAY_SOUND,success)
@@ -293,19 +295,21 @@ release: all
 # everything first (AGENTS.md documents these as "build + run"). When the app
 # exits, the success/error jingle reflects its exit status (bash PIPESTATUS
 # keeps the app's code through the tee pipeline).
-run: all
+run: 
 	@echo "Running app from $(OUT_DIR)/"
+	@$(call PLAY_SOUND,start)
 	@mkdir -p logs
 	@cd $(OUT_DIR) && bash -c './app 2>&1 | tee ../logs/run.log; exit $${PIPESTATUS[0]}' \
 		&& $(call PLAY_SOUND,success) \
-		|| { $(call PLAY_SOUND,error); exit 1; }
+		|| $(call PLAY_SOUND,error);
 
 run-debug: debug
 	@echo "Running debug build from $(OUT_DIR)/"
+	@$(call PLAY_SOUND,start)
 	@mkdir -p logs
 	@cd $(OUT_DIR) && bash -c './app 2>&1 | tee ../logs/run.log; exit $${PIPESTATUS[0]}' \
 		&& $(call PLAY_SOUND,success) \
-		|| { $(call PLAY_SOUND,error); exit 1; }
+		|| $(call PLAY_SOUND,error);
 
 valgrind: debug
 	@echo "Running valgrind with suppressions..."
@@ -319,7 +323,8 @@ clean:
 	# Remove generated SPIR-V files in shaders/ (if present)
 	-rm -f $(SPVS)
 	rm -f pipeline_cache.bin
-	
+	@$(call PLAY_SOUND,clean)
+
 debug: BUILD = debug
 debug: all
 	
