@@ -204,7 +204,7 @@ endef
 # a successful one plays the success jingle. BUILD is forwarded explicitly so
 # `make debug` / `make release` keep their target-specific configuration.
 all:
-	@$(call PLAY_SOUND,start)
+	@$(call PLAY_SOUND,build)
 	@$(MAKE) --no-print-directory _all BUILD=$(BUILD) \
 		|| { $(call PLAY_SOUND,error); exit 1; }
 	@$(call PLAY_SOUND,success)
@@ -297,7 +297,7 @@ release: all
 # keeps the app's code through the tee pipeline).
 run: 
 	@echo "Running app from $(OUT_DIR)/"
-	@$(call PLAY_SOUND,start)
+	@$(call PLAY_SOUND,run)
 	@mkdir -p logs
 	@cd $(OUT_DIR) && bash -c './app 2>&1 | tee ../logs/run.log; exit $${PIPESTATUS[0]}' \
 		&& $(call PLAY_SOUND,success) \
@@ -305,7 +305,7 @@ run:
 
 run-debug: debug
 	@echo "Running debug build from $(OUT_DIR)/"
-	@$(call PLAY_SOUND,start)
+	@$(call PLAY_SOUND,run)
 	@mkdir -p logs
 	@cd $(OUT_DIR) && bash -c './app 2>&1 | tee ../logs/run.log; exit $${PIPESTATUS[0]}' \
 		&& $(call PLAY_SOUND,success) \
