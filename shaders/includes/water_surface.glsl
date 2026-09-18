@@ -556,7 +556,7 @@ void shadeWaterSurface() {
     // would read past the allocation (undefined values: black opaque water
     // with RT disabled). Fall back to layer 0 (the default water look) so
     // every pixel renders defined water. fragBrushIndex itself is left raw
-    // so debug view 61 can still show the true id distribution.
+    // so DEBUG_MODE_MATERIAL_INDEX can still show the true id distribution.
     int nWaterLayers = max(waterParams.length(), 1);
     int waterLi = (fragBrushIndex >= 0 && fragBrushIndex < nWaterLayers) ? fragBrushIndex : 0;
     WaterParamsGPU wp = waterParams[waterLi];
@@ -750,18 +750,17 @@ void shadeWaterSurface() {
     // (Schlick-weighted) to save a ray on hits. A missed first ray always
     // recovers the other lobe (bottom via zero-cost raster recovery, mirror
     // via a real ray), so no pixel ends with two empty lobes ("just
-    // tinted"). Reference mode (any rt.debug view except 59-62, the
-    // diagnostic masks themselves) forces dual-trace + full-rate.
+    // tinted"). Traced-result debug views (see debugModeForcesRtReference)
+    // force dual-trace + full-rate.
     float hash01 = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
     bool waterRefMode = false;
     bool waterSingleRay = false;
     bool waterChecker = false;
     float waterContribMin = 0.02;
 #ifdef RT_ENABLED
-    // Views 59-62 visualize the budgeted behavior itself, so they must not
-    // force reference (otherwise the counters could never show the live cut).
-    waterRefMode = (rt.debug.x != 0.0)
-        && (rt.debug.x < 58.5 || rt.debug.x > 63.5);
+    // Ray mask / depth source visualize the budgeted behavior itself, so they
+    // must not force reference (otherwise they could never show the live cut).
+    waterRefMode = debugModeForcesRtReference(int(rt.debug.x + 0.5));
     waterSingleRay = (rt.rayParams.z > 0.5) && !waterRefMode;
     waterContribMin = clamp(rt.rayParams.y, 0.0, 1.0);
     waterChecker = (rt.rayParams.x > 0.5) && !waterRefMode
@@ -798,7 +797,7 @@ void shadeWaterSurface() {
     // (Refraction is pipe-first, so its inline fallback is not checker-gated:
     // an invalid pipe texel has no cover and must trace.)
     bool reflCheckerSkip = waterChecker && (reflMixEst <= 0.7);
-    // Ray-mask for debug view 59 (pixel-ratio counter): per lobe 0=disabled,
+    // Ray-mask for DEBUG_MODE_RAY_MASK (pixel-ratio counter): per lobe 0=disabled,
     // 1=sky fallback, 2=pipe hit, 3=inline traced, 4=skipped by budget gate.
     float refrMask = 0.0;
     float reflMaskDbg = 0.0;
@@ -807,7 +806,7 @@ void shadeWaterSurface() {
     // (a < RT_DEEP_WATER, i.e. not the miss marker), raster recovery.
     bool pipeRefrValid = false;
     bool refrInlineHitReal = false;
-    // Thickness-source id for debug view 60 (which branch set the water
+    // Thickness-source id for DEBUG_MODE_DEPTH_SOURCE (which branch set the water
     // column): 0=raster back-face MISSING / no RT, 1=RT inline hit length,
     // 2=miss continuity (raster bottom measured along the Snell ray),
     // 3=miss with no raster bottom->thin, 4=(retired),
@@ -1155,7 +1154,7 @@ void shadeWaterSurface() {
     // pipeline's reflection is never used as the color — its flat-sky/slab
     // output at the shoreline was the "reflection missing at the shore"
     // report, and the migration plan deletes the pipeline in Phase 3. The
-    // pipe texel is still sampled so view 59 keeps reporting pipe coverage.
+    // pipe texel is still sampled so DEBUG_MODE_RAY_MASK keeps reporting pipe coverage.
     if (usePipe && rt.toggles.x > 0.5) {
         vec4 pipeRefl = textureLod(rtReflectTex, screenUV, 0.0);
         if (pipeRefl.a > 0.5) reflMaskDbg = 2.0;
@@ -1490,16 +1489,102 @@ void shadeWaterSurface() {
     if (captureMode) alpha = 1.0;
     outColor = vec4(waterColor, alpha);
 
-    // Debug: visual displacement color when debug mode set to 38 ("Water Displacement")
-    if (dbgMode == 38) {
-        // Prefer tessellation-provided debug value when available (fragDebug).
-        // But also compute a per-fragment approximation of the bump displacement so the debug
-        // mode works even when tessellation is disabled.
+    // ── Unified debug views (IDs shared with the solid path) ──
+    // Canonical IDs live in includes/debug_modes.glsl (mirror of
+    // vulkan/includes/DebugModes.hpp). Solid-only material views (albedo,
+    // normal/height maps, roughness, AO, triplanar, UV, tess heat) fall
+    // through to the composited water color above; 0 = normal render.
+    if (dbgMode == DEBUG_MODE_SHADING_NORMAL) {
+        outColor = vec4(normalize(normal) * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_GEOMETRIC_NORMAL) {
+        outColor = vec4(normalize(flatN) * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_FACE_NORMAL) {
+        vec3 fn = normalize(cross(dFdy(fragPosWorld), dFdx(fragPosWorld)));
+        outColor = vec4(fn * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_MATERIAL_INDEX) {
+        // Water brush/layer id per pixel (golden-ratio hue). MAGENTA = out of
+        // the waterParams SSBO range (those pixels fall back to layer 0).
+        int nLB = max(waterParams.length(), 1);
+        vec3 bidCol;
+        if (fragBrushIndex < 0 || fragBrushIndex >= nLB) {
+            bidCol = vec3(1.0, 0.0, 1.0);
+        } else {
+            float hh = fract(float(fragBrushIndex) * 0.61803398875);
+            bidCol = clamp(0.5 + 0.5 * cos(6.2831853 * (hh + vec3(0.0, 0.33, 0.67))), 0.0, 1.0);
+        }
+        outColor = vec4(bidCol, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_N_DOT_L) {
+        outColor = vec4(vec3(max(dot(normal, lightDir), 0.0)), 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_LIGHT_VECTOR) {
+        outColor = vec4(normalize(lightDir) * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_SHADOW) {
+        // Water never samples the shadow map (see SHADOW ON WATER above):
+        // always 0 by design.
+        outColor = vec4(vec3(shadow), 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_REFLECTION_COLOR) {
+        // Reflection color actually used (RT/SSR hit or sky fallback).
+        outColor = vec4(skyColor, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_REFLECTION_VECTOR) {
+        outColor = vec4(reflectDir * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_FRESNEL) {
+        outColor = vec4(vec3(clamp(fresnel, 0.0, 1.0)), 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_RAY_MASK) {
+        // Ray-query pixel ratio (per lobe): R = reflection inline traced,
+        // G = refraction inline traced, B = pipeline hit. Budget-skipped
+        // pixels (checker/single-ray/contrib) stay dark; sky fallback is
+        // near-black. Masks: 0=disabled, 1=sky, 2=pipe, 3=inline, 4=budget.
+        vec3 maskCol = vec3(0.0);
+        if (reflMaskDbg > 2.5 && reflMaskDbg < 3.5) maskCol.r = 1.0;
+        else if (reflMaskDbg > 1.5 && reflMaskDbg < 2.5) maskCol.b += 0.5;
+        if (refrMask > 2.5 && refrMask < 3.5) maskCol.g = 1.0;
+        else if (refrMask > 1.5 && refrMask < 2.5) maskCol.b += 0.5;
+        outColor = vec4(maskCol, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_SKY_REFLECTION) {
+        // Raw sky equirect along the reflection direction — verifies the
+        // fallback the water pass uses for RT misses.
+        vec3 sc = texture(skyEquirectTex,
+            waterDirToEquirectUV(normalize(reflect(-viewDir, normal)))).rgb;
+        outColor = vec4(sc, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_REFRACTION_COLOR) {
+        // Refracted scene color before the aerial-distance fade.
+        outColor = vec4(dbgSceneColor, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_WATER_NOISE) {
+        outColor = vec4(refractionNoise, 0.5 + 0.5 * (refractionNoise.x - refractionNoise.y), 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_DISPLACEMENT) {
+        // Prefer the tessellation-provided debug value (fragDebug); fall back
+        // to a per-fragment approximation so the view works without
+        // tessellation.
         float timeDebug = waterRenderUBO.timeParams.x;
         float waveScaleDbg = 1.0;  // No longer in passParams (z=nearPlane now)
-
         float bumpAmpDbg = wp.waveParams.z;
-
         float animTimeDbg = timeDebug * wp.params3.x;
         float waveDisplacementDbg = waterWaveDisplacement(
             fragPos.xyz,
@@ -1511,174 +1596,49 @@ void shadeWaterSurface() {
             bumpAmpDbg,
             waveScaleDbg
         );
-
         float maxExpected = bumpAmpDbg * waveScaleDbg * 1.5;
         float normDisp = clamp((waveDisplacementDbg / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
-
         vec3 debugCol = fragDebug;
-        // If tessellation wasn't producing a debug value (likely zero), prefer computed color
         if (length(debugCol) < 0.001) debugCol = vec3(normDisp);
         outColor = vec4(debugCol, 1.0);
+        return;
     }
-
-    // Debug mode 39: raw sky equirect (reflection of view dir) — verifies the
-    // water pass reaches the sky fallback it uses for RT misses.
-    if (dbgMode == 39) {
-        vec3 sc = texture(skyEquirectTex,
-            waterDirToEquirectUV(normalize(reflect(-viewDir, normal)))).rgb;
-        outColor = vec4(sc, 1.0);
+    if (dbgMode == DEBUG_MODE_THICKNESS) {
+        // Water column thickness normalized by the per-layer refraction cap.
+        float thickN = clamp(waterThickness / max(refrThickCap, 1.0), 0.0, 1.0);
+        outColor = vec4(vec3(thickN), 1.0);
+        return;
     }
-
-    // Debug mode 35: screen UV — verifies correct clip → UV conversion.
-    if (dbgMode == 35) {
-        outColor = vec4(screenUV, 0.0, 1.0);
-    }
-
-
-   // Debug mode 36: water noise
-    if (int(ubo.debugParams.x) == 36) {
-        outColor = vec4(refractionNoise, 0.5 + 0.5 * (refractionNoise.x - refractionNoise.y), 1.0);
-    }
-
-    // Debug mode 37: final displaced normal used by shading.
-    if (int(ubo.debugParams.x) == 37) {
-        vec3 n = normalize(normal);
-        outColor = vec4(n * 0.5 + 0.5, 1.0);
-    }
-
-    // --- Reflection sampling debug helpers ---
-    // Use the global debug mode (ubo.debugParams.x) to visualize reflection
-    // computation steps and RT sampling. Helpful to diagnose orientation.
-    if (dbgMode == 40) {
-        // Visualize reflection vector (packed to [0,1])
-        vec3 vis = reflectDir * 0.5 + 0.5;
-        outColor = vec4(vis, 1.0);
-    }
-    if (dbgMode == 41) {
-        // Show RT/sky reflection color actually used by shading
-        outColor = vec4(skyColor, 1.0);
-    }
-
-    if (dbgMode == 42) {
-        vec3 maps = vec3(clamp(caustFront, 0.0, 1.0), clamp(caustBack, 0.0, 1.0), clamp(mix(caustFront, caustBack, depthInfluence), 0.0, 1.0));
-        outColor = vec4(maps, 1.0);
-    }
-    if (dbgMode == 43) {
-        vec3 maps = vec3(clamp(lineFrontRaw, 0.0, 1.0), clamp(lineBackRaw, 0.0, 1.0), clamp(lineCombined, 0.0, 1.0));
-        outColor = vec4(maps, 1.0);
-    }
-    if (dbgMode == 44) {
-        vec3 maps = vec3(clamp(cloudFinal, 0.0, 1.0), clamp(lineFinal, 0.0, 1.0), clamp(caustRaw, 0.0, 1.0));
-        outColor = vec4(maps, 1.0);
-    }
-    if (dbgMode == 45) {
-        outColor = vec4(vec3(clamp(caustic, 0.0, 1.0)), 1.0);
-    }
-
-    // --- Water thickness / depth debug modes (46..49) ---
-    // 43: Back-face raw depth (texture sample)
-    if (dbgMode == 46) {
-        outColor = vec4(vec3(backFaceDepthRaw), 1.0);
-    }
-    // 44: Front-face linear depth (normalized to [0,1])
-    if (dbgMode == 47) {
-        float nearP = ubo.passParams.z;
-        float farP = ubo.passParams.w;
-        float v = clamp((frontFaceLinear - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
-        outColor = vec4(vec3(v), 1.0);
-    }
-    // 45: Back-face linear depth (normalized to [0,1])
-    if (dbgMode == 48) {
-        float nearP = ubo.passParams.z;
-        float farP = ubo.passParams.w;
-        float v = clamp((backFaceLinear - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
-        outColor = vec4(vec3(v), 1.0);
-    }
-    // 46: Water thickness (normalized by per-layer caustic depth scale or 1.0)
-    // (Ancient modes 46/47 showed solid scene depth, which water no longer
-    // samples; long removed — 46..49 are water depth/thickness now.)
-    if (dbgMode == 49) {
-        float denom = max(wp.causticParams.w, 1.0);
-        float v = clamp(waterThickness / denom, 0.0, 1.0);
-        outColor = vec4(vec3(v), 1.0);
-    }
-
-    // ── Hybrid RT debug views (settings.rtDebugView mirrors) ──
-    // 50 = RT/pipeline reflection only, 51 = refraction only,
-    // 52 = RT thickness, 53 = Fresnel, 54 = Beer-Lambert transmittance.
-    // 50/51 read the pre-aerial-fade snapshots so diagnostics show raw RT.
-    if (dbgMode == 50) {
-        outColor = vec4(dbgReflColor, 1.0);
-    }
-    if (dbgMode == 51) {
-        outColor = vec4(dbgSceneColor, 1.0);
-    }
-    if (dbgMode == 52) {
-        float thickDenom = 300.0;
-#ifdef RT_ENABLED
-        thickDenom = max(rt.distances.y, 1.0);
-#endif
-        outColor = vec4(vec3(clamp(waterThickness / thickDenom, 0.0, 1.0)), 1.0);
-    }
-    if (dbgMode == 53) {
-        outColor = vec4(vec3(clamp(fresnel, 0.0, 1.0)), 1.0);
-    }
-    if (dbgMode == 54) {
+    if (dbgMode == DEBUG_MODE_ABSORPTION) {
+        // Beer-Lambert transmittance through the water column.
         outColor = vec4(clamp(transmittance, 0.0, 1.0), 1.0);
+        return;
     }
-    if (dbgMode == 59) {
-        // Ray-query pixel ratio (per lobe): R = reflection inline traced,
-        // G = refraction inline traced, B = pipeline hit. Budget-skipped
-        // pixels (checker/single-ray/contrib) stay dark; sky fallback is
-        // near-black. The lit-pixel fraction must drop >=50% vs full-rate.
-        // Masks: 0=disabled, 1=sky, 2=pipe, 3=inline, 4=budget-skipped.
-        vec3 maskCol = vec3(0.0);
-        if (reflMaskDbg > 2.5 && reflMaskDbg < 3.5) maskCol.r = 1.0;
-        else if (reflMaskDbg > 1.5 && reflMaskDbg < 2.5) maskCol.b += 0.5;
-        if (refrMask > 2.5 && refrMask < 3.5) maskCol.g = 1.0;
-        else if (refrMask > 1.5 && refrMask < 2.5) maskCol.b += 0.5;
-        outColor = vec4(maskCol, 1.0);
+    if (dbgMode == DEBUG_MODE_CAUSTICS) {
+        outColor = vec4(vec3(clamp(caustic, 0.0, 1.0)), 1.0);
+        return;
     }
-    if (dbgMode == 60) {
+    if (dbgMode == DEBUG_MODE_DEPTH_SOURCE) {
         // Water-column source: which branch set this pixel's thickness.
-        // Read with RT on (toggles + pipeline as in the failing view).
         // grey=raster back-face/no-RT, green=RT inline hit length,
-        // cyan=miss continuity (raster bottom), magenta=miss with no
-        // raster bottom->thin, blue=pipeline refraction output.
-        // (Red/proven-deep is retired: depth now grades continuously.)
+        // cyan=miss continuity (raster bottom), magenta=miss with no raster
+        // bottom->thin, blue=pipeline refraction output.
         vec3 dc = vec3(0.25);
         if (depthSource > 0.5 && depthSource < 1.5) dc = vec3(0.0, 1.0, 0.0);
         else if (depthSource < 2.5 && depthSource > 1.5) dc = vec3(0.0, 1.0, 1.0);
         else if (depthSource < 3.5 && depthSource > 2.5) dc = vec3(1.0, 0.0, 1.0);
         else if (depthSource > 4.5) dc = vec3(0.0, 0.0, 1.0);
         outColor = vec4(dc, 1.0);
+        return;
     }
-    if (dbgMode == 61) {
-        // Water brush/layer id per pixel (golden-ratio hue). MAGENTA =
-        // out of the waterParams SSBO range: those pixels previously read
-        // past the allocation (undefined values → black opaque water with
-        // RT disabled) and now fall back to layer 0.
-        int nLB = max(waterParams.length(), 1);
-        vec3 bidCol;
-        if (fragBrushIndex < 0 || fragBrushIndex >= nLB) {
-            bidCol = vec3(1.0, 0.0, 1.0);
-        } else {
-            float hh = fract(float(fragBrushIndex) * 0.61803398875);
-            bidCol = clamp(0.5 + 0.5 * cos(6.2831853 * (hh + vec3(0.0, 0.33, 0.67))), 0.0, 1.0);
-        }
-        outColor = vec4(bidCol, 1.0);
-    }
-    if (dbgMode == 62) {
-        // Water composition terms: R = tintBlend (water tint dominance),
-        // G = mirrorPresence (reflection mix), B = thickness / layer cap.
-        // Localizes a shore band: if the band is water-shading-driven it
-        // appears as a distinct band in one of these channels; if all three
-        // are smooth across it, the band comes from the sampled content
-        // (bottom/reflection color) or the alpha fade, not the mix weights.
+    if (dbgMode == DEBUG_MODE_WATER_COMPOSE) {
+        // R = tintBlend (water tint dominance), G = mirrorPresence
+        // (reflection mix), B = thickness / layer cap.
         float thickN = clamp(waterThickness / max(refrThickCap, 1.0), 0.0, 1.0);
         outColor = vec4(clamp(tintBlend, 0.0, 1.0),
                         clamp(mirrorPresence, 0.0, 1.0),
                         thickN, 1.0);
+        return;
     }
 
 

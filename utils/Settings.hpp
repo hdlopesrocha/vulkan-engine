@@ -29,7 +29,9 @@ public:
     float moveSpeed = 2.5f;
     float angularSpeedDeg = 45.0f;
 
-    // Debug
+    // Debug: canonical view IDs in vulkan/includes/DebugModes.hpp (0 = normal
+    // render). Drives the raster solid/water shaders and the RT reference-path
+    // forcing; both surfaces dispatch on the same IDs.
     int debugMode = 0;
 
     // Triplanar
@@ -102,9 +104,9 @@ public:
     //   this (terrain: blendedRefStrength*Fresnel*(1-rough); water: lobe mix).
     // rtSingleRay: water traces reflection XOR refraction stochastically
     //   (probability = Fresnel mix) instead of always both (~2x fewer rays);
-    //   off = dual-trace reference. Any rtDebugView except 59 (the budget
-    //   mask itself) forces reference (dual + full-rate) so diagnostics show
-    //   full quality.
+    //   off = dual-trace reference. debugModeForcesRtReference (see
+    //   vulkan/includes/DebugModes.hpp) forces reference (dual + full-rate)
+    //   for traced-result debug views so diagnostics show full quality.
     int rtRayScale = 1;
     float rtRayContribMin = 0.02f;
     bool rtSingleRay = true;
@@ -113,8 +115,4 @@ public:
     // instead of the separate liquid pass. Default off (old path); consumed
     // by Phase-1b (draw routing + blend pipeline). No effect yet.
     bool waterInMainPass = false;
-    // RT debug views (0=off; also drives ubo.debugParams extensions in shaders):
-    //  50=RT reflection only, 51=RT refraction only, 52=thickness,
-    //  53=Fresnel, 54=absorption, 55=CSM-only, 56=RT-local-only, 57=CSM+RT combined
-    int rtDebugView = 0;
 };

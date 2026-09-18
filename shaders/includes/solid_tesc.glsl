@@ -117,9 +117,9 @@ void main() {
     float outer2 = computeEdgeTess(p0, p1, pc_inBrushIndex[0], pc_inBrushIndex[1]);
     float inner  = max(max(outer0, outer1), outer2);
 
-    // Tessellation-level debug feed (debug mode 60): per-corner max edge level
-    // normalized by 16 (typical maxLevel). The TES interpolates it like any
-    // other varying so the fragment shader sees a smooth heatmap.
+    // Tessellation-level debug feed (DEBUG_MODE_TESS_HEAT): per-corner max edge
+    // level normalized by 16 (typical maxLevel). The TES interpolates it like
+    // any other varying so the fragment shader sees a smooth heatmap.
     float cornerLevel = max(max(outer0, outer1), max(outer2, inner)) / 16.0;
     tc_fragTessLevel[gl_InvocationID] = vec3(clamp(cornerLevel, 0.0, 4.0));
 

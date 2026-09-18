@@ -30,10 +30,12 @@ layout(location = VARY_LOCALPOS) in vec3 fragPosWorldNotDisplaced;
 layout(location = VARY_TEXWEIGHTS) in vec3 fragTexWeights;
 layout(location = VARY_HSV) in vec3 fragHSV;
 layout(location = VARY_SHARPNORMAL) in vec3 fragSharpNormal; // face normal computed in TES (sharp)
-layout(location = VARY_DEBUG) in vec3 fragTessLevel; // tessellation level heat (tesc output /16, debug 60)
+layout(location = VARY_DEBUG) in vec3 fragTessLevel; // tessellation level heat (tesc output /16, DEBUG_MODE_TESS_HEAT)
 #endif
 
 #include "includes/ubo.glsl"
+
+#include "includes/debug_modes.glsl"
 
 #include "includes/textures.glsl"
 

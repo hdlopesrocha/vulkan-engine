@@ -8,7 +8,7 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     vec4 materialFlags;
     mat4 lightSpaceMatrix; // for shadow mapping
     vec4 shadowEffects; // x/y/z = unused, w=global shadows enabled (1.0 = on)
-    vec4 debugParams; // x=debugMode (0=default; solid 1-7 normals/geometry, 8-27 material/UV, 28-30 roughness/AO, 31-34 light/shadow/reflection; water 35-49 screen/noise/normals/displacement/sky/vectors/caustics/depths/thickness; 50-54 RT water views, 55-57 shadow comparison, 58 tess heat; y=roughnessEnabled, z=aoEnabled)
+    vec4 debugParams; // x=DebugMode (see includes/debug_modes.glsl; 0=default render); y=roughnessEnabled, z=aoEnabled
     vec4 triplanarSettings;
     vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessellationFactor, w = reserved
     vec4 passParams;   // x = isShadowPass, y = tessEnabled, z = nearPlane, w = farPlane

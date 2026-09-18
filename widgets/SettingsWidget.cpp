@@ -1,5 +1,6 @@
 #include "SettingsWidget.hpp"
 #include "components/ImGuiHelpers.hpp"
+#include "vulkan/includes/DebugModes.hpp"
 #include <vector>
 #include <functional>
 
@@ -344,93 +345,18 @@ void SettingsWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Debug Visualisation");
         ColSeparator();
-        const char* debugItems[] = {
-            // 0: default
-            "Default Render",
-            // Solid: normals & geometry (1-7)
-            "Fragment Normal",
-            "World Normal",
-            "Normal from Derivatives",
-            "TES Face Normal",
-            "Triplanar Normal",
-            "Per-Projection Triplanar Normals (RGB)",
-            "Triplanar Weights",
-            // Solid: material & textures (8-27)
-            "UV Coordinates",
-            "Albedo Texture",
-            "Albedo Samples (R/G/B)",
-            "Triplanar Albedo",
-            "Normal Texture",
-            "Bump Texture",
-            "Triplanar Bump (Height)",
-            "Per-Projection Triplanar Bump (RGB)",
-            "Height Pre-Projection",
-            "Per-Projection Triplanar Heights (RGB)",
-            "UV vs Triplanar Height Diff",
-            "UV vs Triplanar Bump Diff",
-            "Tex Indices (RGB)",
-            "Tex Weights (RGB)",
-            "Triplanar UV X (first)",
-            "Triplanar UV Y (first)",
-            "Triplanar UV Z (first)",
-            "Per-Projection Triplanar Normal X (first)",
-            "Per-Projection Triplanar Normal Y (first)",
-            "Per-Projection Triplanar Normal Z (first)",
-            // Solid: roughness, AO, light (28-34)
-            "Roughness (map)",
-            "Material Roughness (map x factor)",
-            "Ambient Occlusion (map)",
-            "N·L (grayscale)",
-            "Light Vector (RGB)",
-            "Shadow Diagnostics",
-            "Reflection Factor (env map)",
-            // Water (35-49)
-            "Water Screen UV",
-            "Water Noise",
-            "Water Displaced Normal",
-            "Water Displacement",
-            "Sky Reflection (equirect)",
-            "Reflection Vector (visualize)",
-            "Water Reflection Color",
-            "Caustics: Area Contraction (front/back/blend)",
-            "Caustics: Anisotropy (front/back/blend)",
-            "Caustics: Cloud/Line Components (cloud,line,raw)",
-            "Caustics: Final Caustic Mask",
-            "Back-face Depth (raw)",
-            "Front-face Depth (linearized)",
-            "Back-face Depth (linearized)",
-            "Water Thickness (normalized)",
-            // RT views (50-57, 59-61 drive rt.debug.x; any view except 59-61
-            // also forces full-quality reference rays — see SceneRenderer).
-            // IDs go straight to the GPU, so index == value (0-61 in order).
-            "RT Reflection Only",
-            "RT Refraction Only",
-            "RT Thickness",
-            "Fresnel",
-            "Absorption (Beer-Lambert)",
-            "CSM Shadows Only",
-            "RT Local Shadows Only",
-            "CSM + RT Combined Shadow",
-            "Tessellation Level Heat",
-            "Ray Mask",
-            "Depth Source",
-            "Water Brush Id",
-            "Water Compose"
-        };
-        static_assert(IM_ARRAYSIZE(debugItems) == 63, "debug combo must cover IDs 0-62");
+        // Canonical IDs/names live in vulkan/includes/DebugModes.hpp; the
+        // shaders mirror them in includes/debug_modes.glsl. Both surfaces
+        // dispatch on the same IDs, so a view only ever affects the surface
+        // it applies to and the rest keeps rendering normally.
+        constexpr int modeCount = static_cast<int>(DebugMode::Count);
         // Clamp stale/out-of-range IDs instead of indexing out of bounds.
-        int current = settings.debugMode;
-        if (current < 0 || current >= IM_ARRAYSIZE(debugItems)) current = 0;
+        int current = static_cast<int>(debugModeFromInt(settings.debugMode));
         // Index shown in the header so no SameLine widget is needed (narrow-column safe).
-        ImGui::Text("Debug Mode (%d)", settings.debugMode);
+        ImGui::Text("Debug Mode (%d)", current);
         ImGui::SetNextItemWidth(kSettingsColWidth);
-        if (ImGui::Combo("##Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
+        if (ImGui::Combo("##Debug Mode", &current, kDebugModeNames, modeCount)) {
             settings.debugMode = current;
-            // Single owner of both IDs: raster shows the view via debugMode,
-            // the RT pipeline via rtDebugView (0 = normal RT rendering).
-            // 59-62 are pure diagnostics (no reference forcing downstream).
-            const bool isRtView = (current >= 50 && current <= 57) || (current >= 59 && current <= 62);
-            settings.rtDebugView = isRtView ? current : 0;
         }
 
         if (ImGui::Checkbox("Show Mesh Bounding Boxes", &settings.showBoundingBoxes)) {

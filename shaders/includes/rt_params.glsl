@@ -8,7 +8,7 @@ struct RayTracingParamsGLSL {
     vec4 distances;    // x=maxReflect y=maxRefract z=maxShadowDist w=roughnessThreshold
     vec4 water;        // x=IOR, y=maxWaterThickness (hit clamp), z=coarseBoxSize (deep/sky fallback), w reserved
     vec4 absorption;   // rgb=Beer-Lambert coeff, a=thicknessScale
-    vec4 debug;        // x=RT debug view, y=tlasReady, z=selfSkipDist, w=useWaterPipeline
+    vec4 debug;        // x=DebugMode (see debug_modes.glsl), y=tlasReady, z=selfSkipDist, w=useWaterPipeline
     mat4 invViewProj;
     mat4 prevViewProj; // previous frame's view-projection (temporal SSR reprojection)
     vec4 viewPos;

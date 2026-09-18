@@ -310,7 +310,7 @@ void shadeSolidSurface() {
     vec3 envReflection = vec3(0.0);
     float blendedRefStrength = 0.0;
     float envFresnelFactor = 0.0;
-    // Ray-budget mask for debug view 59 (ray-query pixel ratio): 0 = no
+    // Ray-budget mask for DEBUG_MODE_RAY_MASK (ray-query pixel ratio): 0 = no
     // reflective surface, 1 = skipped by roughness/contrib gate, 2 = skipped
     // by checkerboard half-rate, 3 = inline ray traced.
     float rtTraceMask = 0.0;
@@ -358,29 +358,29 @@ void shadeSolidSurface() {
             // result would be invisible. Checkerboard (rt.rayParams.x > 0.5)
             // traces even (x+y) pixels only; strong mirrors (contrib > 0.5)
             // stay full-rate so polished surfaces never dither, and any debug
-            // view except 59 (the mask itself) forces full-rate reference.
-            // The null-TLAS skip path (rt.debug.y) is unchanged.
+            // view of a traced result (see debugModeForcesRtReference) forces
+            // full-rate reference. The null-TLAS skip path (rt.debug.y) is
+            // unchanged.
             float roughThreshold = 0.6;
 #ifdef RT_ENABLED
             roughThreshold = clamp(rt.distances.w, 0.0, 1.0);
             float contrib = clamp(blendedRefStrength, 0.0, 1.0) * fresnel
                 * (1.0 - clamp(rough, 0.0, 1.0));
             float contribMin = clamp(rt.rayParams.y, 0.0, 1.0);
-            // Views 59-62 visualize the budgeted behavior itself, so they
-            // must not force reference (otherwise the counters could never
-            // show the live behavior).
-            bool refMode = (rt.debug.x != 0.0)
-                && (rt.debug.x < 58.5 || rt.debug.x > 63.5);
+            // Ray mask / depth source visualize the budgeted behavior itself,
+            // so they must not force reference (otherwise the counters could
+            // never show the live behavior).
+            bool refMode = debugModeForcesRtReference(int(rt.debug.x + 0.5));
             bool checkerOn = (rt.rayParams.x > 0.5) && !refMode;
             // Checkerboard only claims pixels that survived every other gate
-            // (else gated pixels would misreport as half-rate in view 59).
+            // (else gated pixels would misreport as half-rate in the mask).
             bool gatedOut = !((rt.debug.y > 0.5) && rt.toggles.x > 0.5
                 && rough <= roughThreshold && contrib >= contribMin);
             bool checkerSkip = checkerOn && !gatedOut
                 && ((int(gl_FragCoord.x) + int(gl_FragCoord.y)) & 1) == 1
                 && contrib <= 0.5;
             bool doRTTrace = !gatedOut && !checkerSkip;
-            // Mask for debug view 59.
+            // Mask for DEBUG_MODE_RAY_MASK.
             rtTraceMask = checkerSkip ? 2.0 : ((doRTTrace ? 3.0 : 1.0));
 #else
             bool doRTTrace = false;
@@ -596,76 +596,76 @@ void shadeSolidSurface() {
         }
     }
 
-    // Debug visualisation modes (0 = normal render)
+    // ── Unified debug views (IDs shared with the water path) ──
+    // Canonical IDs live in includes/debug_modes.glsl (mirror of
+    // vulkan/includes/DebugModes.hpp). Water-only views (sky/refraction/
+    // noise/displacement/thickness/absorption/caustics/depth/compose) fall
+    // through to normal shading here; 0 = normal render.
     int debugMode = int(ubo.debugParams.x + 0.5);
-    if (debugMode == 1) {
-        vec3 gn = normalize(fragNormal);
-        outColor = vec4(gn * 0.5 + 0.5, 1.0);
-        return;
-    }
-    if (debugMode == 2) {
+    if (debugMode == DEBUG_MODE_SHADING_NORMAL) {
+        // Final material-perturbed normal actually used for lighting.
         vec3 nm = normalize(worldNormal);
         outColor = vec4(nm * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 8) {
-        outColor = vec4(uv.x, uv.y, 0.0, 1.0);
+    if (debugMode == DEBUG_MODE_GEOMETRIC_NORMAL) {
+        // Interpolated base-surface normal before material perturbation.
+        outColor = vec4(normalize(N) * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 9) {
-        vec3 ra0 = texture(albedoArray, vec3(uv, float(texIndices.x))).rgb;
-        vec3 ra1 = texture(albedoArray, vec3(uv, float(texIndices.y))).rgb;
-        vec3 ra2 = texture(albedoArray, vec3(uv, float(texIndices.z))).rgb;
-        vec3 rawAlbedo = ra0 * w.x + ra1 * w.y + ra2 * w.z;
-        outColor = vec4(rawAlbedo, 1.0);
+    if (debugMode == DEBUG_MODE_FACE_NORMAL) {
+        // Rasterizer-visible facet normal from screen-space derivatives.
+        vec3 fn = normalize(cross(dFdy(fragPosWorld), dFdx(fragPosWorld)));
+        outColor = vec4(fn * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 12) {
+    if (debugMode == DEBUG_MODE_ALBEDO) {
+        outColor = vec4(albedoColor, 1.0);
+        return;
+    }
+    if (debugMode == DEBUG_MODE_NORMAL_MAP) {
+        // Raw normal-map samples (UV addressing) blended by barycentric weights.
         vec3 rn0 = texture(normalArray, vec3(uv, float(texIndices.x))).rgb;
         vec3 rn1 = texture(normalArray, vec3(uv, float(texIndices.y))).rgb;
         vec3 rn2 = texture(normalArray, vec3(uv, float(texIndices.z))).rgb;
-        vec3 rawNormalTex = rn0 * w.x + rn1 * w.y + rn2 * w.z;
-        outColor = vec4(rawNormalTex, 1.0);
+        outColor = vec4(rn0 * w.x + rn1 * w.y + rn2 * w.z, 1.0);
         return;
     }
-    if (debugMode == 13) {
-        float h0 = texture(heightArray, vec3(uv, float(texIndices.x))).r;
-        float h1 = texture(heightArray, vec3(uv, float(texIndices.y))).r;
-        float h2 = texture(heightArray, vec3(uv, float(texIndices.z))).r;
-        float h = h0 * w.x + h1 * w.y + h2 * w.z;
+    if (debugMode == DEBUG_MODE_HEIGHT_MAP) {
+        // Final height/bump sample driving displacement: triplanar when the
+        // material uses triplanar mapping, UV addressing otherwise.
+        float h;
+        if (usedTriplanar) {
+            float b0 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.x);
+            float b1 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.y);
+            float b2 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.z);
+            h = b0 * w.x + b1 * w.y + b2 * w.z;
+        } else {
+            float h0 = texture(heightArray, vec3(uv, float(texIndices.x))).r;
+            float h1 = texture(heightArray, vec3(uv, float(texIndices.y))).r;
+            float h2 = texture(heightArray, vec3(uv, float(texIndices.z))).r;
+            h = h0 * w.x + h1 * w.y + h2 * w.z;
+        }
         outColor = vec4(vec3(h), 1.0);
         return;
     }
-    if (debugMode == 16) {
-        outColor = vec4(NdotL, totalShadow, 0.0, 1.0);
+    if (debugMode == DEBUG_MODE_ROUGHNESS) {
+        // Roughness that actually drives the specular/mirror mix.
+        outColor = vec4(vec3(clamp(roughnessValue * roughnessFactor, 0.0, 1.0)), 1.0);
         return;
     }
-    if (debugMode == 3) {
-        vec3 normalToShow = normalize(cross(dFdy(fragPosWorld), dFdx(fragPosWorld)));
-        outColor = vec4(normalToShow * 0.5 + 0.5, 1.0);
+    if (debugMode == DEBUG_MODE_AMBIENT_OCCLUSION) {
+        outColor = vec4(vec3(ambientOcclusion), 1.0);
         return;
     }
-    if (debugMode == 32) {
-        vec3 tl = normalize(toLight);
-        outColor = vec4(tl * 0.5 + 0.5, 1.0);
-        return;
-    }
-    if (debugMode == 31) {
-        outColor = vec4(vec3(NdotL), 1.0);
-        return;
-    }
-    if (debugMode == 33) {
-        outColor = vec4(shadow, 0.0, totalShadow, 1.0);
-        return;
-    }
-    if (debugMode == 7) {
-        // Visualize triplanar blend weights RGB (X/Y/Z projections)
+    if (debugMode == DEBUG_MODE_TRIPLANAR_WEIGHTS) {
+        // Triplanar blend weights RGB (X/Y/Z projections).
         outColor = vec4(triW, 1.0);
         return;
     }
-
-    if (debugMode == 20) {
-        // Map each corner brushIndex to a distinct color from a small palette, then blend by barycentric weights
+    if (debugMode == DEBUG_MODE_MATERIAL_INDEX) {
+        // Palette-blended brush/texture index: each corner's index selects a
+        // color, barycentric weights blend them.
         const int PALETTE_SIZE = 16;
         const vec3 palette[PALETTE_SIZE] = vec3[](
             vec3(0.90, 0.10, 0.10), // red
@@ -685,207 +685,46 @@ void shadeSolidSurface() {
             vec3(0.60, 0.60, 0.60), // gray
             vec3(1.00, 1.00, 1.00)  // white
         );
-
         vec3 c0 = palette[int(mod(float(texIndices.x), float(PALETTE_SIZE)) + 0.5)];
         vec3 c1 = palette[int(mod(float(texIndices.y), float(PALETTE_SIZE)) + 0.5)];
         vec3 c2 = palette[int(mod(float(texIndices.z), float(PALETTE_SIZE)) + 0.5)];
-        vec3 blended = c0 * w.x + c1 * w.y + c2 * w.z;
-        outColor = vec4(blended, 1.0);
+        outColor = vec4(c0 * w.x + c1 * w.y + c2 * w.z, 1.0);
         return;
     }
-
-    if (debugMode == 21) {
-        // Visualize barycentric weights directly as RGB
-        outColor = vec4(clamp(w, 0.0, 1.0), 1.0);
+    if (debugMode == DEBUG_MODE_UV) {
+        outColor = vec4(uv.x, uv.y, 0.0, 1.0);
         return;
     }
-
-    if (debugMode == 10) {
-        // Show the raw albedo samples for each corner packed into RGB (a0.r, a1.r, a2.r)
-        vec3 a0 = texture(albedoArray, vec3(uv, float(texIndices.x))).rgb;
-        vec3 a1 = texture(albedoArray, vec3(uv, float(texIndices.y))).rgb;
-        vec3 a2 = texture(albedoArray, vec3(uv, float(texIndices.z))).rgb;
-        outColor = vec4(a0.r, a1.r, a2.r, 1.0);
+    if (debugMode == DEBUG_MODE_N_DOT_L) {
+        outColor = vec4(vec3(NdotL), 1.0);
         return;
     }
-
-    if (debugMode == 11) {
-        // Visualize triplanar-sampled albedo blended across the three material indices
-        vec3 ta0 = computeTriplanarAlbedo(fragPosWorld, triW, texIndices.x, N);
-        vec3 ta1 = computeTriplanarAlbedo(fragPosWorld, triW, texIndices.y, N);
-        vec3 ta2 = computeTriplanarAlbedo(fragPosWorld, triW, texIndices.z, N);
-        vec3 tAlbedo = ta0 * w.x + ta1 * w.y + ta2 * w.z;
-        outColor = vec4(tAlbedo, 1.0);
+    if (debugMode == DEBUG_MODE_LIGHT_VECTOR) {
+        vec3 tl = normalize(toLight);
+        outColor = vec4(tl * 0.5 + 0.5, 1.0);
         return;
     }
-
-    if (debugMode == 17) {
-        // Show per-projection triplanar heights for each corner packed into RGB
-        vec2 tScale = vec2(materials[texIndices.x].triplanarParams.x, 
-                            materials[texIndices.x].triplanarParams.y);
-        float th0x = texture(heightArray, vec3(fragPosWorld.yz * tScale, float(texIndices.x))).r;
-        float th0y = texture(heightArray, vec3(fragPosWorld.xz * tScale, float(texIndices.x))).r;
-        float th0z = texture(heightArray, vec3(fragPosWorld.xy * tScale, float(texIndices.x))).r;
-        // Pack the three projection samples as RGB for the first material (useful to see which projection contributes height)
-        outColor = vec4(th0x, th0y, th0z, 1.0);
+    if (debugMode == DEBUG_MODE_SHADOW) {
+        // R = CSM, G = RT local/contact, B = combined term actually shaded.
+        outColor = vec4(shadow, clamp(rtLocalShadow, 0.0, 1.0), totalShadow, 1.0);
         return;
     }
-
-    if (debugMode == 18) {
-        // Show difference between UV-blended height and triplanar-blended height (abs difference)
-        float h_uv0 = texture(heightArray, vec3(uv, float(texIndices.x))).r;
-        float h_uv1 = texture(heightArray, vec3(uv, float(texIndices.y))).r;
-        float h_uv2 = texture(heightArray, vec3(uv, float(texIndices.z))).r;
-        float h_uv = h_uv0 * w.x + h_uv1 * w.y + h_uv2 * w.z;
-        float h_tri0 = sampleHeightTriplanar(fragPosWorld, geomN, texIndices.x);
-        float h_tri1 = sampleHeightTriplanar(fragPosWorld, geomN, texIndices.y);
-        float h_tri2 = sampleHeightTriplanar(fragPosWorld, geomN, texIndices.z);
-        float h_tri = h_tri0 * w.x + h_tri1 * w.y + h_tri2 * w.z;
-        float d = abs(h_uv - h_tri);
-        outColor = vec4(vec3(d * 5.0), 1.0); // amplify differences for visibility
-        return;
-    }
-
-    if (debugMode == 5) {
-        // Visualize triplanar-sampled normal blended across the three material indices
-        vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, texIndices.x, geomN, N);
-        vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, texIndices.y, geomN, N);
-        vec3 tn2 = computeTriplanarNormal(fragPosWorld, triW, texIndices.z, geomN, N);
-        vec3 blended = tn0 * w.x + tn1 * w.y + tn2 * w.z;
-        vec3 tNormal = reorientNormal(blended, geomN);
-        outColor = vec4(tNormal * 0.5 + 0.5, 1.0);
-        return;
-    }
-
-    if (debugMode == 6) {
-        // Show per-projection triplanar normals for the first material packed into RGB
-        vec3 nX = computeTriplanarNormal(fragPosWorld, vec3(1.0, 0.0, 0.0), texIndices.x, geomN, N);
-        vec3 nY = computeTriplanarNormal(fragPosWorld, vec3(0.0, 1.0, 0.0), texIndices.x, geomN, N);
-        vec3 nZ = computeTriplanarNormal(fragPosWorld, vec3(0.0, 0.0, 1.0), texIndices.x, geomN, N);
-        // Pack single components of each projection to RGB so we can visually inspect contributions
-        outColor = vec4(nX.x * 0.5 + 0.5, nY.y * 0.5 + 0.5, nZ.z * 0.5 + 0.5, 1.0);
-        return;
-    }
-
-    if (debugMode == 14) {
-        // Visualize triplanar-sampled bump (height) blended across the three material indices
-        float b0 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.x);
-        float b1 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.y);
-        float b2 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.z);
-        float b = b0 * w.x + b1 * w.y + b2 * w.z;
-        outColor = vec4(vec3(b), 1.0);
-        return;
-    }
-
-    if (debugMode == 15) {
-        // Show per-projection triplanar heights using sampleHeightTriplanar for the first material packed into RGB
-        float ph0x = sampleHeightTriplanar(fragPosWorld, vec3(1.0, 0.0, 0.0), texIndices.x);
-        float ph0y = sampleHeightTriplanar(fragPosWorld, vec3(0.0, 1.0, 0.0), texIndices.x);
-        float ph0z = sampleHeightTriplanar(fragPosWorld, vec3(0.0, 0.0, 1.0), texIndices.x);
-        outColor = vec4(ph0x, ph0y, ph0z, 1.0);
-        return;
-    }
-
-    if (debugMode == 19) {
-        // Show difference between UV-blended height and triplanar-blended height using worldNormal (abs difference)
-        float h_uv0 = texture(heightArray, vec3(uv, float(texIndices.x))).r;
-        float h_uv1 = texture(heightArray, vec3(uv, float(texIndices.y))).r;
-        float h_uv2 = texture(heightArray, vec3(uv, float(texIndices.z))).r;
-        float h_uv = h_uv0 * w.x + h_uv1 * w.y + h_uv2 * w.z;
-        float h_tri0 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.x);
-        float h_tri1 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.y);
-        float h_tri2 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.z);
-        float h_tri = h_tri0 * w.x + h_tri1 * w.y + h_tri2 * w.z;
-        float d = abs(h_uv - h_tri);
-        outColor = vec4(vec3(d * 5.0), 1.0); // amplify differences for visibility
-        return;
-    }
-
-    if (debugMode == 22) {
-        // Visualize triplanar UV for X projection (first material)
-        vec2 uvX, uvY, uvZ;
-        computeTriplanarUVs(fragPosWorld, texIndices.x, N, uvX, uvY, uvZ);
-        vec2 show = fract(uvX);
-        outColor = vec4(show.x, show.y, 0.0, 1.0);
-        return;
-    }
-    if (debugMode == 23) {
-        // Visualize triplanar UV for Y projection (first material)
-        vec2 uvX, uvY, uvZ;
-        computeTriplanarUVs(fragPosWorld, texIndices.x, N, uvX, uvY, uvZ);
-        vec2 show = fract(uvY);
-        outColor = vec4(show.x, show.y, 0.0, 1.0);
-        return;
-    }
-    if (debugMode == 24) {
-        // Visualize triplanar UV for Z projection (first material)
-        vec2 uvX, uvY, uvZ;
-        computeTriplanarUVs(fragPosWorld, texIndices.x, N, uvX, uvY, uvZ);
-        vec2 show = fract(uvZ);
-        outColor = vec4(show.x, show.y, 0.0, 1.0);
-        return;
-    }
-
-    if (debugMode == 25) {
-        tripNormal0 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, texIndices.x, geomN, N);
-        outColor = vec4(normalize(tripNormal0) * 0.5 + 0.5, 1.0);
-        return;
-    }
-    if (debugMode == 26) {
-        tripNormal1 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, texIndices.y, geomN, N);
-        outColor = vec4(normalize(tripNormal1) * 0.5 + 0.5, 1.0);
-        return;
-    }
-    if (debugMode == 27) {
-        tripNormal2 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, texIndices.z, geomN, N);
-        outColor = vec4(normalize(tripNormal2) * 0.5 + 0.5, 1.0);
-        return;
-    }
-
-    if (debugMode == 4) {
-        // Visualize TES-provided face normal (sharp per-triangle normal computed in tessellation evaluation shader)
-        vec3 s = normalize(fragSharpNormal);
-        outColor = vec4(s * 0.5 + 0.5, 1.0);
-        return;
-    }
-    if (debugMode == 28) {
-        outColor = vec4(vec3(roughnessValue), 1.0);
-        return;
-    }
-    if (debugMode == 29) {
-        // Material roughness actually driving the mirror mix: raw map sample
-        // (mode 28) times the per-material roughness factor, clamped — black
-        // = full mirror, white = matte. Stays black when roughness maps are
-        // globally disabled.
-        outColor = vec4(vec3(clamp(roughnessValue * roughnessFactor, 0.0, 1.0)), 1.0);
-        return;
-    }
-    if (debugMode == 30) {
-        outColor = vec4(vec3(ambientOcclusion), 1.0);
-        return;
-    }
-    if (debugMode == 34) {
-        // Environment reflection contribution — the cubemap sample weighted
-        // by the Fresnel factor actually mixed into the final colour.
+    if (debugMode == DEBUG_MODE_REFLECTION_COLOR) {
+        // Environment reflection contribution mixed into the final color.
         outColor = vec4(envReflection * envFresnelFactor, 1.0);
         return;
     }
-    // ── Hybrid RT debug views (also selectable via settings.rtDebugView) ──
-    // 55 = CSM-only shadows, 56 = RT-local-only, 57 = CSM+RT combined shadow.
-    if (debugMode == 55) {
-        outColor = vec4(vec3(shadow), 1.0);
+    if (debugMode == DEBUG_MODE_REFLECTION_VECTOR) {
+        vec3 rv = normalize(reflect(-viewDir, worldNormal));
+        outColor = vec4(rv * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 56) {
-        outColor = vec4(vec3(clamp(rtLocalShadow, 0.0, 1.0)), 1.0);
+    if (debugMode == DEBUG_MODE_FRESNEL) {
+        outColor = vec4(vec3(envFresnelFactor), 1.0);
         return;
     }
-    if (debugMode == 57) {
-        outColor = vec4(vec3(totalShadow), 1.0);
-        return;
-    }
-    if (debugMode == 59) {
-        // Ray-query pixel ratio: white = inline ray traced, mid-grey =
+    if (debugMode == DEBUG_MODE_RAY_MASK) {
+        // Ray-query budget mask: white = inline traced, mid-grey =
         // checkerboard-skipped (pipeline/sky fallback), dark = gated
         // (roughness/contrib), black = non-reflective. The traced-pixel
         // fraction must drop >=50% vs full-rate with default settings.
@@ -896,10 +735,10 @@ void shadeSolidSurface() {
         outColor = vec4(maskCol, 1.0);
         return;
     }
-    // ── Tessellation-level heatmap (tess levels / 16: black = 1 inactive,
-    // blue→green→red = increasing subdivision). Proves per-fragment which
-    // materials/dstances actually subdivide.
-    if (debugMode == 58) {
+    if (debugMode == DEBUG_MODE_TESS_HEAT) {
+        // Tessellation-level heatmap (tess levels / 16: black = 1 inactive,
+        // blue→green→red = increasing subdivision). Proves per-fragment which
+        // materials/distances actually subdivide.
         float t = clamp(fragTessLevel.x, 0.0, 4.0);
         vec3 heat = mix(vec3(0.0), vec3(0.0, 0.0, 1.0), clamp(t * 4.0, 0.0, 1.0));
         heat = mix(heat, vec3(0.0, 1.0, 0.0), clamp((t - 0.25) * 4.0, 0.0, 1.0));
@@ -907,6 +746,10 @@ void shadeSolidSurface() {
         outColor = vec4(heat, 1.0);
         return;
     }
+
+    // (legacy per-corner/per-projection material debug views removed — the
+    // canonical MaterialIndex / NormalMap / HeightMap / TriplanarWeights
+    // views above cover them)
 
     // Energy-conserving blend between lit color and environment reflection.
     // reflectionStrength=0 → lit color only; =1 → physical Fresnel mirror
