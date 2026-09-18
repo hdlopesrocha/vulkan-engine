@@ -1,6 +1,7 @@
-#version 450
+// Water TCS (moved from water.tesc). Requires: ubo, locations,
+// perlin, water_noise, waterParams/waterRenderUBO (ubo.glsl).
+// Defines the stage's main().
 
-#include "includes/locations.glsl"
 
 // Water tessellation control shader — noise-adaptive tessellation
 // Uses the same Perlin FBM noise function as the displacement/bump to
@@ -23,9 +24,6 @@ layout(location = VARY_BRUSHPATCH) flat out ivec3 tc_fragBrushIndex[];
 layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
 layout(location = VARY_HSV) out vec3 tc_fragHSV[];
 
-#include "includes/ubo.glsl"
-#include "includes/perlin.glsl"
-#include "includes/water_noise.glsl"
 
 void main() {
     outPos[gl_InvocationID] = inPos[gl_InvocationID];
@@ -64,9 +62,13 @@ void main() {
             return;
         }
 
-        // Select the water params from the first brush index on the patch
+        // Select the water params from the first brush index on the patch.
+        // Brush ids are terrain paint ids; the water SSBO holds only a few
+        // layers, so out-of-range ids fall back to layer 0 (default look)
+        // instead of reading past the allocation.
         int idx = max(pc_inBrushIndex[0], 0);
-        WaterParamsGPU wp = waterParams[idx];
+        int nWL = max(waterParams.length(), 1);
+        WaterParamsGPU wp = waterParams[(idx >= 0 && idx < nWL) ? idx : 0];
 
         float nearDist   = wp.tessParams.x;
         float farDist    = wp.tessParams.y;

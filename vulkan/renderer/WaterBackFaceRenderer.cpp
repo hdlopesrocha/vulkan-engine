@@ -110,10 +110,10 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
     if (!app || pipelineLayout == VK_NULL_HANDLE) return;
     VkDevice device = app->getDevice();
 
-    VkShaderModule bfVert = app->getOrCreateShaderModule("shaders/water.vert.spv");
+    VkShaderModule bfVert = app->getOrCreateShaderModule("shaders/main_water.vert.spv");
     VkShaderModule bfFrag = app->getOrCreateShaderModule("shaders/water_backface.frag.spv");
-    VkShaderModule bfTesc = app->getOrCreateShaderModule("shaders/water.tesc.spv");
-    VkShaderModule bfTese = app->getOrCreateShaderModule("shaders/water.tese.spv");
+    VkShaderModule bfTesc = app->getOrCreateShaderModule("shaders/main_water.tesc.spv");
+    VkShaderModule bfTese = app->getOrCreateShaderModule("shaders/main_water.tese.spv");
 
     std::vector<VkPipelineShaderStageCreateInfo> bfStages;
     VkPipelineShaderStageCreateInfo vs{};

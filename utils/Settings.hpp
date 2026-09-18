@@ -77,7 +77,7 @@ public:
     bool rtRefractions = true;   // water refraction via Snell (IOR below)
     bool rtThickness = true;     // RT water thickness + Beer-Lambert absorption
     bool rtLocalShadows = false; // selective RT contact shadows augmenting CSM (off = CSM-only, recommended)
-    bool rtWaterPipeline = true; // water via async RT pipeline outputs (off = inline ray queries)
+    bool rtWaterPipeline = false; // water via async RT pipeline outputs (off = inline ray queries)
     float rtMaxReflectDist = 500.0f;  // reflection ray Tmax (world units)
     float rtMaxRefractDist = 300.0f;  // refraction ray Tmax (also deep-water thickness)
     float rtCoarseBoxSize = 48.0f;  // proxy boxes wider than this are "coarse": unreliable for refraction detail, treated as deep water/sky
@@ -94,6 +94,25 @@ public:
     // thin slabs instead of flying over them to sky. The old 2.0 m default
     // dated from full-cell-volume proxies and blinded flat-terrain mirrors.
     float rtSelfSkipDist = 0.05f;     // ignore proxy hits closer than this (own-box guard)
+    // ── Ray-budget controls (runtime A/B, mirrored into RayTracingParams::rayParams) ──
+    // rtRayScale: 0 = full-rate inline rays (reference), 1 = checkerboard
+    //   half-rate (inline trace on even (x+y) pixels only, odd pixels reuse the
+    //   pipeline/sky fallback — ~2x fewer ray queries).
+    // rtRayContribMin: skip the inline ray when the lobe contribution is below
+    //   this (terrain: blendedRefStrength*Fresnel*(1-rough); water: lobe mix).
+    // rtSingleRay: water traces reflection XOR refraction stochastically
+    //   (probability = Fresnel mix) instead of always both (~2x fewer rays);
+    //   off = dual-trace reference. Any rtDebugView except 59 (the budget
+    //   mask itself) forces reference (dual + full-rate) so diagnostics show
+    //   full quality.
+    int rtRayScale = 1;
+    float rtRayContribMin = 0.02f;
+    bool rtSingleRay = true;
+    // ── Water-in-main migration (Phase 1): draw water chunks in the main
+    // pass with the WATER_MODE=1 water-blend pipeline (see main.frag)
+    // instead of the separate liquid pass. Default off (old path); consumed
+    // by Phase-1b (draw routing + blend pipeline). No effect yet.
+    bool waterInMainPass = false;
     // RT debug views (0=off; also drives ubo.debugParams extensions in shaders):
     //  50=RT reflection only, 51=RT refraction only, 52=thickness,
     //  53=Fresnel, 54=absorption, 55=CSM-only, 56=RT-local-only, 57=CSM+RT combined

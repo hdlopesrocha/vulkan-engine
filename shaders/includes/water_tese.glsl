@@ -1,6 +1,6 @@
-#version 450
+// Water TES (moved from water.tese). Requires: ubo, locations,
+// perlin, water_noise. Defines the stage's main().
 
-#include "includes/locations.glsl"
 
 // Water tessellation evaluation shader
 // Applies wave displacement using Perlin noise
@@ -27,15 +27,12 @@ layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace; // light-space pos 
 layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
 layout(location = VARY_HSV) out vec3 fragHSV;
 
-#include "includes/ubo.glsl"
 
 // Water back-face depth texture for depth-dependent wave attenuation and
 // volume-based bump modulation (set 2). The solid scene depth is no longer
 // sampled here so the water pass has no dependency on the solid depth target.
 layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex;
 
-#include "includes/perlin.glsl"
-#include "includes/water_noise.glsl"
 
 // Linearize depth from Vulkan [0,1] depth buffer to eye-space distance.
 float linearizeDepth(float depth) {
@@ -87,11 +84,14 @@ void main() {
     if (texIndices.y >= 0 && weights.y > weights.x) chosenIdx = texIndices.y;
     if (texIndices.z >= 0 && weights.z > max(weights.x, weights.y)) chosenIdx = texIndices.z;
     if (chosenIdx < 0) chosenIdx = 0;
-    // Expose the chosen brushIndex to the fragment stage
+    // Expose the chosen brushIndex to the fragment stage (kept raw so the
+    // fragment debug view can show the true id distribution)
     fragBrushIndex = chosenIdx;
 
-    // Load selected WaterParams from SSBO
-    WaterParamsGPU wp = waterParams[chosenIdx];
+    // Load selected WaterParams from SSBO, falling back to layer 0 for
+    // out-of-range terrain paint ids (see water.frag).
+    int nWL = max(waterParams.length(), 1);
+    WaterParamsGPU wp = waterParams[(chosenIdx >= 0 && chosenIdx < nWL) ? chosenIdx : 0];
 
     // Get water and noise parameters from selected params
     float time = waterRenderUBO.timeParams.x;

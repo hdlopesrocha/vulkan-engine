@@ -101,7 +101,11 @@ OUT_SPVS = \
 	$(foreach ext,$(RT_SHADER_EXTS),$(patsubst shaders/%.$(ext), $(OUT_DIR)/shaders/%.$(ext).spv, $(wildcard shaders/*.$(ext)))) \
 	$(OUT_DIR)/shaders/main_brush.frag.spv \
 	$(OUT_DIR)/shaders/main_rt.frag.spv \
-	$(OUT_DIR)/shaders/water_rt.frag.spv
+	$(OUT_DIR)/shaders/main_water.frag.spv \
+	$(OUT_DIR)/shaders/main_water_rt.frag.spv \
+	$(OUT_DIR)/shaders/main_water.vert.spv \
+	$(OUT_DIR)/shaders/main_water.tesc.spv \
+	$(OUT_DIR)/shaders/main_water.tese.spv
 
 # Compile main.frag with -DBRUSH_PASS for brush rendering (no PAINT mode, no set=1)
 $(OUT_DIR)/shaders/main_brush.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
@@ -124,13 +128,48 @@ $(OUT_DIR)/shaders/main_rt.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
 	else \
 		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D RT_ENABLED $< -o $@; \
 	fi
-$(OUT_DIR)/shaders/water_rt.frag.spv: shaders/water.frag $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (RT_ENABLED)"
+# Phase-1 merged water stages: same main.* sources compiled with
+# -DWATER_MODE=1 (water varyings/bindings/geometry paths). The fragment gets
+# an RT and a non-RT variant, mirroring main_rt/main.
+$(OUT_DIR)/shaders/main_water.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (WATER_MODE=1)"
 	@mkdir -p $(dir $@)
 	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes -DRT_ENABLED $< -o $@; \
+		glslc --target-env=vulkan1.3 -Ishaders/includes -DWATER_MODE=1 $< -o $@; \
 	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D RT_ENABLED $< -o $@; \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 $< -o $@; \
+	fi
+$(OUT_DIR)/shaders/main_water_rt.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (WATER_MODE=1 RT_ENABLED)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes -DWATER_MODE=1 -DRT_ENABLED $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 --D RT_ENABLED $< -o $@; \
+	fi
+$(OUT_DIR)/shaders/main_water.vert.spv: shaders/main.vert $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (WATER_MODE=1)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes -DWATER_MODE=1 $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 $< -o $@; \
+	fi
+$(OUT_DIR)/shaders/main_water.tesc.spv: shaders/main.tesc $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (WATER_MODE=1)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes -DWATER_MODE=1 $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 $< -o $@; \
+	fi
+$(OUT_DIR)/shaders/main_water.tese.spv: shaders/main.tese $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (WATER_MODE=1)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes -DWATER_MODE=1 $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 $< -o $@; \
 	fi
 
 

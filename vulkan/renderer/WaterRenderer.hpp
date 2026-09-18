@@ -120,6 +120,11 @@ public:
     // Get the water geometry pipeline layout
     VkPipelineLayout getWaterGeometryPipelineLayout() const { return waterGeometryPipelineLayout; }
 
+    // Water-in-main blend pipeline (Phase-1 migration): identical stages /
+    // layout to the geometry pipeline, but alpha-blended, depth-write off and
+    // targeting the main solid color format. Used by renderMainTargets().
+    VkPipeline getWaterMainPipeline() const { return waterMainPipeline; }
+
     // Get the descriptor set layout for scene textures (set 2)
     VkDescriptorSetLayout getWaterDepthDescriptorSetLayout() const { return waterDepthDescriptorSetLayout; }
 
@@ -171,6 +176,25 @@ public:
     // stale content from previous frames.
     void clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex);
 
+    // Phase-1 water-in-main: draw the water geometry directly into the given
+    // color/depth targets (the main solid pass outputs) with alpha blending,
+    // instead of the separate water color/geometry-depth pair. LOAD ops
+    // preserve the opaque scene; depth test on, depth write off. The caller
+    // must have bound per-frame scene textures (back-face depth, sky, and the
+    // PREVIOUS frame's solid color/depth + vegetation, since the current
+    // frames are the attachments here). No-op when the blend pipeline is
+    // unavailable. Does not touch the water color/geom-depth targets, so the
+    // composite must skip the water branch while this path is active.
+    void renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
+                           VkImage colorImage, VkImageView colorView,
+                           VkImage depthImage, VkImageView depthView,
+                           VkImageView skyView, VkDescriptorSet overrideWaterDs);
+
+    // 1x1 zeroed color view (alpha 0) bound to the composite's water input
+    // while water is drawn directly into the main color target, so the
+    // composite's water blend collapses to the base color.
+    VkImageView getDummyWaterColorView() const { return dummyWaterView_; }
+
     // Hybrid RT resources (set after SceneRenderer creates them; may be null
     // when RT is unsupported — the non-async prepare path then binds dummies
     // for the RT outputs and the sky view passed by the caller).
@@ -212,6 +236,7 @@ private:
 
     // Pipelines
     TrackedHandle<VkPipeline> waterGeometryPipeline;
+    TrackedHandle<VkPipeline> waterMainPipeline; // alpha-blended, main-pass targets
 
     // Water geometry pipeline layout (includes depth texture binding)
     TrackedHandle<VkPipelineLayout> waterGeometryPipelineLayout;
@@ -264,6 +289,10 @@ private:
     VmaAllocation dummySkyAlloc_ = VK_NULL_HANDLE;
     VkDeviceMemory dummySkyMem_ = VK_NULL_HANDLE;
     VkImageView dummySkyView_ = VK_NULL_HANDLE; // SHADER_READ layout (sky)
+    VkImage dummyWaterImage_ = VK_NULL_HANDLE;
+    VmaAllocation dummyWaterAlloc_ = VK_NULL_HANDLE;
+    VkDeviceMemory dummyWaterMem_ = VK_NULL_HANDLE;
+    VkImageView dummyWaterView_ = VK_NULL_HANDLE; // zeroed RGBA, SHADER_READ
     void ensureDummyViews(VulkanApp* app);
 
     // Water render time UBO (binding 10)

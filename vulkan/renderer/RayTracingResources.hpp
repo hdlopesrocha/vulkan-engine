@@ -72,6 +72,12 @@ struct RayTracingParams {
     glm::vec4 clipPlanes = glm::vec4(0.1f, 8092.0f, 0.0f, 0.0f); // x=near, y=far
     glm::vec4 sunDir = glm::vec4(0.0f, -1.0f, 0.0f, 0.0f); // xyz=direction TO sun
     glm::vec4 sunColor = glm::vec4(1.0f, 1.0f, 0.9f, 1.0f);
+    // Ray-budget controls (runtime A/B without recompiling):
+    // x=rayScaleMode (0=full-rate reference, 1=checkerboard half-rate inline),
+    // y=contribMin (skip the inline ray when the lobe contribution is below),
+    // z=singleRay (1=Fresnel stochastic reflection-xor-refraction for water,
+    //   0=dual-trace reference), w=reserved.
+    glm::vec4 rayParams = glm::vec4(1.0f, 0.02f, 1.0f, 0.0f);
 };
 
 class RayTracingResources {

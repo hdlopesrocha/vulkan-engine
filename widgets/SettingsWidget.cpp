@@ -115,6 +115,11 @@ void SettingsWidget::render() {
         if (ImGui::Checkbox("Water via RT pipeline (off = inline queries)", &settings.rtWaterPipeline)) {
         }
         TooltipOnHover("Water via async RT pipeline outputs (off = inline ray queries)");
+        if (ImGui::Checkbox("Water in main pass (Phase-1, blend into solid)", &settings.waterInMainPass)) {
+        }
+        TooltipOnHover("Draw water with the alpha-blended main pipeline into the solid color/depth targets "
+                       "(no separate water pass/composite water). Smoother work-in-progress: in-trace "
+                       "screen lookups use the previous frame's solid/vegetation targets.");
     });
 
     // 2: RT Distances (split out so the RT block packs into columns)
@@ -395,9 +400,9 @@ void SettingsWidget::render() {
             "Front-face Depth (linearized)",
             "Back-face Depth (linearized)",
             "Water Thickness (normalized)",
-            // RT views (50-57, 59-60 drive rt.debug.x; any view except 59/60
+            // RT views (50-57, 59-61 drive rt.debug.x; any view except 59-61
             // also forces full-quality reference rays — see SceneRenderer).
-            // IDs go straight to the GPU, so index == value (0-60 in order).
+            // IDs go straight to the GPU, so index == value (0-61 in order).
             "RT Reflection Only",
             "RT Refraction Only",
             "RT Thickness",
@@ -408,9 +413,10 @@ void SettingsWidget::render() {
             "CSM + RT Combined Shadow",
             "Tessellation Level Heat",
             "Ray Mask",
-            "Depth Source"
+            "Depth Source",
+            "Water Brush Id"
         };
-        static_assert(IM_ARRAYSIZE(debugItems) == 61, "debug combo must cover IDs 0-60");
+        static_assert(IM_ARRAYSIZE(debugItems) == 62, "debug combo must cover IDs 0-61");
         // Clamp stale/out-of-range IDs instead of indexing out of bounds.
         int current = settings.debugMode;
         if (current < 0 || current >= IM_ARRAYSIZE(debugItems)) current = 0;
@@ -421,7 +427,8 @@ void SettingsWidget::render() {
             settings.debugMode = current;
             // Single owner of both IDs: raster shows the view via debugMode,
             // the RT pipeline via rtDebugView (0 = normal RT rendering).
-            const bool isRtView = (current >= 50 && current <= 57) || current == 59 || current == 60;
+            // 59-61 are pure diagnostics (no reference forcing downstream).
+            const bool isRtView = (current >= 50 && current <= 57) || (current >= 59 && current <= 61);
             settings.rtDebugView = isRtView ? current : 0;
         }
 

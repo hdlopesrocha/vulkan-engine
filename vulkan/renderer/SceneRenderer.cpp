@@ -842,8 +842,8 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         };
         waterWireframe->createPipeline(app, {VK_FORMAT_R32G32B32A32_SFLOAT},
             waterSetLayouts,
-            "shaders/water.vert.spv", "shaders/water_wireframe.frag.spv",
-            "shaders/water.tesc.spv", "shaders/water.tese.spv",
+            "shaders/main_water.vert.spv", "shaders/water_wireframe.frag.spv",
+            "shaders/main_water.tesc.spv", "shaders/main_water.tese.spv",
             "water wireframe");
     }
 
@@ -2411,5 +2411,16 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     p.clipPlanes = glm::vec4(nearPlane, farPlane, 0.0f, 0.0f);
     p.sunDir = glm::vec4(sunDirTo, 0.0f);
     p.sunColor = glm::vec4(sunColor, 1.0f);
+    // Ray-budget A/B: any debug view forces the reference path (full-rate +
+    // dual-trace) so diagnostics/screenshots show full quality; otherwise honor
+    // the runtime toggles. Views 59-61 are the budget/depth/brush masks
+    // themselves and must stay budgeted, or the counters could never show
+    // the live behavior. Keeps the null-TLAS skip path (debug.y) unchanged.
+    const int dbgV = settings.rtDebugView;
+    const bool refMode = (dbgV != 0 && dbgV != 59 && dbgV != 60 && dbgV != 61);
+    p.rayParams = glm::vec4(refMode ? 0.0f : static_cast<float>(settings.rtRayScale),
+                            settings.rtRayContribMin,
+                            (settings.rtSingleRay && !refMode) ? 1.0f : 0.0f,
+                            0.0f);
     rayTracing->updateParams(p, app->getCurrentFrame());
 }

@@ -2331,12 +2331,45 @@ public:
                         this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, frameIdx, wBack, wRefl, wRefr, wsky, wSolid, wSolidDepth, wVegC, wVegD);
                         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                             vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
-                        this->sceneRenderer->mainLiquidRenderer->renderPass(this, cmd, frameIdx,
-                            settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2, /*drawBrushLiquid=*/false);
+                        if (settings.waterInMainPass && this->sceneRenderer->mainSolidRenderer
+                            && this->sceneRenderer->mainLiquidRenderer->getWaterMainPipeline() != VK_NULL_HANDLE) {
+                            // Phase-1 water-in-main: blend water directly into the
+                            // main solid color/depth targets (LOAD-preserved) with
+                            // the alpha-blended water pipeline instead of the
+                            // separate water target pair. The current main targets
+                            // are the attachments here, so the in-trace screen
+                            // lookups bind the PREVIOUS frame's solid/veg views
+                            // (1-frame latency, same convention as the RT pipeline
+                            // outputs); back-face depth stays the current frame's
+                            // (written earlier on this command buffer) and sky is
+                            // current. The composite skips its water branch via
+                            // the zeroed dummy water view.
+                            constexpr uint32_t kFif = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+                            const uint32_t prevIdx = (frameIdx + kFif - 1u) % kFif;
+                            VkImageView pSolid = this->sceneRenderer->mainSolidRenderer->getColorView(prevIdx);
+                            VkImageView pSolidDepth = this->sceneRenderer->mainSolidRenderer->getDepthView(prevIdx);
+                            VkImageView pVegC = this->sceneRenderer->vegetationRenderer
+                                ? this->sceneRenderer->vegetationRenderer->getVegColorView(prevIdx) : VK_NULL_HANDLE;
+                            VkImageView pVegD = this->sceneRenderer->vegetationRenderer
+                                ? this->sceneRenderer->vegetationRenderer->getVegDepthView(prevIdx) : VK_NULL_HANDLE;
+                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, frameIdx,
+                                wBack, wRefl, wRefr, wsky, pSolid, pSolidDepth, pVegC, pVegD);
+                            this->sceneRenderer->mainLiquidRenderer->renderMainTargets(this, cmd, frameIdx,
+                                this->sceneRenderer->mainSolidRenderer->getColorImage(frameIdx),
+                                this->sceneRenderer->mainSolidRenderer->getColorView(frameIdx),
+                                this->sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx),
+                                this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx),
+                                wsky, slot.waterDs2);
+                        } else {
+                            this->sceneRenderer->mainLiquidRenderer->renderPass(this, cmd, frameIdx,
+                                settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2, /*drawBrushLiquid=*/false);
+                        }
                         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                             vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
                         // Transition water geometry depth to SRO for the compositor.
-                        VkImage wgdImg = this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(frameIdx);
+                        // (Water-in-main never writes it: skipped there.)
+                        VkImage wgdImg = settings.waterInMainPass ? VK_NULL_HANDLE
+                                                                  : this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(frameIdx);
                         if (wgdImg != VK_NULL_HANDLE) {
                             app->recordTransitionImageLayoutLayer(cmd, wgdImg, VK_FORMAT_D32_SFLOAT,
                                 this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthLayout(frameIdx),
@@ -2385,7 +2418,7 @@ public:
                 // semBrushLiquid (registered, so the composite waits on it). This lets
                 // the composite run in parallel with the brush-liquid overlay instead
                 // of serializing behind it on the water queue.
-                if (settings.waterEnabled && this->sceneRenderer->brushRenderer) {
+                if (settings.waterEnabled && this->sceneRenderer->brushRenderer && !settings.waterInMainPass) {
                     VkImageView blsky = (this->sceneRenderer->skyRenderer)
                         ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
                     VkCommandBuffer brushLiquidCmd = app->allocatePrimaryCommandBuffer();
@@ -2744,7 +2777,9 @@ public:
                 commandBuffer,
                 sceneRenderer->mainSolidRenderer->getColorView(frameIdx),
                 sceneRenderer->mainSolidRenderer->getDepthView(frameIdx),
-                sceneRenderer->mainLiquidRenderer->getWaterDepthView(frameIdx),
+                settings.waterInMainPass
+                    ? sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()
+                    : sceneRenderer->mainLiquidRenderer->getWaterDepthView(frameIdx),
                 brushColorView,
                 brushDepthView,
                 brushBackFaceDepthView,

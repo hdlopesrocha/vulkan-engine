@@ -173,6 +173,28 @@ void WaterRenderer::ensureDummyViews(VulkanApp* app) {
         });
         app->setImageLayoutTracked(dummySkyImage_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
     }
+    if (dummyWaterView_ == VK_NULL_HANDLE) {
+        // Zeroed 1x1 RGBA: composite water input while water blends directly
+        // into the main color target (alpha 0 → mix() keeps the base color).
+        RendererUtils::createImage2DWithVma(app->getDevice(), app, 1, 1,
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, "WaterRenderer: dummyWater",
+            dummyWaterImage_, dummyWaterAlloc_, dummyWaterMem_, dummyWaterView_);
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            app->recordTransitionImageLayoutLayer(cmd, dummyWaterImage_, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
+            VkClearColorValue clear{};
+            clear.float32[0] = 0.0f; clear.float32[1] = 0.0f;
+            clear.float32[2] = 0.0f; clear.float32[3] = 0.0f;
+            VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(cmd, dummyWaterImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 &clear, 1, &range);
+            app->recordTransitionImageLayoutLayer(cmd, dummyWaterImage_, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        });
+        app->setImageLayoutTracked(dummyWaterImage_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+    }
 }
 
 void WaterRenderer::createSamplers(VulkanApp* app) {
@@ -517,16 +539,17 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Create water geometry pipeline with dedicated water shaders.
     // Hybrid RT: the RT variant samples the pipeline outputs + inline ray
     // queries (same lighting/CSM/water otherwise); non-RT hardware uses the
-    // sky-equirect fallback variant.
+    // sky-equirect fallback variant. Phase-1: all four stages are the merged
+    // main.* sources built with WATER_MODE=1.
     const char* waterFragPath = (app && app->rayTracingEnabled())
-        ? "shaders/water_rt.frag.spv" : "shaders/water.frag.spv";
-    VkShaderModule vertModule = app->getOrCreateShaderModule("shaders/water.vert.spv");
+        ? "shaders/main_water_rt.frag.spv" : "shaders/main_water.frag.spv";
+    VkShaderModule vertModule = app->getOrCreateShaderModule("shaders/main_water.vert.spv");
     VkShaderModule fragModule = app->getOrCreateShaderModule(waterFragPath);
     VkShaderModule tescModule = VK_NULL_HANDLE;
     VkShaderModule teseModule = VK_NULL_HANDLE;
     bool hasTessellation = true;
-    tescModule = app->getOrCreateShaderModule("shaders/water.tesc.spv");
-    teseModule = app->getOrCreateShaderModule("shaders/water.tese.spv");
+    tescModule = app->getOrCreateShaderModule("shaders/main_water.tesc.spv");
+    teseModule = app->getOrCreateShaderModule("shaders/main_water.tese.spv");
 
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
 
@@ -680,6 +703,60 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     } else {
         app->resources.addPipeline(waterGeometryPipeline, "WaterRenderer: waterGeometryPipeline");
         std::cout << "[WaterRenderer] Created water geometry pipeline (dynamic rendering, 1 color attachment)" << std::endl;
+    }
+
+    // Phase-1 water-in-main blend variant: same stages/layout, but drawn into
+    // the MAIN solid color/depth targets with alpha blending. Depth writes stay
+    // off so water neither disturbs the solid depth (sampled downstream) nor
+    // self-occludes in draw order; depth test still rejects water behind
+    // terrain. Color format matches the solid pass attachment.
+    {
+        VkPipelineRasterizationStateCreateInfo mainRasterizer = rasterizer;
+        mainRasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+        mainRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+
+        VkPipelineDepthStencilStateCreateInfo mainDepthStencil = depthStencil;
+        mainDepthStencil.depthWriteEnable = VK_FALSE;
+
+        std::array<VkPipelineColorBlendAttachmentState, 1> mainBlendAttachments{};
+        for (auto& att : mainBlendAttachments) {
+            att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+            att.blendEnable = VK_TRUE;
+            att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            att.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            att.colorBlendOp = VK_BLEND_OP_ADD;
+            // Premultiplied-style alpha accumulation: the destination alpha
+            // becomes coverage, so later passes (brush overlay) can depth-test
+            // against the blended result if needed.
+            att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            att.alphaBlendOp = VK_BLEND_OP_ADD;
+        }
+        VkPipelineColorBlendStateCreateInfo mainColorBlending{};
+        mainColorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        mainColorBlending.logicOpEnable = VK_FALSE;
+        mainColorBlending.attachmentCount = static_cast<uint32_t>(mainBlendAttachments.size());
+        mainColorBlending.pAttachments = mainBlendAttachments.data();
+
+        VkFormat mainColorFmt = app->getSwapchainImageFormat();
+        VkPipelineRenderingCreateInfo mainRenderingInfo = pipelineRenderingInfo;
+        mainRenderingInfo.pColorAttachmentFormats = &mainColorFmt;
+        mainRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+
+        VkGraphicsPipelineCreateInfo mainPipelineInfo = pipelineInfo;
+        mainPipelineInfo.pNext = &mainRenderingInfo;
+        mainPipelineInfo.pRasterizationState = &mainRasterizer;
+        mainPipelineInfo.pDepthStencilState = &mainDepthStencil;
+        mainPipelineInfo.pColorBlendState = &mainColorBlending;
+
+        if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &mainPipelineInfo, nullptr, &waterMainPipeline) != VK_SUCCESS) {
+            std::cerr << "[WaterRenderer] Warning: Failed to create water-in-main blend pipeline" << std::endl;
+            waterMainPipeline = VK_NULL_HANDLE;
+        } else {
+            app->resources.addPipeline(waterMainPipeline, "WaterRenderer: waterMainPipeline");
+            std::cout << "[WaterRenderer] Created water-in-main blend pipeline (alpha, depth-write off)" << std::endl;
+        }
     }
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
@@ -1073,8 +1150,124 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     endWaterGeometryPass(cmd);
 }
 
-void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView skyView, VkDescriptorSet overrideWaterDs) {
-    if (!app || cmd == VK_NULL_HANDLE || !brushRenderer_) return;
+void WaterRenderer::renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
+                                      VkImage colorImage, VkImageView colorView,
+                                      VkImage depthImage, VkImageView depthView,
+                                      VkImageView skyView, VkDescriptorSet overrideWaterDs) {
+    if (!app || cmd == VK_NULL_HANDLE) return;
+    if (waterMainPipeline == VK_NULL_HANDLE) return;
+    if (frameIndex >= FRAMES) return;
+    if (colorImage == VK_NULL_HANDLE || colorView == VK_NULL_HANDLE ||
+        depthImage == VK_NULL_HANDLE || depthView == VK_NULL_HANDLE) return;
+
+    // The caller (MyApp, water command buffer) has already waited on the solid
+    // pass semaphore, so the main targets are complete and in SHADER_READ_ONLY.
+    // Transition both to attachment layouts (batched single barrier).
+    {
+        std::vector<VulkanApp::BatchTransition> batch;
+        batch.reserve(2);
+        VulkanApp::BatchTransition colorBegin{};
+        colorBegin.image     = colorImage;
+        colorBegin.format    = app->getSwapchainImageFormat();
+        colorBegin.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        colorBegin.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorBegin.mipLevels = 1;
+        batch.push_back(colorBegin);
+        VulkanApp::BatchTransition depthBegin{};
+        depthBegin.image     = depthImage;
+        depthBegin.format    = VK_FORMAT_D32_SFLOAT;
+        depthBegin.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        depthBegin.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthBegin.mipLevels = 1;
+        batch.push_back(depthBegin);
+        app->recordTransitionBatch(cmd, batch);
+    }
+
+    // LOAD ops: the opaque scene stays; water alpha-blends on top.
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = colorView;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = depthView;
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = {renderWidth, renderHeight};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = &depthAttachment;
+
+    vkCmdBeginRendering(cmd, &renderingInfo);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(renderWidth);
+    viewport.height = static_cast<float>(renderHeight);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {renderWidth, renderHeight};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, waterMainPipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterMainPipeline);
+
+    VkDescriptorSet mainDs = app->getMainDescriptorSet();
+    if (mainDs != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
+    }
+    VkDescriptorSet sceneDs = (overrideWaterDs != VK_NULL_HANDLE) ? overrideWaterDs : getWaterDepthDescriptorSet(frameIndex);
+    if (sceneDs != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
+    }
+
+    waterIndirectRenderer.drawPrepared(cmd);
+
+    vkCmdEndRendering(cmd);
+
+    // Back to SHADER_READ_ONLY: the composite samples the color target and the
+    // depth target is read by later passes (brush overlay, debug widgets).
+    {
+        std::vector<VulkanApp::BatchTransition> batch;
+        batch.reserve(2);
+        VulkanApp::BatchTransition colorEnd{};
+        colorEnd.image     = colorImage;
+        colorEnd.format    = app->getSwapchainImageFormat();
+        colorEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        colorEnd.mipLevels = 1;
+        batch.push_back(colorEnd);
+        VulkanApp::BatchTransition depthEnd{};
+        depthEnd.image     = depthImage;
+        depthEnd.format    = VK_FORMAT_D32_SFLOAT;
+        depthEnd.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        depthEnd.mipLevels = 1;
+        batch.push_back(depthEnd);
+        app->recordTransitionBatch(cmd, batch);
+    }
+
+    (void)skyView;
+}
+
+void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView skyView, VkDescriptorSet overrideWaterDs) {    if (!app || cmd == VK_NULL_HANDLE || !brushRenderer_) return;
     if (frameIndex >= 3) return;
     if (waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
 

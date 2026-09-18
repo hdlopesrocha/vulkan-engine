@@ -20,6 +20,7 @@ layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace;
 layout(location = VARY_LOCALPOS) out vec3 fragLocalPos;          // provide local/world pos to TCS
 layout(location = VARY_LOCALNORMAL) out vec3 fragLocalNormal;       // provide local/world normal to TCS
 layout(location = VARY_SHARPNORMAL) out vec3 fragSharpNormal;      // face normal
+layout(location = VARY_POSCLIP) out vec4 fragPosClip;              // clip-space pos (water back-face pass)
 layout(location = VARY_HSV) out vec3 fragHSV;
 
 void main() {
@@ -51,4 +52,5 @@ void main() {
     
     // apply MVP transform to the vertex position
     gl_Position = ubo.viewProjection * worldPos;
+    fragPosClip = gl_Position;
 }

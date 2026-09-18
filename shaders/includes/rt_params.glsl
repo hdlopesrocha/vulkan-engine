@@ -16,6 +16,10 @@ struct RayTracingParamsGLSL {
     vec4 clipPlanes;   // x=near, y=far
     vec4 sunDir;       // xyz=direction TO sun
     vec4 sunColor;
+    vec4 rayParams;    // x=rayScaleMode (0=full-rate, 1=checkerboard half-rate),
+                       // y=contribMin (skip inline ray when lobe contribution below),
+                       // z=singleRay (1=Fresnel stochastic reflection-xor-refraction,
+                       //   0=dual-trace reference), w=reserved
 };
 
 // Shared ray payload (rgen + rmiss + rchit). MUST stay a single variable:
