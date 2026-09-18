@@ -1,6 +1,20 @@
 .DEFAULT_GOAL := all
-.PHONY: debug release run run-debug clean all imgui shaders server
+.PHONY: debug release run run-debug clean all _all imgui shaders server
 MAKE_JOBS ?= 8
+
+# Success/error jingles. The mp3s live in sounds/ and are played on build
+# completion and after a run exits. The first available player wins; if none
+# is installed the sounds are silently skipped.
+SOUND_DIR := $(CURDIR)/sounds
+define PLAY_SOUND
+{ f="$(SOUND_DIR)/$(1).mp3"; if [ -f "$$f" ]; then \
+    if command -v mpv >/dev/null 2>&1; then mpv --really-quiet --no-video "$$f" >/dev/null 2>&1; \
+    elif command -v ffplay >/dev/null 2>&1; then ffplay -nodisp -autoexit -loglevel quiet "$$f" >/dev/null 2>&1; \
+    elif command -v mpg123 >/dev/null 2>&1; then mpg123 -q "$$f" >/dev/null 2>&1; \
+    elif command -v cvlc >/dev/null 2>&1; then cvlc --play-and-exit --intf dummy "$$f" >/dev/null 2>&1; \
+    fi; \
+fi; }
+endef
 
 # Minimal Makefile: assumes ImGui is installed system-wide and enables it
 CC = g++
@@ -184,7 +198,17 @@ define make-obj-dirs
 	done
 endef
 
-all: imgui shaders $(OUT) server
+# Sound-wrapped build: the real work lives in _all and is driven through a
+# sub-make so a failed build (or link) can still play the error jingle, while
+# a successful one plays the success jingle. BUILD is forwarded explicitly so
+# `make debug` / `make release` keep their target-specific configuration.
+all:
+	@$(MAKE) --no-print-directory _all BUILD=$(BUILD) \
+		|| { $(call PLAY_SOUND,error); exit 1; }
+	@$(call PLAY_SOUND,success)
+
+.PHONY: _all
+_all: imgui shaders $(OUT) server
 	$(call make-obj-dirs)
 	@mkdir -p $(OBJ_DIR)/imgui
 
@@ -265,17 +289,23 @@ release: all
 
 .PHONY: run run-debug valgrind callgrind
 # NOTE: run/run-debug DEPEND on the build (all/debug) so stale binaries or
-# shaders can never be launched by accident — a bare `make run`.refreshes
-# everything first (AGENTS.md documents these as "build + run").
+# shaders can never be launched by accident — a bare `make run` refreshes
+# everything first (AGENTS.md documents these as "build + run"). When the app
+# exits, the success/error jingle reflects its exit status (bash PIPESTATUS
+# keeps the app's code through the tee pipeline).
 run: all
 	@echo "Running app from $(OUT_DIR)/"
 	@mkdir -p logs
-	@cd $(OUT_DIR) && ./app 2>&1 | tee ../logs/run.log
+	@cd $(OUT_DIR) && bash -c './app 2>&1 | tee ../logs/run.log; exit $${PIPESTATUS[0]}' \
+		&& $(call PLAY_SOUND,success) \
+		|| { $(call PLAY_SOUND,error); exit 1; }
 
 run-debug: debug
 	@echo "Running debug build from $(OUT_DIR)/"
 	@mkdir -p logs
-	@cd $(OUT_DIR) && ./app 2>&1 | tee ../logs/run.log
+	@cd $(OUT_DIR) && bash -c './app 2>&1 | tee ../logs/run.log; exit $${PIPESTATUS[0]}' \
+		&& $(call PLAY_SOUND,success) \
+		|| { $(call PLAY_SOUND,error); exit 1; }
 
 valgrind: debug
 	@echo "Running valgrind with suppressions..."
