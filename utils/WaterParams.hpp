@@ -197,7 +197,7 @@ struct WaterParams {
     // it recedes between them. Residual strength kept between crests
     // (0 = fully retreats, 1 = continuous line).
     float foamContactFloor = 0.15f;
-    float foamMaskFloor = 0.35f;      // foam left where the wave mask is 0
+    float foamMaskFloor = 0.15f;     // foam left where the wave mask is 0 (calm patches)
     // Foam shape / motion:
     //  - edge: 0 = soft gradients, 1 = hard, well-defined foam edges
     //  - coverage: global foam coverage multiplier (lighter foam < 1)

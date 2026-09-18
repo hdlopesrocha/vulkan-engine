@@ -45,7 +45,8 @@ layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex;
 
 // World-space direction of DECREASING water depth (toward the shore) from a
 // center raw-depth sample plus two offset samples. Returns vec2(0) when the
-// signal is unusable (clear depth, degenerate span, flat bottom).
+// signal is unusable (clear depth, solid above the surface/in front, degenerate
+// span, flat bottom).
 vec2 waterShoreDirFromSamples(float rawC, float rawX, float rawY,
                               vec2 uvC, vec2 uvX, vec2 uvY, vec3 surfacePos) {
     if (rawC >= 0.9999 || rawX >= 0.9999 || rawY >= 0.9999) return vec2(0.0);
@@ -55,9 +56,13 @@ vec2 waterShoreDirFromSamples(float rawC, float rawX, float rawY,
     vec3 pC = wC.xyz / wC.w;
     vec3 pX = wX.xyz / wX.w;
     vec3 pY = wY.xyz / wY.w;
-    float dC = max(surfacePos.y - pC.y, 0.0);
-    float dX = max(surfacePos.y - pX.y, 0.0);
-    float dY = max(surfacePos.y - pY.y, 0.0);
+    float dC = surfacePos.y - pC.y;
+    float dX = surfacePos.y - pX.y;
+    float dY = surfacePos.y - pY.y;
+    // A solid hit ABOVE the water surface is the terrain itself in front
+    // (bank/cliff occluding the water), not a bottom: the gradient is
+    // unusable there.
+    if (dC < 0.0 || dX < 0.0 || dY < 0.0) return vec2(0.0);
     // Screen step -> world XZ offsets; solve the 2x2 system for the
     // world-space depth gradient, then take its negative (decreasing depth).
     vec2 sX = pX.xz - pC.xz;
@@ -149,7 +154,13 @@ void main() {
         float solidDepthRaw = texture(solidSceneDepthTex, screenUV).r;
         if (solidDepthRaw < 0.9999) {
             vec4 solidWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, solidDepthRaw, 1.0);
-            waterDepth = max(pos.y - solidWorldH.y / solidWorldH.w, 0.0);
+            float drop = pos.y - solidWorldH.y / solidWorldH.w;
+            // Only a solid hit BELOW the water surface is a bottom. A hit
+            // above it is terrain in front (bank/cliff occluding the water):
+            // report unknown (-1) so no shore zone, foam band or contact line
+            // is painted there. (Clamping to 0 faked a waterline and flooded
+            // the map with shore foam wherever land stood behind the water.)
+            waterDepth = (drop >= 0.0) ? drop : -1.0;
         }
 
         float gradStep = max(wp.waveWarp.w, 0.0);
