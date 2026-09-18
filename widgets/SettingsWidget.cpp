@@ -101,15 +101,20 @@ void SettingsWidget::render() {
         ImGui::Text("Hybrid RT");
         ColSeparator();
         ImGui::TextWrapped("Raster=primary, CSM=macro shadows, RT=secondary (reflections, refraction, thickness, contact).");
-        if (ImGui::Checkbox("RT reflections", &settings.rtReflections)) {
+        if (ImGui::Checkbox("RT solid reflections", &settings.rtReflections)) {
         }
-        TooltipOnHover("Solid + water RT reflections (sky on miss/off)");
+        TooltipOnHover("Solid mirror/SSR reflection rays (sky on miss/off).");
+        if (ImGui::Checkbox("RT water reflections", &settings.rtWaterReflections)) {
+        }
+        TooltipOnHover("Water surface reflection rays (inline and RT-pipeline).\n"
+                       "Per-material 'Enable Reflection' still gates each water layer.");
         if (ImGui::Checkbox("RT refractions", &settings.rtRefractions)) {
         }
-        TooltipOnHover("Water refraction via Snell IOR");
+        TooltipOnHover("Water refraction via Snell IOR (the same ray also carries RT thickness).");
         if (ImGui::Checkbox("RT water thickness", &settings.rtThickness)) {
         }
-        TooltipOnHover("RT water thickness + Beer-Lambert absorption");
+        TooltipOnHover("Use the refraction ray's path length as water thickness + Beer-Lambert absorption.\n"
+                       "Off = thickness comes only from the raster back face.");
         if (ImGui::Checkbox("RT local/contact shadows (augment CSM)", &settings.rtLocalShadows)) {
         }
         TooltipOnHover("Selective RT contact shadows augmenting CSM (off = CSM-only, recommended)");

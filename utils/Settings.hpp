@@ -75,8 +75,9 @@ public:
     // ── Hybrid RT (raster owns primary, CSM owns macro shadows, RT owns
     // secondary visibility: solid/water reflections, water refraction/
     // thickness, selective local/contact shadows) ──
-    bool rtReflections = true;   // solid + water RT reflections (sky on miss/off)
-    bool rtRefractions = true;   // water refraction via Snell (IOR below)
+    bool rtReflections = true;   // solid RT reflections (mirror/SSR rays)
+    bool rtWaterReflections = true; // water RT reflections (own toggle so each ray path is switchable)
+    bool rtRefractions = true;   // water refraction via Snell (IOR below); also carries RT thickness
     bool rtThickness = true;     // RT water thickness + Beer-Lambert absorption
     bool rtLocalShadows = false; // selective RT contact shadows augmenting CSM (off = CSM-only, recommended)
     bool rtWaterPipeline = false; // water via async RT pipeline outputs (off = inline ray queries)

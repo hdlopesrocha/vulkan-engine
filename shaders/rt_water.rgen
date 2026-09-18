@@ -77,7 +77,7 @@ void main() {
     // shows up in reflected water. Refraction stays solid-only (underwater
     // targets).
     vec4 reflectValue = vec4(0.0, 0.0, 0.0, 0.0);
-    if (rt.toggles.x > 0.5) {
+    if (rt.rayParams.w > 0.5) {
         vec3 R = reflect(-V, N);
         rtPayload.data = vec4(0.0);
         rtPayload.coarseF = 0.0;

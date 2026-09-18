@@ -60,7 +60,7 @@ struct RTProxyBox {
 // debug.y = TLAS ready, debug.z = self-skip distance, debug.w = water RT
 // pipeline selector (1 = sample pipeline outputs, 0 = inline ray queries).
 struct RayTracingParams {
-    glm::vec4 toggles = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f); // x=reflections y=refractions z=thickness w=localShadows
+    glm::vec4 toggles = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f); // x=solid reflections y=refractions z=thickness w=localShadows
     glm::vec4 distances = glm::vec4(500.0f, 300.0f, 12.0f, 0.6f); // x=maxReflect y=maxRefract z=maxShadowDist w=roughnessThreshold
     glm::vec4 water = glm::vec4(1.333f, 6.0f, 0.0f, 0.0f); // x=IOR, y=maxWaterThickness (both mirrored from water layer 0 for the layer-unaware pipeline path), z=coarseBoxSize, w reserved
     glm::vec4 absorption = glm::vec4(0.35f, 0.12f, 0.08f, 1.0f); // rgb=Beer-Lambert coeff, a=thicknessScale (mirrored from water layer 0; inline path reads WaterParams)
@@ -76,8 +76,8 @@ struct RayTracingParams {
     // x=rayScaleMode (0=full-rate reference, 1=checkerboard half-rate inline),
     // y=contribMin (skip the inline ray when the lobe contribution is below),
     // z=singleRay (1=Fresnel stochastic reflection-xor-refraction for water,
-    //   0=dual-trace reference), w=reserved.
-    glm::vec4 rayParams = glm::vec4(1.0f, 0.02f, 1.0f, 0.0f);
+    //   0=dual-trace reference), w=waterReflections (1 = water reflection rays enabled).
+    glm::vec4 rayParams = glm::vec4(1.0f, 0.02f, 1.0f, 1.0f);
 };
 
 class RayTracingResources {

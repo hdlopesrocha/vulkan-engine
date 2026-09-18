@@ -19,7 +19,8 @@ struct RayTracingParamsGLSL {
     vec4 rayParams;    // x=rayScaleMode (0=full-rate, 1=checkerboard half-rate),
                        // y=contribMin (skip inline ray when lobe contribution below),
                        // z=singleRay (1=Fresnel stochastic reflection-xor-refraction,
-                       //   0=dual-trace reference), w=reserved
+                       //   0=dual-trace reference),
+                       // w=waterReflections (1 = water reflection rays enabled)
 };
 
 // Shared ray payload (rgen + rmiss + rchit). MUST stay a single variable:

@@ -2382,16 +2382,18 @@ public:
                         // DEPTH_STENCIL_ATTACHMENT (VUID layout mismatch)).
                         // Outputs feed NEXT frame's water shading (1-frame
                         // latency, same-queue ordered). Own timestamps (20-21).
-                        // Skip the whole dispatch when no water material has RT
-                        // reflection or refraction enabled: the outputs would be
-                        // sampled by nobody (per-layer toggles gate the lobes).
-                        bool waterRtNeeded = false;
+                        // Skip the whole dispatch when no enabled ray path can
+                        // use it: per-layer toggles AND the global settings
+                        // toggles must both allow at least one lobe.
+                        bool anyLayerRefl = false;
+                        bool anyLayerRefr = false;
                         for (const WaterParams& wp : waterParams) {
-                            if (wp.enableReflection || wp.enableRefraction) {
-                                waterRtNeeded = true;
-                                break;
-                            }
+                            anyLayerRefl = anyLayerRefl || wp.enableReflection;
+                            anyLayerRefr = anyLayerRefr || wp.enableRefraction;
                         }
+                        const bool waterRtNeeded =
+                            (settings.rtWaterReflections && anyLayerRefl) ||
+                            (settings.rtRefractions && anyLayerRefr);
                         if (waterRtNeeded &&
                             this->sceneRenderer->rayTracing &&
                             this->sceneRenderer->rayTracing->isPipelineReady() &&

@@ -842,7 +842,10 @@ void shadeWaterSurface() {
             vec4 pipeRefr = textureLod(rtRefractTex, screenUV, 0.0);
             if (pipeRefr.a >= 0.0) {
                 sceneColor = pipeRefr.rgb;
-                rtThickness = pipeRefr.a;
+                // Thickness only when the RT-thickness toggle is on: the
+                // ray still runs for the refracted color, but its path
+                // length is not consumed as a water column when disabled.
+                rtThickness = (rt.toggles.z > 0.5) ? pipeRefr.a : -1.0;
                 refrResolved = true;
                 refrMask = 2.0;
                 depthSource = 5.0;
@@ -869,7 +872,7 @@ void shadeWaterSurface() {
             // a >= 0 always from rtTraceWater: capped path length on hit, or
             // RT_DEEP_WATER marker on miss (deep, unresolved water). Only a
             // real triangle hit counts as bottom content for miss-recovery.
-            rtThickness = hit.a;
+            rtThickness = (rt.toggles.z > 0.5) ? hit.a : -1.0;
             rtThickFromScene = true;
             refrResolved = true;
             refrMask = 3.0;
@@ -1158,7 +1161,7 @@ void shadeWaterSurface() {
     // report, and the migration plan deletes the pipeline in Phase 3. The
     // pipe texel is still sampled so DEBUG_MODE_RAY_MASK keeps reporting pipe
     // coverage — but only while the layer's Reflection toggle is on.
-    if (enableReflection && usePipe && rt.toggles.x > 0.5) {
+    if (enableReflection && usePipe && rt.rayParams.w > 0.5) {
         vec4 pipeRefl = textureLod(rtReflectTex, screenUV, 0.0);
         if (pipeRefl.a > 0.5) reflMaskDbg = 2.0;
     }
@@ -1173,7 +1176,7 @@ void shadeWaterSurface() {
     bool reflDidTrace = false;
     vec4 reflHit = vec4(0.0);
     vec3 reflOrigin = vec3(0.0);
-    if (enableReflection && !reflBudgetSkip && rtReady && rt.toggles.x > 0.5) {
+    if (enableReflection && !reflBudgetSkip && rtReady && rt.rayParams.w > 0.5) {
         // Origin on the UNDISPLACED base surface, biased along the base
         // normal (mirrors main.frag): the BLAS holds the undisplaced CPU
         // mesh, so tracing from the displaced (tessellated wave) surface
@@ -1217,7 +1220,7 @@ void shadeWaterSurface() {
             reflMaskDbg = 3.0;
         }
         reflResolved = true;
-    } else if (!reflResolved && rtReady && rt.toggles.x > 0.5 && reflBudgetSkip) {
+    } else if (!reflResolved && rtReady && rt.rayParams.w > 0.5 && reflBudgetSkip) {
         reflMaskDbg = 4.0;
     }
 #endif

@@ -2425,6 +2425,6 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     p.rayParams = glm::vec4(refMode ? 0.0f : static_cast<float>(settings.rtRayScale),
                             settings.rtRayContribMin,
                             (settings.rtSingleRay && !refMode) ? 1.0f : 0.0f,
-                            0.0f);
+                            settings.rtWaterReflections ? 1.0f : 0.0f);
     rayTracing->updateParams(p, app->getCurrentFrame());
 }
