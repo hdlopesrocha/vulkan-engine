@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <array>
+#include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 #include "../ShaderStage.hpp"
 #include "../includes/locations.hpp"
@@ -64,11 +65,17 @@ void WaterRenderer::setSceneRenderers(SolidRenderer* solid, BrushRenderer* brush
     waterWireframe_ = waterWireframe;
 }
 
+namespace {
 
+// Single source of truth for CPU -> GPU water parameter packing. Shared by
+// the one-time buffer initialization and the runtime widget updates so both
+// paths can never drift apart. Field meanings are documented in
+// vulkan/ubo/WaterParamsGPU.hpp and mirrored by the GLSL struct.
+WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
+    // Shore direction: 0 deg = +Z, 90 deg = +X (right-handed XZ plane).
+    const float shoreAngle = glm::radians(p.shoreWaveAngle);
+    const glm::vec2 shoreDir(std::sin(shoreAngle), std::cos(shoreAngle));
 
-void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p) {
-    if (!appPtr) return;
-    if (layer >= waterParamsCount) return;
     WaterParamsGPU gpu{};
     gpu.params1 = glm::vec4(p.refractionStrength, p.fresnelPower, p.transparency, p.reflectionStrength);
     gpu.params2 = glm::vec4(p.waterTint, p.noiseScale, static_cast<float>(p.noiseOctaves), p.noisePersistence);
@@ -81,13 +88,48 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
                               p.enableBlur ? 1.0f : 0.0f,
                               p.blurRadius);
     gpu.reserved2 = glm::vec4(static_cast<float>(p.blurSamples), p.volumeBlurRate, p.volumeBumpRate, p.uniformReflection ? 1.0f : 0.0f);
+    gpu.reserved3 = glm::vec4(0.0f); // legacy cubemap-available flag (removed with Solid360)
+    gpu.tessParams = glm::vec4(p.tessNearDist, p.tessFarDist, p.tessMinLevel, p.tessMaxLevel);
     gpu.causticColor = glm::vec4(p.causticColor, 0.0f);
     gpu.causticParams = glm::vec4(p.causticSoftness, p.causticIntensity, 0.0f, p.causticDepthScale);
     gpu.causticExtraParams = glm::vec4(0.0f); // wave-shape caustics: no mode/line/speed knobs
     gpu.absorptionParams = glm::vec4(p.absorption, p.absorptionScale);
     gpu.refractionParams = glm::vec4(p.ior, p.maxThickness, p.shoreFadeDepth, 0.0f);
-    gpu.reserved3 = glm::vec4(0.0f); // legacy cubemap-available flag (removed with Solid360)
-    gpu.tessParams = glm::vec4(p.tessNearDist, p.tessFarDist, p.tessMinLevel, p.tessMaxLevel);
+
+    // Shore-wave system
+    gpu.waveToggles = glm::vec4(p.enableWaves ? 1.0f : 0.0f,
+                                p.enableFoam ? 1.0f : 0.0f,
+                                p.enableVolumetric ? 1.0f : 0.0f, 0.0f);
+    gpu.waveZones = glm::vec4(p.zoneDeepDepth, p.zoneBreakDepth, p.zoneShallowDepth, 0.0f);
+    gpu.waveDirection = glm::vec4(shoreDir.x, shoreDir.y, 0.0f, 0.0f);
+    gpu.waveShape = glm::vec4(p.waveSharpDeep, p.waveSharpBreak, p.waveSharpShallow, p.waveShoalGain);
+    gpu.waveShoal = glm::vec4(p.waveShoalSpeed, p.waveShallowDecay, p.waveLineAmplitude, p.breakerWidth);
+    gpu.waveComponent1 = glm::vec4(p.waveFrequency, p.waveSpeed, 1.0f, 0.0f);
+    gpu.waveComponent2 = glm::vec4(p.crossWaveFrequency, p.crossWaveSpeed, p.crossWaveAmplitude, p.crossWavePhase);
+    gpu.waveBreaker = glm::vec4(p.breakerAmplitude, p.waveChopAmount, p.whitecapOnset, 0.0f);
+    gpu.waveCurl = glm::vec4(p.breakerCurl, p.breakerCrestCurve, 0.0f, 0.0f);
+    gpu.waveWarp = glm::vec4(p.waveWarpAmount, p.waveAmpVariation, p.waveRidgeStretch, p.shoreGradientStep);
+    gpu.waveMask = glm::vec4(p.waveMaskScale, p.waveMaskThreshold, p.waveMaskSoftness, p.waveMaskSpeed);
+    gpu.foamParams = glm::vec4(p.foamCrestThreshold, p.foamTrailPhase, p.foamDecay, p.foamColorAmount);
+    gpu.foamNoise = glm::vec4(p.foamNoiseScale, p.foamNoiseSpeed, p.foamNoiseAmount, p.foamShoreAmount);
+    gpu.foamExtra = glm::vec4(p.foamMaskFloor, p.foamDiffuseFloor, p.foamAmbient, 0.0f);
+    gpu.foamContact = glm::vec4(p.foamContactWidth, p.foamContactAmount, p.foamContactAlpha, 0.0f);
+    gpu.foamColor = glm::vec4(p.foamColor, 0.0f);
+    gpu.oceanColor = glm::vec4(p.oceanColor, p.oceanColorStart);
+    gpu.oceanParams = glm::vec4(p.oceanDepthScale, 0.0f, 0.0f, 0.0f);
+    gpu.volumetricParams = glm::vec4(p.volumetricStrength, p.volumetricDensity, p.volumetricPhaseG, 0.0f);
+    gpu.volumetricColor = glm::vec4(p.volumetricColor, 0.0f);
+    return gpu;
+}
+
+} // namespace
+
+
+
+void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p) {
+    if (!appPtr) return;
+    if (layer >= waterParamsCount) return;
+    WaterParamsGPU gpu = makeWaterParamsGPU(p);
 
     size_t offset = static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
     void* data = nullptr;
@@ -475,11 +517,13 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     sceneBindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     sceneBindings[4].pImmutableSamplers = nullptr;
 
-    // Solid pass depth (binding 5) — SSR march target + occlusion test.
+    // Solid pass depth (binding 5) — SSR march target + occlusion test, and
+    // the water-depth bottom the TES samples for the shore-wave regions
+    // (the water volume's own back face sits an SDF bias below the terrain).
     sceneBindings[5].binding = 5;
     sceneBindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sceneBindings[5].descriptorCount = 1;
-    sceneBindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
     sceneBindings[5].pImmutableSamplers = nullptr;
 
     // Vegetation color (binding 6) — reflection lookup over the grass layer.
@@ -1037,31 +1081,8 @@ VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint
 void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams) {
     if (waterParamsBuffer.buffer == VK_NULL_HANDLE) return;
 
-    auto makeGpu = [&](const WaterParams& p) {
-        WaterParamsGPU gpu{};
-        gpu.params1 = glm::vec4(p.refractionStrength, p.fresnelPower, p.transparency, p.reflectionStrength);
-        gpu.params2 = glm::vec4(p.waterTint, p.noiseScale, static_cast<float>(p.noiseOctaves), p.noisePersistence);
-        gpu.params3 = glm::vec4(p.noiseTimeSpeed, p.noiseLacunarity, p.specularIntensity, p.specularPower);
-        gpu.shallowColor = glm::vec4(p.shallowColor, p.waveDepthTransition);
-        gpu.deepColor = glm::vec4(p.deepColor, p.glitterIntensity);
-        gpu.waveParams = glm::vec4(p.tessNoiseInfluence, 0.0f, p.bumpAmplitude, p.depthFalloff);
-        gpu.reserved1 = glm::vec4(p.enableReflection ? 1.0f : 0.0f,
-                                  p.enableRefraction ? 1.0f : 0.0f,
-                                  p.enableBlur ? 1.0f : 0.0f,
-                                  p.blurRadius);
-        gpu.reserved2 = glm::vec4(static_cast<float>(p.blurSamples), p.volumeBlurRate, p.volumeBumpRate, p.uniformReflection ? 1.0f : 0.0f);
-        gpu.causticColor = glm::vec4(p.causticColor, 0.0f);
-        gpu.causticParams = glm::vec4(p.causticSoftness, p.causticIntensity, 0.0f, p.causticDepthScale);
-        gpu.causticExtraParams = glm::vec4(0.0f); // wave-shape caustics: no mode/line/speed knobs
-        gpu.absorptionParams = glm::vec4(p.absorption, p.absorptionScale);
-        gpu.refractionParams = glm::vec4(p.ior, p.maxThickness, p.shoreFadeDepth, 0.0f);
-        gpu.reserved3 = glm::vec4(0.0f); // legacy cubemap-available flag (removed with Solid360)
-        gpu.tessParams = glm::vec4(p.tessNearDist, p.tessFarDist, p.tessMinLevel, p.tessMaxLevel);
-        return gpu;
-    };
-
     for (uint32_t i = 0; i < waterParams.size(); ++i) {
-        const WaterParamsGPU gpu = (i < waterParams.size()) ? makeGpu(waterParams[i]) : WaterParamsGPU();
+        const WaterParamsGPU gpu = makeWaterParamsGPU(waterParams[i]);
         memcpy(static_cast<char*>(waterParamsBuffer.mappedData) + i * sizeof(WaterParamsGPU), &gpu, sizeof(WaterParamsGPU));
     }
 }

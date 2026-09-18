@@ -34,17 +34,145 @@ void WaterWidget::render() {
         }
         ImGui::Separator();
 
-        // Wave settings
-        if (ImGui::CollapsingHeader("Wave Animation", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::SliderFloat("Wave Speed", &layerParams.waveSpeed, 0.0f, 2.0f);
-            ImGui::SliderFloat("Wave Height", &layerParams.bumpAmplitude, 0.0f, 256.0f);
-            ImGui::SliderFloat("Wave Depth Transition", &layerParams.waveDepthTransition, 0.0f, 100.0f, "%.1f");
-            ImGuiHelpers::SetTooltipIfHovered("Distance (world units) over which waves ramp from zero to full height.\n0 = disabled (no depth-based attenuation).");
-            ImGui::SliderFloat("Noise Scale", &layerParams.noiseScale, 0.01f, 256.0f, "%.2f");
+        // ── Shore waves (master + shape + direction) ──
+        if (ImGui::CollapsingHeader("Shore Waves", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Checkbox("Enable Waves", &layerParams.enableWaves);
+            ImGuiHelpers::SetTooltipIfHovered("Master toggle for the thickness-zoned shore-wave system.\n"
+                                              "Only the first water material enables it by default.");
+            ImGui::SliderFloat("Wave Height", &layerParams.bumpAmplitude, 0.0f, 64.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Overall vertical amplitude of the wave displacement (world units).");
+            ImGui::SliderFloat("Wave Speed", &layerParams.waveSpeed, 0.0f, 30.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Deep-water phase speed of the primary swell (m/s).");
+            ImGui::SliderFloat("Wave Frequency", &layerParams.waveFrequency, 0.001f, 1.0f, "%.4f");
+            ImGuiHelpers::SetTooltipIfHovered("Primary swell spatial frequency (rad/m). Wavelength = 2*pi/frequency.");
+            ImGui::SliderFloat("Shore Direction (deg)", &layerParams.shoreWaveAngle, 0.0f, 360.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("FALLBACK wave propagation direction toward the shore.\n"
+                                              "The shader normally derives the local shore direction from the\n"
+                                              "water-depth gradient (toward thinning water); this angle is used\n"
+                                              "only where the bottom cannot be measured.\n"
+                                              "0 = +Z, 90 = +X, 180 = -Z, 270 = -X.");
+            ImGui::SliderFloat("Shore Gradient Step", &layerParams.shoreGradientStep, 0.0f, 64.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Screen-texel step used to sample the water-depth gradient that\n"
+                                              "yields the shore direction. Wider = more stable deep-ocean direction.\n"
+                                              "0 = disable the gradient and always use the fixed Shore Direction angle.");
+            ImGui::Separator();
+            ImGui::Text("Cross swell (breaks up the crest lines)");
+            ImGui::SliderFloat("Cross Frequency", &layerParams.crossWaveFrequency, 0.001f, 2.0f, "%.4f");
+            ImGui::SliderFloat("Cross Speed", &layerParams.crossWaveSpeed, 0.0f, 30.0f, "%.2f");
+            ImGui::SliderFloat("Cross Amplitude", &layerParams.crossWaveAmplitude, 0.0f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Cross Phase Offset", &layerParams.crossWavePhase, -256.0f, 256.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Offset of the cross train along the shore direction (world units).\n"
+                                              "Both trains move along the same shore direction; this shifts them apart.");
+            ImGui::Separator();
+            ImGui::SliderFloat("Chop Amount", &layerParams.waveChopAmount, 0.0f, 2.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("FBM chop mixed into the ridged crests (uses the Noise Detail spectrum).");
+            ImGui::SliderFloat("Ridge Stretch", &layerParams.waveRidgeStretch, 1.0f, 24.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Anisotropy of the ridged Perlin crests: along/across frequency ratio.\n"
+                                              "Higher = long, wave-like crest lines; 1 = isotropic ridge blobs.");
+            ImGui::SliderFloat("Crest Phase Warp", &layerParams.waveWarpAmount, 0.0f, 3.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Extra Perlin domain-warp drift of the ridged crests (feature units).\n"
+                                              "Uses the same Noise Detail spectrum as the chop.");
+            ImGui::SliderFloat("Crest Amp Variation", &layerParams.waveAmpVariation, 0.0f, 0.95f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Perlin-driven local crest height variation (0 = uniform crests).");
+            ImGui::SliderFloat("Whitecap Onset", &layerParams.whitecapOnset, 0.0f, 0.95f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Shoaling progress at which whitecaps start to appear (0..1).");
+        }
+
+        // ── Depth zones and wave shape ──
+        if (ImGui::CollapsingHeader("Wave Zones (Thickness)", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextWrapped("Waves are shaped by the measured water thickness: deep ocean swell above "
+                               "Zone Deep, shoaling and breakers toward Zone Break, foam and a decaying "
+                               "line wave below it, ending at the waterline.");
+            ImGui::SliderFloat("Zone Deep Depth", &layerParams.zoneDeepDepth, 1.0f, 1024.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Water thickness at/above which the open-ocean swell is at full strength.");
+            ImGui::SliderFloat("Zone Break Depth", &layerParams.zoneBreakDepth, 1.0f, 512.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Breaker line: waves crash and foam is born around this thickness.");
+            ImGui::SliderFloat("Zone Shallow Depth", &layerParams.zoneShallowDepth, 0.0f, 256.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Below this thickness only the residual shore line wave remains.");
+            ImGui::Separator();
+            ImGui::SliderFloat("Shoal Gain", &layerParams.waveShoalGain, 0.0f, 4.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Amplitude gain from the deep zone toward the breaker line.");
+            ImGui::SliderFloat("Shoal Speed Drop", &layerParams.waveShoalSpeed, 0.0f, 1.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("How much the phase speed drops as the water shallows [0..1].");
+            ImGui::SliderFloat("Shallow Decay", &layerParams.waveShallowDecay, 0.05f, 6.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Amplitude decay exponent between the breaker line and the shallow zone.");
+            ImGui::SliderFloat("Line Wave Amplitude", &layerParams.waveLineAmplitude, 0.0f, 1.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Residual shore line wave height fraction below the shallow zone.");
+            ImGui::SliderFloat("Breaker Amplitude", &layerParams.breakerAmplitude, 0.0f, 3.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Extra crest height concentrated at the breaker line.");
+            ImGui::SliderFloat("Breaker Width", &layerParams.breakerWidth, 0.1f, 128.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Depth half-width of the breaker amplitude bump.");
+            ImGui::SliderFloat("Breaker Curl", &layerParams.breakerCurl, -0.9f, 0.9f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Forward-leaning lip of the breaking crest (profile skew).\n"
+                                              "Sign flips the lean direction, 0 = symmetric crest.");
+            ImGui::SliderFloat("Crest Curvature", &layerParams.breakerCrestCurve, 0.0f, 2.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Hooks the breaking crest line into a curl around the break line\n"
+                                              "(0 = straight crests). Only active where the wave is breaking.");
+            ImGui::Separator();
+            ImGui::SliderFloat("Sharpness Deep", &layerParams.waveSharpDeep, 0.25f, 12.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Crest sharpness in deep water (1 = cosine, higher = peaked).");
+            ImGui::SliderFloat("Sharpness Break", &layerParams.waveSharpBreak, 0.25f, 16.0f, "%.2f");
+            ImGui::SliderFloat("Sharpness Shallow", &layerParams.waveSharpShallow, 0.25f, 12.0f, "%.2f");
+        }
+
+        // ── Organic calm patches ──
+        if (ImGui::CollapsingHeader("Organic Mask")) {
+            ImGui::TextWrapped("Low-frequency noise mask: in calm patches the wave amplitude can drop to zero.");
+            ImGui::SliderFloat("Mask Scale", &layerParams.waveMaskScale, 0.0f, 0.2f, "%.4f");
+            ImGui::SliderFloat("Mask Threshold", &layerParams.waveMaskThreshold, 0.0f, 1.0f, "%.3f");
+            ImGui::SliderFloat("Mask Softness", &layerParams.waveMaskSoftness, 0.0f, 1.0f, "%.3f");
+            ImGui::SliderFloat("Mask Speed", &layerParams.waveMaskSpeed, 0.0f, 1.0f, "%.3f");
+        }
+
+        // ── Foam / whitewater ──
+        if (ImGui::CollapsingHeader("Foam", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Checkbox("Enable Foam", &layerParams.enableFoam);
+            ImGui::ColorEdit3("Foam Color", &layerParams.foamColor.x);
+            ImGui::SliderFloat("Foam Amount", &layerParams.foamColorAmount, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Crest Threshold", &layerParams.foamCrestThreshold, 0.0f, 0.99f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Wave crest height at which foam starts appearing.");
+            ImGui::SliderFloat("Trail Lag", &layerParams.foamTrailPhase, 0.0f, 2.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Lag of the trailing foam band behind the ridged crest\n"
+                                              "(ridge-feature units; 1 = one crest feature).");
+            ImGui::SliderFloat("Foam Decay", &layerParams.foamDecay, 0.0f, 0.5f, "%.4f");
+            ImGuiHelpers::SetTooltipIfHovered("Foam extinction per meter below the breaker line.");
+            ImGui::SliderFloat("Shore Foam", &layerParams.foamShoreAmount, 0.0f, 1.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Persistent foam line on the shallow band (fades with the line wave).");
+            ImGui::SliderFloat("Contact Width", &layerParams.foamContactWidth, 0.05f, 32.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Depth band of the final foam line where the water meets the\n"
+                                              "solid (peaks at depth 0, world units).");
+            ImGui::SliderFloat("Contact Amount", &layerParams.foamContactAmount, 0.0f, 1.0f, "%.3f");
+            ImGui::SliderFloat("Contact Opacity", &layerParams.foamContactAlpha, 0.0f, 1.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Minimum composite opacity forced for the contact line so the\n"
+                                              "last water pixels still render foam.");
+            ImGui::Separator();
+            ImGui::SliderFloat("Foam Noise Scale", &layerParams.foamNoiseScale, 0.0f, 2.0f, "%.3f");
+            ImGui::SliderFloat("Foam Noise Speed", &layerParams.foamNoiseSpeed, 0.0f, 2.0f, "%.3f");
+            ImGui::SliderFloat("Foam Noise Amount", &layerParams.foamNoiseAmount, 0.0f, 1.0f, "%.3f");
+            ImGui::SliderFloat("Foam Mask Floor", &layerParams.foamMaskFloor, 0.0f, 1.0f, "%.3f");
+            ImGui::SliderFloat("Foam Diffuse Floor", &layerParams.foamDiffuseFloor, 0.0f, 1.0f, "%.3f");
+            ImGui::SliderFloat("Foam Ambient", &layerParams.foamAmbient, 0.0f, 1.0f, "%.3f");
+        }
+
+        // ── Noise detail (chop + refraction + specular) ──
+        if (ImGui::CollapsingHeader("Noise Detail")) {
+            ImGui::SliderFloat("Noise Scale", &layerParams.noiseScale, 0.01f, 4.0f, "%.3f");
             ImGui::SliderInt("Noise Octaves", &layerParams.noiseOctaves, 1, 8);
             ImGui::SliderFloat("Noise Persistence", &layerParams.noisePersistence, 0.1f, 0.9f);
             ImGui::SliderFloat("Noise Lacunarity", &layerParams.noiseLacunarity, 1.0f, 4.0f);
             ImGui::SliderFloat("Noise Time Speed", &layerParams.noiseTimeSpeed, 0.0f, 5.0f);
+        }
+
+        // ── Volumetric scattering ──
+        if (ImGui::CollapsingHeader("Volumetric Scattering", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextWrapped("Single-scattering sunlight inside the measured water column "
+                               "(Henyey-Greenstein phase, saturating with thickness).");
+            ImGui::Checkbox("Enable Volumetric", &layerParams.enableVolumetric);
+            ImGui::ColorEdit3("Scatter Color", &layerParams.volumetricColor.x);
+            ImGui::SliderFloat("Scatter Strength", &layerParams.volumetricStrength, 0.0f, 2.0f, "%.3f");
+            ImGui::SliderFloat("Scatter Density", &layerParams.volumetricDensity, 0.0f, 2.0f, "%.4f");
+            ImGui::SliderFloat("Scatter Anisotropy", &layerParams.volumetricPhaseG, -0.95f, 0.95f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Henyey-Greenstein g: 0 = isotropic, >0 = forward scattering (sun halo).");
         }
 
         // Tessellation settings
@@ -85,6 +213,12 @@ void WaterWidget::render() {
             ImGui::ColorEdit3("Shallow Color", &layerParams.shallowColor.x);
             ImGui::ColorEdit3("Deep Color", &layerParams.deepColor.x);
             ImGui::SliderFloat("Depth Falloff", &layerParams.depthFalloff, 0.001f, 1.0f);
+            ImGui::Separator();
+            ImGui::ColorEdit3("Ocean Color", &layerParams.oceanColor.x);
+            ImGuiHelpers::SetTooltipIfHovered("Third color stop: deep-ocean tint beyond Ocean Color Start.");
+            ImGui::SliderFloat("Ocean Color Start", &layerParams.oceanColorStart, 0.0f, 512.0f, "%.1f");
+            ImGui::SliderFloat("Ocean Depth Scale", &layerParams.oceanDepthScale, 1.0f, 512.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Thickness ramp over which the deep tint blends to the ocean color.");
         }
 
         // Reflection settings
@@ -103,17 +237,6 @@ void WaterWidget::render() {
             ImGui::SetItemTooltip("Sharpness of the specular highlight.\nHigher = tighter, smaller hotspot.");
             ImGui::SliderFloat("Glitter Intensity", &layerParams.glitterIntensity, 0.0f, 5.0f);
             ImGui::SetItemTooltip("Brightness of sun glitter sparkles on the water surface.");
-        }
-
-        // Water volume depth-based effects
-        if (ImGui::CollapsingHeader("Water Volume", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::TextWrapped("Bump amplitude ramps up with water volume thickness "
-                               "(back-face depth minus front-face depth).");
-            ImGui::SliderFloat("Volume Bump Rate", &layerParams.volumeBumpRate, 0.0f, 1.0f, "%.3f");
-            ImGuiHelpers::SetTooltipIfHovered("Exponential rate for bump/wave amplitude increase with water thickness.\n"
-                                  "0 = no depth-based bump modulation (full bump everywhere).\n"
-                                  "Higher = bump reaches max faster with depth.");
-            // volume light accumulation removed; caustics preserved below
         }
 
         // Caustics (physical sunlight focusing; wave-shape driven)

@@ -46,6 +46,7 @@ enum class DebugMode : int {
     Caustics,             // water only: final caustic mask
     DepthSource,          // water only: which branch produced the thickness (must stay budgeted)
     WaterCompose,         // water only: tint / mirror / thickness channels
+    WaterRegions,         // water only: thickness-zone region palette (deep/shoal/breaker/foam/line)
     Count
 };
 
@@ -79,6 +80,7 @@ inline constexpr const char* kDebugModeNames[] = {
     "Caustics",
     "Water Depth Source",
     "Water Compose",
+    "Water Regions",
 };
 
 static_assert(sizeof(kDebugModeNames) / sizeof(kDebugModeNames[0])

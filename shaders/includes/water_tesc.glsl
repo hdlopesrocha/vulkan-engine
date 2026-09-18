@@ -76,7 +76,6 @@ void main() {
         float maxLevel   = wp.tessParams.w;
         float noiseInf   = wp.waveParams.x;
         float timeVal    = waterRenderUBO.timeParams.x * wp.params3.x;
-        float lacunarity = wp.params3.y;
 
         // Per-edge tessellation: evaluate noise at each edge's midpoint so
         // adjacent patches sharing an edge compute the same midpoint, the same
@@ -94,14 +93,13 @@ void main() {
             float db = length(ubo.viewPos.xyz - vb);
             float distTess = clamp(farDist / max(min(da, db), 1.0), minLevel, maxLevel);
 
-            if (noiseInf > 0.0) {
+            if (noiseInf > 0.0 && wp.waveToggles.x > 0.5) {
                 // Noise at edge midpoint — deterministic, identical for both
-                // adjacent patches sharing this edge
+                // adjacent patches sharing this edge. The TCS has no thickness
+                // signal, so the field is sampled as deep water (-1).
                 vec3 edgeMid = (va + vb) * 0.5;
                 float noiseVal = waterWaveDisplacement(
-                    edgeMid, timeVal,
-                    wp.params2.y, int(max(wp.params2.z, 1.0)), wp.params2.w, lacunarity,
-                    1.0, 1.0
+                    edgeMid, timeVal, -1.0, 1.0, wp.waveDirection.xy, wp
                 );
                 float noiseMod = 1.0 + noiseInf * (noiseVal - 0.5);
                 outer[e] = clamp(distTess * noiseMod, minLevel, maxLevel);

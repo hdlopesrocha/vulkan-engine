@@ -398,6 +398,10 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             float tintDepthScale = max(wp.causticParams.w, 0.0001);
             float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
             vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+            // Third color stop: deep-ocean tint beyond oceanColorStart.
+            float oceanF = 1.0 - exp(-max(thickness - wp.oceanColor.w, 0.0)
+                                      / max(wp.oceanParams.x, 1e-3));
+            waterTintColor = mix(waterTintColor, wp.oceanColor.rgb, oceanF);
             vec3 transmittance = exp(-min(
                 wp.absorptionParams.rgb * max(thickness * wp.absorptionParams.a, 0.0),
                 vec3(2.5)));
@@ -643,20 +647,18 @@ void shadeWaterSurface() {
     vec3 B  = cross(flatN, T);
 
     vec3 normal;
+    // Same single thickness-zoned wave field the TES displaced the geometry
+    // with: identical undisplaced base position, animation time, water
+    // thickness (fragWaterDepth forwarded by the TES) and raw amplitude
+    // (fragBasePos.w), so the per-pixel analytic normal matches the
+    // rasterized surface exactly while still resolving detail far below the
+    // tessellation density. waveField.foam carries the whitewater coverage
+    // used by the foam shading below.
+    WaterWaveField waveField = waterWaveField(
+        fragBasePos.xyz, animTime, fragWaterDepth, fragBasePos.w, fragShoreDir, wp, true);
     {
-        // Analytic height-field normal from a single noise evaluation (the
-        // gradient replaces 5 finite-difference samples).  Uses the UNDISPLACED
-        // base position (fragBasePos.xyz) and the FINAL bump amplitude
-        // (fragBasePos.w) straight from the TES so the per-fragment normal is
-        // evaluated on the exact same height field the displaced geometry was
-        // built from — same noise, same amplitude, same depth/volume
-        // attenuation.  This keeps shading normals perfectly consistent with the
-        // tessellated surface.
-        vec3  basePos = fragBasePos.xyz;
-        float bumpAmp = fragBasePos.w;
-        vec4 wave = waterWaveSample(basePos, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bumpAmp, 1.0);
-        float dhdT = dot(wave.yzw, T);
-        float dhdB = dot(wave.yzw, B);
+        float dhdT = dot(waveField.grad, T);
+        float dhdB = dot(waveField.grad, B);
 
         normal = normalize(flatN - dhdT * T - dhdB * B);
     }
@@ -1290,6 +1292,11 @@ void shadeWaterSurface() {
 
     // Water tint color transitions from shallow → deep depending on volume.
     vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+    // Third color stop: beyond oceanColorStart the tint becomes the per-layer
+    // deep-ocean color (dark blue, independent of the shallow/deep pair).
+    float oceanF = 1.0 - exp(-max(waterThickness - wp.oceanColor.w, 0.0)
+                              / max(wp.oceanParams.x, 1e-3));
+    waterTintColor = mix(waterTintColor, wp.oceanColor.rgb, oceanF);
 
 // Blend scene color with water tint: depthFade (Depth Falloff over the best
 // depth signal) sets the amount, Water Tint scales it, Transparency caps it
@@ -1381,12 +1388,10 @@ void shadeWaterSurface() {
         float finestFreq = max(noiseScale * pow(max(noiseLacunarity, 1.0),
                               float(max(noiseOctaves - 1, 0))), 1e-4);
         float ec = clamp(0.25 / finestFreq, 0.02, 2.0);
-        vec4 waveP = waterWaveSample(entry + sunHat * ec, animTime, noiseScale,
-                                     noiseOctaves, noisePersistence, noiseLacunarity,
-                                     fragBasePos.w, 1.0);
-        vec4 waveM = waterWaveSample(entry - sunHat * ec, animTime, noiseScale,
-                                     noiseOctaves, noisePersistence, noiseLacunarity,
-                                     fragBasePos.w, 1.0);
+        vec4 waveP = waterWaveSample(entry + sunHat * ec, animTime,
+                                     depth, fragBasePos.w, fragShoreDir, wp);
+        vec4 waveM = waterWaveSample(entry - sunHat * ec, animTime,
+                                     depth, fragBasePos.w, fragShoreDir, wp);
         float d2h = (dot(waveP.yzw, sunHat) - dot(waveM.yzw, sunHat)) / (2.0 * ec);
         // Bottom irradiance ratio: inverse Jacobian of the refracted ray
         // map. Folds (|J| -> 0) are physically unbounded; causticSoftness is
@@ -1409,6 +1414,38 @@ void shadeWaterSurface() {
     texHSV.y = clamp(texHSV.y * (hsvColor.y * 2.0), 0.0, 1.0);
     texHSV.z *= hsvColor.z * 2.0;
     waterColor = hsvToRgb(texHSV);
+
+    // === VOLUMETRIC SCATTERING ===
+    // Single-scattering approximation of sunlight scattered inside the
+    // measured water column toward the eye: Henyey-Greenstein phase (g),
+    // saturating with thickness (density), attenuated by the same
+    // Beer-Lambert transmittance the bottom light travels through. The phase
+    // is scaled by 4*pi so 1.0 is the isotropic limit (g = 0). Amount, tint,
+    // density and anisotropy are all per-layer parameters.
+    if (wp.waveToggles.z > 0.5 && wp.volumetricParams.x > 0.0) {
+        float volDepth = max(waterThickness, 0.0);
+        float volAtt = 1.0 - exp(-volDepth * max(wp.volumetricParams.y, 0.0));
+        float volCos = clamp(dot(viewDir, lightDir), -1.0, 1.0);
+        float volG = clamp(wp.volumetricParams.z, -0.95, 0.95);
+        float volDenom = max(1.0 + volG * volG - 2.0 * volG * volCos, 1e-4);
+        float volPhase = (1.0 - volG * volG) / pow(volDenom, 1.5);
+        waterColor += wp.volumetricColor.rgb * ubo.lightColor.rgb
+                    * volPhase * volAtt * wp.volumetricParams.x * transmittance;
+    }
+
+    // === FOAM / WHITEWATER ===
+    // Whitewater coverage from the same shore-wave field that displaced and
+    // shaded the surface (waveField.foam). Lit by the sun with a configurable
+    // ambient floor, composited over the water color per layer. Foam is a
+    // surface effect, so it lands after the volume terms (caustics/scatter).
+    if (wp.waveToggles.y > 0.5 && waveField.foam > 0.0) {
+        float foamDiff = max(dot(normal, lightDir), 0.0);
+        float foamLight = wp.foamExtra.y + (1.0 - wp.foamExtra.y) * foamDiff;
+        vec3 foamLit = wp.foamColor.rgb
+            * (ubo.lightColor.rgb * foamLight + vec3(wp.foamExtra.z));
+        float foamMix = clamp(waveField.foam * wp.foamParams.w, 0.0, 1.0);
+        waterColor = mix(waterColor, foamLit, foamMix);
+    }
 
     // === FINAL OUTPUT ===
     // True translucency through the composite blend (mix(baseColor,
@@ -1434,6 +1471,10 @@ void shadeWaterSurface() {
     if (thicknessForAlpha > 1e-4 && shoreWidth > 1e-6) {
         alpha *= smoothstep(0.0, shoreWidth, thicknessForAlpha);
     }
+    // Shoreline contact foam is a surface line, not volume translucency: it
+    // must stay visible where the water meets the solid even when the alpha
+    // shoreline fade would otherwise erase the last water pixels.
+    alpha = max(alpha, clamp(waveField.contact * wp.foamContact.z, 0.0, 1.0));
     if (captureMode) alpha = 1.0;
     outColor = vec4(waterColor, alpha);
 
@@ -1528,24 +1569,15 @@ void shadeWaterSurface() {
     }
     if (dbgMode == DEBUG_MODE_DISPLACEMENT) {
         // Prefer the tessellation-provided debug value (fragDebug); fall back
-        // to a per-fragment approximation so the view works without
-        // tessellation.
+        // to a per-fragment evaluation of the same single wave field so the
+        // view works without tessellation.
         float timeDebug = waterRenderUBO.timeParams.x;
-        float waveScaleDbg = 1.0;  // No longer in passParams (z=nearPlane now)
         float bumpAmpDbg = wp.waveParams.z;
         float animTimeDbg = timeDebug * wp.params3.x;
-        float waveDisplacementDbg = waterWaveDisplacement(
-            fragPos.xyz,
-            animTimeDbg,
-            noiseScale,
-            noiseOctaves,
-            noisePersistence,
-            noiseLacunarity,
-            bumpAmpDbg,
-            waveScaleDbg
-        );
-        float maxExpected = bumpAmpDbg * waveScaleDbg * 1.5;
-        float normDisp = clamp((waveDisplacementDbg / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
+        vec4 waveDbg = waterWaveSample(
+            fragPos.xyz, animTimeDbg, waterThickness, bumpAmpDbg, fragShoreDir, wp);
+        float maxExpected = max(bumpAmpDbg * (1.0 + wp.waveShape.w + wp.waveBreaker.x), 1e-3);
+        float normDisp = clamp((waveDbg.x / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
         vec3 debugCol = fragDebug;
         if (length(debugCol) < 0.001) debugCol = vec3(normDisp);
         outColor = vec4(debugCol, 1.0);
@@ -1586,6 +1618,36 @@ void shadeWaterSurface() {
         outColor = vec4(clamp(tintBlend, 0.0, 1.0),
                         clamp(mirrorPresence, 0.0, 1.0),
                         thickN, 1.0);
+        return;
+    }
+
+
+    if (dbgMode == DEBUG_MODE_WATER_REGIONS) {
+        // Thickness-zone region palette, using the SAME boundaries and the
+        // SAME depth signal (fragWaterDepth) as the wave field itself. An
+        // unknown thickness (-1) is what the field treats as open deep water,
+        // shown here in purple so unmeasured water is distinguishable from
+        // measured deep water (blue).
+        float zDeep = max(wp.waveZones.x, 1.0);
+        float zBreak = clamp(wp.waveZones.y, 0.0, zDeep);
+        float zShallow = clamp(wp.waveZones.z, 0.0, zBreak);
+        float breakerHalf = max(wp.waveShoal.w, 1e-3);
+        float d = fragWaterDepth;
+        vec3 regionColor;
+        if (d < 0.0) {
+            regionColor = vec3(0.45, 0.10, 0.60);            // unknown -> deep
+        } else if (d >= zDeep) {
+            regionColor = vec3(0.10, 0.20, 0.65);            // deep ocean
+        } else if (d >= zBreak) {
+            regionColor = vec3(0.15, 0.75, 0.25);            // shoaling band
+        } else if (d >= zShallow) {
+            regionColor = (abs(d - zBreak) <= breakerHalf)
+                ? vec3(1.00, 0.25, 0.00)                     // breaker line
+                : vec3(0.15, 0.85, 0.95);                    // foam decay band
+        } else {
+            regionColor = vec3(1.00, 1.00, 1.00);            // shore line wave
+        }
+        outColor = vec4(regionColor, 1.0);
         return;
     }
 

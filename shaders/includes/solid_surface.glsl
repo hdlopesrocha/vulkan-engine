@@ -498,6 +498,10 @@ void shadeSolidSurface() {
                             float tintDepthScale = max(wp.causticParams.w, 0.0001);
                             float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
                             vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+                            // Third color stop: deep-ocean tint beyond oceanColorStart.
+                            float oceanF = 1.0 - exp(-max(thickness - wp.oceanColor.w, 0.0)
+                                                      / max(wp.oceanParams.x, 1e-3));
+                            waterTintColor = mix(waterTintColor, wp.oceanColor.rgb, oceanF);
                             // Beer-Lambert absorption (water.frag): the sky seen
                             // through the transparent water is attenuated by the
                             // water column.

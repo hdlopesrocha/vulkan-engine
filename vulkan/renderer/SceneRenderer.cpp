@@ -271,6 +271,10 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         const float tintDepthScale = std::max(wp.causticDepthScale, 0.0001f);
         const float volumeFactor = 1.0f - std::exp(-thickness / tintDepthScale);
         glm::vec3 waterTintColor = glm::mix(wp.shallowColor, wp.deepColor, volumeFactor);
+        // Third color stop (deep-ocean tint), matching the water shader.
+        const float oceanF = 1.0f - std::exp(-std::max(thickness - wp.oceanColorStart, 0.0f)
+                                             / std::max(wp.oceanDepthScale, 1e-3f));
+        waterTintColor = glm::mix(waterTintColor, wp.oceanColor, oceanF);
         // Beer-Lambert absorption (water.frag): the tint seen through the
         // water column is attenuated.
         const glm::vec3 transmittance = glm::exp(-glm::min(

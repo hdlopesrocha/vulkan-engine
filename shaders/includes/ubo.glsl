@@ -70,6 +70,28 @@ struct WaterParamsGPU {
     vec4 causticExtraParams; // reserved (wave-shape caustics: no mode/line/speed knobs)
     vec4 absorptionParams; // xyz = Beer-Lambert coeff, w = absorption scale
     vec4 refractionParams; // x = IOR, y = max thickness cap, z = shore fade depth, w = unused
+
+    // Shore-wave system (mirrors vulkan/ubo/WaterParamsGPU.hpp).
+    vec4 waveToggles;      // x=enableWaves, y=enableFoam, z=enableVolumetric, w=unused
+    vec4 waveZones;        // x=deep depth(>=), y=break depth, z=shallow depth, w=unused
+    vec4 waveDirection;    // xy=shore direction (unit, world XZ), zw=unused
+    vec4 waveShape;        // x=sharp deep, y=sharp break, z=sharp shallow, w=shoal gain
+    vec4 waveShoal;        // x=speed shoal, y=shallow decay, z=line amplitude, w=breaker width
+    vec4 waveComponent1;   // x=frequency(rad/m), y=speed(m/s), z=amplitude, w=unused
+    vec4 waveComponent2;   // x=cross frequency, y=cross speed, z=cross amp, w=cross phase offset along shore (world units)
+    vec4 waveBreaker;      // x=breaker amplitude, y=chop amount, z=whitecap onset, w=unused
+    vec4 waveCurl;         // x=breaker lip skew, y=breaker crest-line hook, zw=unused
+    vec4 waveWarp;         // x=crest phase warp(feature units), y=crest amp variation, z=ridge stretch(along/across), w=shore gradient step(texels)
+    vec4 waveMask;         // x=scale, y=threshold, z=softness, w=time speed
+    vec4 foamParams;       // x=crest threshold, y=trail phase, z=decay/m, w=color amount
+    vec4 foamNoise;        // x=scale, y=time speed, z=noise amount, w=shore amount
+    vec4 foamExtra;        // x=mask floor, y=diffuse floor, z=ambient, w=unused
+    vec4 foamContact;      // x=contact width(world), y=contact amount, z=contact alpha, w=unused
+    vec4 foamColor;        // rgb=foam color, a=unused
+    vec4 oceanColor;       // rgb=deep ocean color, a=ocean tint start depth
+    vec4 oceanParams;      // x=ocean depth scale, yzw=unused
+    vec4 volumetricParams; // x=strength, y=density, z=Henyey-Greenstein g, w=unused
+    vec4 volumetricColor;  // rgb=volumetric scatter tint, a=unused
 };
 
 layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {

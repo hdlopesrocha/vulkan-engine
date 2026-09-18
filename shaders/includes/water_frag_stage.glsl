@@ -13,7 +13,9 @@
 layout(location = VARY_LOCALPOS) in vec3 fragPos;
 layout(location = VARY_NORMAL) in vec3 fragNormal;
 layout(location = VARY_SHARPNORMAL) in vec3 fragBaseNormal;  // undisplaced base normal
-layout(location = VARY_BASEPOS) in vec4 fragBasePos;          // xyz = undisplaced base position, w = TES bump amplitude
+layout(location = VARY_BASEPOS) in vec4 fragBasePos;          // xyz = undisplaced base position, w = raw bump amplitude
+layout(location = VARY_WATERDEPTH) in float fragWaterDepth;   // TES-measured water thickness (-1 = unknown/deep)
+layout(location = VARY_SHOREDIR) in vec2 fragShoreDir;        // unit shore direction (toward thinner water)
 layout(location = VARY_UV) in vec2 fragTexCoord;
 layout(location = VARY_POSCLIP) in vec4 fragPosClip;  // clip-space position for scene sampling
 layout(location = VARY_DEBUG) in vec3 fragDebug;   // debug visual (displacement)

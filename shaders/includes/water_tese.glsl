@@ -18,7 +18,9 @@ layout(location = VARY_HSV) in vec3 tc_fragHSV[];
 layout(location = VARY_LOCALPOS) out vec3 fragPos;
 layout(location = VARY_NORMAL) out vec3 fragNormal;
 layout(location = VARY_SHARPNORMAL) out vec3 fragBaseNormal;  // undisplaced base normal for per-fragment detail
-layout(location = VARY_BASEPOS) out vec4 fragBasePos;        // xyz = undisplaced base position, w = final bump amplitude
+layout(location = VARY_BASEPOS) out vec4 fragBasePos;        // xyz = undisplaced base position, w = raw bump amplitude
+layout(location = VARY_WATERDEPTH) out float fragWaterDepth; // measured water depth (-1 = unknown/deep)
+layout(location = VARY_SHOREDIR) out vec2 fragShoreDir;      // unit shore direction (toward thinner water)
 layout(location = VARY_UV) out vec2 fragTexCoord;
 layout(location = VARY_POSCLIP) out vec4 fragPosClip;  // clip-space position for depth lookup
 layout(location = VARY_DEBUG) out vec3 fragDebug;   // debug visual (displacement)
@@ -28,33 +30,47 @@ layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
 layout(location = VARY_HSV) out vec3 fragHSV;
 
 
-// Water back-face depth texture for depth-dependent wave attenuation and
-// volume-based bump modulation (set 2). The solid scene depth is no longer
-// sampled here so the water pass has no dependency on the solid depth target.
+// Solid terrain depth (set 2, binding 5). The shore-wave zones are driven by
+// the water depth measured against the REAL bottom here, not by the water
+// volume's back face: the volume underside is pushed an SDF bias below the
+// terrain (to keep the surface from z-fighting the ground), which shifts every
+// zone by that bias. This binding is also used by the fragment stage, so the
+// pass already depends on the solid depth target.
+layout(set = 2, binding = 5) uniform sampler2D solidSceneDepthTex;
+// Water volume back-face depth (set 2, binding 0): direction fallback only.
+// Where no solid bottom stands behind the pixel (very deep / far water) the
+// volume underside still carries the bottom slope, and its constant SDF bias
+// does not change the horizontal gradient direction.
 layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex;
 
-
-// Linearize depth from Vulkan [0,1] depth buffer to eye-space distance.
-float linearizeDepth(float depth) {
-    float nearPlane = ubo.passParams.z;
-    float farPlane  = ubo.passParams.w;
-    return (nearPlane * farPlane) / (farPlane - depth * (farPlane - nearPlane));
+// World-space direction of DECREASING water depth (toward the shore) from a
+// center raw-depth sample plus two offset samples. Returns vec2(0) when the
+// signal is unusable (clear depth, degenerate span, flat bottom).
+vec2 waterShoreDirFromSamples(float rawC, float rawX, float rawY,
+                              vec2 uvC, vec2 uvX, vec2 uvY, vec3 surfacePos) {
+    if (rawC >= 0.9999 || rawX >= 0.9999 || rawY >= 0.9999) return vec2(0.0);
+    vec4 wC = ubo.invViewProjection * vec4(uvC * 2.0 - 1.0, rawC, 1.0);
+    vec4 wX = ubo.invViewProjection * vec4(uvX * 2.0 - 1.0, rawX, 1.0);
+    vec4 wY = ubo.invViewProjection * vec4(uvY * 2.0 - 1.0, rawY, 1.0);
+    vec3 pC = wC.xyz / wC.w;
+    vec3 pX = wX.xyz / wX.w;
+    vec3 pY = wY.xyz / wY.w;
+    float dC = max(surfacePos.y - pC.y, 0.0);
+    float dX = max(surfacePos.y - pX.y, 0.0);
+    float dY = max(surfacePos.y - pY.y, 0.0);
+    // Screen step -> world XZ offsets; solve the 2x2 system for the
+    // world-space depth gradient, then take its negative (decreasing depth).
+    vec2 sX = pX.xz - pC.xz;
+    vec2 sY = pY.xz - pC.xz;
+    float det = sX.x * sY.y - sX.y * sY.x;
+    if (abs(det) < 1e-4) return vec2(0.0);
+    vec2 g = vec2((dX - dC) * sY.y - (dY - dC) * sX.y,
+                  sX.x * (dY - dC) - sY.x * (dX - dC)) / det;
+    float gl = length(g);
+    if (gl < 1e-5) return vec2(0.0);
+    return -g / gl;
 }
 
-vec3 clampAndNormalizeBary(vec3 b) {
-    b = max(b, vec3(0.0001));
-    return b / (b.x + b.y + b.z);
-}
-
-vec3 sampleDisplacedPos(vec3 bary, float animTime,
-                        float foamNoiseScale, int foamNoiseOctaves, float foamNoisePersistence,
-                        float foamNoiseLacunarity,
-                        float bumpAmp, float waveScale) {
-    vec3 p = bary.x * inPos[0] + bary.y * inPos[1] + bary.z * inPos[2];
-    vec3 n = normalize(bary.x * inNormal[0] + bary.y * inNormal[1] + bary.z * inNormal[2]);
-    float h = waterWaveDisplacement(p.xyz, animTime, foamNoiseScale, foamNoiseOctaves, foamNoisePersistence, foamNoiseLacunarity, bumpAmp, waveScale);
-    return p + n * h;
-}
 void main() {
     // Interpolate position
         vec3 bary = gl_TessCoord;
@@ -93,84 +109,74 @@ void main() {
     int nWL = max(waterParams.length(), 1);
     WaterParamsGPU wp = waterParams[(chosenIdx >= 0 && chosenIdx < nWL) ? chosenIdx : 0];
 
-    // Get water and noise parameters from selected params
+    // Get the water parameters driving the single wave field.
     float time = waterRenderUBO.timeParams.x;
-    // waveScale is no longer in passParams (z/w now carry nearPlane/farPlane).
-    // Displacement magnitude is fully controlled by bumpAmp from the widget.
-    float waveScale = 1.0;
     float noiseTimeSpeed = wp.params3.x;
-
-    // Noise params from params2 (same as fragment shader)
-    float noiseScale = wp.params2.y;
-    int noiseOctaves = int(max(wp.params2.z, 1.0));
-    float noisePersistence = wp.params2.w;
-    float noiseLacunarity = wp.params3.y;
 
     float bumpAmp = wp.waveParams.z; // bump amplitude provided via Water widget
 
     // --- Screen-space UV of the undisplaced base vertex ---
-    // Shared by the shallow-wave attenuation and the volume-based bump
-    // modulation, and forwarded to the fragment stage (fragBasePos) so the
-    // per-fragment analytic normal samples the SAME height field the displaced
-    // geometry was built from.
+    // Used to sample the water back-face depth (thickness) below.
     vec2 screenUV = vec2(0.0);
-    float baseClipDepth = 0.0;
     bool haveScreen = false;
     {
         vec4 preClip = ubo.viewProjection * vec4(pos, 1.0);
         if (preClip.w > 0.001) {
             screenUV = clamp(preClip.xy / preClip.w * 0.5 + 0.5, 0.001, 0.999);
-            baseClipDepth = preClip.z / preClip.w;
             haveScreen = true;
         }
     }
 
-    // --- Depth-based wave attenuation (shallow: suppress waves) ---
-    // Without the solid scene depth, "shallow" is approximated by the water
-    // volume thickness (front-to-back-face distance): thin water is calm, thick
-    // water keeps its waves.  waveDepthTransition controls the ramp distance.
-    float waveDepthTransition = wp.shallowColor.w;
-    if (waveDepthTransition > 0.0 && haveScreen) {
-        float backFaceDepthRaw = texture(waterBackDepthTex, screenUV).r;
-        float backFaceLin = linearizeDepth(backFaceDepthRaw);
-        float waterDepthLin = linearizeDepth(baseClipDepth);
-        float thickness = max(backFaceLin - waterDepthLin, 0.0);
-        bumpAmp *= smoothstep(0.0, waveDepthTransition, thickness);
-    }
+    // --- Water depth + shore direction (drive the shore-wave zones) ---
+    // Depth is measured against the SOLID terrain behind the water (the
+    // visible bottom), so depth = 0 at the true waterline and no SDF bias from
+    // the water volume's underside leaks into the zones. The drop is vertical
+    // (world Y difference along the view ray), which keeps the region bands
+    // camera-stable. No solid bottom behind the pixel -> -1 (open/deep water
+    // keeps the full swell).
+    //
+    // The shore direction is the direction of DECREASING water depth (the
+    // negative water-depth gradient): waves and their foam travel toward
+    // thinning water. The gradient is a central sample of the solid depth at
+    // two screen offsets, reconstructed in world space. In deep water the
+    // solid bottom can be too far/absent, so the water volume's own back face
+    // (whose constant SDF bias is vertical and does not change the horizontal
+    // gradient direction) provides the direction fallback. Finally the
+    // configured shoreWaveAngle is used when neither measures a slope.
+    vec2 shoreDir = normalize(wp.waveDirection.xy + vec2(1e-5, 0.0));
+    float waterDepth = -1.0;
+    if (haveScreen) {
+        float solidDepthRaw = texture(solidSceneDepthTex, screenUV).r;
+        if (solidDepthRaw < 0.9999) {
+            vec4 solidWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, solidDepthRaw, 1.0);
+            waterDepth = max(pos.y - solidWorldH.y / solidWorldH.w, 0.0);
+        }
 
-    // --- Volume-based bump amplitude (deep water: amplify waves) ---
-    // Reconstruct water thickness from the back-face depth the same way the
-    // fragment stage does, so the amplitude that drives the displaced geometry
-    // matches the one used for the per-fragment shading normal.
-    float volumeBumpRate = wp.reserved2.z;
-    if (volumeBumpRate > 0.0 && haveScreen) {
-        float backFaceDepthRaw = texture(waterBackDepthTex, screenUV).r;
+        float gradStep = max(wp.waveWarp.w, 0.0);
+        if (gradStep > 0.0) {
+            vec2 texel = 1.0 / vec2(textureSize(solidSceneDepthTex, 0));
+            vec2 uvX = clamp(screenUV + vec2(texel.x * gradStep, 0.0), 0.0, 1.0);
+            vec2 uvY = clamp(screenUV + vec2(0.0, texel.y * gradStep), 0.0, 1.0);
 
-        // No bottom rendered (open/deep water or unmodeled far field): keep
-        // full amplitude. An unmeasured bottom is not a shallow one — zeroing
-        // the waves here turns distant water into a flat mirror with a razor
-        // edge at the validity boundary (grazing Fresnel amplifies the
-        // normal-field discontinuity enormously). Only a MEASURED thin sheet
-        // calms the waves.
-        if (backFaceDepthRaw < 0.9999) {
-            mat4 invVP = ubo.invViewProjection;
-            vec4 backFaceWorldH = invVP * vec4(screenUV * 2.0 - 1.0, backFaceDepthRaw, 1.0);
-            vec3 backFaceWorld = backFaceWorldH.xyz / backFaceWorldH.w;
-
-            vec3 worldFrontPos = pos;
-            vec3 worldRayDir = normalize(worldFrontPos - ubo.viewPos.xyz);
-            float backFaceThickness = max(dot(backFaceWorld - worldFrontPos, worldRayDir), 0.0);
-            const float kMinVolumeThickness = 0.05;
-            bool hasValidBackFace = backFaceThickness > kMinVolumeThickness;
-            float waterThickness = hasValidBackFace ? backFaceThickness : 0.0;
-
-            bumpAmp *= (1.0 - exp(-waterThickness * volumeBumpRate));
+            vec2 dir = waterShoreDirFromSamples(
+                solidDepthRaw,
+                texture(solidSceneDepthTex, uvX).r,
+                texture(solidSceneDepthTex, uvY).r,
+                screenUV, uvX, uvY, pos);
+            if (dot(dir, dir) < 1e-6) {
+                dir = waterShoreDirFromSamples(
+                    texture(waterBackDepthTex, screenUV).r,
+                    texture(waterBackDepthTex, uvX).r,
+                    texture(waterBackDepthTex, uvY).r,
+                    screenUV, uvX, uvY, pos);
+            }
+            if (dot(dir, dir) > 1e-6) shoreDir = dir;
         }
     }
+    fragShoreDir = shoreDir;
 
-    // Calculate wave displacement and its analytic spatial gradient using 4D
-    // Perlin FBM.  A single noise evaluation yields both the height and the
-    // gradient, replacing the previous 5-evaluation central-difference scheme.
+    // Calculate the thickness-zoned shore-wave displacement and its analytic
+    // spatial gradient (single wave field: directional swell + chop + mask).
     float animTime = time * noiseTimeSpeed;
     vec3 xyz = pos.xyz;
 
@@ -182,12 +188,10 @@ void main() {
     vec4 wave = waterWaveSample(
         xyz,
         animTime,
-        noiseScale,
-        noiseOctaves,
-        noisePersistence,
-        noiseLacunarity,
+        waterDepth,
         bumpAmp,
-        waveScale
+        shoreDir,
+        wp
     );
 
     float waveDisplacement = wave.x;
@@ -211,10 +215,12 @@ void main() {
     pos += waveDisplacement * normal;
     fragNormal = bumpedN;
     fragBaseNormal = normal;   // undisplaced (flat) interpolated base normal
-    fragBasePos = vec4(pos - waveDisplacement * normal, bumpAmp);  // base pos + final amplitude
+    fragBasePos = vec4(pos - waveDisplacement * normal, bumpAmp);  // base pos + raw amplitude
+    fragWaterDepth = waterDepth;
 
-    // Debug: encode displacement as color (normalized)
-    float maxExpected = bumpAmp * waveScale * 1.5; // heuristic normalization factor
+    // Debug: encode displacement as color (normalized against the largest
+    // possible envelope: deep + shoal gain + breaker bump).
+    float maxExpected = max(bumpAmp * (1.0 + wp.waveShape.w + wp.waveBreaker.x), 1e-3);
     float normDisp = clamp((waveDisplacement / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
     fragDebug = vec3(normDisp);
     

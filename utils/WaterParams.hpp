@@ -3,7 +3,10 @@
 
 // Water rendering parameters (CPU-side)
 struct WaterParams {
-    float waveSpeed = 0.5f;
+    // Deep-water phase speed of the primary swell (m/s). The angular
+    // frequency is derived as frequency * speed, and the speed is reduced
+    // with depth by waveShoalSpeed (shoaling).
+    float waveSpeed = 6.0f;
     // LEGACY (no effect, kept for layout/API stability): never uploaded to
     // the GPU — shaders use a neutral 1.0. Use Wave Height / Noise Scale.
     float waveScale = 0.03f;
@@ -38,9 +41,9 @@ struct WaterParams {
     // Vertical bump amplitude for water geometry
     float bumpAmplitude = 8.0f;
 
-    // Depth-based wave attenuation: distance (world units) over which waves
-    // transition from zero displacement (at solid surface) to full amplitude.
-    // 0 = disabled (no depth-based attenuation).
+    // LEGACY (no effect): superseded by the thickness-zone wave model
+    // (zoneDeepDepth / zoneBreakDepth / zoneShallowDepth + waveShoal terms).
+    // Kept for API/layout stability; not uploaded for any shader behavior.
     float waveDepthTransition = 20.0f;
 
     // Feature toggles
@@ -58,7 +61,9 @@ struct WaterParams {
     int   blurSamples = 4;      // number of blur taps per axis (NxN kernel)
 
     // Volume depth-based effect transitions
-    // LEGACY (no effect, see enableBlur): blur has no implementation.
+    // LEGACY (no effect): volume blur was removed; the former volume-bump
+    // ramp is superseded by the thickness-zone wave model (shoal gain, breaker
+    // bump, shallow decay). Kept for API/layout stability.
     float volumeBlurRate = 0.004f;   // exponential rate: blur ramps with water thickness
     float volumeBumpRate = 0.05f;  // exponential rate: bump ramps with water thickness
     // Tessellation parameters (noise-adaptive water surface)
@@ -87,4 +92,114 @@ struct WaterParams {
     float causticSoftness = 0.5f;
     // Depth reference (world units) used by the water-tint volume ramp.
     float causticDepthScale = 128.0f;
+
+    // ── Shore-wave system (thickness-zoned, per water material) ──────────
+    // Waves travel along `shoreWaveAngle` (direction TOWARD the shore) and
+    // are shaped by configurable water-thickness zones:
+    //   d >= zoneDeepDepth                 : open ocean, sharp big swell
+    //   zoneBreakDepth <= d < zoneDeepDepth: shoaling band (gains height,
+    //                                        sharpens, whitecaps appear)
+    //   d ~ zoneBreakDepth                 : breaker line, foam is born
+    //   zoneShallowDepth <= d < zoneBreak  : foam rides shoreward and fades
+    //   d < zoneShallowDepth               : residual line wave -> 0 at shore
+    // Only the waves are gated by enableWaves; foam follows its own toggle.
+    bool enableWaves = false;       // master toggle (layer 0 only by default)
+    bool enableFoam = true;         // whitewater/foam rendering
+    bool enableVolumetric = true;   // volumetric light scattering in the volume
+
+    // Zone boundaries (water thickness, world units)
+    float zoneDeepDepth = 128.0f;   // >= : open-ocean swell
+    float zoneBreakDepth = 64.0f;   // breaker line (crash + foam birth)
+    float zoneShallowDepth = 32.0f; // below : line wave decaying to 0 at shore
+
+    // Swell shape
+    float waveFrequency = 0.10f;    // primary swell (rad/m): ~63 m wavelength
+    float waveSharpDeep = 2.5f;     // crest sharpness in deep water
+    float waveSharpBreak = 4.5f;    // crest sharpness at the break line
+    float waveSharpShallow = 1.5f;  // crest sharpness in the shore band
+    float waveShoalGain = 0.8f;     // amplitude gain from deep -> break depth
+    float waveShoalSpeed = 0.6f;    // celerity drop with depth [0..1]
+    float waveShallowDecay = 1.5f;  // amplitude decay exponent, break -> shallow
+    float waveLineAmplitude = 0.25f;// residual line-wave height fraction
+    float breakerAmplitude = 0.6f;  // extra crest height at the break line
+    float breakerWidth = 10.0f;     // depth half-width of the breaker bump
+    // Curly plunging-breaker shape (active only where the wave is breaking):
+    //  - curl: forward-leaning profile skew that steepens the lip;
+    //    sign flips the lean direction
+    //  - crestCurve: hooks the breaking crest line into a curl
+    float breakerCurl = 0.6f;       // lip skew [-0.9..0.9]
+    float breakerCrestCurve = 0.4f; // crest-line hook (0 = straight crests)
+    float waveChopAmount = 0.25f;   // FBM chop mixed into the directional swell
+    float whitecapOnset = 0.35f;    // shoal progress where whitecaps start [0..1]
+    // Organic variation of the sharp crests. The crests themselves are ridged
+    // Perlin multifractal (see the shader); these control the extra noise
+    // modulation (uses the same FBM spectrum as the chop):
+    //  - phase warp: domain-warp drift of the ridged crests (feature units,
+    //    1.0 = one ridge-feature shift)
+    //  - amplitude variation: local crest height variation [0..1]
+    //  - ridge stretch: along/across frequency ratio; higher = longer crest
+    //    lines (more wave-like, less blob-like)
+    float waveWarpAmount = 0.5f;    // crest phase warp (feature units)
+    float waveAmpVariation = 0.5f;  // local crest amplitude variation [0..1]
+    float waveRidgeStretch = 4.0f;  // ridged-crest anisotropy (along/across)
+
+    // Second shoreward train (different scale/speed; breaks up the crest
+    // lines). It reuses the SAME shore movement as the primary train — the
+    // phase offset just shifts it along the shore direction.
+    float crossWaveFrequency = 0.21f;
+    float crossWaveSpeed = 4.5f;
+    float crossWaveAmplitude = 0.4f;
+    float crossWavePhase = 0.0f;    // offset along the shore direction (world units)
+
+    // Propagation direction toward the shore (degrees in the XZ plane).
+    // 0 = +Z, 90 = +X, 180 = -Z, 270 = -X. This is the FALLBACK direction:
+    // the shader derives the local shore direction from the water-depth
+    // gradient (toward thinning water) and only uses this angle where the
+    // bottom cannot be measured. Set ShoreGradientStep = 0 to force it.
+    float shoreWaveAngle = 0.0f;
+    // Screen-texel step used to sample the water-depth gradient that yields
+    // the shore direction. 0 = disable the gradient and use shoreWaveAngle.
+    // A wider step keeps the deep-ocean direction stable (the bottom slope
+    // there is small relative to the local ray spacing).
+    float shoreGradientStep = 16.0f;
+
+    // Organic amplitude mask: low-frequency noise that can remove waves
+    // entirely in patches (some places stay calm).
+    float waveMaskScale = 0.002f;
+    float waveMaskThreshold = 0.5f;
+    float waveMaskSoftness = 0.18f;
+    float waveMaskSpeed = 1.0f;
+
+    // Foam (whitewater) look
+    float foamCrestThreshold = 0.65f; // crest height where foam appears
+    float foamTrailPhase = 1.0f;      // phase lag of the trailing foam band
+    float foamDecay = 0.03f;          // foam extinction per meter below break
+    float foamColorAmount = 0.9f;     // max foam color mix
+    float foamNoiseScale = 0.25f;     // broken-up texture scale
+    float foamNoiseSpeed = 0.15f;     // texture advection speed
+    float foamNoiseAmount = 0.6f;     // how strongly noise breaks the foam
+    float foamShoreAmount = 0.5f;     // persistent foam line near the shore
+    // Shoreline contact foam: the final line where the water meets the solid.
+    // Peaks at zero depth and falls off over foamContactWidth; the fragment
+    // stage forces the composite alpha up for it so the last visible water
+    // pixels still render the line.
+    float foamContactWidth = 4.0f;    // depth falloff band (world units)
+    float foamContactAmount = 1.0f;   // line strength [0..1]
+    float foamContactAlpha = 0.85f;   // minimum composite opacity of the line
+    float foamMaskFloor = 0.35f;      // foam left where the wave mask is 0
+    float foamDiffuseFloor = 0.25f;   // ambient foam lighting floor
+    float foamAmbient = 0.08f;        // constant ambient added to foam
+    glm::vec3 foamColor = glm::vec3(1.0f);
+
+    // Deep-ocean tint: third color stop reached beyond oceanColorStart
+    // (dark blue like open-ocean water, independent of the shallow/deep mix).
+    glm::vec3 oceanColor = glm::vec3(0.0f, 0.03f, 0.08f);
+    float oceanColorStart = 128.0f;   // thickness where the ocean tint kicks in
+    float oceanDepthScale = 64.0f;    // ramp length from deep to ocean tint
+
+    // Volumetric scattering (single-scattering approximation, sun-lit)
+    float volumetricStrength = 0.15f; // in-scattered light amount
+    float volumetricDensity = 0.08f;  // extinction per meter of water column
+    float volumetricPhaseG = 0.4f;    // Henyey-Greenstein anisotropy [-0.95..0.95]
+    glm::vec3 volumetricColor = glm::vec3(0.10f, 0.35f, 0.40f); // scatter tint
 };

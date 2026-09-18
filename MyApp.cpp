@@ -603,7 +603,13 @@ public:
         for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i)
             shadowParams.shadowMapSizes[i] = sceneRenderer->shadowMapper->getShadowMapSize(i);
         // Initialize application-owned water params with two default elements
-        waterParams.push_back(WaterParams{}); // Add a third layer to demonstrate pagination in UI even without texture arrays
+        {
+            // First (default) water material: shore waves enabled. All other
+            // layers keep the struct default (enableWaves = false), i.e. calm.
+            WaterParams wp0 = WaterParams();
+            wp0.enableWaves = true;
+            waterParams.push_back(wp0);
+        }
         {
             WaterParams wp = WaterParams();
             wp.noiseOctaves = 1;
