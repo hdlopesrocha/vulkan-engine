@@ -82,8 +82,8 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
                               p.blurRadius);
     gpu.reserved2 = glm::vec4(static_cast<float>(p.blurSamples), p.volumeBlurRate, p.volumeBumpRate, p.uniformReflection ? 1.0f : 0.0f);
     gpu.causticColor = glm::vec4(p.causticColor, 0.0f);
-    gpu.causticParams = glm::vec4(p.causticScale, p.causticIntensity, p.causticPower, p.causticDepthScale);
-    gpu.causticExtraParams = glm::vec4(p.causticLineScale, p.causticLineMix, static_cast<float>(p.causticType), p.causticVelocity);
+    gpu.causticParams = glm::vec4(p.causticSoftness, p.causticIntensity, 0.0f, p.causticDepthScale);
+    gpu.causticExtraParams = glm::vec4(0.0f); // wave-shape caustics: no mode/line/speed knobs
     gpu.absorptionParams = glm::vec4(p.absorption, p.absorptionScale);
     gpu.refractionParams = glm::vec4(p.ior, p.maxThickness, p.shoreFadeDepth, 0.0f);
     gpu.reserved3 = glm::vec4(0.0f); // legacy cubemap-available flag (removed with Solid360)
@@ -1051,8 +1051,8 @@ void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& 
                                   p.blurRadius);
         gpu.reserved2 = glm::vec4(static_cast<float>(p.blurSamples), p.volumeBlurRate, p.volumeBumpRate, p.uniformReflection ? 1.0f : 0.0f);
         gpu.causticColor = glm::vec4(p.causticColor, 0.0f);
-        gpu.causticParams = glm::vec4(p.causticScale, p.causticIntensity, p.causticPower, p.causticDepthScale);
-        gpu.causticExtraParams = glm::vec4(p.causticLineScale, p.causticLineMix, static_cast<float>(p.causticType), p.causticVelocity);
+        gpu.causticParams = glm::vec4(p.causticSoftness, p.causticIntensity, 0.0f, p.causticDepthScale);
+        gpu.causticExtraParams = glm::vec4(0.0f); // wave-shape caustics: no mode/line/speed knobs
         gpu.absorptionParams = glm::vec4(p.absorption, p.absorptionScale);
         gpu.refractionParams = glm::vec4(p.ior, p.maxThickness, p.shoreFadeDepth, 0.0f);
         gpu.reserved3 = glm::vec4(0.0f); // legacy cubemap-available flag (removed with Solid360)

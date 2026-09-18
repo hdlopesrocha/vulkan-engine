@@ -13,9 +13,9 @@ struct WaterParamsGPU {
     glm::vec4 reserved2;  // x=legacy blurSamples (unused), y=legacy volumeBlurRate (unused), z=volumeBumpRate, w=unused
     glm::vec4 reserved3;  // unused (legacy cubemap-available flag removed with Solid360)
     glm::vec4 tessParams; // x=tessNearDist, y=tessFarDist, z=tessMinLevel, w=tessMaxLevel
-    glm::vec4 causticColor; // xyz = color, w = unused
-    glm::vec4 causticParams; // x=scale, y=intensity, z=power, w=depthScale
-    glm::vec4 causticExtraParams; // x=lineScale, y=lineMix, z = causticType (0=perlin,1=voronoi), w = causticVelocity
+    glm::vec4 causticColor; // xyz = color of the focused sunlight, w = unused
+    glm::vec4 causticParams; // x=softness (|J| floor), y=intensity, z=unused, w=tint depth reference
+    glm::vec4 causticExtraParams; // reserved (wave-shape caustics need no mode/line/speed knobs)
     glm::vec4 absorptionParams; // xyz = Beer-Lambert coeff, w = absorption scale
     glm::vec4 refractionParams; // x=IOR, y=max thickness cap, z=shore fade depth, w=unused
 };

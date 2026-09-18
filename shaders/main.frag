@@ -99,7 +99,6 @@ bool aoEnabled = ubo.debugParams.z > 0.5;
 // file; see includes/water_frag_stage.glsl.
 #include "includes/perlin.glsl"
 #include "includes/water_noise.glsl"
-#include "includes/voronoi.glsl"
 #include "includes/water_frag_stage.glsl"
 #else
 // Solid surface shading (extracted): writes outColor; debug branches return.

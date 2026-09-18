@@ -72,18 +72,19 @@ struct WaterParams {
     // 0 = purely distance-based, 1 = fully noise-adaptive.
     float tessNoiseInfluence = 0.3f;
 
-    // Caustics / light focusing parameters
-    glm::vec3 causticColor = glm::vec3(0.0f, 0.58f, 1.0f);
-    float causticIntensity = 10.0f;    // multiplier for caustic brightness
-    float causticScale = 5.0f;       // scale factor applied to Jacobian determinant
-    float causticPower = 1.0f;        // exponent to sharpen caustic contrast
-    // Depth scale (world units) controlling blend from surface->bottom caustic
-    float causticDepthScale = 64.0f;
-    // Line-shaped caustic tuning
-    float causticLineScale = 1.0f;    // multiplier for anisotropy -> line strength
-    float causticLineMix = 1.0f;      // 0=cloudy, 1=lines
-    // Speed multiplier for caustic animation. 0 = static, 1 = normal speed.
-    float causticVelocity = 1.0f;
-    // Caustic generation mode: 0 = Perlin (Jacobian-based), 1 = Voronoi (Worley)
-    int causticType = 0;
+    // ── Caustics (physical: refracted-sunlight focusing on the bottom) ──
+    // The pattern is computed from the WAVE HEIGHT FIELD alone (the same
+    // waterWaveSample() that displaces the surface): the bottom irradiance
+    // is the inverse Jacobian of the refracted ray map,
+    //   E/E0 = 1 / |1 + d·K·d²h/du²|,  K = cosθi/(n·cos³θt),
+    // with u the sun azimuth, d the water column and h the wave height.
+    // There is no separate caustic noise/scale/speed: the pattern rides the
+    // waves and inherits their spectrum. Only the look controls below remain.
+    glm::vec3 causticColor = glm::vec3(1.0f);   // tint of the focused sunlight
+    float causticIntensity = 0.2f;              // strength of the added light
+    // Softness: clamp floor on |J| (the 1/J fold is unbounded). Higher values
+    // soften the bright ridges; 1.0 disables caustics (gain clamps to 1).
+    float causticSoftness = 0.5f;
+    // Depth reference (world units) used by the water-tint volume ramp.
+    float causticDepthScale = 128.0f;
 };

@@ -67,7 +67,7 @@ struct WaterParamsGPU {
     vec4 tessParams; // x=tessNearDist, y=tessFarDist, z=tessMinLevel, w=tessMaxLevel
     vec4 causticColor; // rgb = caustic tint, w = unused
     vec4 causticParams; // x = scale, y = intensity, z = power, w = depthScale
-    vec4 causticExtraParams; // x = lineScale, y = lineMix, z = causticType (0=perlin,1=voronoi), w = causticVelocity
+    vec4 causticExtraParams; // reserved (wave-shape caustics: no mode/line/speed knobs)
     vec4 absorptionParams; // xyz = Beer-Lambert coeff, w = absorption scale
     vec4 refractionParams; // x = IOR, y = max thickness cap, z = shore fade depth, w = unused
 };

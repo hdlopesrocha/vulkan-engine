@@ -1273,14 +1273,13 @@ void shadeWaterSurface() {
     // Water tint colors from UBO (declared in the Beer-Lambert block above).
 
 
-    // Caustic parameters
+    // Caustic parameters (physical, wave-shape driven — see the caustics
+    // block below). Only color, strength and the fold softness remain: the
+    // pattern, its spatial scale and its animation all come from the wave
+    // height field itself (no separate noise/scale/velocity knobs).
     vec3 causticColor = wp.causticColor.rgb;
-    float causticScale = wp.causticParams.x;
     float causticIntensity = wp.causticParams.y;
-    float causticPower = wp.causticParams.z;
-    int causticType = int(round(clamp(wp.causticExtraParams.z, 0.0, 1.0)));
-    float causticVelocity = wp.causticExtraParams.w;
-    float causticAnimTime = animTime * causticVelocity;
+    float causticSoftness = clamp(wp.causticParams.x, 0.02, 1.0);
 
     // Tint color ramps shallow → deep with measured water thickness around the
     // per-layer reference distance (Caustic Depth Scale doubles as the depth
@@ -1333,126 +1332,75 @@ void shadeWaterSurface() {
 
     // (Volume light accumulation removed — caustics only)
 
-    // === CAUSTICS / LIGHT FOCUSING ===
-    // Estimate local Jacobian of the refraction offset field by finite-difference
-    // along the surface tangent frame (T,B). Negative determinant indicates
-    // local focusing (area contraction) which produces brighter caustics.
-    // Compute incidence/angle and a simple depth-based ramp for caustic strength
-    // Incidence term for caustic modulation
-    float lightIncidenceCaust = max(dot(normal, lightDir), 0.0);
-    float angularCaust = (causticPower > 0.0) ? pow(lightIncidenceCaust, causticPower) : 1.0;
-
-    // Depth-based ramps: keep a small exponential ramp as an additional softening
-    float depthRampCaust = 1.0 - exp(-waterThickness * 0.02);
-
-    // Volume-aware caustics: evaluate the refraction noise Jacobian at both
-    // the front surface and at the back-face (bottom) and blend according
-    // to water thickness. This approximates how focusing changes through the
-    // water column and lets caustics appear where the volume causes stronger
-    // focusing on the bottom.
-    float causticDepthScale = wp.causticParams.w; // w = depth-scale (world units)
-    float depthInfluence = (causticDepthScale > 0.0) ? clamp(waterThickness / causticDepthScale, 0.0, 1.0) : 1.0;
-
-    // Back-face (bottom) sampling: march along the view ray from the front
-    // position by the measured water thickness to approximate the bottom
-    // world position — used by both caustic modes.
+    // === CAUSTICS (physical, driven by the wave height field) ===
+    // Sunlight refracted at the wavy surface converges on the lake bottom.
+    // For a height field h(x,z), the ray entering at the surface lands
+    // displaced horizontally by D = d·(dh/du)·K along the sun azimuth u,
+    // with the exact first-order Snell coefficient
+    //     K = cos(theta_i) / (n · cos^3(theta_t)),
+    // where d is the water column. The bottom irradiance is the inverse
+    // Jacobian of the map x -> x + D(x):
+    //     E/E0 = 1 / |1 + d · K · d2h/du2|
+    // so the caustic pattern is produced ONLY by the wave field — the same
+    // waterWaveSample() that displaces the surface and builds the analytic
+    // shading normal. No independent caustic noise, scale, or animation
+    // clock: the pattern rides the waves, moves with them, and inherits
+    // their spectrum by construction. The added light is the EXCESS over
+    // the flat-surface case and is attenuated by the same Beer-Lambert
+    // transmittance as the bottom behind it.
     vec3 backPos = fragPosWorld + worldRayDir * waterThickness;
-
-    // Line-shaped measure parameters
-    float lineScale = wp.causticExtraParams.x;
-    float lineMix = clamp(wp.causticExtraParams.y, 0.0, 1.0);
-
-    // Prepare outputs that debug and later code expect
-    float caustFront = 0.0;
-    float caustBack = 0.0;
-    float lineFrontRaw = 0.0;
-    float lineBackRaw = 0.0;
-    float cloudFinal = 0.0;
-    float lineFinal = 0.0;
-    float lineCombined = 0.0;
-
-    // Skip the entire caustic block when caustics are effectively disabled
-    // (intensity ≈ 0) and we are not visualizing them in a debug mode. This
-    // avoids hundreds of redundant 4D-noise evaluations per deep-water fragment
-    // with zero visual change where caustics are off.
-    bool causticDebugMode = (dbgMode >= 42 && dbgMode <= 45);
+    float caustic = 0.0;
+    float causticGain = 1.0;   // bottom irradiance ratio 1/|J|
+    // The caustic pattern feeds the final mask debug view, so keep it
+    // computed while that view is selected even if the effect is disabled.
+    bool causticDebugMode = (dbgMode == DEBUG_MODE_CAUSTICS);
     if (causticIntensity > 0.001 || causticDebugMode) {
-
-    // Reuse the refraction noise already computed above (same fragPos, same
-    // octaves/scale/time) for the front-face caustic Jacobian instead of
-    // recomputing waterRefractionNoise a second time this fragment.
-    vec2 caustRef0 = refractionNoise * refractionStrength;
-
-    // Compute only the selected caustic noise per-fragment
-    if (causticType == 1) {
-        // VORONOI-based measures (Worley noise) — jitter feature points using FBM
-        vec2 vorFront = voronoi3d(fragPos * causticScale, causticAnimTime, noiseScale, 0.5, noiseOctaves, noisePersistence, noiseLacunarity);
-        vec2 vorBack  = voronoi3d(backPos * causticScale, causticAnimTime, noiseScale, 0.5, noiseOctaves, noisePersistence, noiseLacunarity);
-        float f1f = vorFront.x;
-        float f2f = vorFront.y;
-        float f1b = vorBack.x;
-        float f2b = vorBack.y;
-
-        caustFront = max(1.0 - f1f, 0.0);
-        caustBack  = max(1.0 - f1b, 0.0);
-        lineFrontRaw = max(1.0 - (f2f - f1f) * lineScale, 0.0);
-        lineBackRaw  = max(1.0 - (f2b - f1b) * lineScale, 0.0);
-
-        // Compose final cloud/line measures and apply power/intensity
-        float cloudCombined = mix(caustFront, caustBack, depthInfluence);
-        cloudFinal = pow(max(cloudCombined, 1e-6), causticPower);
-        lineCombined = mix(lineFrontRaw, lineBackRaw, depthInfluence);
-        lineFinal = pow(max(lineCombined, 1e-6), causticPower);
-    } else {
-        // PERLIN-based measures (existing Jacobian method)
-        // Front face: reuse caustRef0 (= waterRefractionNoise(fragPos)) and only
-        // compute the two tangent-perturbed samples that differ.
-        vec2 refT = waterRefractionNoise(fragPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
-        vec2 refB = waterRefractionNoise(fragPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
-        vec2 ddT = (refT - caustRef0) / eps;
-        vec2 ddB = (refB - caustRef0) / eps;
-        float detJFront = ddT.x * ddB.y - ddT.y * ddB.x;
-        float trFront = ddT.x + ddB.y;
-        float anisFront = sqrt(max(trFront * trFront - 4.0 * detJFront, 0.0));
-
-        caustFront = max(-detJFront * causticScale, 0.0);
-        lineFrontRaw  = max(anisFront * causticScale * lineScale, 0.0);
-
-        // Back face: only needed for genuinely thick water volumes. For flat /
-        // co-planar surfaces (hasValidBackFace == false) the bottom Jacobian
-        // equals the surface Jacobian, so reuse the front estimate instead of
-        // issuing the full back-face FBM sample set.
-        if (hasValidBackFace) {
-            vec2 caustRef0b = waterRefractionNoise(backPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
-            vec2 refTb = waterRefractionNoise(backPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
-            vec2 refBb = waterRefractionNoise(backPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
-            vec2 ddTb = (refTb - caustRef0b) / eps;
-            vec2 ddBb = (refBb - caustRef0b) / eps;
-            float detJBack = ddTb.x * ddBb.y - ddTb.y * ddBb.x;
-            float trBack = ddTb.x + ddBb.y;
-            float anisBack = sqrt(max(trBack * trBack - 4.0 * detJBack, 0.0));
-
-            caustBack = max(-detJBack * causticScale, 0.0);
-            lineBackRaw = max(anisBack * causticScale * lineScale, 0.0);
-        } else {
-            caustBack = caustFront;
-            lineBackRaw = lineFrontRaw;
-        }
-
-        // Compose final cloud/line measures and apply power/intensity
-        float cloudCombined = mix(caustFront, caustBack, depthInfluence);
-        cloudFinal = pow(max(cloudCombined, 1e-6), causticPower);
-        lineCombined = mix(lineFrontRaw, lineBackRaw, depthInfluence);
-        lineFinal = pow(max(lineCombined, 1e-6), causticPower);
+        // Sun geometry (flat-surface incidence): stable coefficient, the
+        // wave slopes enter through the curvature term only.
+        vec3 Lprop = normalize(ubo.lightDir.xyz);       // light travel dir
+        float cosI = clamp(-Lprop.y, 0.0, 1.0);
+        float sinI = sqrt(max(1.0 - cosI * cosI, 0.0));
+        float sinT = sinI / waterIor;
+        float cosT = sqrt(max(1.0 - sinT * sinT, 1e-4));
+        float K = cosI / max(waterIor * cosT * cosT * cosT, 1e-4);
+        vec2 sunH2 = vec2(Lprop.x, Lprop.z);
+        float sunLen = length(sunH2);
+        vec3 sunHat = (sunLen > 1e-5)
+            ? vec3(sunH2.x / sunLen, 0.0, sunH2.y / sunLen)
+            : vec3(1.0, 0.0, 0.0);
+        float depth = max(waterThickness, 0.0);
+        float tanT = sinT / max(cosT, 1e-4);
+        // Surface entry point that feeds the bottom beneath this pixel: the
+        // refracted ray is offset d·tan(theta_t) along the sun azimuth.
+        vec3 entry = backPos - sunHat * (depth * tanT);
+        // Wave curvature along u: central difference of the ANALYTIC wave
+        // gradient. The stencil resolves the FINEST octave of the wave
+        // spectrum (quarter wavelength), so the caustic detail follows the
+        // same band-limited field the surface is displaced with — no
+        // aliasing from an oversized step.
+        float finestFreq = max(noiseScale * pow(max(noiseLacunarity, 1.0),
+                              float(max(noiseOctaves - 1, 0))), 1e-4);
+        float ec = clamp(0.25 / finestFreq, 0.02, 2.0);
+        vec4 waveP = waterWaveSample(entry + sunHat * ec, animTime, noiseScale,
+                                     noiseOctaves, noisePersistence, noiseLacunarity,
+                                     fragBasePos.w, 1.0);
+        vec4 waveM = waterWaveSample(entry - sunHat * ec, animTime, noiseScale,
+                                     noiseOctaves, noisePersistence, noiseLacunarity,
+                                     fragBasePos.w, 1.0);
+        float d2h = (dot(waveP.yzw, sunHat) - dot(waveM.yzw, sunHat)) / (2.0 * ec);
+        // Bottom irradiance ratio: inverse Jacobian of the refracted ray
+        // map. Folds (|J| -> 0) are physically unbounded; causticSoftness is
+        // the only artistic control (a clamp floor on |J|).
+        float jac = 1.0 + depth * K * d2h;
+        causticGain = 1.0 / max(abs(jac), causticSoftness);
+        // Only CONVERGED light (gain > 1) adds to the flat-surface
+        // irradiance, scaled by the sun elevation (no sun -> no caustics).
+        float excess = max(causticGain - 1.0, 0.0) * cosI;
+        caustic = excess * causticIntensity * (1.0 - shadow);
     }
-
-    } // end caustic-intensity / debug guard
-
-    // Blend cloud vs line patterns, then apply intensity and modulations
-    float caustRaw = mix(cloudFinal, lineFinal, lineMix);
-    float caustic = caustRaw * causticIntensity * depthRampCaust * angularCaust * edgeFade * (1.0 - shadow);
-
-    waterColor += causticColor * caustic;
+    // Attenuated by the water column (the focused light travels down to the
+    // bottom and back to the eye through the same absorption).
+    waterColor += causticColor * (caustic * transmittance);
 
     // Apply per-vertex HSV: rotate hue, offset saturation, scale value
     vec3 hsvColor = fragHSV;

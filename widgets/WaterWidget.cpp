@@ -116,30 +116,24 @@ void WaterWidget::render() {
             // volume light accumulation removed; caustics preserved below
         }
 
-        // Caustics (light focusing) settings
+        // Caustics (physical sunlight focusing; wave-shape driven)
         if (ImGui::CollapsingHeader("Caustics", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextWrapped("Physically derived from the wave height field: sunlight refracted by the "
+                               "surface focuses on the bottom with irradiance E/E0 = 1/|1 + d*K*d2h/du2| "
+                               "(Snell K, water column d, wave curvature along the sun azimuth u). "
+                               "The pattern, its scale and its motion ride the waves — no separate "
+                               "caustic noise or speed.");
             ImGui::ColorEdit3("Caustic Color", &layerParams.causticColor.x);
-            ImGui::SliderFloat("Caustic Intensity", &layerParams.causticIntensity, 0.0f, 10.0f);
-            ImGuiHelpers::SetTooltipIfHovered("Overall brightness multiplier for caustic highlights.");
-            ImGui::SliderFloat("Caustic Scale", &layerParams.causticScale, 0.01f, 200.0f, "%.2f");
-            ImGuiHelpers::SetTooltipIfHovered("Scale factor applied to the computed Jacobian determinant when forming caustic brightness.");
-            ImGui::SliderFloat("Caustic Power", &layerParams.causticPower, 0.1f, 4.0f, "%.2f");
-            ImGuiHelpers::SetTooltipIfHovered("Exponent to sharpen or soften caustic contrast.");
+            ImGuiHelpers::SetTooltipIfHovered("Tint of the focused sunlight (near-white is physical; "
+                                              "colored tints are stylistic).");
+            ImGui::SliderFloat("Caustic Intensity", &layerParams.causticIntensity, 0.0f, 4.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("Strength of the added focused light (excess over the flat-surface "
+                                              "irradiance, attenuated by the water column). 0 disables caustics.");
+            ImGui::SliderFloat("Caustic Softness", &layerParams.causticSoftness, 0.02f, 1.0f, "%.3f");
+            ImGuiHelpers::SetTooltipIfHovered("Clamp floor on |J| (the inverse-Jacobian fold is unbounded).\n"
+                                              "Lower = sharper, brighter caustic ridges; 1.0 disables them.");
             ImGui::SliderFloat("Caustic Depth Scale", &layerParams.causticDepthScale, 0.1f, 256.0f, "%.2f");
-            ImGuiHelpers::SetTooltipIfHovered("World-space depth (units) over which caustic blending transitions\nfrom surface-focused to bottom-focused. Lower values make bottom-based caustics appear\nfor shallower water.");
-            ImGui::SliderFloat("Caustic Line Scale", &layerParams.causticLineScale, 0.01f, 10.0f, "%.2f");
-            ImGuiHelpers::SetTooltipIfHovered("Multiplier applied to anisotropy to form thin caustic lines.\nHigher = thinner/more pronounced lines.");
-            ImGui::SliderFloat("Caustic Line Mix", &layerParams.causticLineMix, 0.0f, 1.0f, "%.2f");
-            ImGuiHelpers::SetTooltipIfHovered("Blend between cloudy caustics (0.0) and line-shaped caustics (1.0).");
-            ImGui::SliderFloat("Caustic Velocity", &layerParams.causticVelocity, 0.0f, 1.0f, "%.3f");
-            ImGuiHelpers::SetTooltipIfHovered("Speed multiplier for caustic animation. 0 = static.");
-            // Caustic generation type (0 = Perlin, 1 = Voronoi)
-            const char* causticTypes[] = { "Perlin (Jacobian)", "Voronoi (Worley)" };
-            int ct = layerParams.causticType;
-            if (ImGui::Combo("Caustic Type", &ct, causticTypes, IM_ARRAYSIZE(causticTypes))) {
-                layerParams.causticType = ct;
-            }
-            ImGuiHelpers::SetTooltipIfHovered("Choose caustic generation: Perlin (jacobian-based) or Voronoi (Worley).");
+            ImGuiHelpers::SetTooltipIfHovered("Depth reference for the water-tint volume ramp (shallow->deep blend).");
         }
 
         ImGui::Separator();
