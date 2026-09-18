@@ -68,13 +68,21 @@ void WaterRenderer::setSceneRenderers(SolidRenderer* solid, BrushRenderer* brush
 namespace {
 
 // CPU/UI stores feature PERIODS (world units); the shader consumes spatial
-// scales/frequencies. Period <= 0 disables that spectrum (scale/frequency 0).
-constexpr float kWaterTwoPi = 6.283185307179586f;
-float waterPeriodToFrequency(float period) {
-    return period > 0.0f ? kWaterTwoPi / period : 0.0f;
-}
+// scales (features per world unit). The C++ WaterParamsGPU values therefore
+// stay in PERIODS too and are converted exactly once, at the buffer upload
+// boundary, by waterGpuPeriodsToScales() below.
 float waterPeriodToScale(float period) {
     return period > 0.0f ? 1.0f / period : 0.0f;
+}
+
+// Convert the period-valued slots of a packed GPU block into the shader's
+// spatial scales. Called only right before the buffer write.
+void waterGpuPeriodsToScales(WaterParamsGPU& gpu) {
+    gpu.params2.y = waterPeriodToScale(gpu.params2.y);
+    gpu.waveComponent1.x = waterPeriodToScale(gpu.waveComponent1.x);
+    gpu.waveComponent2.x = waterPeriodToScale(gpu.waveComponent2.x);
+    gpu.waveMask.x = waterPeriodToScale(gpu.waveMask.x);
+    gpu.foamNoise.x = waterPeriodToScale(gpu.foamNoise.x);
 }
 
 // Single source of truth for CPU -> GPU water parameter packing. Shared by
@@ -86,11 +94,9 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     const float shoreAngle = glm::radians(p.shoreWaveAngle);
     const glm::vec2 shoreDir(std::sin(shoreAngle), std::cos(shoreAngle));
 
-    // CPU/UI stores feature PERIODS (world units); the shader consumes spatial
-    // scales/frequencies. Period <= 0 disables that spectrum (scale 0).
     WaterParamsGPU gpu{};
     gpu.params1 = glm::vec4(p.refractionStrength, p.fresnelPower, p.transparency, p.reflectionStrength);
-    gpu.params2 = glm::vec4(p.waterTint, waterPeriodToScale(p.noisePeriod), static_cast<float>(p.noiseOctaves), p.noisePersistence);
+    gpu.params2 = glm::vec4(p.waterTint, p.noisePeriod, static_cast<float>(p.noiseOctaves), p.noisePersistence);
     gpu.params3 = glm::vec4(p.noiseTimeSpeed, p.noiseLacunarity, p.specularIntensity, p.specularPower);
     gpu.shallowColor = glm::vec4(p.shallowColor, p.waveDepthTransition);
     gpu.deepColor = glm::vec4(p.deepColor, p.glitterIntensity);
@@ -116,14 +122,14 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     gpu.waveDirection = glm::vec4(shoreDir.x, shoreDir.y, 0.0f, 0.0f);
     gpu.waveShape = glm::vec4(p.waveSharpDeep, p.waveSharpBreak, p.waveSharpShallow, p.waveShoalGain);
     gpu.waveShoal = glm::vec4(p.waveShoalSpeed, p.waveShallowDecay, p.waveLineAmplitude, p.breakerWidth);
-    gpu.waveComponent1 = glm::vec4(waterPeriodToFrequency(p.wavePeriod), p.waveSpeed, 1.0f, 0.0f);
-    gpu.waveComponent2 = glm::vec4(waterPeriodToFrequency(p.crossWavePeriod), p.crossWaveSpeed, p.crossWaveAmplitude, p.crossWavePhase);
+    gpu.waveComponent1 = glm::vec4(p.wavePeriod, p.waveSpeed, 1.0f, 0.0f);
+    gpu.waveComponent2 = glm::vec4(p.crossWavePeriod, p.crossWaveSpeed, p.crossWaveAmplitude, p.crossWavePhase);
     gpu.waveBreaker = glm::vec4(p.breakerAmplitude, p.waveChopAmount, p.whitecapOnset, p.waveHeightFalloff);
     gpu.waveCurl = glm::vec4(p.breakerCurl, p.breakerCrestCurve, 0.0f, 0.0f);
     gpu.waveWarp = glm::vec4(p.waveWarpAmount, p.waveAmpVariation, p.waveRidgeStretch, p.shoreGradientStep);
-    gpu.waveMask = glm::vec4(waterPeriodToScale(p.waveMaskPeriod), p.waveMaskThreshold, p.waveMaskSoftness, p.waveMaskSpeed);
+    gpu.waveMask = glm::vec4(p.waveMaskPeriod, p.waveMaskThreshold, p.waveMaskSoftness, p.waveMaskSpeed);
     gpu.foamParams = glm::vec4(p.foamCrestThreshold, p.foamTrailPhase, p.foamDecay, p.foamColorAmount);
-    gpu.foamNoise = glm::vec4(waterPeriodToScale(p.foamNoisePeriod), p.foamNoiseSpeed, p.foamNoiseAmount, p.foamShoreAmount);
+    gpu.foamNoise = glm::vec4(p.foamNoisePeriod, p.foamNoiseSpeed, p.foamNoiseAmount, p.foamShoreAmount);
     gpu.foamExtra = glm::vec4(p.foamMaskFloor, p.foamDiffuseFloor, p.foamAmbient, 0.0f);
     gpu.foamContact = glm::vec4(p.foamContactWidth, p.foamContactAmount, p.foamContactAlpha, p.foamContactFloor);
     gpu.foamShape = glm::vec4(p.foamEdge, p.foamCoverage, p.foamShoreSpeed, p.foamLagGrowth);
@@ -143,6 +149,7 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
     if (!appPtr) return;
     if (layer >= waterParamsCount) return;
     WaterParamsGPU gpu = makeWaterParamsGPU(p);
+    waterGpuPeriodsToScales(gpu); // periods -> shader scales, at the upload boundary
 
     size_t offset = static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
     void* data = nullptr;
@@ -1095,7 +1102,8 @@ void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& 
     if (waterParamsBuffer.buffer == VK_NULL_HANDLE) return;
 
     for (uint32_t i = 0; i < waterParams.size(); ++i) {
-        const WaterParamsGPU gpu = makeWaterParamsGPU(waterParams[i]);
+        WaterParamsGPU gpu = makeWaterParamsGPU(waterParams[i]);
+        waterGpuPeriodsToScales(gpu); // periods -> shader scales, at the upload boundary
         memcpy(static_cast<char*>(waterParamsBuffer.mappedData) + i * sizeof(WaterParamsGPU), &gpu, sizeof(WaterParamsGPU));
     }
 }

@@ -77,8 +77,8 @@ struct WaterParamsGPU {
     vec4 waveDirection;    // xy=shore direction (unit, world XZ), zw=unused
     vec4 waveShape;        // x=sharp deep, y=sharp break, z=sharp shallow, w=shoal gain
     vec4 waveShoal;        // x=speed shoal, y=shallow decay, z=line amplitude, w=breaker width
-    vec4 waveComponent1;   // x=frequency(rad/m), y=speed(m/s), z=amplitude, w=unused
-    vec4 waveComponent2;   // x=cross frequency, y=cross speed, z=cross amp, w=cross phase offset along shore (world units)
+    vec4 waveComponent1;   // x=crest scale(1/period), y=speed(m/s), z=amplitude, w=unused
+    vec4 waveComponent2;   // x=cross crest scale(1/period), y=cross speed, z=cross amp, w=cross phase offset along shore (world units)
     vec4 waveBreaker;      // x=breaker amplitude, y=chop amount, z=whitecap onset, w=height falloff exponent
     vec4 waveCurl;         // x=breaker lip skew, y=breaker crest-line hook, zw=unused
     vec4 waveWarp;         // x=crest phase warp(feature units), y=crest amp variation, z=ridge stretch(along/across), w=shore gradient step(texels)
