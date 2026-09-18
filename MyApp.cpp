@@ -2318,6 +2318,22 @@ public:
                             }
                         }
                     }
+                    // Water RT shading gate: global ray-path toggles AND the
+                    // per-material water layer flags. Drives BOTH the water
+                    // pipeline variant (heavy ray-query fragment shader vs. the
+                    // cheaper non-RT shader) and the async RT dispatch below.
+                    bool anyLayerRefl = false;
+                    bool anyLayerRefr = false;
+                    for (const WaterParams& wp : waterParams) {
+                        anyLayerRefl = anyLayerRefl || wp.enableReflection;
+                        anyLayerRefr = anyLayerRefr || wp.enableRefraction;
+                    }
+                    const bool waterRtNeeded =
+                        (settings.rtWaterReflections && anyLayerRefl) ||
+                        (settings.rtRefractions && anyLayerRefr);
+                    if (this->sceneRenderer->mainLiquidRenderer)
+                        this->sceneRenderer->mainLiquidRenderer->setRtShadingEnabled(waterRtNeeded);
+
                     if (slot.waterDs2 != VK_NULL_HANDLE) {
                         VkImageView wsky = (this->sceneRenderer->skyRenderer)
                             ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
@@ -2382,18 +2398,9 @@ public:
                         // DEPTH_STENCIL_ATTACHMENT (VUID layout mismatch)).
                         // Outputs feed NEXT frame's water shading (1-frame
                         // latency, same-queue ordered). Own timestamps (20-21).
-                        // Skip the whole dispatch when no enabled ray path can
-                        // use it: per-layer toggles AND the global settings
-                        // toggles must both allow at least one lobe.
-                        bool anyLayerRefl = false;
-                        bool anyLayerRefr = false;
-                        for (const WaterParams& wp : waterParams) {
-                            anyLayerRefl = anyLayerRefl || wp.enableReflection;
-                            anyLayerRefr = anyLayerRefr || wp.enableRefraction;
-                        }
-                        const bool waterRtNeeded =
-                            (settings.rtWaterReflections && anyLayerRefl) ||
-                            (settings.rtRefractions && anyLayerRefr);
+                        // waterRtNeeded (computed above) covers per-layer AND
+                        // global toggles; skip the whole dispatch when no
+                        // enabled ray path can use it.
                         if (waterRtNeeded &&
                             this->sceneRenderer->rayTracing &&
                             this->sceneRenderer->rayTracing->isPipelineReady() &&

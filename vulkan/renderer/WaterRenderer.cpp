@@ -600,15 +600,17 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 
     std::cout << "[WaterRenderer] Created water pipeline layout with 3 descriptor sets" << std::endl;
 
-    // Create water geometry pipeline with dedicated water shaders.
-    // Hybrid RT: the RT variant samples the pipeline outputs + inline ray
-    // queries (same lighting/CSM/water otherwise); non-RT hardware uses the
-    // sky-equirect fallback variant. Phase-1: all four stages are the merged
-    // main.* sources built with WATER_MODE=1.
-    const char* waterFragPath = (app && app->rayTracingEnabled())
-        ? "shaders/main_water_rt.frag.spv" : "shaders/main_water.frag.spv";
+    // Create water geometry pipelines with dedicated water shaders.
+    // Hybrid RT: BOTH fragment variants are built up front — the RT one
+    // (pipeline outputs + inline ray queries) and the non-RT one (sky
+    // fallbacks). The runtime selector binds whichever matches the enabled
+    // ray paths, so a fully disabled RT configuration never pays the
+    // ray-query shader's register/occupancy cost. Phase-1: all four stages
+    // are the merged main.* sources built with WATER_MODE=1.
     VkShaderModule vertModule = app->getOrCreateShaderModule("shaders/main_water.vert.spv");
-    VkShaderModule fragModule = app->getOrCreateShaderModule(waterFragPath);
+    VkShaderModule fragNoRtModule = app->getOrCreateShaderModule("shaders/main_water.frag.spv");
+    VkShaderModule fragRtModule = (app && app->rayTracingEnabled())
+        ? app->getOrCreateShaderModule("shaders/main_water_rt.frag.spv") : VK_NULL_HANDLE;
     VkShaderModule tescModule = VK_NULL_HANDLE;
     VkShaderModule teseModule = VK_NULL_HANDLE;
     bool hasTessellation = true;
@@ -643,7 +645,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     VkPipelineShaderStageCreateInfo fragStage{};
     fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragStage.module = fragModule;
+    fragStage.module = fragNoRtModule;
     fragStage.pName = "main";
     shaderStages.push_back(fragStage);
 
@@ -761,71 +763,91 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     pipelineInfo.subpass = 0;
     if (hasTessellation) pipelineInfo.pTessellationState = &tessState;
 
-    if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &waterGeometryPipeline) != VK_SUCCESS) {
-        std::cerr << "[WaterRenderer] Warning: Failed to create water geometry pipeline" << std::endl;
-        waterGeometryPipeline = VK_NULL_HANDLE;
-    } else {
-        app->resources.addPipeline(waterGeometryPipeline, "WaterRenderer: waterGeometryPipeline");
-        std::cout << "[WaterRenderer] Created water geometry pipeline (dynamic rendering, 1 color attachment)" << std::endl;
-    }
-
     // Phase-1 water-in-main blend variant: same stages/layout, but drawn into
     // the MAIN solid color/depth targets with alpha blending. Depth writes stay
     // off so water neither disturbs the solid depth (sampled downstream) nor
     // self-occludes in draw order; depth test still rejects water behind
     // terrain. Color format matches the solid pass attachment.
-    {
-        VkPipelineRasterizationStateCreateInfo mainRasterizer = rasterizer;
-        mainRasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-        mainRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    VkPipelineRasterizationStateCreateInfo mainRasterizer = rasterizer;
+    mainRasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    mainRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
-        VkPipelineDepthStencilStateCreateInfo mainDepthStencil = depthStencil;
-        mainDepthStencil.depthWriteEnable = VK_FALSE;
+    VkPipelineDepthStencilStateCreateInfo mainDepthStencil = depthStencil;
+    mainDepthStencil.depthWriteEnable = VK_FALSE;
 
-        std::array<VkPipelineColorBlendAttachmentState, 1> mainBlendAttachments{};
-        for (auto& att : mainBlendAttachments) {
-            att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-            att.blendEnable = VK_TRUE;
-            att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-            att.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-            att.colorBlendOp = VK_BLEND_OP_ADD;
-            // Premultiplied-style alpha accumulation: the destination alpha
-            // becomes coverage, so later passes (brush overlay) can depth-test
-            // against the blended result if needed.
-            att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-            att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-            att.alphaBlendOp = VK_BLEND_OP_ADD;
-        }
-        VkPipelineColorBlendStateCreateInfo mainColorBlending{};
-        mainColorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        mainColorBlending.logicOpEnable = VK_FALSE;
-        mainColorBlending.attachmentCount = static_cast<uint32_t>(mainBlendAttachments.size());
-        mainColorBlending.pAttachments = mainBlendAttachments.data();
-
-        VkFormat mainColorFmt = app->getSwapchainImageFormat();
-        VkPipelineRenderingCreateInfo mainRenderingInfo = pipelineRenderingInfo;
-        mainRenderingInfo.pColorAttachmentFormats = &mainColorFmt;
-        mainRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-
-        VkGraphicsPipelineCreateInfo mainPipelineInfo = pipelineInfo;
-        mainPipelineInfo.pNext = &mainRenderingInfo;
-        mainPipelineInfo.pRasterizationState = &mainRasterizer;
-        mainPipelineInfo.pDepthStencilState = &mainDepthStencil;
-        mainPipelineInfo.pColorBlendState = &mainColorBlending;
-
-        if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &mainPipelineInfo, nullptr, &waterMainPipeline) != VK_SUCCESS) {
-            std::cerr << "[WaterRenderer] Warning: Failed to create water-in-main blend pipeline" << std::endl;
-            waterMainPipeline = VK_NULL_HANDLE;
-        } else {
-            app->resources.addPipeline(waterMainPipeline, "WaterRenderer: waterMainPipeline");
-            std::cout << "[WaterRenderer] Created water-in-main blend pipeline (alpha, depth-write off)" << std::endl;
-        }
+    std::array<VkPipelineColorBlendAttachmentState, 1> mainBlendAttachments{};
+    for (auto& att : mainBlendAttachments) {
+        att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        att.blendEnable = VK_TRUE;
+        att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        att.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        att.colorBlendOp = VK_BLEND_OP_ADD;
+        // Premultiplied-style alpha accumulation: the destination alpha
+        // becomes coverage, so later passes (brush overlay) can depth-test
+        // against the blended result if needed.
+        att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        att.alphaBlendOp = VK_BLEND_OP_ADD;
     }
+    VkPipelineColorBlendStateCreateInfo mainColorBlending{};
+    mainColorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    mainColorBlending.logicOpEnable = VK_FALSE;
+    mainColorBlending.attachmentCount = static_cast<uint32_t>(mainBlendAttachments.size());
+    mainColorBlending.pAttachments = mainBlendAttachments.data();
+
+    VkFormat mainColorFmt = app->getSwapchainImageFormat();
+    VkPipelineRenderingCreateInfo mainRenderingInfo = pipelineRenderingInfo;
+    mainRenderingInfo.pColorAttachmentFormats = &mainColorFmt;
+    mainRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+
+    VkGraphicsPipelineCreateInfo mainPipelineInfo = pipelineInfo;
+    mainPipelineInfo.pNext = &mainRenderingInfo;
+    mainPipelineInfo.pRasterizationState = &mainRasterizer;
+    mainPipelineInfo.pDepthStencilState = &mainDepthStencil;
+    mainPipelineInfo.pColorBlendState = &mainColorBlending;
+
+    // Create one geometry + one main pipeline per fragment module. The
+    // fragment stage is always the last entry of shaderStages; swapping its
+    // module is all that differs between the RT and non-RT variants (same
+    // pipeline layout, render state and descriptor sets).
+    auto createVariant = [&](VkShaderModule frag, TrackedHandle<VkPipeline>& geomOut,
+                             TrackedHandle<VkPipeline>& mainOut,
+                             const char* geomName, const char* mainName,
+                             const char* label) {
+        if (frag == VK_NULL_HANDLE) return;
+        shaderStages.back().module = frag;
+
+        if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &geomOut) != VK_SUCCESS) {
+            std::cerr << "[WaterRenderer] Warning: Failed to create water geometry pipeline (" << label << ")" << std::endl;
+            geomOut = VK_NULL_HANDLE;
+        } else {
+            app->resources.addPipeline(geomOut, geomName);
+            std::cout << "[WaterRenderer] Created water geometry pipeline " << label
+                      << " (dynamic rendering, 1 color attachment)" << std::endl;
+        }
+
+        if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &mainPipelineInfo, nullptr, &mainOut) != VK_SUCCESS) {
+            std::cerr << "[WaterRenderer] Warning: Failed to create water-in-main blend pipeline (" << label << ")" << std::endl;
+            mainOut = VK_NULL_HANDLE;
+        } else {
+            app->resources.addPipeline(mainOut, mainName);
+            std::cout << "[WaterRenderer] Created water-in-main blend pipeline " << label
+                      << " (alpha, depth-write off)" << std::endl;
+        }
+    };
+
+    createVariant(fragNoRtModule, waterGeometryPipeline, waterMainPipeline,
+                  "WaterRenderer: waterGeometryPipeline (non-RT)",
+                  "WaterRenderer: waterMainPipeline (non-RT)", "non-RT");
+    createVariant(fragRtModule, waterGeometryPipelineRt, waterMainPipelineRt,
+                  "WaterRenderer: waterGeometryPipeline (RT)",
+                  "WaterRenderer: waterMainPipeline (RT)", "RT");
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
     vertModule = VK_NULL_HANDLE;
-    fragModule = VK_NULL_HANDLE;
+    fragNoRtModule = VK_NULL_HANDLE;
+    fragRtModule = VK_NULL_HANDLE;
     if (tescModule) tescModule = VK_NULL_HANDLE;
     if (teseModule) teseModule = VK_NULL_HANDLE;
 
@@ -833,7 +855,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 }
 
 void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex, bool loadExisting) {
-    if (waterGeometryPipeline == VK_NULL_HANDLE) return;
+    if (getWaterGeometryPipeline() == VK_NULL_HANDLE) return;
     if (frameIndex >= 3) return;
     if (waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
 
@@ -1179,9 +1201,9 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     }
 
     // Main geometry pass
-    if (waterGeometryPipeline != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsPipeline(cmd, waterGeometryPipeline);
-        else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeometryPipeline);
+    if (getWaterGeometryPipeline() != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsPipeline(cmd, getWaterGeometryPipeline());
+        else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, getWaterGeometryPipeline());
         waterIndirectRenderer.drawPrepared(cmd);
         // Brush liquid water: same pipeline, same descriptor sets, its own IR.
         // Drawn right after the main water so brush liquid depth/color lands in
@@ -1197,7 +1219,7 @@ void WaterRenderer::renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint3
                                       VkImage depthImage, VkImageView depthView,
                                       VkImageView skyView, VkDescriptorSet overrideWaterDs) {
     if (!app || cmd == VK_NULL_HANDLE) return;
-    if (waterMainPipeline == VK_NULL_HANDLE) return;
+    if (getWaterMainPipeline() == VK_NULL_HANDLE) return;
     if (frameIndex >= FRAMES) return;
     if (colorImage == VK_NULL_HANDLE || colorView == VK_NULL_HANDLE ||
         depthImage == VK_NULL_HANDLE || depthView == VK_NULL_HANDLE) return;
@@ -1264,8 +1286,8 @@ void WaterRenderer::renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint3
     scissor.extent = {renderWidth, renderHeight};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, waterMainPipeline);
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterMainPipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, getWaterMainPipeline());
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, getWaterMainPipeline());
 
     VkDescriptorSet mainDs = app->getMainDescriptorSet();
     if (mainDs != VK_NULL_HANDLE) {

@@ -114,8 +114,12 @@ public:
     // pass to depth-test against solid geometry so water is only rasterized
     // where it is visible in front of solids.
     
-    // Get the water geometry pipeline (for rendering water to G-buffer)
-    VkPipeline getWaterGeometryPipeline() const { return waterGeometryPipeline; }
+    // Get the water geometry pipeline (for rendering water to G-buffer).
+    // Returns the RT fragment variant only while RT shading is enabled; with
+    // every ray path off, the cheaper non-RT variant is bound instead (same
+    // layout/descriptors, sky fallbacks), so a disabled configuration does
+    // not pay the register/occupancy cost of the ray-query shader.
+    VkPipeline getWaterGeometryPipeline() const { return activeGeometryPipeline(); }
     
     // Get the water geometry pipeline layout
     VkPipelineLayout getWaterGeometryPipelineLayout() const { return waterGeometryPipelineLayout; }
@@ -123,7 +127,13 @@ public:
     // Water-in-main blend pipeline (Phase-1 migration): identical stages /
     // layout to the geometry pipeline, but alpha-blended, depth-write off and
     // targeting the main solid color format. Used by renderMainTargets().
-    VkPipeline getWaterMainPipeline() const { return waterMainPipeline; }
+    VkPipeline getWaterMainPipeline() const { return activeMainPipeline(); }
+
+    // Runtime RT-shading selector (from the settings ray-path toggles + the
+    // per-material water layer flags). Recreating pipelines is avoided: both
+    // variants are built at init and swapped per draw.
+    void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
+    bool rtShadingEnabled() const { return rtShadingEnabled_; }
 
     // Get the descriptor set layout for scene textures (set 2)
     VkDescriptorSetLayout getWaterDepthDescriptorSetLayout() const { return waterDepthDescriptorSetLayout; }
@@ -202,6 +212,17 @@ public:
 
 private:
 
+    // Active pipeline variant (RT fragment shader while RT shading is on and
+    // the RT variant exists, otherwise the cheaper non-RT variant).
+    VkPipeline activeGeometryPipeline() const {
+        return (rtShadingEnabled_ && waterGeometryPipelineRt != VK_NULL_HANDLE)
+            ? waterGeometryPipelineRt.handle : waterGeometryPipeline.handle;
+    }
+    VkPipeline activeMainPipeline() const {
+        return (rtShadingEnabled_ && waterMainPipelineRt != VK_NULL_HANDLE)
+            ? waterMainPipelineRt.handle : waterMainPipeline.handle;
+    }
+
     // vkCmdEndRendering without barriers (shared by endWaterGeometryPass and
     // endWaterGeometryPassWithDepth, which emit their own batched barriers).
     void endWaterRendering(VkCommandBuffer cmd);
@@ -237,6 +258,11 @@ private:
     // Pipelines
     TrackedHandle<VkPipeline> waterGeometryPipeline;
     TrackedHandle<VkPipeline> waterMainPipeline; // alpha-blended, main-pass targets
+    // RT fragment-shader variants (same layout/descriptors; bound instead of
+    // the non-RT pair while any ray path is enabled).
+    TrackedHandle<VkPipeline> waterGeometryPipelineRt;
+    TrackedHandle<VkPipeline> waterMainPipelineRt;
+    bool rtShadingEnabled_ = true;
 
     // Water geometry pipeline layout (includes depth texture binding)
     TrackedHandle<VkPipelineLayout> waterGeometryPipelineLayout;
