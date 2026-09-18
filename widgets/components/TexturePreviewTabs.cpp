@@ -6,6 +6,7 @@ namespace ImGuiComponents {
 void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> textures, std::vector<MixerParameters>& mixerParams,
                               size_t &currentMixerIndex, int &previewSource, int &activeMap, bool showNoise) {
     const float previewSize = 512.0f;
+    ImGui::PushStyleVar(ImGuiStyleVar_TabBarBorderSize, 0.0f);
     if (ImGui::BeginTabBar(id)) {
         if (ImGui::BeginTabItem("Albedo")) {
             activeMap = 0;
@@ -73,6 +74,7 @@ void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> text
         }
         ImGui::EndTabBar();
     }
+    ImGui::PopStyleVar();
 }
 
 } // namespace ImGuiComponents
