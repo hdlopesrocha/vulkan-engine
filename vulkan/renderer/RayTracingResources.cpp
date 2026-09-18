@@ -797,8 +797,26 @@ bool RayTracingResources::recordSceneBlas(VulkanApp* app, VkCommandBuffer cmd) {
     return true;
 }
 
+void RayTracingResources::setRuntimeEnabled(bool enabled) {
+    if (runtimeEnabled_ == enabled) return;
+    runtimeEnabled_ = enabled;
+    if (enabled) {
+        // Scene edits may have happened while disabled: force a proxy repack
+        // and skip the build throttle once so the first re-enabled frame
+        // traces current geometry.
+        forceProxyRefresh_ = true;
+        lastBuiltValid_ = false;
+    }
+}
+
+bool RayTracingResources::consumeForceProxyRefresh() {
+    const bool f = forceProxyRefresh_;
+    forceProxyRefresh_ = false;
+    return f;
+}
+
 bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
-    if (!supported_ || !dirty_ || cmd == VK_NULL_HANDLE) return false;
+    if (!supported_ || !runtimeEnabled_ || !dirty_ || cmd == VK_NULL_HANDLE) return false;
     ++frameCounter_;
     // Never waste the initial build on an empty proxy set: an empty TLAS
     // helps nobody, yet it would flip tlasBuilt_ on, so shaders spend the

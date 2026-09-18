@@ -192,6 +192,15 @@ public:
     uint32_t buildCount() const { return buildCount_; }
     bool tlasBuilt() const { return tlasBuilt_; }
 
+    // Runtime RT gate: when every ray-path Settings toggle is off, nothing can
+    // consume the acceleration structures, so buildIfNeeded and the proxy
+    // repack are skipped entirely (no BLAS/TLAS work while RT is disabled).
+    // Re-enabling forces one immediate rebuild + repack so scene edits made
+    // while disabled are never traced from stale boxes/geometry.
+    void setRuntimeEnabled(bool enabled);
+    bool runtimeEnabled() const { return runtimeEnabled_; }
+    bool consumeForceProxyRefresh();
+
     // (Re)point the per-slot water-depth (D32) + sky equirect views. Called
     // once at init and on swapchain resize (handles stable otherwise).
     void setSceneViews(VulkanApp* app, const VkImageView waterDepthViews[3],
@@ -246,6 +255,8 @@ private:
     std::vector<RTProxyBox> stagedSolids_;
     std::vector<RTProxyBox> stagedWaters_;
     bool dirty_ = true;
+    bool runtimeEnabled_ = true;      // set from the Settings ray-path toggles
+    bool forceProxyRefresh_ = false;  // consumed once after re-enabling RT
     uint32_t activeSolidCount_ = 0;
     uint32_t activeWaterCount_ = 0;
     bool lastBuiltValid_ = false;

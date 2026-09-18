@@ -2089,6 +2089,11 @@ void SceneRenderer::writeSSRBindings(VulkanApp* app) {
 
 void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
     if (!rayTracing || !rayTracing->isSupported()) return;
+    // No ray path enabled: keep the proxy maps accumulating but do no repack
+    // work. Re-enabling consumes the force flag so the first frame back
+    // repacks from current chunk state.
+    if (!rayTracing->runtimeEnabled()) return;
+    sceneChanged = sceneChanged || rayTracing->consumeForceProxyRefresh();
     // Fingerprint both proxy-source registries (count + bounds/material hash).
     // Camera moves, LOD band switches and tessellation changes never touch
     // these maps, so they never mark the proxy dirty (§6). O(N), N ~= chunks.
@@ -2383,6 +2388,11 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
                                    const glm::vec3& sunDirTo, const glm::vec3& sunColor,
                                    float nearPlane, float farPlane) {
     if (!app || !rayTracing || !rayTracing->isSupported()) return;
+    // Runtime gate: with every ray-path toggle off nothing can consume the
+    // acceleration structures, so builds/repacks are skipped entirely. RT
+    // thickness alone cannot trace (it rides the refraction ray).
+    rayTracing->setRuntimeEnabled(settings.rtReflections || settings.rtWaterReflections
+                                  || settings.rtRefractions || settings.rtLocalShadows);
     RayTracingParams p{};
     p.toggles = glm::vec4(settings.rtReflections ? 1.0f : 0.0f,
                            settings.rtRefractions ? 1.0f : 0.0f,
