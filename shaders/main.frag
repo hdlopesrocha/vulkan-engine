@@ -62,9 +62,11 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 // design (origins, never targets). Shaders gate all sampling on rt.debug.y
 // (tlasReady): before the first BLAS/TLAS build completes everything falls
 // back to sky/CSM so no invalid acceleration structure is ever traced.
-// Compiled out entirely without RT_ENABLED (non-RT hardware fallback).
-#ifdef RT_ENABLED
+// rt_params.glsl is included UNCONDITIONALLY (structs + rtProceduralSky): the
+// sky-reflection fallback used with RT off needs the procedural sky helper;
+// the RT UBO/TLAS/buffer bindings stay compiled out without RT_ENABLED.
 #include "includes/rt_params.glsl"
+#ifdef RT_ENABLED
 layout(set = 0, binding = 14) uniform accelerationStructureEXT rtTlas;
 layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rt; };
 layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]; };

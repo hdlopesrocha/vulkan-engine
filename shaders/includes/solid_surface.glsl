@@ -333,14 +333,13 @@ void shadeSolidSurface() {
             float fresnel = 0.04 + 0.96 * pow(1.0 - cosTheta, 5.0);
             float rough = clamp(roughnessValue * roughnessFactor, 0.0, 1.0);
             vec3 reflDir = reflect(-reflV, reflN);
-            // Procedural sky fallback (dielectric F0=0.04 gradient using the
-            // scene sky colors — also the RT miss value, so toggling RT never
-            // pops the miss baseline).
-            vec3 skyApprox = vec3(0.35, 0.5, 0.65);
-#ifdef RT_ENABLED
-            skyApprox = rtProceduralSky(normalize(reflDir), sky.skyHorizon.rgb,
-                                        sky.skyZenith.rgb, sky.skyParams.y);
-#endif
+            // Sky-reflection fallback: used whenever the RT mirror ray is not
+            // traced (RT reflections off / TLAS not ready / roughness gate).
+            // Procedural horizon/zenith gradient from the sky UBO — also the
+            // RT miss value, so toggling RT never pops the miss baseline, and
+            // solid reflections still come "from the sky" in raster-only mode.
+            vec3 skyApprox = rtProceduralSky(normalize(reflDir), sky.skyHorizon.rgb,
+                                             sky.skyZenith.rgb, sky.skyParams.y);
             skyApprox *= aoBlend * (1.0 - rough * 0.5);
             vec3 rtColor = skyApprox;
             // Set when the ray-query resolved the reflection to a WATER proxy:
