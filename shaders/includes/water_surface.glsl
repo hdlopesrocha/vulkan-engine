@@ -686,15 +686,20 @@ void shadeWaterSurface() {
 #endif
 
     // === PERLIN NOISE-BASED REFRACTION ===
-    // Generate refraction distortion from shared FBM helper.
-    vec2 refractionNoise = waterRefractionNoise(
-        fragPos.xyz,
-        noiseScale,
-        animTime,
-        int(noiseOctaves),
-        noisePersistence,
-        noiseLacunarity
-    );
+    // Generate refraction distortion from shared FBM helper. Only evaluated
+    // when the distortion can be used (refraction on, or the debug view that
+    // visualizes it): three FBM layers per pixel is not free.
+    vec2 refractionNoise = vec2(0.0);
+    if (enableRefraction || dbgMode == DEBUG_MODE_WATER_NOISE) {
+        refractionNoise = waterRefractionNoise(
+            fragPos.xyz,
+            noiseScale,
+            animTime,
+            int(noiseOctaves),
+            noisePersistence,
+            noiseLacunarity
+        );
+    }
     
     // Combine noise layers for complex refraction pattern
     vec2 refractionOffset = enableRefraction
@@ -1119,11 +1124,15 @@ void shadeWaterSurface() {
     vec3 halfDir = normalize(lightDir + viewDir);
     float specAngle = max(dot(normal, halfDir), 0.0);
     
-    // Main specular highlight with noise perturbation
-    float specNoise = 0.8 + 0.4 * waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
-                                                max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
-    float specular = pow(specAngle, specularPowerParam) * specNoise;
-    vec3 specularColor = ubo.lightColor.xyz * specular * specularIntensity;
+    // Main specular highlight with noise perturbation. The noise FBM only
+    // runs when the highlight/glitter can contribute (intensity > 0).
+    vec3 specularColor = vec3(0.0);
+    if (specularIntensity > 0.0 || glitterIntensity > 0.0) {
+        float specNoise = 0.8 + 0.4 * waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
+                                                    max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
+        float specular = pow(specAngle, specularPowerParam) * specNoise;
+        specularColor = ubo.lightColor.xyz * specular * specularIntensity;
+    }
     
     // Sun glitter: high-frequency noise-based sparkles
     if (glitterIntensity > 0.0) {
@@ -1226,7 +1235,11 @@ void shadeWaterSurface() {
 #endif
     if (!reflResolved) {
         // Explicit LOD: per-fragment fallback branch (see refraction above).
-        skyColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
+        // Skipped entirely when reflection is off (the sampled sky would be
+        // discarded by the final mix), except for the debug view that shows it.
+        if (enableReflection || dbgMode == DEBUG_MODE_REFLECTION_COLOR) {
+            skyColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
+        }
         if (reflMaskDbg == 0.0) reflMaskDbg = 1.0;
     }
 
