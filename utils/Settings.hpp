@@ -54,8 +54,8 @@ public:
     int maxTargetLod = 16;
 
     // Tessellation
-    bool tessellationEnabled = true; // user-enabled (was default false)
-    bool shadowTessellationEnabled = true;
+    bool tessellationEnabled = false; // user-enabled (was default false)
+    bool shadowTessellationEnabled = false;
     bool adaptiveTessellation = true;
     float tessellationFactor = 1.0f;
     float tessMaxDistance = 512.0f;
@@ -75,10 +75,10 @@ public:
     // ── Hybrid RT (raster owns primary, CSM owns macro shadows, RT owns
     // secondary visibility: solid/water reflections, water refraction/
     // thickness, selective local/contact shadows) ──
-    bool rtReflections = true;   // solid RT reflections (mirror/SSR rays)
-    bool rtWaterReflections = true; // water RT reflections (own toggle so each ray path is switchable)
-    bool rtRefractions = true;   // water refraction via Snell (IOR below); also carries RT thickness
-    bool rtThickness = true;     // RT water thickness + Beer-Lambert absorption
+    bool rtReflections = false;   // solid RT reflections (mirror/SSR rays)
+    bool rtWaterReflections = false; // water RT reflections (own toggle so each ray path is switchable)
+    bool rtRefractions = false;   // water refraction via Snell (IOR below); also carries RT thickness
+    bool rtThickness = false;     // RT water thickness + Beer-Lambert absorption
     bool rtLocalShadows = false; // selective RT contact shadows augmenting CSM (off = CSM-only, recommended)
     bool rtWaterPipeline = false; // water via async RT pipeline outputs (off = inline ray queries)
     float rtMaxReflectDist = 500.0f;  // reflection ray Tmax (world units)
