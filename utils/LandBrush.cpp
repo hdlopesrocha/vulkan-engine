@@ -22,7 +22,9 @@ int LandBrush::paint(const Vertex &vertex) const {
     int sandLevel = 16;
     int softSandLevel = 2;
     int brushIndex;
-    if (glm::dot(glm::vec3(0.0f,1.0f,0.0f), n ) <=0 ){
+
+    float dot = glm::dot(glm::vec3(0.0f,1.0f,0.0f), n );
+    if(dot <= 0.01f) {
         brushIndex = underground;
     } else if(steepness < 0.980 ){
         brushIndex = rock;
