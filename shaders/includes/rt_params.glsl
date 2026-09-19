@@ -6,7 +6,7 @@
 struct RayTracingParamsGLSL {
     vec4 toggles;      // x=reflections y=refractions z=thickness w=localShadows
     vec4 distances;    // x=maxReflect y=maxRefract z=maxShadowDist w=roughnessThreshold
-    vec4 water;        // x=IOR, y=maxWaterThickness (hit clamp), z=coarseBoxSize (deep/sky fallback), w reserved
+    vec4 water;        // x=IOR, y=maxWaterThickness (hit clamp), z=coarseBoxSize (deep/sky fallback), w=maxReflectionBounces
     vec4 absorption;   // rgb=Beer-Lambert coeff, a=thicknessScale
     vec4 debug;        // x=DebugMode (see debug_modes.glsl), y=tlasReady, z=selfSkipDist, w=useWaterPipeline
     mat4 invViewProj;

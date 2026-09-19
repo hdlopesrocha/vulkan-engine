@@ -122,6 +122,12 @@ void SettingsWidget::render() {
         if (ImGui::Checkbox("Water via RT pipeline (off = inline queries)", &settings.rtWaterPipeline)) {
         }
         TooltipOnHover("Water via async RT pipeline outputs (off = inline ray queries)");
+        FieldLabel("Reflection bounces", "Extra mirror rays on reflective hits");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderInt("##Reflection bounces", &settings.rtReflectionBounces, 0, 3);
+        TooltipOnHover("Extra mirror rays when a water/solid reflection hits another\n"
+                       "reflective surface (0 = single reflection, 1 = reflection inside\n"
+                       "the reflection, up to 3). More bounces cost more ray work.");
         if (ImGui::Checkbox("Water in main pass (Phase-1, blend into solid)", &settings.waterInMainPass)) {
         }
         TooltipOnHover("Draw water with the alpha-blended main pipeline into the solid color/depth targets "

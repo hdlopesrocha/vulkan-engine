@@ -81,6 +81,7 @@ layout(set = 0, binding = 23) readonly buffer RTSceneGeomInfo { uvec4 rtSceneGeo
 layout(set = 0, binding = 24) readonly buffer RTSceneVerts { float rtSceneVerts[]; };
 layout(set = 0, binding = 25) readonly buffer RTSceneIndices { uint rtSceneIndices[]; };
 #include "includes/rt_scene_sample.glsl"
+#include "includes/rt_reflection.glsl"
 #endif
 
 // Screen-space reflection refinement (set 0, bindings 19/20): the *previous*

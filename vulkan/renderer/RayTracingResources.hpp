@@ -62,7 +62,7 @@ struct RTProxyBox {
 struct RayTracingParams {
     glm::vec4 toggles = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f); // x=solid reflections y=refractions z=thickness w=localShadows
     glm::vec4 distances = glm::vec4(500.0f, 300.0f, 12.0f, 0.6f); // x=maxReflect y=maxRefract z=maxShadowDist w=roughnessThreshold
-    glm::vec4 water = glm::vec4(1.333f, 6.0f, 0.0f, 0.0f); // x=IOR, y=maxWaterThickness (both mirrored from water layer 0 for the layer-unaware pipeline path), z=coarseBoxSize, w reserved
+    glm::vec4 water = glm::vec4(1.333f, 6.0f, 0.0f, 1.0f); // x=IOR, y=maxWaterThickness (both mirrored from water layer 0 for the layer-unaware pipeline path), z=coarseBoxSize, w=maxReflectionBounces
     glm::vec4 absorption = glm::vec4(0.35f, 0.12f, 0.08f, 1.0f); // rgb=Beer-Lambert coeff, a=thicknessScale (mirrored from water layer 0; inline path reads WaterParams)
     glm::vec4 debug = glm::vec4(0.0f); // x=RT debug view, y=tlasReady, z=selfSkip, w=useWaterPipeline
     glm::mat4 invViewProj = glm::mat4(1.0f);

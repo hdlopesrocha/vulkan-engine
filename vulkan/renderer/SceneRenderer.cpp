@@ -2206,7 +2206,12 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     auto it = mainSolidProxyData.find(s.chunkId);
                     const uint32_t mat = (it != mainSolidProxyData.end()) ? it->second.materialId : 0u;
                     const auto avg = textureArrays_->albedoAverage(mat);
-                    g.albedo = glm::vec4(avg[0], avg[1], avg[2], float(mat));
+                    // albedo.w = the chunk's mirror strength (NOT the material
+                    // id): reflection rays read it to decide whether a hit
+                    // surface is itself reflective (multi-bounce reflections).
+                    const float matRefl = materialManagerPtr
+                        ? materialManagerPtr->reflectionStrength(mat) : 0.0f;
+                    g.albedo = glm::vec4(avg[0], avg[1], avg[2], matRefl);
                     geoms.push_back(g);
                 }
                 // Water chunks: append the real water MESH (transparent layer)
@@ -2407,7 +2412,8 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     // Pipeline-path water look mirrors water layer 0 (rgen has no layer id).
     // The sampled inline path reads each fragment's own WaterParams instead.
     p.water = glm::vec4(waterLook.ior, waterLook.maxThickness,
-                         settings.rtCoarseBoxSize, 0.0f);
+                        settings.rtCoarseBoxSize,
+                        static_cast<float>(std::clamp(settings.rtReflectionBounces, 0, 3)));
     p.absorption = glm::vec4(waterLook.absorption[0], waterLook.absorption[1],
                              waterLook.absorption[2], waterLook.absorptionScale);
     p.debug = glm::vec4(static_cast<float>(settings.debugMode),

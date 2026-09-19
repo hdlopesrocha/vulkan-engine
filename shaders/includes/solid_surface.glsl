@@ -468,74 +468,30 @@ void shadeSolidSurface() {
                             hitN = normalize(n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y);
                         }
                         if (dot(hitN, reflDir) > 0.0) hitN = -hitN; // face the incoming ray
+                        // Mirror strength of this primary hit (drives the
+                        // in-reflection bounce below); set by each branch.
+                        float hitReflectivity = 0.0;
                         // Water chunk marker (geomInfo.w): the real water mesh
                         // is in the scene BLAS; shade it as water (sky
                         // reflection + tint), never the terrain albedo lookup
                         // (a water chunk's brushIndex addresses water params).
                         if (gi.w > 0u) {
-                            // Reflected water: transparent water look computed
-                            // from the water's OWN params (water.frag formula):
-                            // tint = mix(shallow, deep, volume) blended over
-                            // the sky by waterTint*transparency. No recursive
-                            // reflection/refraction.
-                            // Stable water layer id: chunk-dominant, carried in
-                            // rtSceneAlbedo[lo].w (per-vertex brushIndex can
-                            // vary within a triangle → color flicker).
-                            // Guarded to the water SSBO range (default layer
-                            // 0): terrain paint ids would otherwise read past
-                            // the few water layers (undefined values).
+                            // Reflected water: SAME composition as the raster
+                            // water surface (tint base + Fresnel/strength sky
+                            // reflection) so water inside a mirror matches the
+                            // water itself. The underwater bottom is not traced
+                            // from inside a mirror, so the refraction term
+                            // collapses to the tint (refraction-off water).
                             int nWLM = max(waterParams.length(), 1);
                             int wIdM = int(rtSceneAlbedo[lo].w + 0.5);
                             int wLayer = (wIdM >= 0 && wIdM < nWLM) ? wIdM : 0;
                             WaterParamsGPU wp = waterParams[wLayer];
-                            vec3 shallowTint = wp.shallowColor.rgb;
-                            vec3 deepTint = wp.deepColor.rgb;
-                            float waterTintStr = wp.params2.x;
-                            float transparency = wp.params1.z;
-                            float depthFalloff = wp.waveParams.w;
-                            float thickness = max(wp.refractionParams.y, 0.0);
-                            float tintDepthScale = max(wp.causticParams.w, 0.0001);
-                            float volumeFactor = 1.0 - exp(-thickness / tintDepthScale);
-                            vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
-                            // Third color stop: deep-ocean tint beyond oceanColorStart.
-                            float oceanF = 1.0 - exp(-max(thickness - wp.oceanColor.w, 0.0)
-                                                      / max(wp.oceanParams.x, 1e-3));
-                            waterTintColor = mix(waterTintColor, wp.oceanColor.rgb, oceanF);
-                            // Beer-Lambert absorption (water.frag): the sky seen
-                            // through the transparent water is attenuated by the
-                            // water column.
-                            vec3 transmittance = exp(-min(
-                                wp.absorptionParams.rgb
-                                    * max(thickness * wp.absorptionParams.a, 0.0),
-                                vec3(2.5)));
-                            float depthFade = 1.0 - exp(-thickness * depthFalloff);
-                            float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
-                            float tintBlend = clamp(depthFade * waterTintStr, 0.0, tintMax);
-                            vec3 skyR = rtProceduralSky(normalize(reflDir),
-                                sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
-                            vec3 toLight = -normalize(ubo.lightDir.xyz);
-                            float ndl = max(dot(hitN, toLight), 0.0);
-                            // CSM shadow at the reflected hit, like the terrain
-                            // branch below: without it a lake in mountain shadow
-                            // still reflects fully lit inside mirrors.
-                            float hitShadow = ShadowCalculation(
-                                ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
-                            // Sky (surface mirror) stays unlit; only the
-                            // volume tint takes NdotL/shadow. Multiplying the
-                            // whole mix by the sun term turned reflected water
-                            // near-black where the hit was shadowed/grazing —
-                            // the dark band along the shoreline.
-                            vec3 skyPart = skyR * transmittance;
-                            vec3 litTint = waterTintColor
-                                * (ubo.lightColor.rgb * (0.55 + 0.45 * ndl) * (1.0 - hitShadow)
-                                   + vec3(0.09, 0.12, 0.15));
-                            vec3 waterColor = mix(skyPart, litTint, tintBlend);
-                            rtColor = waterColor;
-                            // A mirror's reflection is not occluded by AO nor dimmed by the
-                            // surface roughness (the RT roughness gate already
-                            // handles scatter): the reflection is full-strength.
-                            rtColor *= 1.0;
+                            rtColor = rtResolveWaterHit(wp, hitPos, hitN, reflDir);
                             waterHit = true;
+                            // No bounce off water hits (see rtHitReflectivity):
+                            // the water look already includes its mirror and
+                            // recursive water rays self-intersect the flat
+                            // BLAS mesh (water-on-water triangle noise).
                         } else {
                         // Real painted material at this triangle (Vertex float
                         // offset 11 = brushIndex): the proxy registry only
@@ -566,11 +522,27 @@ void shadeSolidSurface() {
                         // mirrors no longer read as near-black plates.
                         rtColor = hitAlbedo * (ubo.lightColor.rgb * ndl * (1.0 - hitShadow)
                                                + vec3(0.26));
-                        // A mirror's reflection is not occluded by AO nor dimmed by the
-                            // surface roughness (the RT roughness gate already
+                        // A mirror's reflection is not occluded by AO nor dimmed by
+                            // the surface roughness (the RT roughness gate already
                             // handles scatter): the reflection is full-strength.
                             rtColor *= 1.0;
+                        // Chunk mirror strength (packed in rtSceneAlbedo[].w by
+                        // the proxy/geometry builder) gates the bounce below.
+                        hitReflectivity = clamp(rtSceneAlbedo[lo].w, 0.0, 1.0);
                         } // terrain else
+                        // Reflection-inside-reflection: when the primary hit is
+                        // itself reflective, chain extra mirror rays up to the
+                        // configured bounce count (rt.water.w, 0 = single).
+                        {
+                            int extraBounces = clamp(int(rt.water.w + 0.5), 0, 3) - 1;
+                            if (hitReflectivity > 0.02 && extraBounces >= 0) {
+                                vec3 nextDir = normalize(reflect(normalize(reflDir), hitN));
+                                vec3 bounceCol = rtTraceMirror(hitPos + hitN * 0.05,
+                                                               nextDir, extraBounces,
+                                                               selfSkip);
+                                rtColor = mix(rtColor, bounceCol, hitReflectivity);
+                            }
+                        }
                         } // !ssHit
                     }
                 }

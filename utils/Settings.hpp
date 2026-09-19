@@ -81,6 +81,7 @@ public:
     bool rtThickness = false;     // RT water thickness + Beer-Lambert absorption
     bool rtLocalShadows = false; // selective RT contact shadows augmenting CSM (off = CSM-only, recommended)
     bool rtWaterPipeline = false; // water via async RT pipeline outputs (off = inline ray queries)
+    int rtReflectionBounces = 1; // extra mirror rays when a reflection hits a reflective surface (0..3)
     float rtMaxReflectDist = 500.0f;  // reflection ray Tmax (world units)
     float rtMaxRefractDist = 300.0f;  // refraction ray Tmax (also deep-water thickness)
     float rtCoarseBoxSize = 48.0f;  // proxy boxes wider than this are "coarse": unreliable for refraction detail, treated as deep water/sky

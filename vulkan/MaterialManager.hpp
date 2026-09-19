@@ -24,6 +24,13 @@ public:
 
     size_t count() const { return materialCount; }
 
+    // CPU-side mirror strength of a material [0..1]. Used when packing the RT
+    // scene-geometry meta so reflection rays can decide whether a hit surface
+    // is itself reflective (multi-bounce reflections).
+    float reflectionStrength(size_t index) const {
+        return (index < cpuCache.size()) ? cpuCache[index].tessLevelParams.z : 0.0f;
+    }
+
     // Access underlying storage buffer (for descriptor binding)
     const Buffer& getBuffer() const { return materialBuffer; }
     Buffer& getBuffer() { return materialBuffer; }
