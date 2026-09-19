@@ -115,7 +115,7 @@ struct WaterParams {
     float zoneShallowDepth = 32.0f; // below : line wave decaying to 0 at shore
 
     // Swell shape
-    float wavePeriod = 256.0f;      // primary swell wavelength (world units)
+    float wavePeriod = 128.0f;      // primary swell wavelength (world units)
     float waveSharpDeep = 2.5f;     // crest sharpness in deep water
     float waveSharpBreak = 4.5f;    // crest sharpness at the break line
     float waveSharpShallow = 1.5f;  // crest sharpness in the shore band
@@ -153,7 +153,7 @@ struct WaterParams {
     // Second shoreward train (different scale/speed; breaks up the crest
     // lines). It reuses the SAME shore movement as the primary train — the
     // phase offset just shifts it along the shore direction.
-    float crossWavePeriod = 128.0f; // cross train wavelength (world units)
+    float crossWavePeriod = 32.0f; // cross train wavelength (world units)
     float crossWaveSpeed = 4.5f;
     float crossWaveAmplitude = 0.4f;
     float crossWavePhase = 0.0f;    // offset along the shore direction (world units)
@@ -172,7 +172,7 @@ struct WaterParams {
 
     // Organic amplitude mask: low-frequency noise that can remove waves
     // entirely in patches (some places stay calm).
-    float waveMaskPeriod = 500.0f;
+    float waveMaskPeriod = 256.0f;
     float waveMaskThreshold = 0.5f;
     float waveMaskSoftness = 0.18f;
     float waveMaskSpeed = 0.05f;
