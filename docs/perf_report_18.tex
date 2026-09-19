@@ -1,0 +1,594 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+\title{Performance Report 18: Vulkan Engine \\
+\large Ray Tracing Performance Analysis II --- Wasted Traversals, Enumeration Passes, and Residual Overheads}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Report~17 analysed the hybrid RT path and paired 12 issues with remediation prompts (ray gating, Tmax capping, build strategy, queue placement, hit-shading tiers). Since then the inline path migrated from proxy boxes to the real scene-geometry instance, and the water shader was restructured (single-ray selection, miss recovery, raster back-face thickness). This follow-up re-audits the \emph{current} code and finds 12 \emph{new} issues: a discarded lead ray on every inline refraction, a non-opaque full-enumeration refraction pass, a three-ray reflection chain that rippled water makes common, mirror-bounce fan-out with flagship shading per bounce, a pipeline reflection output that is traced/stored/barriered but never used as a color, proxy BLAS builds that always process all 202\,752 triangles regardless of scene size, a 64-step SSR march that runs exactly on the pixels that already missed, per-frame full-span CPU snapshots under the renderer mutex, an $O(n^2)$ containment filter where dyadic bounds allow $O(n)$, a 5-fetch/5-reconstruct stencil in the half-res raygen, a sky fetch paid on every hit, and dead SSR/UBO plumbing. Each issue is paired with the standard technique that fixes it and a copy-pasteable prompt (goal, steps, files, validation) preserving validation-clean execution, Synchronization2, runtime feature detection, and the raster$+$CSM fallback required by \texttt{AGENTS.md}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+The RT re-architecture that landed after Report~17 (exact scene triangles for all inline rays, per-lobe budgets, miss recovery) fixed the \textit{accuracy} complaints --- and quietly raised the \textit{ray fan-out}: where the proxy design traced one box-TLAS ray per lobe, the exact-geometry design traces up to \textbf{three scene-BLAS rays per reflection} (staged chain), \textbf{two per refraction} (a discarded lead query plus a full-enumeration pass), and \textbf{up to four more} when a reflective hit chains mirror bounces. A worst-case water pixel now executes \textbf{8 traversals plus a 64-step SSR march plus $\sim$80 texture fetches}; the defaults still reach 5--6 traversals on thick water.
+
+\begin{itemize}
+    \item \textbf{Wasted rays:} the refraction lead query is traced and its traversal discarded on every pixel (\texttt{water\_surface.glsl:90--93} vs.\ 134--165); the pipeline reflection output feeds only a debug mask (\texttt{rt\_water.rgen:80--95} vs.\ \texttt{water\_surface.glsl:1129--1132}); the reflection chain's second and third rays exist to serve a self-water guard that a post-commit test can replace.
+    \item \textbf{Wrong algorithm shape:} the refraction pass enumerates \emph{every} candidate with \texttt{NoOpaque} (no early-out) because solid and water share one TLAS instance; opaque early-out traversal is available the moment the scene BLAS is split by content mask.
+    \item \textbf{Constant-max builds:} both proxy BLASes build $16\,384\times12 + 512\times12$ triangles on every rebuild even when a few hundred proxies are active; build time never scales down.
+    \item \textbf{CPU residue:} full span snapshots $+$ deep vector compares every frame, an $O(n^2)$ nesting filter on change, and descriptor/UBO writes for removed features.
+\end{itemize}
+
+\textbf{Recommended order:} delete the discarded lead ray (C1) $\rightarrow$ split the scene instance and restore opaque refraction (C2) $\rightarrow$ collapse the reflection chain (C3) $\rightarrow$ bound bounce fan-out (H4) $\rightarrow$ stop tracing the unused pipeline reflection (H5) $\rightarrow$ active-prefix BLAS builds (H6). The CPU issues (M8, M9) are independent and cheap.
+
+% =====================================================================
+\section{Delta Since Report 17: Current RT Architecture}
+% =====================================================================
+
+\subsection{What Changed}
+
+\begin{itemize}
+    \item \textbf{Inline rays trace the scene instance only.} \texttt{main.frag} reflections (\texttt{solid\_surface.glsl:410--412}) and both water lobes (\texttt{water\_surface.glsl:90--92}) use \texttt{RT\_RAY\_MASK\_SCENE} (0x04) against the real chunk triangles; the proxy BLASes now serve only the water pipeline and the (default-off) contact shadows.
+    \item \textbf{The water shader restructured} into \texttt{includes/water\_surface.glsl}: per-lobe contribution gates, Fresnel-weighted single-ray selection (\texttt{rtSingleRay}, default on), raster-bottom miss recovery (\texttt{rtRasterBottom}), raster back-face thickness authority, and an SSR march on reflection miss.
+    \item \textbf{The pipeline reflection lost its consumer:} \texttt{water\_surface.glsl:1123--1132} documents ``the inline ray wins whenever it runs''; the pipeline texel is sampled only to report coverage in \texttt{DEBUG\_MODE\_RAY\_MASK}.
+    \item \textbf{Shader layout:} \texttt{main.frag} is now a 132-line dispatcher; the RT code lives in \texttt{includes/solid\_surface.glsl}, \texttt{includes/water\_surface.glsl}, \texttt{includes/rt\_reflection.glsl}, \texttt{includes/rt\_scene\_sample.glsl}. Report~17 line references to \texttt{main.frag}/\texttt{water.frag} map onto these includes.
+\end{itemize}
+
+\subsection{Ray Fan-Out Inventory (per pixel, current code)}
+
+\begin{longtable}{@{}llll@{}}
+\toprule
+\textbf{Pixel type} & \textbf{Traversals} & \textbf{Extra fetches} & \textbf{Source} \\
+\midrule
+Water, reflection hit & 1 (chain stage 1) & SSR lookup 4, triplanar $\leq$3, CSM & \texttt{water\_surface.glsl:188--200, 284--410} \\
+Water, reflection self-water/miss & 2--3 (chain stages 2--3) & $+$ 64-step SSR march on miss & \texttt{water\_surface.glsl:201--255, 1174--1190} \\
+Water, reflective hit & $+$1--3 bounce rays & each: triplanar $\leq$3 $+$ CSM & \texttt{rt\_reflection.glsl:70--144} \\
+Water, refraction (always) & 2 (lead $+$ enumeration) & enumeration loads per candidate & \texttt{water\_surface.glsl:90--93, 134--165} \\
+Water, refraction miss/skip & --- & $\leq$6 (raster-bottom recovery) & \texttt{water\_surface.glsl:18--59, 879--893} \\
+Solid, reflective & 1 $+$ 0--3 bounces & per hit: triplanar $\leq$3 $+$ CSM & \texttt{solid\_surface.glsl:410--548} \\
+Solid, contact shadow (def.\ off) & 1 & --- & \texttt{solid\_surface.glsl:243--255} \\
+Pipeline water (half-res) & 2 (reflect $+$ refract) & 5 depth $+$ 5 reconstructions & \texttt{rt\_water.rgen:45--129} \\
+\bottomrule
+\end{longtable}
+
+Worst case (thick water, bounces $=3$, reflection self-hits then misses): $3 + 3 + 2 = 8$ traversals, one 64-step march, $\sim$80 fetches --- for one pixel. The chain stages and the lead refraction ray are the pure-waste component; the bounce rays are the unbounded component.
+
+\subsection{Acceleration Structures (unchanged since Report 17)}
+
+\begin{longtable}{@{}llll@{}}
+\toprule
+\textbf{AS} & \textbf{Contents} & \textbf{Build primitive count} & \textbf{Consumers} \\
+\midrule
+Solid proxy BLAS & $\leq$16\,384 boxes & \textbf{always 196\,608 tris} & pipeline, shadows \\
+Water proxy BLAS & $\leq$512 boxes & \textbf{always 6\,144 tris} & pipeline (non-opaque) \\
+Scene BLAS & $\leq$4\,096 chunk geoms (solid $+$ water in one instance) & active triangles & all inline rays \\
+TLAS & 3 instances (0x01/0x02/0x04) & 3 & all rays \\
+\bottomrule
+\end{longtable}
+
+% =====================================================================
+\section{Cost Model}
+% =====================================================================
+
+Frame RT cost $\approx$ Report~17's model, but the current code shifts weight onto the \emph{multiplicity} term:
+
+\begin{equation}
+C = \sum_{\mathrm{lobes}} N_{\mathrm{px}} \times \underbrace{R_{\mathrm{fan-out}}}_{\text{this report}} \times (C_{\mathrm{traverse}} + C_{\mathrm{shade}}) + C_{\mathrm{build}} + C_{\mathrm{dispatch}} + \underbrace{C_{\mathrm{CPU}}}_{\text{this report}}
+\end{equation}
+
+Report~17 attacked $N_{\mathrm{px}}$, $C_{\mathrm{traverse}}$, $C_{\mathrm{shade}}$, $C_{\mathrm{build}}$, $C_{\mathrm{dispatch}}$. The issues below attack $R_{\mathrm{fan-out}}$ (rays spawned per lobe: lead rays, chain stages, enumeration, bounces), the constant-max build floor, and the per-frame CPU residue that the migration left behind.
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: Every Inline Refraction Traces a Lead Ray Whose Traversal Is Discarded}
+
+\textbf{Location:} \texttt{shaders/includes/water\_surface.glsl:90--93} (unconditional lead query \texttt{rq}), 98--107 (miss early-out for reflection only), 134--165 (the refraction path re-traces as \texttt{rqf}), 277--278 (shading re-reads \texttt{rq}'s committed indices).
+
+\begin{itemize}
+    \item \texttt{rtTraceWater} opens by initializing and fully proceeding an opaque, front-culled query \texttt{rq} --- for \emph{both} ray types. The refraction branch then ignores everything \texttt{rq} traversed and runs the filtered pass \texttt{rqf} (\texttt{NoOpaque}, uncull) that does the real selection. Every inline refraction pixel therefore pays \textbf{two full scene-BLAS traversals}; the first exists only to feed a miss check that does not even return for refraction.
+    \item Correctness hazard riding along: the shared shading block re-declares \texttt{prim}/\texttt{lo} from \texttt{rq}'s committed state (277--278), \emph{shadowing} the filtered pass's winners (\texttt{bestPrimS}/\texttt{bestLoS}, captured at 148--163 and stored into the outer \texttt{prim}/\texttt{lo} at 166--177). When the two queries disagree (culled lead commits a different triangle, or none), the shader pairs one triangle's \texttt{hitT}/barycentrics with another triangle's indices. It works today only because both queries usually resolve to the same bottom triangle.
+    \item The lead query is not free: opaque traversal of the scene BLAS with \texttt{tMax} up to \texttt{refrSceneTMax} (300\,m default path) on every refracting water pixel.
+\end{itemize}
+
+\textbf{Technique:} delete the redundant traversal. Initialize the lead query only for reflection; let the refraction filtered pass stand alone, and shade from the indices the filtered pass already captured (drop the shadowing re-reads). One structurally obvious correctness fix and a guaranteed $\sim$2$\times$ inline-refraction cut in the same edit.
+
+\begin{tcolorbox}[promptbox={Prompt: Remove the Discarded Lead Ray from the Refraction Path}]
+\textbf{Goal:} Exactly one traversal per inline refraction; shading indices provably from the same query that produced \texttt{hitT}/barycentrics.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item In \texttt{rtTraceWater} (\texttt{water\_surface.glsl:74--92}), hoist the lead \texttt{rayQueryInitializeEXT}/\texttt{while(proceed)} into the \texttt{!refraction} path (declare \texttt{rq} inside the reflection branch; the reflection miss early-out at 98--107 moves with it).
+    \item In the shared shading block (270--283), delete the shadowing \texttt{const uint prim}/\texttt{const uint lo} re-reads from \texttt{rq}; use the outer \texttt{prim}/\texttt{lo}/\texttt{hitBary} that the winning pass (filtered, or reflection stage) already stored. Verify the reflection stages 2/3 (\texttt{rq2}/\texttt{rq3}) also store their indices into the outer variables --- they already do (222--224, 247--249).
+    \item Keep the sky fetch (97) miss-only per Issue~L11 while touching these lines.
+    \item Re-run the waterline/shoreline reflection suite (the ``reflection missing at the shore'' regression case) and a refraction close-up: pixel-identical output is expected everywhere the two queries used to agree; where they disagreed, the filtered winner is the correct shading source.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_surface.glsl} (\texttt{rtTraceWater} 74--283)
+\end{itemize}
+
+\textbf{Validation:} GPU ray-query counters (RenderDoc/NSight) on a lake view: refraction rays per pixel drop from 2 to 1; screenshot diff vs.\ baseline $=0$ on agreeing pixels; \texttt{VULKAN\_GPU\_ASSISTED=1 make run-debug} clean; no change to the reflection path's stage-1 behavior.
+\end{tcolorbox}
+
+\subsection{C2: Refraction Enumerates Every Candidate (NoOpaque, No Cull, No Early-Out)}
+
+\textbf{Location:} \texttt{shaders/includes/water\_surface.glsl:123--178} (filtered pass), instance layout \texttt{RayTracingResources.cpp:505--513} (single scene instance, mask 0x04), scene build \texttt{SceneRenderer.cpp:2196--2244} (solid and water geometries appended to one list).
+
+\begin{itemize}
+    \item The filtered pass runs \texttt{gl\_RayFlagsNoOpaqueEXT} with \emph{no} face culling and walks \textbf{every} candidate triangle along the ray, tracking nearest-solid and nearest-water separately. Non-opaque traversal disables hardware early-out: cost scales with \emph{all} intersected triangles, and each candidate costs a \texttt{rtSceneGeomInfo[loC].w} storage load plus four ray-query getter calls inside the hottest loop in the shader.
+    \item The enumeration exists only because solid and water geometries share one TLAS instance, so per-candidate classification must happen in software. Masks are per-\emph{instance} in Vulkan; nothing else forces this shape.
+    \item Displacement-flipped faces motivated the no-cull choice (comment at 111--117) --- but culling and \emph{opacity} are independent: an opaque, uncullled query still early-outs at the nearest hit.
+\end{itemize}
+
+\textbf{Technique:} split by content, then early-out. Give the scene two instances --- solid triangles (mask 0x04) and the water mesh (new mask 0x08) --- so each ray type traverses exactly the content it needs with \texttt{gl\_RayFlagsOpaqueEXT} (no cull flags, preserving the displacement-flip tolerance). Refraction becomes: opaque solid query (nearest solid, early-out) $+$ opaque water query with \texttt{tMax} clamped to the solid hitT (early-out); take the min, exactly the current semantics. Common case (open lake bottom) collapses to one early-out traversal.
+
+\begin{tcolorbox}[promptbox={Prompt: Split the Scene Instance by Content and Restore Opaque Refraction}]
+\textbf{Goal:} Refraction cost proportional to the nearest hit, not to every triangle along the ray; identical hit/winner semantics.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item In \texttt{SceneRenderer.cpp:2196--2244}, emit solid and water \texttt{SceneTriGeometry} lists separately (two calls or a tagged single call) so \texttt{RayTracingResources} can build \emph{two} scene BLASes (or two geometry partitions built as two BLASes): \texttt{sceneBlas\_} (solid) and \texttt{sceneBlasWater\_}.
+    \item In \texttt{RayTracingResources.cpp:505--513} and the TLAS rebuild (1080--1110), add instance 3: custom index 3, mask \texttt{kMaskSceneWater = 0x08}, referencing the water scene BLAS (TLAS grows 3 $\rightarrow$ 4 instances; sized for 4; update \texttt{maxInstances} and the instance buffer).
+    \item In \texttt{rt\_params.glsl}, add \texttt{RT\_RAY\_MASK\_SCENE\_WATER = 0x08u} and \texttt{RT\_SCENE\_WATER\_INSTANCE = 3u}.
+    \item Rewrite the refraction branch of \texttt{rtTraceWater} (\texttt{water\_surface.glsl:123--178}): (a) opaque query, mask \texttt{SCENE}, no cull flags $\rightarrow$ nearest solid \texttt{tS}; (b) opaque query, mask \texttt{SCENE\_WATER}, \texttt{tMax = tS} (or \texttt{tMax} on miss) $\rightarrow$ nearest water \texttt{tW}; (c) winner selection identical to the current \texttt{bestTS}/\texttt{bestTW} logic including the solid tie-break. Keep \texttt{geomInfo.w} classification as the post-commit check it was meant to be.
+    \item Update \texttt{rtBoxIndex}/geometry-index consumers: water-geometry indices now address the water partition's \texttt{geomInfo} (keep two lookup buffers or a tagged base; document the mapping next to \texttt{rtSceneGeomInfo}).
+    \item Keep the old enumeration path compiled under a debug define for one release to A/B correctness, then delete it.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{vulkan/renderer/RayTracingResources.hpp/cpp} (second scene BLAS, instance 3, TLAS sizing)
+    \item \texttt{vulkan/renderer/SceneRenderer.cpp} (split geometry emission 2196--2244)
+    \item \texttt{shaders/includes/rt\_params.glsl} (new mask/instance constants)
+    \item \texttt{shaders/includes/water\_surface.glsl} (refraction pass 123--178)
+\end{itemize}
+
+\textbf{Validation:} Refraction-heavy lake view: traversal-candidate counters drop to $\leq$2 committed chains per pixel; pixel-diff vs.\ enumeration baseline $=0$ (same winner logic); trough-wall and grazing-crest cases (the displacement-flip motivation) still resolve; GPU-assisted validation clean on the new instance and masks.
+\end{tcolorbox}
+
+\subsection{C3: Reflection Staged Chain --- Up to Three Traversals per Pixel, Common on Rippled Water}
+
+\textbf{Location:} \texttt{shaders/includes/water\_surface.glsl:179--255} (stage 1 forward culled $\rightarrow$ stage 2 backward validation $\rightarrow$ stage 3 unculled), call site 1164--1166 (\texttt{RT\_NO\_LIMIT}, \texttt{reflWaterMinHit}).
+
+\begin{itemize}
+    \item On a stage-1 miss \emph{or} a discarded self-water hit (\texttt{tC < waterMinHit}, 188--200), the chain fires a \emph{backward} ray (\texttt{rq2}, span up to \texttt{max(thickCap*2, 4)} but min-capped against the 10\,km \texttt{tMax} at 207) and, failing that, a full \emph{unculled forward} ray (\texttt{rq3}) across the *entire* \texttt{RT\_NO\_LIMIT} range. Three scene-BLAS traversals for one lobe.
+    \item The discard that triggers the chain is the common case on animated water: rippled shading normals tip mirror rays into the reflector's own undisplaced BLAS plane, so stage 1 commits a self-water hit, discards it, and re-traces twice. Calm-mirror pixels are the cheap path; moving water --- the default look --- is the expensive one.
+    \item All three rays are uncapped (\texttt{RT\_NO\_LIMIT}; Report~17 C2 covers the cap itself --- orthogonal).
+\end{itemize}
+
+\textbf{Technique:} one uncullled opaque query $+$ post-commit classification. A single \texttt{gl\_RayFlagsOpaqueEXT} query with no cull flags commits the nearest triangle of \emph{any} facing; the shader already fetches the hit normal and can classify front/back via \texttt{rayQueryGetIntersectionFrontFaceEXT} (or the normal vs.\ direction dot it already computes at 343). Self-water rejection becomes an $O(1)$ post-commit test against \texttt{waterMinHit}; flipped-face tolerance is preserved by not culling at all. The backward/unculled stages survive only as a debug reference path.
+
+\begin{tcolorbox}[promptbox={Prompt: Collapse the Reflection Chain to One Query with Post-Commit Classification}]
+\textbf{Goal:} One traversal per water reflection pixel in the common case; identical self-water and flipped-face semantics.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item In \texttt{rtTraceWater}'s reflection branch (\texttt{water\_surface.glsl:179--255}), replace the three-stage chain with a single opaque, uncullled query (mask \texttt{SCENE}, \texttt{tMin = 0.05}, current \texttt{tMax}).
+    \item Post-commit: read \texttt{rayQueryGetIntersectionFrontFaceEXT} and the geometry's \texttt{geomInfo.w}; reject (treat as miss) exactly when the hit is water \emph{and} \texttt{tC < waterMinHit} --- the current stage-1 self-water rule (188--200) applied to the single commit.
+    \item On rejection, do \emph{not} re-trace: fall through to the existing miss path (sky $+$ the SSR march of Issue~M7, which already covers grazing misses). Validate against the current chain on the animated-shoreline case; the chain's stage-2/3 recoveries should coincide with the SSR result or be visually indistinguishable --- capture both in the A/B.
+    \item Keep the full chain behind \texttt{rt.debug.x == RT\_DEBUG\_REF\_CHAIN} (new debug id) for reference screenshots; document why single-query is the default (comment at the branch: displaced-face tolerance comes from \emph{not culling}, not from enumerating directions).
+    \item Delete \texttt{rq2}/\texttt{rq3} once the A/B is accepted; note the removed backward-span math (207--227) in the commit message.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_surface.glsl} (\texttt{rtTraceWater} reflection branch 179--255)
+    \item \texttt{shaders/includes/rt\_params.glsl} (debug id doc) and \texttt{vulkan/includes/DebugModes.hpp} (new id)
+\end{itemize}
+
+\textbf{Validation:} Animated-water shoreline flythrough: reflection rays per pixel $\approx$1 (ray-mask debug view stays green); side-by-side video vs.\ chain baseline shows no new sky leaks at grazing angles; SSR fallback engagement rate (debug counter) unchanged or lower; GPU-assisted validation clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{High-Severity Issues}
+% =====================================================================
+
+\subsection{H4: Mirror Bounce Chains Fan Out Rays and Re-Run Flagship Shading per Bounce}
+
+\textbf{Location:} \texttt{shaders/includes/rt\_reflection.glsl:70--144} (\texttt{rtTraceMirror}), callers \texttt{solid\_surface.glsl:539--548} and \texttt{water\_surface.glsl:400--409}; budget \texttt{Settings.hpp:84} (\texttt{rtReflectionBounces}, default 1, max 3).
+
+\begin{itemize}
+    \item Each reflective hit chains up to \texttt{rt.water.w} additional mirror rays (default 1, max 3), every one uncapped (\texttt{RT\_NO\_LIMIT}, line 78) and every one shaded at full fidelity: unique-slot material compression, up to 3 triplanar/\texttt{textureLod} evaluations (121), and a complete cascaded \texttt{ShadowCalculation} (124--125) --- per bounce, per pixel, under divergent control flow.
+    \item No throughput early-out: the loop multiplies \texttt{throughput} by \texttt{refl} but never stops when the product is invisible; a chain of 0.1-strength mirrors still pays all remaining rays.
+    \item Stacked on C1--C3, a thick-water pixel can reach 8 traversals; bounce rays are the multiplier (2--4$\times$ the primary count on mirror materials).
+    \item The chunk-average albedo (\texttt{rtSceneAlbedo[lo]}) is already bound and is the standard second-bounce shading --- never used here.
+\end{itemize}
+
+\textbf{Technique:} bounce budget with decay. Throughput cutoff, per-bounce Tmax decay, and a shading ladder: bounce 0 keeps the flagship path; bounce $\geq$1 shades chunk-average albedo $+$ unshadowed NdotL (distant mirror content is subpixel; CSM fetches cannot be justified twice removed).
+
+\begin{tcolorbox}[promptbox={Prompt: Bound Mirror Bounce Fan-Out with Throughput and Shading Decay}]
+\textbf{Goal:} Bounce cost bounded by visible contribution; default look unchanged.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item In \texttt{rtTraceMirror} (\texttt{rt\_reflection.glsl:70--144}): break the loop when \texttt{throughput < 0.05} (expose as \texttt{rt.rayParams} spare channel for A/B); decay Tmax per bounce (\texttt{tMax\_b = RT\_NO\_LIMIT / (1 << b)} clamped to $\geq$250\,m) so deep bounces traverse less of the TLAS.
+    \item Add the shading ladder: \texttt{if (b == 0)} keep the current triplanar $+$ CSM path; \texttt{else} shade \texttt{rtSceneAlbedo[lo].rgb * (sunColor * ndl + 0.26)} with \emph{no} \texttt{ShadowCalculation} and no vertex-pool loads (normal from the committed triangle's face normal --- compute from positions or accept the flat face normal; both avoid the 16-float pool).
+    \item Gate the chain launch at both call sites on screen-space contribution: skip when \texttt{hitReflectivity * envFresnelFactor < contribMin} (water: \texttt{refl * reflMixEst}; the estimates already exist at \texttt{water\_surface.glsl:742--745} and \texttt{solid\_surface.glsl:366--368}).
+    \item Lower the default \texttt{rtReflectionBounces} 1 $\rightarrow$ keep 1 (visual parity), but document in \texttt{Settings.hpp} that 2--3 is a screenshot mode; add a debug counter view for bounce rays/pixel.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/rt\_reflection.glsl} (loop 70--144)
+    \item \texttt{shaders/includes/solid\_surface.glsl} (launch gate 539--548)
+    \item \texttt{shaders/includes/water\_surface.glsl} (launch gate 400--409)
+    \item \texttt{utils/Settings.hpp} (comment), \texttt{shaders/includes/rt\_params.glsl} (cutoff channel doc)
+\end{itemize}
+
+\textbf{Validation:} Mirror-material test scene (polished spheres): bounce-ray counter $\leq$1.2/pixel median; bounce-$\geq$1 shading shows zero \texttt{ShadowCalculation} fetches in the shader profiler; screenshot diff vs.\ baseline $\leq$1\% on mirror interiors (throughput cutoff is below display threshold); GPU-assisted validation clean.
+\end{tcolorbox}
+
+\subsection{H5: Pipeline Reflection Output Is Traced, Stored, Barriered --- and Never Used as a Color}
+
+\textbf{Location:} \texttt{shaders/rt\_water.rgen:80--95} (reflection trace $+$ store), consumer \texttt{water\_surface.glsl:1129--1132} (samples \texttt{rtReflectTex} only to set \texttt{reflMaskDbg}), debug-only use 1524--1525; barriers \texttt{RayTracingResources.cpp:1292--1310, 1320--1338}.
+
+\begin{itemize}
+    \item Since the inline exact-triangle path became authoritative (``the inline ray wins whenever it runs'', comment at 1123--1128), the pipeline's reflection texel colors \emph{nothing}: its only runtime reader is the \texttt{DEBUG\_MODE\_RAY\_MASK} coverage view. The ray is still traced at half-res for every water pixel whenever \texttt{rt.rayParams.w > 0.5}.
+    \item The waste is threefold: the traversal itself, the \texttt{reflectOut} image (R16G16B16A16 half-res, written and read for a debug view), and two of the four per-frame \texttt{GENERAL}$\to$\texttt{GENERAL} barriers bracketing the dispatch.
+    \item The header note says the migration plan deletes the pipeline in Phase~3 --- until then, the reflection half of it is pure overhead on every water frame.
+\end{itemize}
+
+\textbf{Technique:} stop producing what nothing consumes. Gate the rgen reflection branch on actual consumption (debug mode or an explicit setting), default off; keep refraction/thickness (those \emph{are} consumed, \texttt{water\_surface.glsl:803--814}). Longer term, drop \texttt{reflectOut} and its barriers with the Phase-3 deletion.
+
+\begin{tcolorbox}[promptbox={Prompt: Gate the Pipeline Reflection Trace on Actual Consumption}]
+\textbf{Goal:} Zero pipeline reflection cost in normal rendering; debug coverage view still available on demand.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Add \texttt{Settings::rtWaterPipelineReflection} (default \texttt{false}); mirror into a spare \texttt{RayTracingParams::debug}/\texttt{rayParams} channel (document the channel in \texttt{rt\_params.glsl}).
+    \item In \texttt{rt\_water.rgen:80}, change the gate to \texttt{rt.rayParams.w > 0.5 \&\& rt.pipelineReflConsumed > 0.5} (new channel); when skipped, store the invalid marker (\texttt{reflect.a = 0}) exactly like the no-water early-out (46--53) so the debug mask reads ``no pipe cover'' instead of stale data.
+    \item Force the flag on when \texttt{debugMode == DEBUG\_MODE\_RAY\_MASK} (the one true consumer) in \texttt{SceneRenderer::updateRTParams} so the debug view keeps working without a manual toggle.
+    \item Shrink the dispatch barriers: when the flag is off, skip the \texttt{reflectImage\_} WAR/write-completion barrier pair (\texttt{RayTracingResources.cpp:1292--1338}) and leave the image in \texttt{GENERAL}; keep the refraction pair untouched.
+    \item Leave a TODO referencing the Phase-3 pipeline deletion: removing \texttt{reflectOut} entirely frees the half-res image and simplifies \texttt{createOutputImages}/\texttt{writeRTSet}.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/rt\_water.rgen} (gate 80, marker store)
+    \item \texttt{shaders/includes/rt\_params.glsl} + \texttt{vulkan/renderer/RayTracingResources.hpp} (new param channel)
+    \item \texttt{vulkan/renderer/RayTracingResources.cpp} (\texttt{dispatchWaterRT} barrier split)
+    \item \texttt{vulkan/renderer/SceneRenderer.cpp} (\texttt{updateRTParams} flag wiring), \texttt{utils/Settings.hpp}
+\end{itemize}
+
+\textbf{Validation:} Default run: pipeline GPU time (timestamps 20--21) drops by the reflection share ($\sim$half on open water); \texttt{DEBUG\_MODE\_RAY\_MASK} still shows pipe coverage when active; invalid-marker path verified (no stale reflections after toggling); validation clean on the barrier removal (no WAR hazard --- the image is neither read nor written when gated).
+\end{tcolorbox}
+
+\subsection{H6: Proxy BLAS Builds Always Process All 202\,752 Triangles}
+
+\textbf{Location:} \texttt{vulkan/renderer/RayTracingResources.cpp:1010--1015} (solid build, \texttt{kMaxSolidProxies * kTrisPerBox}), 1016--1027 (water build), size queries 397--398/453 (max counts), tail zeroing 920--928.
+
+\begin{itemize}
+    \item Both proxy BLAS builds pass \texttt{primitiveCount} for the \emph{capacity} ($16\,384\times12 = 196\,608$ and $512\times12 = 6\,144$ triangles), not the \emph{active} count. A scene with 300 active chunks builds --- and pays for --- the same 196k-triangle BLAS as a maxed-out scene. Inactive slots are degenerate zero-area triangles: never hit, but still walked by the builder.
+    \item Slots are packed prefixes (solids $[0, \texttt{activeSolidCount\_})$, water $[\texttt{kWaterProxyStart}, +\texttt{activeWaterCount\_})$), so the active set \emph{is} a prefix of each partition --- building the prefix is exactly correct, no holes.
+    \item The tail \texttt{zeroBox} staging (920--928) exists only to feed these max builds; prefix builds make most of it dead (Report~17 M7's dirty-range work shrinks the rest).
+    \item AS \emph{allocation} must stay max-sized (the BLAS buffer is created once from the max size query); only the build \emph{range} shrinks --- fully valid Vulkan.
+\end{itemize}
+
+\textbf{Technique:} active-prefix builds. Keep capacity-based size queries and buffer allocation; pass \texttt{activeCount * kTrisPerBox} as the build primitive count. Build time and scratch churn become proportional to scene content.
+
+\begin{tcolorbox}[promptbox={Prompt: Build Only the Active Proxy Prefix}]
+\textbf{Goal:} Proxy BLAS build cost proportional to active proxies, not to capacity.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item In \texttt{recordBuild} (\texttt{RayTracingResources.cpp:1010--1027}), change both \texttt{buildBlas} calls to \texttt{activeSolidCount\_ * kTrisPerBox} and \texttt{activeWaterCount\_ * kTrisPerBox} respectively (the \texttt{maxVertex} fields stay capacity-wide --- valid, the range info governs what is built).
+    \item Guard the empty case: when a count is 0, skip that BLAS build entirely and drop its TLAS instance reference for this build (the TLAS already conditionally includes the scene instance at 1085--1087 --- mirror that pattern; an empty solid scene must not trace a stale BLAS).
+    \item Shrink the staging loop (920--928): \texttt{stageBox} over $[0, \texttt{active*Count\_})$ only; delete the \texttt{zeroBox} tail \emph{except} when shrinking (previous build had more slots): then zero exactly the retired range $[\texttt{active}, \texttt{prevActive})$ so no stale triangles linger in the built prefix's neighbourhood (defensive; the built range already excludes them).
+    \item Keep the size queries (397--398, 453) and buffer allocations at capacity; log active vs.\ capacity in the existing rebuild line for verification.
+    \item Re-check the \S2 host$\to$build barrier ranges (954): they may stay full-buffer (simplicity) or narrow to the staged prefix --- document the choice.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{vulkan/renderer/RayTracingResources.cpp} (\texttt{recordBuild} builds and staging, TLAS instance guard)
+    \item \texttt{vulkan/renderer/RayTracingResources.hpp} (\texttt{prevActive*} members if the shrink-zeroing is kept)
+\end{itemize}
+
+\textbf{Validation:} Rebuild log on a small scene shows active $\ll$ capacity and measurably lower build ms; reflections identical (built prefix $=$ previously non-degenerate set); empty-scene run traces nothing (sky fallback, no stale hits); GPU-assisted validation clean on skipped builds and zero-instance TLAS.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M7: The Pixels That Miss Are the Most Expensive --- 64-Step SSR March After a Missed Ray}
+
+\textbf{Location:} \texttt{shaders/includes/water\_surface.glsl:1174--1190} (march on inline reflection miss), \texttt{traceSSR} 444--494.
+
+\begin{itemize}
+    \item When the inline reflection ray misses, the fallback marches the solid depth buffer: 64 world-space steps, each projecting through \texttt{viewProjection} and fetching \texttt{solidSceneDepthTex}, plus a 5-iteration binary refinement with 2 fetches per iteration on crossing. That is 64--74 texture fetches \emph{after} paying 1--3 traversals (C3) --- spent on the pixels where the reflection contributes the least (sky-facing, grazing).
+    \item The march is direction-blind: rays pointing above the horizon (\texttt{dir.y > 0}) can never cross the terrain depth, yet march all 64 steps.
+    \item Step schedule is fixed: 20$\times$1\,m $+$ geometric growth to $\sim$4\,km regardless of roughness, distance, or the lobe's Fresnel weight.
+\end{itemize}
+
+\textbf{Technique:} gate and adapt the march. Upward rays exit immediately (sky is the correct answer); remaining rays scale step count with lobe contribution and cap total travel by the reflection distance budget. The march stays the exactness-preserving fallback for the grazing cases it was built for (comment at 1175--1178) --- it just stops running where it cannot produce anything.
+
+\begin{tcolorbox}[promptbox={Prompt: Gate and Adapt the Miss-Path SSR March}]
+\textbf{Goal:} Miss-path cost proportional to possible gain; zero steps for impossible directions.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item In \texttt{traceSSR} (\texttt{water\_surface.glsl:444--494}), early-return \texttt{vec4(0)} when \texttt{dir.y > 0.02} (above-horizon: terrain depth can never be crossed; the caller's sky baseline already holds the right color).
+    \item Scale the iteration count by the lobe estimate: pass \texttt{reflMixEst} (already computed at 708--710) and use \texttt{steps = mix(16, 64, reflMixEst)}; keep the near/far step schedule shape.
+    \item Cap total travel at \texttt{min(4000, rt.distances.x * 2)} (reflection budget) instead of the hardcoded far-plane multiple at 463.
+    \item Skip the binary refinement when the crossing gap exceeds \texttt{sceneEye * 0.5} (grazing uncertainty: the refined point is noise anyway; \texttt{gapFade} already attenuates it).
+    \item Add a debug counter (ray-mask view channel) for marched steps/pixel to verify the cut on a horizon-heavy frame.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_surface.glsl} (\texttt{traceSSR} 444--494, call site 1179)
+\end{itemize}
+
+\textbf{Validation:} Horizon/sky-heavy water views: march-step counter drops $\geq$60\%; shoreline grazing case (the march's raison d'\^{e}tre) pixel-identical; upward-tilted camera frames show zero marched steps; no validation issues (pure shader change).
+\end{tcolorbox}
+
+\subsection{M8: Per-Frame Full-Span Snapshots and Deep Vector Compares Under the Renderer Mutex}
+
+\textbf{Location:} \texttt{vulkan/renderer/SceneRenderer.cpp:2145, 2153} (\texttt{copyAllRTGeometrySpans} every frame, both layers), 2157/2161 (\texttt{operator!=} deep compare), \texttt{IndirectRenderer.hpp:446--465} (mutex-held full copy).
+
+\begin{itemize}
+    \item Every frame --- chunk churn or not --- the RT refresh snapshots \emph{all} active mesh spans for solid and water (each $\sim$56 bytes: 6 uints $+$ 2 vec3) while holding \texttt{IndirectRenderer::mutex}, then deep-compares both vectors element-wise against last frame's copies. At a few thousand resident chunks this is $\sim$100--200\,KB copied and compared per frame, plus lock contention with the async publish path (\texttt{addMeshSlotted}/\texttt{removeMeshSlotted} take the same mutex).
+    \item The fingerprint guard (\texttt{fp}/\texttt{lastFp}, 2100--2129) already proves the maps are unchanged on idle frames --- but the span snapshot runs \emph{before} and regardless of it (2137--2161 sits outside the \texttt{fp} early-out at 2248).
+    \item \texttt{RTGeometrySpan::operator==} compares two \texttt{glm::vec3} per element (six float compares) --- cheap per element, multiplied by $2n$ per frame.
+\end{itemize}
+
+\textbf{Technique:} generation counters. \texttt{IndirectRenderer} bumps a monotonic \texttt{uint64} on every mesh add/remove/republish; the RT refresh compares two integers per layer and snapshots only on mismatch. This is the standard dirty-tracking the proxy maps already use (\texttt{fp}), applied to the span source.
+
+\begin{tcolorbox}[promptbox={Prompt: Replace Per-Frame Span Snapshots with Generation Counters}]
+\textbf{Goal:} Idle-frame RT refresh cost $= O(1)$; snapshots only on real change.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Add \texttt{std::atomic<uint64\_t> spanGeneration\_} to \texttt{IndirectRenderer}; increment in \texttt{addMeshSlotted}, \texttt{removeMeshSlotted}, and any in-place republish path (audit \texttt{IndirectRenderer.cpp} for all mesh-mutating entries; the generation must also bump when a republish moves the vertex/index span in place).
+    \item In \texttt{SceneRenderer::rebuildProxySet} (2137--2161), read both generations \emph{before} the fingerprint block; skip \texttt{copyAllRTGeometrySpans} and the compares entirely when both match \texttt{lastSolidSpanGen\_}/\texttt{lastWaterSpanGen\_} (new members).
+    \item On mismatch, snapshot and compare as today (the compare still guards spurious generation bumps); store the new generations after a successful \texttt{setSceneGeometry}.
+    \item Thread-safety: generation reads are atomic and lock-free; the snapshot keeps the mutex (already correct). Document that the counter never resets (wrap at $2^{64}$ is a non-event).
+    \item Keep the water snapshot's joint-refresh semantics (2217--2223: solid-only refresh must not drop water geometries) --- the generation pair preserves it by construction.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{vulkan/renderer/IndirectRenderer.hpp/cpp} (generation member $+$ bumps)
+    \item \texttt{vulkan/renderer/SceneRenderer.cpp} (\texttt{rebuildProxySet} 2137--2161, new members in \texttt{SceneRenderer.hpp})
+\end{itemize}
+
+\textbf{Validation:} CPU profile (perf/callgrind) of an idle 60\,s capture: \texttt{copyAllRTGeometrySpans} calls $\approx$ 0; scene-load burst still triggers exactly one snapshot per layer per change; reflections after a brush edit refresh correctly (generation bumped); no data races (ThreadSanitizer or careful review of the bump sites).
+\end{tcolorbox}
+
+\subsection{M9: $O(n^2)$ Geometric Containment Filter Where Dyadic Bounds Allow $O(n)$}
+
+\textbf{Location:} \texttt{vulkan/renderer/IndirectRenderer.hpp:478--527} (\texttt{filterNonOverlappingSpans}), called from \texttt{SceneRenderer.cpp:2169--2170} on every span-set change.
+
+\begin{itemize}
+    \item On each scene-load/edit burst, every candidate span is containment-tested against \emph{all} previously kept spans (six plane compares each). With $n \approx 4\,000$ resident chunks across rungs, worst case is $\sim$16M tests on the main thread, inside the publish path that already holds user-visible latency.
+    \item The comment justifies the linear scan with ``partially overlapping spans are conservatively kept'' --- but the input is octree output: bounds are dyadic-exact (noted in the same comment), so containment is decidable by cell key, not by scanning.
+    \item The sort by volume (497--500) is fine; the quadratic part is the kept-scan (509--526).
+\end{itemize}
+
+\textbf{Technique:} hash the dyadic grid. Kept spans' bounds quantize exactly onto the octree's dyadic cells: key a hash map by quantized min-corner (and level/size class); a candidate is enclosed iff a kept span exists at a coarser size class whose cell contains the candidate's min-corner --- $O(\log n)$ grid walks up the dyadic ladder instead of an all-kept scan. Expected $O(n)$, same conservative result for the (non-occurring) partial-overlap case: keep anything not exactly enclosed.
+
+\begin{tcolorbox}[promptbox={Prompt: Make the Non-Overlapping-Span Filter Linear}]
+\textbf{Goal:} Scene-load filtering cost linear in resident chunks; identical kept set.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item In \texttt{filterNonOverlappingSpans} (\texttt{IndirectRenderer.hpp:478--527}), after the existing volume sort, replace the \texttt{kept} vector scan with a hash map: \texttt{unordered\_map<CellKey, const Cand*>} where \texttt{CellKey} = (quantized min-corner, size class from \texttt{level} or volume$\to$dyadic exponent).
+    \item For each candidate, walk \emph{up} the ladder: starting from the candidate's own cell, quantize the min-corner to each coarser size class and probe the map; the first hit at a containing cell marks \texttt{enclosesKept} (dyadic nesting guarantees the coarse cell's span contains the candidate iff its min-corner matches the coarse quantization --- verify with the existing epsilon test as an assertion in debug builds).
+    \item Insert kept candidates into the map; disjoint spans never collide on a containing key, preserving the ``disjoint always kept'' property.
+    \item Keep the partial-overlap conservative path: any candidate whose bounds do not quantize exactly (defensive \texttt{if}) falls back to the old linear scan --- correctness never depends on the assumption.
+    \item Assert-equivalence in debug: run both filters on the same input after a scene load and \texttt{assert} identical output sets (order may differ; compare as sets), logged once.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{vulkan/renderer/IndirectRenderer.hpp} (\texttt{filterNonOverlappingSpans}; add a small \texttt{CellKey} hash helper)
+\end{itemize}
+
+\textbf{Validation:} Scene-load burst timing: filter ms drops $\geq$10$\times$ at 4k spans; debug assert confirms set-equality with the old filter across loads/edits; reflections show no missing/coarse-overlayed regions (same kept set); no new allocations on the frame path (the filter runs on change only --- keep it that way).
+\end{tcolorbox}
+
+\subsection{M10: Raygen Pays 5 Full-Res Depth Fetches and 5 World Reconstructions per Half-Res Pixel}
+
+\textbf{Location:} \texttt{shaders/rt\_water.rgen:45--70}.
+
+\begin{itemize}
+    \item The half-res raygen samples the \emph{full-res} water depth texture five times (center $+$ 4-neighbour stencil) and runs \texttt{reconstructWorld} (mat4 multiply $+$ perspective divide) five times per dispatched pixel --- a full-res-cost normal estimate executed at half-res dispatch density, i.e.\ $\sim$1.25$\times$ the raster pass's own depth-reconstruction cost amortized over nothing.
+    \item The water surface is a displaced heightfield whose shading normal the raster pass already computes (wave/Perlin detail); the RT pipeline approximates the same normal from depth differences --- the most expensive possible source --- and gets a \emph{screen-space} normal that aliases at depth discontinuities (shorelines), which are exactly the pixels being traced.
+    \item Neighbour samples at full-res texel offsets from a half-res dispatch also straddle cache lines: the stencil's footprint is 2$\times$ the dispatch grid's.
+\end{itemize}
+
+\textbf{Technique:} derive the normal from the surface, not the stencil. The cheapest correct source is the water mesh's own analytic base normal (flat layers: constant up; displaced layers: the same wave normal the raster computes --- the noise helpers are shared includes). If wave detail is intentionally out of scope for the pipeline (comment at 56--58 says ripple detail lives in the inline path), then a constant up normal is \emph{already} the pipeline's effective assumption and the whole stencil can go.
+
+\begin{tcolorbox}[promptbox={Prompt: Replace the Raygen Depth Stencil with an Analytic Water Normal}]
+\textbf{Goal:} One depth fetch $+$ one reconstruction per dispatched pixel; normals at least as stable as the current stencil.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item In \texttt{rt\_water.rgen:45--70}, delete the 4-neighbour stencil and the four extra \texttt{reconstructWorld} calls.
+    \item Set \texttt{N} from the water surface model: constant \texttt{vec3(0,1,0)} faced toward the viewer (matches the raster's base plane; the pipeline is documented to trade ripple detail for async half-res tracing), \emph{or} --- if wave tilt is desired in reflections --- evaluate the shared \texttt{water\_noise} normal at \texttt{pos} with the layer-0 params already mirrored in \texttt{rt.water}/\texttt{rt.absorption} (document the layer-0 limitation, same as the existing mirrors).
+    \item Keep the center \texttt{reconstructWorld} (needed for the ray origin) and the facing flip (70).
+    \item A/B against the stencil on a shoreline frame: the stencil's depth-discontinuity artifacts (smeared normals at the waterline) should \emph{improve}, not regress; capture both.
+    \item Note the freed texture cache budget in the commit (5 $\rightarrow$ 1 full-res depth fetches per half-res pixel).
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/rt\_water.rgen} (45--70)
+\end{itemize}
+
+\textbf{Validation:} Pipeline GPU time (timestamps 20--21) drops measurably on water-fill views; reflection/refraction outputs pixel-diff within noise on open water and \emph{better} edge behavior at the waterline; the inline path (full analytic normals) is untouched; validation clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L11: Sky Equirect Fetch and Trig Evaluated Before the Hit Test, Discarded on Every Hit}
+
+\textbf{Location:} \texttt{shaders/includes/water\_surface.glsl:97} (unconditional \texttt{textureLod} $+$ \texttt{rtDirToEquirectUV}), used only on miss returns (104--105, 262); hit returns (314, 364, 410) discard it. Same pattern in \texttt{rt\_reflection.glsl:81--82} (procedural sky computed per bounce before the hit test --- ALU-only).
+
+\begin{itemize}
+    \item \texttt{rtDirToEquirectUV} is \texttt{atan} $+$ \texttt{acos} plus a dependent texture fetch from the equirect map --- executed on \emph{every} \texttt{rtTraceWater} call, hit or miss. On hit-dominated frames (open water looking at terrain) it is pure waste per pixel; the fetch also occupies a texture unit slot during traversal.
+    \item The caller already fetches sky for its own fallback (\texttt{water\_surface.glsl:1197}), so the miss-path fetch is occasionally duplicated as well.
+\end{itemize}
+
+\textbf{Technique:} fetch on demand. Move the sky sample into the two miss returns (or compute it once after the hit selection when \texttt{!haveHit}); pass the caller's sky where it already exists.
+
+\begin{tcolorbox}[promptbox={Prompt: Make the Sky Fetch Miss-Only in rtTraceWater}]
+\textbf{Goal:} Zero sky fetches on hit pixels; identical miss colors.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Move \texttt{vec3 sky = textureLod(...)} (\texttt{water\_surface.glsl:97}) below the hit selection, into the \texttt{!haveHit} return (262) and the reflection forward-miss return (104--105); each computes from the same \texttt{dir}.
+    \item In \texttt{rt\_reflection.glsl:81--82}, move the procedural-sky evaluation inside the miss branch (it is pure ALU --- the compiler may already sink it, but make it explicit and match the water helper).
+    \item Verify no other consumer of \texttt{sky} exists between 97 and the returns (grep the function); the unreachable tail (416) keeps its own fetch.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_surface.glsl} (97, 104--105, 262, 416)
+    \item \texttt{shaders/includes/rt\_reflection.glsl} (81--87)
+\end{itemize}
+
+\textbf{Validation:} Screenshot diff $=0$ (same values, same branches); texture-fetch counters on hit-dominated water views drop by one equirect fetch per traced pixel; no implicit-LOD introduction (all fetches stay \texttt{textureLod}).
+\end{tcolorbox}
+
+\subsection{L12: Dead SSR Bindings, Double UBO Writes, and Orphaned \texttt{prevViewProj} Plumbing}
+
+\textbf{Location:} \texttt{shaders/main.frag:91--92} (SSR bindings declared), \texttt{solid\_surface.glsl:20--61} (\texttt{traceSSR} defined, never called), \texttt{SceneRenderer.cpp:2067--2070} (bindings 19/20 written every frame), 2427--2428 (\texttt{prevViewProj} streamed), 2435 $+$ \texttt{RayTracingResources.cpp:1278--1285} (\texttt{rtResolution} zeroed then rewritten; params UBO written twice per frame per slot).
+
+\begin{itemize}
+    \item The solid SSR refinement was removed (comment at \texttt{solid\_surface.glsl:558--563}) but its descriptor writes (previous-frame color $+$ depth, every frame), its two samplers, its shader bindings, and the \texttt{prevViewProj} matrix it consumed all survive. Descriptor writes are small but perpetual, and the dead \texttt{traceSSR} bloats the biggest fragment shader in the engine (instruction cache $+$ compile time).
+    \item \texttt{updateRTParams} memcpy's the full \texttt{RayTracingParams} (including \texttt{rtResolution = vec4(0)}), then \texttt{dispatchWaterRT} re-opens the same mapped slot and rewrites \texttt{invViewProj}/\texttt{viewPos}/\texttt{rtResolution} --- two writes, one of which undoes a zeroing that served nothing.
+    \item None of this is hot individually; together it is unreviewed residue from the SSR removal, and dead bindings are where validation warnings and future stale-descriptor bugs grow.
+\end{itemize}
+
+\textbf{Technique:} delete what nothing samples; write each UBO field once at its natural owner.
+
+\begin{tcolorbox}[promptbox={Prompt: Remove Dead SSR Plumbing and Single-Source the RT Params Writes}]
+\textbf{Goal:} No descriptor writes, bindings, samplers, or UBO fields serving removed features; one writer per \texttt{RayTracingParams} field.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Delete \texttt{traceSSR} from \texttt{solid\_surface.glsl} (20--61) and the \texttt{ssrColorTex}/\texttt{ssrDepthTex} declarations (\texttt{main.frag:91--92}); remove the binding-19/20 writes and the two samplers from \texttt{SceneRenderer.cpp} (1981--2026, 2055--2070) and the set-layout entries if the bindings go unused by all stages (audit \texttt{water\_frag\_stage.glsl} set-2 first --- the water path uses \emph{its own} scene textures, unaffected).
+    \item Remove \texttt{prevViewProj} from \texttt{RayTracingParams}/\texttt{RayTracingParamsGLSL} (both sides, keep struct sizes in sync) or repurpose it for Report~17 L11's temporal reuse --- decide in the commit; do not keep streaming it ``just in case''.
+    \item Make \texttt{updateRTParams} the single writer: pass the dispatch's \texttt{invViewProj}/\texttt{viewPos} through it (they are already parameters) and set \texttt{rtResolution} there from the live output size; delete the re-write block in \texttt{dispatchWaterRT} (\texttt{RayTracingResources.cpp:1278--1285}).
+    \item Rebuild both shader variants (\texttt{make shaders}) and grep for orphaned \texttt{binding = 19/20} references.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/main.frag}, \texttt{shaders/includes/solid\_surface.glsl}, \texttt{shaders/includes/rt\_params.glsl}
+    \item \texttt{vulkan/renderer/SceneRenderer.cpp} (samplers, descriptor writes, \texttt{updateRTParams})
+    \item \texttt{vulkan/renderer/RayTracingResources.hpp/cpp} (params struct, \texttt{dispatchWaterRT})
+\end{itemize}
+
+\textbf{Validation:} \texttt{make shaders} clean; reflection/water visuals unchanged (nothing sampled the removed bindings); validation shows no dangling binding warnings; params-driven debug views (\texttt{rtResolution}-dependent) still correct in the pipeline dispatch.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Technique Catalogue (Quick Reference)}
+% =====================================================================
+
+\begin{longtable}{@{}lll@{}}
+\toprule
+\textbf{Technique} & \textbf{Attacks} & \textbf{Issues} \\
+\midrule
+Delete redundant traversal (single source per lobe) & $R_{\mathrm{fan-out}}$ & C1, H5 \\
+Instance split by content $+$ opaque early-out & $C_{\mathrm{traverse}}$ & C2 \\
+Post-commit classification instead of re-tracing & $R_{\mathrm{fan-out}}$ & C3 \\
+Throughput cutoff $+$ Tmax/shading decay per bounce & $R_{\mathrm{fan-out}}$, $C_{\mathrm{shade}}$ & H4 \\
+Active-prefix BLAS builds & $C_{\mathrm{build}}$ & H6 \\
+Direction/contribution-gated adaptive marching & miss-path cost & M7 \\
+Generation counters instead of snapshot$+$compare & $C_{\mathrm{CPU}}$ & M8 \\
+Dyadic-grid hashing instead of containment scan & $C_{\mathrm{CPU}}$ & M9 \\
+Analytic normals instead of depth stencils & $C_{\mathrm{dispatch}}$ & M10 \\
+Fetch-on-demand (miss-only sky) & $C_{\mathrm{shade}}$ & L11 \\
+Dead-code/descriptor removal; single-writer UBOs & hygiene & L12 \\
+\bottomrule
+\end{longtable}
+
+% =====================================================================
+\section{Recommended Priority Order}
+% =====================================================================
+
+\begin{enumerate}
+    \item \textbf{C1 --- delete the discarded refraction lead ray} --- one-function change, guaranteed $\sim$2$\times$ inline-refraction cut, fixes the shadowed-index hazard in the same edit.
+    \item \textbf{C2 --- split scene instance, opaque refraction} --- removes the only no-early-out pass; largest traversal win on refraction-heavy views.
+    \item \textbf{C3 --- collapse the reflection chain} --- 3$\rightarrow$1 rays on the default (rippled) water look.
+    \item \textbf{H5 --- gate the unused pipeline reflection} --- pure-waste removal; zero visual risk.
+    \item \textbf{H4 --- bound bounce fan-out} --- caps the worst-case multiplier on mirror materials.
+    \item \textbf{H6 --- active-prefix builds} --- build ms proportional to scene size; trivially verifiable from the existing rebuild log.
+    \item \textbf{M7 --- gate the SSR march} --- sky/horizon frames stop paying 64 steps per miss.
+    \item \textbf{M8 --- generation counters} --- idle-frame CPU to $O(1)$; independent of the shader work.
+    \item \textbf{M9 --- linear span filter} --- scene-load latency; independent.
+    \item \textbf{M10 --- analytic raygen normal} --- cheapens every pipeline dispatch.
+    \item \textbf{L11, L12 --- fetch-on-demand and dead-plumbing removal} --- free hygiene; bundle with any of the above.
+\end{enumerate}
+
+% =====================================================================
+\section{Validation Checklist (applies to every prompt)}
+% =====================================================================
+
+\begin{itemize}
+    \item No new validation errors: \texttt{make debug} $+$ \texttt{VULKAN\_GPU\_ASSISTED=1 make run-debug} log clean (ray-query flag changes, new TLAS instance/masks, barrier removals).
+    \item Synchronization2 only; every touched barrier keeps its why-comment; no \texttt{vkDeviceWaitIdle} in the frame path.
+    \item Feature detection preserved: inline queries require \texttt{acceleration\_structure} $+$ \texttt{ray\_query}; the pipeline requires \texttt{ray\_tracing\_pipeline}; raster$+$CSM$+$sky fallback intact when absent (\texttt{VulkanApp.cpp:5717--5774}).
+    \item BLAS/TLAS changes retire old structures via \texttt{deferDestroyUntilAllPending}; never destroy under in-flight frames; shrunk builds still leave the TLAS referencing valid structures (empty-set guard).
+    \item Shader changes keep \texttt{textureLod} under divergent flow; no new implicit derivatives; both \texttt{main.frag} variants (\texttt{RT\_ENABLED} on/off, \texttt{WATER\_MODE} 0/1) compile via \texttt{make shaders}.
+    \item Before/after evidence per issue: GPU timestamps (existing query slots 15/20--21 plus caller brackets), ray-query/texture counters (RenderDoc or NSight), the ray-mask/depth-source debug views, and pixel-diff screenshots on the canonical views (open-lake mirror, animated shoreline, terrain-fill mirror, sky-only).
+\end{itemize}
+
+% =====================================================================
+\section{Conclusion}
+% =====================================================================
+
+The post-Report~17 migration to exact scene triangles made reflections and refractions \emph{correct}; this report shows it also made them \emph{profligate}: discarded lead rays, a no-early-out enumeration, a three-ray chain on the common case, unbounded bounce fan-out, and a pipeline output nobody reads. None of these require new infrastructure --- every fix is a deletion, a gate, an instance split, or a counter --- and each ships with an A/B path and a validation recipe. Land C1 first (it is a strict improvement including a latent correctness fix), then C2/C3 for the traversal shape, then H5/H6 to stop paying for unconsumed outputs and unbuilt geometry. Once fan-out is bounded, the Report~17 quality-ladder work (temporal reuse, roughness grading, denoising) becomes measurable on a ray budget that is finally honest.
+
+\end{document}
