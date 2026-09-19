@@ -10,12 +10,17 @@
 
 layout(location = VARY_LOCALPOS) in vec3 fragPos;
 layout(location = VARY_NORMAL) in vec3 fragNormal;
+layout(location = VARY_SHARPNORMAL) in vec3 fragBaseNormal;
+layout(location = VARY_BASEPOS) in vec4 fragBasePos;
+layout(location = VARY_WATERDEPTH) in float fragWaterDepth;
+layout(location = VARY_SHOREDIR) in vec2 fragShoreDir;
 layout(location = VARY_UV) in vec2 fragTexCoord;
 layout(location = VARY_POSCLIP) in vec4 fragPosClip;
 layout(location = VARY_DEBUG) in vec3 fragDebug;
 layout(location = VARY_POSWORLD) in vec3 fragPosWorld;
 layout(location = VARY_POSLIGHT) in vec4 fragPosLightSpace;
 layout(location = VARY_BRUSHPATCH) flat in int fragBrushIndex;
+layout(location = VARY_HSV) in vec3 fragHSV;
 
 void main() {
     // No scene-depth discard: water is independent of the solid pass. The
