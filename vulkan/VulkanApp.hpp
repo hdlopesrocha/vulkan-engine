@@ -118,6 +118,11 @@ class VulkanApp {
     bool rayQuerySupported = false;
     bool rayPipelineSupported = false;
     bool deferredHostOpsSupported = false;
+    // VK_KHR_shader_clock / shaderDeviceClock: enables the device-scope
+    // realtime clock used by the opt-in per-op RT profiling shader variants
+    // (shaders/includes/rt_profile.glsl). Independent of RT support; when
+    // false the profile variants are never created and RT profiling stays off.
+    bool shaderClockSupported = false;
     bool rayTracingEnabled() const { return accelStructSupported && rayQuerySupported; }
     bool rayPipelineEnabled() const { return rayTracingEnabled() && rayPipelineSupported; }
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProps{};

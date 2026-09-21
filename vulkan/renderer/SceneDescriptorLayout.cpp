@@ -219,16 +219,27 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     sceneIndicesBinding.pImmutableSamplers = nullptr;
     sceneIndicesBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    // binding 26: per-op RT profiling counters (RT_PROFILE shader variants
+    // only; fragment ray-query sites accumulate into it). Declared in the
+    // layout unconditionally so the profile pipelines share this set layout
+    // (production variants simply never reference the binding).
+    VkDescriptorSetLayoutBinding rtProfileBinding{};
+    rtProfileBinding.binding = 26;
+    rtProfileBinding.descriptorCount = 1;
+    rtProfileBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    rtProfileBinding.pImmutableSamplers = nullptr;
+    rtProfileBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     // Binding numbers are sparse by design: 11 (legacy 360 cubemap) is
     // intentionally absent.
-    std::array<VkDescriptorSetLayoutBinding, 25> bindings = {
+    std::array<VkDescriptorSetLayoutBinding, 26> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
         shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
         waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
         roughnessSamplerBinding, aoSamplerBinding,
         tlasBinding, rtReflectBinding, rtRefractBinding, rtParamsBinding, rtMetaBinding,
         ssrColorBinding, ssrDepthBinding, scenePrimBaseBinding, sceneMetaBinding,
-        sceneGeomInfoBinding, sceneVertsBinding, sceneIndicesBinding
+        sceneGeomInfoBinding, sceneVertsBinding, sceneIndicesBinding, rtProfileBinding
     };
     // Fill the material binding at position 5
     bindings[5].binding = 5;
@@ -241,7 +252,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     // (the only UPDATE_AFTER_BIND binding, for swapchain-resize view churn)
     // is gone. RT views/TLAS are stable between resizes (rewritten only on
     // resize/recreate events, never while in flight).
-    std::array<VkDescriptorBindingFlags, 25> bindingFlags{};
+    std::array<VkDescriptorBindingFlags, 26> bindingFlags{};
     bindingFlags.fill(0);
 
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};

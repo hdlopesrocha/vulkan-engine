@@ -452,13 +452,13 @@ private:
     // buffers are warm mirrors (classic sets stay authoritative); once the
     // main layout flips to DESCRIPTOR_BUFFER_BIT, bindSet0ForFrame() becomes
     // the bind path and classic set-0 writes stop.
-    // NOTE (hybrid RT): offsets cover set-0 bindings 0..18 (binding 11 absent
+    // NOTE (hybrid RT): offsets cover set-0 bindings 0..26 (binding 11 absent
     // — legacy cubemap removed). Binding 14 (TLAS) has no warm mirror.
     struct Set0DescriptorBuffers {
         std::vector<Buffer> buffers;                 // one per frame
         std::vector<VkDeviceAddress> addresses;      // device address per frame
         VkDeviceSize setSize = 0;                    // aligned set-0 byte size
-        std::array<VkDeviceSize, 19> bindingOffsets{}; // driver binding offsets
+        std::array<VkDeviceSize, 27> bindingOffsets{}; // driver binding offsets
         bool ready = false;
     };
     Set0DescriptorBuffers descBuffers_;

@@ -124,6 +124,8 @@ void RayTracingResources::cleanup(VulkanApp* app) {
         if (tlasInstanceBuffer_.buffer) app->destroyBuffer(tlasInstanceBuffer_);
         for (auto& pb : paramsBuffers_)
             if (pb.buffer) app->destroyBuffer(pb);
+        for (auto& pb : profileBuffers_)
+            if (pb.buffer) app->destroyBuffer(pb);
         if (sbtBuffer_.buffer) app->destroyBuffer(sbtBuffer_);
         if (rtSetPool_ != VK_NULL_HANDLE) {
             app->resources.removeDescriptorPool(rtSetPool_);
@@ -407,6 +409,18 @@ void RayTracingResources::createProxyBuffers(VulkanApp* app) {
         RayTracingParams defaults{};
         if (paramsBuffers_[f].mappedData)
             memcpy(paramsBuffers_[f].mappedData, &defaults, sizeof(defaults));
+    }
+
+    // Per-op RT profiling counter blocks (one per in-flight frame). Only the
+    // RT_PROFILE shader variants touch them; they are created unconditionally
+    // with the rest of the RT resources so set-0 binding 26 always has a valid
+    // buffer when a profile pipeline is active.
+    for (uint32_t f = 0; f < kParamFrames; ++f) {
+        profileBuffers_[f] = app->createBuffer(sizeof(RTProfileCounters),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (profileBuffers_[f].mappedData)
+            memset(profileBuffers_[f].mappedData, 0, sizeof(RTProfileCounters));
     }
 }
 
@@ -1216,6 +1230,20 @@ void RayTracingResources::updateParams(const RayTracingParams& p, uint32_t frame
     Buffer& slot = paramsBuffers_[frameIndex % kParamFrames];
     if (slot.mappedData == nullptr) return;
     memcpy(slot.mappedData, &p, sizeof(p));
+}
+
+// Profile counter slot read/reset. The caller must ensure the slot's frame
+// fence has signaled (it is only reused after the per-slot wait), so the GPU
+// is never atomically writing the slot being read or cleared.
+void RayTracingResources::resetProfile(uint32_t frameIndex) {
+    Buffer& slot = profileBuffers_[frameIndex % kParamFrames];
+    if (slot.mappedData) memset(slot.mappedData, 0, sizeof(RTProfileCounters));
+}
+
+void RayTracingResources::readProfile(uint32_t frameIndex, RTProfileCounters& out) const {
+    const Buffer& slot = profileBuffers_[frameIndex % kParamFrames];
+    if (slot.mappedData) memcpy(&out, slot.mappedData, sizeof(RTProfileCounters));
+    else out = RTProfileCounters{};
 }
 
 // ── Water RT pipeline (rgen/miss/chit) + SBT ────────────────────────────

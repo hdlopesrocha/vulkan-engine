@@ -35,6 +35,21 @@
 
 class VulkanApp;
 
+// Per-op RT profiling counters. Layout mirrors the std430 block in
+// shaders/includes/rt_profile.glsl; op ids are the RT_PROFILE_OP_* constants
+// there. The profile shader variants sample 1/4 of invocations
+// (rt_profile.glsl: RT_PROFILE_SAMPLE_STRIDE), so counts and time are scaled
+// by 4 on display. `time` is device-clock nanoseconds >> 6 (64 ns units),
+// summed over invocations = "thread-time" (ops run concurrently; compare
+// shares, not absolute frame time).
+struct RTProfileCounters {
+    static constexpr uint32_t kOpCount = 7;
+    uint32_t rays[kOpCount] = {};  // ray queries issued
+    uint32_t hits[kOpCount] = {};  // committed intersections
+    uint32_t time[kOpCount] = {};  // 64 ns units, summed thread-time
+};
+static_assert(sizeof(RTProfileCounters) == RTProfileCounters::kOpCount * 3 * sizeof(uint32_t));
+
 // One stable proxy entry per scene chunk. The BLAS stores the AABB; the
 // metadata buffer (indexed by primitive ID in hit shaders / ray queries)
 // carries the shading data the box alone cannot provide.
@@ -205,6 +220,19 @@ public:
     uint32_t buildCount() const { return buildCount_; }
     bool tlasBuilt() const { return tlasBuilt_; }
 
+    // Per-op RT profiling (shader-instrumented, RT_PROFILE variants). One
+    // host-visible counter block per in-flight frame: the shaders atomically
+    // accumulate into the slot their frame's set 0 binds. Callers read the
+    // slot only after its frame fence has signaled, then reset it (see
+    // MyApp::preRenderPass — same discipline as the timestamp query pools).
+    // No-op / null when RT is unsupported.
+    VkBuffer getProfileBuffer(uint32_t frameIndex = 0) const {
+        if (!supported_) return VK_NULL_HANDLE;
+        return profileBuffers_[frameIndex % kParamFrames].buffer;
+    }
+    void resetProfile(uint32_t frameIndex);
+    void readProfile(uint32_t frameIndex, RTProfileCounters& out) const;
+
     // Runtime RT gate: when every ray-path Settings toggle is off, nothing can
     // consume the acceleration structures, so buildIfNeeded and the proxy
     // repack are skipped entirely (no BLAS/TLAS work while RT is disabled).
@@ -318,6 +346,10 @@ private:
     VkDescriptorSet getRTSet() const { return rtSets_[0]; }
     VkDescriptorSet getRTSetForFrame(uint32_t f) const { return rtSets_[f % 3]; }
     Buffer paramsBuffers_[kParamFrames]{};
+    // Per-frame RT profiling counter blocks (host-visible, atomically
+    // incremented by the RT_PROFILE shader variants; contents read + reset by
+    // the app after the slot's fence). Layout mirrors rt_profile.glsl.
+    Buffer profileBuffers_[kParamFrames]{};
 
     // ── Real scene-geometry BLASes (reflection/refraction rays) ───────────
     // One geometry per active chunk, referencing the raster mesh's spans in

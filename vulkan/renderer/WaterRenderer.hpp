@@ -135,6 +135,12 @@ public:
     void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
     bool rtShadingEnabled() const { return rtShadingEnabled_; }
 
+    // Per-op RT profiling selector (RT_PROFILE frag+TES variant, built only
+    // when the device supports VK_KHR_shader_clock). Opt-in: the instrumented
+    // shaders carry atomics + device-clock reads.
+    void setRtProfilingEnabled(bool enabled) { rtProfilingEnabled_ = enabled; }
+    bool rtProfilingEnabled() const { return rtProfilingEnabled_; }
+
     // Global ray-path gates (from Settings) forwarded to the water shader via
     // the water render UBO so they apply in BOTH fragment variants (the non-RT
     // variant cannot see the RT params block, which is why the gates are not
@@ -219,13 +225,18 @@ public:
 
 private:
 
-    // Active pipeline variant (RT fragment shader while RT shading is on and
-    // the RT variant exists, otherwise the cheaper non-RT variant).
+    // Active pipeline variant (profiling RT while RT profiling is on, else RT
+    // while RT shading is on and the RT variant exists, else the cheaper
+    // non-RT variant).
     VkPipeline activeGeometryPipeline() const {
+        if (rtShadingEnabled_ && rtProfilingEnabled_ && waterGeometryPipelineRtProf != VK_NULL_HANDLE)
+            return waterGeometryPipelineRtProf.handle;
         return (rtShadingEnabled_ && waterGeometryPipelineRt != VK_NULL_HANDLE)
             ? waterGeometryPipelineRt.handle : waterGeometryPipeline.handle;
     }
     VkPipeline activeMainPipeline() const {
+        if (rtShadingEnabled_ && rtProfilingEnabled_ && waterMainPipelineRtProf != VK_NULL_HANDLE)
+            return waterMainPipelineRtProf.handle;
         return (rtShadingEnabled_ && waterMainPipelineRt != VK_NULL_HANDLE)
             ? waterMainPipelineRt.handle : waterMainPipeline.handle;
     }
@@ -269,7 +280,12 @@ private:
     // the non-RT pair while any ray path is enabled).
     TrackedHandle<VkPipeline> waterGeometryPipelineRt;
     TrackedHandle<VkPipeline> waterMainPipelineRt;
+    // RT_PROFILE variants (frag + TES with counters + device clock; only
+    // created when VK_KHR_shader_clock is supported).
+    TrackedHandle<VkPipeline> waterGeometryPipelineRtProf;
+    TrackedHandle<VkPipeline> waterMainPipelineRtProf;
     bool rtShadingEnabled_ = true;
+    bool rtProfilingEnabled_ = false;
     bool rtReflectionsEnabled_ = true;
     bool rtRefractionsEnabled_ = true;
 

@@ -243,11 +243,14 @@ void shadeSolidSurface() {
     if (rtReady && rt.toggles.w > 0.5 && shadow < 0.5 && NdotL > 0.01) {
         vec3 sunDir = -normalize(ubo.lightDir.xyz);
         float shadowDist = max(rt.distances.z, 0.5);
+        RT_PROF_BEGIN(rtProfShadow, RT_PROFILE_OP_CONTACT_SHADOW);
         rayQueryEXT shadowRQ;
         rayQueryInitializeEXT(shadowRQ, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_ALL,
             fragPosWorld + worldNormal * 0.05, 0.05, sunDir, shadowDist);
         while (rayQueryProceedEXT(shadowRQ)) {}
+        RT_PROF_END(rtProfShadow);
         if (rayQueryGetIntersectionTypeEXT(shadowRQ, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+            RT_PROF_HIT(RT_PROFILE_OP_CONTACT_SHADOW);
             float hitT = rayQueryGetIntersectionTEXT(shadowRQ, true);
             // Contact falloff: full occlusion at contact, fading to lit at maxDist.
             rtLocalShadow = clamp(1.0 - hitT / shadowDist, 0.0, 1.0);
@@ -393,6 +396,7 @@ void shadeSolidSurface() {
                 // needed (the BLAS itself must not displace, per design).
                 float selfSkip = max(rt.debug.z, 0.15);
                 vec3 origin = fragPosWorldNotDisplaced + reflN * selfSkip;
+                RT_PROF_BEGIN(rtProfRefl, RT_PROFILE_OP_SOLID_REFLECTION);
                 rayQueryEXT rq;
                 // Mirror reflections trace the real scene-geometry instances
                 // ONLY (exact chunk triangles: solids + the real water mesh,
@@ -412,7 +416,9 @@ void shadeSolidSurface() {
                     RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER,
                     origin, 0.05, normalize(reflDir), RT_NO_LIMIT);
                 while (rayQueryProceedEXT(rq)) {}
+                RT_PROF_END(rtProfRefl);
                 if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+                    RT_PROF_HIT(RT_PROFILE_OP_SOLID_REFLECTION);
                     float hitT = rayQueryGetIntersectionTEXT(rq, true);
                     // Own-surface guard: hits closer than selfSkip are the
                     // reflector's own triangles, not true scenery.
@@ -580,6 +586,16 @@ void shadeSolidSurface() {
     // noise/displacement/thickness/absorption/caustics/depth/compose) fall
     // through to normal shading here; 0 = normal render.
     int debugMode = int(ubo.debugParams.x + 0.5);
+    if (debugMode == DEBUG_MODE_SCENE_DEPTH) {
+        // Linear eye-space depth / far (white = far/clear). Shows whether the
+        // opaque pass actually writes the terrain (e.g. the lake bed) behind
+        // the water.
+        float nearP = max(ubo.passParams.z, 1e-4);
+        float farP = max(ubo.passParams.w, nearP + 1.0);
+        float zEye = (nearP * farP) / (farP - gl_FragCoord.z * (farP - nearP));
+        outColor = vec4(vec3(clamp(zEye / farP, 0.0, 1.0)), 1.0);
+        return;
+    }
     if (debugMode == DEBUG_MODE_SHADING_NORMAL) {
         // Final material-perturbed normal actually used for lighting.
         vec3 nm = normalize(worldNormal);

@@ -6,6 +6,11 @@
 #ifdef RT_ENABLED
 #extension GL_EXT_ray_query : require
 #endif
+// Shader clock for per-op RT profiling (RT_PROFILE variants only). Must be a
+// top-level #extension: directives inside includes are illegal after tokens.
+#ifdef RT_PROFILE
+#extension GL_EXT_shader_realtime_clock : require
+#endif
 #include "includes/locations.glsl"
 
 // Stage dispatcher (Phase-1 merge): WATER_MODE selects the water stage path.
@@ -101,6 +106,11 @@ uint rtSceneGeomIndex(uint instanceCustomIndex, uint geometryIndex) {
     return (instanceCustomIndex == RT_SCENE_WATER_INSTANCE)
         ? rtScenePrimBase[0] + geometryIndex : geometryIndex;
 }
+// Per-op RT profiling (RT_PROFILE variants only): declares set 0 binding 26
+// and the RT_PROF_* macros used by the instrumented ray-query sites. Included
+// BEFORE the reflection helpers so their function bodies see the macros (the
+// preprocessor is textual).
+#include "includes/rt_profile.glsl"
 #include "includes/rt_scene_sample.glsl"
 #include "includes/rt_reflection.glsl"
 #endif

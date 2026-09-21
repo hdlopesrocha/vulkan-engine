@@ -611,6 +611,10 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     VkShaderModule fragNoRtModule = app->getOrCreateShaderModule("shaders/main_water.frag.spv");
     VkShaderModule fragRtModule = (app && app->rayTracingEnabled())
         ? app->getOrCreateShaderModule("shaders/main_water_rt.frag.spv") : VK_NULL_HANDLE;
+    // Per-op profiling variant (counters + device clock). Built only when the
+    // device supports VK_KHR_shader_clock.
+    VkShaderModule fragRtProfModule = (app && app->rayTracingEnabled() && app->shaderClockSupported)
+        ? app->getOrCreateShaderModule("shaders/main_water_rt_prof.frag.spv") : VK_NULL_HANDLE;
     VkShaderModule tescModule = VK_NULL_HANDLE;
     VkShaderModule teseModule = VK_NULL_HANDLE;
     bool hasTessellation = true;
@@ -843,11 +847,15 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     createVariant(fragRtModule, waterGeometryPipelineRt, waterMainPipelineRt,
                   "WaterRenderer: waterGeometryPipeline (RT)",
                   "WaterRenderer: waterMainPipeline (RT)", "RT");
+    createVariant(fragRtProfModule, waterGeometryPipelineRtProf, waterMainPipelineRtProf,
+                  "WaterRenderer: waterGeometryPipeline (RT prof)",
+                  "WaterRenderer: waterMainPipeline (RT prof)", "RT prof");
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
     vertModule = VK_NULL_HANDLE;
     fragNoRtModule = VK_NULL_HANDLE;
     fragRtModule = VK_NULL_HANDLE;
+    fragRtProfModule = VK_NULL_HANDLE;
     if (tescModule) tescModule = VK_NULL_HANDLE;
     if (teseModule) teseModule = VK_NULL_HANDLE;
 

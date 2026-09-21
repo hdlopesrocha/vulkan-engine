@@ -72,11 +72,13 @@ vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit) {
     float throughput = 1.0;
     int traces = clamp(extraBounces, 0, 3) + 1;
     for (int b = 0; b < traces; ++b) {
+        RT_PROF_BEGIN(rtProfBounce, RT_PROFILE_OP_BOUNCE);
         rayQueryEXT rq;
         rayQueryInitializeEXT(rq, rtTlas,
             gl_RayFlagsOpaqueEXT | gl_RayFlagsCullFrontFacingTrianglesEXT,
             RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER, origin, max(minHit, 0.05), dir, RT_NO_LIMIT);
         while (rayQueryProceedEXT(rq)) {}
+        RT_PROF_END(rtProfBounce);
 
         vec3 skyCol = rtProceduralSky(normalize(dir),
             sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
@@ -84,6 +86,7 @@ vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit) {
             accum += throughput * skyCol;
             break;
         }
+        RT_PROF_HIT(RT_PROFILE_OP_BOUNCE);
         const uint instC = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
         if (!rtIsSceneInstance(instC)) {
             accum += throughput * skyCol;
@@ -171,6 +174,7 @@ vec3 rtResolveWaterHit(WaterParamsGPU wp, vec3 hitPos, vec3 hitN, vec3 incidentD
     bool haveBottom = false;
     {
         float tMax = max(thickCap * 3.0, 8.0);
+        RT_PROF_BEGIN(rtProfSnell, RT_PROFILE_OP_WATER_HIT_REFRACT);
         rayQueryEXT rq;
         rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsNoOpaqueEXT,
                               RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER,
@@ -193,7 +197,9 @@ vec3 rtResolveWaterHit(WaterParamsGPU wp, vec3 hitPos, vec3 hitN, vec3 incidentD
                 bestWater = (rtSceneGeomInfo[lo].w != 0u);
             }
         }
+        RT_PROF_END(rtProfSnell);
         if (bestT >= 0.0) {
+            RT_PROF_HIT(RT_PROFILE_OP_WATER_HIT_REFRACT);
             thickness = min(bestT, thickCap);
             if (!bestWater) {
                 uvec4 gi = rtSceneGeomInfo[bestLo];

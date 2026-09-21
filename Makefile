@@ -120,7 +120,9 @@ OUT_SPVS = \
 	$(OUT_DIR)/shaders/main_water_rt.frag.spv \
 	$(OUT_DIR)/shaders/main_water.vert.spv \
 	$(OUT_DIR)/shaders/main_water.tesc.spv \
-	$(OUT_DIR)/shaders/main_water.tese.spv
+	$(OUT_DIR)/shaders/main_water.tese.spv \
+	$(OUT_DIR)/shaders/main_rt_prof.frag.spv \
+	$(OUT_DIR)/shaders/main_water_rt_prof.frag.spv
 
 # Compile main.frag with -DBRUSH_PASS for brush rendering (no PAINT mode, no set=1)
 $(OUT_DIR)/shaders/main_brush.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
@@ -185,6 +187,27 @@ $(OUT_DIR)/shaders/main_water.tese.spv: shaders/main.tese $(SHADER_INCLUDES)
 		glslc --target-env=vulkan1.3 -Ishaders/includes -DWATER_MODE=1 $< -o $@; \
 	else \
 		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 $< -o $@; \
+	fi
+
+# Per-op RT profiling variants (RT_PROFILE): instrument every inline
+# ray-query site with counters + device-clock thread-time. Requires
+# VK_KHR_shader_clock (shaderDeviceClock); only created at runtime when
+# supported. Production variants stay free of the clock capability.
+$(OUT_DIR)/shaders/main_rt_prof.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (RT_ENABLED RT_PROFILE)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes -DRT_ENABLED -DRT_PROFILE $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D RT_ENABLED --D RT_PROFILE $< -o $@; \
+	fi
+$(OUT_DIR)/shaders/main_water_rt_prof.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (WATER_MODE=1 RT_ENABLED RT_PROFILE)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes -DWATER_MODE=1 -DRT_ENABLED -DRT_PROFILE $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 --D RT_ENABLED --D RT_PROFILE $< -o $@; \
 	fi
 
 

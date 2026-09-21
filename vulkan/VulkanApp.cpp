@@ -5676,6 +5676,7 @@ void VulkanApp::createLogicalDevice() {
     bool rayPipelineExtFound = false;
     bool rayQueryExtFound = false;
     bool deferredHostOpsExtFound = false;
+    bool shaderClockExtFound = false;
     uint32_t availExtCount = 0;
     vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &availExtCount, nullptr);
     if (availExtCount > 0) {
@@ -5709,6 +5710,9 @@ void VulkanApp::createLogicalDevice() {
             if (strcmp(ext.extensionName, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) == 0) {
                 deferredHostOpsExtFound = true;
             }
+            if (strcmp(ext.extensionName, VK_KHR_SHADER_CLOCK_EXTENSION_NAME) == 0) {
+                shaderClockExtFound = true;
+            }
         }
     }
     // ── Hybrid RT feature detection (never version checks) ────────────────
@@ -5727,6 +5731,10 @@ void VulkanApp::createLogicalDevice() {
     }
     VkPhysicalDeviceAccelerationStructureFeaturesKHR accelFeatQuery{};
     accelFeatQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    // Shader clock query (per-op RT profiling) rides the same features2 chain.
+    VkPhysicalDeviceShaderClockFeaturesKHR clockFeatQuery{};
+    clockFeatQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR;
+    accelFeatQuery.pNext = &clockFeatQuery;
     VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatQuery{};
     rayQueryFeatQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
     rayQueryFeatQuery.pNext = &accelFeatQuery;
@@ -5742,6 +5750,13 @@ void VulkanApp::createLogicalDevice() {
     const bool rtPipeFeatOk = !rtForceDisabled && rtPipeFeatQuery.rayTracingPipeline == VK_TRUE;
     const bool rtBaseOk = accelStructExtFound && rayQueryExtFound && accelFeatOk && rayQueryFeatOk;
     const bool rtPipeOk = rtBaseOk && rayPipelineExtFound && rtPipeFeatOk;
+    // Per-op RT profiling needs the DEVICE-scope clock (OpReadClockKHR with
+    // Device scope in the RT_PROFILE shader variants). Independent of RT:
+    // queried unconditionally, enabled when advertised.
+    shaderClockSupported = shaderClockExtFound && clockFeatQuery.shaderDeviceClock == VK_TRUE;
+    if (shaderClockSupported) {
+        printf("[VulkanApp] VK_KHR_shader_clock supported — per-op RT profiling available\n");
+    }
     // Enabling structs chained into VkDeviceCreateInfo::pNext only when supported.
     VkPhysicalDeviceAccelerationStructureFeaturesKHR accelFeatEnable{};
     accelFeatEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
@@ -5754,6 +5769,10 @@ void VulkanApp::createLogicalDevice() {
     rtPipeFeatEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
     rtPipeFeatEnable.pNext = &rayQueryFeatEnable;
     rtPipeFeatEnable.rayTracingPipeline = VK_TRUE;
+    // Shader clock enabling struct (chained below only when supported).
+    VkPhysicalDeviceShaderClockFeaturesKHR clockFeatEnable{};
+    clockFeatEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR;
+    clockFeatEnable.shaderDeviceClock = VK_TRUE;
     if (rtBaseOk) {
         // RT needs bufferDeviceAddress (SBT + TLAS addresses + BLAS geometry).
         vulkan12Features.bufferDeviceAddress = VK_TRUE;
@@ -5772,6 +5791,9 @@ void VulkanApp::createLogicalDevice() {
     } else {
         printf("[VulkanApp] Hybrid RT not supported (accelStruct ext=%d feat=%d, rayQuery ext=%d feat=%d) — raster + CSM fallback, sky for misses\n",
             (int)accelStructExtFound, (int)accelFeatOk, (int)rayQueryExtFound, (int)rayQueryFeatOk);
+    }
+    if (shaderClockSupported) {
+        extensions.push_back(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
     }
     // Query VK_EXT_descriptor_buffer feature support via vkGetPhysicalDeviceFeatures2.
     // Feature detection (not version checks): the extension may be advertised
@@ -5843,6 +5865,10 @@ void VulkanApp::createLogicalDevice() {
     if (descriptorBufferFeatSupported) {
         descriptorBufferFeaturesEnable.pNext = chainHead;
         chainHead = reinterpret_cast<VkBaseOutStructure*>(&descriptorBufferFeaturesEnable);
+    }
+    if (shaderClockSupported) {
+        clockFeatEnable.pNext = chainHead;
+        chainHead = reinterpret_cast<VkBaseOutStructure*>(&clockFeatEnable);
     }
     // Always rewired (no-op when no optionals: head == &vulkan14Features).
     createInfo.pNext = chainHead;

@@ -1059,11 +1059,16 @@ void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArray
             wImg(15, rayTracing->getLinearSampler(), rayTracing->getReflectionView(), VK_IMAGE_LAYOUT_GENERAL);
             wImg(16, rayTracing->getLinearSampler(), rayTracing->getRefractionView(), VK_IMAGE_LAYOUT_GENERAL);
             wBuf(17, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                 rayTracing->getParamsBuffer(), sizeof(RayTracingParams));
+                 rayTracing->getParamsBuffer(static_cast<uint32_t>(fi)), sizeof(RayTracingParams));
             VkDeviceSize metaSize = VkDeviceSize(sizeof(RTProxyMeta)) * RayTracingResources::kMaxProxies;
             if (metaSize > 0)
                 wBuf(18, ssboSize, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                      rayTracing->getMetaBuffer(), metaSize);
+            // Binding 26: this frame's RT profiling counters (RT_PROFILE
+            // variants only; the descriptor must exist for the profile
+            // pipelines to be valid).
+            wBuf(26, ssboSize, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                 rayTracing->getProfileBuffer(static_cast<uint32_t>(fi)), sizeof(RTProfileCounters));
         }
     }
     if (failures > 0)
@@ -2076,13 +2081,26 @@ void SceneRenderer::writeSSRBindings(VulkanApp* app) {
     bind(app->getStaticDescriptorSet(), 0);
     // Per-frame RT params (binding 17): each main set reads its own slot's
     // camera matrices, so in-flight frames never see another frame's view.
+    // Binding 26: per-frame RT profiling counters (same per-slot discipline:
+    // the RT_PROFILE shader variants atomically accumulate into the slot their
+    // frame's set binds, and the app reads/resets that slot after its fence).
     if (rayTracing && rayTracing->isSupported()) {
         for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi) {
             VkDescriptorSet ds = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
             VkBuffer pb = rayTracing->getParamsBuffer(static_cast<uint32_t>(fi));
             if (ds == VK_NULL_HANDLE || pb == VK_NULL_HANDLE) continue;
             writer.writeBuffer(ds, 17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, pb, 0, sizeof(RayTracingParams));
+            VkBuffer profBuf = rayTracing->getProfileBuffer(static_cast<uint32_t>(fi));
+            if (profBuf != VK_NULL_HANDLE)
+                writer.writeBuffer(ds, 26, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, profBuf,
+                                   0, sizeof(RTProfileCounters));
         }
+        // Static set: slot 0's buffers are always a legal binding.
+        VkDescriptorSet staticSet = app->getStaticDescriptorSet();
+        VkBuffer profBuf0 = rayTracing->getProfileBuffer(0);
+        if (staticSet != VK_NULL_HANDLE && profBuf0 != VK_NULL_HANDLE)
+            writer.writeBuffer(staticSet, 26, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, profBuf0,
+                               0, sizeof(RTProfileCounters));
     }
     writer.flush();
 }

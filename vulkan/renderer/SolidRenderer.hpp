@@ -69,6 +69,13 @@ public:
     void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
     bool rtShadingEnabled() const { return rtShadingEnabled_; }
 
+    // Per-op RT profiling selector (RT_PROFILE variant, built only when the
+    // device supports VK_KHR_shader_clock). Opt-in: instrumented shaders carry
+    // atomics + device-clock reads, so they are only bound while the user has
+    // RT profiling enabled in the overlay.
+    void setRtProfilingEnabled(bool enabled) { rtProfilingEnabled_ = enabled; }
+    bool rtProfilingEnabled() const { return rtProfilingEnabled_; }
+
     // Deferred depth test: draw only depth (no color)
     void drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet);
     // Deferred depth test: draw only color with LESS_OR_EQUAL compare, no depth write
@@ -86,13 +93,18 @@ public:
 
 private:
     
-    // Active solid color pipeline variant (RT fragment while RT shading is on
-    // and the RT variant exists; otherwise the non-RT variant).
+    // Active solid color pipeline variant (profiling RT fragment while RT
+    // profiling is on; otherwise the RT variant while RT shading is on and it
+    // exists; otherwise the non-RT variant).
     VkPipeline activeGraphicsPipeline() const {
+        if (rtShadingEnabled_ && rtProfilingEnabled_ && graphicsPipelineRtProf != VK_NULL_HANDLE)
+            return graphicsPipelineRtProf.handle;
         return (rtShadingEnabled_ && graphicsPipelineRt != VK_NULL_HANDLE)
             ? graphicsPipelineRt.handle : graphicsPipeline.handle;
     }
     VkPipeline activeDeferredColorPipeline() const {
+        if (rtShadingEnabled_ && rtProfilingEnabled_ && deferredColorPipelineRtProf != VK_NULL_HANDLE)
+            return deferredColorPipelineRtProf.handle;
         return (rtShadingEnabled_ && deferredColorPipelineRt != VK_NULL_HANDLE)
             ? deferredColorPipelineRt.handle : deferredColorPipeline.handle;
     }
@@ -112,7 +124,12 @@ private:
     // solid RT paths are enabled).
     TrackedHandle<VkPipeline> graphicsPipelineRt;
     TrackedHandle<VkPipeline> deferredColorPipelineRt;
+    // RT_PROFILE variants (counters + device clock; only created when
+    // VK_KHR_shader_clock is supported).
+    TrackedHandle<VkPipeline> graphicsPipelineRtProf;
+    TrackedHandle<VkPipeline> deferredColorPipelineRtProf;
     bool rtShadingEnabled_ = true;
+    bool rtProfilingEnabled_ = false;
     // Brush color pipeline (alpha blending enabled)
     TrackedHandle<VkPipeline> brushDeferredColorPipeline;
     TrackedHandle<VkPipelineLayout> brushDeferredColorPipelineLayout;

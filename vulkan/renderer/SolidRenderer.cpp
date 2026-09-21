@@ -236,6 +236,14 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             ? app->getOrCreateShaderModule("shaders/main_rt.frag.spv") : VK_NULL_HANDLE,
         VK_SHADER_STAGE_FRAGMENT_BIT
     );
+    // Per-op profiling variant (counters + device clock). Built only when the
+    // device supports VK_KHR_shader_clock; the production variants above stay
+    // free of the clock capability.
+    ShaderStage fragmentShaderRtProf = ShaderStage(
+        (app->rayTracingEnabled() && app->shaderClockSupported)
+            ? app->getOrCreateShaderModule("shaders/main_rt_prof.frag.spv") : VK_NULL_HANDLE,
+        VK_SHADER_STAGE_FRAGMENT_BIT
+    );
 
     ShaderStage tescShader = ShaderStage(
         app->getOrCreateShaderModule("shaders/main.tesc.spv"),
@@ -290,6 +298,25 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         );
         graphicsPipelineRt = rtPipeline;
         (void)rtLayout;
+    }
+
+    // Profiling variant of the main solid pipeline (same config/layout).
+    if (fragmentShaderRtProf.info.module != VK_NULL_HANDLE) {
+        auto [profPipeline, profLayout] = app->createGraphicsPipeline(
+            {
+                vertexShader.info,
+                tescShader.info,
+                teseShader.info,
+                fragmentShaderRtProf.info
+            },
+            std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+            vk_layouts::defaultAttributes(),
+            setLayouts,
+            nullptr,
+            cfg
+        );
+        graphicsPipelineRtProf = profPipeline;
+        (void)profLayout;
     }
 
     GraphicsPipelineConfig depthCfg{};
@@ -360,6 +387,18 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             );
             deferredColorPipelineRt = rtCp;
             (void)rtCl;
+        }
+        // Profiling variant of the deferred/forward color pipeline.
+        if (fragmentShaderRtProf.info.module != VK_NULL_HANDLE) {
+            auto [profCp, profCl] = app->createGraphicsPipeline(
+                { vertexShader.info, tescShader.info, teseShader.info, fragmentShaderRtProf.info },
+                std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+                vk_layouts::defaultAttributes(),
+                setLayouts, nullptr,
+                dcCfg
+            );
+            deferredColorPipelineRtProf = profCp;
+            (void)profCl;
         }
     }
     {

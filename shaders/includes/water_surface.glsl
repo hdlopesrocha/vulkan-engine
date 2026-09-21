@@ -86,6 +86,10 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // 5 cm tMin (self-hit guard, origin biased above the surface at the
     // call site).
     float tMin = refraction ? 0.01 : 0.05;
+    // RT per-op profiling op id (no-op without RT_PROFILE): this helper serves
+    // both water lobes, so every query it issues is attributed to its lobe.
+    const uint rtProfOp = refraction ? RT_PROFILE_OP_WATER_REFRACTION
+                                     : RT_PROFILE_OP_WATER_REFLECTION;
     // Hit selection: refraction runs one OPAQUE early-out query over solids;
     // reflection keeps the staged chain. The BLAS holds undisplaced geometry
     // while the raster shows tessellated/displaced surfaces (waves up to
@@ -106,10 +110,12 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     if (refraction) {
         // Nearest SOLID triangle: opaque (hardware early-out) and no cull
         // flags, so displaced/flipped faces still register.
+        RT_PROF_BEGIN(rtProfRqS, rtProfOp);
         rayQueryEXT rqS;
         rayQueryInitializeEXT(rqS, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SCENE,
             origin, tMin, dir, tMax);
         while (rayQueryProceedEXT(rqS)) {}
+        RT_PROF_END(rtProfRqS);
         if (rayQueryGetIntersectionTypeEXT(rqS, true) != gl_RayQueryCommittedIntersectionNoneEXT &&
             rayQueryGetIntersectionInstanceCustomIndexEXT(rqS, true) == RT_SCENE_INSTANCE) {
             uint loC = rtSceneGeomIndex(RT_SCENE_INSTANCE,
@@ -117,6 +123,7 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             // Post-commit classification: the mask already selects the solid
             // partition; verify geomInfo.w agrees before committing.
             if (rtSceneGeomInfo[loC].w == 0u) {
+                RT_PROF_HIT(rtProfOp);
                 hitT = rayQueryGetIntersectionTEXT(rqS, true);
                 prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rqS, true));
                 lo = loC;
@@ -141,12 +148,14 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // and culls ray-front faces so only rasterizer-visible triangles report
     // (scene meshes wind CW-outward for the BACK+CW rasterizer; ray-front is
     // fixed CCW).
+    RT_PROF_BEGIN(rtProfRq, rtProfOp);
     rayQueryEXT rq;
     rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT |
         gl_RayFlagsCullFrontFacingTrianglesEXT,
         RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER,
         origin, tMin, dir, tMax);
     while (rayQueryProceedEXT(rq)) {}
+    RT_PROF_END(rtProfRq);
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
         // Forward miss: reflection misses stay plain sky (the refraction
         // deep marker never reaches this branch — it comes from the
@@ -182,12 +191,14 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         // origin's own plane can never rediscover itself as "sky".
         float backSpan = min(tMax, max(thickCap * 2.0, 4.0));
         vec3 backOrigin = origin + dir * backSpan;
+        RT_PROF_BEGIN(rtProfRq2, rtProfOp);
         rayQueryEXT rq2;
         rayQueryInitializeEXT(rq2, rtTlas, gl_RayFlagsOpaqueEXT |
             gl_RayFlagsCullFrontFacingTrianglesEXT,
             RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER,
             backOrigin, 0.01, -dir, backSpan);
         while (rayQueryProceedEXT(rq2)) {}
+        RT_PROF_END(rtProfRq2);
         if (rayQueryGetIntersectionTypeEXT(rq2, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
             uint instC2 = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq2, true));
             if (rtIsSceneInstance(instC2)) {
@@ -213,11 +224,13 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             // neither cull set can report. Water rule mirrors stage 1:
             // reflection relies on its origin bias + tMin, so its mesh may
             // report like any hit.
+            RT_PROF_BEGIN(rtProfRq3, rtProfOp);
             rayQueryEXT rq3;
             rayQueryInitializeEXT(rq3, rtTlas, gl_RayFlagsOpaqueEXT,
                 RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER,
                 origin, tMin, dir, tMax);
             while (rayQueryProceedEXT(rq3)) {}
+            RT_PROF_END(rtProfRq3);
             if (rayQueryGetIntersectionTypeEXT(rq3, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
                 uint instC3 = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq3, true));
                 if (rtIsSceneInstance(instC3)) {
@@ -235,6 +248,8 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         }
     } // end backward-else
     } // end refraction(split) / reflection(staged) split
+    // One hit per call (not per staged query): rays - hits is the miss count.
+    if (haveHit) RT_PROF_HIT(rtProfOp);
     if (!haveHit) {
         // Deep-water marker (refraction miss) or plain sky (reflection
         // triple miss). The deep marker is resolved against the raster

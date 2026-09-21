@@ -248,6 +248,12 @@ public:
     float profilePostProcess = 0.0f;
     float profileImGui = 0.0f;
     float profileRTDispatch = 0.0f; // hybrid-RT water pipeline traceRays (slots 20-21)
+    // Per-op RT profiling (opt-in): the RT_PROFILE shader variants accumulate
+    // per-op counters + device-clock thread-time into per-frame GPU buffers;
+    // read/reset one frame-slot behind (see preRenderPass). Off by default —
+    // the instrumented pipelines carry atomics and clock reads.
+    bool rtProfilingEnabled_ = false;
+    RTProfileCounters rtProfileStats_{};
     float profileBackface = 0.0f;
     float profileCpuUpdate = 0.0f;
     float profileCpuRecord = 0.0f;
@@ -1255,6 +1261,25 @@ public:
             vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 0, 6);   // 0-5:  shadow/cull/brush
             vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 16, 4);  // 16-19: postprocess/imgui
             queryPoolReady[frameIdx] = true;
+        }
+
+        // Per-op RT profiling: bind the instrumented (RT_PROFILE) pipeline
+        // variants while the toggle is on, and read + reset this slot's counter
+        // block. The slot was last written MAX_FRAMES_IN_FLIGHT frames ago and
+        // its fence has signaled (per-slot wait in drawFrame), so the read and
+        // the CPU memset never race the GPU's atomics. Requires
+        // VK_KHR_shader_clock (the profile variants are only built with it).
+        if (sceneRenderer && sceneRenderer->rayTracing) {
+            const bool rtProf = rtProfilingEnabled_ && shaderClockSupported
+                && sceneRenderer->rayTracing->isSupported();
+            if (sceneRenderer->mainSolidRenderer)
+                sceneRenderer->mainSolidRenderer->setRtProfilingEnabled(rtProf);
+            if (sceneRenderer->mainLiquidRenderer)
+                sceneRenderer->mainLiquidRenderer->setRtProfilingEnabled(rtProf);
+            if (rtProf) {
+                sceneRenderer->rayTracing->readProfile(frameIdx, rtProfileStats_);
+                sceneRenderer->rayTracing->resetProfile(frameIdx);
+            }
         }
 
         auto cpuRecordT0 = std::chrono::high_resolution_clock::now();
@@ -2642,6 +2667,41 @@ public:
                             sceneRenderer->rayTracing->tlasBuilt() ? "built" : "pending");
                     } else {
                         ImGui::Text("RT unsupported — raster + CSM fallback");
+                    }
+                    // ── Per-op RT GPU profiling (opt-in) ──
+                    // The instrumented shader variants accumulate per-op ray
+                    // counts, hit counts and device-clock thread-time into a
+                    // per-frame GPU buffer (1/4 of invocations sampled; scaled
+                    // up here). Time is summed over shader invocations: the ops
+                    // run concurrently, so compare the shares, not the absolute
+                    // ms against frame time.
+                    ImGui::Checkbox("RT op profiling", &rtProfilingEnabled_);
+                    if (rtProfilingEnabled_) {
+                        if (!shaderClockSupported) {
+                            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
+                                "VK_KHR_shader_clock unsupported - profiling off");
+                        } else {
+                            static const char* kRtOpNames[RTProfileCounters::kOpCount] = {
+                                "Solid refl", "Water refl", "Water refr", "Water depth",
+                                "Bounce/dbl", "Contact shdw", "Water-hit refr"
+                            };
+                            float timeMs[RTProfileCounters::kOpCount];
+                            float totalMs = 0.0f;
+                            for (uint32_t o = 0; o < RTProfileCounters::kOpCount; ++o) {
+                                // Counter unit = 64 ns, 1/4 sampled => 256 ns each.
+                                timeMs[o] = static_cast<float>(rtProfileStats_.time[o])
+                                    * 256.0f * 1e-6f;
+                                totalMs += timeMs[o];
+                            }
+                            ImGui::Text("--- RT Ops (thread-ms, %.1f total) ---", totalMs);
+                            for (uint32_t o = 0; o < RTProfileCounters::kOpCount; ++o) {
+                                const float raysK = static_cast<float>(rtProfileStats_.rays[o]) * 4.0f * 1e-3f;
+                                const float hitsK = static_cast<float>(rtProfileStats_.hits[o]) * 4.0f * 1e-3f;
+                                const float pct = (totalMs > 0.001f) ? (timeMs[o] / totalMs * 100.0f) : 0.0f;
+                                ImGui::Text("%-12s %7.2f ms %5.0f%%  rays %6.0fK hits %6.0fK",
+                                    kRtOpNames[o], timeMs[o], pct, raysK, hitsK);
+                            }
+                        }
                     }
                     ImGui::Separator();
                     ImGui::Text("--- CPU Timing (ms) ---");
