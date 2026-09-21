@@ -75,18 +75,22 @@ vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit) {
         rayQueryEXT rq;
         rayQueryInitializeEXT(rq, rtTlas,
             gl_RayFlagsOpaqueEXT | gl_RayFlagsCullFrontFacingTrianglesEXT,
-            RT_RAY_MASK_SCENE, origin, max(minHit, 0.05), dir, RT_NO_LIMIT);
+            RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER, origin, max(minHit, 0.05), dir, RT_NO_LIMIT);
         while (rayQueryProceedEXT(rq)) {}
 
         vec3 skyCol = rtProceduralSky(normalize(dir),
             sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
-        if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT ||
-            rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) != RT_SCENE_INSTANCE) {
+        if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+            accum += throughput * skyCol;
+            break;
+        }
+        const uint instC = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+        if (!rtIsSceneInstance(instC)) {
             accum += throughput * skyCol;
             break;
         }
 
-        uint lo = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true));
+        uint lo = rtSceneGeomIndex(instC, uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true)));
         uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
         vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
         float t = rayQueryGetIntersectionTEXT(rq, true);
@@ -168,7 +172,8 @@ vec3 rtResolveWaterHit(WaterParamsGPU wp, vec3 hitPos, vec3 hitN, vec3 incidentD
     {
         float tMax = max(thickCap * 3.0, 8.0);
         rayQueryEXT rq;
-        rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsNoOpaqueEXT, RT_RAY_MASK_SCENE,
+        rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsNoOpaqueEXT,
+                              RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER,
                               hitPos + hitN * 0.05, 0.05, refrDir, tMax);
         float bestT = -1.0;
         uint bestPrim = 0u, bestLo = 0u;
@@ -176,9 +181,10 @@ vec3 rtResolveWaterHit(WaterParamsGPU wp, vec3 hitPos, vec3 hitN, vec3 incidentD
         bool bestWater = false;
         while (rayQueryProceedEXT(rq)) {
             if (rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCommittedIntersectionNoneEXT) continue;
-            if (rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false) != RT_SCENE_INSTANCE) continue;
+            uint instC = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false));
+            if (!rtIsSceneInstance(instC)) continue;
             float t = rayQueryGetIntersectionTEXT(rq, false);
-            uint lo = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, false));
+            uint lo = rtSceneGeomIndex(instC, uint(rayQueryGetIntersectionGeometryIndexEXT(rq, false)));
             if (bestT < 0.0 || t < bestT) {
                 bestT = t;
                 bestLo = lo;

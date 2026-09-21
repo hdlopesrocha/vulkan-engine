@@ -61,103 +61,68 @@ vec4 rtRasterBottom(vec3 O, vec3 S, vec2 suv) {
 
 #ifdef RT_ENABLED
 // Trace one water secondary ray. Both paths trace the real scene-geometry
-// instance (exact chunk triangles, water mesh flagged in geomInfo.w).
-// refraction=true: downward Snell ray from the TRUE displaced surface,
-//   enumerated without culling order, resolving the lake-bottom color from
-//   the nearest SOLID triangle (water candidates skipped) with a =
-//   underwater path length (capped at thickCap) or RT_DEEP_WATER when no
-//   solid triangle exists along the ray.
+// instances (exact chunk triangles): solids via RT_SCENE_INSTANCE and the
+// water mesh via RT_SCENE_WATER_INSTANCE (geomInfo.w marks the partition).
+// refraction=true: downward Snell ray from the TRUE displaced surface with
+//   no culling, resolving the lake bottom against SOLID triangles only. The
+//   water mesh in the BLAS is the UNDISPLACED base surface: treating its
+//   triangles as a water/air boundary reports phantom columns at every wave
+//   crest (tiny thickness → transparent "ice" patches) and flips winner per
+//   base triangle (hard cuts between the water look and the bottom). A miss
+//   is deep water. One OPAQUE early-out query, so cost tracks the nearest
+//   solid hit instead of every candidate along the ray. a = underwater path
+//   length (capped at thickCap) or RT_DEEP_WATER when no solid exists.
 // refraction=false: mirror ray resolving the reflected scene the staged way
-//   (forward culled, reverse culled, forward unculled); a = 1 on a hit,
+//   (forward culled, reverse culled, forward unculled); it DOES see the
+//   water mesh (other water bodies must appear in mirrors); a = 1 on a hit,
 //   0 on a miss.
 // Macro shadows stay CSM-owned: hits get ambient + sun diffuse only.
 vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thickCap, float waterMinHit) {
     // Refraction rays start AT the displaced water surface and go down.
-    // tMin stays tiny (1 cm): the filtered pass skips water-mesh candidates,
-    // so coplanar touch is the only self-guard needed, and shoreline
-    // shallows (<5 cm deep) still hit the lake bottom underneath instead of
-    // missing to deep-water tint. Reflection keeps the 5 cm tMin (self-hit
-    // guard, origin biased above the surface at the call site).
+    // tMin stays tiny (1 cm): the solid query can never see the water mesh
+    // (separate instance/mask), so coplanar touch is the only self-guard
+    // needed, and shoreline shallows (<5 cm deep) still hit the lake bottom
+    // underneath instead of missing to deep-water tint. Reflection keeps the
+    // 5 cm tMin (self-hit guard, origin biased above the surface at the
+    // call site).
     float tMin = refraction ? 0.01 : 0.05;
-    // Hit selection: refraction uses a FILTERED pass, reflection the staged
-    // chain below. The BLAS holds undisplaced geometry while the raster
-    // shows tessellated/displaced surfaces (waves up to bumpAmplitude off
-    // the base plane), so any fixed cull set is blind to flipped faces and
-    // any base-plane origin mismeasures the visible column. Refraction
-    // therefore traces from the TRUE displaced surface with NO culling
-    // order, enumerating every candidate and keeping the nearest SOLID
-    // triangle; own water surface (geomInfo.w) is skipped so trough walls
-    // and grazing crests can never report air gaps as water depth. The
-    // reported length IS the visible water column — no correction needed.
+    // Hit selection: refraction runs one OPAQUE early-out query over solids;
+    // reflection keeps the staged chain. The BLAS holds undisplaced geometry
+    // while the raster shows tessellated/displaced surfaces (waves up to
+    // bumpAmplitude off the base plane), so refraction uses NO cull flags:
+    // opacity and face culling are independent, and not culling keeps
+    // flipped (displaced) faces visible while hardware still early-outs at
+    // the nearest accepted hit. The reported length IS the visible water
+    // column — no correction needed.
     //
-    // Exactly one traversal runs per ray type: the filtered pass below for
-    // refraction, the staged chain (declared inside its branch) for
-    // reflection. The shading block consumes the outer prim/lo/hitBary that
-    // the WINNING query stored alongside hitT — indices, distance and
-    // barycentrics are provably from the same query (the old lead query ran
-    // for both ray types and the shading re-read its committed indices,
-    // pairing one triangle's hitT/bary with another triangle's indices
-    // whenever the two traversals disagreed).
+    // The shading block consumes the outer prim/lo/hitBary that the WINNING
+    // query stored alongside hitT — indices, distance and barycentrics are
+    // provably from the same query.
     bool haveHit = false;
     float hitT = 0.0;
     uint prim = 0u;
     uint lo = 0u;
     vec2 hitBary = vec2(0.0);
     if (refraction) {
-        // FILTERED refraction pass (caller passes the displaced surface
-        // point as origin). NoOpaque: every candidate is enumerated (an
-        // opaque query would stop at the first triangle); no cull flags:
-        // displacement flips faces, so no fixed cull set is trusted.
-        // Water-mesh candidates COUNT (user): the nearest WATER and nearest
-        // SOLID triangles are tracked separately and whichever bounds the
-        // water column first wins — min(water backface, solid front face).
-        // The shared shading below handles both winners (gi.w water-look
-        // vs triplanar bottom). Ties break toward solid (deterministic, no
-        // flicker on coplanar water/solid).
-        rayQueryEXT rqf;
-        rayQueryInitializeEXT(rqf, rtTlas, gl_RayFlagsNoOpaqueEXT, RT_RAY_MASK_SCENE,
+        // Nearest SOLID triangle: opaque (hardware early-out) and no cull
+        // flags, so displaced/flipped faces still register.
+        rayQueryEXT rqS;
+        rayQueryInitializeEXT(rqS, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SCENE,
             origin, tMin, dir, tMax);
-        float bestTS = -1.0;
-        uint bestPrimS = 0u;
-        uint bestLoS = 0u;
-        vec2 bestBaryS = vec2(0.0);
-        float bestTW = -1.0;
-        uint bestPrimW = 0u;
-        uint bestLoW = 0u;
-        vec2 bestBaryW = vec2(0.0);
-        while (rayQueryProceedEXT(rqf)) {
-            if (rayQueryGetIntersectionTypeEXT(rqf, false) == gl_RayQueryCommittedIntersectionNoneEXT) continue;
-            if (rayQueryGetIntersectionInstanceCustomIndexEXT(rqf, false) != RT_SCENE_INSTANCE) continue;
-            uint loC = uint(rayQueryGetIntersectionGeometryIndexEXT(rqf, false));
-            float tC = rayQueryGetIntersectionTEXT(rqf, false);
-            if (rtSceneGeomInfo[loC].w != 0u) {
-                if (bestTW < 0.0 || tC < bestTW) {
-                    bestTW = tC;
-                    bestPrimW = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rqf, false));
-                    bestLoW = loC;
-                    bestBaryW = rayQueryGetIntersectionBarycentricsEXT(rqf, false);
-                }
-            } else {
-                if (bestTS < 0.0 || tC < bestTS) {
-                    bestTS = tC;
-                    bestPrimS = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rqf, false));
-                    bestLoS = loC;
-                    bestBaryS = rayQueryGetIntersectionBarycentricsEXT(rqf, false);
-                }
+        while (rayQueryProceedEXT(rqS)) {}
+        if (rayQueryGetIntersectionTypeEXT(rqS, true) != gl_RayQueryCommittedIntersectionNoneEXT &&
+            rayQueryGetIntersectionInstanceCustomIndexEXT(rqS, true) == RT_SCENE_INSTANCE) {
+            uint loC = rtSceneGeomIndex(RT_SCENE_INSTANCE,
+                uint(rayQueryGetIntersectionGeometryIndexEXT(rqS, true)));
+            // Post-commit classification: the mask already selects the solid
+            // partition; verify geomInfo.w agrees before committing.
+            if (rtSceneGeomInfo[loC].w == 0u) {
+                hitT = rayQueryGetIntersectionTEXT(rqS, true);
+                prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rqS, true));
+                lo = loC;
+                hitBary = rayQueryGetIntersectionBarycentricsEXT(rqS, true);
+                haveHit = true;
             }
-        }
-        if (bestTS >= 0.0 && (bestTW < 0.0 || bestTS <= bestTW)) {
-            hitT = bestTS;
-            prim = bestPrimS;
-            lo = bestLoS;
-            hitBary = bestBaryS;
-            haveHit = true;
-        } else if (bestTW >= 0.0) {
-            hitT = bestTW;
-            prim = bestPrimW;
-            lo = bestLoW;
-            hitBary = bestBaryW;
-            haveHit = true;
         }
     } else {
     // Stage 1: forward ray (cull front faces). For reflection, a water-mesh
@@ -169,22 +134,23 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // later stages can still find real scenery. Distant water (a lake across
     // the valley), i.e. beyond the threshold, stays a valid reflector.
     //
-    // The staged chain traces the real scene-geometry instance only (exact
-    // chunk triangles, including the real water mesh flagged in geomInfo.w):
-    // proxy boxes are excluded like in main.frag (their coarse flat tops
-    // imprint the dominant material and stepped heights on hits). It stays
-    // opaque and culls ray-front faces so only rasterizer-visible triangles
-    // report (scene meshes wind CW-outward for the BACK+CW rasterizer;
-    // ray-front is fixed CCW).
+    // The staged chain traces the real scene-geometry instances only (exact
+    // chunk triangles: solids + the real water mesh via geomInfo.w): proxy
+    // boxes are excluded like in main.frag (their coarse flat tops imprint
+    // the dominant material and stepped heights on hits). It stays opaque
+    // and culls ray-front faces so only rasterizer-visible triangles report
+    // (scene meshes wind CW-outward for the BACK+CW rasterizer; ray-front is
+    // fixed CCW).
     rayQueryEXT rq;
     rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT |
-        gl_RayFlagsCullFrontFacingTrianglesEXT, RT_RAY_MASK_SCENE,
+        gl_RayFlagsCullFrontFacingTrianglesEXT,
+        RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER,
         origin, tMin, dir, tMax);
     while (rayQueryProceedEXT(rq)) {}
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
         // Forward miss: reflection misses stay plain sky (the refraction
         // deep marker never reaches this branch — it comes from the
-        // filtered pass's miss below and is resolved against the raster
+        // split-instance pass's miss below and is resolved against the raster
         // bottom at the call site). The sky fetch is miss-only (Issue
         // L11); explicit LOD because this helper runs under per-fragment
         // control flow, where implicit-LOD texture() has undefined
@@ -193,43 +159,49 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     }
     // Committed type != None is guaranteed by the early-out above; only
     // the scene-instance filter remains.
-    if (rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) == RT_SCENE_INSTANCE) {
-        float tC = rayQueryGetIntersectionTEXT(rq, true);
-        uint loC = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true));
-        bool selfWater = (!refraction) && (rtSceneGeomInfo[loC].w != 0u) && (tC < waterMinHit);
-        if (!selfWater) {
-            hitT = tC;
-            prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
-            lo = loC;
-            hitBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
-            haveHit = true;
+    {
+        uint instC = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+        if (rtIsSceneInstance(instC)) {
+            float tC = rayQueryGetIntersectionTEXT(rq, true);
+            uint loC = rtSceneGeomIndex(instC, uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true)));
+            bool selfWater = (!refraction) && (rtSceneGeomInfo[loC].w != 0u) && (tC < waterMinHit);
+            if (!selfWater) {
+                hitT = tC;
+                prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
+                lo = loC;
+                hitBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+                haveHit = true;
+            }
         }
     }
     if (!haveHit) {
         // Opposite-direction validation of the local column (reflection;
-        // refraction uses the filtered pass above). Water is allowed beyond
-        // the same dead zone the forward tMin enforces (5.5 cm > 5 cm bias
-        // + float noise): distant lake surfaces still mirror, but the
+        // refraction uses the split-instance pass above). Water is allowed
+        // beyond the same dead zone the forward tMin enforces (5.5 cm > 5 cm
+        // bias + float noise): distant lake surfaces still mirror, but the
         // origin's own plane can never rediscover itself as "sky".
         float backSpan = min(tMax, max(thickCap * 2.0, 4.0));
         vec3 backOrigin = origin + dir * backSpan;
         rayQueryEXT rq2;
         rayQueryInitializeEXT(rq2, rtTlas, gl_RayFlagsOpaqueEXT |
-            gl_RayFlagsCullFrontFacingTrianglesEXT, RT_RAY_MASK_SCENE,
+            gl_RayFlagsCullFrontFacingTrianglesEXT,
+            RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER,
             backOrigin, 0.01, -dir, backSpan);
         while (rayQueryProceedEXT(rq2)) {}
-        if (rayQueryGetIntersectionTypeEXT(rq2, true) != gl_RayQueryCommittedIntersectionNoneEXT &&
-            rayQueryGetIntersectionInstanceCustomIndexEXT(rq2, true) == RT_SCENE_INSTANCE) {
-            uint lo2 = uint(rayQueryGetIntersectionGeometryIndexEXT(rq2, true));
-            float fwdT = backSpan - rayQueryGetIntersectionTEXT(rq2, true);
-            bool waterOk = (rtSceneGeomInfo[lo2].w == 0u)
-                || (!refraction && fwdT >= waterMinHit);
-            if (waterOk && fwdT >= 0.0) {
-                hitT = fwdT;
-                prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq2, true));
-                lo = lo2;
-                hitBary = rayQueryGetIntersectionBarycentricsEXT(rq2, true);
-                haveHit = true;
+        if (rayQueryGetIntersectionTypeEXT(rq2, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+            uint instC2 = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq2, true));
+            if (rtIsSceneInstance(instC2)) {
+                uint lo2 = rtSceneGeomIndex(instC2, uint(rayQueryGetIntersectionGeometryIndexEXT(rq2, true)));
+                float fwdT = backSpan - rayQueryGetIntersectionTEXT(rq2, true);
+                bool waterOk = (rtSceneGeomInfo[lo2].w == 0u)
+                    || (!refraction && fwdT >= waterMinHit);
+                if (waterOk && fwdT >= 0.0) {
+                    hitT = fwdT;
+                    prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq2, true));
+                    lo = lo2;
+                    hitBary = rayQueryGetIntersectionBarycentricsEXT(rq2, true);
+                    haveHit = true;
+                }
             }
         }
         if (!haveHit) {
@@ -239,34 +211,36 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             // is flipped faces anywhere along the FULL segment — displaced
             // overhangs and flipped panels beyond the local backSpan that
             // neither cull set can report. Water rule mirrors stage 1:
-            // refraction skips its own surface (seen from above within tMin
-            // like the forward ray); reflection likewise relies on its
-            // origin bias + tMin, so its mesh may report like any hit.
+            // reflection relies on its origin bias + tMin, so its mesh may
+            // report like any hit.
             rayQueryEXT rq3;
-            rayQueryInitializeEXT(rq3, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SCENE,
+            rayQueryInitializeEXT(rq3, rtTlas, gl_RayFlagsOpaqueEXT,
+                RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER,
                 origin, tMin, dir, tMax);
             while (rayQueryProceedEXT(rq3)) {}
-            if (rayQueryGetIntersectionTypeEXT(rq3, true) != gl_RayQueryCommittedIntersectionNoneEXT &&
-                rayQueryGetIntersectionInstanceCustomIndexEXT(rq3, true) == RT_SCENE_INSTANCE) {
-                uint lo3 = uint(rayQueryGetIntersectionGeometryIndexEXT(rq3, true));
-                float tC3 = rayQueryGetIntersectionTEXT(rq3, true);
-                if (rtSceneGeomInfo[lo3].w == 0u || (!refraction && tC3 >= waterMinHit)) {
-                    hitT = tC3;
-                    prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq3, true));
-                    lo = lo3;
-                    hitBary = rayQueryGetIntersectionBarycentricsEXT(rq3, true);
-                    haveHit = true;
+            if (rayQueryGetIntersectionTypeEXT(rq3, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+                uint instC3 = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq3, true));
+                if (rtIsSceneInstance(instC3)) {
+                    uint lo3 = rtSceneGeomIndex(instC3, uint(rayQueryGetIntersectionGeometryIndexEXT(rq3, true)));
+                    float tC3 = rayQueryGetIntersectionTEXT(rq3, true);
+                    if (rtSceneGeomInfo[lo3].w == 0u || (!refraction && tC3 >= waterMinHit)) {
+                        hitT = tC3;
+                        prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq3, true));
+                        lo = lo3;
+                        hitBary = rayQueryGetIntersectionBarycentricsEXT(rq3, true);
+                        haveHit = true;
+                    }
                 }
             }
         }
     } // end backward-else
-    } // end refraction(filtered) / reflection(staged) split
+    } // end refraction(split) / reflection(staged) split
     if (!haveHit) {
-        // Deep-water marker (refraction filtered miss) or plain sky
-        // (reflection triple miss). The deep marker is resolved against the
-        // raster bottom at the call site, not here: this function has no
-        // view of the solid depth target. The sky fetch is miss-only
-        // (Issue L11): hit pixels never touch the equirect.
+        // Deep-water marker (refraction miss) or plain sky (reflection
+        // triple miss). The deep marker is resolved against the raster
+        // bottom at the call site, not here: this function has no view of
+        // the solid depth target. The sky fetch is miss-only (Issue L11):
+        // hit pixels never touch the equirect.
         vec3 sky = textureLod(skyEquirectTex, rtDirToEquirectUV(normalize(dir)), 0.0).rgb;
         return refraction ? vec4(sky, RT_DEEP_WATER) : vec4(sky, 0.0);
     }
@@ -279,7 +253,7 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     { // haveHit guarantees a scene-geometry hit from the winning query.
         // Real triangle hit: shade with the owning chunk's data. prim/lo/
         // hitBary are the OUTER variables stored by the same query that
-        // produced hitT (the filtered refraction pass or the winning
+        // produced hitT (the split-instance refraction pass or the winning
         // reflection stage) — never re-read from another traversal, whose
         // committed triangle can disagree with the winner (the old shadowing
         // re-reads from the lead query paired one triangle's hitT/bary with
@@ -288,12 +262,21 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         // (GLSL_EXT_ray_query semantics); a cumulative primBase binary
         // search would map local indices onto the wrong chunk for every
         // geometry after the first.
-        // Screen-space color lookup FIRST: sample this frame's solid render at
-        // the reflected hit point so the mirror shows the terrain exactly as
-        // it appears on screen (mixed ground cover, shadows, detail) instead
-        // of the chunk's single dominant-material sample (a flat dirt blob).
-        // The water pass runs after the solid pass, so the targets are current.
-        {
+        // Water-mesh hits are classified from geomInfo.w. The screen-space
+        // bottom lookup below is valid for solid hits AND for a REFRACTED
+        // water-mesh hit (the projected point's solid depth is the underwater
+        // terrain), but never for a REFLECTED water hit: pasting the on-screen
+        // terrain behind the lake made reflected water read as land. Water
+        // vertices also live in the WATER pools, so the solid vertex/index
+        // reads in the off-screen fallback are only valid for gi.w == 0.
+        uvec4 gi = rtSceneGeomInfo[lo];
+        if (gi.w == 0u || refraction) {
+            // Screen-space color lookup. Sample this frame's solid render at
+            // the reflected/refracted hit point so the mirror shows the
+            // terrain exactly as it appears on screen (mixed ground cover,
+            // shadows, detail) instead of the chunk's single dominant-material
+            // sample (a flat dirt blob). The water pass runs after the solid
+            // pass, so the targets are current.
             const float nearP = ubo.passParams.z;
             const float farP = ubo.passParams.w;
             // World-to-clip projection is viewProjection (NOT its inverse:
@@ -329,11 +312,33 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
                 }
             }
         }
+        if (gi.w > 0u) {
+            // Reflected/refracted water: use the SAME composition as the
+            // raster water surface (tint base + Fresnel/strength sky
+            // reflection) so water inside a ray matches the water itself. The
+            // underwater bottom is traced by rtResolveWaterHit's own Snell
+            // ray, so the term is the water column, not a solid surface.
+            //
+            // Normal: the real water triangle's vertices live in the WATER
+            // pools (not bindings 24/25), so no interpolated normal is
+            // available here. Water is a heightfield: use UP oriented toward
+            // the incoming ray.
+            vec3 hitN = (dot(vec3(0.0, 1.0, 0.0), dir) > 0.0)
+                ? vec3(0.0, -1.0, 0.0) : vec3(0.0, 1.0, 0.0);
+            int nWLL = max(waterParams.length(), 1);
+            int wId = int(rtSceneAlbedo[lo].w + 0.5);
+            int wLayer = (wId >= 0 && wId < nWLL) ? wId : 0;
+            WaterParamsGPU wp = waterParams[wLayer];
+            vec3 waterColor = rtResolveWaterHit(wp, hitPos, hitN, dir);
+            // No bounce off water hits: the water look already includes its
+            // mirror, and recursive water rays self-intersect the flat BLAS
+            // mesh (water-on-water triangle noise).
+            return vec4(waterColor, refraction ? min(hitT, cap) : 1.0);
+        }
         // Off-screen fallback: real interpolated triangle normal (see
         // main.frag) for relief and correct shading; albedo is the triplanar
         // sample at the true hit position, blended to the chunk average with
         // distance.
-        uvec4 gi = rtSceneGeomInfo[lo];
         // prim is already local to this geometry (ray-query semantics) — do
         // NOT subtract the cumulative base.
         uint localPrim = prim;
@@ -353,34 +358,6 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         vec2 bary = hitBary;
         vec3 hitN = normalize(n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y);
         if (dot(hitN, dir) > 0.0) hitN = -hitN;
-        // Water chunk marker (geomInfo.w): the real water mesh is in the scene
-        // BLAS — a water surface reflecting another water surface. Shade it as
-        // water (sky reflection + tint); its brushIndex addresses water
-        // params, not scene materials.
-        if (gi.w > 0u) {
-            // Reflected water: use the SAME composition as the raster water
-            // surface (tint base + Fresnel/strength sky reflection) so water
-            // inside a reflection matches the water itself. The underwater
-            // bottom is not traced from inside a mirror, so the refraction
-            // term collapses to the tint exactly like refraction-off water.
-            //
-            // Normal: the interpolated triangle normal above came from the
-            // SOLID vertex pools (bindings 24/25); water vertices live in the
-            // WATER pools, so that normal is another chunk's data (faceted
-            // shards) and produces wrong Fresnel + reflection directions.
-            // Water is a heightfield: use UP oriented toward the incoming ray.
-            hitN = (dot(vec3(0.0, 1.0, 0.0), dir) > 0.0)
-                ? vec3(0.0, -1.0, 0.0) : vec3(0.0, 1.0, 0.0);
-            int nWLL = max(waterParams.length(), 1);
-            int wId = int(rtSceneAlbedo[lo].w + 0.5);
-            int wLayer = (wId >= 0 && wId < nWLL) ? wId : 0;
-            WaterParamsGPU wp = waterParams[wLayer];
-            vec3 waterColor = rtResolveWaterHit(wp, hitPos, hitN, dir);
-            // No bounce off water hits: the water look already includes its
-            // mirror, and recursive water rays self-intersect the flat BLAS
-            // mesh (water-on-water triangle noise).
-            return vec4(waterColor, refraction ? min(hitT, cap) : 1.0);
-        }
         int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
         // Distance-based texture LOD (this helper runs under per-fragment
         // control flow where implicit-LOD texture() is undefined): refraction

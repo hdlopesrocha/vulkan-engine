@@ -2193,8 +2193,10 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     q.buffer = wib;
                     wiaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
                 }
-                std::vector<RayTracingResources::SceneTriGeometry> geoms;
-                geoms.reserve(filtered.size() + wfiltered.size() + 64);
+                std::vector<RayTracingResources::SceneTriGeometry> solidGeoms;
+                std::vector<RayTracingResources::SceneTriGeometry> waterGeoms;
+                solidGeoms.reserve(filtered.size());
+                waterGeoms.reserve(wfiltered.size());
                 for (const auto& s : filtered) {
                     RayTracingResources::SceneTriGeometry g;
                     g.vertexAddress = vaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
@@ -2212,15 +2214,15 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     const float matRefl = materialManagerPtr
                         ? materialManagerPtr->reflectionStrength(mat) : 0.0f;
                     g.albedo = glm::vec4(avg[0], avg[1], avg[2], matRefl);
-                    geoms.push_back(g);
+                    solidGeoms.push_back(g);
                 }
-                // Water chunks: append the real water MESH (transparent layer)
-                // to the scene BLAS so reflections hit the actual water surface
-                // triangles (accurate positions, no proxy boxes). The
-                // waterChunk flag routes hit shading to the water look (sky
-                // reflection + tint) instead of the terrain albedo lookup.
-                // Runs on every joint refresh (not only when water changed)
-                // so a solid-only refresh never drops the water geometries.
+                // Water chunks: a SECOND scene BLAS (TLAS instance 3, mask 0x08)
+                // holding the real water MESH so reflections hit the actual
+                // water surface triangles while refraction can trace solids and
+                // water as separate opaque passes (nearest of each kind, no
+                // candidate enumeration). Runs on every joint refresh (not only
+                // when water changed) so a solid-only refresh never drops the
+                // water geometries.
                 for (const auto& s : wfiltered) {
                     RayTracingResources::SceneTriGeometry g;
                     g.vertexAddress = wvaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
@@ -2229,7 +2231,6 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     g.indexCount = s.indexCount;
                     g.baseVertex = s.baseVertex;
                     g.firstIndex = s.firstIndex;
-                    g.waterChunk = true;
                     // albedo.w = the water LAYER index (chunk
                     // dominant, stable per chunk) so hit shading reads
                     // a consistent layer — per-vertex brushIndex can
@@ -2239,9 +2240,9 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     const float wLayer = (wit != mainWaterProxyData.end())
                         ? static_cast<float>(wit->second.materialId) : 0.0f;
                     g.albedo = glm::vec4(waterReflectionTint_, wLayer);
-                    geoms.push_back(g);
+                    waterGeoms.push_back(g);
                 }
-                rayTracing->setSceneGeometry(std::move(geoms));
+                rayTracing->setSceneGeometry(std::move(solidGeoms), std::move(waterGeoms));
             }
         }
     }

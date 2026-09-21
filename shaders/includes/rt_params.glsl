@@ -45,10 +45,16 @@ const uint RT_WATER_BOX_START = 16384u;
 const uint RT_RAY_MASK_SOLID = 0x01u;
 const uint RT_RAY_MASK_WATER = 0x02u;
 const uint RT_RAY_MASK_ALL = 0x03u;
-// Real scene-geometry instance (exact chunk triangles): reflection rays trace
-// this instead of the proxy boxes so mirror positions match the scene.
+// Real scene-geometry instances (exact chunk triangles), split by content so
+// each ray type can early-out on the nearest hit of its own partition:
+// solids (mask 0x04) and the real water mesh (mask 0x08) have separate BLASes
+// and TLAS instances. Reflection rays trace both; refraction traces solids
+// only (the water BLAS is the UNDISPLACED base surface, a phantom boundary
+// for a downward Snell ray).
 const uint RT_RAY_MASK_SCENE = 0x04u;
 const uint RT_SCENE_INSTANCE = 2u;
+const uint RT_RAY_MASK_SCENE_WATER = 0x08u;
+const uint RT_SCENE_WATER_INSTANCE = 3u;
 
 // Reflection rays are UNCAPPED by design: mirror targets can sit anywhere
 // in the scene (grazing rays travel far before hitting), and the proxy TLAS
@@ -82,7 +88,10 @@ float rtCoarseFeather(float footprint, float limit) {
     float hi = max(limit * 2.0, lo + 1.0);
     return clamp((footprint - lo) / max(hi - lo, 1e-6), 0.0, 1.0);
 }
-// Global metadata index for a triangle hit (primitiveID is per-BLAS local).
+// Global metadata index for a PROXY triangle hit (primitiveID is per-BLAS
+// local; proxy instances 0 = solid, 1 = water). Never call this with a scene
+// instance (RT_SCENE_INSTANCE / RT_SCENE_WATER_INSTANCE): those address
+// rtSceneGeomInfo via the partition mapping declared next to its binding.
 uint rtBoxIndex(uint primitiveId, uint instanceCustomIndex) {
     return primitiveId / 12u + (instanceCustomIndex == 1u ? RT_WATER_BOX_START : 0u);
 }

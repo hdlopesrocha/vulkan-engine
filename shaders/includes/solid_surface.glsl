@@ -394,9 +394,9 @@ void shadeSolidSurface() {
                 float selfSkip = max(rt.debug.z, 0.15);
                 vec3 origin = fragPosWorldNotDisplaced + reflN * selfSkip;
                 rayQueryEXT rq;
-                // Mirror reflections trace the real scene-geometry instance
-                // ONLY (exact chunk triangles, including the real water mesh
-                // via the waterChunk flag below). The water proxy boxes are
+                // Mirror reflections trace the real scene-geometry instances
+                // ONLY (exact chunk triangles: solids + the real water mesh,
+                // the latter flagged by geomInfo.w). The water proxy boxes are
                 // deliberately excluded: they are coarse thickness slabs whose
                 // side walls stick up above the lake surface while neighbouring
                 // chunks leave vertical gaps — grazing mirror rays either slam
@@ -408,7 +408,8 @@ void shadeSolidSurface() {
                 // is fixed CCW — so this keeps exactly the rasterizer-visible
                 // faces and skips inward faces the main pass would cull.
                 rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT |
-                    gl_RayFlagsCullFrontFacingTrianglesEXT, RT_RAY_MASK_SCENE,
+                    gl_RayFlagsCullFrontFacingTrianglesEXT,
+                    RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER,
                     origin, 0.05, normalize(reflDir), RT_NO_LIMIT);
                 while (rayQueryProceedEXT(rq)) {}
                 if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -416,19 +417,21 @@ void shadeSolidSurface() {
                     // Own-surface guard: hits closer than selfSkip are the
                     // reflector's own triangles, not true scenery.
                     if (hitT >= selfSkip) {
-                        // Mask-selected: only the real scene-geometry instance can
-                        // report hits (see the SCENE-only mask above).
+                        // Mask-selected: only the real scene-geometry instances
+                        // can report hits (see the SCENE masks above).
                         const uint inst = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
-                        if (inst == RT_SCENE_INSTANCE) {
+                        if (rtIsSceneInstance(inst)) {
                         // The primitive index is LOCAL to the hit geometry
                         // (per GLSL_EXT_ray_query: "the index of the primitive
                         // within the geometry of the BLAS"). The geometry index
-                        // comes from the ray query directly — never binary
-                        // search cumulative primBase (that maps local indices
-                        // onto the wrong chunk for every geometry after the
-                        // first, corrupting brushIndex/UV/normal reads).
+                        // maps through rtSceneGeomIndex() onto the combined
+                        // solid/water lookup buffers — never binary search
+                        // cumulative primBase (that maps local indices onto
+                        // the wrong chunk for every geometry after the first,
+                        // corrupting brushIndex/UV/normal reads).
                         const uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
-                        const uint lo = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true));
+                        const uint lo = rtSceneGeomIndex(inst,
+                            uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true)));
                         // Real interpolated triangle normal from the merged
                         // vertex pool (Vertex stride 16 floats: position 0-2,
                         // normal 8-10) via the hit barycentrics.

@@ -98,11 +98,22 @@ public:
     static constexpr uint32_t kMaskSolid = 0x01;
     static constexpr uint32_t kMaskWater = 0x02;
     static constexpr uint32_t kMaskAll = 0x03;
-    // Real scene-geometry instance (exact chunk triangles for reflections).
+    // Real scene-geometry instances (exact chunk triangles), split by content
+    // so each ray type can early-out on the nearest hit of its partition:
+    // solids (mask 0x04) and the water mesh (mask 0x08) each have their own
+    // TLAS instance and BLAS. Refraction traces solids only (the water BLAS
+    // holds the undisplaced base surface, a phantom boundary for a downward
+    // Snell ray); reflections trace both.
     static constexpr uint32_t kMaskScene = 0x04;
+    static constexpr uint32_t kMaskSceneWater = 0x08;
     static constexpr uint32_t kSceneInstanceIndex = 2;
+    static constexpr uint32_t kSceneWaterInstanceIndex = 3;
     // Scene lookup buffers are preallocated at init (no resize), sized for the
-    // maximum number of concurrently active geometry spans.
+    // maximum number of concurrently active geometry spans. Solids and water
+    // mesh share them as two partitions — solids in [0, nSolid), water in
+    // [nSolid, nSolid + nWater) — while each BLAS numbers its geometries from
+    // 0. Shaders offset a water instance's geometry index by nSolid, which
+    // recordSceneBlas publishes in rtScenePrimBase[0] (the partition tag).
     static constexpr uint32_t kMaxSceneGeoms = 4096;
 
     RayTracingResources() = default;
@@ -129,12 +140,15 @@ public:
     void setProxies(const std::vector<RTProxyBox>& solids,
                     const std::vector<RTProxyBox>& waters);
 
-    // Real scene geometry for reflection rays: one entry per active chunk,
-    // referencing the raster mesh's vertex/index spans in the shared merged
-    // buffers (device addresses computed by the caller). Rebuilt alongside the
-    // proxies; reflection rays then hit the real triangles so mirror positions
-    // match the scene exactly. `albedo` is the chunk's average linear color for
-    // hit shading (the AS carries no material data).
+    // Real scene geometry for reflection/refraction rays: one entry per active
+    // chunk, referencing the raster mesh's vertex/index spans in the shared
+    // merged buffers (device addresses computed by the caller). Rebuilt
+    // alongside the proxies; rays then hit the real triangles so mirror
+    // positions match the scene exactly. `albedo` is the chunk's average
+    // linear color for hit shading (the AS carries no material data).
+    // The two lists become two scene BLASes (solid triangles mask 0x04, water
+    // mesh mask 0x08); water `albedo.w` carries the water layer index and the
+    // `geomInfo.w` flag (1 = water) routes hit shading to the water look.
     struct SceneTriGeometry {
         VkDeviceAddress vertexAddress = 0; // chunk's first vertex (already offset)
         VkDeviceAddress indexAddress = 0;  // chunk's first index (already offset)
@@ -143,13 +157,12 @@ public:
         uint32_t baseVertex = 0;  // element offset into the merged vertex pool
         uint32_t firstIndex = 0;  // element offset into the merged index pool
         glm::vec4 albedo = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
-        // Water chunk marker: the geometry's brushIndex addresses water
-        // params, not scene materials — hit shading must use the water look
-        // (sky reflection + tint) instead of the terrain albedo lookup.
-        bool waterChunk = false;
     };
-    void setSceneGeometry(std::vector<SceneTriGeometry> geoms);
-    uint32_t sceneGeometryCount() const { return uint32_t(sceneGeoms_.size()); }
+    void setSceneGeometry(std::vector<SceneTriGeometry> solids,
+                          std::vector<SceneTriGeometry> waters);
+    uint32_t sceneGeometryCount() const {
+        return uint32_t(sceneSolidGeoms_.size() + sceneWaterGeoms_.size());
+    }
     VkBuffer getSceneGeomPrimBaseBuffer() const { return scenePrimBaseBuffer_.buffer; }
     VkBuffer getSceneGeomInfoBuffer() const { return sceneGeomInfoBuffer_.buffer; }
     VkBuffer getSceneGeomMetaBuffer() const { return sceneMetaBuffer_.buffer; }
@@ -248,7 +261,7 @@ private:
     // its own partition (self-contained vertex/index ranges).
     Buffer aabbBuffer_{}; // box-triangle soup (device address, build input)
     Buffer metaBuffer_{}; // RTProxyMeta array (storage, hit shading)
-    Buffer tlasInstanceBuffer_{}; // 2x VkAccelerationStructureInstanceKHR
+    Buffer tlasInstanceBuffer_{}; // 4x VkAccelerationStructureInstanceKHR (solid/water proxies + solid/water scene)
     VkDeviceAddress aabbAddress_ = 0;
     VkDeviceAddress tlasInstanceAddress_ = 0;
 
@@ -306,12 +319,15 @@ private:
     VkDescriptorSet getRTSetForFrame(uint32_t f) const { return rtSets_[f % 3]; }
     Buffer paramsBuffers_[kParamFrames]{};
 
-    // ── Real scene-geometry BLAS (reflection rays) ────────────────────────
+    // ── Real scene-geometry BLASes (reflection/refraction rays) ───────────
     // One geometry per active chunk, referencing the raster mesh's spans in
     // the shared merged vertex/index buffers. Rebuilt with the proxies when
-    // chunks change; traced with kMaskScene. primBase[i] = first primitive of
-    // geometry i (binary-searched in the shader); meta[i] = average albedo.
-    std::vector<SceneTriGeometry> sceneGeoms_;
+    // chunks change; solids are traced with kMaskScene, the water mesh with
+    // kMaskSceneWater. Combined lookup order is solids then water:
+    // primBase[0] = solid geometry count (partition tag), primBase[1+i] =
+    // first primitive of combined geometry i; meta[i] = average albedo.
+    std::vector<SceneTriGeometry> sceneSolidGeoms_;
+    std::vector<SceneTriGeometry> sceneWaterGeoms_;
     // Staging layout (bytes) for the fragment-read lookup buffers below.
     // With 3 frames in flight, a CPU memcpy straight into those buffers at
     // record time lands while older frames still trace the PREVIOUS BLAS
@@ -339,10 +355,22 @@ private:
     Buffer sceneScratch_{};
     VkDeviceSize sceneScratchSize_ = 0;
     VkDeviceSize sceneBlasSize_ = 0;
+    // Water mesh partition (kMaskSceneWater rays): separate AS so opaque
+    // traversal early-outs on the nearest water triangle without walking
+    // solids, and vice versa.
+    Buffer sceneBlasWaterBuffer_{};
+    VkAccelerationStructureKHR sceneBlasWater_ = VK_NULL_HANDLE;
+    VkDeviceAddress sceneBlasWaterAddress_ = 0;
+    Buffer sceneScratchWater_{};
+    VkDeviceSize sceneScratchWaterSize_ = 0;
+    VkDeviceSize sceneBlasWaterSize_ = 0;
     Buffer scenePrimBaseBuffer_{};
-    // Per-geometry uvec4 {baseVertex, firstIndex, primBase, 0} so hit shading can
-    // fetch the real triangle attributes (position/normal) from the merged
-    // vertex/index buffers via barycentrics.
+    // Combined solid-then-water partition: per-geometry uvec4
+    // {baseVertex, firstIndex, primBase, waterFlag (1 = water mesh)} so hit
+    // shading can fetch the real triangle attributes (position/normal) from
+    // the merged vertex/index buffers via barycentrics and route water hits
+    // to the water look. A water instance's per-BLAS geometry index is offset
+    // by scenePrimBaseBuffer_[0] (solid geometry count) before indexing.
     Buffer sceneGeomInfoBuffer_{};
     Buffer sceneMetaBuffer_{};
     uint32_t scenePrimBaseCapacity_ = 0; // in uints

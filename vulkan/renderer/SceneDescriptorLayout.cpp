@@ -173,8 +173,10 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     ssrDepthBinding.pImmutableSamplers = nullptr;
     ssrDepthBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // binding 21: real scene-geometry primitive bases ([0]=count, [1..N]=first
-    // primitive of geometry i) for the reflection BLAS (binary search).
+    // binding 21: scene-geometry partition table. [0] = solid geometry count
+    // (the base the shaders add to a water-instance geometry index); [1..N] =
+    // first primitive of combined geometry i (unused by ray-query shading:
+    // primitive indices are per-BLAS).
     VkDescriptorSetLayoutBinding scenePrimBaseBinding{};
     scenePrimBaseBinding.binding = 21;
     scenePrimBaseBinding.descriptorCount = 1;
