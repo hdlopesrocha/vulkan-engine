@@ -49,6 +49,7 @@ enum class DebugMode : int {
     WaterRegions,         // water only: thickness-zone region palette (deep/shoal/breaker/foam/line)
     WaterDepthSources,    // water only: R=solid-scene depth drop, G=water back-face drop, B=final depth (all / zDeep)
     SceneDepth,           // both: scene depth (solid: own fragment depth; water: solid depth behind), linear/far grayscale
+    ReflectionSource,     // water only: which branch resolved the reflection (solid/water/guard/SSR/sky/equirect)
     Count
 };
 
@@ -85,6 +86,7 @@ inline constexpr const char* kDebugModeNames[] = {
     "Water Regions",
     "Water Depth Sources",
     "Scene Depth",
+    "Reflection Source",
 };
 
 static_assert(sizeof(kDebugModeNames) / sizeof(kDebugModeNames[0])
@@ -105,6 +107,7 @@ constexpr bool debugModeForcesRtReference(DebugMode mode) {
         case DebugMode::ReflectionColor:
         case DebugMode::RefractionColor:
         case DebugMode::Thickness:
+        case DebugMode::ReflectionSource:
         case DebugMode::Shadow:
             return true;
         default:

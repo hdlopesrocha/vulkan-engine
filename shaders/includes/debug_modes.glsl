@@ -36,6 +36,7 @@ const int DEBUG_MODE_WATER_COMPOSE = 28;
 const int DEBUG_MODE_WATER_REGIONS = 29;
 const int DEBUG_MODE_WATER_DEPTH_SOURCES = 30;
 const int DEBUG_MODE_SCENE_DEPTH = 31;
+const int DEBUG_MODE_REFLECTION_SOURCE = 32;
 
 // Views whose displayed value is produced by traced reflection/refraction
 // rays force the full-quality reference path (full-rate + dual-trace) so the
@@ -46,5 +47,6 @@ bool debugModeForcesRtReference(int mode) {
     return mode == DEBUG_MODE_REFLECTION_COLOR
         || mode == DEBUG_MODE_REFRACTION_COLOR
         || mode == DEBUG_MODE_THICKNESS
+        || mode == DEBUG_MODE_REFLECTION_SOURCE
         || mode == DEBUG_MODE_SHADOW;
 }

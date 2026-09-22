@@ -285,6 +285,27 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         // vertices also live in the WATER pools, so the solid vertex/index
         // reads in the off-screen fallback are only valid for gi.w == 0.
         uvec4 gi = rtSceneGeomInfo[lo];
+        // Below-waterline guard (reflection only): wave slopes can tip a
+        // grazing mirror ray slightly below the surface, where it hits the
+        // submerged lake bed instead of the scenery above the water. Shading
+        // that hit paints the underwater terrain over the water — the
+        // "far geometry has no reflection / dark far water" artifact. Treat
+        // any SOLID hit clearly below the reflector's water level as a miss so
+        // the mirror falls back to the sky (the ray direction is left
+        // untouched, so genuine above-water terrain hits still reflect
+        // normally). The reference is the UNDISPLACED base position
+        // (fragBasePos.y = the local waterline), not the displaced origin:
+        // in shallow water a wave trough can dip below the bed, which would
+        // let a bed hit sit above the displaced surface and slip through.
+        if (!refraction && gi.w == 0u && hitPos.y < fragBasePos.y - 0.05) {
+            // Mirror ray dipped below the waterline: return the horizon sky as
+            // a resolved reflection (a=0.6 > 0.5, source=guard for the
+            // reflection-source debug view) so the fallback does not re-march
+            // the solid depth and land on the bed again.
+            vec3 skyDir = normalize(vec3(dir.x, max(dir.y, 0.0), dir.z));
+            vec3 skyB = textureLod(skyEquirectTex, rtDirToEquirectUV(skyDir), 0.0).rgb;
+            return vec4(skyB, 0.6);
+        }
         if (gi.w == 0u || refraction) {
             // Screen-space color lookup. Sample this frame's solid render at
             // the reflected/refracted hit point so the mirror shows the
@@ -328,6 +349,20 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             }
         }
         if (gi.w > 0u) {
+            // Self-water guard for reflection: a wave-trough fragment's origin
+            // sits BELOW the undisplaced (flat) water BLAS plane, so a grazing
+            // upward mirror ray can hit the water mesh from below at a distance
+            // far beyond waterMinHit. Shading that hit as water reflects the
+            // ray about the surface, pointing the mirror chain DOWN into the
+            // volume where it lands on the lake bed — the far-water "sky is not
+            // reflected" artifact (steep near rays hit within waterMinHit and
+            // were already skipped). A reflection ray travelling UP that hits
+            // the water mesh is always the reflector's own surface: treat it as
+            // a sky miss.
+            if (!refraction && dir.y > 0.0) {
+                vec3 skyW = textureLod(skyEquirectTex, rtDirToEquirectUV(normalize(dir)), 0.0).rgb;
+                return vec4(skyW, 0.6); // source=guard (self-water)
+            }
             // Reflected/refracted water: use the SAME composition as the
             // raster water surface (tint base + Fresnel/strength sky
             // reflection) so water inside a ray matches the water itself. The
@@ -336,10 +371,9 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             //
             // Normal: the real water triangle's vertices live in the WATER
             // pools (not bindings 24/25), so no interpolated normal is
-            // available here. Water is a heightfield: use UP oriented toward
-            // the incoming ray.
-            vec3 hitN = (dot(vec3(0.0, 1.0, 0.0), dir) > 0.0)
-                ? vec3(0.0, -1.0, 0.0) : vec3(0.0, 1.0, 0.0);
+            // available here. Water is a heightfield: use a constant UP normal
+            // (matching the solid path).
+            vec3 hitN = vec3(0.0, 1.0, 0.0);
             int nWLL = max(waterParams.length(), 1);
             int wId = int(rtSceneAlbedo[lo].w + 0.5);
             int wLayer = (wId >= 0 && wId < nWLL) ? wId : 0;
@@ -348,7 +382,9 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             // No bounce off water hits: the water look already includes its
             // mirror, and recursive water rays self-intersect the flat BLAS
             // mesh (water-on-water triangle noise).
-            return vec4(waterColor, refraction ? min(hitT, cap) : 1.0);
+            // a=0.8 marks a resolved reflected-water hit (source=water in the
+            // reflection-source debug view); refraction carries thickness.
+            return vec4(waterColor, refraction ? min(hitT, cap) : 0.8);
         }
         // Off-screen fallback: real interpolated triangle normal (see
         // main.frag) for relief and correct shading; albedo is the triplanar
@@ -441,66 +477,6 @@ float linearizeDepth(float depth) {
     return (nearPlane * farPlane) / (farPlane - depth * (farPlane - nearPlane));
 }
 
-// Screen-space reflection march over the solid pass depth (set 2, binding 5).
-// Returns hit color in rgb and a confidence in a (0 = no usable hit). The ray
-// is projected with the camera inverse view-projection (the water pass runs
-// after the solid pass, so this frame's targets are current). Marching front
-// to back, the first depth crossing is the first real intersection, so any
-// crossing counts as a hit and a binary search refines it — this is
-// step-size independent, unlike a thin thickness window. Covers up to ~2 km
-// so distant mirrors (the polished spheres) reflect on-screen scenery at the
-// right positions instead of the flat proxy boxes. `eyeDir` is the unit
-// vector from the surface to the camera: rays nearly tangent to the view
-// direction are where screen-space marching is least reliable, so they fade.
-vec4 traceSSR(vec3 origin, vec3 dir, vec3 eyeDir) {
-    float nearP = ubo.passParams.z;
-    float farP  = ubo.passParams.w;
-    // No facing fade here: water's reflection misses are exactly the
-    // grazing, near-parallel rays that the old smoothstep discarded — the
-    // shoreline case this march now serves. The edge and gap fades still
-    // guard screen-border and depth-uncertain crosses.
-    float prevT = 0.0;
-    float t = 0.25;
-    for (int i = 0; i < 64; ++i) {
-        // Near field: 1 m steps (thin silhouettes); far field: 13% geometric
-        // growth so the remaining steps reach ~4 km without huge near steps.
-        t += (i < 20) ? 1.0 : max(2.0, t * 0.13);
-        vec3 P = origin + dir * t;
-        // World-to-clip is viewProjection (see the note at the rtTraceWater
-        // lookup), not its inverse (invViewProjection maps clip->world).
-        vec4 clip = ubo.viewProjection * vec4(P, 1.0);
-        if (clip.w <= 0.001 || clip.w > farP * 2.0) break;
-        vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
-        float d = textureLod(solidSceneDepthTex, uv, 0.0).r;
-        if (d < 1.0) {
-            float sceneEye = (nearP * farP) / (farP - d * (farP - nearP));
-            float rayEye = clip.w; // GLM perspective: clip.w == eye depth
-            if (rayEye > sceneEye + 0.05) {
-                // First crossing: refine with a binary search (5 iterations).
-                float lo = prevT, hi = t;
-                for (int j = 0; j < 5; ++j) {
-                    float mid = 0.5 * (lo + hi);
-                    vec4 cm = ubo.viewProjection * vec4(origin + dir * mid, 1.0);
-                    vec2 uvm = cm.xy / cm.w * 0.5 + 0.5;
-                    float dm = textureLod(solidSceneDepthTex, uvm, 0.0).r;
-                    float em = (nearP * farP) / (farP - dm * (farP - nearP));
-                    if (cm.w > em) { hi = mid; uv = uvm; rayEye = cm.w; sceneEye = em; }
-                    else lo = mid;
-                }
-                float edge = smoothstep(0.0, 0.06, uv.x) * smoothstep(0.0, 0.06, 1.0 - uv.x)
-                           * smoothstep(0.0, 0.06, uv.y) * smoothstep(0.0, 0.06, 1.0 - uv.y);
-                // Crossings further behind the surface are less certain
-                // (ray nearly parallel to it): soften instead of hard-cutting.
-                float gapFade = 1.0 - clamp((rayEye - sceneEye) / max(1.0, sceneEye * 0.25), 0.0, 0.5);
-                return vec4(textureLod(solidSceneColorTex, uv, 0.0).rgb,
-                            edge * gapFade);
-            }
-        }
-        prevT = t;
-    }
-    return vec4(0.0);
-}
 
 vec2 waterDirToEquirectUV(vec3 dir) {
     const float PI = 3.14159265358979;
@@ -638,6 +614,23 @@ void shadeWaterSurface() {
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
     // Keep the normal facing the visible side to avoid flat/dark lighting from flipped orientation.
     if (dot(normal, viewDir) < 0.0) normal = -normal;
+
+    // Distance-based normal LOD: at range one pixel spans many wave features,
+    // so the per-fragment analytic gradient aliases badly (especially with
+    // fine noise spectra) and randomizes the mirror direction — far water then
+    // reflects a noisy mix of terrain/bed and sky instead of the stable sky.
+    // Fade the wave-normal detail toward the smooth base normal with camera
+    // distance, the same band-limiting the raster needs for stable specular
+    // and reflections. Near water keeps the full per-pixel ripple detail.
+    {
+        float camDist = length(ubo.viewPos.xyz - fragPosWorld);
+        float detail = 1.0 - smoothstep(200.0, 1000.0, camDist);
+        if (detail < 1.0) {
+            vec3 baseN = flatN;
+            if (dot(baseN, viewDir) < 0.0) baseN = -baseN;
+            normal = normalize(mix(baseN, normal, detail));
+        }
+    }
     vec3 lightDir = normalize(-ubo.lightDir.xyz);
     
     // Base screen UV already computed at the top of main() and reused above.
@@ -1148,6 +1141,10 @@ void shadeWaterSurface() {
 
     vec3 skyColor = vec3(0.0);
     bool reflResolved = false;
+    // Which branch resolved the reflection (DEBUG_MODE_REFLECTION_SOURCE):
+    // 0=disabled, 1=inline solid hit, 2=inline water hit, 3=guard, 4=SSR hit,
+    // 5=inline sky miss, 6=equirect fallback.
+    float reflSource = 0.0;
 #ifdef RT_ENABLED
     // Reflection source: the INLINE exact-triangle ray only. The async proxy
     // pipeline no longer produces a reflection (its flat proxy output was
@@ -1192,29 +1189,19 @@ void shadeWaterSurface() {
             skyColor = reflHit.rgb;
             reflResolved = true;
             reflMaskDbg = 3.0;
+            reflSource = (reflHit.a > 0.9) ? 1.0 : ((reflHit.a > 0.7) ? 2.0 : 3.0);
         }
     }
     if (!reflResolved && reflDidTrace) {
-        // Inline miss. Screen-space fallback over this frame's solid render
-        // resolves the shallow near-parallel rays that slip over the
-        // undisplaced BLAS (the bank at the waterline) instead of flat sky —
-        // that march is exactly what the shoreline needs. Steep upward
-        // reflections (dir.y >= 0.5) are genuine sky: the traced sky baseline
-        // is already the correct result and marching tens of steps over clear
-        // depth cannot beat it, so skip the march there.
-        if (reflectDir.y < 0.5) {
-            vec4 ssr = traceSSR(reflOrigin, normalize(reflectDir), normalize(viewDir));
-            if (ssr.a > 0.02) {
-                skyColor = ssr.rgb;
-                reflMaskDbg = 3.0;
-            } else {
-                skyColor = reflHit.rgb; // trace's own sky (miss baseline)
-                reflMaskDbg = 3.0;
-            }
-        } else {
-            skyColor = reflHit.rgb; // steep miss = sky (no march)
-            reflMaskDbg = 3.0;
-        }
+        // Inline miss: the exact-triangle ray is authoritative and its miss
+        // baseline is the sky. The screen-space fallback was REMOVED: it
+        // marched the solid depth (which under the water is the lake bed) and
+        // reported false hits far beyond the shoreline slip it was meant for,
+        // replacing genuine sky misses with terrain — the far-water "sky is
+        // not reflected" artifact (green in DEBUG_MODE_REFLECTION_SOURCE).
+        skyColor = reflHit.rgb; // trace's own sky (miss baseline)
+        reflMaskDbg = 3.0;
+        reflSource = 5.0;
         reflResolved = true;
     } else if (!reflResolved && rtReady && rt.rayParams.w > 0.5 && reflBudgetSkip) {
         reflMaskDbg = 4.0;
@@ -1226,6 +1213,7 @@ void shadeWaterSurface() {
         // discarded by the final mix), except for the debug view that shows it.
         if (enableReflection || dbgMode == DEBUG_MODE_REFLECTION_COLOR) {
             skyColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
+            reflSource = 6.0;
         }
         if (reflMaskDbg == 0.0) reflMaskDbg = 1.0;
     }
@@ -1553,6 +1541,26 @@ void shadeWaterSurface() {
     if (dbgMode == DEBUG_MODE_REFLECTION_COLOR) {
         // Reflection color actually used (RT/SSR hit or sky fallback).
         outColor = vec4(skyColor, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_REFLECTION_SOURCE) {
+        // Which branch resolved the reflection:
+        //   black   = reflection disabled
+        //   red     = inline ray hit SOLID terrain (above the waterline)
+        //   yellow  = inline ray hit reflected WATER
+        //   magenta = guard (below-waterline bed / upward self-water)
+        //   green   = SSR near-field hit
+        //   blue    = inline ray miss (sky)
+        //   cyan    = equirect sky fallback (no inline trace)
+        vec3 srcCol = vec3(0.0);
+        if (reflSource < 0.5)       srcCol = vec3(0.0);
+        else if (reflSource < 1.5)  srcCol = vec3(1.0, 0.0, 0.0);
+        else if (reflSource < 2.5)  srcCol = vec3(1.0, 1.0, 0.0);
+        else if (reflSource < 3.5)  srcCol = vec3(1.0, 0.0, 1.0);
+        else if (reflSource < 4.5)  srcCol = vec3(0.0, 1.0, 0.0);
+        else if (reflSource < 5.5)  srcCol = vec3(0.0, 0.0, 1.0);
+        else                        srcCol = vec3(0.0, 1.0, 1.0);
+        outColor = vec4(srcCol, 1.0);
         return;
     }
     if (dbgMode == DEBUG_MODE_REFLECTION_VECTOR) {
