@@ -21,6 +21,7 @@ layout(set = 0, binding = 5) uniform WaterUBO {
     vec4 screenSize;
     float brushAlpha;
     float brushMode;         // 0=overlay, 2=PAINT (replace solid texture)
+    float waterBlurEnabled;  // 1 = body/column written this frame, fetch/blur allowed
 } ubo;
 
 layout(set = 0, binding = 6) uniform sampler2D sceneSkyTex;
@@ -104,7 +105,11 @@ void main() {
     // the water shader from the measured depth and the layer's blur params)
     // sets the disc size, and a bilateral depth weight keeps the blur from
     // smearing across depth edges.
-    if (waterAlpha > 0.0) {
+    // H4: waterBlurEnabled is false when no layer needs this blur, i.e. the
+    // water pass bound the single-attachment variant and never wrote the
+    // body/column targets. The whole block is then skipped so no body/column
+    // fetch is executed; the alpha/occlusion path below is unaffected.
+    if (waterAlpha > 0.0 && ubo.waterBlurEnabled > 0.5) {
         vec4 bodyCenter = textureLod(waterBodyTex, uv, 0.0);
         vec2 columnCenter = textureLod(waterColumnTex, uv, 0.0).rg;
         float blurPx = columnCenter.g;

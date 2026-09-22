@@ -29,6 +29,10 @@ public:
     /// waterGeomDepthView is the raw water geometry depth buffer (D32).
     /// brushAlpha controls the brush overlay opacity (0.0 = invisible, 1.0 = fully opaque).
     /// brushMode: 0=overlay, 2=PAINT (replace solid texture within brush volume).
+    /// waterBlurEnabled: pass WaterRenderer::waterBlurNeeded(). When false (no
+    /// layer has enableBlur && blurRadius > 0, or water-in-main is active) the
+    /// composite performs no waterBody/waterColumn fetches at all; the water
+    /// pass wrote only the color target (H4, perf report 19).
     void render(VulkanApp* app, VkCommandBuffer cmd,
                 VkImageView sceneColorView, VkImageView sceneDepthView,
                 VkImageView waterColorView,
@@ -43,7 +47,8 @@ public:
                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
                 const glm::vec3& viewPos,
                 uint32_t frameIdx,
-                VkImageView skyView = VK_NULL_HANDLE);
+                VkImageView skyView = VK_NULL_HANDLE,
+                bool waterBlurEnabled = true);
 
     bool isReady() const { return pipeline != VK_NULL_HANDLE; }
 

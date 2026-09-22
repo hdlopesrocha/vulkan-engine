@@ -353,7 +353,8 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                    const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                    const glm::vec3& viewPos,
                                    uint32_t frameIdx,
-                                   VkImageView skyView) {
+                                   VkImageView skyView,
+                                   bool waterBlurEnabled) {
     assert(skyView != VK_NULL_HANDLE);
     if (pipeline == VK_NULL_HANDLE) {
         std::cerr << "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping." << std::endl;
@@ -373,6 +374,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     ubo.screenSize = glm::vec4(renderWidth, renderHeight, 1.0f / renderWidth, 1.0f / renderHeight);
     ubo.brushAlpha = brushAlpha;
     ubo.brushMode = brushMode;
+    // H4: 0 when no water layer needs the final-pass blur; the composite then
+    // skips the body/column fetches entirely.
+    ubo.waterBlurEnabled = waterBlurEnabled ? 1.0f : 0.0f;
 
     void* data;
     data = uniformBuffer.map(0);

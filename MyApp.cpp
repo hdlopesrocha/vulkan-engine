@@ -3022,7 +3022,13 @@ public:
                 invViewProj,
                 glm::vec3(uboStatic.viewPos),
                 frameIdx,
-                skyViewPP);
+                skyViewPP,
+                // Body/column blur gate (perf_report_19 H4): when no layer
+                // needs the final-pass blur the geometry pass skips the aux
+                // targets and the composite must not fetch them. water-in-main
+                // has no aux targets at all.
+                !settings.waterInMainPass
+                    && sceneRenderer->mainLiquidRenderer->waterBlurNeeded());
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 17);
         }

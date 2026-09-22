@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 #include "../ShaderStage.hpp"
@@ -157,9 +158,28 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
 
 
 
+void WaterRenderer::refreshWaterBlurNeeded() {
+    waterBlurNeeded_ = false;
+    for (bool needed : layerBlurNeeded_) {
+        if (needed) {
+            waterBlurNeeded_ = true;
+            break;
+        }
+    }
+}
+
 void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p) {
     if (!appPtr) return;
     if (layer >= waterParamsCount) return;
+
+    // H4: keep the per-layer blur gate in sync with the SSBO write so the
+    // geometry pass can pick the single-attachment variant without a new
+    // MyApp setter.
+    if (static_cast<size_t>(layer) >= layerBlurNeeded_.size())
+        layerBlurNeeded_.resize(static_cast<size_t>(layer) + 1, false);
+    layerBlurNeeded_[layer] = p.enableBlur && p.blurRadius > 0.0f;
+    refreshWaterBlurNeeded();
+
     WaterParamsGPU gpu = makeWaterParamsGPU(p);
     waterGpuPeriodsToScales(gpu); // periods -> shader scales, at the upload boundary
 
@@ -725,6 +745,12 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     VkShaderModule fragNoRtModule = app->getOrCreateShaderModule("shaders/main_water.frag.spv");
     VkShaderModule fragRtModule = (app && app->rayTracingEnabled())
         ? app->getOrCreateShaderModule("shaders/main_water_rt.frag.spv") : VK_NULL_HANDLE;
+    // H4 single-attachment variants: same water fragment stage compiled with
+    // WATER_NO_BODY, i.e. without the body/column aux outputs. Selected while
+    // no layer requests the final-pass blur.
+    VkShaderModule fragNoBodyModule = app->getOrCreateShaderModule("shaders/main_water_nobody.frag.spv");
+    VkShaderModule fragRtNoBodyModule = (app && app->rayTracingEnabled())
+        ? app->getOrCreateShaderModule("shaders/main_water_rt_nobody.frag.spv") : VK_NULL_HANDLE;
     VkShaderModule tescModule = VK_NULL_HANDLE;
     VkShaderModule teseModule = VK_NULL_HANDLE;
     // RT TES: same water TES plus the optional inline ray-query water-region
@@ -864,6 +890,23 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     pipelineInfo.layout = waterGeometryPipelineLayout;
     pipelineInfo.subpass = 0;
 
+    // H4 single-attachment state: the WATER_NO_BODY fragment modules declare
+    // only outColor, so the no-body geometry pipelines must advertise exactly
+    // one color attachment (and a matching blend-state count — dynamic
+    // rendering requires pColorBlendState->attachmentCount to equal
+    // colorAttachmentCount). Everything else is shared with the 3-attachment
+    // variants.
+    VkFormat noBodyColorFmt = VK_FORMAT_R32G32B32A32_SFLOAT;
+    VkPipelineRenderingCreateInfo noBodyRenderingInfo = pipelineRenderingInfo;
+    noBodyRenderingInfo.colorAttachmentCount = 1;
+    noBodyRenderingInfo.pColorAttachmentFormats = &noBodyColorFmt;
+    std::array<VkPipelineColorBlendAttachmentState, 1> noBodyBlendAttachments = {
+        colorBlendAttachments[0]
+    };
+    VkPipelineColorBlendStateCreateInfo noBodyColorBlending = colorBlending;
+    noBodyColorBlending.attachmentCount = 1;
+    noBodyColorBlending.pAttachments = noBodyBlendAttachments.data();
+
     // Phase-1 water-in-main blend variant: same stages/layout, but drawn into
     // the MAIN solid color/depth targets with alpha blending. Depth writes stay
     // off so water neither disturbs the solid depth (sampled downstream) nor
@@ -925,6 +968,8 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
                             TrackedHandle<VkPipeline>& mainRt,
                             TrackedHandle<VkPipeline>& geomRtProf,
                             TrackedHandle<VkPipeline>& mainRtProf,
+                            TrackedHandle<VkPipeline>& geomNoBody,
+                            TrackedHandle<VkPipeline>& geomRtNoBody,
                             const char* familyLabel) {
         std::vector<VkPipelineShaderStageCreateInfo> stages;
 
@@ -978,6 +1023,13 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         familyMainPipelineInfo.pInputAssemblyState = &familyInputAssembly;
         if (tess) familyMainPipelineInfo.pTessellationState = &tessState;
 
+        // H4 no-body geometry-only variant: same family state, one color
+        // attachment, WATER_NO_BODY fragment module. No water-in-main
+        // counterpart is created (that pipeline already has one attachment).
+        VkGraphicsPipelineCreateInfo familyNoBodyPipelineInfo = familyPipelineInfo;
+        familyNoBodyPipelineInfo.pNext = &noBodyRenderingInfo;
+        familyNoBodyPipelineInfo.pColorBlendState = &noBodyColorBlending;
+
         auto createVariant = [&](VkShaderModule frag, VkShaderModule tese,
                                  TrackedHandle<VkPipeline>& geomOut,
                                  TrackedHandle<VkPipeline>& mainOut,
@@ -1014,29 +1066,61 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
             }
         };
 
+        // Geometry-only (no water-in-main) variant used with WATER_NO_BODY.
+        // The TES is explicitly reset to the base module when no specialized
+        // one is requested, so the RT swap performed by a previous variant does
+        // not leak into the non-RT no-body pipeline.
+        auto createNoBodyVariant = [&](VkShaderModule frag, VkShaderModule tese,
+                                       TrackedHandle<VkPipeline>& geomOut,
+                                       const char* variantLabel) {
+            if (frag == VK_NULL_HANDLE) return;
+            stages.back().module = frag;
+            if (teseStageIndex >= 0)
+                stages[teseStageIndex].module = (tese != VK_NULL_HANDLE) ? tese : teseModule;
+
+            std::string geomName = std::string("WaterRenderer: waterGeometryPipeline (")
+                                 + variantLabel + " " + familyLabel + ", no body)";
+            if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &familyNoBodyPipelineInfo, nullptr, &geomOut) != VK_SUCCESS) {
+                std::cerr << "[WaterRenderer] Warning: Failed to create water geometry pipeline ("
+                          << variantLabel << " " << familyLabel << ", no body)" << std::endl;
+                geomOut = VK_NULL_HANDLE;
+            } else {
+                app->resources.addPipeline(geomOut, geomName.c_str());
+                std::cout << "[WaterRenderer] Created water geometry pipeline "
+                          << variantLabel << " " << familyLabel
+                          << " (dynamic rendering, 1 color attachment, no body/column)" << std::endl;
+            }
+        };
+
         createVariant(fragNoRtModule, VK_NULL_HANDLE, geomNoRt, mainNoRt, "non-RT");
         createVariant(fragRtModule, teseRtModule, geomRt, mainRt, "RT");
         // The profiling TES is only swapped in when a TES stage exists
         // (teseStageIndex >= 0); the non-tess family ignores it.
         createVariant(fragRtProfModule, teseRtProfModule, geomRtProf, mainRtProf, "RT prof");
+        createNoBodyVariant(fragNoBodyModule, VK_NULL_HANDLE, geomNoBody, "non-RT");
+        createNoBodyVariant(fragRtNoBodyModule, teseRtModule, geomRtNoBody, "RT");
     };
 
     // Tessellated family (today's pipeline, unchanged apart from the factory
     // refactor): PATCH_LIST + TCS/TES + tessellation state.
     createFamily(true, vertModule, waterGeometryPipeline, waterMainPipeline,
                  waterGeometryPipelineRt, waterMainPipelineRt,
-                 waterGeometryPipelineRtProf, waterMainPipelineRtProf, "tess");
+                 waterGeometryPipelineRtProf, waterMainPipelineRtProf,
+                 waterGeometryPipelineNoBody, waterGeometryPipelineRtNoBody, "tess");
     // Non-tessellated family (C1): TRIANGLE_LIST + WATER_NO_TESS VS, no TCS/TES
     // and no tessellation state.
     createFamily(false, vertNoTessModule, waterGeometryPipelineNoTess, waterMainPipelineNoTess,
                  waterGeometryPipelineRtNoTess, waterMainPipelineRtNoTess,
-                 waterGeometryPipelineRtProfNoTess, waterMainPipelineRtProfNoTess, "no-tess");
+                 waterGeometryPipelineRtProfNoTess, waterMainPipelineRtProfNoTess,
+                 waterGeometryPipelineNoTessNoBody, waterGeometryPipelineRtNoTessNoBody, "no-tess");
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
     vertModule = VK_NULL_HANDLE;
     vertNoTessModule = VK_NULL_HANDLE;
     fragNoRtModule = VK_NULL_HANDLE;
     fragRtModule = VK_NULL_HANDLE;
+    fragNoBodyModule = VK_NULL_HANDLE;
+    fragRtNoBodyModule = VK_NULL_HANDLE;
     teseRtModule = VK_NULL_HANDLE;
     fragRtProfModule = VK_NULL_HANDLE;
     teseRtProfModule = VK_NULL_HANDLE;
@@ -1047,13 +1131,26 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 }
 
 void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex, bool loadExisting) {
-    if (getWaterGeometryPipeline() == VK_NULL_HANDLE) return;
     if (frameIndex >= 3) return;
-    // The geometry pipeline declares three color attachments (water color +
-    // body + column), so all must exist to begin the pass.
+
+    // H4: the body/column aux attachments only exist in the blur-capable
+    // pipeline variant. In no-body mode the pass requires (and touches) only
+    // the water color + geometry depth attachments; the body/column images and
+    // their tracked layouts stay untouched so a later blur-on frame resumes
+    // from the last SHADER_READ_ONLY state. Cached before the early-outs so
+    // endWaterGeometryPass always matches the selected mode.
+    activePassBodyAttachments_ = geometryBodyAttachmentsActive();
+    const bool useBody = activePassBodyAttachments_;
+
+    if (getWaterGeometryPipeline() == VK_NULL_HANDLE) return;
+
+    // The water color target is always required. The body/column images are
+    // required only when the selected variant writes them.
     if (waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
-    if (waterBodyImages[frameIndex] == VK_NULL_HANDLE || waterBodyImageViews[frameIndex] == VK_NULL_HANDLE) return;
-    if (waterColumnImages[frameIndex] == VK_NULL_HANDLE || waterColumnImageViews[frameIndex] == VK_NULL_HANDLE) return;
+    if (useBody) {
+        if (waterBodyImages[frameIndex] == VK_NULL_HANDLE || waterBodyImageViews[frameIndex] == VK_NULL_HANDLE) return;
+        if (waterColumnImages[frameIndex] == VK_NULL_HANDLE || waterColumnImageViews[frameIndex] == VK_NULL_HANDLE) return;
+    }
 
     activeWaterFrameIndex = frameIndex;
 
@@ -1067,10 +1164,11 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     // DEPTH_STENCIL_ATTACHMENT_OPTIMAL (occlusion testing). Same stage/access
     // mapping as the single transitions; entries already in the target layout
     // (e.g. depth re-entered with LOAD ops for the brush-liquid overlay)
-    // resolve to no-ops inside the same call.
+    // resolve to no-ops inside the same call. H4: body/column entries are
+    // omitted in no-body mode.
     {
         std::vector<VulkanApp::BatchTransition> batch;
-        batch.reserve(4);
+        batch.reserve(useBody ? 4 : 2);
         VulkanApp::BatchTransition colorBegin{};
         colorBegin.image     = waterDepthImages[frameIndex];
         colorBegin.format    = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -1078,7 +1176,7 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
         colorBegin.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         colorBegin.mipLevels = 1;
         batch.push_back(colorBegin);
-        if (waterBodyImages[frameIndex] != VK_NULL_HANDLE) {
+        if (useBody && waterBodyImages[frameIndex] != VK_NULL_HANDLE) {
             VulkanApp::BatchTransition bodyBegin{};
             bodyBegin.image     = waterBodyImages[frameIndex];
             bodyBegin.format    = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -1087,7 +1185,7 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
             bodyBegin.mipLevels = 1;
             batch.push_back(bodyBegin);
         }
-        if (waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
+        if (useBody && waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
             VulkanApp::BatchTransition columnBegin{};
             columnBegin.image     = waterColumnImages[frameIndex];
             columnBegin.format    = VK_FORMAT_R16G16_SFLOAT;
@@ -1121,25 +1219,28 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     // Attachment 1: water body (refraction+tint body RGB, weight A) for the
     // composite's depth-guided blur (blurred and re-inserted by weight, so the
     // reflection stays sharp). Preserved alongside the color target when the
-    // brush-liquid overlay re-enters this pass with LOAD ops.
+    // brush-liquid overlay re-enters this pass with LOAD ops. Only present in
+    // the blur-capable variant (H4).
     VkRenderingAttachmentInfo bodyAttachment{};
     bodyAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    bodyAttachment.imageView = waterBodyImageViews[frameIndex];
+    bodyAttachment.imageView = useBody ? waterBodyImageViews[frameIndex] : VK_NULL_HANDLE;
     bodyAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     bodyAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     bodyAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     bodyAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
 
     // Attachment 2: water column (measured water depth in R, per-material blur
-    // radius in pixels in G) driving the composite blur.
+    // radius in pixels in G) driving the composite blur. Same no-body gating.
     VkRenderingAttachmentInfo columnAttachment{};
     columnAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    columnAttachment.imageView = waterColumnImageViews[frameIndex];
+    columnAttachment.imageView = useBody ? waterColumnImageViews[frameIndex] : VK_NULL_HANDLE;
     columnAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     columnAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     columnAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     columnAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
 
+    // H4: in no-body mode only attachment 0 is declared; the extra entries are
+    // present but excluded by colorAttachmentCount.
     std::array<VkRenderingAttachmentInfo, 3> colorAttachments = {
         colorAttachment, bodyAttachment, columnAttachment
     };
@@ -1165,7 +1266,8 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     renderingInfo.renderArea.offset = {0, 0};
     renderingInfo.renderArea.extent = {renderWidth, renderHeight};
     renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size());
+    // H4: the no-body pipeline variant declares a single color attachment.
+    renderingInfo.colorAttachmentCount = useBody ? static_cast<uint32_t>(colorAttachments.size()) : 1u;
     renderingInfo.pColorAttachments = colorAttachments.data();
     renderingInfo.pDepthAttachment = &depthAttachment;
 
@@ -1199,9 +1301,11 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
     // Batched end barriers: water color + body + column
     // COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL (sampled by the
     // forward swapchain/postprocess pass, which blurs the body using the
-    // packed water column depth).
+    // packed water column depth). H4: in no-body mode the aux attachments were
+    // never transitioned/attached, so their barriers and layout updates are
+    // skipped and only the color target is restored.
     std::vector<VulkanApp::BatchTransition> batch;
-    batch.reserve(3);
+    batch.reserve(activePassBodyAttachments_ ? 3 : 1);
     VulkanApp::BatchTransition colorEnd{};
     colorEnd.image     = waterDepthImages[frameIndex];
     colorEnd.format    = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -1209,7 +1313,7 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
     colorEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     colorEnd.mipLevels = 1;
     batch.push_back(colorEnd);
-    if (waterBodyImages[frameIndex] != VK_NULL_HANDLE) {
+    if (activePassBodyAttachments_ && waterBodyImages[frameIndex] != VK_NULL_HANDLE) {
         VulkanApp::BatchTransition bodyEnd{};
         bodyEnd.image     = waterBodyImages[frameIndex];
         bodyEnd.format    = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -1218,7 +1322,7 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
         bodyEnd.mipLevels = 1;
         batch.push_back(bodyEnd);
     }
-    if (waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
+    if (activePassBodyAttachments_ && waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
         VulkanApp::BatchTransition columnEnd{};
         columnEnd.image     = waterColumnImages[frameIndex];
         columnEnd.format    = VK_FORMAT_R16G16_SFLOAT;
@@ -1229,9 +1333,9 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
     }
     appPtr->recordTransitionBatch(cmd, batch);
     waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    if (waterBodyImages[frameIndex] != VK_NULL_HANDLE)
+    if (activePassBodyAttachments_ && waterBodyImages[frameIndex] != VK_NULL_HANDLE)
         waterBodyImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    if (waterColumnImages[frameIndex] != VK_NULL_HANDLE)
+    if (activePassBodyAttachments_ && waterColumnImages[frameIndex] != VK_NULL_HANDLE)
         waterColumnImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
@@ -1248,9 +1352,10 @@ void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t 
     // the composite at postprocess binding 7). Was: endWaterGeometryPass plus
     // a second lone depth transition (two calls). Same mapping as the single
     // transitions; the geom depth shares the pass boundary, so one call covers
-    // all resources.
+    // all resources. H4: in no-body mode the aux attachments were never
+    // transitioned/attached, so only color + depth are restored.
     std::vector<VulkanApp::BatchTransition> batch;
-    batch.reserve(4);
+    batch.reserve(activePassBodyAttachments_ ? 4 : 2);
     VulkanApp::BatchTransition colorEnd{};
     colorEnd.image     = waterDepthImages[frameIndex];
     colorEnd.format    = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -1258,7 +1363,7 @@ void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t 
     colorEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     colorEnd.mipLevels = 1;
     batch.push_back(colorEnd);
-    if (waterBodyImages[frameIndex] != VK_NULL_HANDLE) {
+    if (activePassBodyAttachments_ && waterBodyImages[frameIndex] != VK_NULL_HANDLE) {
         VulkanApp::BatchTransition bodyEnd{};
         bodyEnd.image     = waterBodyImages[frameIndex];
         bodyEnd.format    = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -1267,7 +1372,7 @@ void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t 
         bodyEnd.mipLevels = 1;
         batch.push_back(bodyEnd);
     }
-    if (waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
+    if (activePassBodyAttachments_ && waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
         VulkanApp::BatchTransition columnEnd{};
         columnEnd.image     = waterColumnImages[frameIndex];
         columnEnd.format    = VK_FORMAT_R16G16_SFLOAT;
@@ -1287,9 +1392,9 @@ void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t 
     }
     appPtr->recordTransitionBatch(cmd, batch);
     waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    if (waterBodyImages[frameIndex] != VK_NULL_HANDLE)
+    if (activePassBodyAttachments_ && waterBodyImages[frameIndex] != VK_NULL_HANDLE)
         waterBodyImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    if (waterColumnImages[frameIndex] != VK_NULL_HANDLE)
+    if (activePassBodyAttachments_ && waterColumnImages[frameIndex] != VK_NULL_HANDLE)
         waterColumnImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE)
         waterGeomDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1419,6 +1524,18 @@ VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint
 }
 
 void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams) {
+    // H4: track the per-layer blur gate from the full layer vector. The SSBO may
+    // hold more entries than the CPU vector (waterParamsCount); entries beyond
+    // the uploaded vector are never written and can never request blur, so they
+    // are tracked as false.
+    const size_t trackedLayers = std::max(static_cast<size_t>(waterParamsCount),
+                                          waterParams.size());
+    layerBlurNeeded_.assign(trackedLayers, false);
+    for (uint32_t i = 0; i < waterParams.size(); ++i) {
+        layerBlurNeeded_[i] = waterParams[i].enableBlur && waterParams[i].blurRadius > 0.0f;
+    }
+    refreshWaterBlurNeeded();
+
     if (waterParamsBuffer.buffer == VK_NULL_HANDLE) return;
 
     for (uint32_t i = 0; i < waterParams.size(); ++i) {

@@ -61,8 +61,13 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 //           the inverse reflection mix), the only part the final composite
 //           blurs — reflections and surface effects stay sharp.
 //  column = measured water depth in meters, the blur radius driver.
+// WATER_NO_BODY (H4): the single-color-attachment water variant used when no
+// layer needs the final-pass blur. The outputs (and their writes in
+// water_surface.glsl) are compiled out; all shading computation stays.
+#ifndef WATER_NO_BODY
 layout(location = FRAG_OUT_WATER_BODY) out vec4 outWaterBody;
 layout(location = FRAG_OUT_WATER_COLUMN) out vec4 outWaterColumn;
+#endif
 #endif
 
 #include "includes/common.glsl"

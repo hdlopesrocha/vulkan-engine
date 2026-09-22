@@ -543,8 +543,11 @@ vec2 waterDirToEquirectUV(vec3 dir) {
 void shadeWaterSurface() {
     // Default aux outputs: every early-return debug view leaves a defined
     // value (zeros = no body, no weighted contribution, no measured depth).
+    // WATER_NO_BODY (H4): compiled out with the output declarations.
+#ifndef WATER_NO_BODY
     outWaterBody = vec4(0.0);
     outWaterColumn = vec4(0.0);
+#endif
 
     // Get water parameters from SSBO indexed by fragment brushIndex.
     // Brush ids are TERRAIN paint ids (0..N textures) while the water SSBO
@@ -1569,6 +1572,9 @@ void shadeWaterSurface() {
     // in pixels (0 = crisp). The radius grows with the measured depth up to
     // the per-material cap, so the blur is per water material (layer); it is
     // 0 whenever the material flag OR the global Settings blur toggle is off.
+    // WATER_NO_BODY (H4): the single-color-attachment variant has no aux
+    // attachments, so only the writes are compiled out.
+#ifndef WATER_NO_BODY
     float bodyWeight = (enableReflection
         ? clamp(1.0 - mirrorPresence, 0.0, 1.0)
         : 1.0) * clamp(alpha, 0.0, 1.0);
@@ -1577,6 +1583,7 @@ void shadeWaterSurface() {
         : 0.0;
     outWaterBody = vec4(refractedColor, bodyWeight);
     outWaterColumn = vec4(min(max(regionDepth, 0.0), 60000.0), blurPx, 0.0, 0.0);
+#endif
 
     // ── Unified debug views (IDs shared with the solid path) ──
     // Canonical IDs live in includes/debug_modes.glsl (mirror of

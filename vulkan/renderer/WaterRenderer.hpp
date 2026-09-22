@@ -160,6 +160,15 @@ public:
     void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
     bool rtShadingEnabled() const { return rtShadingEnabled_; }
 
+    // Runtime body/column (final-pass blur) gate (H4, perf report 19): true
+    // when at least one water layer has enableBlur && blurRadius > 0, i.e.
+    // the composite's depth-guided blur can run. When false the geometry pass
+    // selects the single-color-attachment WATER_NO_BODY variant and skips the
+    // body/column transitions/clears, and the composite must not fetch them.
+    // Tracked from the layer params (initializeWaterParamsBuffer /
+    // updateGPUParamsForLayer), so no new MyApp setter is required.
+    bool waterBlurNeeded() const { return waterBlurNeeded_; }
+
     // Runtime tessellation selector (Settings::tessellationEnabled). Both
     // pipeline families are built at init — the historical PATCH_LIST + TCS/TES
     // family and a TRIANGLE_LIST family with the WATER_NO_TESS vertex module
@@ -265,7 +274,29 @@ private:
     // tessellation is off the non-tess (TRIANGLE_LIST, no TCS/TES) family is
     // used, with the RT-prof variant falling back to the plain RT non-tess
     // variant (and RT to non-RT) when a variant was not built.
+    //
+    // H4: when no layer needs the final-pass blur, the single-attachment
+    // WATER_NO_BODY variants are preferred (RT-prof falls back to the RT
+    // no-body variant; a missing no-body module falls back to the matching
+    // blur-capable variant). geometryBodyAttachmentsActive() mirrors this
+    // selection so the pass begin/end always agree with the bound pipeline.
     VkPipeline activeGeometryPipeline() const {
+        if (!waterBlurNeeded_) {
+            if (!tessellationEnabled_) {
+                if (rtShadingEnabled_ && waterGeometryPipelineRtNoTessNoBody != VK_NULL_HANDLE)
+                    return waterGeometryPipelineRtNoTessNoBody.handle;
+                if (waterGeometryPipelineNoTessNoBody != VK_NULL_HANDLE)
+                    return waterGeometryPipelineNoTessNoBody.handle;
+            } else {
+                if (rtShadingEnabled_ && waterGeometryPipelineRtNoBody != VK_NULL_HANDLE)
+                    return waterGeometryPipelineRtNoBody.handle;
+                if (waterGeometryPipelineNoBody != VK_NULL_HANDLE)
+                    return waterGeometryPipelineNoBody.handle;
+            }
+            // No-body variant unavailable: fall through to the blur-capable
+            // variants (waterBlurNeeded_ false then only skips the composite
+            // blur path, which has no effect since blurPx is 0 anyway).
+        }
         if (!tessellationEnabled_) {
             if (rtShadingEnabled_ && rtProfilingEnabled_ && waterGeometryPipelineRtProfNoTess != VK_NULL_HANDLE)
                 return waterGeometryPipelineRtProfNoTess.handle;
@@ -278,6 +309,26 @@ private:
         return (rtShadingEnabled_ && waterGeometryPipelineRt != VK_NULL_HANDLE)
             ? waterGeometryPipelineRt.handle : waterGeometryPipeline.handle;
     }
+
+    // Whether the currently selectable geometry pipeline writes the body and
+    // column aux attachments. Mirrors activeGeometryPipeline()'s no-body
+    // selection (H4) so begin/endWaterGeometryPass and the pipeline always
+    // agree, including the missing-module fallback.
+    bool geometryBodyAttachmentsActive() const {
+        if (waterBlurNeeded_) return true;
+        if (!tessellationEnabled_) {
+            if (rtShadingEnabled_ && waterGeometryPipelineRtNoTessNoBody != VK_NULL_HANDLE) return false;
+            if (waterGeometryPipelineNoTessNoBody != VK_NULL_HANDLE) return false;
+        } else {
+            if (rtShadingEnabled_ && waterGeometryPipelineRtNoBody != VK_NULL_HANDLE) return false;
+            if (waterGeometryPipelineNoBody != VK_NULL_HANDLE) return false;
+        }
+        return true;
+    }
+
+    // Recompute waterBlurNeeded_ from the tracked per-layer gates.
+    void refreshWaterBlurNeeded();
+
     VkPipeline activeMainPipeline() const {
         if (!tessellationEnabled_) {
             if (rtShadingEnabled_ && rtProfilingEnabled_ && waterMainPipelineRtProfNoTess != VK_NULL_HANDLE)
@@ -358,6 +409,14 @@ private:
     TrackedHandle<VkPipeline> waterMainPipelineRtNoTess;
     TrackedHandle<VkPipeline> waterGeometryPipelineRtProfNoTess;
     TrackedHandle<VkPipeline> waterMainPipelineRtProfNoTess;
+    // H4 (perf report 19): single-color-attachment geometry variants built
+    // from the WATER_NO_BODY fragment modules (no outWaterBody/outWaterColumn).
+    // Selected while waterBlurNeeded_ is false; there are no water-in-main
+    // counterparts (that pipeline already targets one attachment).
+    TrackedHandle<VkPipeline> waterGeometryPipelineNoBody;
+    TrackedHandle<VkPipeline> waterGeometryPipelineRtNoBody;
+    TrackedHandle<VkPipeline> waterGeometryPipelineNoTessNoBody;
+    TrackedHandle<VkPipeline> waterGeometryPipelineRtNoTessNoBody;
     bool tessellationEnabled_ = true;
     bool rtShadingEnabled_ = true;
     bool rtProfilingEnabled_ = false;
@@ -366,6 +425,19 @@ private:
     // Global gate for the per-material refraction/tint blur (Settings::
     // blurEnabled): delivered as WaterRenderUBO.timeParams.w.
     bool blurEnabled_ = true;
+
+    // H4 per-layer blur gate: layerBlurNeeded_[i] = layer i's enableBlur &&
+    // blurRadius > 0, kept in sync with the SSBO upload; waterBlurNeeded_ is
+    // the OR over all tracked layers. The vector is sized to the larger of
+    // waterParamsCount and the uploaded CPU vector so SSBO entries that are
+    // never written count as no-blur.
+    std::vector<bool> layerBlurNeeded_;
+    bool waterBlurNeeded_ = true; // conservative default until params init
+
+    // Body/column mode of the pass currently being recorded, cached by
+    // beginWaterGeometryPass so both end functions skip the aux transitions in
+    // the no-body (H4) mode. Default true = blur-capable.
+    bool activePassBodyAttachments_ = true;
 
     // Water geometry pipeline layout (includes depth texture binding)
     TrackedHandle<VkPipelineLayout> waterGeometryPipelineLayout;
