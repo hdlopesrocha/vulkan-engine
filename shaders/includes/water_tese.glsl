@@ -1,6 +1,15 @@
 // Water TES (moved from water.tese). Requires: ubo, locations,
 // perlin, water_noise. Defines the stage's main().
+//
+// C1 (perf report 19): this include also exposes the shared per-vertex wave
+// core waterDisplaceWaterVertex() and the set-2 depth sampling helper
+// waterShoreDirFromSamples() to the WATER_NO_TESS vertex path (main.vert built
+// with -DWATER_NO_TESS=1). The no-tess VS measures fragWaterDepth/fragShoreDir
+// with the exact same samples and sign rules as the TES, so the tessellated
+// and non-tessellated geometry paths cannot drift. Only the TES
+// layout/interface and the TES main() are compiled out under WATER_NO_TESS.
 
+#ifndef WATER_NO_TESS
 
 // Water tessellation evaluation shader
 // Applies wave displacement using Perlin noise
@@ -29,6 +38,7 @@ layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace; // light-space pos 
 layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
 layout(location = VARY_HSV) out vec3 fragHSV;
 
+#endif // !WATER_NO_TESS
 
 // Solid terrain depth (set 2, binding 5). The shore-wave zones are driven by
 // the water depth measured against the REAL bottom here, not by the water
@@ -88,6 +98,61 @@ vec2 waterShoreDirFromSamples(float rawC, float rawX, float rawY,
     return -g / gl;
 }
 
+// ── Shared per-vertex wave core ─────────────────────────────────────────
+// Displaces `pos` along its base normal by the thickness-zoned wave field and
+// returns the analytic wave normal (exact for the `base + N * h` height
+// field). The TES full path below and the WATER_NO_TESS vertex shader both
+// call this, so the two geometry paths can never drift.
+struct WaterVertexWave {
+    vec3 pos;           // displaced world position
+    vec3 normal;        // analytic wave normal at the displaced surface
+    vec3 basePos;       // undisplaced base world position
+    float displacement; // signed height displacement along the base normal
+};
+
+WaterVertexWave waterDisplaceWaterVertex(vec3 pos, vec3 normal, float animTime,
+                                         float waterDepth, vec2 shoreDir,
+                                         float bumpAmp, WaterParamsGPU wp) {
+    // Surface basis (tangent plane) for projecting the analytic gradient.
+    vec3 upVec = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(upVec, normal));
+    vec3 B = cross(normal, T);
+
+    vec4 wave = waterWaveSample(
+        pos.xyz,
+        animTime,
+        waterDepth,
+        bumpAmp,
+        shoreDir,
+        wp
+    );
+
+    // Project the analytic gradient onto the tangent basis to get the
+    // height-field slopes along T and B.
+    float dhdT = dot(wave.yzw, T);
+    float dhdB = dot(wave.yzw, B);
+
+    vec3 bumpedN = normalize(normal - dhdT * T - dhdB * B);
+    if (dot(bumpedN, normal) < 0.0) bumpedN = -bumpedN;
+
+    WaterVertexWave v;
+    v.displacement = wave.x;
+    // Displace along the FLAT base normal, not the perturbed one. The analytic
+    // normal `bumpedN = N - dHdT*T - dHdB*B` is the exact surface normal only for
+    // a height field defined as `base + N * h`. Displacing along the tilted
+    // `bumpedN` instead would build a different surface whose true normal no
+    // longer matches `bumpedN`, so lighting would disagree with the geometry
+    // (visible especially on steep/large waves). Keeping the displacement axis
+    // fixed at `normal` makes the rasterized surface and the shading normal
+    // consistent.
+    v.pos = pos + wave.x * normal;
+    v.basePos = pos;
+    v.normal = bumpedN;
+    return v;
+}
+
+#ifndef WATER_NO_TESS
+
 void main() {
     // Interpolate position
         vec3 bary = gl_TessCoord;
@@ -125,6 +190,31 @@ void main() {
     // out-of-range terrain paint ids (see water.frag).
     int nWL = max(waterParams.length(), 1);
     WaterParamsGPU wp = waterParams[(chosenIdx >= 0 && chosenIdx < nWL) ? chosenIdx : 0];
+
+    // ── C1 fast path: global tessellation toggle is OFF ────────────────
+    // The TCS already clamped every tessellation level to 1, so this stage
+    // runs once per base vertex. Emit the interpolated base vertex directly
+    // and skip ALL texture fetches, the shore-gradient solve, the displaced-UV
+    // refinement and the full wave field. The fragment stage derives its own
+    // analytic wave normal from fragBasePos/fragWaterDepth/fragShoreDir, so
+    // the base normal below is only a fallback.
+    if (ubo.passParams.y < 0.5) {
+        fragBaseNormal = normal;                      // undisplaced base normal
+        fragBasePos = vec4(pos, wp.waveParams.z);     // base pos + raw bump amplitude
+        // Shallow safe fallback depth (the TES-only depth textures are not
+        // sampled here): finite waves, no deep swell, no contact foam.
+        fragWaterDepth = clamp(wp.waveZones.z, 0.0, max(wp.waveZones.x, 1.0));
+        fragShoreDir = normalize(wp.waveDirection.xy + vec2(1e-5, 0.0));
+        fragNormal = normal;
+        fragDebug = vec3(0.5);                        // zero displacement envelope
+        fragPos = pos;
+        fragPosWorld = pos;
+        fragPosLightSpace = ubo.lightSpaceMatrix * vec4(pos, 1.0);
+        vec4 fastClipPos = ubo.viewProjection * vec4(pos, 1.0);
+        fragPosClip = fastClipPos;
+        gl_Position = fastClipPos;
+        return;
+    }
 
     // Get the water parameters driving the single wave field.
     float time = waterRenderUBO.timeParams.x;
@@ -252,44 +342,17 @@ void main() {
 
     // Calculate the thickness-zoned shore-wave displacement and its analytic
     // spatial gradient (single wave field: directional swell + chop + mask).
+    // Shared with the WATER_NO_TESS vertex path via waterDisplaceWaterVertex()
+    // so both geometry paths cannot drift.
     float animTime = time * noiseTimeSpeed;
-    vec3 xyz = pos.xyz;
-
-    // Surface basis (tangent plane) for projecting the analytic gradient.
-    vec3 upVec = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 T = normalize(cross(upVec, normal));
-    vec3 B = cross(normal, T);
-
-    vec4 wave = waterWaveSample(
-        xyz,
-        animTime,
-        waterDepth,
-        bumpAmp,
-        shoreDir,
-        wp
-    );
-
-    float waveDisplacement = wave.x;
-
-    // Project the analytic gradient onto the tangent basis to get the
-    // height-field slopes along T and B.
-    float dhdT = dot(wave.yzw, T);
-    float dhdB = dot(wave.yzw, B);
-
-    vec3 bumpedN = normalize(normal - dhdT * T - dhdB * B);
-    if (dot(bumpedN, normal) < 0.0) bumpedN = -bumpedN;
-
-    // Displace along the FLAT base normal, not the perturbed one. The analytic
-    // normal `bumpedN = N - dHdT*T - dHdB*B` is the exact surface normal only for
-    // a height field defined as `base + N * h`. Displacing along the tilted
-    // `bumpedN` instead would build a different surface whose true normal no
-    // longer matches `bumpedN`, so lighting would disagree with the geometry
-    // (visible especially on steep/large waves). Keeping the displacement axis
-    // fixed at `normal` makes the rasterized surface and the shading normal
-    // consistent.
-    pos += waveDisplacement * normal;
-    fragNormal = bumpedN;
+    WaterVertexWave wv = waterDisplaceWaterVertex(pos, normal, animTime,
+                                                  waterDepth, shoreDir, bumpAmp, wp);
+    float waveDisplacement = wv.displacement;
+    pos = wv.pos;
+    fragNormal = wv.normal;
     fragBaseNormal = normal;   // undisplaced (flat) interpolated base normal
+    // Recompute the base position from the displaced one (not wv.basePos) to
+    // keep the tessellated path's floating-point sequence unchanged.
     fragBasePos = vec4(pos - waveDisplacement * normal, bumpAmp);  // base pos + raw amplitude
 
     // Refine the raster depth at the DISPLACED screen position. The depth
@@ -336,3 +399,5 @@ void main() {
     fragPosClip = clipPos;
     gl_Position = clipPos;
 }
+
+#endif // !WATER_NO_TESS

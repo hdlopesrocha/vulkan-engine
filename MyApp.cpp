@@ -2416,6 +2416,14 @@ public:
                         settings.rtWaterPipeline && settings.rtRefractions && anyLayerRefr;
                     if (this->sceneRenderer->mainLiquidRenderer) {
                         this->sceneRenderer->mainLiquidRenderer->setRtShadingEnabled(waterRtNeeded);
+                        // Global tessellation gate (perf_report_19 C1): when the
+                        // preset disables tessellation the water passes must use
+                        // the non-tessellated pipeline; delivered per frame so a
+                        // preset switch takes effect immediately.
+                        this->sceneRenderer->mainLiquidRenderer->setTessellationEnabled(settings.tessellationEnabled);
+                        if (this->sceneRenderer->backFaceRenderer) {
+                            this->sceneRenderer->backFaceRenderer->setTessellationEnabled(settings.tessellationEnabled);
+                        }
                         // Global feature gates delivered via the water render
                         // UBO: they apply in both fragment variants, so
                         // "refraction off" really disables the sky fallback

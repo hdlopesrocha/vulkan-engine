@@ -604,11 +604,13 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     std::array<VkDescriptorSetLayoutBinding, 8> sceneBindings{};
 
     // Water back-face depth (binding 0) — for water volume thickness.
-    // Also sampled by the tessellation evaluation shader (VUID 07988).
+    // Also sampled by the tessellation evaluation shader and by the
+    // WATER_NO_TESS vertex path (C1), which measures the same per-vertex
+    // depth/shore direction (VUID 07988).
     sceneBindings[0].binding = 0;
     sceneBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sceneBindings[0].descriptorCount = 1;
-    sceneBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    sceneBindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
     sceneBindings[0].pImmutableSamplers = nullptr;
 
     // RT reflection output (binding 1) — half-res pipeline image (GENERAL).
@@ -642,10 +644,12 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Solid pass depth (binding 5) — SSR march target + occlusion test, and
     // the water-depth bottom the TES samples for the shore-wave regions
     // (the water volume's own back face sits an SDF bias below the terrain).
+    // The WATER_NO_TESS vertex path (C1) samples it too, for the same
+    // per-vertex shore-zone depth/shore-direction measurement.
     sceneBindings[5].binding = 5;
     sceneBindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sceneBindings[5].descriptorCount = 1;
-    sceneBindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    sceneBindings[5].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
     sceneBindings[5].pImmutableSamplers = nullptr;
 
     // Vegetation color (binding 6) — reflection lookup over the grass layer.
@@ -709,7 +713,15 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // ray paths, so a fully disabled RT configuration never pays the
     // ray-query shader's register/occupancy cost. Phase-1: all four stages
     // are the merged main.* sources built with WATER_MODE=1.
+    //
+    // C1 (perf report 19): a SECOND pipeline family is built for the
+    // non-tessellation case (Settings::tessellationEnabled == false): the
+    // same fragment modules and pipeline layout, but TRIANGLE_LIST topology,
+    // the WATER_NO_TESS vertex module and no TCS/TES/tessellation state, so
+    // the Minimal preset never runs the tessellator or the TES per-vertex
+    // wave/depth work.
     VkShaderModule vertModule = app->getOrCreateShaderModule("shaders/main_water.vert.spv");
+    VkShaderModule vertNoTessModule = app->getOrCreateShaderModule("shaders/main_water_no_tess.vert.spv");
     VkShaderModule fragNoRtModule = app->getOrCreateShaderModule("shaders/main_water.frag.spv");
     VkShaderModule fragRtModule = (app && app->rayTracingEnabled())
         ? app->getOrCreateShaderModule("shaders/main_water_rt.frag.spv") : VK_NULL_HANDLE;
@@ -726,43 +738,8 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         ? app->getOrCreateShaderModule("shaders/main_water_rt_prof.frag.spv") : VK_NULL_HANDLE;
     VkShaderModule teseRtProfModule = (app && app->rayTracingEnabled() && app->rtProfilingSupported)
         ? app->getOrCreateShaderModule("shaders/main_water_rt_prof.tese.spv") : VK_NULL_HANDLE;
-    bool hasTessellation = true;
-    int teseStageIndex = -1; // shaderStages index of the TES stage (per-variant swap)
     tescModule = app->getOrCreateShaderModule("shaders/main_water.tesc.spv");
     teseModule = app->getOrCreateShaderModule("shaders/main_water.tese.spv");
-
-    std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
-
-    VkPipelineShaderStageCreateInfo vertStage{};
-    vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertStage.module = vertModule;
-    vertStage.pName = "main";
-    shaderStages.push_back(vertStage);
-
-    if (hasTessellation) {
-        VkPipelineShaderStageCreateInfo tescStage{};
-        tescStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        tescStage.stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-        tescStage.module = tescModule;
-        tescStage.pName = "main";
-        shaderStages.push_back(tescStage);
-
-        teseStageIndex = static_cast<int>(shaderStages.size());
-        VkPipelineShaderStageCreateInfo teseStage{};
-        teseStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        teseStage.stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-        teseStage.module = teseModule;
-        teseStage.pName = "main";
-        shaderStages.push_back(teseStage);
-    }
-
-    VkPipelineShaderStageCreateInfo fragStage{};
-    fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragStage.module = fragNoRtModule;
-    fragStage.pName = "main";
-    shaderStages.push_back(fragStage);
 
     // Vertex input (same as main pipeline)
     VkVertexInputBindingDescription bindingDesc{};
@@ -794,7 +771,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = hasTessellation ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     inputAssembly.primitiveRestartEnable = VK_FALSE;
 
     VkPipelineViewportStateCreateInfo viewportState{};
@@ -847,11 +824,11 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     colorBlending.attachmentCount = static_cast<uint32_t>(colorBlendAttachments.size());
     colorBlending.pAttachments = colorBlendAttachments.data();
 
+    // Patch control points for the tessellated family; the non-tessellated
+    // family leaves pTessellationState null (no tessellation stages).
     VkPipelineTessellationStateCreateInfo tessState{};
-    if (hasTessellation) {
-        tessState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
-        tessState.patchControlPoints = 3;
-    }
+    tessState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+    tessState.patchControlPoints = 3;
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -874,10 +851,10 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     pipelineInfo.pNext = &pipelineRenderingInfo;
     pipelineInfo.renderPass = VK_NULL_HANDLE;
 
-    pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
-    pipelineInfo.pStages = shaderStages.data();
+    // pStages / pInputAssemblyState / pTessellationState are family-specific
+    // and filled in by createFamily() below; the shared state pointers remain
+    // valid for both families.
     pipelineInfo.pVertexInputState = &vertexInputInfo;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.pRasterizationState = &rasterizer;
@@ -886,7 +863,6 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.layout = waterGeometryPipelineLayout;
     pipelineInfo.subpass = 0;
-    if (hasTessellation) pipelineInfo.pTessellationState = &tessState;
 
     // Phase-1 water-in-main blend variant: same stages/layout, but drawn into
     // the MAIN solid color/depth targets with alpha blending. Depth writes stay
@@ -935,53 +911,130 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     mainPipelineInfo.pDepthStencilState = &mainDepthStencil;
     mainPipelineInfo.pColorBlendState = &mainColorBlending;
 
-    // Create one geometry + one main pipeline per fragment module. The
-    // fragment stage is always the last entry of shaderStages; swapping its
-    // module is all that differs between the RT and non-RT variants (same
-    // pipeline layout, render state and descriptor sets). The RT variant also
-    // swaps the TES (inline ray-query water depth).
-    auto createVariant = [&](VkShaderModule frag, VkShaderModule tese,
-                             TrackedHandle<VkPipeline>& geomOut,
-                             TrackedHandle<VkPipeline>& mainOut,
-                             const char* geomName, const char* mainName,
-                             const char* label) {
-        if (frag == VK_NULL_HANDLE) return;
-        shaderStages.back().module = frag;
-        if (tese != VK_NULL_HANDLE && teseStageIndex >= 0)
-            shaderStages[teseStageIndex].module = tese;
+    // Create the pipeline families. A family differs only in the input
+    // assembly topology, the presence of the TCS/TES stages and the
+    // tessellation state; the fragment module is swapped per variant (non-RT /
+    // RT / RT prof). The RT variants additionally swap the TES to the
+    // ray-query water-depth TES (tessellated family only — the non-tess VS
+    // emits the fallback depth by design). All families share the pipeline
+    // layout and render state, so descriptor sets and bind points are common.
+    auto createFamily = [&](bool tess, VkShaderModule vert,
+                            TrackedHandle<VkPipeline>& geomNoRt,
+                            TrackedHandle<VkPipeline>& mainNoRt,
+                            TrackedHandle<VkPipeline>& geomRt,
+                            TrackedHandle<VkPipeline>& mainRt,
+                            TrackedHandle<VkPipeline>& geomRtProf,
+                            TrackedHandle<VkPipeline>& mainRtProf,
+                            const char* familyLabel) {
+        std::vector<VkPipelineShaderStageCreateInfo> stages;
 
-        if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &geomOut) != VK_SUCCESS) {
-            std::cerr << "[WaterRenderer] Warning: Failed to create water geometry pipeline (" << label << ")" << std::endl;
-            geomOut = VK_NULL_HANDLE;
-        } else {
-            app->resources.addPipeline(geomOut, geomName);
-            std::cout << "[WaterRenderer] Created water geometry pipeline " << label
-                      << " (dynamic rendering, 1 color attachment)" << std::endl;
+        VkPipelineShaderStageCreateInfo vs{};
+        vs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vs.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vs.module = vert;
+        vs.pName = "main";
+        stages.push_back(vs);
+
+        int teseStageIndex = -1; // shaderStages index of the TES stage (per-variant swap)
+        if (tess) {
+            VkPipelineShaderStageCreateInfo tescStage{};
+            tescStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            tescStage.stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+            tescStage.module = tescModule;
+            tescStage.pName = "main";
+            stages.push_back(tescStage);
+
+            teseStageIndex = static_cast<int>(stages.size());
+            VkPipelineShaderStageCreateInfo teseStage{};
+            teseStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            teseStage.stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+            teseStage.module = teseModule;
+            teseStage.pName = "main";
+            stages.push_back(teseStage);
         }
 
-        if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &mainPipelineInfo, nullptr, &mainOut) != VK_SUCCESS) {
-            std::cerr << "[WaterRenderer] Warning: Failed to create water-in-main blend pipeline (" << label << ")" << std::endl;
-            mainOut = VK_NULL_HANDLE;
-        } else {
-            app->resources.addPipeline(mainOut, mainName);
-            std::cout << "[WaterRenderer] Created water-in-main blend pipeline " << label
-                      << " (alpha, depth-write off)" << std::endl;
-        }
+        // Fragment stage last; the per-variant module is set below.
+        VkPipelineShaderStageCreateInfo fragStage{};
+        fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragStage.module = VK_NULL_HANDLE;
+        fragStage.pName = "main";
+        stages.push_back(fragStage);
+
+        VkPipelineInputAssemblyStateCreateInfo familyInputAssembly = inputAssembly;
+        familyInputAssembly.topology = tess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST
+                                            : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkGraphicsPipelineCreateInfo familyPipelineInfo = pipelineInfo;
+        familyPipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
+        familyPipelineInfo.pStages = stages.data();
+        familyPipelineInfo.pInputAssemblyState = &familyInputAssembly;
+        // pTessellationState stays null for the non-tessellated family.
+        if (tess) familyPipelineInfo.pTessellationState = &tessState;
+
+        VkGraphicsPipelineCreateInfo familyMainPipelineInfo = mainPipelineInfo;
+        familyMainPipelineInfo.stageCount = familyPipelineInfo.stageCount;
+        familyMainPipelineInfo.pStages = stages.data();
+        familyMainPipelineInfo.pInputAssemblyState = &familyInputAssembly;
+        if (tess) familyMainPipelineInfo.pTessellationState = &tessState;
+
+        auto createVariant = [&](VkShaderModule frag, VkShaderModule tese,
+                                 TrackedHandle<VkPipeline>& geomOut,
+                                 TrackedHandle<VkPipeline>& mainOut,
+                                 const char* variantLabel) {
+            if (frag == VK_NULL_HANDLE) return;
+            stages.back().module = frag;
+            if (tese != VK_NULL_HANDLE && teseStageIndex >= 0)
+                stages[teseStageIndex].module = tese;
+
+            std::string geomName = std::string("WaterRenderer: waterGeometryPipeline (")
+                                 + variantLabel + " " + familyLabel + ")";
+            std::string mainName = std::string("WaterRenderer: waterMainPipeline (")
+                                 + variantLabel + " " + familyLabel + ")";
+            if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &familyPipelineInfo, nullptr, &geomOut) != VK_SUCCESS) {
+                std::cerr << "[WaterRenderer] Warning: Failed to create water geometry pipeline ("
+                          << variantLabel << " " << familyLabel << ")" << std::endl;
+                geomOut = VK_NULL_HANDLE;
+            } else {
+                app->resources.addPipeline(geomOut, geomName.c_str());
+                std::cout << "[WaterRenderer] Created water geometry pipeline "
+                          << variantLabel << " " << familyLabel
+                          << " (dynamic rendering, 1 color attachment)" << std::endl;
+            }
+
+            if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &familyMainPipelineInfo, nullptr, &mainOut) != VK_SUCCESS) {
+                std::cerr << "[WaterRenderer] Warning: Failed to create water-in-main blend pipeline ("
+                          << variantLabel << " " << familyLabel << ")" << std::endl;
+                mainOut = VK_NULL_HANDLE;
+            } else {
+                app->resources.addPipeline(mainOut, mainName.c_str());
+                std::cout << "[WaterRenderer] Created water-in-main blend pipeline "
+                          << variantLabel << " " << familyLabel
+                          << " (alpha, depth-write off)" << std::endl;
+            }
+        };
+
+        createVariant(fragNoRtModule, VK_NULL_HANDLE, geomNoRt, mainNoRt, "non-RT");
+        createVariant(fragRtModule, teseRtModule, geomRt, mainRt, "RT");
+        // The profiling TES is only swapped in when a TES stage exists
+        // (teseStageIndex >= 0); the non-tess family ignores it.
+        createVariant(fragRtProfModule, teseRtProfModule, geomRtProf, mainRtProf, "RT prof");
     };
 
-    createVariant(fragNoRtModule, VK_NULL_HANDLE, waterGeometryPipeline, waterMainPipeline,
-                  "WaterRenderer: waterGeometryPipeline (non-RT)",
-                  "WaterRenderer: waterMainPipeline (non-RT)", "non-RT");
-    createVariant(fragRtModule, teseRtModule, waterGeometryPipelineRt, waterMainPipelineRt,
-                  "WaterRenderer: waterGeometryPipeline (RT)",
-                  "WaterRenderer: waterMainPipeline (RT)", "RT");
-    createVariant(fragRtProfModule, teseRtProfModule,
-                  waterGeometryPipelineRtProf, waterMainPipelineRtProf,
-                  "WaterRenderer: waterGeometryPipeline (RT prof)",
-                  "WaterRenderer: waterMainPipeline (RT prof)", "RT prof");
+    // Tessellated family (today's pipeline, unchanged apart from the factory
+    // refactor): PATCH_LIST + TCS/TES + tessellation state.
+    createFamily(true, vertModule, waterGeometryPipeline, waterMainPipeline,
+                 waterGeometryPipelineRt, waterMainPipelineRt,
+                 waterGeometryPipelineRtProf, waterMainPipelineRtProf, "tess");
+    // Non-tessellated family (C1): TRIANGLE_LIST + WATER_NO_TESS VS, no TCS/TES
+    // and no tessellation state.
+    createFamily(false, vertNoTessModule, waterGeometryPipelineNoTess, waterMainPipelineNoTess,
+                 waterGeometryPipelineRtNoTess, waterMainPipelineRtNoTess,
+                 waterGeometryPipelineRtProfNoTess, waterMainPipelineRtProfNoTess, "no-tess");
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
     vertModule = VK_NULL_HANDLE;
+    vertNoTessModule = VK_NULL_HANDLE;
     fragNoRtModule = VK_NULL_HANDLE;
     fragRtModule = VK_NULL_HANDLE;
     teseRtModule = VK_NULL_HANDLE;
@@ -1393,9 +1446,11 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     // The solid render pass already images to SHADER_READ_ONLY_OPTIMAL via
     // explicit endPass barriers, but we need an execution + memory dependency
     // between the two command sequences on the same command buffer. The
-    // tessellation evaluation shader also samples the back-face depth (set 2
-    // binding 2) for volume bump modulation, so it must be included in the
-    // destination stage mask alongside the fragment shader.
+    // tessellation evaluation shader samples the back-face depth (set 2
+    // binding 0) and the solid depth (binding 5) for the per-vertex shore
+    // zones; the WATER_NO_TESS vertex path samples the same two bindings
+    // (C1), so VERTEX must be in the destination stage mask alongside TES and
+    // the fragment shader.
     VkMemoryBarrier2 memBarrier{};
     memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     // The back-face pass writes its depth image at EARLY_FRAGMENT_TESTS stage
@@ -1403,7 +1458,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     // (not just LATE) to establish the dependency for that write.
     memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
     memBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     memBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
     VkDependencyInfo depInfo{};
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;

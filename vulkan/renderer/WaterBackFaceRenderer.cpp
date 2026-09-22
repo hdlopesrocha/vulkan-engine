@@ -108,12 +108,31 @@ void WaterBackFaceRenderer::cleanup(VulkanApp* app) {
 
 void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pipelineLayout) {
     if (!app || pipelineLayout == VK_NULL_HANDLE) return;
+
+    // C1 (perf report 19): build BOTH pipeline variants up front with the
+    // caller's layout — the historical PATCH_LIST + TCS/TES one and a
+    // TRIANGLE_LIST one with the WATER_NO_TESS vertex module and no
+    // tessellation stages. The runtime selector (setTessellationEnabled) binds
+    // whichever matches Settings::tessellationEnabled.
+    createBackFacePipeline(app, pipelineLayout, /*tess=*/true,
+                           "shaders/main_water.vert.spv",
+                           "WaterBackFaceRenderer: backFacePipeline",
+                           backFacePipeline);
+    createBackFacePipeline(app, pipelineLayout, /*tess=*/false,
+                           "shaders/main_water_no_tess.vert.spv",
+                           "WaterBackFaceRenderer: backFacePipeline (no tess)",
+                           backFacePipelineNoTess);
+}
+
+void WaterBackFaceRenderer::createBackFacePipeline(VulkanApp* app, VkPipelineLayout pipelineLayout,
+                                                   bool tess, const char* vertPath,
+                                                   const char* debugName,
+                                                   TrackedHandle<VkPipeline>& pipelineOut) {
+    if (!app || pipelineLayout == VK_NULL_HANDLE) return;
     VkDevice device = app->getDevice();
 
-    VkShaderModule bfVert = app->getOrCreateShaderModule("shaders/main_water.vert.spv");
+    VkShaderModule bfVert = app->getOrCreateShaderModule(vertPath);
     VkShaderModule bfFrag = app->getOrCreateShaderModule("shaders/water_backface.frag.spv");
-    VkShaderModule bfTesc = app->getOrCreateShaderModule("shaders/main_water.tesc.spv");
-    VkShaderModule bfTese = app->getOrCreateShaderModule("shaders/main_water.tese.spv");
 
     std::vector<VkPipelineShaderStageCreateInfo> bfStages;
     VkPipelineShaderStageCreateInfo vs{};
@@ -123,7 +142,10 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
     vs.pName = "main";
     bfStages.push_back(vs);
 
-    { // tessellation stages (always available — getOrCreateShaderModule would throw if missing)
+    if (tess) { // tessellation stages (always available — getOrCreateShaderModule would throw if missing)
+        VkShaderModule bfTesc = app->getOrCreateShaderModule("shaders/main_water.tesc.spv");
+        VkShaderModule bfTese = app->getOrCreateShaderModule("shaders/main_water.tese.spv");
+
         VkPipelineShaderStageCreateInfo tc{};
         tc.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         tc.stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
@@ -163,7 +185,8 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+    inputAssembly.topology = tess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST
+                                  : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     inputAssembly.primitiveRestartEnable = VK_FALSE;
 
     VkPipelineViewportStateCreateInfo viewportState{};
@@ -228,14 +251,16 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
     bfPipeInfo.layout = pipelineLayout;
     bfPipeInfo.renderPass = VK_NULL_HANDLE;
     bfPipeInfo.subpass = 0;
-    bfPipeInfo.pTessellationState = &tessState;
+    // No tessellation state without TCS/TES: pTessellationState must be null
+    // whenever the topology is not PATCH_LIST.
+    if (tess) bfPipeInfo.pTessellationState = &tessState;
 
-    if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &bfPipeInfo, nullptr, &backFacePipeline) != VK_SUCCESS) {
-        std::cerr << "[WaterBackFaceRenderer] Warning: Failed to create back-face depth pipeline" << std::endl;
-        backFacePipeline = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &bfPipeInfo, nullptr, &pipelineOut) != VK_SUCCESS) {
+        std::cerr << "[WaterBackFaceRenderer] Warning: Failed to create back-face depth pipeline (" << debugName << ")" << std::endl;
+        pipelineOut = VK_NULL_HANDLE;
     } else {
-        app->resources.addPipeline(backFacePipeline, "WaterBackFaceRenderer: backFacePipeline");
-        std::cout << "[WaterBackFaceRenderer] Created back-face depth pipeline" << std::endl;
+        app->resources.addPipeline(pipelineOut, debugName);
+        std::cout << "[WaterBackFaceRenderer] Created back-face depth pipeline (" << debugName << ")" << std::endl;
     }
 }
 
@@ -294,7 +319,10 @@ void WaterBackFaceRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t
                                               VkDescriptorSet mainDs, VkDescriptorSet sceneDs,
                                               VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
-    if (backFacePipeline == VK_NULL_HANDLE) return;
+    // Select the variant matching the global tessellation toggle (falls back
+    // to the tessellated pipeline when the no-tess variant was not built).
+    VkPipeline activePipelineHandle = activePipeline();
+    if (activePipelineHandle == VK_NULL_HANDLE) return;
     if (frameIndex >= backFaceDepthImages.size()) return;
     if (backFaceDepthImages[frameIndex] == VK_NULL_HANDLE) return;
 
@@ -345,8 +373,8 @@ void WaterBackFaceRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t
     scissor.extent = {renderWidth, renderHeight};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, backFacePipeline);
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, backFacePipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, activePipelineHandle);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipelineHandle);
 
     if (mainDs != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 1, &mainDs, 0, nullptr);

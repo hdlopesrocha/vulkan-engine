@@ -61,8 +61,10 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     waterParamsBinding.descriptorCount = 1;
     waterParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     waterParamsBinding.pImmutableSamplers = nullptr;
-    // Make the water params visible to fragment, tessellation evaluation, and tessellation control shaders
-    waterParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+    // Make the water params visible to fragment, tessellation evaluation, and
+    // tessellation control shaders. VERTEX is included for the WATER_NO_TESS
+    // water vertex path (C1), which loads the per-vertex layer params directly.
+    waterParamsBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 
     // Per-instance / per-draw descriptor set uses bindings: 0 (UBO), 1..3 (samplers), 4 (shadow cascade 0),
     // 5 (Materials SSBO), 6 (Sky UBO), 7 (water params), 8 (shadow cascade 1), 9 (shadow cascade 2)
@@ -90,7 +92,9 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     waterRenderUBOBinding.descriptorCount = 1;
     waterRenderUBOBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     waterRenderUBOBinding.pImmutableSamplers = nullptr;
-    waterRenderUBOBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+    // VERTEX is included for the WATER_NO_TESS water vertex path (C1), which
+    // reads the water time from the vertex stage.
+    waterRenderUBOBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 
     // NOTE (hybrid RT): binding 11 (legacy 360° environment cubemap) was
     // REMOVED. Solid reflections and water reflection/refraction are now

@@ -160,6 +160,15 @@ public:
     void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
     bool rtShadingEnabled() const { return rtShadingEnabled_; }
 
+    // Runtime tessellation selector (Settings::tessellationEnabled). Both
+    // pipeline families are built at init — the historical PATCH_LIST + TCS/TES
+    // family and a TRIANGLE_LIST family with the WATER_NO_TESS vertex module
+    // and no tessellation stages — and the active*() selectors swap per draw,
+    // so no pipeline is ever recreated from the render loop. Default true
+    // preserves the always-tessellated behavior on first frame.
+    void setTessellationEnabled(bool enabled) { tessellationEnabled_ = enabled; }
+    bool tessellationEnabled() const { return tessellationEnabled_; }
+
     // Per-op RT profiling selector (RT_PROFILE frag+TES variant, built only
     // when the device supports VK_KHR_shader_clock). Opt-in: the instrumented
     // shaders carry atomics + device-clock reads.
@@ -252,14 +261,31 @@ private:
 
     // Active pipeline variant (profiling RT while RT profiling is on, else RT
     // while RT shading is on and the RT variant exists, else the cheaper
-    // non-RT variant).
+    // non-RT variant). The tessellation family is selected first: when
+    // tessellation is off the non-tess (TRIANGLE_LIST, no TCS/TES) family is
+    // used, with the RT-prof variant falling back to the plain RT non-tess
+    // variant (and RT to non-RT) when a variant was not built.
     VkPipeline activeGeometryPipeline() const {
+        if (!tessellationEnabled_) {
+            if (rtShadingEnabled_ && rtProfilingEnabled_ && waterGeometryPipelineRtProfNoTess != VK_NULL_HANDLE)
+                return waterGeometryPipelineRtProfNoTess.handle;
+            if (rtShadingEnabled_ && waterGeometryPipelineRtNoTess != VK_NULL_HANDLE)
+                return waterGeometryPipelineRtNoTess.handle;
+            return waterGeometryPipelineNoTess.handle;
+        }
         if (rtShadingEnabled_ && rtProfilingEnabled_ && waterGeometryPipelineRtProf != VK_NULL_HANDLE)
             return waterGeometryPipelineRtProf.handle;
         return (rtShadingEnabled_ && waterGeometryPipelineRt != VK_NULL_HANDLE)
             ? waterGeometryPipelineRt.handle : waterGeometryPipeline.handle;
     }
     VkPipeline activeMainPipeline() const {
+        if (!tessellationEnabled_) {
+            if (rtShadingEnabled_ && rtProfilingEnabled_ && waterMainPipelineRtProfNoTess != VK_NULL_HANDLE)
+                return waterMainPipelineRtProfNoTess.handle;
+            if (rtShadingEnabled_ && waterMainPipelineRtNoTess != VK_NULL_HANDLE)
+                return waterMainPipelineRtNoTess.handle;
+            return waterMainPipelineNoTess.handle;
+        }
         if (rtShadingEnabled_ && rtProfilingEnabled_ && waterMainPipelineRtProf != VK_NULL_HANDLE)
             return waterMainPipelineRtProf.handle;
         return (rtShadingEnabled_ && waterMainPipelineRt != VK_NULL_HANDLE)
@@ -321,6 +347,18 @@ private:
     // created when VK_KHR_shader_clock is supported).
     TrackedHandle<VkPipeline> waterGeometryPipelineRtProf;
     TrackedHandle<VkPipeline> waterMainPipelineRtProf;
+    // Non-tessellation family (C1, perf report 19): TRIANGLE_LIST topology, no
+    // TCS/TES and no tessellation state, using the WATER_NO_TESS vertex
+    // module. Same fragment modules and pipeline layout as the tessellated
+    // family, so descriptor sets are shared. Selected when
+    // tessellationEnabled_ is false.
+    TrackedHandle<VkPipeline> waterGeometryPipelineNoTess;
+    TrackedHandle<VkPipeline> waterMainPipelineNoTess;
+    TrackedHandle<VkPipeline> waterGeometryPipelineRtNoTess;
+    TrackedHandle<VkPipeline> waterMainPipelineRtNoTess;
+    TrackedHandle<VkPipeline> waterGeometryPipelineRtProfNoTess;
+    TrackedHandle<VkPipeline> waterMainPipelineRtProfNoTess;
+    bool tessellationEnabled_ = true;
     bool rtShadingEnabled_ = true;
     bool rtProfilingEnabled_ = false;
     bool rtReflectionsEnabled_ = true;

@@ -15,6 +15,14 @@ public:
 
     void createPipelines(VulkanApp* app, VkPipelineLayout pipelineLayout);
 
+    // Global tessellation toggle (Settings::tessellationEnabled): selects the
+    // TRIANGLE_LIST + WATER_NO_TESS variant (no TCS/TES) when false. Both
+    // variants are built by createPipelines() with the caller's layout, so
+    // descriptor sets are shared and no pipeline is rebuilt at runtime.
+    // Default true preserves the historical always-tessellated behavior.
+    void setTessellationEnabled(bool enabled) { tessellationEnabled_ = enabled; }
+    bool tessellationEnabled() const { return tessellationEnabled_; }
+
     // Create/destroy per-frame depth targets
     void createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
     void destroyRenderTargets(VulkanApp* app);
@@ -45,7 +53,27 @@ public:
     void patchBinding0(VkDescriptorSet ds, VkImageView newView);
 
 private:
+    // Build one back-face pipeline variant (tess: PATCH_LIST + TCS/TES, else
+    // TRIANGLE_LIST with the WATER_NO_TESS vertex module and no tessellation
+    // state) with the caller-provided layout. `vertPath` selects the vertex
+    // module (main_water.vert vs main_water_no_tess.vert).
+    void createBackFacePipeline(VulkanApp* app, VkPipelineLayout pipelineLayout,
+                                bool tess, const char* vertPath,
+                                const char* debugName,
+                                TrackedHandle<VkPipeline>& pipelineOut);
+
+    // Active pipeline for the current tessellation toggle; falls back to the
+    // tessellated pipeline if the no-tess variant failed to build.
+    VkPipeline activePipeline() const {
+        if (!tessellationEnabled_ && backFacePipelineNoTess != VK_NULL_HANDLE)
+            return backFacePipelineNoTess.handle;
+        return backFacePipeline.handle;
+    }
+
     TrackedHandle<VkPipeline> backFacePipeline;
+    // Non-tessellation variant (C1): TRIANGLE_LIST, no TCS/TES.
+    TrackedHandle<VkPipeline> backFacePipelineNoTess;
+    bool tessellationEnabled_ = true;
     static constexpr uint32_t FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
     std::array<VkImage, FRAMES> backFaceDepthImages = {};
     std::array<VmaAllocation, FRAMES> backFaceDepthAllocations = {};
