@@ -19,22 +19,22 @@ layout(triangles, equal_spacing, cw) in;
 layout(location = VARY_LOCALPOS) in vec3 inPos[];
 layout(location = VARY_NORMAL) in vec3 inNormal[];
 layout(location = VARY_SHARPNORMAL) in vec3 inBaseNormal[];
-layout(location = VARY_UV) in vec2 inTexCoord[];
 layout(location = VARY_BRUSHPATCH) in ivec3 tc_fragBrushIndex[];
 layout(location = VARY_TEXWEIGHTS) in vec3 tc_fragTexWeights[];
 layout(location = VARY_HSV) in vec3 tc_fragHSV[];
 
 layout(location = VARY_LOCALPOS) out vec3 fragPos;
+// Kept for the water wireframe debug pipeline (shaders/water_wireframe.frag
+// statically loads it); the production water fragment stage does not declare
+// it, so the write is eliminated for the water pipelines.
 layout(location = VARY_NORMAL) out vec3 fragNormal;
 layout(location = VARY_SHARPNORMAL) out vec3 fragBaseNormal;  // undisplaced base normal for per-fragment detail
 layout(location = VARY_BASEPOS) out vec4 fragBasePos;        // xyz = undisplaced base position, w = raw bump amplitude
 layout(location = VARY_WATERDEPTH) out float fragWaterDepth; // measured water depth (-1 = unknown/deep)
 layout(location = VARY_SHOREDIR) out vec2 fragShoreDir;      // unit shore direction (toward thinner water)
-layout(location = VARY_UV) out vec2 fragTexCoord;
 layout(location = VARY_POSCLIP) out vec4 fragPosClip;  // clip-space position for depth lookup
 layout(location = VARY_DEBUG) out vec3 fragDebug;   // debug visual (displacement)
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;  // world-space position for shadow cascades
-layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
 layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
 layout(location = VARY_HSV) out vec3 fragHSV;
 
@@ -167,11 +167,6 @@ void main() {
                                 bary.y * inNormal[1] +
                                 bary.z * inNormal[2]);
     
-    // Interpolate texture coordinates
-        fragTexCoord = bary.x * inTexCoord[0] +
-                       bary.y * inTexCoord[1] +
-                       bary.z * inTexCoord[2];
-    
     // Interpolate HSV
     fragHSV = tc_fragHSV[0] * bary.x + tc_fragHSV[1] * bary.y + tc_fragHSV[2] * bary.z;
 
@@ -209,7 +204,6 @@ void main() {
         fragDebug = vec3(0.5);                        // zero displacement envelope
         fragPos = pos;
         fragPosWorld = pos;
-        fragPosLightSpace = ubo.lightSpaceMatrix * vec4(pos, 1.0);
         vec4 fastClipPos = ubo.viewProjection * vec4(pos, 1.0);
         fragPosClip = fastClipPos;
         gl_Position = fastClipPos;
@@ -316,7 +310,10 @@ void main() {
         waterDepth = clamp(wp.waveZones.z, 0.0, max(wp.waveZones.x, 1.0));
     }
 
-    if (haveScreen) {
+    // Calm layers (waveToggles.x < 0.5) have no wave zones/shore travel, so
+    // the shore-direction solve is dead work; shoreDir keeps the configured
+    // waveDirection fallback set above.
+    if (haveScreen && wp.waveToggles.x > 0.5) {
         float gradStep = max(wp.waveWarp.w, 0.0);
         if (gradStep > 0.0) {
             vec2 texel = 1.0 / vec2(textureSize(solidSceneDepthTex, 0));
@@ -363,7 +360,14 @@ void main() {
     // the raster depth off. The displaced UV is the pixel actually shaded.
     // The RT path is a world-space ray and does not depend on the UV, so a
     // successful RT hit is never overwritten.
-    if (!waterDepthFromRt) {
+    //
+    // Calm layers (waveToggles.x < 0.5): waterWaveField() early-outs to an
+    // identically zero field (water_noise.glsl), so waterDisplaceWaterVertex()
+    // leaves `pos` unchanged. The displaced UV then equals the base UV and
+    // this block would re-sample the exact same texels as the base depth
+    // measurement above, producing the same value: a pure no-op. Skip it and
+    // keep the base measurement.
+    if (!waterDepthFromRt && wp.waveToggles.x > 0.5) {
         vec4 dispClip = ubo.viewProjection * vec4(pos, 1.0);
         if (dispClip.w > 0.001) {
             vec2 uvD = clamp(dispClip.xy / dispClip.w * 0.5 + 0.5, 0.001, 0.999);
@@ -394,7 +398,6 @@ void main() {
     
     fragPos = pos;
     fragPosWorld = pos;
-    fragPosLightSpace = ubo.lightSpaceMatrix * vec4(pos, 1.0);
     vec4 clipPos = ubo.viewProjection * vec4(pos, 1.0);
     fragPosClip = clipPos;
     gl_Position = clipPos;

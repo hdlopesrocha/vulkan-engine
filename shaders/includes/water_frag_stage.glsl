@@ -10,17 +10,19 @@
 // Water fragment shader
 // Samples scene color with Perlin noise-based refraction, specular lighting, and depth-based effects
 
+// H6 (perf report 19): VARY_NORMAL / VARY_UV / VARY_POSLIGHT are not declared
+// here anymore — the water shading below never reads them (fragBaseNormal
+// carries the undisplaced normal, the wave normal is derived per pixel from
+// fragBasePos/fragWaterDepth/fragShoreDir). The wireframe debug fragment
+// shader still consumes VARY_NORMAL from the TES.
 layout(location = VARY_LOCALPOS) in vec3 fragPos;
-layout(location = VARY_NORMAL) in vec3 fragNormal;
 layout(location = VARY_SHARPNORMAL) in vec3 fragBaseNormal;  // undisplaced base normal
 layout(location = VARY_BASEPOS) in vec4 fragBasePos;          // xyz = undisplaced base position, w = raw bump amplitude
 layout(location = VARY_WATERDEPTH) in float fragWaterDepth;   // TES-measured water thickness (-1 = unknown/deep)
 layout(location = VARY_SHOREDIR) in vec2 fragShoreDir;        // unit shore direction (toward thinner water)
-layout(location = VARY_UV) in vec2 fragTexCoord;
 layout(location = VARY_POSCLIP) in vec4 fragPosClip;  // clip-space position for scene sampling
 layout(location = VARY_DEBUG) in vec3 fragDebug;   // debug visual (displacement)
 layout(location = VARY_POSWORLD) in vec3 fragPosWorld;  // world-space position for shadow cascades
-layout(location = VARY_POSLIGHT) in vec4 fragPosLightSpace; // light-space pos (cascade 0)
 layout(location = VARY_BRUSHPATCH) flat in int fragBrushIndex;
 layout(location = VARY_HSV) in vec3 fragHSV;
 

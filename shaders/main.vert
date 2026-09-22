@@ -28,21 +28,25 @@ layout(location = ATTR_HSV) in vec3 inHSV;
 // set-2 depth textures with the exact same samples, sign rules and
 // displaced-UV refinement as the TES (water_tese.glsl), so the two paths
 // render the same shore zones and region tint.
+// H6 (perf report 19): the dead VARY_UV/VARY_POSLIGHT varyings were pruned;
+// VARY_NORMAL is kept for output-set parity with the TES (which keeps it for
+// the water wireframe debug fragment shader).
 #include "includes/perlin.glsl"
 #include "includes/water_noise.glsl"
 #include "includes/water_tese.glsl"
 
 layout(location = VARY_LOCALPOS) out vec3 fragPos;
+// Kept for output-set parity with the TES. The TES keeps it because the water
+// wireframe debug fragment shader (tessellated only) statically loads it; no
+// no-tess water fragment stage reads it.
 layout(location = VARY_NORMAL) out vec3 fragNormal;
 layout(location = VARY_SHARPNORMAL) out vec3 fragBaseNormal;  // undisplaced base normal for per-fragment detail
 layout(location = VARY_BASEPOS) out vec4 fragBasePos;         // xyz = undisplaced base position, w = raw bump amplitude
 layout(location = VARY_WATERDEPTH) out float fragWaterDepth;  // measured water depth (-1 = unknown/deep)
 layout(location = VARY_SHOREDIR) out vec2 fragShoreDir;       // unit shore direction (toward thinner water)
-layout(location = VARY_UV) out vec2 fragTexCoord;
 layout(location = VARY_POSCLIP) out vec4 fragPosClip;         // clip-space position for depth lookup
 layout(location = VARY_DEBUG) out vec3 fragDebug;             // debug visual (displacement)
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;       // world-space position for shadow cascades
-layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace;  // light-space pos (cascade 0)
 layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
 layout(location = VARY_HSV) out vec3 fragHSV;
 
@@ -99,7 +103,10 @@ void main() {
         waterDepth = clamp(wp.waveZones.z, 0.0, max(wp.waveZones.x, 1.0));
     }
 
-    if (haveScreen) {
+    // Calm layers (waveToggles.x < 0.5) have no wave zones/shore travel, so
+    // the shore-direction solve is dead work; shoreDir keeps the configured
+    // waveDirection fallback set above.
+    if (haveScreen && wp.waveToggles.x > 0.5) {
         float gradStep = max(wp.waveWarp.w, 0.0);
         if (gradStep > 0.0) {
             vec2 texel = 1.0 / vec2(textureSize(solidSceneDepthTex, 0));
@@ -130,8 +137,14 @@ void main() {
     // Refine the measured depth at the DISPLACED vertex, exactly like the TES
     // (water_tese.glsl): the depth above was read at the base vertex's UV,
     // which at a grazing view can land far from the shaded fragment. There is
-    // no RT depth path in the no-tess VS, so this always runs.
-    {
+    // no RT depth path in the no-tess VS, so this is gated only by waves.
+    //
+    // Calm layers (waveToggles.x < 0.5): waterWaveField() early-outs to an
+    // identically zero field (water_noise.glsl), so waterDisplaceWaterVertex()
+    // leaves wv.pos unchanged. The displaced UV then equals the base UV and
+    // this block would re-sample the exact same texels as the base depth
+    // measurement above, producing the same value: a pure no-op.
+    if (wp.waveToggles.x > 0.5) {
         vec4 dispClip = ubo.viewProjection * vec4(wv.pos, 1.0);
         if (dispClip.w > 0.001) {
             vec2 uvD = clamp(dispClip.xy / dispClip.w * 0.5 + 0.5, 0.001, 0.999);
@@ -155,7 +168,6 @@ void main() {
 
     fragBrushIndex = chosenIdx;
     fragHSV = inHSV;
-    fragTexCoord = inUV;
     fragBaseNormal = normal;                  // undisplaced (flat) base normal
     fragBasePos = vec4(wv.basePos, bumpAmp);  // base pos + raw amplitude
     fragWaterDepth = waterDepth;
@@ -164,7 +176,6 @@ void main() {
     fragDebug = vec3(0.5);                    // zero displacement envelope
     fragPos = wv.pos;
     fragPosWorld = wv.pos;
-    fragPosLightSpace = ubo.lightSpaceMatrix * vec4(wv.pos, 1.0);
     vec4 clipPos = ubo.viewProjection * vec4(wv.pos, 1.0);
     fragPosClip = clipPos;
     gl_Position = clipPos;
