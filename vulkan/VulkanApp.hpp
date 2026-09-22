@@ -423,6 +423,14 @@ public:
 
 
         void drawFrame();
+        // Exit screenshot: called from drawFrame once the window-close request is
+        // observed, so the final frame records a swapchain→host-buffer copy.
+        // No-op when the surface does not support TRANSFER_SRC on swapchain images.
+        void requestExitScreenshot();
+        // Write the buffer recorded by requestExitScreenshot() to
+        // screenshot.png (CWD-relative, i.e. bin/). Called from cleanup() after
+        // deviceWaitIdle() guarantees the copy completed.
+        void writeExitScreenshot();
         // Diagnostic hook invoked when a frame-slot fence wait or the frame
         // timeline wait exceeds a stall threshold (GPU ring hang signature).
         // MyApp uses it to dump partial per-pass query timestamps. Set before
@@ -825,6 +833,25 @@ public:
         static uint64_t nowNs();
 
         mutable std::vector<MemoryHeapBudget> m_memoryBudgetScratch;
+
+        // ── Exit screenshot ───────────────────────────────────────────────────
+        // requestExitScreenshot() sets screenshotRequested when the close request
+        // is observed, so the final frame records a swapchain→screenshotBuffer
+        // copy. cleanup() then reads the host-visible buffer back and writes it
+        // as screenshot.png. screenshotSupportsTransferSrc is queried from the
+        // surface capabilities in createSwapchain().
+        bool screenshotRequested = false;
+        bool screenshotSupportsTransferSrc = false;
+        // Set once the capture frame's submission succeeded, so cleanup() never
+        // reads an unfilled buffer from an aborted frame.
+        bool screenshotCopySubmitted = false;
+        VkDeviceSize screenshotBufferSize = 0;
+        Buffer screenshotBuffer;
+        // Extent/format of the captured swapchain image. Stored so a swapchain
+        // recreate between capture and cleanup cannot make the readback use a
+        // different size than the buffer was allocated for.
+        VkExtent2D screenshotExtent{};
+        VkFormat screenshotFormat = VK_FORMAT_UNDEFINED;
 
 };
 

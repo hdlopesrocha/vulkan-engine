@@ -161,6 +161,9 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
 #include <cstdio>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
+// Declaration-only: the implementation lives in the system libstb (linked via
+// -lstb, same as the ImGui backend's stbi_write_png call).
+#include <stb/stb_image_write.h>
 #include <mutex>
 #include <functional>
 #include <vector>
@@ -466,6 +469,12 @@ void VulkanApp::cleanup() {
         glfwTerminate();
         return;
     }
+
+    // The final frame recorded a swapchain→buffer copy when the close request
+    // was observed (see drawFrame). deviceWaitIdle() above guarantees the copy
+    // has completed, so the host-visible buffer can be read back and saved now,
+    // while the device/VMA are still alive.
+    writeExitScreenshot();
 
     // Drain pending command buffers and run all deferred destroys BEFORE tearing
     // down the renderers. Deferred lambdas (e.g. VegetationRenderer::
@@ -871,6 +880,12 @@ void VulkanApp::createSwapchain() {
     createInfo.imageExtent = extent;
     createInfo.imageArrayLayers = 1;
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    // Feature-detect swapchain readback for the exit screenshot: only request
+    // TRANSFER_SRC when the surface reports it (some surfaces do not).
+    screenshotSupportsTransferSrc = (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    if (screenshotSupportsTransferSrc) {
+        createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    }
 
     QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
     uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
@@ -4556,6 +4571,14 @@ void VulkanApp::drawFrame() {
     }
     imguiLastTime = now;
 
+    // Exit screenshot: the close flag was set by GLFW (window X), by update()
+    // (ESC) or by the Exit menu during renderImGui() above. Checked last so all
+    // close paths are covered, but still before command recording so this final
+    // frame can copy the swapchain image for cleanup() to save.
+    if (!screenshotRequested && glfwWindowShouldClose(window)) {
+        requestExitScreenshot();
+    }
+
     // Wait on the semaphore used for this acquire (indexed by semaphoreIndex).
     // Reused across frames (drawFrame runs on the main thread only); clear()
     // retains capacity so the per-frame push_backs below stop allocating after
@@ -4844,14 +4867,56 @@ void VulkanApp::drawFrame() {
 
     vkCmdEndRendering(commandBuffer);
 
+    // Exit screenshot readback: copy the just-rendered swapchain image into the
+    // host-visible buffer. The image is in COLOR_ATTACHMENT_OPTIMAL here, so
+    // transition to TRANSFER_SRC_OPTIMAL first; the barrier makes the render
+    // pass writes visible to the copy (COLOR_ATTACHMENT_OUTPUT → TRANSFER).
+    // The present transition below starts from TRANSFER_SRC_OPTIMAL in this case.
+    if (screenshotRequested) {
+        VkImageMemoryBarrier2 copyBarrier{};
+        copyBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        copyBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        copyBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        copyBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        copyBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        copyBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        copyBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        copyBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        copyBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        copyBarrier.image = swapchainImages[imageIndex];
+        copyBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+        VkDependencyInfo copyDepInfo{};
+        copyDepInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        copyDepInfo.imageMemoryBarrierCount = 1;
+        copyDepInfo.pImageMemoryBarriers = &copyBarrier;
+        vkCmdPipelineBarrier2(commandBuffer, &copyDepInfo);
+
+        VkBufferImageCopy copyRegion{};
+        copyRegion.bufferOffset = 0;
+        copyRegion.bufferRowLength = 0;
+        copyRegion.bufferImageHeight = 0;
+        copyRegion.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        copyRegion.imageOffset = { 0, 0, 0 };
+        copyRegion.imageExtent = { swapchainExtent.width, swapchainExtent.height, 1 };
+        vkCmdCopyImageToBuffer(commandBuffer, swapchainImages[imageIndex],
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               screenshotBuffer.buffer, 1, &copyRegion);
+    }
+
     // Transition swapchain image: COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR
+    // (or TRANSFER_SRC_OPTIMAL → PRESENT_SRC_KHR when the screenshot copy above
+    // read the image).
     {
         VkImageMemoryBarrier2 presentBarrier{};
         presentBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        presentBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        presentBarrier.oldLayout = screenshotRequested ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                                                       : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         presentBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        presentBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        presentBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        presentBarrier.srcStageMask = screenshotRequested ? VK_PIPELINE_STAGE_2_TRANSFER_BIT
+                                                          : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        presentBarrier.srcAccessMask = screenshotRequested ? VK_ACCESS_2_TRANSFER_READ_BIT
+                                                           : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
         presentBarrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
         presentBarrier.dstAccessMask = 0;
         presentBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -4909,6 +4974,9 @@ void VulkanApp::drawFrame() {
         r = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, frameFence);
         if (r == VK_SUCCESS) {
             frameTimelineValue.store(nextTimelineValue);
+            // The exit-screenshot copy rides in this command buffer, so a
+            // successful submit means the readback buffer will be filled.
+            if (screenshotRequested) screenshotCopySubmitted = true;
         }
         // Track the live fence for this slot so the deferred-destroy gate and
         // waitForFrameFences() observe the correct in-flight state.
@@ -4983,6 +5051,102 @@ void VulkanApp::drawFrame() {
 
     // Advance to next CPU frame
     currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+}
+
+void VulkanApp::requestExitScreenshot() {
+    if (screenshotRequested) return;
+    if (!screenshotSupportsTransferSrc) {
+        std::cerr << "[VulkanApp] exit screenshot skipped: surface does not support "
+                     "VK_IMAGE_USAGE_TRANSFER_SRC_BIT on swapchain images\n";
+        return;
+    }
+    const VkDeviceSize size = static_cast<VkDeviceSize>(swapchainExtent.width) *
+                              static_cast<VkDeviceSize>(swapchainExtent.height) * 4;
+    if (size == 0) return;
+    try {
+        // Host-visible readback target for vkCmdCopyImageToBuffer; zeroInit is
+        // unnecessary since the copy overwrites every byte.
+        screenshotBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, false);
+    } catch (const std::exception &e) {
+        std::cerr << "[VulkanApp] exit screenshot buffer creation failed: " << e.what() << "\n";
+        return;
+    }
+    screenshotBufferSize = size;
+    screenshotExtent = swapchainExtent;
+    screenshotFormat = swapchainImageFormat;
+    screenshotRequested = true;
+}
+
+void VulkanApp::writeExitScreenshot() {
+    if (!screenshotRequested || screenshotBuffer.buffer == VK_NULL_HANDLE) return;
+    screenshotRequested = false;
+    if (!screenshotCopySubmitted) {
+        // The capture frame aborted before submission, so the buffer holds no
+        // image data (createBuffer was called with zeroInit=false).
+        std::cerr << "[VulkanApp] exit screenshot skipped: capture frame was not submitted\n";
+        destroyBuffer(screenshotBuffer);
+        screenshotBufferSize = 0;
+        return;
+    }
+    screenshotCopySubmitted = false;
+
+    const uint32_t width = screenshotExtent.width;
+    const uint32_t height = screenshotExtent.height;
+    const uint8_t* src = static_cast<const uint8_t*>(screenshotBuffer.mappedData);
+    if (src == nullptr) {
+        std::cerr << "[VulkanApp] exit screenshot skipped: readback buffer is not mapped\n";
+        destroyBuffer(screenshotBuffer);
+        screenshotBufferSize = 0;
+        return;
+    }
+
+    // The GPU wrote the buffer; make those writes visible to the CPU (the
+    // allocation may be non-coherent).
+    VkResult invalidateRes = vmaInvalidateAllocation(vma.allocator, screenshotBuffer.allocation,
+                                                     0, screenshotBufferSize);
+    if (invalidateRes != VK_SUCCESS) {
+        std::cerr << "[VulkanApp] vmaInvalidateAllocation failed for exit screenshot: "
+                  << invalidateRes << "\n";
+        destroyBuffer(screenshotBuffer);
+        screenshotBufferSize = 0;
+        return;
+    }
+
+    // stbi_write_png wants RGBA8; the swapchain is B8G8R8A8_SRGB on this app.
+    std::vector<uint8_t> rgba(static_cast<size_t>(width) * height * 4);
+    const bool bgra = (screenshotFormat == VK_FORMAT_B8G8R8A8_SRGB ||
+                       screenshotFormat == VK_FORMAT_B8G8R8A8_UNORM);
+    const bool rgba8 = (screenshotFormat == VK_FORMAT_R8G8B8A8_SRGB ||
+                        screenshotFormat == VK_FORMAT_R8G8B8A8_UNORM);
+    if (bgra) {
+        for (size_t i = 0; i < rgba.size(); i += 4) {
+            rgba[i + 0] = src[i + 2];
+            rgba[i + 1] = src[i + 1];
+            rgba[i + 2] = src[i + 0];
+            rgba[i + 3] = src[i + 3];
+        }
+    } else if (rgba8) {
+        std::memcpy(rgba.data(), src, rgba.size());
+    } else {
+        std::cerr << "[VulkanApp] exit screenshot skipped: unsupported swapchain format "
+                  << screenshotFormat << "\n";
+        destroyBuffer(screenshotBuffer);
+        screenshotBufferSize = 0;
+        return;
+    }
+
+    // CWD-relative: the app runs from bin/, so this lands in bin/screenshot.png.
+    const char* path = "screenshot.png";
+    if (stbi_write_png(path, static_cast<int>(width), static_cast<int>(height), 4,
+                       rgba.data(), static_cast<int>(width) * 4) != 0) {
+        std::cout << "[VulkanApp] saved exit screenshot to " << path
+                  << " (" << width << "x" << height << ")\n";
+    } else {
+        std::cerr << "[VulkanApp] failed to write exit screenshot to " << path << "\n";
+    }
+    destroyBuffer(screenshotBuffer);
+    screenshotBufferSize = 0;
 }
 
 void VulkanApp::cleanupSwapchain() {
