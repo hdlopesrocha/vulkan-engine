@@ -43,7 +43,7 @@ void main() {
     vec2 uv = (vec2(coord) + 0.5) / outSize;
 
     float depth = texture(waterDepthTex, uv).r;
-    if (depth >= 0.9999 || rt.debug.y < 0.5) {
+    if (depth >= 1.0 || rt.debug.y < 0.5) {
         // No water here (or TLAS not built yet): invalid markers. The water
         // shader checks reflect.a > 0.5 before sampling reflection and
         // refract.a >= 0.0 before sampling refraction/thickness.

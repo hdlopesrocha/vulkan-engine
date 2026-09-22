@@ -596,7 +596,7 @@ void shadeWaterSurface() {
     // represents a genuinely thick water body (>= 5 cm), not a thin surface.
     const float kMinVolumeThickness = 0.05; // 5 cm world-space
     // Also reject backFaceDepthRaw == 1.0 (depth-clear value = no geometry rendered).
-    bool hasValidBackFace = (backFaceDepthRaw < 0.9999) && (backFaceThickness > kMinVolumeThickness);
+    bool hasValidBackFace = (backFaceDepthRaw < 1.0) && (backFaceThickness > kMinVolumeThickness);
     float waterThickness  = hasValidBackFace ? backFaceThickness : 0.0;
 
     // Common bump parameters.
@@ -1212,34 +1212,17 @@ void shadeWaterSurface() {
 
     // (Screen-space refinement removed: the inline trace above hits the real
     // chunk triangles directly, so a depth-march pass is redundant.)
-
-    // === AERIAL DETAIL FADE (§10/§11) ===
-    // Refraction/thickness fade: proxy boxes are per-chunk flats, so beyond
-    // the near field their tops and hit/miss classification imprint box-shaped
-    // steps onto refraction color and thickness — and every such step is a
-    // potential razor line (LOD frontiers are straight, full-width and
-    // camera-following). Distance is continuous, so fading by distance cannot
-    // create edges by construction; it only removes them. Near field (<120 m,
-    // where boxes are tightest) keeps pixel-identical RT detail; far field
-    // converges to deep tint, i.e. honest aerial perspective.
-    // Reflection is NOT faded: a mirror must keep reflecting the scenery no
-    // matter how far the water pixel is from the camera.
+    //
+    // (Aerial detail fade removed: it was a proxy-era workaround for box-step
+    // classification edges, and it inflated waterThickness toward maxRefr (a
+    // RAY-RANGE bound, not a water column) with camera distance. That tripped
+    // the oceanColorStart=128 m color stop at range, so distant water darkened
+    // even when it was shallow. Refraction now traces exact scene triangles
+    // with a continuous hit/miss path, so distance no longer needs to fade
+    // depth/color. Debug snapshots (raw RT before composition) stay.)
     vec3 dbgSceneColor = sceneColor;
     vec3 dbgReflColor = skyColor;
-    // Translucency (final alpha) must use the TRUE local thickness, not the
-    // faded one: the fade inflates distant shallows toward deep, which would
-    // force distant shores opaque. Snapshot before fading.
     float thicknessForAlpha = waterThickness;
-    {
-        const float fadeStart = 120.0;
-        const float fadeEnd = 400.0;
-        float fragDist = length(fragPosWorld - ubo.viewPos.xyz);
-        float detailFade = smoothstep(fadeStart, fadeEnd, fragDist);
-        if (detailFade > 0.0) {
-            sceneColor = mix(sceneColor, deepTint, detailFade);
-            waterThickness = mix(waterThickness, maxRefr, detailFade);
-        }
-    }
 
     // Uniform reflection toggle: when set, apply reflectionStrength uniformly
     // instead of modulating by Fresnel. This flag is stored in reserved2.w
