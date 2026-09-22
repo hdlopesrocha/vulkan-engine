@@ -70,7 +70,8 @@ struct WaterParams {
     // the shoreline stays crisp). Reflections and surface highlights are never
     // blurred. Per material, so one water layer can stay crisp while another
     // blurs. blurRadius is the radius clamp in pixels, blurDepthScale the
-    // growth in pixels per meter of depth.
+    // growth in pixels per meter of depth. Also gated globally by
+    // Settings::blurEnabled: the blur runs only when both are on.
     bool enableBlur = true;
     float blurRadius = 8.0f;       // max blur radius (pixels)
     float blurDepthScale = 0.35f;  // blur growth (pixels per meter of depth)

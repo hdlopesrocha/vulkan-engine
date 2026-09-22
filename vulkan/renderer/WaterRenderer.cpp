@@ -477,7 +477,6 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
     VkImage depthImg = waterGeomDepthImages[frameIndex];
     VkImage bodyImg = waterBodyImages[frameIndex];
     VkImage columnImg = waterColumnImages[frameIndex];
-
     if (colorImg == VK_NULL_HANDLE && depthImg == VK_NULL_HANDLE &&
         bodyImg == VK_NULL_HANDLE && columnImg == VK_NULL_HANDLE) return;
 
@@ -1614,9 +1613,10 @@ void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint3
     endWaterGeometryPassWithDepth(cmd, frameIndex);
 }
 
-void WaterRenderer::setRtFeatureFlags(bool reflections, bool refractions) {
+void WaterRenderer::setRtFeatureFlags(bool reflections, bool refractions, bool blur) {
     rtReflectionsEnabled_ = reflections;
     rtRefractionsEnabled_ = refractions;
+    blurEnabled_ = blur;
     // Write through immediately (read-modify-write keeps the time): the
     // water-in-main path renders without calling renderPass(), so it relies
     // on these flags already being in the UBO.
@@ -1626,6 +1626,7 @@ void WaterRenderer::setRtFeatureFlags(bool reflections, bool refractions) {
         auto* ubo = static_cast<WaterRenderUBO*>(data);
         ubo->timeParams.y = refractions ? 1.0f : 0.0f;
         ubo->timeParams.z = reflections ? 1.0f : 0.0f;
+        ubo->timeParams.w = blur ? 1.0f : 0.0f;
     }
     waterRenderUBO_.unmap();
 }
@@ -1639,13 +1640,13 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
     }
 
     // Update the water render UBO with the active layer time value and the
-    // global ray-path gates (readable from both fragment variants).
+    // global feature gates (readable from both fragment variants).
     if (waterRenderUBO_.buffer != VK_NULL_HANDLE) {
         WaterRenderUBO renderUbo{};
         renderUbo.timeParams = glm::vec4(waterTime,
                                          rtRefractionsEnabled_ ? 1.0f : 0.0f,
                                          rtReflectionsEnabled_ ? 1.0f : 0.0f,
-                                         0.0f);
+                                         blurEnabled_ ? 1.0f : 0.0f);
         void* data = nullptr;
         data = waterRenderUBO_.map(0);
         memcpy(data, &renderUbo, sizeof(WaterRenderUBO));

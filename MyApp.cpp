@@ -2416,11 +2416,14 @@ public:
                         settings.rtWaterPipeline && settings.rtRefractions && anyLayerRefr;
                     if (this->sceneRenderer->mainLiquidRenderer) {
                         this->sceneRenderer->mainLiquidRenderer->setRtShadingEnabled(waterRtNeeded);
-                        // Global path gates delivered via the water render UBO:
-                        // they apply in both fragment variants, so "refraction
-                        // off" really disables the sky fallback too.
+                        // Global feature gates delivered via the water render
+                        // UBO: they apply in both fragment variants, so
+                        // "refraction off" really disables the sky fallback
+                        // too, and blur requires the global toggle plus the
+                        // per-material flag.
                         this->sceneRenderer->mainLiquidRenderer->setRtFeatureFlags(
-                            settings.rtWaterReflections, settings.rtRefractions);
+                            settings.rtWaterReflections, settings.rtRefractions,
+                            settings.blurEnabled);
                     }
 
                     if (slot.waterDs2 != VK_NULL_HANDLE) {
@@ -3104,15 +3107,11 @@ public:
         }
         if (auto qualityEvent = std::dynamic_pointer_cast<SetGraphicsQualityEvent>(event)) {
             // Runs on the queued-event drain (main thread, before frame
-            // recording). The upload callback pushes the touched per-layer
-            // water params to the GPU so the preset applies even when the
-            // Water Settings widget is hidden.
+            // recording). Presets edit global Settings gates only; the
+            // authored per-layer WaterParams stay untouched (the shaders AND
+            // the global gate with the material flag).
             GraphicsSettingsCommand command(qualityEvent->quality);
-            command.execute(settings, waterParams, [this](uint32_t layer, const WaterParams& params) {
-                if (sceneRenderer && sceneRenderer->mainLiquidRenderer) {
-                    sceneRenderer->mainLiquidRenderer->updateGPUParamsForLayer(layer, params);
-                }
-            });
+            command.execute(settings);
             return;
         }
         if (auto rebuildEvent = std::dynamic_pointer_cast<RebuildBrushEvent>(event)) {

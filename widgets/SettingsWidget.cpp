@@ -77,6 +77,12 @@ void SettingsWidget::render() {
             // toggled
         }
         TooltipOnHover("When off, water passes are skipped and only the solid scene is composited");
+        if (ImGui::Checkbox("Water Blur (global)", &settings.blurEnabled)) {
+            // toggled
+        }
+        TooltipOnHover("Global gate for the per-material refraction/tint blur.\n"
+                       "The blur runs only where this AND the layer's 'Enable Blur' are on.\n"
+                       "Reflections and surface highlights are never blurred.");
         if (ImGui::Checkbox("Render Vegetation", &settings.vegetationEnabled)) {
             // toggled
         }

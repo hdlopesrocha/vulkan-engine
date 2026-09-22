@@ -365,6 +365,7 @@ void WaterWidget::render() {
                            "surface highlights are never blurred.");
         CheckboxField("Enable Blur", &layerParams.enableBlur,
             "Blur this water material's refraction + tint body in the final composite.\n"
+            "Requires the global Settings 'Water Blur' toggle too.\n"
             "Reflections and surface highlights stay sharp.");
         SliderFloatField("Max Radius (px)", &layerParams.blurRadius, 0.0f, 32.0f, "%.1f",
             "Blur radius clamp for this material (pixels) at full depth.");

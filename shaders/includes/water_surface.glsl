@@ -477,6 +477,60 @@ float linearizeDepth(float depth) {
     return (nearPlane * farPlane) / (farPlane - depth * (farPlane - nearPlane));
 }
 
+// Screen-space reflection march over the solid pass depth (set 2, binding 5).
+// Returns the hit color in rgb and a confidence in a (0 = no usable hit);
+// `hitPos` receives the world position of the solid surface at the hit. This
+// fallback covers the on-screen solids the exact-triangle ray misses (coarse
+// LoD / undisplaced-BLAS slips): without it those solids simply vanish from
+// the reflection. The CALLER rejects hits below the local water level, so the
+// submerged bed can never be painted as a reflection (the far-water terrain
+// artifact). `maxT` bounds the march; the camera projection is viewProjection
+// (invViewProjection maps clip->world).
+vec4 traceSSR(vec3 origin, vec3 dir, float maxT, out vec3 hitPos) {
+    hitPos = vec3(0.0);
+    float nearP = ubo.passParams.z;
+    float farP  = ubo.passParams.w;
+    float prevT = 0.0;
+    float t = 0.25;
+    for (int i = 0; i < 64; ++i) {
+        // Near field: 1 m steps (thin silhouettes); far field: 13% geometric
+        // growth so the remaining steps reach the cap without huge near steps.
+        t += (i < 20) ? 1.0 : max(2.0, t * 0.13);
+        if (t > maxT) break;
+        vec3 P = origin + dir * t;
+        vec4 clip = ubo.viewProjection * vec4(P, 1.0);
+        if (clip.w <= 0.001 || clip.w > farP * 2.0) break;
+        vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
+        float d = textureLod(solidSceneDepthTex, uv, 0.0).r;
+        if (d < 1.0) {
+            float sceneEye = (nearP * farP) / (farP - d * (farP - nearP));
+            float rayEye = clip.w; // GLM perspective: clip.w == eye depth
+            if (rayEye > sceneEye + 0.05) {
+                // First crossing: refine with a binary search (5 iterations).
+                float lo = prevT, hi = t;
+                for (int j = 0; j < 5; ++j) {
+                    float mid = 0.5 * (lo + hi);
+                    vec4 cm = ubo.viewProjection * vec4(origin + dir * mid, 1.0);
+                    vec2 uvm = cm.xy / cm.w * 0.5 + 0.5;
+                    float dm = textureLod(solidSceneDepthTex, uvm, 0.0).r;
+                    float em = (nearP * farP) / (farP - dm * (farP - nearP));
+                    if (cm.w > em) { hi = mid; uv = uvm; }
+                    else lo = mid;
+                }
+                float edge = smoothstep(0.0, 0.06, uv.x) * smoothstep(0.0, 0.06, 1.0 - uv.x)
+                           * smoothstep(0.0, 0.06, uv.y) * smoothstep(0.0, 0.06, 1.0 - uv.y);
+                float dHit = textureLod(solidSceneDepthTex, uv, 0.0).r;
+                vec4 wh = ubo.invViewProjection * vec4(uv * 2.0 - 1.0, dHit, 1.0);
+                hitPos = wh.xyz / max(wh.w, 1e-6);
+                return vec4(textureLod(solidSceneColorTex, uv, 0.0).rgb, edge);
+            }
+        }
+        prevT = t;
+    }
+    return vec4(0.0);
+}
+
 
 vec2 waterDirToEquirectUV(vec3 dir) {
     const float PI = 3.14159265358979;
@@ -522,6 +576,11 @@ void shadeWaterSurface() {
     // Feature toggles
     bool enableReflection = wp.reserved1.x > 0.5;
     bool enableRefraction = wp.reserved1.y > 0.5;
+    // Blur is a two-way gate like refraction: the per-material flag
+    // (blurParams.x) AND the global Settings toggle (waterRenderUBO.timeParams.w)
+    // must both be on, so the Minimal preset can disable blur without
+    // overwriting the authored per-layer params.
+    bool enableBlur = (wp.blurParams.x > 0.5) && (waterRenderUBO.timeParams.w > 0.5);
     // Global ray-path gates from Settings, delivered via the water render UBO
     // so they apply in BOTH fragment variants (the non-RT variant has no `rt`
     // block). Refraction off must mean NO refraction at all — including the
@@ -1193,15 +1252,23 @@ void shadeWaterSurface() {
         }
     }
     if (!reflResolved && reflDidTrace) {
-        // Inline miss: the exact-triangle ray is authoritative and its miss
-        // baseline is the sky. The screen-space fallback was REMOVED: it
-        // marched the solid depth (which under the water is the lake bed) and
-        // reported false hits far beyond the shoreline slip it was meant for,
-        // replacing genuine sky misses with terrain — the far-water "sky is
-        // not reflected" artifact (green in DEBUG_MODE_REFLECTION_SOURCE).
-        skyColor = reflHit.rgb; // trace's own sky (miss baseline)
+        // Inline miss. Screen-space fallback for the on-screen solids the
+        // exact-triangle ray misses (coarse LoD / undisplaced-BLAS slips):
+        // without it those solids vanish from the reflection. Hits BELOW the
+        // local water level are the submerged bed and are rejected (sky), so
+        // the far-water "terrain painted as reflection" artifact cannot come
+        // back. The march is distance-capped.
+        const float kSsrMaxDist = 2000.0;
+        vec3 ssrWorld;
+        vec4 ssr = traceSSR(reflOrigin, normalize(reflectDir), kSsrMaxDist, ssrWorld);
+        if (ssr.a > 0.02 && ssrWorld.y >= fragBasePos.y - 0.05) {
+            skyColor = ssr.rgb;
+            reflSource = 4.0;
+        } else {
+            skyColor = reflHit.rgb; // trace's own sky (miss baseline)
+            reflSource = 5.0;
+        }
         reflMaskDbg = 3.0;
-        reflSource = 5.0;
         reflResolved = true;
     } else if (!reflResolved && rtReady && rt.rayParams.w > 0.5 && reflBudgetSkip) {
         reflMaskDbg = 4.0;
@@ -1482,11 +1549,12 @@ void shadeWaterSurface() {
     // refracted bottom and its tint soften.
     // column (RG) = measured water depth (m) and this material's blur radius
     // in pixels (0 = crisp). The radius grows with the measured depth up to
-    // the per-material cap, so the blur is per water material (layer).
+    // the per-material cap, so the blur is per water material (layer); it is
+    // 0 whenever the material flag OR the global Settings blur toggle is off.
     float bodyWeight = (enableReflection
         ? clamp(1.0 - mirrorPresence, 0.0, 1.0)
         : 1.0) * clamp(alpha, 0.0, 1.0);
-    float blurPx = (wp.blurParams.x > 0.5)
+    float blurPx = enableBlur
         ? clamp(regionDepth * max(wp.blurParams.z, 0.0), 0.0, max(wp.blurParams.y, 0.0))
         : 0.0;
     outWaterBody = vec4(refractedColor, bodyWeight);

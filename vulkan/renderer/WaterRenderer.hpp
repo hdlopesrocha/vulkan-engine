@@ -166,12 +166,12 @@ public:
     void setRtProfilingEnabled(bool enabled) { rtProfilingEnabled_ = enabled; }
     bool rtProfilingEnabled() const { return rtProfilingEnabled_; }
 
-    // Global ray-path gates (from Settings) forwarded to the water shader via
+    // Global feature gates (from Settings) forwarded to the water shader via
     // the water render UBO so they apply in BOTH fragment variants (the non-RT
     // variant cannot see the RT params block, which is why the gates are not
     // read from `rt.*`). Writers go through immediately so the water-in-main
     // path (which does not rewrite the UBO) sees them too.
-    void setRtFeatureFlags(bool reflections, bool refractions);
+    void setRtFeatureFlags(bool reflections, bool refractions, bool blur);
 
     // Get the descriptor set layout for scene textures (set 2)
     VkDescriptorSetLayout getWaterDepthDescriptorSetLayout() const { return waterDepthDescriptorSetLayout; }
@@ -325,6 +325,9 @@ private:
     bool rtProfilingEnabled_ = false;
     bool rtReflectionsEnabled_ = true;
     bool rtRefractionsEnabled_ = true;
+    // Global gate for the per-material refraction/tint blur (Settings::
+    // blurEnabled): delivered as WaterRenderUBO.timeParams.w.
+    bool blurEnabled_ = true;
 
     // Water geometry pipeline layout (includes depth texture binding)
     TrackedHandle<VkPipelineLayout> waterGeometryPipelineLayout;

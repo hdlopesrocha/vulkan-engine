@@ -11,6 +11,11 @@ public:
     // Toggle rendering of the main solid scene (terrain/meshes)
     bool renderSolid = true;
     bool waterEnabled = true;
+    // Global gate for the per-material refraction/tint blur (WaterParams::
+    // enableBlur): the final-pass blur runs only when BOTH this and the
+    // layer's own flag are on (same two-way pattern as rtRefractions /
+    // rtWaterReflections with the per-layer reflection/refraction toggles).
+    bool blurEnabled = true;
     bool vegetationEnabled = true;
     bool wireframeMode = false;
     bool waterWireframeMode = false;
