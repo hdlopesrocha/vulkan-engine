@@ -936,7 +936,7 @@ void SceneRenderer::initDescriptorBuffers(VulkanApp* app) {
         descBuffers_.buffers.push_back(b);
         descBuffers_.addresses.push_back(addr);
     }
-    for (uint32_t binding = 0; binding < 19; ++binding) {
+    for (uint32_t binding = 0; binding < 27; ++binding) {
         // Binding 11 was removed (legacy cubemap); the query layout carries no
         // entry for it — skip so the offset query never touches a missing
         // binding (VUID-vkGetDescriptorSetLayoutBindingOffsetEXT-binding-08021).

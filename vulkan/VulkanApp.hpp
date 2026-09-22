@@ -123,6 +123,12 @@ class VulkanApp {
     // (shaders/includes/rt_profile.glsl). Independent of RT support; when
     // false the profile variants are never created and RT profiling stays off.
     bool shaderClockSupported = false;
+    // Full per-op RT profiling gate: the RT_PROFILE variants atomically write
+    // a storage buffer from the fragment (fragmentStoresAndAtomics) and the
+    // water TES (vertexPipelineStoresAndAtomics). Creating those pipelines
+    // without the features is invalid (VUID-RuntimeSpirv-NonWritable-06340/41),
+    // so the profile variants are only built when both are supported/enabled.
+    bool rtProfilingSupported = false;
     bool rayTracingEnabled() const { return accelStructSupported && rayQuerySupported; }
     bool rayPipelineEnabled() const { return rayTracingEnabled() && rayPipelineSupported; }
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProps{};

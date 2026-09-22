@@ -5527,6 +5527,18 @@ void VulkanApp::createLogicalDevice() {
     }
     deviceFeatures.tessellationShader = VK_TRUE;
     deviceFeatures.samplerAnisotropy = VK_TRUE;
+    // Per-op RT profiling (RT_PROFILE variants) atomically accumulates counts
+    // and clock time into a storage buffer from the fragment and water-TES
+    // stages. Without fragmentStoresAndAtomics / vertexPipelineStoresAndAtomics
+    // those shaders are invalid (VUID-RuntimeSpirv-NonWritable-06340/06341), so
+    // the features are enabled when advertised and rtProfilingSupported stays
+    // false otherwise.
+    if (supportedFeatures.fragmentStoresAndAtomics) {
+        deviceFeatures.fragmentStoresAndAtomics = VK_TRUE;
+    }
+    if (supportedFeatures.vertexPipelineStoresAndAtomics) {
+        deviceFeatures.vertexPipelineStoresAndAtomics = VK_TRUE;
+    }
     // Robust buffer access: out-of-bounds reads return 0 instead of undefined behavior
     deviceFeatures.robustBufferAccess = VK_TRUE;
     // Enable depth clamp so tessellation-displaced vertices beyond the far plane
@@ -5756,6 +5768,18 @@ void VulkanApp::createLogicalDevice() {
     shaderClockSupported = shaderClockExtFound && clockFeatQuery.shaderDeviceClock == VK_TRUE;
     if (shaderClockSupported) {
         printf("[VulkanApp] VK_KHR_shader_clock supported — per-op RT profiling available\n");
+    }
+    // The profile variants also atomically store to a storage buffer in the
+    // fragment and water-TES stages: require (and enable) both
+    // fragmentStoresAndAtomics and vertexPipelineStoresAndAtomics. If the clock
+    // is present without them, the profile pipelines must not be created (the
+    // production variants stay untouched).
+    const bool fragmentStoresOk = supportedFeatures.fragmentStoresAndAtomics == VK_TRUE;
+    const bool vertexStoresOk = supportedFeatures.vertexPipelineStoresAndAtomics == VK_TRUE;
+    rtProfilingSupported = shaderClockSupported && fragmentStoresOk && vertexStoresOk;
+    if (shaderClockSupported && !(fragmentStoresOk && vertexStoresOk)) {
+        printf("[VulkanApp] shader clock present but storage atomics unsupported (fragment=%d vertex=%d) — per-op RT profiling disabled\n",
+            (int)fragmentStoresOk, (int)vertexStoresOk);
     }
     // Enabling structs chained into VkDeviceCreateInfo::pNext only when supported.
     VkPhysicalDeviceAccelerationStructureFeaturesKHR accelFeatEnable{};

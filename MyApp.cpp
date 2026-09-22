@@ -1270,7 +1270,7 @@ public:
         // the CPU memset never race the GPU's atomics. Requires
         // VK_KHR_shader_clock (the profile variants are only built with it).
         if (sceneRenderer && sceneRenderer->rayTracing) {
-            const bool rtProf = rtProfilingEnabled_ && shaderClockSupported
+            const bool rtProf = rtProfilingEnabled_ && rtProfilingSupported
                 && sceneRenderer->rayTracing->isSupported();
             if (sceneRenderer->mainSolidRenderer)
                 sceneRenderer->mainSolidRenderer->setRtProfilingEnabled(rtProf);
@@ -2677,9 +2677,9 @@ public:
                     // ms against frame time.
                     ImGui::Checkbox("RT op profiling", &rtProfilingEnabled_);
                     if (rtProfilingEnabled_) {
-                        if (!shaderClockSupported) {
+                        if (!rtProfilingSupported) {
                             ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
-                                "VK_KHR_shader_clock unsupported - profiling off");
+                                "shader clock / storage atomics unsupported - profiling off");
                         } else {
                             static const char* kRtOpNames[RTProfileCounters::kOpCount] = {
                                 "Solid refl", "Water refl", "Water refr", "Water depth",

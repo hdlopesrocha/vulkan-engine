@@ -417,7 +417,9 @@ void RayTracingResources::createProxyBuffers(VulkanApp* app) {
     // buffer when a profile pipeline is active.
     for (uint32_t f = 0; f < kParamFrames; ++f) {
         profileBuffers_[f] = app->createBuffer(sizeof(RTProfileCounters),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            // SHADER_DEVICE_ADDRESS: the descriptor-buffer path writes this
+            // binding from its device address (vkGetDescriptorEXT).
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (profileBuffers_[f].mappedData)
             memset(profileBuffers_[f].mappedData, 0, sizeof(RTProfileCounters));

@@ -237,10 +237,11 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         VK_SHADER_STAGE_FRAGMENT_BIT
     );
     // Per-op profiling variant (counters + device clock). Built only when the
-    // device supports VK_KHR_shader_clock; the production variants above stay
-    // free of the clock capability.
+    // device supports VK_KHR_shader_clock AND fragmentStoresAndAtomics (the
+    // instrumentation atomically writes a storage buffer from the fragment
+    // stage); the production variants above stay free of the clock capability.
     ShaderStage fragmentShaderRtProf = ShaderStage(
-        (app->rayTracingEnabled() && app->shaderClockSupported)
+        (app->rayTracingEnabled() && app->rtProfilingSupported)
             ? app->getOrCreateShaderModule("shaders/main_rt_prof.frag.spv") : VK_NULL_HANDLE,
         VK_SHADER_STAGE_FRAGMENT_BIT
     );

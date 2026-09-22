@@ -220,15 +220,16 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     sceneIndicesBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     // binding 26: per-op RT profiling counters (RT_PROFILE shader variants
-    // only; fragment ray-query sites accumulate into it). Declared in the
-    // layout unconditionally so the profile pipelines share this set layout
-    // (production variants simply never reference the binding).
+    // only; fragment + water TES ray-query sites accumulate into it). Declared
+    // in the layout unconditionally so the profile pipelines share this set
+    // layout (production variants simply never reference the binding).
     VkDescriptorSetLayoutBinding rtProfileBinding{};
     rtProfileBinding.binding = 26;
     rtProfileBinding.descriptorCount = 1;
     rtProfileBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     rtProfileBinding.pImmutableSamplers = nullptr;
-    rtProfileBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    rtProfileBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
+        | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     // Binding numbers are sparse by design: 11 (legacy 360 cubemap) is
     // intentionally absent.
