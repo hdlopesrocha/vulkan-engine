@@ -1162,23 +1162,33 @@ void shadeWaterSurface() {
     float specAngle = max(dot(normal, halfDir), 0.0);
     
     // Main specular highlight with noise perturbation. The noise FBM only
-    // runs when the highlight/glitter can contribute (intensity > 0).
+    // runs when the highlight/glitter can contribute (intensity > 0) AND the
+    // layer actually has a wave field to perturb: with waves off
+    // (wp.waveToggles.x < 0.5) waterWaveField() returns identically zero, so
+    // the FBM perturbation and the glitter sparkles only add noise to a flat
+    // surface. The unperturbed analytic highlight is kept instead.
     vec3 specularColor = vec3(0.0);
-    if (specularIntensity > 0.0 || glitterIntensity > 0.0) {
-        float specNoise = 0.8 + 0.4 * waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
-                                                    max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
-        float specular = pow(specAngle, specularPowerParam) * specNoise;
-        specularColor = ubo.lightColor.xyz * specular * specularIntensity;
-    }
-    
-    // Sun glitter: high-frequency noise-based sparkles
-    if (glitterIntensity > 0.0) {
-        float glitterNoise = waterFbmNoise(fragPos.xyz, noiseScale * 3.0, animTime, 3.0,
-                                           max(int(noiseOctaves) - 2, 1), noisePersistence, noiseLacunarity, vec3(0.0));
-        float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xyz, noiseScale * 0.5, animTime, 0.5,
-                                                           max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
-        float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * pow(specAngle, 32.0);
-        specularColor += ubo.lightColor.xyz * glitter * glitterIntensity;
+    if (wp.waveToggles.x > 0.5) {
+        if (specularIntensity > 0.0 || glitterIntensity > 0.0) {
+            float specNoise = 0.8 + 0.4 * waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
+                                                        max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
+            float specular = pow(specAngle, specularPowerParam) * specNoise;
+            specularColor = ubo.lightColor.xyz * specular * specularIntensity;
+        }
+
+        // Sun glitter: high-frequency noise-based sparkles
+        if (glitterIntensity > 0.0) {
+            float glitterNoise = waterFbmNoise(fragPos.xyz, noiseScale * 3.0, animTime, 3.0,
+                                               max(int(noiseOctaves) - 2, 1), noisePersistence, noiseLacunarity, vec3(0.0));
+            float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xyz, noiseScale * 0.5, animTime, 0.5,
+                                                               max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
+            float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * pow(specAngle, 32.0);
+            specularColor += ubo.lightColor.xyz * glitter * glitterIntensity;
+        }
+    } else if (specularIntensity > 0.0) {
+        // Waves off: no field to perturb, so no FBM and no glitter; the
+        // unperturbed analytic highlight is the whole specular lobe.
+        specularColor = ubo.lightColor.xyz * pow(specAngle, specularPowerParam) * specularIntensity;
     }
     
     // === REFLECTION (hardware RT §9) ===
@@ -1413,7 +1423,15 @@ void shadeWaterSurface() {
     // The caustic pattern feeds the final mask debug view, so keep it
     // computed while that view is selected even if the effect is disabled.
     bool causticDebugMode = (dbgMode == DEBUG_MODE_CAUSTICS);
-    if (causticIntensity > 0.001 || causticDebugMode) {
+    // Enter only when the effect can contribute: the pattern is produced ONLY
+    // by the wave field (waterWaveSample(), whose central difference is
+    // identically zero when wp.waveToggles.x < 0.5), and the column must be
+    // deep enough to focus sunlight (flat/no-volume water reports
+    // waterThickness = 0, which makes the Jacobian exactly 1 and the excess
+    // exactly 0). The debug view still forces the block so its mask stays
+    // populated.
+    if ((causticIntensity > 0.001 && waterThickness > 0.05 && wp.waveToggles.x > 0.5)
+        || causticDebugMode) {
         // Sun geometry (flat-surface incidence): stable coefficient, the
         // wave slopes enter through the curvature term only.
         vec3 Lprop = normalize(ubo.lightDir.xyz);       // light travel dir
