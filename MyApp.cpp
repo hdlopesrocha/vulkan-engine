@@ -2237,8 +2237,34 @@ public:
                     app->resources.addDescriptorSet(s.set, label);
                     return s;
                 };
+                // ── Back-face demand gate (perf_report_19 C3) ─────────────────
+                // The back-face depth pass exists only to measure the water
+                // VOLUME (column thickness) for these per-layer consumers:
+                //   enableWaves      -> TES shore-zone/gradient + shoaling depth
+                //   enableFoam       -> thickness-zoned foam bands/contact line
+                //   enableVolumetric -> scattering integrates over the column
+                //   causticIntensity -> refracting-column inverse-Jacobian light
+                //   enableRefraction -> Beer-Lambert thickness / tint absorption
+                // Blur is NOT a consumer: the body/column it reads are computed
+                // by the water fragment shader from the wave field regardless of
+                // the back-face pass. When no layer needs the volume, skip the
+                // cull, the water-depth descriptor set, the dummy patch and the
+                // pass entirely; slot.pool/slot.waterDs stay untouched, and the
+                // water set binds the 1x1 dummy depth (clear depth ->
+                // hasValidBackFace=false, waterThickness=0).
+                bool waterVolumeNeeded = false;
+                for (const WaterParams& wp : waterParams) {
+                    waterVolumeNeeded = waterVolumeNeeded || wp.enableWaves || wp.enableFoam
+                        || wp.enableVolumetric || wp.causticIntensity > 0.001f || wp.enableRefraction;
+                }
+                // Shadows ON: the shadow cascade cull contends for the liquid
+                // cull buffers, so the task-local cull is still required.
+                // Shadows OFF: the main water cull output is already complete
+                // (ordering proof at the render call) and is reused instead.
+                const bool taskLocalBackFaceCull = waterVolumeNeeded && settings.enableShadows;
+
                 VkDescriptorSet computeDs = VK_NULL_HANDLE;
-                {
+                if (taskLocalBackFaceCull) {
                     VkDescriptorSetLayout bfLayout = ind.getComputeDescriptorSetLayout();
                     auto& dsSlot = lazyComputeSlot(cachedBackfaceCompute, ringBackfaceCompute, bfLayout, "Lazy cachedBackfaceCompute");
                     computeDs = dsSlot.set;
@@ -2287,7 +2313,10 @@ public:
                 // UPDATE_AFTER_BIND and trip GPU-assisted validation's descriptor-count
                 // check).
                 VkDescriptorSet asyncWaterDs = VK_NULL_HANDLE;
-                {
+                // Demand gate: no volume consumer means nothing reads the depth,
+                // so skip the water-depth set creation/update as well. It stays
+                // lazily created on the first frame the volume is needed again.
+                if (waterVolumeNeeded) {
                     VkImageView bfBack = (this->sceneRenderer->backFaceRenderer) ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
                     // Hybrid RT: back-face set carries RT outputs + sky (no cubemap).
                     VkImageView bfRefl = VK_NULL_HANDLE, bfRefr = VK_NULL_HANDLE, bfSky = VK_NULL_HANDLE;
@@ -2342,17 +2371,37 @@ public:
                     }
                 }
 
-                // Render back-face pass using this slot's (ring-reused) compact/visible
-                // buffers so draws consume the cull results
+                // Render back-face pass using the cull results. Ordering proof
+                // for the shared-cull path below: this command buffer waits
+                // tlSolid@v (submit at the end of the task), tlSolid is signaled
+                // by the solid pass which waits tlShadow, and tlShadow is
+                // signaled by the shadow task after waiting tlCull. The main
+                // water cull ran in the cull task BEFORE tlCull was signaled,
+                // and a timeline semaphore wait makes those SSBO writes visible
+                // to this queue, so the main cull output is complete before this
+                // draw executes. The later water geometry pass reads the same
+                // compact/visible buffers in this same command buffer -- a
+                // read-read with no hazard.
                 auto tBackface = std::chrono::high_resolution_clock::now();
-                if (this->sceneRenderer->backFaceRenderer) {
+                if (waterVolumeNeeded && this->sceneRenderer->backFaceRenderer) {
+                    VkBuffer bfCompact = VK_NULL_HANDLE;
+                    VkBuffer bfVisible = VK_NULL_HANDLE;
+                    if (taskLocalBackFaceCull) {
+                        bfCompact = slot.compact.buffer;
+                        bfVisible = slot.visible.buffer;
+                    } else {
+                        // Shadows off: reuse the main water cull output instead
+                        // of re-dispatching the same cull into task-local buffers.
+                        bfCompact = ind.getCurrentCompactBuffer();
+                        bfVisible = ind.getCurrentVisibleCountBuffer();
+                    }
                     this->sceneRenderer->backFaceRenderer->render(app, cmd, frameIdx,
                                                 ind,
                                                 this->sceneRenderer->mainLiquidRenderer->getWaterGeometryPipelineLayout(),
                                                 app->getMainDescriptorSet(),
                                                 asyncWaterDs,
-                                                (computeDs != VK_NULL_HANDLE) ? slot.compact.buffer : VK_NULL_HANDLE,
-                                                (computeDs != VK_NULL_HANDLE) ? slot.visible.buffer : VK_NULL_HANDLE);
+                                                bfCompact,
+                                                bfVisible);
                 }
 
                 this->profileBackface = std::chrono::duration<float, std::milli>(
@@ -2366,8 +2415,18 @@ public:
                 if (this->sceneRenderer->mainLiquidRenderer) {
                     auto& waterIR = this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
                     waterIR.acquireBuffers(cmd);
-                    VkImageView wBack = (this->sceneRenderer->backFaceRenderer)
-                        ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
+                    // Demand gate: when no layer consumes the volume the back-face
+                    // pass did not run this frame, so its depth image holds stale
+                    // data. Bind the 1x1 dummy depth instead: it reads as clear
+                    // depth -> hasValidBackFace=false, waterThickness=0, matching
+                    // "no volume" (the back-face set binding 0 is written with the
+                    // same dummy when the pass runs).
+                    VkImageView wBack = VK_NULL_HANDLE;
+                    if (this->sceneRenderer->backFaceRenderer) {
+                        wBack = waterVolumeNeeded
+                            ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx)
+                            : this->sceneRenderer->backFaceRenderer->getDummyDepthView();
+                    }
                     VkImageView wRefl = VK_NULL_HANDLE, wRefr = VK_NULL_HANDLE;
                     if (this->sceneRenderer->rayTracing && this->sceneRenderer->rayTracing->isSupported()) {
                         wRefl = this->sceneRenderer->rayTracing->getReflectionView();

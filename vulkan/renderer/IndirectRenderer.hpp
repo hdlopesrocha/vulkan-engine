@@ -324,6 +324,12 @@ public:
     const Buffer& getIndirectBuffer() const { return indirectBuffer; }
     const Buffer& getBoundsBuffer() const { return boundsBuffer; }
     const Buffer& getCompactBuffer(uint32_t frame) const { return compactIndirectBuffers[frame % MAX_CULL_FRAMES]; }
+    // Compacted indirect commands / visible count written by the most recent
+    // cull -- the same pair drawPrepared() consumes. Used by the water
+    // back-face pass to reuse the main water cull output when it is guaranteed
+    // complete (shadows off); see the ordering proof in MyApp.cpp.
+    VkBuffer getCurrentCompactBuffer() const { return compactIndirectBuffers[currentCullFrame].buffer; }
+    VkBuffer getCurrentVisibleCountBuffer() const { return visibleCountBuffers[currentCullFrame].buffer; }
     // Last observed visible count for a cull frame (async readback cache, 1-frame latency, for stats only).
     uint32_t getLastVisibleCount(uint32_t frame) const { return lastVisibleCount[frame % MAX_CULL_FRAMES]; }
     VkDescriptorSetLayout getComputeDescriptorSetLayout() const { return computeDescriptorSetLayout; }
