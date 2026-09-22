@@ -172,6 +172,12 @@ public:
     struct SceneTriGeometry {
         VkDeviceAddress vertexAddress = 0; // chunk's first vertex (already offset)
         VkDeviceAddress indexAddress = 0;  // chunk's first index (already offset)
+        // Owning merged buffers (solid or water pools). The async AS build
+        // records its own TRANSFER -> ACCEL_BUILD barrier for these (the
+        // uploads that fill them are vkCmdCopyBuffer submissions), so the
+        // build no longer depends on the cull CB's acquireBuffers barrier.
+        VkBuffer vertexBuffer = VK_NULL_HANDLE;
+        VkBuffer indexBuffer = VK_NULL_HANDLE;
         uint32_t vertexCount = 0;
         uint32_t indexCount = 0;
         uint32_t baseVertex = 0;  // element offset into the merged vertex pool
@@ -192,6 +198,13 @@ public:
     // was recorded. Never blocks the CPU; never called when !supported_.
     // Why here: the rasterizer owns hi-detail tessellated geometry; this
     // stable proxy exists only for secondary rays (§6/§21).
+    // True when a throttled AS rebuild is pending this frame. Advances the
+    // internal frame counter (call exactly once per frame, before deciding
+    // where to record the build) and applies the same guards as
+    // buildIfNeeded(), so the caller can allocate/record the build on an
+    // async queue without paying a command buffer when nothing changed.
+    bool wantsBuild();
+
     bool buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd);
 
     // Dispatch the water RT pipeline (half-res refraction/thickness only).

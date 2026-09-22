@@ -900,9 +900,10 @@ bool RayTracingResources::consumeForceProxyRefresh() {
     return f;
 }
 
-bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
-    if (!supported_ || !runtimeEnabled_ || !dirty_ || cmd == VK_NULL_HANDLE) return false;
+bool RayTracingResources::wantsBuild() {
+    if (!supported_ || !runtimeEnabled_) return false;
     ++frameCounter_;
+    if (!dirty_) return false;
     // Never waste the initial build on an empty proxy set: an empty TLAS
     // helps nobody, yet it would flip tlasBuilt_ on, so shaders spend the
     // whole scene-load window tracing empty space (every ray misses, hence
@@ -916,6 +917,16 @@ bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
     // This keeps the 300+ MB scene BLAS build off the hot path and the iGPU
     // bounded (the per-frame and 10-frame variants both OOM'd on the 2.5 GB
     // shared-memory budget).
+    if (frameCounter_ - lastBuildFrame_ < 30 && lastBuiltValid_) return false;
+    return true;
+}
+
+bool RayTracingResources::buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd) {
+    if (!supported_ || !runtimeEnabled_ || !dirty_ || cmd == VK_NULL_HANDLE) return false;
+    // The per-frame counter is advanced by wantsBuild(); this re-check keeps
+    // the guards valid for direct callers (and is a no-op after wantsBuild()).
+    const bool haveBoxes = (activeSolidCount_ + activeWaterCount_) > 0;
+    if (!haveBoxes && !lastBuiltValid_) return false;
     if (frameCounter_ - lastBuildFrame_ < 30 && lastBuiltValid_) return false;
     const auto t0 = std::chrono::high_resolution_clock::now();
     const bool built = recordBuild(app, cmd);
@@ -1018,28 +1029,63 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
     // and in recordSceneBlas) feed the vkCmdCopyBuffer publishes in §3b, so
     // the staging range gets a HOST -> TRANSFER dependency while the rest
     // keeps HOST -> ACCEL_BUILD.
+    // Scene BLAS inputs (the merged solid/water vertex+index buffers) are
+    // filled by vkCmdCopyBuffer uploads. The async build CB is submitted
+    // before the cull CB (whose acquireBuffers barrier used to cover them), so
+    // establish TRANSFER -> ACCEL_BUILD here or the build reads the uploads
+    // without a memory dependency (same-queue READ_AFTER_WRITE hazard).
     {
-        VkBufferMemoryBarrier2 barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        barrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-        barrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-        barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR
+        std::vector<VkBufferMemoryBarrier2> barriers;
+        barriers.reserve(3 + 4);
+
+        VkBufferMemoryBarrier2 host{};
+        host.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        host.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        host.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+        host.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        host.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR
             | VK_ACCESS_2_SHADER_READ_BIT;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        host.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         // Ranges cover the alignment slack (writes land at +delta, delta < 16)
         // and all TLAS instances.
+        VkBufferMemoryBarrier2 b = host;
+        b.buffer = aabbBuffer_.buffer; b.offset = 0; b.size = vertBytes + idxBytes + 16;
+        barriers.push_back(b);
+        b = host;
+        b.buffer = tlasInstanceBuffer_.buffer; b.offset = 0;
+        b.size = 4 * sizeof(VkAccelerationStructureInstanceKHR) + 16;
+        barriers.push_back(b);
+        b = host;
+        b.buffer = lookupStaging_.buffer; b.offset = 0; b.size = kStageTotalSize;
+        b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        barriers.push_back(b);
+
+        auto addSceneBuffer = [&](VkBuffer sceneBuf) {
+            if (sceneBuf == VK_NULL_HANDLE) return;
+            for (const auto& e : barriers) if (e.buffer == sceneBuf) return;
+            VkBufferMemoryBarrier2 sb{};
+            sb.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            sb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            sb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            sb.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+            sb.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR
+                | VK_ACCESS_2_SHADER_READ_BIT;
+            sb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            sb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            sb.buffer = sceneBuf;
+            sb.offset = 0;
+            sb.size = VK_WHOLE_SIZE;
+            barriers.push_back(sb);
+        };
+        for (const auto& g : sceneSolidGeoms_) { addSceneBuffer(g.vertexBuffer); addSceneBuffer(g.indexBuffer); }
+        for (const auto& g : sceneWaterGeoms_) { addSceneBuffer(g.vertexBuffer); addSceneBuffer(g.indexBuffer); }
+
         VkDependencyInfo dep{};
         dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        VkBufferMemoryBarrier2 barriers[3]{barrier, barrier, barrier};
-        barriers[0].buffer = aabbBuffer_.buffer; barriers[0].offset = 0; barriers[0].size = vertBytes + idxBytes + 16;
-        barriers[1].buffer = tlasInstanceBuffer_.buffer; barriers[1].offset = 0; barriers[1].size = 4 * sizeof(VkAccelerationStructureInstanceKHR) + 16;
-        barriers[2].buffer = lookupStaging_.buffer; barriers[2].offset = 0; barriers[2].size = kStageTotalSize;
-        barriers[2].dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-        barriers[2].dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-        dep.bufferMemoryBarrierCount = 3;
-        dep.pBufferMemoryBarriers = barriers;
+        dep.bufferMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
+        dep.pBufferMemoryBarriers = barriers.data();
         vkCmdPipelineBarrier2(cmd, &dep);
     }
 
@@ -1314,6 +1360,13 @@ void RayTracingResources::createRTPipeline(VulkanApp* app) {
     pci.pGroups = groups.data();
     pci.maxPipelineRayRecursionDepth = 1; // single secondary bounce (§7 default)
     pci.layout = rtPipelineLayout_;
+    // Perf hints: every shader group has a miss and a closest-hit shader (no
+    // null shaders), so the implementation may skip null checks in traversal.
+    // SKIP_AABBS is deliberately NOT set: it requires the
+    // rayTraversalPrimitiveCulling feature, which the device does not enable
+    // (VUID-VkRayTracingPipelineCreateInfoKHR-rayTraversalPrimitiveCulling-03596).
+    pci.flags = VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_MISS_SHADERS_BIT_KHR
+        | VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_CLOSEST_HIT_SHADERS_BIT_KHR;
     // NULL deferredOperation = blocking compile (init path may block; never in
     // the frame path). Pipeline cache inherited from the app for faster loads.
     pci.basePipelineHandle = VK_NULL_HANDLE;

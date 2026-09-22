@@ -1431,7 +1431,10 @@ public:
         // Launch asynchronous recording+submit for independent offscreen passes
         // using a persistent thread pool to avoid per-frame std::thread creation overhead.
         // Dependency graph (timeline semaphores, one per producer):
-        //   cull task      : brush early pass + all GPU culls (+ RT BLAS/TLAS build) -> tlCull
+        //   cull task      : brush early pass + all GPU culls -> tlCull
+        //                    (the throttled RT BLAS/TLAS rebuild rides its own
+        //                    command buffer on the solid queue, ahead of the
+        //                    solid pass — see the cull task)
         //   shadow task    : shadow map + cascade cull + blur, restores visibleLods/UBO
         //                    (runs after cull on the worker) -> tlShadow
         //   backface+water : back-face depth pass + water geometry pass + RT dispatch
@@ -1454,6 +1457,10 @@ public:
         static VkSemaphore tlVeg = VK_NULL_HANDLE, tlSdf = VK_NULL_HANDLE, tlBbox = VK_NULL_HANDLE;
         static VkSemaphore tlWater = VK_NULL_HANDLE, tlBrushLiquid = VK_NULL_HANDLE;
         static uint64_t tlFrameValue = 0;
+        // Last frame value signaled on tlWater (0 = none yet). The async RT
+        // build waits on it so it cannot overwrite the TLAS/metas while a
+        // previous frame's water pass (different queue) is still reading them.
+        static uint64_t lastWaterSignal = 0;
         static bool tlInit = false;
         if (!tlInit) {
             tlCull      = createTimelineSemaphore();
@@ -1524,12 +1531,36 @@ public:
                 if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
                     this->sceneRenderer->debugSDFRenderer->prepareCull(cullCmd);
                 // Hybrid RT: (re)build the stable proxy BLAS/TLAS when chunk
-                // changes staged new boxes. Throttled inside (≤1/30 frames);
-                // camera/LOD/tessellation never mark dirty (§6). Recorded in
-                // the root cull CB so every downstream consumer (solid, water,
-                // shadow) observes it via the tlCull timeline wait.
-                if (this->sceneRenderer && this->sceneRenderer->rayTracing)
-                    this->sceneRenderer->rayTracing->buildIfNeeded(this, cullCmd);
+                // changes staged new boxes. Throttled inside (<=1/30 frames);
+                // camera/LOD/tessellation never mark dirty (§6). The build is
+                // recorded on its OWN command buffer and submitted to the solid
+                // queue BEFORE the solid pass, so it no longer serializes with
+                // the graphics-queue cull/main work. Same-queue FIFO orders it
+                // ahead of the solid pass that consumes the new TLAS, and the
+                // water pass waits tlSolid@v (signaled after the build).
+                // Previous frames' water passes (different queue) may still
+                // read the metas/TLAS, so the build waits on tlWater's last
+                // signaled value; previous solid passes are same-queue FIFO.
+                if (this->sceneRenderer && this->sceneRenderer->rayTracing &&
+                    this->sceneRenderer->rayTracing->wantsBuild()) {
+                    VkCommandBuffer buildCmd = app->allocatePrimaryCommandBuffer();
+                    VkCommandBufferBeginInfo bbegin{};
+                    bbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                    bbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    if (vkBeginCommandBuffer(buildCmd, &bbegin) == VK_SUCCESS &&
+                        this->sceneRenderer->rayTracing->buildIfNeeded(this, buildCmd)) {
+                        std::vector<VkSemaphore> buildWaits;
+                        std::vector<uint64_t> buildWaitValues;
+                        if (lastWaterSignal > 0) {
+                            buildWaits.push_back(tlWater);
+                            buildWaitValues.push_back(lastWaterSignal);
+                        }
+                        app->submitCommandBufferAsyncToQueue(buildCmd, app->getSolidQueue(),
+                            nullptr, buildWaits, false, {}, buildWaitValues, 0, {}, false);
+                    } else {
+                        app->freeCommandBuffer(buildCmd);
+                    }
+                }
                 // Signal the single cull timeline semaphore; consumers wait on tlCull@v.
                 // Cull is the root producer. The composite no longer waits tlCull
                 // directly (it is transitively implied by tlBrushLiquid via the
@@ -2488,6 +2519,9 @@ public:
                 // Wait on the vegetation pass too: water.frag's reflection
                 // lookup samples the vegetation color/depth targets, which are
                 // written on the vegetation queue and signaled by tlVeg@v.
+                // Record the value so a later RT AS build waits for this
+                // frame's water consumers before overwriting TLAS/metas.
+                lastWaterSignal = v;
                 app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater, {tlSolid, tlSky, tlVeg}, false, {}, {v, v, v}, v, {}, false);
 
                 // Brush-liquid overlay: re-enter the water geometry pass on its own

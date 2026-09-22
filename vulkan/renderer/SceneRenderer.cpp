@@ -2213,6 +2213,8 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     RayTracingResources::SceneTriGeometry g;
                     g.vertexAddress = vaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
                     g.indexAddress = iaddr + VkDeviceAddress(s.firstIndex) * sizeof(uint32_t);
+                    g.vertexBuffer = vb;
+                    g.indexBuffer = ib;
                     g.vertexCount = s.vertexCount;
                     g.indexCount = s.indexCount;
                     g.baseVertex = s.baseVertex;
@@ -2239,6 +2241,8 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     RayTracingResources::SceneTriGeometry g;
                     g.vertexAddress = wvaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
                     g.indexAddress = wiaddr + VkDeviceAddress(s.firstIndex) * sizeof(uint32_t);
+                    g.vertexBuffer = wvb;
+                    g.indexBuffer = wib;
                     g.vertexCount = s.vertexCount;
                     g.indexCount = s.indexCount;
                     g.baseVertex = s.baseVertex;
