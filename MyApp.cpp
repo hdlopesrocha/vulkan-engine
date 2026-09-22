@@ -36,6 +36,7 @@
 #include "widgets/SkyWidget.hpp"
 #include "widgets/SkySettings.hpp"
 #include "widgets/WaterWidget.hpp"
+#include "widgets/GraphicsQualityWidget.hpp"
 #include "widgets/RenderTargetsWidget.hpp"
 #include "widgets/BillboardCreator.hpp"
 #include "widgets/ImpostorWidget.hpp"
@@ -62,6 +63,7 @@
 #include "utils/MainSceneLoader.hpp"
 #include "space/UniqueChangeCollector.hpp"
 #include "utils/Settings.hpp"
+#include "utils/GraphicsSettingsCommand.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "widgets/RadialMenu.hpp"
 #include "math/Camera.hpp"
@@ -83,6 +85,7 @@
 #include "events/SetBrushSdfTypeEvent.hpp"
 #include "events/SetLightEvent.hpp"
 #include "events/SetPageEvent.hpp"
+#include "events/SetGraphicsQualityEvent.hpp"
 #include "events/RadialMenuHandler.hpp"
 #include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
@@ -266,6 +269,7 @@ public:
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<SkyWidget> skyWidget;
     std::shared_ptr<WaterWidget> waterWidget;
+    std::shared_ptr<GraphicsQualityWidget> graphicsQualityWidget;
     std::shared_ptr<RenderTargetsWidget> renderTargetsWidget;
     std::shared_ptr<BillboardCreator> billboardCreator;
     std::shared_ptr<ImpostorService> impostorService;
@@ -839,6 +843,9 @@ public:
         // Water UI uses the application-owned water params vector and updates GPU state explicitly.
         waterWidget = std::make_shared<WaterWidget>(sceneRenderer->mainLiquidRenderer.get(), &waterParams);
 
+        // Right-aligned main-UI preset buttons (publishes SetGraphicsQualityEvent).
+        graphicsQualityWidget = std::make_shared<GraphicsQualityWidget>(&eventManager);
+
         renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
             this,
             sceneRenderer, sceneRenderer->mainSolidRenderer.get(), sceneRenderer->skyRenderer.get(),
@@ -873,6 +880,7 @@ public:
         widgetManager.addWidget(controllerParametersWidget);
         widgetManager.addWidget(gamepadWidget);
         widgetManager.addWidget(settingsWidget);
+        widgetManager.addWidget(graphicsQualityWidget);
         widgetManager.addWidget(lightWidget);
         widgetManager.addWidget(skyWidget);
         widgetManager.addWidget(waterWidget);
@@ -3058,6 +3066,19 @@ public:
         }
         if (auto fullscreenEvent = std::dynamic_pointer_cast<ToggleFullscreenEvent>(event)) {
             toggleFullscreen();
+            return;
+        }
+        if (auto qualityEvent = std::dynamic_pointer_cast<SetGraphicsQualityEvent>(event)) {
+            // Runs on the queued-event drain (main thread, before frame
+            // recording). The upload callback pushes the touched per-layer
+            // water params to the GPU so the preset applies even when the
+            // Water Settings widget is hidden.
+            GraphicsSettingsCommand command(qualityEvent->quality);
+            command.execute(settings, waterParams, [this](uint32_t layer, const WaterParams& params) {
+                if (sceneRenderer && sceneRenderer->mainLiquidRenderer) {
+                    sceneRenderer->mainLiquidRenderer->updateGPUParamsForLayer(layer, params);
+                }
+            });
             return;
         }
         if (auto rebuildEvent = std::dynamic_pointer_cast<RebuildBrushEvent>(event)) {
