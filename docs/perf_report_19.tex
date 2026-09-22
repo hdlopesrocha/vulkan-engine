@@ -1,0 +1,824 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+\title{Performance Report 19: Vulkan Engine \\
+\large Water Rendering in Minimal Graphics Mode --- What the Preset Leaves Running}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Reports~17 and~18 audited the hybrid ray-traced water path. This report audits the \emph{other} end of the quality range: the new \textbf{Minimal} graphics preset
+(\texttt{utils/GraphicsSettingsCommand.hpp:69--91}), which disables every RT ray path, per-layer water blur, per-layer reflection/refraction lobes, tessellation, and shadows.
+The preset removes the expensive \emph{optional} work --- but the frame-level water machinery around it was built assuming the effects were present, so a large amount of
+unconditional and near-dead work survives. A minimal-mode frame still runs an always-tessellated water pipeline twice (geometry $+$ back-face), a second water cull, a full-res
+back-face rasterization, two auxiliary full-res render targets that nothing consumes, a per-pixel wave field evaluated three times (with caustics evaluating to exactly zero on
+flat water), ungated specular/glitter noise, unconditional RT params streaming and descriptor rewrites for compiled-out bindings, and a double water-UBO write.
+The report finds \textbf{12 issues} and pairs each with a copy-pasteable implementation prompt (goal, steps, files, validation) that preserves validation-clean execution,
+Synchronization2, runtime feature detection, and the raster$+$CSM fallback required by \texttt{AGENTS.md}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+The Minimal preset was implemented as a settings-level switch: it flips flags and lets the existing per-frame code read them. That is the right shape for the RT paths ---
+\texttt{SceneRenderer::updateRTParams} turns the RT runtime off (\texttt{SceneRenderer.cpp:2412--2414}), \texttt{dispatchWaterRT} is gated off
+(\texttt{MyApp.cpp:2415--2416, 2493--2503}), shadows early-out to an empty command buffer (\texttt{ShadowRenderer.cpp:854--862}), the composite blur loop is skipped because
+\texttt{blurPx = 0} (\texttt{postprocess.frag:110--111}), and the TCS collapses the tess factors to 1 (\texttt{water\_tesc.glsl:55--63}). The remaining cost is the problem:
+
+\begin{itemize}
+    \item \textbf{The water pipeline is always a tessellation pipeline.} \texttt{WaterRenderer.cpp:730} hard-codes \texttt{bool hasTessellation = true;}, the topology is
+    \texttt{PATCH\_LIST} (\texttt{:798}), and \texttt{pTessellationState} is always attached (\texttt{:890}); \texttt{WaterBackFaceRenderer.cpp:166,207} does the same. The global
+    toggle only writes \texttt{gl\_TessLevel*=1} in the TCS. The TCS, the fixed-function tessellator, and the TES all still execute --- and the TES body
+    (\texttt{water\_tese.glsl:91--338}) has \emph{no} gate on \texttt{ubo.passParams.y}: it still samples 6--9 depth texels, runs the shore-gradient solve, and evaluates the full
+    wave field per generated vertex, in both the geometry pass and the back-face pass.
+    \item \textbf{The per-pixel wave field is evaluated three times.} The fragment stage evaluates \texttt{waterWaveField} for the analytic normal
+    (\texttt{water\_surface.glsl:657}) and \emph{two more} \texttt{waterWaveSample} calls for caustics (\texttt{:1420,1422}) --- even on flat water where the caustic contribution is
+    provably zero (\texttt{depth = 0} $\Rightarrow$ $|J| = 1$ $\Rightarrow$ excess $= 0$). On top of that, specular and glitter FBM (\texttt{:1145--1160}, defaults $2.0$/$1.5$) are gated
+    only by their intensities, not by \texttt{enableWaves}, so every layer pays $\sim$10 more noise octaves. Layer 0 runs on the order of \textbf{60 four-dimensional Perlin
+    octaves and dozens of \texttt{pow()} per pixel}.
+    \item \textbf{The back-face pass is unconditional.} It is recorded whenever water is enabled (\texttt{MyApp.cpp:2167, 2348--2356}) with its own cull
+    (\texttt{:2275--2278}), a full-res D32 clear, layout transitions, and the same always-tessellated raster path --- even though its only consumers (thickness, tint, caustics,
+    volumetric, shore zones) are per-layer features that a truly minimal water configuration does not need.
+    \item \textbf{Two full-res auxiliary targets are written and sampled for nothing.} Body (RGBA16F) and column (RG16F) attachments are mandatory for the pass
+    (\texttt{WaterRenderer.cpp:1003--1004}) and written per water pixel (\texttt{water\_surface.glsl:1536--1537}), but their only consumer is the composite blur loop that is
+    skipped when \texttt{blurPx = 0} (\texttt{postprocess.frag:108--134}).
+    \item \textbf{RT-off residue.} \texttt{updateRTParams} memcpys the full RT params UBO every frame with no consumer (\texttt{MyApp.cpp:1360};
+    \texttt{RayTracingResources.cpp:1241--1246}), the water set-2 bindings still point at RT output images because the gate is \texttt{isSupported()} rather than
+    \texttt{runtimeEnabled()} (\texttt{MyApp.cpp:2294--2297, 2372--2374}), and the AS/proxy allocations stay resident (\texttt{RayTracingResources.cpp:59--86}).
+    \item \textbf{CPU overhead around the pass.} The water render UBO is written twice per frame (\texttt{WaterRenderer.cpp:1617--1631} then \texttt{:1643--1653}), the set-2 descriptor
+    update is deliberately uncached (8 bindings $\times$ 2 sets $+$ one dummy patch per frame, \texttt{:1320--1334}), the brush-liquid overlay is always recorded and submitted
+    (\texttt{MyApp.cpp:2533--2551}), and query slots 0--5 are reset but never written \texttt{MyApp.cpp:1275--1276}.
+\end{itemize}
+
+\textbf{Recommended order:} gate the TES fast path and add a non-tessellation pipeline (C1) $\rightarrow$ consolidate the wave-field evaluations and gate caustics/specular/glitter
+(C2) $\rightarrow$ make the back-face pass demand-driven and drop its second cull (C3) $\rightarrow$ skip body/column and their composite samples when blur is off (H4) $\rightarrow$
+suppress RT-off per-frame work (H5) $\rightarrow$ trim the TES body and dead varyings (H6). M7--M10 are local CPU/build hygiene; L11--L12 remove dead allocations and extend the
+preset so C1--C3 actually fire.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Water work item in Minimal} & \textbf{Still runs?} & \textbf{Covered by} \\
+\midrule
+Always-tessellated geometry $+$ back-face pipelines (TCS/tess/TES) & yes & C1 \\
+$3\times$ wave-field evaluation $+$ specular/glitter FBM per pixel & yes & C2 \\
+Caustics field evaluation with zero contribution (flat water) & yes & C2, L12 \\
+Back-face pass $+$ second water cull $+$ full-res clear & yes & C3, L12 \\
+Body/column attachments $+$ composite samples (blur off) & yes & H4 \\
+RT params UBO stream, RT output bindings, AS residency & yes & H5 \\
+TES per-vertex depth fetches and dead varyings & yes & H6 \\
+Water UBO double write $+$ uncached descriptor rewrites & yes & M7 \\
+Empty-water full clear/record path & yes & M8 \\
+Brush-liquid submit, empty shadow CB, unused timestamps & yes & M9 \\
+\bottomrule
+\end{tabular}
+\caption{Minimal-mode water work that survives the preset, and where it is addressed.}
+\end{table}
+
+% =====================================================================
+\section{What ``Minimal'' Leaves Running}
+% =====================================================================
+
+\subsection{Preset Definition (for reference)}
+
+\texttt{GraphicsSettingsCommand::applyMinimal} (\texttt{utils/GraphicsSettingsCommand.hpp:69--91}) sets:
+\begin{itemize}
+    \item \texttt{rtReflections}, \texttt{rtWaterReflections}, \texttt{rtRefractions}, \texttt{rtThickness}, \texttt{rtWaterDepth}, \texttt{rtLocalShadows} $=$ \texttt{false};
+    \item \texttt{tessellationEnabled}, \texttt{shadowTessellationEnabled}, \texttt{enableShadows} $=$ \texttt{false};
+    \item per layer: \texttt{enableBlur}, \texttt{enableReflection}, \texttt{enableRefraction} $=$ \texttt{false}.
+\end{itemize}
+It deliberately does \emph{not} touch: \texttt{waterEnabled} (stays \texttt{true}), \texttt{waterInMainPass} (stays \texttt{false}), \texttt{rtWaterPipeline} (stays \texttt{false}, and the
+dispatch gate also requires \texttt{rtRefractions}), the wave/foam/volumetric toggles, caustics, specular/glitter, or the scene/quality flags unrelated to water.
+
+\subsection{Per-Frame Water Sequence}
+
+\begin{longtable}{@{}rll@{}}
+\toprule
+\textbf{\#} & \textbf{Step} & \textbf{Evidence} \\
+\midrule
+\endhead
+1 & Build shared UBO: \texttt{passParams.y = tess ? 1 : 0}, \texttt{shadowEffects.w = shadows ? 1 : 0} & \texttt{MyApp.cpp:1329,1333} \\
+2 & \texttt{updateRTParams} (runtime gate $+$ RT UBO memcpy) & \texttt{MyApp.cpp:1360}; \texttt{SceneRenderer.cpp:2403--2467} \\
+3 & Cull task: main-view water cull (\texttt{indirect.comp}) & \texttt{MyApp.cpp:1519--1525} \\
+4 & Water task: second water cull into task-local buffers & \texttt{MyApp.cpp:2275--2278} \\
+5 & Back-face descriptor set update (8 bindings) $+$ dummy patch & \texttt{MyApp.cpp:2329, 2338--2343} \\
+6 & Back-face pass: D32 clear, indirect draw, depth $\rightarrow$ SRO & \texttt{MyApp.cpp:2348--2356}; \texttt{WaterBackFaceRenderer.cpp:292--375} \\
+7 & RT gate: \texttt{waterRtNeeded=false}, \texttt{setRtFeatureFlags(false,false)} (immediate UBO write) & \texttt{MyApp.cpp:2408--2424}; \texttt{WaterRenderer.cpp:1617--1631} \\
+8 & Water set-2 descriptor update (8 bindings) & \texttt{MyApp.cpp:2436} \\
+9 & Water geometry pass: 4 transitions, 3 color clears $+$ depth clear, indirect draw & \texttt{WaterRenderer.cpp:997--1120, 1450--1460} \\
+10 & Water render UBO rewrite (second write of the frame) & \texttt{WaterRenderer.cpp:1643--1653} \\
+11 & Water geom depth $\rightarrow$ SRO; RT dispatch skipped & \texttt{MyApp.cpp:2476--2483, 2493--2503} \\
+12 & Submit water queue; brush-liquid overlay submit (always) & \texttt{MyApp.cpp:2525, 2533--2551} \\
+13 & Composite: water color/body/column samples; blur loop skipped & \texttt{postprocess.frag:97--135} \\
+\bottomrule
+\end{longtable}
+
+\subsection{Work-Item Inventory}
+
+\begin{longtable}{@{}p{6.4cm}p{2.4cm}p{5.2cm}@{}}
+\toprule
+\textbf{Work item} & \textbf{Runs in Minimal} & \textbf{Evidence} \\
+\midrule
+\endhead
+Main water cull & yes & \texttt{MyApp.cpp:1519--1525} \\
+Second water cull (task-local buffers) & yes & \texttt{MyApp.cpp:2275--2278} \\
+Back-face pass (tessellated raster, full-res) & yes & \texttt{MyApp.cpp:2348--2356} \\
+Water geometry pass (tessellated raster) & yes & \texttt{MyApp.cpp:2469--2470} \\
+3 color clears $+$ depth clear, 4 transitions each way & yes & \texttt{WaterRenderer.cpp:1019--1120, 1141--1184} \\
+Body/column attachment writes $+$ composite samples & yes (unconsumed) & \texttt{water\_surface.glsl:1536--1537}; \texttt{postprocess.frag:108--109} \\
+RT params UBO memcpy & yes & \texttt{RayTracingResources.cpp:1241--1246} \\
+RT output bindings in water set 2 & yes & \texttt{MyApp.cpp:2294--2297, 2372--2374} \\
+Brush-liquid overlay pass/submit & yes & \texttt{MyApp.cpp:2533--2551} \\
+Empty shadow command-buffer relay & yes & \texttt{ShadowRenderer.cpp:854--862} \\
+Timestamp slots 0--5 reset, never written & yes & \texttt{MyApp.cpp:1275--1276} \\
+RT dispatch (\texttt{traceRays}) & no & \texttt{MyApp.cpp:2493--2503} \\
+Shadow cascades/culls/blur & no & \texttt{ShadowRenderer.cpp:856--862} \\
+Composite blur loop & no (\texttt{blurPx=0}) & \texttt{postprocess.frag:110--111} \\
+Tessellation factors (distance loop) & no (early-out) & \texttt{water\_tesc.glsl:55--63} \\
+\bottomrule
+\end{longtable}
+
+% =====================================================================
+\section{Cost Model}
+% =====================================================================
+
+Minimal-mode frame cost decomposes into:
+
+\begin{equation}
+C_{\mathrm{water}} = \underbrace{C_{\mathrm{cull}}^{\times 2}}_{\text{two indirect.comp dispatches}} + \underbrace{C_{\mathrm{backface}}}_{\text{full-res depth raster}} + \underbrace{C_{\mathrm{geom}}}_{\text{3 color + depth raster}} + \underbrace{N_{\mathrm{px}} \cdot C_{\mathrm{frag}}}_{\text{per covered pixel}} + \underbrace{C_{\mathrm{CPU}}}_{\text{descriptors/UBO}} + \underbrace{C_{\mathrm{sync}}}_{\text{empty CB, overlays}}
+\end{equation}
+
+with the per-pixel fragment term dominated by procedural noise and unconditional setup:
+
+\begin{equation}
+C_{\mathrm{frag}} \approx \underbrace{3 \cdot C_{\mathrm{wave}}}_{\text{normal, caustics}\times 2} + \underbrace{C_{\mathrm{spec+glitter}}}_{\sim 10\ \text{octaves}} + \underbrace{C_{\mathrm{backface depth + tint + volume}}}_{\text{1--2 fetches, several } \exp/\mathrm{pow}} + C_{\mathrm{tint/alpha}}
+\end{equation}
+
+and the per-vertex (TES) term:
+
+\begin{equation}
+C_{\mathrm{TES}} \approx \underbrace{16\ \text{octaves}}_{\text{layer 0}} + \underbrace{6\text{--}9\ \text{depth fetches}}_{\text{shore gradient + refine}} \quad\text{, executed in \emph{both} passes.}
+\end{equation}
+
+The preset removes $C_{\mathrm{frag}}$'s reflection/refraction/SSR terms and the tess \emph{factors}, but none of the terms above. The issues below attack the multiplicity
+($3\times$ wave field), the unconditional terms (caustics, specular, TES, back-face), the auxiliary targets, and the CPU residue.
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: The Water Pipeline Is Always a Tessellation Pipeline; the TES Body Is Ungated}
+
+\textbf{Location:} \texttt{vulkan/renderer/WaterRenderer.cpp:730} (\texttt{hasTessellation = true}), \texttt{:744--755} (TCS/TES stages), \texttt{:798}
+(\texttt{VK\_PRIMITIVE\_TOPOLOGY\_PATCH\_LIST}), \texttt{:851--855} (\texttt{patchControlPoints = 3}), \texttt{:890} (\texttt{pTessellationState}) --- and identically
+\texttt{vulkan/renderer/WaterBackFaceRenderer.cpp:166}, \texttt{:207}; \texttt{shaders/includes/water\_tesc.glsl:55--63}; \texttt{shaders/includes/water\_tese.glsl:91--338}.
+
+\begin{itemize}
+    \item There is \textbf{no non-tessellated water pipeline}. All water pipelines (geometry, water-in-main, back-face, and their RT variants) are built as triangle patches with a
+    TCS $+$ TES. The global toggle only reaches the TCS, which writes \texttt{gl\_TessLevel* = 1} and returns (\texttt{water\_tesc.glsl:55--63}). The TCS, the fixed-function
+    tessellator, and the TES remain part of the bound pipeline and still execute for the vertices it emits.
+    \item The TES has \textbf{no equivalent gate}. \texttt{main\_water.tese.spv} contains zero accesses to \texttt{passParams}; the body always runs the shore-gradient solve
+    (2--5 depth fetches, \texttt{water\_tese.glsl:229--250}), the base depth samples (\texttt{:178--189}), the displaced-UV refinement (\texttt{:303--323}), and the full
+    \texttt{waterWaveSample} displacement/analytic-normal evaluation (\texttt{:263--293}). That is the most expensive per-vertex work in the water pipeline, and it runs
+    \emph{twice per frame} (geometry pass $+$ back-face pass).
+    \item Because the fragment stage already computes its own analytic wave normal (\texttt{water\_surface.glsl:657}) and the base mesh is a low-density grid, the visual value of
+    per-vertex wave displacement collapses when the tess factors are 1 --- while the cost does not.
+    \item The always-patch topology also means the engine can never draw water as plain triangles, which blocks the cheapest possible minimal path: a triangle-list pipeline with no
+    tessellation stages at all.
+\end{itemize}
+
+\textbf{Technique:} split the pipeline family by tessellation. Build a second pipeline set with \texttt{triangle\_list} topology and no tessellation state, using a vertex-shader
+water path that feeds the same fragment stage (the fragment stage already derives normals/waves itself, so the no-tess VS only needs to emit base attributes and the per-patch
+brush layer). Select by \texttt{settings.tessellationEnabled}, exactly like \texttt{activeGeometryPipeline()} already selects RT vs non-RT. As an interim step (no new pipeline),
+gate the TES body on \texttt{ubo.passParams.y < 0.5} and emit the interpolated base vertex directly --- that alone removes the per-vertex wave/depth work in the current
+configuration.
+
+\begin{tcolorbox}[promptbox={Prompt: Remove the Tessellation Stages When Tessellation Is Off}]
+\textbf{Goal:} With \texttt{tessellationEnabled=false}, no TCS/tessellator/TES executes, and no per-vertex wave/shore-depth work is paid, in both the geometry and back-face passes.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item \textbf{Interim (small, immediate):} at the top of \texttt{water\_tese.glsl} main (\texttt{:91}), branch on \texttt{ubo.passParams.y < 0.5}: write \texttt{fragPos},
+    \texttt{fragBaseNormal}, \texttt{fragBasePos.w}, the brush index/HSV/UV varyings, and \texttt{gl\_Position} from the interpolated base vertex; set \texttt{fragWaterDepth} to the
+    deep default (\texttt{wp.waveZones.x}) and \texttt{fragShoreDir} to the configured \texttt{waveDirection}; skip all texture fetches and noise. Keep the normal/displacement path
+    behind the same branch. This makes the current toggle honest while the full pipeline lands.
+    \item \textbf{Full fix:} add a \texttt{createWaterPipelines(app, waterParams, bool tessellated)} path (or a second factory call) that creates the geometry and main pipelines
+    with \texttt{VK\_PRIMITIVE\_TOPOLOGY\_TRIANGLE\_LIST}, no \texttt{pTessellationState}, and a water vertex module compiled with a \texttt{WATER\_NO\_TESS} define. The
+    \texttt{WATER\_NO\_TESS} VS emits the same varyings (base position/normal/UV, \texttt{fragBasePos.w}, \texttt{brushIndex}, HSV; \texttt{fragWaterDepth} via the same solid/back
+    depth sample at the vertex, or the deep fallback if that is acceptable for minimal). Reuse \texttt{water\_tese.glsl}'s helper functions behind the define so the two paths
+    cannot drift.
+    \item Extend \texttt{activeGeometryPipeline()} / \texttt{activeMainPipeline()} (\texttt{WaterRenderer.hpp:256--267}) to select tess vs non-tess on
+    \texttt{settings.tessellationEnabled}; mirror the pair in \texttt{WaterBackFaceRenderer} (\texttt{WaterBackFaceRenderer.cpp:164--231}) and in the per-frame wireframe path
+    (\texttt{SceneRenderer.cpp:842--846}). Keep the shader modules and pipeline layouts identical where possible so descriptor sets are shared.
+    \item Keep the RT fragment variants only on the tessellated path if that keeps the matrix manageable; the non-tess path must exist for the non-RT fragment (the minimal case).
+    \item Delete the interim TES branch once the pipeline variant is in (or keep it as the defensive path if \texttt{passParams.y} can change without a pipeline rebind).
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{vulkan/renderer/WaterRenderer.cpp} (pipeline factory \texttt{:730--990}, selectors)
+    \item \texttt{vulkan/renderer/WaterBackFaceRenderer.cpp} (back-face pipeline pair)
+    \item \texttt{shaders/includes/water\_tese.glsl} (interim fast path); \texttt{shaders/main.vert} / new \texttt{WATER\_NO\_TESS} VS path; \texttt{Makefile} water shader rules
+    \item \texttt{vulkan/renderer/WaterRenderer.hpp} (pipeline members), \texttt{SceneRenderer.cpp} (wireframe path selection)
+\end{itemize}
+
+\textbf{Validation:} \texttt{spirv-dis} on the bound module path (RenderDoc) shows no TES/TCS bound with the toggle off; water screenshots pixel-identical on open water and
+shoreline (the FS analytic normal is unchanged); GPU timestamps 14/15 drop measurably on water-dominated views; the back-face pass uses the same variant; validation clean
+(no pipeline/topology mismatch), and GPU-assisted validation run via \texttt{VULKAN\_GPU\_ASSISTED=1 make run-debug}.
+\end{tcolorbox}
+
+\subsection{C2: Three Wave-Field Evaluations per Pixel, Plus Ungated Specular/Glitter and Zero-Contribution Caustics}
+
+\textbf{Location:} \texttt{shaders/includes/water\_surface.glsl:657--664} (\texttt{waterWaveField} for the analytic normal), \texttt{:1145--1160}
+(specular $+$ glitter FBM), \texttt{:1393--1434} (caustics with two \texttt{waterWaveSample} calls at \texttt{:1420,1422}); field implementation
+\texttt{shaders/includes/water\_noise.glsl:118--386}.
+
+\begin{itemize}
+    \item The fragment stage evaluates the full multi-train wave field \emph{once} for the analytic normal (\texttt{:657}), then \emph{twice more} inside the caustic block
+    (\texttt{:1420,1422}) to form the central difference of the analytic gradient. With the default 4-octave spectrum and foam, a single \texttt{waterWaveField} is on the order
+    of $\sim$20 four-dimensional Perlin evaluations (each 16 corner hashes); \texttt{waterWaveSample} is $\sim$16. Layer 0 therefore runs on the order of \textbf{50+ noise
+    octaves per pixel} from the wave system alone.
+    \item The caustic block is entered whenever \texttt{causticIntensity > 0.001} (\texttt{:1393}), default $0.2$ per layer. It is \textbf{not} gated on refraction or on a
+    measurable column: with no valid back face (flat/heightfield-only water, and in Minimal the back-face volume is at best a biased underside), \texttt{waterThickness = 0},
+    so $\mathrm{depth}=0$, $|J| = 1$, $\mathrm{excess}=0$ --- the contribution is exactly zero, yet both field evaluations and the whole sun-geometry/sqrt/pow preamble execute.
+    \item Specular and glitter are gated only by \texttt{specularIntensity > 0} / \texttt{glitterIntensity > 0} (\texttt{:1145,1153}), default $2.0$/$1.5$ on \emph{every}
+    layer. They are independent of \texttt{enableWaves}: calm layers with no wave field still pay a 4-octave FBM plus a 2$+$4-octave glitter pair (3 FBM evaluations,
+    $\sim$10 octaves) and two \texttt{pow()} calls per pixel.
+    \item Multiplied out, a layer-0 pixel in Minimal executes on the order of \textbf{60 noise octaves and dozens of \texttt{pow()} calls} --- for a surface whose optional
+    shading (reflection/refraction/blur) is all disabled.
+\end{itemize}
+
+\textbf{Technique:} (a) hard-gate caustics on a nonzero contribution so it disappears when refraction/thickness is off or the column is too thin to focus; (b) derive the
+caustic curvature from the already-evaluated shading field where the positions are close enough, instead of two extra full-field evaluations; (c) gate the specular/glitter
+noise on \texttt{enableWaves} (or a new per-layer surface-detail flag) so calm/minimal water takes the cheap flat-ripple path.
+
+\begin{tcolorbox}[promptbox={Prompt: Evaluate the Wave Field Once and Gate the Optional Noise}]
+\textbf{Goal:} One wave-field evaluation per pixel in the common minimal case; caustics and specular/glitter cost zero when their inputs are disabled.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item \textbf{Gate caustics on contribution} (\texttt{water\_surface.glsl:1393}): enter the block only when
+    \texttt{causticIntensity > 0.001} \textbf{and} (\texttt{waterThickness > kMinCausticDepth} or \texttt{causticDebugMode}). Flat/no-volume water then executes zero caustic
+    work. Add \texttt{enableCaustics} (or reuse \texttt{causticIntensity == 0}) as the documented per-layer switch.
+    \item \textbf{Reuse the shading field} for the curvature term: the field call at \texttt{:657} already returns the analytic spatial gradient (\texttt{wave.yzw}). Build the
+    second derivative along the sun azimuth from the gradient at the entry point plus one \emph{one-sided} field evaluation (instead of two symmetric ones), or, where the entry
+    point is within one finest-octave step of the shaded position, project the shading field's gradient directly. A/B the pattern against the symmetric stencil and keep the
+    cheaper variant only if it is visually indistinguishable.
+    \item \textbf{Gate specular/glitter} (\texttt{:1145--1160}) on \texttt{wp.waveToggles.x > 0.5} (or a new \texttt{waveToggles.w} surface-detail flag packed in
+    \texttt{WaterRenderer.cpp:123--125}). Calm layers then skip three FBM evaluations; document that flat water loses the noise perturbation by design.
+    \item \textbf{Share the field between the analytic normal and foam}: the call at \texttt{:657} requests \texttt{withFoam=true}; if foam is off for a layer
+    (\texttt{waveToggles.y < 0.5}), request \texttt{withFoam=false} and save the foam train (4 octaves) --- and vice versa, do not re-evaluate the field for foam.
+    \item Keep a debug/profiling counter (or the existing debug view) to confirm the octave reduction; do not change the public look of the default (non-minimal) preset.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_surface.glsl} (caustics \texttt{:1387--1434}, specular/glitter \texttt{:1138--1160}, field call \texttt{:657})
+    \item \texttt{shaders/includes/water\_noise.glsl} (if a reduced/withFoam variant is added)
+    \item \texttt{vulkan/renderer/WaterRenderer.cpp} / \texttt{vulkan/ubo/WaterParamsGPU.hpp} / \texttt{utils/WaterParams.hpp} (new per-layer gate, if chosen)
+\end{itemize}
+
+\textbf{Validation:} SPIR-V/source instrumentation shows the caustic block not executed on flat water; screenshot A/B on deep water (caustics on) is within a small tolerance
+and pixel-identical when the effect is off; calm-layer screenshots lose only the noise perturbation and no reflection/refraction path changes; GPU time (timestamp 15 region)
+drops on water-heavy frames; validation clean.
+\end{tcolorbox}
+
+\subsection{C3: The Back-Face Pass Is Unconditional and Culled Twice}
+
+\textbf{Location:} \texttt{MyApp.cpp:2167} (task gate: only \texttt{waterEnabled}), \texttt{:2249--2279} (second cull $+$ descriptor set), \texttt{:2338--2356}
+(dummy patch $+$ back-face render); \texttt{WaterBackFaceRenderer.cpp:292--375}; \texttt{shaders/includes/water\_tese.glsl:178--189,229--250,303--323};
+\texttt{shaders/includes/water\_surface.glsl:612--633,1080--1091,1393--1463}.
+
+\begin{itemize}
+    \item The back-face pass has \textbf{no runtime toggle and no demand check}. It is recorded every frame water is enabled, and it is a full-res depth rasterization that
+    re-runs the entire always-tessellated VS/TCS/TES path (C1) with an empty fragment shader (\texttt{water\_backface.frag:25--28}).
+    \item It needs its own cull because it consumes task-local compact/visible buffers (\texttt{MyApp.cpp:2275--2278, 2354--2355}), while the main water geometry pass
+    consumes the main cull output (\texttt{MyApp.cpp:1519--1525}). That is \textbf{two indirect.comp dispatches (plus fills, barriers, and descriptor writes) for the same
+    geometry, view, and frame}. With shadows enabled the comment in \texttt{ShadowRenderer.cpp:918--923} notes the shadow cascade cull further contends for the liquid buffers;
+    in Minimal (shadows off) there is no such excuse --- the main cull result is already complete and waited on transitively (\texttt{water waits tlSolid}, which waits
+    \texttt{tlShadow}, which waits \texttt{tlCull}).
+    \item The pass's consumers are all per-layer look features: thickness (Beer-Lambert/alpha/tint, \texttt{water\_surface.glsl:1096--1124}), caustics, volumetric
+    (\texttt{:1454--1463}), and the TES shore-zone/gradient fallback (\texttt{water\_tese.glsl:185--250,303--323}). If those are all off (or the layer set is calm), the pass
+    produces nothing anyone reads.
+\end{itemize}
+
+\textbf{Technique:} compute \texttt{backFaceNeeded} on the CPU from the layer flags and the global settings, and skip the cull, descriptor updates, clear, and pass when
+false --- binding the existing 1$\times$1 dummy depth so shaders read clear depth. In the same edit, reuse the main water cull output for the back-face draw whenever the
+shadow pass cannot invalidate it (\texttt{shadowsEnabled == false}), removing the second dispatch.
+
+\begin{tcolorbox}[promptbox={Prompt: Make the Back-Face Pass Demand-Driven and Reuse the Main Cull}]
+\textbf{Goal:} Zero back-face cost when no layer consumes the volume depth; one water cull per frame when shadows are off.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Add a helper (in \texttt{SceneRenderer} or \texttt{MyApp}) that folds the per-layer flags into \texttt{bool waterVolumeNeeded = any(enableWaves || enableFoam ||
+    enableVolumetric || causticIntensity > 0 || enableRefraction || water tint/thickness alpha > 0)}. Recompute it where the water params/frame settings are already
+    inspected (the \texttt{waterRtNeeded} block at \texttt{MyApp.cpp:2402--2424} is the natural home; it already reads every layer).
+    \item Gate the whole back-face block (\texttt{MyApp.cpp:2249--2356}) on it. When false: skip the compute descriptor update, the cull, the set-2 update, the dummy patch,
+    and \texttt{render()}; leave the back-face depth in \texttt{SHADER\_READ\_ONLY} (already the case) and bind the existing dummy depth view to the water set-2 binding 0
+    (\texttt{WaterBackFaceRenderer::getDummyDepthView()}, created at \texttt{WaterBackFaceRenderer.cpp:18--83}).
+    \item Make the shader behavior on the dummy path explicit: sampling the dummy returns clear depth, so \texttt{hasValidBackFace=false}, \texttt{waterThickness=0}, and the
+    wave field uses the shallow/deep fallback --- verify this is exactly the intended minimal look (it should match ``no volume'').
+    \item Remove the second cull when \texttt{!settings.enableShadows}: pass the main water IR's compact/visible buffers to \texttt{backFaceRenderer->render} (the buffers used
+    by \texttt{drawPrepared}) instead of the task-local ones. Document the ordering proof: the water command buffer waits \texttt{tlSolid@v}, and \texttt{tlSolid} is signaled
+    after \texttt{tlShadow}, which is signaled after \texttt{tlCull} --- the main cull output is therefore complete before the back-face draw executes.
+    \item Add a one-line stats/debug output (or reuse the profiling text) reporting \texttt{waterVolumeNeeded} and whether the pass ran, to verify the gate in captures.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{MyApp.cpp} (task block \texttt{:2167--2356}; helper near the \texttt{waterRtNeeded} block)
+    \item \texttt{vulkan/renderer/WaterBackFaceRenderer.hpp/cpp} (accept externally supplied cull buffers already exists via \texttt{drawPreparedWithBuffers}; no API change
+    needed if the main IR buffers are passed)
+    \item \texttt{utils/Settings.hpp} (optional explicit back-face toggle for A/B)
+\end{itemize}
+
+\textbf{Validation:} RenderDoc: exactly one \texttt{indirect.comp} dispatch for water when shadows are off; zero back-face raster passes when the layer flags gate it off;
+water screenshots with the gate on match the previous output when the features are off and are unchanged when features are on; validation clean (no stale attachments read,
+no missing layout transitions), GPU-assisted validation clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{High-Severity Issues}
+% =====================================================================
+
+\subsection{H4: Body and Column Attachments Are Written Every Frame and Sampled by a Loop That Never Runs}
+
+\textbf{Location:} \texttt{vulkan/renderer/WaterRenderer.cpp:1003--1004} (pass requires both), \texttt{:1059--1089} (attachments and clears),
+\texttt{:1141--1184} (transitions); \texttt{shaders/includes/water\_surface.glsl:1530--1537}; \texttt{shaders/postprocess.frag:107--135}.
+
+\begin{itemize}
+    \item The water pipeline declares three color attachments: water color, body (RGBA16F), and column (RG16F). Both auxiliary targets are written for every water pixel and
+    cleared/transitioned every frame. Their \emph{only} consumer is the composite's depth-guided blur, which is entered only when \texttt{blurPx > 0.5}
+    (\texttt{postprocess.frag:110--111}); with \texttt{enableBlur=false} the shader sets \texttt{blurPx = 0} (\texttt{water\_surface.glsl:1533--1535}) and the loop never runs.
+    \item The composite still fetches both textures unconditionally at \texttt{postprocess.frag:108--109} (one fetch each per water-covered pixel) to compute values that are
+    discarded.
+    \item Because the pass hard-requires the body/column images (\texttt{WaterRenderer.cpp:1003--1004}), 1$\times$1 dummies are not a direct substitute: dynamic rendering
+    requires every attachment to be at least the render area, so the only correct way to drop them is a pipeline variant with a single color attachment.
+    \item Cost: two full-res render-target writes (RGBA16F $+$ RG16F), two clears, four layout transitions per frame, and two composite fetches per covered pixel --- all for a
+    feature the preset disabled.
+\end{itemize}
+
+\textbf{Technique:} add a ``blur-capable'' runtime gate (\texttt{any layer enableBlur \&\& blurRadius > 0}); when false, bind a single-attachment water pipeline variant (the
+water-in-main pipeline layout already demonstrates the shape), skip body/column creation/clears/transitions, and gate the composite samples behind the same UBO flag.
+
+\begin{tcolorbox}[promptbox={Prompt: Skip Body/Column Attachments and Composite Samples When Blur Is Off}]
+\textbf{Goal:} In Minimal, the water pass writes only the color and depth targets; the composite performs zero body/column fetches.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Add \texttt{bool waterBlurNeeded} computed where the layer params are packed (or in the \texttt{waterRtNeeded} block): true iff any layer has \texttt{enableBlur} and
+    \texttt{blurRadius > 0}. Expose it to the renderer via \texttt{setWaterBlurEnabled(bool)} (mirroring \texttt{setRtShadingEnabled}) and to the composite UBO via a spare channel
+    (\texttt{PostProcessRenderer.cpp:368--380}).
+    \item Build a variant of the geometry pipeline with a single color attachment (attachment 0 only) and no body/column write in the fragment shader. The cleanest route is a
+    \texttt{WATER\_NO\_BODY} define in \texttt{main.frag} (guarding \texttt{water\_surface.glsl:1530--1537} and the output locations) plus a second
+    \texttt{VkPipelineRenderingCreateInfo} with one format; reuse the same modules/layout otherwise. Create it next to the existing non-RT/RT variants
+    (\texttt{WaterRenderer.cpp:944--982}).
+    \item In \texttt{beginWaterGeometryPass} (\texttt{:997--1120}), when the flag is false: do not require body/column images, do not add their transitions or attachments, and
+    skip their clears. Keep the color/depth clears and layout transitions exactly as they are.
+    \item In the composite shader, guard the two samples under the same flag (or under \texttt{blurPx > 0.5} evaluated from the passed UBO): when blur is off, the whole
+    \texttt{if (waterAlpha > 0.0)} body block becomes just the color/occlusion path.
+    \item Verify the brush-liquid overlay path (\texttt{renderBrushLiquid}, \texttt{WaterRenderer.cpp:1580--1615}) also works with the single-attachment variant, or force the
+    multi-attachment variant while the overlay runs (document either choice).
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{vulkan/renderer/WaterRenderer.hpp/cpp} (variant creation, gate, pass begin)
+    \item \texttt{shaders/main.frag} / \texttt{shaders/includes/water\_surface.glsl} (\texttt{WATER\_NO\_BODY} guard)
+    \item \texttt{shaders/postprocess.frag} (sample gate), \texttt{vulkan/renderer/PostProcessRenderer.cpp} (UBO flag)
+    \item \texttt{Makefile} (water shader variant rules)
+\end{itemize}
+
+\textbf{Validation:} RenderDoc shows 1 color attachment $+$ depth in the Minimal water pass and zero body/column fetches in the composite; GPU time drops for water-heavy
+views; with blur on, output is pixel-identical to the baseline and the pass still writes all three targets; validation clean on both variants.
+\end{tcolorbox}
+
+\subsection{H5: RT-Off Residue --- Per-Frame Params Streaming, Unconsumed Bindings, Resident AS Memory}
+
+\textbf{Location:} \texttt{MyApp.cpp:1360} (\texttt{updateRTParams} every frame), \texttt{:2294--2297} and \texttt{:2372--2374} (RT views fetched and bound),
+\texttt{SceneRenderer.cpp:2403--2467}, \texttt{RayTracingResources.cpp:1241--1246} (params memcpy), \texttt{:59--86} (AS/proxy allocation).
+
+\begin{itemize}
+    \item \texttt{updateRTParams} runs unconditionally and ends in a mapped \texttt{memcpy} of a full \texttt{RayTracingParams} struct
+    (\texttt{RayTracingResources.cpp:1241--1246}) even when \texttt{runtimeEnabled\_} is false. In Minimal nothing samples that block: the bound fragment module is compiled
+    without \texttt{RT\_ENABLED} (verified: no ray-query instructions, no RT params access).
+    \item The water set-2 bindings for the RT reflection/refraction views are written every frame; the gate uses \texttt{rayTracing->isSupported()} (device capability), not
+    \texttt{runtimeEnabled()}. The shader compiles those bindings out, so the writes are pure CPU cost (8 descriptors $\times$ 2 sets).
+    \item The acceleration-structure buffers, scratch, and RT output images remain allocated for the process lifetime once the device supports RT; disabling RT does not
+    release them (\texttt{setRuntimeEnabled} only flips booleans, \texttt{RayTracingResources.cpp:885--895}). This is a VRAM/budget issue rather than per-frame GPU cost, but it
+    matters on the low-end targets that would use Minimal.
+\end{itemize}
+
+\textbf{Technique:} make \texttt{runtimeEnabled} the single source of truth for per-frame work: skip the params UBO write when disabled, bind 1$\times$1 dummies for the RT
+outputs in the water/back-face sets, and (optionally) defer-destroy the AS/proxy allocations on the disable transition with the existing \texttt{deferDestroyUntilFence}
+mechanism, re-creating on enable.
+
+\begin{tcolorbox}[promptbox={Prompt: Suppress Per-Frame RT Work While the RT Runtime Is Disabled}]
+\textbf{Goal:} With all RT paths off, no RT params UBO is streamed and no RT views are bound or referenced per frame.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item In \texttt{SceneRenderer::updateRTParams} (\texttt{SceneRenderer.cpp:2403--2467}), after \texttt{setRuntimeEnabled(...)}, early-return (before building/memcpy'ing
+    \texttt{RayTracingParams}) when the runtime flag is false. Keep the solid renderer's \texttt{setRtShadingEnabled(false)} call --- that switch must still happen.
+    \item In the back-face and water set-2 updates (\texttt{MyApp.cpp:2294--2297, 2372--2374}; \texttt{WaterRenderer::updateSceneTexturesBinding}
+    \texttt{WaterRenderer.cpp:1248--1334}), choose the RT views only when \texttt{runtimeEnabled()}, else \texttt{VK\_NULL\_HANDLE} so the existing dummy fallback binds. Do not
+    change the layout/descriptor-count contract (the bindings stay declared).
+    \item Optional memory work: on the enabled$\to$disabled transition, schedule the AS/proxy buffers/images for deferred destruction (frames-in-flight safe) and set the
+    ``pipeline ready'' flags so a later enable re-initializes them; if that is too invasive for this pass, add a log line with the resident bytes and a TODO.
+    \item Keep \texttt{isSupported()} (capability) separate from \texttt{runtimeEnabled()} (policy) in every gate; document the distinction at the two call sites.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{vulkan/renderer/SceneRenderer.cpp} (\texttt{updateRTParams}), \texttt{vulkan/renderer/RayTracingResources.hpp/cpp} (early-out helper/accessor)
+    \item \texttt{MyApp.cpp} (water/back-face set updates)
+\end{itemize}
+
+\textbf{Validation:} CPU profile of an idle minimal run shows no \texttt{updateParams}/memcpy calls; RenderDoc shows dummy RT bindings; toggling RT on again restores the
+full path without validation errors (descriptor/layout checks); VRAM budget (\texttt{VK\_EXT\_memory\_budget} overlay) reflects any deferred frees.
+\end{tcolorbox}
+
+\subsection{H6: TES Per-Vertex Cost Is Ungated by Waves and Carries Varyings the Water Fragment Never Reads}
+
+\textbf{Location:} \texttt{shaders/includes/water\_tese.glsl:178--190} (base depth fetches), \texttt{:229--250} (shore gradient, 2--5 fetches), \texttt{:303--323}
+(displaced-UV refinement, 2 fetches), varyings \texttt{:18--30}; water fragment usage of those varyings.
+
+\begin{itemize}
+    \item The shore-gradient solve and both depth-refinement blocks are gated only by \texttt{haveScreen} and \texttt{gradStep > 0} --- never by \texttt{enableWaves}. A layer
+    with waves off still pays 2 solid depth samples $+$ 2--5 gradient samples $+$ 2 refinement samples per generated vertex, in both passes.
+    \item The TES writes \texttt{fragNormal}, \texttt{fragPosLightSpace}, and \texttt{fragTexCoord}, but the bound non-RT water fragment module contains \textbf{zero loads} of
+    them (the fragment stage computes its own normal from the wave field and does not use light-space or UV varyings). The writes and the interpolation inputs still cost
+    registers and bandwidth in the vertex stages.
+    \item The base-depth samples at \texttt{:178--189} feed \texttt{waterDepth}, which the FS uses for tint/shore zones; with waves off those zones still matter to the look, so this
+    work cannot always be dropped --- but it can be shared: the solid/back depth sample is taken per vertex \emph{and} the fragment re-samples the back-face at \texttt{:612}.
+\end{itemize}
+
+\textbf{Technique:} gate the shore-gradient and refinement work on \texttt{enableWaves} (the only consumers are the wave-zone and shore-direction systems), and prune the
+varyings the water fragment never reads. Where a camera-stable depth is still needed, sample it once per vertex and pass it through instead of re-deriving.
+
+\begin{tcolorbox}[promptbox={Prompt: Gate the TES Shore/Refinement Work on Waves and Prune Dead Varyings}]
+\textbf{Goal:} Calm layers perform no shore-gradient/refinement fetches; the water VS$\to$FS interface carries only consume varyings.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item In \texttt{water\_tese.glsl}, wrap the gradient block (\texttt{:229--250}) in \texttt{if (haveScreen \&\& gradStep > 0.0 \&\& wp.waveToggles.x > 0.5)}. Use the configured
+    \texttt{waveDirection} as the fallback (already the initial value), so calm layers keep a valid shore direction for caustics if they ever run.
+    \item Do the same for the displaced-UV refinement (\texttt{:303--323}): a flat surface needs no per-vertex depth refine; skip it when \texttt{wp.waveToggles.x < 0.5} and keep
+    the base \texttt{waterDepth} from the coarse samples (or the deep fallback).
+    \item Audit the water fragment's loads of \texttt{fragNormal}, \texttt{fragPosLightSpace}, \texttt{fragTexCoord}, \texttt{fragDebug}; remove the ones never read from the
+    TES/VS/TCS output lists (locations stay reserved but the writes/interpolation go away). Rebuild and confirm with \texttt{spirv-dis} that the FS does not load them.
+    \item Keep \texttt{fragBasePos.w} (bump amplitude), \texttt{fragShoreDir}, \texttt{fragBaseNormal} --- those are consumed.
+    \item Re-check the back-face pipeline: it shares the TES, so the same gates apply there automatically.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_tese.glsl} (blocks above, varying writes)
+    \item \texttt{shaders/includes/water\_tesc.glsl} (drop the matching passthroughs), \texttt{shaders/main.vert} and the water FS (\texttt{main.frag} WATER\_MODE path)
+    \item \texttt{vulkan/includes/locations.hpp} only if locations must stay stable for the RT variant
+\end{itemize}
+
+\textbf{Validation:} Calm-layer RenderDoc capture shows the gradient/refinement fetches gone from the TES while wave layers keep them; screenshots for wave layers
+pixel-identical; \texttt{spirv-dis} shows no FS loads of the removed varyings; validation clean (no interface mismatch); GPU-assisted validation clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M7: The Water Render UBO Is Written Twice per Frame and the Descriptor Sets Are Rewritten Unconditionally}
+
+\textbf{Location:} \texttt{vulkan/renderer/WaterRenderer.cpp:1617--1631} (\texttt{setRtFeatureFlags} immediate write), \texttt{:1643--1653} (\texttt{renderPass} rewrite),
+\texttt{:1320--1334} (uncached descriptor update); \texttt{MyApp.cpp:2329, 2338--2343, 2436}.
+
+\begin{itemize}
+    \item \texttt{setRtFeatureFlags(false,false)} maps and writes \texttt{waterRenderUBO\_} on the host (\texttt{:1623--1630}); \texttt{renderPass} then maps and rewrites the
+    same struct later the same frame (\texttt{:1643--1653}). The first write exists for the water-in-main path, which does not call \texttt{renderPass} --- but in the normal
+    path it is overwritten before any GPU read. Two map/unmap cycles per frame for one logical update.
+    \item \texttt{updateSceneTexturesBinding} is deliberately uncached (``rewrite the bindings unconditionally'', \texttt{:1320--1326}): 8 combined-image-sampler writes for the
+    back-face set, 8 for the water set, plus one dummy patch on the back-face set --- per frame. The frame-ring sets are stable except for resize and RT toggles.
+\end{itemize}
+
+\textbf{Technique:} store the flags and fold them into the single \texttt{renderPass} UBO write (write-once per frame); cache the descriptor sets per frame slot with a small
+input-version counter (resize/RT-toggle/frame-slot) and skip \texttt{vkUpdateDescriptorSets} when nothing changed. If descriptor-buffer path is enabled, the same version check
+avoids the host memcpy.
+
+\begin{tcolorbox}[promptbox={Prompt: Single Water UBO Write and Versioned Descriptor Caching}]
+\textbf{Goal:} One UBO write per frame; descriptor updates only when their inputs changed.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Replace the immediate write in \texttt{setRtFeatureFlags} with member assignment; make \texttt{renderPass} the only writer of \texttt{waterRenderUBO\_} (pass the flags
+    into \texttt{WaterRenderUBO.timeParams.y/z} where the struct is filled at \texttt{:1643--1653}). Keep a comment stating the water-in-main path must still write its own UBO
+    (or call a dedicated \texttt{flushWaterRenderUBO()}).
+    \item Add a per-set \texttt{uint32\_t bindingVersion} in the renderer plus a global input version bumped on resize/RT-toggle/scene-texture change; store the last-written
+    version per frame slot and early-return from \texttt{updateSceneTexturesBinding} when unchanged.
+    \item Keep the dummy patch on the back-face set inside the version check (it is an input, not a separate write).
+    \item Guard the frame-slot image views (color/depth/veg/back-face) --- they are stable per ring slot, so include the slot index in the cached key.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{vulkan/renderer/WaterRenderer.hpp/cpp} (UBO write consolidation, version cache)
+    \item \texttt{MyApp.cpp} (pass the flags through the existing call sequence)
+\end{itemize}
+
+\textbf{Validation:} \texttt{vkUpdateDescriptorSets} count per frame drops to 0 in steady state (RenderDoc API trace); screenshots unchanged; toggling RT and resizing
+correctly re-writes the sets (version bumps); validation clean.
+\end{tcolorbox}
+
+\subsection{M8: Empty-Water Frames Still Clear Three Full-Res Targets and Record the Full Pass}
+
+\textbf{Location:} \texttt{WaterRenderer.cpp:1059--1120} (clears), \texttt{:1450--1460} (draw); \texttt{MyApp.cpp:2436--2483} (set update, pass, transitions);
+\texttt{SceneRenderer.cpp:1584} (\texttt{readVisibleCount}).
+
+\begin{itemize}
+    \item When the camera looks away from all water (or the scene has none), the GPU cull count is 0, but the CPU still rewrites the water descriptor set, records the pass with
+    three color clears $+$ depth clear, issues the indirect draw with count 0, and transitions the geom depth. At 4K, three full-res clears plus depth are real bandwidth even
+    with nothing drawn.
+    \item \texttt{readVisibleCount} already gives the CPU last frame's visible count (\texttt{SceneRenderer.cpp:1584}); the water task can use it as a one-frame-latency fast
+    path. A stale count only costs a missed optimization (the pass still runs when water appears), never correctness, provided the fast path still clears the water color to
+    alpha 0 (the composite reads it unconditionally).
+\end{itemize}
+
+\textbf{Technique:} add a clear-only fast path for frames where the previous visible count is 0: clear the water color (alpha 0) with \texttt{vkCmdClearColorImage} (or a 1-triangle
+clear draw) and skip the cull, descriptor updates, body/column clears, depth clear, and the pass. Water that appears in the same frame as it becomes visible keeps the full path
+one frame later; because the color target was cleared to alpha 0, the composite shows no ghost.
+
+\begin{tcolorbox}[promptbox={Prompt: Add a Clear-Only Fast Path for Empty Water Frames}]
+\textbf{Goal:} No water pass recording/clears when the previous frame's water visible count is 0.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Expose the last visible water count to the water task (already read in \texttt{processPendingMeshes}; store it on the renderer or pass it through the frame state).
+    \item In the water task, when the count is 0 and no brush-liquid overlay is pending, record only: color target transition $\to$ \texttt{TRANSFER\_DST}/\texttt{GENERAL},
+    \texttt{vkCmdClearColorImage} to $(0,0,0,0)$, transition to \texttt{SHADER\_READ\_ONLY} for the composite. Keep the water geom depth in \texttt{SHADER\_READ\_ONLY} from the
+    previous frame (or clear it once) and bind the dummy/depth target as today.
+    \item Skip the second cull (already covered by C3), the set-2 rewrite (M7), the body/column clears (H4), and the geometry pass for that frame; still signal \texttt{tlWater@v}
+    and keep the brush-liquid overlay's wait chain valid.
+    \item Make the threshold conservative: use \texttt{count == 0} only, never a small count, and document the one-frame latency in a comment. Re-evaluate the count after
+    objects are added (the next frame's full path picks it up).
+    \item Verify the brush overlay path is not skipped when brush liquid can be visible without main water.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{MyApp.cpp} (water task fast path), \texttt{vulkan/renderer/WaterRenderer.hpp/cpp} (small clear helper), \texttt{vulkan/renderer/SceneRenderer.hpp/cpp} (expose
+    the count)
+\end{itemize}
+
+\textbf{Validation:} Camera-away capture: zero water raster passes and only one clear in RenderDoc; camera-into-water transitions show no ghost/one-frame flash; timestamps
+14/15 collapse; validation clean.
+\end{tcolorbox}
+
+\subsection{M9: Auxiliary Per-Frame Sync --- Always-Recorded Brush Liquid, Empty Shadow Relay, Unused Timestamp Slots}
+
+\textbf{Location:} \texttt{MyApp.cpp:2533--2551} (brush-liquid overlay), \texttt{:238} (QUERY\_COUNT), \texttt{:242} (\texttt{profilingEnabled = true}),
+\texttt{:1275--1276} (reset 0--5 and 16--19), \texttt{:2182--2185} (reset 14--15 and 20--21); \texttt{ShadowRenderer.cpp:854--862}.
+
+\begin{itemize}
+    \item The brush-liquid overlay records a second command buffer, re-enters the water geometry pass, and submits on its own queue every frame water is enabled
+    (\texttt{MyApp.cpp:2533--2551}) --- even when the brush scene has no liquid geometry, which is the common case. It also forces the composite to wait
+    \texttt{tlBrushLiquid@v}.
+    \item With shadows off, an empty command buffer is still begun and submitted purely to relay \texttt{tlCull} to \texttt{tlShadow} (\texttt{ShadowRenderer.cpp:854--862}).
+    \item \texttt{QUERY\_COUNT = 24}; slots 0--5 are reset every frame but no code in the tree writes them (writes are 6--21 only). In Minimal, slots 20--21 are reset but never
+    written because the RT dispatch is skipped. Those resets cost a command-buffer call and are permanently ``unavailable'' on readback.
+\end{itemize}
+
+\textbf{Technique:} gate the brush-liquid overlay on a CPU-visible brush-liquid count; when shadows are disabled, replace the empty CB relay with a direct \texttt{tlCull} wait
+for the solid pass (conditional wait list); trim the query pool to the slots actually written and reset only those.
+
+\begin{tcolorbox}[promptbox={Prompt: Gate Auxiliary Water Submits and Prune the Timestamp Slots}]
+\textbf{Goal:} No empty overlay/shadow submits; timestamp resets match the slots that are actually written.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Add a cheap CPU flag for ``brush liquid geometry present'' (the brush liquid IR already tracks mesh count; expose it) and gate the overlay block
+    (\texttt{MyApp.cpp:2533--2551}) on it. When skipped, ensure the composite's \texttt{tlBrushLiquid} wait is omitted (the wait list is already per-frame --- build it
+    conditionally).
+    \item When \texttt{!settings.enableShadows}, skip the empty shadow CB and have the solid pass wait on \texttt{tlCull@v} directly (build \texttt{solidWaitSemaphores} /
+    values conditionally at \texttt{MyApp.cpp:1937--1944}); keep the same signal graph for the other consumers.
+    \item Reduce \texttt{QUERY\_COUNT} to the highest written slot $+$ 1 and reset only the ranges in use; remove the 0--5 resets with the unused slots. Independently, reset
+    slots 20--21 only inside the RT-dispatch gate.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{MyApp.cpp} (overlay gate, conditional waits, query pool), \texttt{SceneRenderer.hpp} (brush liquid count accessor),
+    \texttt{vulkan/renderer/ShadowRenderer.cpp} (skip empty CB when unused)
+\end{itemize}
+
+\textbf{Validation:} RenderDoc queue submissions per frame drop by one when no brush liquid and by one more with shadows off; profiling values for the remaining slots are
+unchanged; toggling shadows/brush liquid back on restores the full graph; validation clean on the conditional wait lists.
+\end{tcolorbox}
+
+\subsection{M10: Shader Build Does Not Optimize; Dead Uniform-Gated Chains Stay in the Water Module}
+
+\textbf{Location:} \texttt{Makefile:153--168,185--192} (water shader rules use plain \texttt{glslc}, no \texttt{-O}, no \texttt{spirv-opt} step); examples in
+\texttt{shaders/includes/water\_surface.glsl:743--800} (\texttt{fresnelEarly}, \texttt{hash01}, \texttt{bottomEmpty}), \texttt{:1177} (\texttt{reflectDir}), \texttt{:1544--1751}
+(debug compare chain).
+
+\begin{itemize}
+    \item The non-RT water module is compiled with no optimization pass. Uniform-gated and dataflow-dead chains survive in the SPIR-V: one \texttt{bottomEmpty} chain with no
+    reader, a \texttt{fract(sin(...))} hash selector used only on the RT path, a \texttt{fresnelEarly} \texttt{pow} whose only consumers are under \texttt{\#ifdef RT\_ENABLED}, an
+    always-computed \texttt{reflectDir} that is unused when reflection is off, and a $\sim$20-branch debug-view chain evaluated per pixel.
+    \item Vendor compilers usually DCE most of this, but ``usually'' is not a guarantee, and register pressure/I-cache in the largest fragment module in the engine directly
+    affects occupancy.
+\end{itemize}
+
+\textbf{Technique:} compile shaders with \texttt{glslc -O} (or run \texttt{spirv-opt -O}) in the Makefile, and delete the provably dead water locals (guard \texttt{reflectDir}
+under \texttt{enableReflection}, delete \texttt{bottomEmpty}, move the RT-only \texttt{fresnelEarly} under its define) so the intent is explicit.
+
+\begin{tcolorbox}[promptbox={Prompt: Optimize the Water Shader Modules and Remove Dead Chains}]
+\textbf{Goal:} The bound non-RT water modules contain no uniform-gated dead chains beyond the unavoidable feature branches.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Add \texttt{-O} to the \texttt{glslc} invocations (and \texttt{--target-env=vulkan1.3}) in the water rules (\texttt{Makefile:153--231}) or add a generic
+    \texttt{spirv-opt -O} pass after compilation; verify shader loading still works (the loader reads SPIR-V files directly).
+    \item Delete or relocate the RT-only locals in \texttt{water\_surface.glsl}: \texttt{bottomEmpty} (no reader), \texttt{fresnelEarly}/\texttt{hash01} (RT-only), and move
+    \texttt{reflectDir} inside the reflection branch. Rebuild and diff \texttt{spirv-dis} output.
+    \item Keep the debug-view chain but make it a single early switch where possible (uniform branch), so the common path skips the $\sim$20 comparisons in one branch.
+    \item Do not regress the RT variant: run the same \texttt{spirv-dis} check on \texttt{main\_water\_rt.frag.spv} to confirm the RT paths are intact.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{Makefile} (shader rules), \texttt{shaders/includes/water\_surface.glsl} (dead locals, debug chain)
+\end{itemize}
+
+\textbf{Validation:} SPIR-V instruction counts drop for the non-RT module; screenshots for minimal and default presets are within tolerance (optimization must not change
+results); RT debug modes still render; validation clean, GPU-assisted validation clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L11: Dead Full-Res Scene Color/Depth Allocations Inside WaterRenderer}
+
+\textbf{Location:} \texttt{vulkan/renderer/WaterRenderer.cpp:307--329} (create $+$ transition to \texttt{SHADER\_READ\_ONLY}), \texttt{:413--420} (reset),
+\texttt{WaterRenderer.hpp:284--291} (members).
+
+\begin{itemize}
+    \item The renderer creates per-frame \texttt{sceneColorImages} and \texttt{sceneDepthImages} (swapchain format and D32), transitions them to
+    \texttt{SHADER\_READ\_ONLY\_OPTIMAL} at creation, and never writes or reads them anywhere. They occupy VRAM for the process lifetime and appear in the resource registry.
+    \item This is a leftover from the pre-async design where the water pass sampled the scene color/depth directly; the current design resolves solid occlusion at composite time
+    (\texttt{postprocess.frag:141--146}) and passes solid/veg views through the scene-texture bindings instead.
+\end{itemize}
+
+\textbf{Technique:} delete the members, creation, transitions, and resets.
+
+\begin{tcolorbox}[promptbox={Prompt: Remove the Dead Scene Color/Depth Targets from WaterRenderer}]
+\textbf{Goal:} No unused full-res images allocated by the water renderer.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Remove \texttt{sceneColorImages/Views/Allocations/Memories} and \texttt{sceneDepthImages/Views/Allocations/Memories} from \texttt{WaterRenderer.hpp}
+    (\texttt{:284--291}) and all uses in \texttt{WaterRenderer.cpp} (\texttt{:307--329, 413--420}, destructor/destroy paths).
+    \item Rebuild and grep for the removed names to confirm no remaining references.
+    \item Verify the composite path still has its inputs (solid/veg views come from the bindings) and run a normal frame.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{vulkan/renderer/WaterRenderer.hpp/cpp}
+\end{itemize}
+
+\textbf{Validation:} VRAM budget drops by $3\times$(swapchain size $+$ D32) at 4K; no validation errors on resource destruction; frame output unchanged.
+\end{tcolorbox}
+
+\subsection{L12: Extend the Minimal Preset with Water-Specific Switches (New Implementation)}
+
+\textbf{Location:} \texttt{utils/GraphicsSettingsCommand.hpp:69--91} (current \texttt{applyMinimal}); \texttt{utils/WaterParams.hpp} (per-layer features);
+\texttt{vulkan/ubo/WaterParamsGPU.hpp:24} (\texttt{waveToggles}).
+
+\begin{itemize}
+    \item Minimal today still runs the full water look package: waves, foam, volumetric scattering, caustics, specular/glitter, depth-region tint, and (as a consequence) the
+    back-face pass (C3) and the expensive per-pixel wave/caustic work (C2). The preset only removes RT, blur, per-layer reflection/refraction lobes, tessellation, and shadows.
+    \item The per-layer \texttt{waveToggles.z} (volumetric) and caustic intensities are the natural levers, but the command does not touch them, and there is no single ``water
+    quality'' surface for a preset to set. The water shaders also have no cheap ``flat water'' switch (C2's specular/glitter gate).
+\end{itemize}
+
+\textbf{Technique:} introduce a \texttt{WaterQuality} tier (or explicit per-layer flags) and extend \texttt{GraphicsSettingsCommand} to configure it: a minimal tier disables
+volumetric, caustics, glitter, and optionally foam; a maximum tier restores the defaults. This makes C1--C3's gates actually fire in the shipped preset, and gives the report's
+optimizations a measurable target.
+
+\begin{tcolorbox}[promptbox={Prompt: Add a Water Quality Tier and Wire It into the Quality Presets}]
+\textbf{Goal:} One switch that makes minimal water genuinely minimal (no volumetric, caustics, glitter, or back-face pass), settable from the quality buttons.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Define \texttt{enum class WaterQuality \{ Full, Minimal \}} in \texttt{utils/WaterParams.hpp} (per layer) or a global \texttt{Settings} field mirrored into the layers by
+    the command. Map it to: \texttt{enableVolumetric}, \texttt{causticIntensity = 0}, \texttt{glitterIntensity = 0}, optionally \texttt{enableFoam} and \texttt{enableWaves}.
+    \item Extend \texttt{GraphicsSettingsCommand::applyMinimal/applyMaximum} (\texttt{:52--91}) to set the tier; keep the existing flags as they are so C2/C3 gates can read one
+    coherent state.
+    \item Add the corresponding shader gates: volumetric already has one (\texttt{water\_surface.glsl:1454}); caustics gets the C2 gate; glitter is covered by the C2
+    specular/glitter gate; waves already early-out in \texttt{water\_noise.glsl:125}.
+    \item Surface the tier in the water/settings UI (optional, one combo) and in the preset tooltip in \texttt{GraphicsQualityWidget.cpp}.
+    \item Verify the presets are idempotent and that toggling back to Maximum restores the previous look (store the previous per-layer values if ``restore'' is desired, or
+    document reset-to-defaults semantics).
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{utils/WaterParams.hpp}, \texttt{utils/GraphicsSettingsCommand.hpp}, \texttt{vulkan/renderer/WaterRenderer.cpp} (packing, if a packed flag is added)
+    \item \texttt{shaders/includes/water\_surface.glsl} (gates), \texttt{widgets/GraphicsQualityWidget.cpp} (tooltip), \texttt{widgets/WaterWidget.cpp} (optional UI)
+\end{itemize}
+
+\textbf{Validation:} Minimal preset now shows zero volumetric/caustic/glitter work in the shader counters; Maximum restores the reference screenshots; the back-face pass gate
+(C3) reports ``not needed'' in a Minimal capture; validation clean, GPU-assisted validation clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Implementation Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}llp{6.2cm}@{}}
+\toprule
+\textbf{Order} & \textbf{Issue} & \textbf{Expected delta in Minimal} \\
+\midrule
+1 & C1 & Removes TCS/tess/TES stages or, at minimum, all per-vertex wave/depth work; applies to both passes. \\
+2 & C2 (+L12) & Removes caustic evaluations on flat water and 3--10 noise octaves per pixel on calm layers; makes the wave field single-evaluation where possible. \\
+3 & C3 & Removes one cull dispatch and one full-res raster pass when the volume is unused; halves water cull cost when shadows are off. \\
+4 & H4 & Removes 2 full-res attachment writes $+$ 2 clears $+$ 4 transitions and 2 composite fetches. \\
+5 & H5 & Removes per-frame RT UBO streaming and RT-view descriptor writes; optional VRAM relief. \\
+6 & H6 & Removes 2--9 depth fetches per TES vertex on calm layers and dead varying traffic. \\
+7 & M7--M10 & CPU/API overhead: one UBO write, cached descriptors, empty-frame fast path, no empty submits, smaller query pool. \\
+8 & L11--L12 & Dead VRAM, and the preset that makes the above visible to users. \\
+\bottomrule
+\end{tabular}
+\caption{Recommended order; every item validates independently and preserves the raster fallback.}
+\end{table}
+
+\textbf{Measurement protocol.} Use the existing GPU timestamps 14/15 (back-face $+$ water geometry, \texttt{MyApp.cpp:2437--2473}) and the CPU record/update timings in the
+profiling overlay. Verify shader-level changes with RenderDoc (bound pipeline stages, texture fetch counters, \texttt{indirect.comp} dispatches) and SPIR-V disassembly
+(\texttt{spirv-dis bin/shaders/main\_water.*.spv}). Keep the RT-enabled presets as the regression baseline: no issue above is allowed to change their output.
+\texttt{AGENTS.md} rules apply to every prompt: runtime feature detection, Synchronization2, reverse-order destruction, no legacy render passes, and validation-clean runs
+(\texttt{VULKAN\_GPU\_ASSISTED=1 make run-debug}).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Per-frame water work (Minimal)} & \textbf{Before} & \textbf{After C1--H6} \\
+\midrule
+Water culls (indirect.comp dispatches) & 2 & 1 (shadows off) \\
+Tessellation stages bound & TCS+tess+TES $\times 2$ passes & none (or TES fast path) \\
+Per-pixel wave-field evaluations & 3 & 1 (2 when caustics on) \\
+Per-pixel noise octaves (layer 0) & $\sim$60 & $\sim$20 (1 field, spec/glitter off) \\
+Per-pixel back/body/column fetches & 1 (FS) $+$ 2 (composite, discarded) & 1 (FS) $+$ 0 \\
+Aux full-res color attachments & 2 & 0 \\
+Per-frame maps/writes (water UBO $+$ sets) & 2 UBO $+$ 17 descriptors & 1 UBO $+$ 0 (steady state) \\
+\bottomrule
+\end{tabular}
+\caption{Qualitative budget for the minimal configuration; exact counts depend on the final variant choices.}
+\end{table}
+
+\end{document}
