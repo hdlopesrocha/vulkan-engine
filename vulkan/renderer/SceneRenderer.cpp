@@ -2413,13 +2413,19 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     // Runtime gate: with every ray-path toggle off nothing can consume the
     // acceleration structures, so builds/repacks are skipped entirely. RT
     // thickness alone cannot trace (it rides the refraction ray).
-    rayTracing->setRuntimeEnabled(settings.rtReflections || settings.rtWaterReflections
+    const bool rtRuntimeEnabled = settings.rtReflections || settings.rtWaterReflections
                                   || settings.rtRefractions || settings.rtLocalShadows
-                                  || settings.rtWaterDepth);
+                                  || settings.rtWaterDepth;
+    rayTracing->setRuntimeEnabled(rtRuntimeEnabled);
     // Solid color pass: bind the non-RT fragment variant while neither solid
-    // RT path (reflections / local shadows) is enabled.
+    // RT path (reflections / local shadows) is enabled. Runs every frame,
+    // including the disabled early-out below (pipeline variant selection).
     if (mainSolidRenderer)
         mainSolidRenderer->setRtShadingEnabled(settings.rtReflections || settings.rtLocalShadows);
+    // No ray path enabled: the bound fragment variants compile the RT block
+    // out, so nothing samples the params UBO. Skip building RayTracingParams
+    // and the per-frame memcpy into the mapped slot (H5).
+    if (!rtRuntimeEnabled) return;
     RayTracingParams p{};
     p.toggles = glm::vec4(settings.rtReflections ? 1.0f : 0.0f,
                            settings.rtRefractions ? 1.0f : 0.0f,

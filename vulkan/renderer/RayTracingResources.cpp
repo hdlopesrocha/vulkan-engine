@@ -892,6 +892,13 @@ void RayTracingResources::setRuntimeEnabled(bool enabled) {
         forceProxyRefresh_ = true;
         lastBuiltValid_ = false;
     }
+    // TODO (perf_report_19 H5, optional): on the enabled->disabled transition
+    // the AS/TLAS objects, proxy/scratch buffers and RT output images stay
+    // resident for the process lifetime (VRAM, not per-frame cost). Releasing
+    // them safely needs deferred destruction (fence per in-flight slot) plus a
+    // lazy re-create path (AS + instance buffer + output images + descriptor/
+    // SBT rewrite); skipped here to avoid a risky partial teardown. This
+    // transition runs once per toggle — no per-frame logging.
 }
 
 bool RayTracingResources::consumeForceProxyRefresh() {

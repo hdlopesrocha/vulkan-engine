@@ -2319,8 +2319,14 @@ public:
                 if (waterVolumeNeeded) {
                     VkImageView bfBack = (this->sceneRenderer->backFaceRenderer) ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
                     // Hybrid RT: back-face set carries RT outputs + sky (no cubemap).
+                    // isSupported() = device capability, runtimeEnabled() = runtime
+                    // policy: while every ray path is off the non-RT fragment variant
+                    // compiles these bindings out, so leave them null and let the
+                    // renderer bind its 1x1 dummies (no real RT output referenced).
                     VkImageView bfRefl = VK_NULL_HANDLE, bfRefr = VK_NULL_HANDLE, bfSky = VK_NULL_HANDLE;
-                    if (this->sceneRenderer->rayTracing && this->sceneRenderer->rayTracing->isSupported()) {
+                    if (this->sceneRenderer->rayTracing
+                        && this->sceneRenderer->rayTracing->isSupported()
+                        && this->sceneRenderer->rayTracing->runtimeEnabled()) {
                         bfRefl = this->sceneRenderer->rayTracing->getReflectionView();
                         bfRefr = this->sceneRenderer->rayTracing->getRefractionView();
                     }
@@ -2427,8 +2433,14 @@ public:
                             ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx)
                             : this->sceneRenderer->backFaceRenderer->getDummyDepthView();
                     }
+                    // Same capability-vs-policy gate as the back-face set: with the
+                    // RT runtime off the water fragment variant never samples these
+                    // bindings, so bind the renderer's dummies instead of the real
+                    // RT output views (H5).
                     VkImageView wRefl = VK_NULL_HANDLE, wRefr = VK_NULL_HANDLE;
-                    if (this->sceneRenderer->rayTracing && this->sceneRenderer->rayTracing->isSupported()) {
+                    if (this->sceneRenderer->rayTracing
+                        && this->sceneRenderer->rayTracing->isSupported()
+                        && this->sceneRenderer->rayTracing->runtimeEnabled()) {
                         wRefl = this->sceneRenderer->rayTracing->getReflectionView();
                         wRefr = this->sceneRenderer->rayTracing->getRefractionView();
                     }
