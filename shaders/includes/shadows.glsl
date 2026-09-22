@@ -30,6 +30,14 @@ float cascadeBlendZ(float z, float margin) {
 }
 
 float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias) {
+    // Global shadow toggle. The raster solid/vegetation/impostor paths gate
+    // their own calls, but the RT reflection/refraction shading (inline ray
+    // hits and the mirror/bounce chains) samples the CSM unconditionally.
+    // Without this guard a disabled CSM still darkens every secondary hit
+    // through its stale or zero-initialized cascade maps — the "shadow
+    // underwater" that survives turning shadows off.
+    if (ubo.shadowEffects.w < 0.5) return 0.0;
+
     const float BLEND_MARGIN = 0.04;
 
     vec3 proj0 = fragPosLightSpace.xyz / fragPosLightSpace.w;
