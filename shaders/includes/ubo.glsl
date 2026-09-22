@@ -58,15 +58,14 @@ struct WaterParamsGPU {
     vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
     vec4 params3;  // x=noiseTimeSpeed, y=noiseLacunarity, z=specularIntensity, w=specularPower
-    vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
-    vec4 deepColor; // xyz = deepColor, w = glitterIntensity
+    vec4 glitterParams; // x=glitterIntensity, yzw=unused
     vec4 waveParams; // x=tessNoiseInfluence, y=unused, z=bumpAmplitude, w=depthFalloff
     vec4 reserved1;  // x=enableReflection, y=enableRefraction, z=legacy enableBlur (unused), w=legacy blurRadius (unused)
     vec4 reserved2;  // x=legacy blurSamples (unused), y=legacy volumeBlurRate (unused), z=volumeBumpRate, w=uniformReflection
     vec4 reserved3;  // x=cube360Available, yzw=unused
     vec4 tessParams; // x=tessNearDist, y=tessFarDist, z=tessMinLevel, w=tessMaxLevel
     vec4 causticColor; // rgb = caustic tint, w = unused
-    vec4 causticParams; // x = scale, y = intensity, z = power, w = depthScale
+    vec4 causticParams; // x = softness (|J| floor), y = intensity, zw = unused
     vec4 causticExtraParams; // reserved (wave-shape caustics: no mode/line/speed knobs)
     vec4 absorptionParams; // xyz = Beer-Lambert coeff, w = absorption scale
     vec4 refractionParams; // x = IOR, y = max thickness cap, z = shore fade depth, w = unused
@@ -89,8 +88,6 @@ struct WaterParamsGPU {
     vec4 foamContact;      // x=contact width(world), y=contact amount, z=contact alpha, w=contact pulse floor
     vec4 foamShape;        // x=edge hardness, y=coverage, z=shore speed factor, w=trail lag growth
     vec4 foamColor;        // rgb=foam color, a=unused
-    vec4 oceanColor;       // rgb=deep ocean color, a=ocean tint start depth
-    vec4 oceanParams;      // x=ocean depth scale, yzw=unused
     vec4 volumetricParams; // x=strength, y=density, z=Henyey-Greenstein g, w=unused
     vec4 volumetricColor;  // rgb=volumetric scatter tint, a=unused
 
@@ -100,7 +97,7 @@ struct WaterParamsGPU {
     vec4 regionBreakerColor; // rgb = breaker-line tint (around zoneBreak)
     vec4 regionShoalColor;   // rgb = shoaling-band tint (zoneBreak..zoneDeep)
     vec4 regionDeepColor;    // rgb = open-ocean tint (d >= zoneDeep)
-    vec4 regionTintParams;   // x=enable region tint, y=blend softness, z=tint shore fade depth (m), w=unused
+    vec4 regionTintParams;   // x=blend softness, y=tint shore fade depth (m), zw=unused
 };
 
 layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {

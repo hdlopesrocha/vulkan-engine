@@ -15,14 +15,14 @@
 //   zoneDeepDepth      open ocean        regionDeepColor
 //
 // Neighboring stops blend through a smoothstep window whose half-width is
-// `regionTintParams.y` (softness) times the adjacent stop spacing, so 0
+// `regionTintParams.x` (softness) times the adjacent stop spacing, so 0
 // gives hard region edges and 0.5 a fully soft ramp. Requires ubo.glsl
 // (WaterParamsGPU declaration) to be included first.
 vec3 waterRegionTint(in WaterParamsGPU wp, float depth) {
     float zDeep = max(wp.waveZones.x, 1.0);
     float zBreak = clamp(wp.waveZones.y, 1e-3, zDeep);
     float zShallow = clamp(wp.waveZones.z, 0.0, zBreak);
-    float soft = clamp(wp.regionTintParams.y, 0.0, 0.5);
+    float soft = clamp(wp.regionTintParams.x, 0.0, 0.5);
 
     float s1 = zShallow;
     float s2 = zBreak;

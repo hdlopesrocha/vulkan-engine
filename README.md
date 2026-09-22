@@ -164,7 +164,7 @@ Water is a four-stage tessellated pipeline (`main_water.vert/tesc/tese/frag`, bu
 
 1. **Tessellation** — noise-adaptive factors with crack-free per-edge midpoints and displacement along the water normal.
 2. **Shore-wave field** — directional swell plus a cross train and ridged FBM chop, shaped by measured water thickness zones: deep swell, shoaling, plunging breakers with curl/crest curvature, shallow decay and a residual shore line wave.
-3. **Surface** — foam and whitewater (crest, trailing, shore and contact lines), per-layer IOR/Snell refraction with Perlin distortion, Beer-Lambert absorption, shallow/deep/ocean tint stops, Henyey-Greenstein volumetric scattering and physically derived caustics (`E/E0 = 1/|1 + d·K·d²h/du²|`) driven by the wave field.
+3. **Surface** — foam and whitewater (crest, trailing, shore and contact lines), per-layer IOR/Snell refraction with Perlin distortion, Beer-Lambert absorption, a 5-stop depth-region tint ramp (shore, foam band, breaker line, shoaling, deep ocean), Henyey-Greenstein volumetric scattering and physically derived caustics (`E/E0 = 1/|1 + d·K·d²h/du²|`) driven by the wave field.
 4. **Reflections** — hardware-RT mirror rays with Fresnel, sun specular and glitter; misses refine or fall back to the equirect environment.
 
 Composition is done by the post-process pass: the water pass renders to its own HDR target and is alpha-composited with occlusion against solid and vegetation depth, or it can be alpha-blended directly into the main pass (`Water in main pass` setting). A dedicated back-face pass captures far-side depth used for volume thickness, and a wireframe pipeline variant renders the surface for debugging. Per-layer parameters live in an SSBO (binding 7); the water time UBO is binding 10.

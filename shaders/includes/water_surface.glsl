@@ -543,7 +543,7 @@ void shadeWaterSurface() {
     float reflectionStrength = wp.params1.w;
     float specularIntensity = wp.params3.z;
     float specularPowerParam = wp.params3.w;
-    float glitterIntensity = wp.deepColor.w;
+    float glitterIntensity = wp.glitterParams.x;
 
     // Feature toggles
     bool enableReflection = wp.reserved1.x > 0.5;
@@ -966,10 +966,6 @@ void shadeWaterSurface() {
     // (toggles, distances, coarse size).
     float absorbScale = absorbScaleBase;
     bool rtDeepMiss = false;
-    // Water tint colors from UBO (declared here — the deep-miss path needs
-    // them, and the tint composition below reuses them).
-    vec3 deepTint = wp.deepColor.rgb;
-    vec3 shallowTint = wp.shallowColor.rgb;
 #ifdef RT_ENABLED
     // Hash-dither resolved RT hit lengths (±0.3 m). Per-chunk flat box tops
     // quantize the true depth into steps; undithered, those steps print as
@@ -1246,7 +1242,7 @@ void shadeWaterSurface() {
     // (Aerial detail fade removed: it was a proxy-era workaround for box-step
     // classification edges, and it inflated waterThickness toward maxRefr (a
     // RAY-RANGE bound, not a water column) with camera distance. That tripped
-    // the oceanColorStart=128 m color stop at range, so distant water darkened
+    // the deep-ocean color stop at range, so distant water darkened
     // even when it was shallow. Refraction now traces exact scene triangles
     // with a continuous hit/miss path, so distance no longer needs to fade
     // depth/color. Debug snapshots (raw RT before composition) stay.)
@@ -1282,38 +1278,22 @@ void shadeWaterSurface() {
     float causticIntensity = wp.causticParams.y;
     float causticSoftness = clamp(wp.causticParams.x, 0.02, 1.0);
 
-    // Tint color. Region mode (default): 5-stop depth-region ramp keyed to
-    // the shore-wave zone boundaries, so the tint color follows the measured
-    // depth bands (shore line → foam band → breaker line → shoaling band →
-    // open ocean) via the shared waterRegionTint() helper. Legacy mode:
-    // shallow → deep around the Caustic Depth Scale reference, plus the
-    // ocean stop beyond oceanColorStart.
-    bool regionTintEnabled = wp.regionTintParams.x > 0.5;
+    // Tint color: 5-stop depth-region ramp keyed to the shore-wave zone
+    // boundaries, so the tint color follows the measured depth bands (shore
+    // line → foam band → breaker line → shoaling band → open ocean) via the
+    // shared waterRegionTint() helper.
     // Depth signal the regions are defined on: the TES-measured vertical
     // world-space drop (fragWaterDepth, always finite), with the composed
     // thickness signal as a fallback when the measured value is unusable.
     float regionDepth = (fragWaterDepth >= 0.0) ? fragWaterDepth : tintDepth;
-    vec3 waterTintColor;
-    if (regionTintEnabled) {
-        waterTintColor = waterRegionTint(wp, regionDepth);
-    } else {
-        float tintDepthScale = max(wp.causticParams.w, 0.0001);
-        float volumeFactor = 1.0 - exp(-waterThickness / tintDepthScale);
-        waterTintColor = mix(shallowTint, deepTint, volumeFactor);
-        // Third color stop: beyond oceanColorStart the tint becomes the
-        // per-layer deep-ocean color (dark blue, independent of the pair).
-        float oceanF = 1.0 - exp(-max(waterThickness - wp.oceanColor.w, 0.0)
-                                  / max(wp.oceanParams.x, 1e-3));
-        waterTintColor = mix(waterTintColor, wp.oceanColor.rgb, oceanF);
-    }
+    vec3 waterTintColor = waterRegionTint(wp, regionDepth);
 
-    // Shoreline tint fade (region-tint mode): the tint weight ramps to exactly
-    // 0 at the waterline over tintShoreFadeDepth meters, so shore water near
+    // Shoreline tint fade: the tint weight ramps to exactly 0 at the
+    // waterline over the per-layer tint shore fade depth, so shore water near
     // the border is transparent and shows the bottom with no water color.
-    // Legacy mode keeps its own depth fade/shore fade (no double fade).
     float tintShoreFade = 1.0;
-    if (regionTintEnabled && wp.regionTintParams.z > 0.0 && regionDepth > 1e-4) {
-        tintShoreFade = smoothstep(0.0, max(wp.regionTintParams.z, 1e-4), regionDepth);
+    if (wp.regionTintParams.y > 0.0 && regionDepth > 1e-4) {
+        tintShoreFade = smoothstep(0.0, max(wp.regionTintParams.y, 1e-4), regionDepth);
     }
 
 // Blend scene color with water tint: depthFade (Depth Falloff over the best
@@ -1497,7 +1477,7 @@ void shadeWaterSurface() {
     if (thicknessForAlpha > 1e-4 && shoreWidth > 1e-6) {
         alpha *= smoothstep(0.0, shoreWidth, thicknessForAlpha);
     }
-    // In region-tint mode the shoreline tint fade is also a coverage fade:
+    // The shoreline tint fade is also a coverage fade:
     // the last water pixels approaching the border are transparent so the
     // bottom shows with no water color. Only applied where a real depth
     // signal exists (flat unmeasurable water keeps the transparency-floor

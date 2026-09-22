@@ -6,15 +6,14 @@ struct WaterParamsGPU {
     glm::vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
     glm::vec4 params2;  // x=waterTint, y=noise period (converted to scale at upload), z=noiseOctaves, w=noisePersistence
     glm::vec4 params3;  // x=noiseTimeSpeed, y=noiseLacunarity, z=specularIntensity, w=specularPower
-    glm::vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
-    glm::vec4 deepColor; // xyz = deepColor, w = glitterIntensity
+    glm::vec4 glitterParams; // x=glitterIntensity, yzw=unused
     glm::vec4 waveParams; // x=tessNoiseInfluence, y=unused, z=bumpAmplitude, w=depthFalloff
     glm::vec4 reserved1;  // x=enableReflection, y=enableRefraction, z=legacy enableBlur (unused), w=legacy blurRadius (unused)
     glm::vec4 reserved2;  // x=legacy blurSamples (unused), y=legacy volumeBlurRate (unused), z=volumeBumpRate, w=unused
     glm::vec4 reserved3;  // unused (legacy cubemap-available flag removed with Solid360)
     glm::vec4 tessParams; // x=tessNearDist, y=tessFarDist, z=tessMinLevel, w=tessMaxLevel
     glm::vec4 causticColor; // xyz = color of the focused sunlight, w = unused
-    glm::vec4 causticParams; // x=softness (|J| floor), y=intensity, z=unused, w=tint depth reference
+    glm::vec4 causticParams; // x=softness (|J| floor), y=intensity, zw=unused
     glm::vec4 causticExtraParams; // reserved (wave-shape caustics need no mode/line/speed knobs)
     glm::vec4 absorptionParams; // xyz = Beer-Lambert coeff, w = absorption scale
     glm::vec4 refractionParams; // x=IOR, y=max thickness cap, z=shore fade depth, w=unused
@@ -38,8 +37,6 @@ struct WaterParamsGPU {
     glm::vec4 foamContact;      // x=contact width(world), y=contact amount, z=contact alpha, w=contact pulse floor
     glm::vec4 foamShape;        // x=edge hardness, y=coverage, z=shore speed factor, w=trail lag growth
     glm::vec4 foamColor;        // rgb=foam color, a=unused
-    glm::vec4 oceanColor;       // rgb=deep ocean color, a=ocean tint start depth
-    glm::vec4 oceanParams;      // x=ocean depth scale, yzw=unused
     glm::vec4 volumetricParams; // x=strength, y=density, z=Henyey-Greenstein g, w=unused
     glm::vec4 volumetricColor;  // rgb=volumetric scatter tint, a=unused
 
@@ -49,5 +46,5 @@ struct WaterParamsGPU {
     glm::vec4 regionBreakerColor; // rgb = breaker-line tint (around zoneBreak)
     glm::vec4 regionShoalColor;   // rgb = shoaling-band tint (zoneBreak..zoneDeep)
     glm::vec4 regionDeepColor;    // rgb = open-ocean tint (d >= zoneDeep)
-    glm::vec4 regionTintParams;   // x=enable region tint, y=blend softness, z=tint shore fade depth (m), w=unused
+    glm::vec4 regionTintParams;   // x=blend softness, y=tint shore fade depth (m), zw=unused
 };

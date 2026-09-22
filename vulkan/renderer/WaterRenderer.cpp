@@ -100,8 +100,7 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     gpu.params1 = glm::vec4(p.refractionStrength, p.fresnelPower, p.transparency, p.reflectionStrength);
     gpu.params2 = glm::vec4(p.waterTint, p.noisePeriod, static_cast<float>(p.noiseOctaves), p.noisePersistence);
     gpu.params3 = glm::vec4(p.noiseTimeSpeed, p.noiseLacunarity, p.specularIntensity, p.specularPower);
-    gpu.shallowColor = glm::vec4(p.shallowColor, p.waveDepthTransition);
-    gpu.deepColor = glm::vec4(p.deepColor, p.glitterIntensity);
+    gpu.glitterParams = glm::vec4(p.glitterIntensity, 0.0f, 0.0f, 0.0f);
     gpu.waveParams = glm::vec4(p.tessNoiseInfluence, 0.0f, p.bumpAmplitude, p.depthFalloff);
     gpu.reserved1 = glm::vec4(p.enableReflection ? 1.0f : 0.0f,
                               p.enableRefraction ? 1.0f : 0.0f,
@@ -111,7 +110,7 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     gpu.reserved3 = glm::vec4(0.0f); // legacy cubemap-available flag (removed with Solid360)
     gpu.tessParams = glm::vec4(p.tessNearDist, p.tessFarDist, p.tessMinLevel, p.tessMaxLevel);
     gpu.causticColor = glm::vec4(p.causticColor, 0.0f);
-    gpu.causticParams = glm::vec4(p.causticSoftness, p.causticIntensity, 0.0f, p.causticDepthScale);
+    gpu.causticParams = glm::vec4(p.causticSoftness, p.causticIntensity, 0.0f, 0.0f);
     gpu.causticExtraParams = glm::vec4(0.0f); // wave-shape caustics: no mode/line/speed knobs
     gpu.absorptionParams = glm::vec4(p.absorption, p.absorptionScale);
     gpu.refractionParams = glm::vec4(p.ior, p.maxThickness, p.shoreFadeDepth, 0.0f);
@@ -136,8 +135,6 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     gpu.foamContact = glm::vec4(p.foamContactWidth, p.foamContactAmount, p.foamContactAlpha, p.foamContactFloor);
     gpu.foamShape = glm::vec4(p.foamEdge, p.foamCoverage, p.foamShoreSpeed, p.foamLagGrowth);
     gpu.foamColor = glm::vec4(p.foamColor, 0.0f);
-    gpu.oceanColor = glm::vec4(p.oceanColor, p.oceanColorStart);
-    gpu.oceanParams = glm::vec4(p.oceanDepthScale, 0.0f, 0.0f, 0.0f);
     gpu.volumetricParams = glm::vec4(p.volumetricStrength, p.volumetricDensity, p.volumetricPhaseG, 0.0f);
     gpu.volumetricColor = glm::vec4(p.volumetricColor, 0.0f);
     gpu.regionShoreColor = glm::vec4(p.regionShoreColor, 0.0f);
@@ -145,9 +142,9 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     gpu.regionBreakerColor = glm::vec4(p.regionBreakerColor, 0.0f);
     gpu.regionShoalColor = glm::vec4(p.regionShoalColor, 0.0f);
     gpu.regionDeepColor = glm::vec4(p.regionDeepColor, 0.0f);
-    gpu.regionTintParams = glm::vec4(p.regionTintEnabled ? 1.0f : 0.0f,
-                                     p.regionBlendSoftness,
+    gpu.regionTintParams = glm::vec4(p.regionBlendSoftness,
                                      p.tintShoreFadeDepth,
+                                     0.0f,
                                      0.0f);
     return gpu;
 }

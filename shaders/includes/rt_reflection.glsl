@@ -36,17 +36,7 @@ vec3 rtWaterSurfaceLook(WaterParamsGPU wp, vec3 hitN, vec3 incidentDir,
     float thickness = max(wp.refractionParams.y, 0.0);
     // Same depth-region tint ramp as the raster surface (thickness here is
     // the layer's column cap: water seen in a mirror has no measured depth).
-    vec3 tintColor;
-    if (wp.regionTintParams.x > 0.5) {
-        tintColor = waterRegionTint(wp, thickness);
-    } else {
-        float tintScale = max(wp.causticParams.w, 1e-3);
-        float volumeFactor = 1.0 - exp(-thickness / tintScale);
-        tintColor = mix(wp.shallowColor.rgb, wp.deepColor.rgb, volumeFactor);
-        float oceanF = 1.0 - exp(-max(thickness - wp.oceanColor.w, 0.0)
-                                  / max(wp.oceanParams.x, 1e-3));
-        tintColor = mix(tintColor, wp.oceanColor.rgb, oceanF);
-    }
+    vec3 tintColor = waterRegionTint(wp, thickness);
     float depthFade = 1.0 - exp(-thickness * max(wp.waveParams.w, 1e-4));
     float tintMax = clamp(1.0 - wp.params1.z, 0.0, 1.0);
     float tintBlend = clamp(depthFade * wp.params2.x, 0.0, tintMax);
@@ -243,19 +233,8 @@ vec3 rtResolveWaterHit(WaterParamsGPU wp, vec3 hitPos, vec3 hitN, vec3 incidentD
 
     // --- Water tint / absorption over the refracted column ---
     // Same color model as the raster water surface: the shared depth-region
-    // ramp when enabled (thickness stands in for the column depth here),
-    // else the legacy shallow -> deep -> ocean stops.
-    vec3 tintColor;
-    if (wp.regionTintParams.x > 0.5) {
-        tintColor = waterRegionTint(wp, thickness);
-    } else {
-        float tintScale = max(wp.causticParams.w, 1e-3);
-        float volumeFactor = 1.0 - exp(-thickness / tintScale);
-        tintColor = mix(wp.shallowColor.rgb, wp.deepColor.rgb, volumeFactor);
-        float oceanF = 1.0 - exp(-max(thickness - wp.oceanColor.w, 0.0)
-                                  / max(wp.oceanParams.x, 1e-3));
-        tintColor = mix(tintColor, wp.oceanColor.rgb, oceanF);
-    }
+    // ramp (thickness stands in for the column depth here).
+    vec3 tintColor = waterRegionTint(wp, thickness);
     // CSM shadow evaluated AT THE WATER SURFACE: darken the composed water
     // (volume tint + surface mirror), matching the raster water convention
     // (waterColor *= mix(1.0, 0.55, shadow)). The refracted bottom below
@@ -267,9 +246,9 @@ vec3 rtResolveWaterHit(WaterParamsGPU wp, vec3 hitPos, vec3 hitN, vec3 incidentD
         ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
     float depthFade = 1.0 - exp(-thickness * max(wp.waveParams.w, 1e-4));
     // Shoreline tint fade, matching the raster surface: no tint at the
-    // waterline (thickness -> 0), ramping in over tintShoreFadeDepth.
-    if (wp.regionTintParams.z > 0.0 && thickness > 1e-4) {
-        depthFade *= smoothstep(0.0, max(wp.regionTintParams.z, 1e-4), thickness);
+    // waterline (thickness -> 0), ramping in over the tint shore fade depth.
+    if (wp.regionTintParams.y > 0.0 && thickness > 1e-4) {
+        depthFade *= smoothstep(0.0, max(wp.regionTintParams.y, 1e-4), thickness);
     }
     float tintMax = clamp(1.0 - wp.params1.z, 0.0, 1.0);
     float tintBlend = clamp(depthFade * wp.params2.x, 0.0, tintMax);

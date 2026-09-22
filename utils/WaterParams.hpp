@@ -13,24 +13,20 @@ struct WaterParams {
     float refractionStrength = 0.03f;
     float fresnelPower = 5.0f;
     float transparency = 0.7f;
-    glm::vec3 shallowColor = glm::vec3(0.1f, 0.4f, 0.5f);
-    glm::vec3 deepColor = glm::vec3(0.0f, 0.15f, 0.25f);
     float depthFalloff = 0.1f;
 
-    // ── Depth-region tint (default look) ────────────────────────────────
+    // ── Depth-region tint ───────────────────────────────────────────────
     // The water tint is a 5-stop color ramp keyed to the measured water
     // DEPTH and the shore-wave zone boundaries (zoneShallowDepth /
     // zoneBreakDepth / zoneDeepDepth): the tint color at a pixel is the
     // region color of its depth band, smoothly blended across the
     // boundaries. Region order (shallow → deep): shore line, foam decay
-    // band, breaker line, shoaling band, open ocean. When disabled, the
-    // legacy shallow → deep → ocean ramp (colors above) is used instead.
-    bool regionTintEnabled = true;
-    glm::vec3 regionShoreColor = glm::vec3(0.20f, 0.50f, 0.52f);   // d < zoneShallowDepth
-    glm::vec3 regionShallowColor = glm::vec3(0.10f, 0.40f, 0.50f); // foam decay band
-    glm::vec3 regionBreakerColor = glm::vec3(0.18f, 0.52f, 0.56f); // breaker line
-    glm::vec3 regionShoalColor = glm::vec3(0.03f, 0.20f, 0.32f);   // shoaling band
-    glm::vec3 regionDeepColor = glm::vec3(0.0f, 0.10f, 0.20f);     // open ocean
+    // band, breaker line, shoaling band, open ocean.
+    glm::vec3 regionShoreColor = glm::vec3(1.0f, 0.0f, 0.0f);   // d < zoneShallowDepth
+    glm::vec3 regionShallowColor = glm::vec3(1.0f, 1.0f, 0.0f); // foam decay band
+    glm::vec3 regionBreakerColor = glm::vec3(0.0f, 1.0f, 0.0f); // breaker line
+    glm::vec3 regionShoalColor = glm::vec3(0.03f, 1.0f, 1.0f);   // shoaling band
+    glm::vec3 regionDeepColor = glm::vec3(0.0f, 0.0f, 1.0f);     // open ocean
     // Boundary blend half-width as a fraction [0..0.5] of the adjacent zone
     // spans: 0 = hard region edges, 0.5 = fully soft ramp.
     float regionBlendSoftness = 0.35f;
@@ -64,11 +60,6 @@ struct WaterParams {
 
     // Vertical bump amplitude for water geometry
     float bumpAmplitude = 8.0f;
-
-    // LEGACY (no effect): superseded by the thickness-zone wave model
-    // (zoneDeepDepth / zoneBreakDepth / zoneShallowDepth + waveShoal terms).
-    // Kept for API/layout stability; not uploaded for any shader behavior.
-    float waveDepthTransition = 20.0f;
 
     // Feature toggles
     bool enableReflection = true;
@@ -114,8 +105,6 @@ struct WaterParams {
     // Softness: clamp floor on |J| (the 1/J fold is unbounded). Higher values
     // soften the bright ridges; 1.0 disables caustics (gain clamps to 1).
     float causticSoftness = 0.5f;
-    // Depth reference (world units) used by the water-tint volume ramp.
-    float causticDepthScale = 128.0f;
 
     // ── Shore-wave system (thickness-zoned, per water material) ──────────
     // Waves travel along `shoreWaveAngle` (direction TOWARD the shore) and
@@ -235,15 +224,37 @@ struct WaterParams {
     float foamAmbient = 0.2f;        // constant ambient added to foam
     glm::vec3 foamColor = glm::vec3(1.0f);
 
-    // Deep-ocean tint: third color stop reached beyond oceanColorStart
-    // (dark blue like open-ocean water, independent of the shallow/deep mix).
-    glm::vec3 oceanColor = glm::vec3(0.0f, 0.03f, 0.08f);
-    float oceanColorStart = 128.0f;   // thickness where the ocean tint kicks in
-    float oceanDepthScale = 64.0f;    // ramp length from deep to ocean tint
-
     // Volumetric scattering (single-scattering approximation, sun-lit)
     float volumetricStrength = 0.15f; // in-scattered light amount
     float volumetricDensity = 0.08f;  // extinction per meter of water column
     float volumetricPhaseG = 0.4f;    // Henyey-Greenstein anisotropy [-0.95..0.95]
     glm::vec3 volumetricColor = glm::vec3(0.10f, 0.35f, 0.40f); // scatter tint
 };
+
+// CPU mirror of shaders/includes/water_tint.glsl: the 5-stop depth-region
+// tint ramp (shore → foam band → breaker line → shoaling → deep ocean), keyed
+// to the same wave-zone boundaries with the same soft blending. Used where the
+// CPU needs a representative water tint (e.g. the RT proxy water albedo).
+inline glm::vec3 waterRegionTint(const WaterParams& p, float depth) {
+    const float zDeep = glm::max(p.zoneDeepDepth, 1.0f);
+    const float zBreak = glm::clamp(p.zoneBreakDepth, 0.001f, zDeep);
+    const float zShallow = glm::clamp(p.zoneShallowDepth, 0.0f, zBreak);
+    const float soft = glm::clamp(p.regionBlendSoftness, 0.0f, 0.5f);
+
+    const float s1 = zShallow;
+    const float s2 = zBreak;
+    const float s3 = 0.5f * (zBreak + zDeep);
+    const float s4 = zDeep;
+
+    const float w1 = soft * glm::max(s1, 0.001f);
+    const float w2 = soft * glm::max(glm::min(s2 - s1, s3 - s2), 0.001f);
+    const float w3 = soft * glm::max(glm::min(s3 - s2, s4 - s3), 0.001f);
+    const float w4 = soft * glm::max(s4 - s3, 0.001f);
+
+    glm::vec3 c = p.regionShoreColor;
+    c = glm::mix(c, p.regionShallowColor, glm::smoothstep(glm::max(s1 - w1, 0.0f), s1 + w1, depth));
+    c = glm::mix(c, p.regionBreakerColor, glm::smoothstep(s2 - w2, s2 + w2, depth));
+    c = glm::mix(c, p.regionShoalColor, glm::smoothstep(s3 - w3, s3 + w3, depth));
+    c = glm::mix(c, p.regionDeepColor, glm::smoothstep(s4 - w4, s4 + w4, depth));
+    return c;
+}

@@ -57,26 +57,14 @@ void WaterWidget::render() {
     sections.push_back({[&]() {
         ImGui::Text("Water Region Tint");
         ColSeparator();
-        CheckboxField("Region Tint Ramp", &layerParams.regionTintEnabled,
-            "Tint the water from the 5 depth-region colors in the sections below,\n"
-            "ordered deep ocean -> shore. The ramp follows the measured water depth\n"
-            "and blends across the region boundaries. Off = legacy shallow/deep/ocean\n"
-            "ramp configured here.");
-        if (!layerParams.regionTintEnabled) {
-            ColorEdit3Field("Legacy Shallow Color", &layerParams.shallowColor.x);
-            ColorEdit3Field("Legacy Deep Color", &layerParams.deepColor.x);
-            ColorEdit3Field("Legacy Ocean Color", &layerParams.oceanColor.x,
-                "Third color stop: deep-ocean tint beyond Ocean Color Start.");
-            SliderFloatField("Ocean Color Start", &layerParams.oceanColorStart, 0.0f, 512.0f, "%.1f");
-            SliderFloatField("Ocean Depth Scale", &layerParams.oceanDepthScale, 1.0f, 512.0f, "%.1f",
-                "Thickness ramp over which the deep tint blends to the ocean color.");
-        }
+        ImGui::TextWrapped("The water tint is a 5-stop color ramp over the measured water depth. "
+                           "Each region below owns its color and the depth boundary that defines "
+                           "it, ordered deep ocean -> shore.");
         SliderFloatField("Region Blend", &layerParams.regionBlendSoftness, 0.0f, 0.5f, "%.3f",
             "Blend softness between region colors, as a fraction of the adjacent\n"
             "zone spans. 0 = hard region edges, 0.5 = soft ramp.");
         SliderFloatField("Depth Falloff", &layerParams.depthFalloff, 0.001f, 1.0f,
-            "Rate at which the tint weight grows with water depth\n"
-            "(applies to both the region and legacy ramps).");
+            "Rate at which the tint weight grows with water depth.");
     }});
 
     sections.push_back({[&]() {
@@ -403,14 +391,12 @@ void WaterWidget::render() {
         SliderFloatField("Caustic Softness", &layerParams.causticSoftness, 0.02f, 1.0f, "%.3f",
             "Clamp floor on |J| (the inverse-Jacobian fold is unbounded).\n"
             "Lower = sharper, brighter caustic ridges; 1.0 disables them.");
-        SliderFloatField("Caustic Depth Scale", &layerParams.causticDepthScale, 0.1f, 256.0f, "%.2f",
-            "Depth reference for the water-tint volume ramp (shallow->deep blend).");
     }});
 
     static std::vector<float> cachedH;
     const std::vector<float> estimates = {
         EstimateSectionHeight(3),   // 0  Water Layer
-        EstimateSectionHeight(6),   // 1  Water Region Tint (+ legacy when off)
+        EstimateSectionHeight(4),   // 1  Water Region Tint
         EstimateSectionHeight(3),   // 2  Region 1: Deep Ocean
         EstimateSectionHeight(3),   // 3  Region 2: Shoaling
         EstimateSectionHeight(3),   // 4  Region 3: Breaker Line
@@ -430,7 +416,7 @@ void WaterWidget::render() {
         EstimateSectionHeight(5),   // 18 Tessellation
         EstimateSectionHeight(9),   // 19 Refraction
         EstimateSectionHeight(7),   // 20 Surface Reflection
-        EstimateSectionHeight(5),   // 21 Caustics
+        EstimateSectionHeight(4),   // 21 Caustics
     };
     LayoutSections(sections, cachedH, estimates);
 

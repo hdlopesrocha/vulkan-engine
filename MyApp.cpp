@@ -620,20 +620,20 @@ public:
             WaterParams wp = WaterParams();
             wp.noiseOctaves = 1;
             wp.waveScale = 8.0f;
-            wp.deepColor = glm::vec3(0.0f, 0.1f, 0.0f);
             wp.causticColor = glm::vec3(1.0f, 0.98f, 0.9f); // sunlight tint
-            wp.shallowColor = glm::vec3(0.1f, 0.5f, 0.1f);
+            // Green depth-region ramp for this demo layer.
+            wp.regionShoreColor = glm::vec3(0.20f, 0.55f, 0.20f);
+            wp.regionShallowColor = glm::vec3(0.10f, 0.50f, 0.10f);
+            wp.regionBreakerColor = glm::vec3(0.15f, 0.55f, 0.15f);
+            wp.regionShoalColor = glm::vec3(0.03f, 0.28f, 0.05f);
+            wp.regionDeepColor = glm::vec3(0.0f, 0.10f, 0.0f);
             wp.waterTint = 0.6f;
             wp.causticIntensity = 0.2f;
             wp.causticSoftness = 0.5f;
-            wp.causticDepthScale = 128.0f;
             wp.tessMinLevel = 2.0f;
             wp.tessMaxLevel = 16.0f;
             wp.reflectionStrength = 0.5f;
             wp.fresnelPower = 1.0f;
-            // Keep this demo layer's custom green shallow/deep look: opt out of
-            // the depth-region tint ramp (which owns the default layer).
-            wp.regionTintEnabled = false;
             waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
         }
         {
@@ -642,12 +642,15 @@ public:
             wp.noiseOctaves = 0;
             wp.waveScale = 0.0f;
             wp.noisePeriod = 0.0f;
-            wp.deepColor = glm::vec3(0.0f, 0.0f, 0.0f);
             wp.causticColor = glm::vec3(1.0f, 1.0f, 1.0f);
-            wp.shallowColor = glm::vec3(1.0f, 1.0f, 1.0f);
+            // White -> black depth-region ramp for this stylized demo layer.
+            wp.regionShoreColor = glm::vec3(1.0f, 1.0f, 1.0f);
+            wp.regionShallowColor = glm::vec3(1.0f, 1.0f, 1.0f);
+            wp.regionBreakerColor = glm::vec3(1.0f, 1.0f, 1.0f);
+            wp.regionShoalColor = glm::vec3(0.4f, 0.4f, 0.4f);
+            wp.regionDeepColor = glm::vec3(0.0f, 0.0f, 0.0f);
             wp.waterTint = 1.0f;
             wp.causticIntensity = 0.0f; // caustics off on this layer
-            wp.causticDepthScale = 1.0f;
             wp.bumpAmplitude = 0.0f;
             wp.blurRadius = 4.0f;
             wp.enableBlur = true;
@@ -655,8 +658,6 @@ public:
             wp.fresnelPower = 1.0f;
             wp.tessMinLevel = 1.0f;
             wp.tessMaxLevel = 1.0f;
-            // Keep this demo layer's black/white tint: opt out of the region ramp.
-            wp.regionTintEnabled = false;
             waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
         }
 

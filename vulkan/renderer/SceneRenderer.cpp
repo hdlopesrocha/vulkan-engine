@@ -262,19 +262,13 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     textureArrays_ = textureArrayManager;
 
     // Representative water surface tint for reflected water: computed with the
-    // water's OWN params (shallow/deep colors, caustic depth scale, max
-    // thickness, absorption) using the exact water.frag formula, so reflected
-    // water carries the real water color — no hardcoded values.
+    // water's OWN params (depth-region colors, max thickness, absorption)
+    // using the exact water shader ramp, so reflected water carries the real
+    // water color — no hardcoded values.
     {
         const WaterParams& wp = waterParams.empty() ? WaterParams{} : waterParams[0];
         const float thickness = std::max(wp.maxThickness, 0.0f);
-        const float tintDepthScale = std::max(wp.causticDepthScale, 0.0001f);
-        const float volumeFactor = 1.0f - std::exp(-thickness / tintDepthScale);
-        glm::vec3 waterTintColor = glm::mix(wp.shallowColor, wp.deepColor, volumeFactor);
-        // Third color stop (deep-ocean tint), matching the water shader.
-        const float oceanF = 1.0f - std::exp(-std::max(thickness - wp.oceanColorStart, 0.0f)
-                                             / std::max(wp.oceanDepthScale, 1e-3f));
-        waterTintColor = glm::mix(waterTintColor, wp.oceanColor, oceanF);
+        const glm::vec3 waterTintColor = waterRegionTint(wp, thickness);
         // Beer-Lambert absorption (water.frag): the tint seen through the
         // water column is attenuated.
         const glm::vec3 transmittance = glm::exp(-glm::min(
@@ -2329,9 +2323,9 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
 
                 auto proxyAlbedo = [&](RTProxyBox& b) {
                     if (isWater) {
-                        // Actual water surface tint (shallow/deep mix from the
-                        // water layer), not a hardcoded blue — so reflected
-                        // water carries the real water color.
+                        // Actual water surface tint (from the water layer's
+                        // depth-region ramp), not a hardcoded blue — so
+                        // reflected water carries the real water color.
                         b.albedo = waterReflectionTint_;
                         b.roughness = 0.15f;
                     } else if (textureArrays_) {
