@@ -116,6 +116,11 @@ void SettingsWidget::render() {
         }
         TooltipOnHover("Use the refraction ray's path length as water thickness + Beer-Lambert absorption.\n"
                        "Off = thickness comes only from the raster back face.");
+        if (ImGui::Checkbox("RT water depth (regions)", &settings.rtWaterDepth)) {
+        }
+        TooltipOnHover("Shore-wave region depth from a ray-traced solid bottom (world-space drop)\n"
+                       "instead of the raster solid + water back-face depth. Requires RT;\n"
+                       "falls back to the raster path where the ray misses.");
         if (ImGui::Checkbox("RT local/contact shadows (augment CSM)", &settings.rtLocalShadows)) {
         }
         TooltipOnHover("Selective RT contact shadows augmenting CSM (off = CSM-only, recommended)");

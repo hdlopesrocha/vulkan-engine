@@ -107,7 +107,9 @@ struct WaterWaveField {
 // shoaling, mask and foam are all per-layer params (see WaterParamsGPU), no
 // shader magic numbers beyond numerical guards.
 //
-//   depth < 0  : thickness unknown (no measured bottom) -> open deep water
+//   depth < 0  : explicit "deep water" request (the tessellation-control
+//                stage has no thickness signal and samples the field as deep);
+//                the water TESE/fragment paths always pass a measured depth
 //   d >= zDeep : full open-ocean swell
 //   zBreak..zDeep : shoaling band (gains height, sharpens, whitecaps)
 //   ~ zBreak   : breaker line (extra crest + foam birth)

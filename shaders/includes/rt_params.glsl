@@ -21,6 +21,10 @@ struct RayTracingParamsGLSL {
                        // z=singleRay (1=Fresnel stochastic reflection-xor-refraction,
                        //   0=dual-trace reference),
                        // w=waterReflections (1 = water reflection rays enabled)
+    vec4 waterDepth;   // x=water-region depth source: 1 = ray-traced solid
+                       // bottom (world-space vertical drop) in the water TES,
+                       // 0 = raster only (solid scene depth + water volume back
+                       // face). yzw reserved.
 };
 
 // Shared ray payload (rgen + rmiss + rchit). MUST stay a single variable:

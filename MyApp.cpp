@@ -2362,7 +2362,8 @@ public:
                     }
                     const bool waterRtNeeded =
                         (settings.rtWaterReflections && anyLayerRefl) ||
-                        (settings.rtRefractions && anyLayerRefr);
+                        (settings.rtRefractions && anyLayerRefr) ||
+                        settings.rtWaterDepth;
                     if (this->sceneRenderer->mainLiquidRenderer) {
                         this->sceneRenderer->mainLiquidRenderer->setRtShadingEnabled(waterRtNeeded);
                         // Global path gates delivered via the water render UBO:

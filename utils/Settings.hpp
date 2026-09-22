@@ -79,6 +79,12 @@ public:
     bool rtWaterReflections = false; // water RT reflections (own toggle so each ray path is switchable)
     bool rtRefractions = false;   // water refraction via Snell (IOR below); also carries RT thickness
     bool rtThickness = false;     // RT water thickness + Beer-Lambert absorption
+    // Water-depth source for the shore-wave regions: true = ray-traced solid
+    // bottom (inline ray query in the water TES, world-space drop); false =
+    // raster only (solid scene depth + water volume back face, world-space
+    // drops). Both modes produce a vertical world-space depth so the region
+    // zones match. Requires RT to be enabled (falls back to raster otherwise).
+    bool rtWaterDepth = false;
     bool rtLocalShadows = false; // selective RT contact shadows augmenting CSM (off = CSM-only, recommended)
     bool rtWaterPipeline = false; // water via async RT pipeline outputs (off = inline ray queries)
     int rtReflectionBounces = 1; // extra mirror rays when a reflection hits a reflective surface (0..3)

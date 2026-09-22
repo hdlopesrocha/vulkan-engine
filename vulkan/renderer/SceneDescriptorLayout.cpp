@@ -114,14 +114,16 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     aoSamplerBinding.pImmutableSamplers = nullptr;
     aoSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // ── Hybrid RT bindings (fragment stage: inline ray queries) ──────────
+    // ── Hybrid RT bindings (fragment stage: inline ray queries; TES also
+    // queries the TLAS for the RT water-region depth) ──────────
     // binding 14: TLAS (stable proxy BLAS; ray queries in main.frag/water.frag)
     VkDescriptorSetLayoutBinding tlasBinding{};
     tlasBinding.binding = 14;
     tlasBinding.descriptorCount = 1;
     tlasBinding.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     tlasBinding.pImmutableSamplers = nullptr;
-    tlasBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    tlasBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
+        | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     // binding 15: RT water reflection output (half-res, sampled by water.frag)
     VkDescriptorSetLayoutBinding rtReflectBinding{};
@@ -145,7 +147,8 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     rtParamsBinding.descriptorCount = 1;
     rtParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     rtParamsBinding.pImmutableSamplers = nullptr;
-    rtParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    rtParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
+        | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     // binding 18: RT proxy metadata (per-box albedo/flags for ray-query hit
     // shading in main.frag). Same buffer the RT pipeline samples at its set 0/4.

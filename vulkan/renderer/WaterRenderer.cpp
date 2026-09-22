@@ -611,13 +611,21 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     VkShaderModule fragNoRtModule = app->getOrCreateShaderModule("shaders/main_water.frag.spv");
     VkShaderModule fragRtModule = (app && app->rayTracingEnabled())
         ? app->getOrCreateShaderModule("shaders/main_water_rt.frag.spv") : VK_NULL_HANDLE;
-    // Per-op profiling variant (counters + device clock). Built only when the
-    // device supports VK_KHR_shader_clock.
-    VkShaderModule fragRtProfModule = (app && app->rayTracingEnabled() && app->shaderClockSupported)
-        ? app->getOrCreateShaderModule("shaders/main_water_rt_prof.frag.spv") : VK_NULL_HANDLE;
     VkShaderModule tescModule = VK_NULL_HANDLE;
     VkShaderModule teseModule = VK_NULL_HANDLE;
+    // RT TES: same water TES plus the optional inline ray-query water-region
+    // depth (rt.waterDepth). Used only by the RT pipeline variant; the RT
+    // fragment variant and this TES are selected together.
+    VkShaderModule teseRtModule = (app && app->rayTracingEnabled())
+        ? app->getOrCreateShaderModule("shaders/main_water_rt.tese.spv") : VK_NULL_HANDLE;
+    // Per-op profiling variant (counters + device clock in both stages). Built
+    // only when the device supports VK_KHR_shader_clock.
+    VkShaderModule fragRtProfModule = (app && app->rayTracingEnabled() && app->rtProfilingSupported)
+        ? app->getOrCreateShaderModule("shaders/main_water_rt_prof.frag.spv") : VK_NULL_HANDLE;
+    VkShaderModule teseRtProfModule = (app && app->rayTracingEnabled() && app->rtProfilingSupported)
+        ? app->getOrCreateShaderModule("shaders/main_water_rt_prof.tese.spv") : VK_NULL_HANDLE;
     bool hasTessellation = true;
+    int teseStageIndex = -1; // shaderStages index of the TES stage (per-variant swap)
     tescModule = app->getOrCreateShaderModule("shaders/main_water.tesc.spv");
     teseModule = app->getOrCreateShaderModule("shaders/main_water.tese.spv");
 
@@ -638,6 +646,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         tescStage.pName = "main";
         shaderStages.push_back(tescStage);
 
+        teseStageIndex = static_cast<int>(shaderStages.size());
         VkPipelineShaderStageCreateInfo teseStage{};
         teseStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         teseStage.stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
@@ -814,13 +823,17 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Create one geometry + one main pipeline per fragment module. The
     // fragment stage is always the last entry of shaderStages; swapping its
     // module is all that differs between the RT and non-RT variants (same
-    // pipeline layout, render state and descriptor sets).
-    auto createVariant = [&](VkShaderModule frag, TrackedHandle<VkPipeline>& geomOut,
+    // pipeline layout, render state and descriptor sets). The RT variant also
+    // swaps the TES (inline ray-query water depth).
+    auto createVariant = [&](VkShaderModule frag, VkShaderModule tese,
+                             TrackedHandle<VkPipeline>& geomOut,
                              TrackedHandle<VkPipeline>& mainOut,
                              const char* geomName, const char* mainName,
                              const char* label) {
         if (frag == VK_NULL_HANDLE) return;
         shaderStages.back().module = frag;
+        if (tese != VK_NULL_HANDLE && teseStageIndex >= 0)
+            shaderStages[teseStageIndex].module = tese;
 
         if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &geomOut) != VK_SUCCESS) {
             std::cerr << "[WaterRenderer] Warning: Failed to create water geometry pipeline (" << label << ")" << std::endl;
@@ -841,13 +854,14 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         }
     };
 
-    createVariant(fragNoRtModule, waterGeometryPipeline, waterMainPipeline,
+    createVariant(fragNoRtModule, VK_NULL_HANDLE, waterGeometryPipeline, waterMainPipeline,
                   "WaterRenderer: waterGeometryPipeline (non-RT)",
                   "WaterRenderer: waterMainPipeline (non-RT)", "non-RT");
-    createVariant(fragRtModule, waterGeometryPipelineRt, waterMainPipelineRt,
+    createVariant(fragRtModule, teseRtModule, waterGeometryPipelineRt, waterMainPipelineRt,
                   "WaterRenderer: waterGeometryPipeline (RT)",
                   "WaterRenderer: waterMainPipeline (RT)", "RT");
-    createVariant(fragRtProfModule, waterGeometryPipelineRtProf, waterMainPipelineRtProf,
+    createVariant(fragRtProfModule, teseRtProfModule,
+                  waterGeometryPipelineRtProf, waterMainPipelineRtProf,
                   "WaterRenderer: waterGeometryPipeline (RT prof)",
                   "WaterRenderer: waterMainPipeline (RT prof)", "RT prof");
 
@@ -855,7 +869,9 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     vertModule = VK_NULL_HANDLE;
     fragNoRtModule = VK_NULL_HANDLE;
     fragRtModule = VK_NULL_HANDLE;
+    teseRtModule = VK_NULL_HANDLE;
     fragRtProfModule = VK_NULL_HANDLE;
+    teseRtProfModule = VK_NULL_HANDLE;
     if (tescModule) tescModule = VK_NULL_HANDLE;
     if (teseModule) teseModule = VK_NULL_HANDLE;
 

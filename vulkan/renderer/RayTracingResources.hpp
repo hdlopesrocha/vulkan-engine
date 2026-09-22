@@ -93,6 +93,11 @@ struct RayTracingParams {
     // z=singleRay (1=Fresnel stochastic reflection-xor-refraction for water,
     //   0=dual-trace reference), w=waterReflections (1 = water reflection rays enabled).
     glm::vec4 rayParams = glm::vec4(1.0f, 0.02f, 1.0f, 1.0f);
+    // Water-region depth source (see Settings::rtWaterDepth):
+    // x = 1: ray-trace the solid bottom from the water TES (world-space
+    // vertical drop); 0 = raster only (solid scene depth + water volume back
+    // face). yzw reserved.
+    glm::vec4 waterDepth = glm::vec4(0.0f);
 };
 
 class RayTracingResources {

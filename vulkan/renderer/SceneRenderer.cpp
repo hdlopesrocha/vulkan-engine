@@ -2416,7 +2416,8 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     // acceleration structures, so builds/repacks are skipped entirely. RT
     // thickness alone cannot trace (it rides the refraction ray).
     rayTracing->setRuntimeEnabled(settings.rtReflections || settings.rtWaterReflections
-                                  || settings.rtRefractions || settings.rtLocalShadows);
+                                  || settings.rtRefractions || settings.rtLocalShadows
+                                  || settings.rtWaterDepth);
     // Solid color pass: bind the non-RT fragment variant while neither solid
     // RT path (reflections / local shadows) is enabled.
     if (mainSolidRenderer)
@@ -2465,5 +2466,9 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
                             settings.rtRayContribMin,
                             (settings.rtSingleRay && !refMode) ? 1.0f : 0.0f,
                             settings.rtWaterReflections ? 1.0f : 0.0f);
+    // Water-region depth source: ray-traced bottom in the water TES vs the
+    // raster path (solid depth + water volume back face). Both return a
+    // world-space vertical drop.
+    p.waterDepth = glm::vec4(settings.rtWaterDepth ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
     rayTracing->updateParams(p, app->getCurrentFrame());
 }

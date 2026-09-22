@@ -37,11 +37,23 @@ layout(location = VARY_HSV) out vec3 fragHSV;
 // zone by that bias. This binding is also used by the fragment stage, so the
 // pass already depends on the solid depth target.
 layout(set = 2, binding = 5) uniform sampler2D solidSceneDepthTex;
-// Water volume back-face depth (set 2, binding 0): direction fallback only.
-// Where no solid bottom stands behind the pixel (very deep / far water) the
-// volume underside still carries the bottom slope, and its constant SDF bias
-// does not change the horizontal gradient direction.
+// Water volume back-face depth (set 2, binding 0): the second raster depth
+// source. Where no solid bottom stands behind the pixel (deep/far water) the
+// volume underside carries the water column; its constant SDF bias only
+// shifts the absolute depth.
 layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex;
+
+#ifdef RT_ENABLED
+// Inline ray-query water depth (optional, toggled by rt.waterDepth.x): trace
+// the view ray to the exact solid bottom and take the world-space vertical
+// drop. Same world-space definition as the raster path, so the shore-wave
+// region zones are identical between modes.
+#include "rt_params.glsl"
+layout(set = 0, binding = 14) uniform accelerationStructureEXT rtTlas;
+layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rt; };
+// Per-op RT profiling (RT_PROFILE variants only): set 0 binding 26 + macros.
+#include "rt_profile.glsl"
+#endif
 
 // World-space direction of DECREASING water depth (toward the shore) from a
 // center raw-depth sample plus two offset samples. Returns vec2(0) when the
@@ -49,7 +61,7 @@ layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex;
 // span, flat bottom).
 vec2 waterShoreDirFromSamples(float rawC, float rawX, float rawY,
                               vec2 uvC, vec2 uvX, vec2 uvY, vec3 surfacePos) {
-    if (rawC >= 0.9999 || rawX >= 0.9999 || rawY >= 0.9999) return vec2(0.0);
+    if (rawC >= 1.0 || rawX >= 1.0 || rawY >= 1.0) return vec2(0.0);
     vec4 wC = ubo.invViewProjection * vec4(uvC * 2.0 - 1.0, rawC, 1.0);
     vec4 wX = ubo.invViewProjection * vec4(uvX * 2.0 - 1.0, rawX, 1.0);
     vec4 wY = ubo.invViewProjection * vec4(uvY * 2.0 - 1.0, rawY, 1.0);
@@ -133,12 +145,21 @@ void main() {
     }
 
     // --- Water depth + shore direction (drive the shore-wave zones) ---
-    // Depth is measured against the SOLID terrain behind the water (the
-    // visible bottom), so depth = 0 at the true waterline and no SDF bias from
-    // the water volume's underside leaks into the zones. The drop is vertical
-    // (world Y difference along the view ray), which keeps the region bands
-    // camera-stable. No solid bottom behind the pixel -> -1 (open/deep water
-    // keeps the full swell).
+    // The region zones read a VERTICAL world-space depth: the drop from the
+    // water surface to the bottom, surfaceY - bottomY. Two interchangeable
+    // sources:
+    //   * Raster (always available): the solid scene depth (the visible
+    //     terrain bottom) plus the water volume back-face depth (the volume
+    //     underside), both reconstructed to world space. The shallowest valid
+    //     drop wins, so the SDF-biased volume underside cannot deepen the
+    //     zones and a missing solid falls back to the volume.
+    //   * RT (rt.waterDepth.x, needs a built TLAS): the same view ray is
+    //     traced to the exact solid bottom and the same vertical drop is
+    //     computed, so the zone definition is identical between modes. On a
+    //     miss the raster value stands.
+    // There is deliberately no "unknown depth" state: the wave field maps a
+    // negative depth to the full deep-ocean swell, whose hard boundary
+    // against measured water printed as a seam in the surface normal/foam.
     //
     // The shore direction is the direction of DECREASING water depth (the
     // negative water-depth gradient): waves and their foam travel toward
@@ -149,20 +170,63 @@ void main() {
     // gradient direction) provides the direction fallback. Finally the
     // configured shoreWaveAngle is used when neither measures a slope.
     vec2 shoreDir = normalize(wp.waveDirection.xy + vec2(1e-5, 0.0));
-    float waterDepth = -1.0;
+    // Raster drop candidates (-1 = not measurable: clear depth, or a solid
+    // sample above the water = terrain in front of the water).
+    float solidDrop = -1.0;
+    float backDrop = -1.0;
+    float solidDepthRaw = 1.0;
     if (haveScreen) {
-        float solidDepthRaw = texture(solidSceneDepthTex, screenUV).r;
-        if (solidDepthRaw < 0.9999) {
+        solidDepthRaw = texture(solidSceneDepthTex, screenUV).r;
+        if (solidDepthRaw < 1.0) {
             vec4 solidWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, solidDepthRaw, 1.0);
             float drop = pos.y - solidWorldH.y / solidWorldH.w;
-            // Only a solid hit BELOW the water surface is a bottom. A hit
-            // above it is terrain in front (bank/cliff occluding the water):
-            // report unknown (-1) so no shore zone, foam band or contact line
-            // is painted there. (Clamping to 0 faked a waterline and flooded
-            // the map with shore foam wherever land stood behind the water.)
-            waterDepth = (drop >= 0.0) ? drop : -1.0;
+            solidDrop = (drop >= 0.0) ? drop : -1.0;
         }
+        float backDepthRaw = texture(waterBackDepthTex, screenUV).r;
+        if (backDepthRaw < 1.0) {
+            vec4 backWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, backDepthRaw, 1.0);
+            backDrop = max(pos.y - backWorldH.y / backWorldH.w, 0.0);
+        }
+    }
+    // Deepest credible bottom of the two world-space drops: the solid terrain
+    // (the visible bed) and the water volume underside (pushed an SDF bias
+    // below the terrain). Taking the deeper of the two keeps the depth
+    // continuous where the solid sample is a bank/edge above the water
+    // (negative drop, ignored) or disappears at range — the volume depth
+    // covers it. -1 candidates (unmeasurable) lose to the valid one.
+    float waterDepth = max(solidDrop, backDrop);
+    bool waterDepthFromRt = false;
+#ifdef RT_ENABLED
+    if (rt.waterDepth.x > 0.5 && rt.debug.y > 0.5) {
+        // Exact solid bottom along the same view ray the raster sample uses.
+        vec3 rayD = normalize(pos - ubo.viewPos.xyz);
+        RT_PROF_BEGIN(rtProfDepth, RT_PROFILE_OP_WATER_DEPTH);
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SCENE,
+                              pos, 0.05, rayD, RT_NO_LIMIT);
+        while (rayQueryProceedEXT(rq)) {}
+        RT_PROF_END(rtProfDepth);
+        if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT &&
+            rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true) == RT_SCENE_INSTANCE) {
+            RT_PROF_HIT(RT_PROFILE_OP_WATER_DEPTH);
+            vec3 hitPos = pos + rayD * rayQueryGetIntersectionTEXT(rq, true);
+            float drop = pos.y - hitPos.y;
+            if (drop >= 0.0) {
+                waterDepth = drop;
+                waterDepthFromRt = true;
+            }
+        }
+    }
+#endif
+    if (waterDepth < 0.0) {
+        // Guard only (base vertex behind the camera, or no measurable raster
+        // depth and an RT miss): stay finite so the wave field never enters
+        // its unknown -> full-deep-swell default. Shallow zone boundary:
+        // finite waves, no deep swell, no contact foam.
+        waterDepth = clamp(wp.waveZones.z, 0.0, max(wp.waveZones.x, 1.0));
+    }
 
+    if (haveScreen) {
         float gradStep = max(wp.waveWarp.w, 0.0);
         if (gradStep > 0.0) {
             vec2 texel = 1.0 / vec2(textureSize(solidSceneDepthTex, 0));
@@ -227,6 +291,36 @@ void main() {
     fragNormal = bumpedN;
     fragBaseNormal = normal;   // undisplaced (flat) interpolated base normal
     fragBasePos = vec4(pos - waveDisplacement * normal, bumpAmp);  // base pos + raw amplitude
+
+    // Refine the raster depth at the DISPLACED screen position. The depth
+    // textures are sampled per pixel, but the depth above was read at the
+    // BASE vertex's UV; at distance a large wave displacement against a
+    // grazing view projects the base vertex tens of pixels from the shaded
+    // fragment, so the base-UV sample can land on shore/sky texels and cut
+    // the raster depth off. The displaced UV is the pixel actually shaded.
+    // The RT path is a world-space ray and does not depend on the UV, so a
+    // successful RT hit is never overwritten.
+    if (!waterDepthFromRt) {
+        vec4 dispClip = ubo.viewProjection * vec4(pos, 1.0);
+        if (dispClip.w > 0.001) {
+            vec2 uvD = clamp(dispClip.xy / dispClip.w * 0.5 + 0.5, 0.001, 0.999);
+            float sd = texture(solidSceneDepthTex, uvD).r;
+            float bd = texture(waterBackDepthTex, uvD).r;
+            float sDrop = -1.0;
+            float bDrop = -1.0;
+            if (sd < 1.0) {
+                vec4 w = ubo.invViewProjection * vec4(uvD * 2.0 - 1.0, sd, 1.0);
+                float drop = pos.y - w.y / w.w;
+                sDrop = (drop >= 0.0) ? drop : -1.0;
+            }
+            if (bd < 1.0) {
+                vec4 w = ubo.invViewProjection * vec4(uvD * 2.0 - 1.0, bd, 1.0);
+                bDrop = max(pos.y - w.y / w.w, 0.0);
+            }
+            float refined = max(sDrop, bDrop);
+            if (refined >= 0.0) waterDepth = refined;
+        }
+    }
     fragWaterDepth = waterDepth;
 
     // Debug: encode displacement as color (normalized against the largest
