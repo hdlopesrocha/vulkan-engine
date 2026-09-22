@@ -800,11 +800,16 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
         shadowIR.bindBuffers(cmd);
         shadowIR.drawCascadeOnly(cmd, cascadeIndex);
     }
-    if (liquidRenderer_) {
-        auto& waterShadowIR = liquidRenderer_->getIndirectRenderer();
-        waterShadowIR.bindBuffers(cmd);
-        waterShadowIR.drawCascadeOnly(cmd, cascadeIndex);
-    }
+    // The water (liquid) surface is deliberately NOT a shadow caster. The
+    // water is transparent to sunlight in this model: the refracted bottom
+    // already gets its own Beer-Lambert attenuation plus the terrain and
+    // vegetation shadows. Drawing the undisplaced water sheet into the CSM
+    // made the lake bed shadow itself — hidden near the camera by the
+    // cascade depth bias, but a hard dark sheet over distant water where the
+    // outer cascades coarsen. The surface does not sample the CSM either
+    // (see water_surface.glsl), so removing the caster is look-neutral for
+    // the water itself. (Its cascade cull above is kept: the same indirect
+    // buffers are re-prepared for the main view in the blur step.)
     if (vegetationEnabled && vegetationRenderer_) {
         const glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
         vegetationRenderer_->drawShadowCascade(app, cmd, ds, camPos, cascadeIndex);
