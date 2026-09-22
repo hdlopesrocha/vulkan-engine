@@ -1622,6 +1622,46 @@ void shadeWaterSurface() {
         outColor = vec4(regionColor, 1.0);
         return;
     }
+    if (dbgMode == DEBUG_MODE_WATER_DEPTH_SOURCES) {
+        // Unambiguous classification of the raster sources:
+        //   RED    (1,0,0) = solid depth target CLEAR at this pixel
+        //   YELLOW (1,1,0) = solid sample ABOVE the water surface (bank)
+        //   otherwise      = real data, scaled to 1/4 of the deep zone so it
+        //                    can never saturate into a flag color:
+        //                    R = solid drop, G = back-face drop, B = final depth
+        float zScale = 4.0 * max(wp.waveZones.x, 1.0);
+        float sd = textureLod(solidSceneDepthTex, screenUV, 0.0).r;
+        if (sd >= 1.0) {
+            outColor = vec4(1.0, 0.0, 0.0, 1.0);
+            return;
+        }
+        vec4 sw = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, sd, 1.0);
+        float sDropSigned = fragPosWorld.y - sw.y / sw.w;
+        if (sDropSigned < 0.0) {
+            outColor = vec4(1.0, 1.0, 0.0, 1.0);
+            return;
+        }
+        float bd = textureLod(waterBackDepthTex, screenUV, 0.0).r;
+        float bDrop = 0.0;
+        if (bd < 1.0) {
+            vec4 bw = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, bd, 1.0);
+            bDrop = max(fragPosWorld.y - bw.y / bw.w, 0.0);
+        }
+        outColor = vec4(clamp(sDropSigned / zScale, 0.0, 1.0),
+                        clamp(bDrop / zScale, 0.0, 1.0),
+                        clamp(fragWaterDepth / zScale, 0.0, 1.0), 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_SCENE_DEPTH) {
+        // Solid scene depth behind the water (linear eye-space / far).
+        // White = clear: the opaque pass wrote no terrain at this pixel.
+        float sd = textureLod(solidSceneDepthTex, screenUV, 0.0).r;
+        float farP = max(ubo.passParams.w, 1.0);
+        outColor = (sd >= 1.0)
+            ? vec4(1.0, 1.0, 1.0, 1.0)
+            : vec4(vec3(clamp(linearizeDepth(sd) / farP, 0.0, 1.0)), 1.0);
+        return;
+    }
 
 
     // Final outputs: only write the composited water color (RGBA)

@@ -34,6 +34,8 @@ const int DEBUG_MODE_CAUSTICS = 26;
 const int DEBUG_MODE_DEPTH_SOURCE = 27;
 const int DEBUG_MODE_WATER_COMPOSE = 28;
 const int DEBUG_MODE_WATER_REGIONS = 29;
+const int DEBUG_MODE_WATER_DEPTH_SOURCES = 30;
+const int DEBUG_MODE_SCENE_DEPTH = 31;
 
 // Views whose displayed value is produced by traced reflection/refraction
 // rays force the full-quality reference path (full-rate + dual-trace) so the

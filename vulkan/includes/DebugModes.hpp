@@ -47,6 +47,8 @@ enum class DebugMode : int {
     DepthSource,          // water only: which branch produced the thickness (must stay budgeted)
     WaterCompose,         // water only: tint / mirror / thickness channels
     WaterRegions,         // water only: thickness-zone region palette (deep/shoal/breaker/foam/line)
+    WaterDepthSources,    // water only: R=solid-scene depth drop, G=water back-face drop, B=final depth (all / zDeep)
+    SceneDepth,           // both: scene depth (solid: own fragment depth; water: solid depth behind), linear/far grayscale
     Count
 };
 
@@ -81,6 +83,8 @@ inline constexpr const char* kDebugModeNames[] = {
     "Water Depth Source",
     "Water Compose",
     "Water Regions",
+    "Water Depth Sources",
+    "Scene Depth",
 };
 
 static_assert(sizeof(kDebugModeNames) / sizeof(kDebugModeNames[0])
