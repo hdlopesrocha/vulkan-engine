@@ -2370,6 +2370,11 @@ public:
                         (settings.rtWaterReflections && anyLayerRefl) ||
                         (settings.rtRefractions && anyLayerRefr) ||
                         settings.rtWaterDepth;
+                    // The async RT pipeline now produces refraction/thickness
+                    // only (its reflection output is retired), so dispatch it
+                    // only when a refraction path can consume it.
+                    const bool waterPipeNeeded =
+                        settings.rtWaterPipeline && settings.rtRefractions && anyLayerRefr;
                     if (this->sceneRenderer->mainLiquidRenderer) {
                         this->sceneRenderer->mainLiquidRenderer->setRtShadingEnabled(waterRtNeeded);
                         // Global path gates delivered via the water render UBO:
@@ -2443,13 +2448,13 @@ public:
                         // DEPTH_STENCIL_ATTACHMENT (VUID layout mismatch)).
                         // Outputs feed NEXT frame's water shading (1-frame
                         // latency, same-queue ordered). Own timestamps (20-21).
-                        // waterRtNeeded (computed above) covers per-layer AND
-                        // global toggles; skip the whole dispatch when no
-                        // enabled ray path can use it.
-                        if (waterRtNeeded &&
+                        // waterPipeNeeded covers the global + per-layer
+                        // refraction gates; skip the dispatch when no pipe
+                        // consumer is enabled (reflection no longer uses it).
+                        if (waterPipeNeeded &&
                             this->sceneRenderer->rayTracing &&
                             this->sceneRenderer->rayTracing->isPipelineReady() &&
-                            settings.rtWaterPipeline && settings.waterEnabled) {
+                            settings.waterEnabled) {
                             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                                 vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 20);
                             this->sceneRenderer->rayTracing->dispatchWaterRT(this, cmd, frameIdx,

@@ -106,12 +106,15 @@ public:
     float rtSelfSkipDist = 0.05f;     // ignore proxy hits closer than this (own-box guard)
     // ── Ray-budget controls (runtime A/B, mirrored into RayTracingParams::rayParams) ──
     // rtRayScale: 0 = full-rate inline rays (reference), 1 = checkerboard
-    //   half-rate (inline trace on even (x+y) pixels only, odd pixels reuse the
-    //   pipeline/sky fallback — ~2x fewer ray queries).
+    //   half-rate (inline trace on even (x+y) pixels only, odd pixels keep the
+    //   sky fallback — ~2x fewer ray queries). Applies to SOLID reflections;
+    //   water reflections always trace full-rate (a skipped mirror is a
+    //   missing mirror) and water refraction is covered by rtSingleRay.
     // rtRayContribMin: skip the inline ray when the lobe contribution is below
     //   this (terrain: blendedRefStrength*Fresnel*(1-rough); water: lobe mix).
     // rtSingleRay: water traces reflection XOR refraction stochastically
-    //   (probability = Fresnel mix) instead of always both (~2x fewer rays);
+    //   (probability = Fresnel mix). Only the REFRACTION lobe honors the cut
+    //   (it recovers from the raster bottom/sky); reflection always traces.
     //   off = dual-trace reference. debugModeForcesRtReference (see
     //   vulkan/includes/DebugModes.hpp) forces reference (dual + full-rate)
     //   for traced-result debug views so diagnostics show full quality.

@@ -963,8 +963,9 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
     // device meta buffer is fragment-read across in-flight generations, so it
     // is published via §3c copies instead).
     // Solids fill slots [0, activeSolidCount_), water volumes global slots
-    // [kWaterProxyStart, kWaterProxyStart + activeWaterCount_); the rest of
-    // each partition stays degenerate (zero-area, never hit).
+    // [kWaterProxyStart, kWaterProxyStart + activeWaterCount_); retired slots
+    // are left untouched (see the staging loop: the BLAS build ranges cover
+    // only the active partitions).
     {
         auto* verts = reinterpret_cast<float*>(
             static_cast<char*>(aabbBuffer_.mappedData) + boxBaseDelta_);
@@ -997,20 +998,16 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
             const float footprint = std::max(b.maxp.x - b.minp.x, b.maxp.z - b.minp.z);
             metas[slot].extra = glm::vec4(std::max(footprint, 0.0f), 0.0f, 0.0f, 0.0f);
         };
-        auto zeroBox = [&](uint32_t slot) {
-            float* v = verts + size_t(slot) * kVertsPerBox * 3;
-            for (int k = 0; k < 24; ++k) v[k] = 0.0f; // degenerate (never hit)
-            metas[slot] = RTProxyMeta{};
-        };
-        for (uint32_t s = 0; s < kMaxSolidProxies; ++s) {
-            if (s < activeSolidCount_) stageBox(s, stagedSolids_[s]);
-            else zeroBox(s);
-        }
-        for (uint32_t w = 0; w < kMaxWaterProxies; ++w) {
-            const uint32_t slot = kWaterProxyStart + w;
-            if (w < activeWaterCount_) stageBox(slot, stagedWaters_[w]);
-            else zeroBox(slot);
-        }
+        // Only the ACTIVE slots are staged. The BLAS build ranges below cover
+        // exactly the active partitions ([0, activeSolidCount_) and
+        // [kWaterProxyStart, +activeWaterCount_)), so stale bytes in retired
+        // slots are never built into an AS nor reachable by a hit. This drops
+        // the old full-capacity zero-fill (16,896 boxes -> ~2.7 MB of host
+        // writes per rebuild) and the full-capacity builds.
+        for (uint32_t s = 0; s < activeSolidCount_; ++s)
+            stageBox(s, stagedSolids_[s]);
+        for (uint32_t w = 0; w < activeWaterCount_; ++w)
+            stageBox(kWaterProxyStart + w, stagedWaters_[w]);
     }
     const VkDeviceSize vertBytes = VkDeviceSize(kMaxProxies) * kVertsPerBox * sizeof(float) * 3;
     const VkDeviceSize idxBytes = VkDeviceSize(kMaxProxies) * kIndicesPerBox * sizeof(uint32_t);
@@ -1096,7 +1093,10 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
         VkAccelerationStructureGeometryTrianglesDataKHR tris = makeBuildTris(
             aabbAddress_, kMaxSolidProxies * kVertsPerBox, aabbAddress_ + vertBytes);
         VkAccelerationStructureGeometryKHR geom = makeGeom(tris);
-        buildBlas(blas_, blasScratchAligned_, geom, kMaxSolidProxies * kTrisPerBox);
+        // Build only the active partition: inactive slots carry no triangles
+        // to traverse or hit, and the builder cost scales with the primitive
+        // count (was: the full 16,384-box capacity on every rebuild).
+        buildBlas(blas_, blasScratchAligned_, geom, activeSolidCount_ * kTrisPerBox);
     }
     {
         VkAccelerationStructureGeometryTrianglesDataKHR tris = makeBuildTris(
@@ -1108,7 +1108,7 @@ bool RayTracingResources::recordBuild(VulkanApp* app, VkCommandBuffer cmd) {
         // distant water bodies stay visible in reflections.
         VkAccelerationStructureGeometryKHR geom = makeGeom(tris);
         geom.flags = 0;
-        buildBlas(blasWater_, waterScratchAligned_, geom, kMaxWaterProxies * kTrisPerBox);
+        buildBlas(blasWater_, waterScratchAligned_, geom, activeWaterCount_ * kTrisPerBox);
     }
     // 3b. Real scene-geometry BLASes (exact chunk triangles for
     // reflection/refraction rays): solids and water mesh built as separate

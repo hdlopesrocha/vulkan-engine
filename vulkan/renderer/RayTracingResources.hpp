@@ -194,10 +194,12 @@ public:
     // stable proxy exists only for secondary rays (§6/§21).
     bool buildIfNeeded(VulkanApp* app, VkCommandBuffer cmd);
 
-    // Dispatch the water RT pipeline (half-res reflection + refraction/
-    // thickness). Reads current water depth + sky (descriptor arrays indexed
-    // by frameIdx), writes the single output pair for NEXT frame's water
-    // shading (1-frame latency, same-queue ordered, no cross-frame hazard).
+    // Dispatch the water RT pipeline (half-res refraction/thickness only).
+    // Reads current water depth + sky (descriptor arrays indexed by frameIdx),
+    // writes the output pair for NEXT frame's water shading (1-frame latency,
+    // same-queue ordered, no cross-frame hazard). The reflection output is
+    // retired (always the invalid marker): the raster water stage resolves
+    // reflections with its inline exact-triangle ray.
     // No-op when !isPipelineReady(). Caller brackets with timestamps.
     void dispatchWaterRT(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIdx,
                          const glm::mat4& invViewProj, const glm::vec3& viewPos);
@@ -326,7 +328,9 @@ private:
     VkDeviceAddress blasWaterAddress_ = 0;
 
     // Water RT outputs (single pair, half-res, GENERAL during dispatch,
-    // SHADER_READ_ONLY otherwise) + sampler.
+    // SHADER_READ_ONLY otherwise) + sampler. reflectImage_ is retained as a
+    // binding-compatibility marker only (written invalid by rgen; the inline
+    // exact-triangle ray is the sole reflection source).
     VkImage reflectImage_ = VK_NULL_HANDLE;
     VmaAllocation reflectAlloc_ = VK_NULL_HANDLE;
     VkDeviceMemory reflectMem_ = VK_NULL_HANDLE;

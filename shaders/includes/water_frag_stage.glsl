@@ -29,24 +29,22 @@ layout(location = VARY_HSV) in vec3 fragHSV;
 
 
 // Water offscreen pass inputs (set 2).
-// Hybrid RT: the legacy solid-360 cubemap (binding 1) is REMOVED. Reflection /
-// refraction come from hardware ray tracing — either the async RT pipeline
-// outputs (bindings 1/2, 1-frame latency, same-queue ordered) or inline ray
-// queries against the proxy TLAS (set 0, binding 14) with the sky equirect
-// (binding 3) as the miss fallback. Precedence per lobe: REFLECTION — the
-// inline ray (full-res exact chunk triangles) wins whenever it runs, so
-// mirror positions match the scene; the pipe covers budget-skipped pixels.
-// REFRACTION — pipe-first (pre-existing): a valid pipe texel
-// (refract.a >= 0.0) is used as-is and its inline ray is skipped; inline
-// runs only for invalid pipe texels (or when the pipeline is off). Ray
-// budget (rt.rayParams): checkerboard half-rate + Fresnel stochastic
-// reflection-xor + contribution gate, each applied only where the pipe
-// covers the pixel; traced-result debug views (debugModeForcesRtReference)
-// force full-rate dual-trace reference.
+// Hybrid RT: reflection comes exclusively from inline ray queries against the
+// exact scene TLAS (set 0, binding 14) with the sky equirect (binding 3) as
+// the miss fallback, refined by the screen-space march on shallow misses.
+// The async RT pipeline no longer produces a reflection (its proxy output was
+// never used as color — rt_water.rgen); binding 1 is retired and always
+// invalid. REFRACTION — pipe-first: a valid pipe texel (retract.a >= 0.0) is
+// used as-is and its inline ray is skipped; inline runs only for invalid pipe
+// texels (or when the pipeline is off), with the screen-space solid sample as
+// the non-RT fallback. Ray budget (rt.rayParams): the Fresnel stochastic
+// single-ray xor cuts the REFRACTION lobe only (recovered from the raster
+// bottom/sky); reflection always traces. Traced-result debug views
+// (debugModeForcesRtReference) force full-rate dual-trace reference.
 // The pass stays decoupled from the solid pass (no solid color/depth reads
 // except the in-trace exact-hit reproject); occlusion resolves at composite.
 layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex; // back-face depth for volume thickness
-layout(set = 2, binding = 1) uniform sampler2D rtReflectTex;   // RT pipeline reflection (rgb, a=valid)
+layout(set = 2, binding = 1) uniform sampler2D rtReflectTex;   // retired RT reflection (always invalid)
 layout(set = 2, binding = 2) uniform sampler2D rtRefractTex;   // RT pipeline refraction (rgb, a=thickness or -1)
 layout(set = 2, binding = 3) uniform sampler2D skyEquirectTex; // sky for RT miss/fallback
 // Screen-space reflection refinement: the solid pass HDR color/depth. The RT

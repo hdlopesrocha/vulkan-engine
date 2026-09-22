@@ -185,7 +185,9 @@ void SettingsWidget::render() {
         TooltipOnHover("Skip the inline ray when the lobe contribution is below this");
         if (ImGui::Checkbox("Water single-ray (Fresnel xor, off = dual reference)", &settings.rtSingleRay)) {
         }
-        TooltipOnHover("Water traces reflection XOR refraction stochastically (probability = Fresnel mix) instead of always both");
+        TooltipOnHover("Water traces reflection XOR refraction stochastically (probability = Fresnel mix).\n"
+                       "Only the REFRACTION ray is cut (it recovers from the raster bottom/sky);\n"
+                       "reflection always traces full-rate. Checkerboard applies to solid reflections.");
 
         ImGui::TextWrapped("Water look (IOR, absorption, depth cap, shore fade) lives in Water Settings, per water layer.");
         ImGui::TextWrapped("CSM stays authoritative: keep RT local shadows OFF unless inspecting contact detail. Proxy BLAS is coarse by design — never use RT for macro terrain shadows.");

@@ -467,9 +467,7 @@ vec4 traceSSR(vec3 origin, vec3 dir, vec3 eyeDir) {
         t += (i < 20) ? 1.0 : max(2.0, t * 0.13);
         vec3 P = origin + dir * t;
         // World-to-clip is viewProjection (see the note at the rtTraceWater
-        // lookup). NOTE: traceSSR is currently uncalled (the inline trace
-        // hits exact triangles directly); kept consistent so a future caller
-        // does not inherit the old inverse-matrix projection bug.
+        // lookup), not its inverse (invViewProjection maps clip->world).
         vec4 clip = ubo.viewProjection * vec4(P, 1.0);
         if (clip.w <= 0.001 || clip.w > farP * 2.0) break;
         vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
@@ -709,14 +707,11 @@ void shadeWaterSurface() {
 #endif
     // === RAY-BUDGET DECISIONS (perf: fewer inline rays, exactness kept) ===
     // Early Fresnel estimate (identical formula to the composite below) for
-    // Fresnel-based single-ray selection. reflMixEst is the lobe weight the
+    // Fresnel-weighted single-ray selection. reflMixEst is the lobe weight the
     // composite will use (uniform flag ? reflectionStrength : Fresnel mix).
-    // Rule: a budget skip (xor/checker) applies ONLY when the async pipeline
-    // covers that lobe's pixel — an uncovered skip would replace an exact
-    // hit with sky. Refraction is pipe-first (pre-existing): its inline ray
-    // runs only for invalid pipe texels, so xor/checker act on the
-    // reflection inline ray (the dominant inline cost); refraction keeps its
-    // pipe-or-trace behavior plus the negligible-lobe gate.
+    // The reflection lobe always traces (a skipped mirror is a missing
+    // mirror); the single-ray xor cuts the REFRACTION lobe, which recovers
+    // from the raster bottom (zero rays) or sky where skipped.
     float fresnelEarlyCurve = pow(1.0 - clamp(dot(viewDir, normal), 0.0, 1.0),
                                  clamp(fresnelPower, 1.0, 8.0));
     float fresnelEarly = clamp(0.02 + 0.98 * fresnelEarlyCurve, 0.0, 1.0);
@@ -726,15 +721,13 @@ void shadeWaterSurface() {
         : mix(fresnelEarly, 1.0, clamp(reflectionStrength, 0.0, 1.0));
     // Blue-noise-ish stochastic selector (FragCoord hash): single-ray mode
     // traces reflection XOR refraction with probability = reflMixEst
-    // (Schlick-weighted) to save a ray on hits. A missed first ray always
-    // recovers the other lobe (bottom via zero-cost raster recovery, mirror
-    // via a real ray), so no pixel ends with two empty lobes ("just
-    // tinted"). Traced-result debug views (see debugModeForcesRtReference)
-    // force dual-trace + full-rate.
+    // (Schlick-weighted) to save a ray on hits. The refraction lobe recovers
+    // from the raster bottom when skipped, so no pixel ends with two empty
+    // lobes ("just tinted"). Traced-result debug views (see
+    // debugModeForcesRtReference) force dual-trace + full-rate.
     float hash01 = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
     bool waterRefMode = false;
     bool waterSingleRay = false;
-    bool waterChecker = false;
     float waterContribMin = 0.02;
 #ifdef RT_ENABLED
     // Ray mask / depth source visualize the budgeted behavior itself, so they
@@ -742,14 +735,20 @@ void shadeWaterSurface() {
     waterRefMode = debugModeForcesRtReference(int(rt.debug.x + 0.5));
     waterSingleRay = (rt.rayParams.z > 0.5) && !waterRefMode;
     waterContribMin = clamp(rt.rayParams.y, 0.0, 1.0);
-    waterChecker = (rt.rayParams.x > 0.5) && !waterRefMode
-        && ((int(gl_FragCoord.x) + int(gl_FragCoord.y)) & 1) == 1;
 #endif
-    bool wantReflInline = true;
+    // Single-ray ray budget (rt.rayParams.z): traces the reflection XOR
+    // refraction stochastically with probability = reflMixEst (Schlick-weight)
+    // to save one full-resolution ray on dual-lobe pixels. Only the
+    // REFRACTION lobe honors the cut: a skipped refraction ray falls back to
+    // the raster bottom (zero rays) or sky, whereas a skipped reflection is a
+    // missing mirror (the shoreline artifact the reflection lobe must not
+    // reintroduce), so reflection always traces. Checkerboard
+    // (rt.rayParams.x) is intentionally NOT applied to water: an invalid
+    // pipe texel has no cover and must trace, and dithering mirrors is
+    // visible. Solid reflections keep their own checkerboard gate.
     bool wantRefrInline = true;
     if (waterSingleRay && enableReflection && enableRefraction && !captureMode) {
         bool pickRefl = hash01 < clamp(reflMixEst, 0.0, 1.0);
-        wantReflInline = pickRefl;
         wantRefrInline = !pickRefl;
     }
     // Per-lobe contribution gates (negligible lobes skip the inline ray and
@@ -761,21 +760,14 @@ void shadeWaterSurface() {
         ? (enableReflection ? (1.0 - reflMixEst) : 1.0) : 0.0;
     // Thick-water policy (user): where the raster back-face measures a real
     // column (genuinely thick volumes — wavy/displaced water reports meters
-    // here), refraction AND reflection always trace: force dual-trace +
-    // full-rate by clearing the xor pick and the checkerboard. Flat/calm
-    // water (no raster column) keeps the budgeted path above. Contrib gates
-    // stay (a negligible lobe is invisible traced or not); reference mode
-    // already forces full, so this is a no-op there.
+    // here), refraction AND reflection always trace: force dual-trace by
+    // clearing the xor pick. Flat/calm water (no raster column) keeps the
+    // budgeted path above. Contrib gates stay (a negligible lobe is invisible
+    // traced or not); reference mode already forces full, so this is a no-op
+    // there.
     if (hasValidBackFace) {
-        wantReflInline = true;
         wantRefrInline = true;
-        waterChecker = false;
     }
-    // Checkerboard pattern flag; reflection additionally keeps full rate
-    // for strong mirrors (reflMixEst > 0.7) so grazing water never dithers.
-    // (Refraction is pipe-first, so its inline fallback is not checker-gated:
-    // an invalid pipe texel has no cover and must trace.)
-    bool reflCheckerSkip = waterChecker && (reflMixEst <= 0.7);
     // Ray-mask for DEBUG_MODE_RAY_MASK (pixel-ratio counter): per lobe 0=disabled,
     // 1=sky fallback, 2=pipe hit, 3=inline traced, 4=skipped by budget gate.
     float refrMask = 0.0;
@@ -829,12 +821,12 @@ void shadeWaterSurface() {
                 pipeRefrValid = true;
             }
         }
-        // Inline fallback: runs only when the pipe cannot cover this texel
-        // (invalid). The xor/checker skips are pipe-gated by construction —
-        // with no pipe cover the exact bottom must be traced, never replaced
-        // with sky. Only the negligible-lobe gate still applies (an
-        // invisible lobe stays skipped). Never black.
-        bool refrBudgetSkip = (refrContribEst < waterContribMin);
+        // Inline fallback: runs when the pipe cannot cover this texel (invalid)
+        // and the single-ray xor did not pick the reflection lobe for it. A
+        // skipped refraction ray falls through to the raster recovery below
+        // (zero-ray raster bottom sample) or the sky fallback, so the exact
+        // bottom is never replaced with black.
+        bool refrBudgetSkip = (refrContribEst < waterContribMin) || !wantRefrInline;
         if (waterRefMode) refrBudgetSkip = false;
         if (!refrResolved && rtReady && rt.toggles.y > 0.5 && !refrBudgetSkip) {
             float refrSceneTMax = hasValidBackFace
@@ -1158,21 +1150,15 @@ void shadeWaterSurface() {
     bool reflResolved = false;
 #ifdef RT_ENABLED
     // Reflection source: the INLINE exact-triangle ray only. The async proxy
-    // pipeline's reflection is never used as the color — its flat-sky/slab
-    // output at the shoreline was the "reflection missing at the shore"
-    // report, and the migration plan deletes the pipeline in Phase 3. The
-    // pipe texel is still sampled so DEBUG_MODE_RAY_MASK keeps reporting pipe
-    // coverage — but only while the layer's Reflection toggle is on.
-    if (enableReflection && usePipe && rt.rayParams.w > 0.5) {
-        vec4 pipeRefl = textureLod(rtReflectTex, screenUV, 0.0);
-        if (pipeRefl.a > 0.5) reflMaskDbg = 2.0;
-    }
+    // pipeline no longer produces a reflection (its flat proxy output was
+    // never used as color — see rt_water.rgen), so the old pipe-coverage
+    // debug sample is gone with it.
     // Budget: only the negligible-contribution gate remains for reflection.
     // A skipped mirror is a missing mirror (exactly the shore bug), so the
-    // xor/checkerboard cuts no longer apply to the reflection lobe: every
-    // pixel that can trace does trace. Reference mode clears the gate.
-    // The per-layer Reflection toggle disables the lobe entirely: no pipe
-    // sample, no inline ray, no SSR fallback (capture mode forces it off too).
+    // xor/checkerboard cuts do not apply to the reflection lobe: every pixel
+    // that can trace does trace. Reference mode clears the gate.
+    // The per-layer Reflection toggle disables the lobe entirely: no inline
+    // ray, no SSR fallback (capture mode forces it off too).
     bool reflBudgetSkip = (reflContribEst < waterContribMin);
     if (waterRefMode) reflBudgetSkip = false;
     bool reflDidTrace = false;
@@ -1209,16 +1195,24 @@ void shadeWaterSurface() {
         }
     }
     if (!reflResolved && reflDidTrace) {
-        // Inline miss: screen-space fallback over this frame's solid render,
-        // so grazing rays that slip over the undisplaced BLAS still show the
-        // reflected scenery (the bank at the waterline) instead of flat sky.
-        // Shallow near-parallel rays are exactly what the march resolves.
-        vec4 ssr = traceSSR(reflOrigin, normalize(reflectDir), normalize(viewDir));
-        if (ssr.a > 0.02) {
-            skyColor = ssr.rgb;
-            reflMaskDbg = 3.0;
+        // Inline miss. Screen-space fallback over this frame's solid render
+        // resolves the shallow near-parallel rays that slip over the
+        // undisplaced BLAS (the bank at the waterline) instead of flat sky —
+        // that march is exactly what the shoreline needs. Steep upward
+        // reflections (dir.y >= 0.5) are genuine sky: the traced sky baseline
+        // is already the correct result and marching tens of steps over clear
+        // depth cannot beat it, so skip the march there.
+        if (reflectDir.y < 0.5) {
+            vec4 ssr = traceSSR(reflOrigin, normalize(reflectDir), normalize(viewDir));
+            if (ssr.a > 0.02) {
+                skyColor = ssr.rgb;
+                reflMaskDbg = 3.0;
+            } else {
+                skyColor = reflHit.rgb; // trace's own sky (miss baseline)
+                reflMaskDbg = 3.0;
+            }
         } else {
-            skyColor = reflHit.rgb; // trace's own sky (miss baseline)
+            skyColor = reflHit.rgb; // steep miss = sky (no march)
             reflMaskDbg = 3.0;
         }
         reflResolved = true;
