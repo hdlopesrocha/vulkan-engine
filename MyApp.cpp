@@ -1756,7 +1756,14 @@ public:
                     depthAtt.imageView = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
                     depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                     depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                    // STORE (not DONT_CARE): the solid depth is sampled later in
+                    // this same frame by the water pass (SSR/shore clamps,
+                    // raster water-region depth) and by debug/preview views.
+                    // DONT_CARE left the sampled image undefined after the color
+                    // pass — on this driver it read as clear over the whole lake
+                    // even though the depth prepass had written the bed, which
+                    // cut the raster water depth off.
+                    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                     depthAtt.clearValue = depthClear;
 
                     VkRenderingInfo ri{};
