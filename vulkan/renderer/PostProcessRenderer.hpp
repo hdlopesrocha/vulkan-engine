@@ -22,9 +22,10 @@ public:
     /// Composite scene + water + brush into the swapchain framebuffer.
     /// Brush color/depth views come from the early brush pass offscreen targets.
     /// waterBodyView is the water refraction+tint body (RGB) with the body
-    /// weight in A; waterColumnView is the measured water depth (m, R16F).
-    /// Together they drive the depth-guided water blur performed in this final
-    /// pass, which blurs only the body so reflections stay sharp.
+    /// weight in A; waterColumnView packs the measured water depth (m, R) and
+    /// the per-material blur radius in pixels (G). Together they drive the
+    /// depth-guided water blur performed in this final pass, which blurs only
+    /// the body so reflections stay sharp.
     /// waterGeomDepthView is the raw water geometry depth buffer (D32).
     /// brushAlpha controls the brush overlay opacity (0.0 = invisible, 1.0 = fully opaque).
     /// brushMode: 0=overlay, 2=PAINT (replace solid texture within brush volume).
@@ -42,9 +43,7 @@ public:
                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
                 const glm::vec3& viewPos,
                 uint32_t frameIdx,
-                VkImageView skyView = VK_NULL_HANDLE,
-                float waterBlurScale = 0.0f,
-                float waterBlurMax = 0.0f);
+                VkImageView skyView = VK_NULL_HANDLE);
 
     bool isReady() const { return pipeline != VK_NULL_HANDLE; }
 

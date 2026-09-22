@@ -59,9 +59,10 @@ struct WaterParamsGPU {
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
     vec4 params3;  // x=noiseTimeSpeed, y=noiseLacunarity, z=specularIntensity, w=specularPower
     vec4 glitterParams; // x=glitterIntensity, yzw=unused
+    vec4 blurParams; // x=enableBlur, y=max radius (pixels), z=radius per meter (px/m), w=unused
     vec4 waveParams; // x=tessNoiseInfluence, y=unused, z=bumpAmplitude, w=depthFalloff
-    vec4 reserved1;  // x=enableReflection, y=enableRefraction, z=legacy enableBlur (unused), w=legacy blurRadius (unused)
-    vec4 reserved2;  // x=legacy blurSamples (unused), y=legacy volumeBlurRate (unused), z=volumeBumpRate, w=uniformReflection
+    vec4 reserved1;  // x=enableReflection, y=enableRefraction, zw=unused
+    vec4 reserved2;  // w=uniformReflection, xyz=unused
     vec4 reserved3;  // x=cube360Available, yzw=unused
     vec4 tessParams; // x=tessNearDist, y=tessFarDist, z=tessMinLevel, w=tessMaxLevel
     vec4 causticColor; // rgb = caustic tint, w = unused

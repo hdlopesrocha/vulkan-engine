@@ -7,9 +7,10 @@ struct WaterParamsGPU {
     glm::vec4 params2;  // x=waterTint, y=noise period (converted to scale at upload), z=noiseOctaves, w=noisePersistence
     glm::vec4 params3;  // x=noiseTimeSpeed, y=noiseLacunarity, z=specularIntensity, w=specularPower
     glm::vec4 glitterParams; // x=glitterIntensity, yzw=unused
+    glm::vec4 blurParams; // x=enableBlur, y=max radius (pixels), z=radius per meter (px/m), w=unused
     glm::vec4 waveParams; // x=tessNoiseInfluence, y=unused, z=bumpAmplitude, w=depthFalloff
-    glm::vec4 reserved1;  // x=enableReflection, y=enableRefraction, z=legacy enableBlur (unused), w=legacy blurRadius (unused)
-    glm::vec4 reserved2;  // x=legacy blurSamples (unused), y=legacy volumeBlurRate (unused), z=volumeBumpRate, w=unused
+    glm::vec4 reserved1;  // x=enableReflection, y=enableRefraction, zw=unused
+    glm::vec4 reserved2;  // w=uniformReflection, xyz=unused
     glm::vec4 reserved3;  // unused (legacy cubemap-available flag removed with Solid360)
     glm::vec4 tessParams; // x=tessNearDist, y=tessFarDist, z=tessMinLevel, w=tessMaxLevel
     glm::vec4 causticColor; // xyz = color of the focused sunlight, w = unused

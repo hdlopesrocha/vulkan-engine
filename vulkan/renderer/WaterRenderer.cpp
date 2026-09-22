@@ -101,12 +101,16 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     gpu.params2 = glm::vec4(p.waterTint, p.noisePeriod, static_cast<float>(p.noiseOctaves), p.noisePersistence);
     gpu.params3 = glm::vec4(p.noiseTimeSpeed, p.noiseLacunarity, p.specularIntensity, p.specularPower);
     gpu.glitterParams = glm::vec4(p.glitterIntensity, 0.0f, 0.0f, 0.0f);
+    gpu.blurParams = glm::vec4(p.enableBlur ? 1.0f : 0.0f,
+                               p.blurRadius,
+                               p.blurDepthScale,
+                               0.0f);
     gpu.waveParams = glm::vec4(p.tessNoiseInfluence, 0.0f, p.bumpAmplitude, p.depthFalloff);
     gpu.reserved1 = glm::vec4(p.enableReflection ? 1.0f : 0.0f,
                               p.enableRefraction ? 1.0f : 0.0f,
-                              p.enableBlur ? 1.0f : 0.0f,
-                              p.blurRadius);
-    gpu.reserved2 = glm::vec4(static_cast<float>(p.blurSamples), p.volumeBlurRate, p.volumeBumpRate, p.uniformReflection ? 1.0f : 0.0f);
+                              0.0f,
+                              0.0f);
+    gpu.reserved2 = glm::vec4(0.0f, 0.0f, 0.0f, p.uniformReflection ? 1.0f : 0.0f);
     gpu.reserved3 = glm::vec4(0.0f); // legacy cubemap-available flag (removed with Solid360)
     gpu.tessParams = glm::vec4(p.tessNearDist, p.tessFarDist, p.tessMinLevel, p.tessMaxLevel);
     gpu.causticColor = glm::vec4(p.causticColor, 0.0f);
@@ -359,7 +363,8 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     // geometry pass):
     //  * body (RGBA16F): RGB = refraction + tint body (pre-reflection),
     //    A = body weight = coverage * (1 - reflection mix).
-    //  * column (R16F): measured water depth (m), the blur radius driver.
+    //  * column (RG16F): measured water depth (m) in R, per-material blur
+    //    radius (px) in G.
     // The final composite blurs the body with a depth-scaled kernel and
     // re-inserts it with its stored weight, so the reflection lobe and the
     // surface effects stay sharp. Both live in SHADER_READ_ONLY between frames
@@ -376,13 +381,13 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
             waterBodyImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
 
-        createImage(VK_FORMAT_R16_SFLOAT,
+        createImage(VK_FORMAT_R16G16_SFLOAT,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
                     waterColumnImages[frameIdx], waterColumnAllocations[frameIdx], waterColumnMemories[frameIdx], waterColumnImageViews[frameIdx]);
         waterColumnImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
         if (waterColumnImages[frameIdx] != VK_NULL_HANDLE && app) {
-            app->transitionImageLayoutLayerForce(waterColumnImages[frameIdx], VK_FORMAT_R16_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            app->transitionImageLayoutLayerForce(waterColumnImages[frameIdx], VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
             app->setImageLayoutTracked(waterColumnImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
             waterColumnImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
@@ -490,7 +495,7 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
             waterBodyImageLayouts[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
     }
     if (columnImg != VK_NULL_HANDLE) {
-        app->recordTransitionImageLayoutLayer(cmd, columnImg, VK_FORMAT_R16_SFLOAT,
+        app->recordTransitionImageLayoutLayer(cmd, columnImg, VK_FORMAT_R16G16_SFLOAT,
             waterColumnImageLayouts[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
     }
 
@@ -533,7 +538,7 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
         waterBodyImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
     if (columnImg != VK_NULL_HANDLE) {
-        app->recordTransitionImageLayoutLayer(cmd, columnImg, VK_FORMAT_R16_SFLOAT,
+        app->recordTransitionImageLayoutLayer(cmd, columnImg, VK_FORMAT_R16G16_SFLOAT,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
         waterColumnImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
@@ -829,7 +834,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 
     // Water render pass has 3 color attachments — need a blend state for each:
     //  0 = water color (RGBA32F), 1 = water body (RGBA16F, body+weight),
-    //  2 = water column (R16F, measured depth in meters).
+    //  2 = water column (RG16F: measured depth in R, blur radius px in G).
     std::array<VkPipelineColorBlendAttachmentState, 3> colorBlendAttachments{};
     for (auto& att : colorBlendAttachments) {
         att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -855,12 +860,12 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Dynamic rendering (no render pass)
     // Attachment 0 = water color (RGBA32F), attachment 1 = water body
     // (RGBA16F: refraction+tint body + body weight), attachment 2 = water
-    // column (R16F: measured depth in meters). The final composite blurs the
+    // column (RG16F: measured depth in R, blur radius in G). The composite blurs the
     // body with a depth-scaled kernel and re-inserts it with its weight.
     std::array<VkFormat, 3> waterColorFmts = {
         VK_FORMAT_R32G32B32A32_SFLOAT,
         VK_FORMAT_R16G16B16A16_SFLOAT,
-        VK_FORMAT_R16_SFLOAT
+        VK_FORMAT_R16G16_SFLOAT
     };
     VkPipelineRenderingCreateInfo pipelineRenderingInfo{};
     pipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
@@ -1033,7 +1038,7 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
         if (waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
             VulkanApp::BatchTransition columnBegin{};
             columnBegin.image     = waterColumnImages[frameIndex];
-            columnBegin.format    = VK_FORMAT_R16_SFLOAT;
+            columnBegin.format    = VK_FORMAT_R16G16_SFLOAT;
             columnBegin.oldLayout = waterColumnImageLayouts[frameIndex];
             columnBegin.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             columnBegin.mipLevels = 1;
@@ -1073,8 +1078,8 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     bodyAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     bodyAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
 
-    // Attachment 2: water column (measured water depth in meters) driving the
-    // composite blur radius.
+    // Attachment 2: water column (measured water depth in R, per-material blur
+    // radius in pixels in G) driving the composite blur.
     VkRenderingAttachmentInfo columnAttachment{};
     columnAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     columnAttachment.imageView = waterColumnImageViews[frameIndex];
@@ -1164,7 +1169,7 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
     if (waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
         VulkanApp::BatchTransition columnEnd{};
         columnEnd.image     = waterColumnImages[frameIndex];
-        columnEnd.format    = VK_FORMAT_R16_SFLOAT;
+        columnEnd.format    = VK_FORMAT_R16G16_SFLOAT;
         columnEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         columnEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         columnEnd.mipLevels = 1;
@@ -1213,7 +1218,7 @@ void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t 
     if (waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
         VulkanApp::BatchTransition columnEnd{};
         columnEnd.image     = waterColumnImages[frameIndex];
-        columnEnd.format    = VK_FORMAT_R16_SFLOAT;
+        columnEnd.format    = VK_FORMAT_R16G16_SFLOAT;
         columnEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         columnEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         columnEnd.mipLevels = 1;

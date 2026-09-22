@@ -30,7 +30,7 @@ void WaterWidget::render() {
     if (!wg.visible()) return;
 
     std::vector<ColumnSection> sections;
-    sections.reserve(22);
+    sections.reserve(23);
 
     sections.push_back({[&]() {
         ImGui::Text("Water Layer");
@@ -357,6 +357,22 @@ void WaterWidget::render() {
     }});
 
     sections.push_back({[&]() {
+        ImGui::Text("Refraction / Tint Blur");
+        ColSeparator();
+        ImGui::TextWrapped("Per-material blur of the refracted bottom + tint in the final pass. "
+                           "The radius grows with the measured water depth up to the max, so "
+                           "deep water softens while the shoreline stays crisp; reflections and "
+                           "surface highlights are never blurred.");
+        CheckboxField("Enable Blur", &layerParams.enableBlur,
+            "Blur this water material's refraction + tint body in the final composite.\n"
+            "Reflections and surface highlights stay sharp.");
+        SliderFloatField("Max Radius (px)", &layerParams.blurRadius, 0.0f, 32.0f, "%.1f",
+            "Blur radius clamp for this material (pixels) at full depth.");
+        SliderFloatField("Depth Rate (px/m)", &layerParams.blurDepthScale, 0.0f, 4.0f, "%.3f",
+            "Blur radius growth per meter of measured water depth (pixels/m).");
+    }});
+
+    sections.push_back({[&]() {
         ImGui::Text("Surface Reflection");
         ColSeparator();
         CheckboxField("Enable Reflection", &layerParams.enableReflection,
@@ -415,8 +431,9 @@ void WaterWidget::render() {
         EstimateSectionHeight(6),   // 17 Volumetric
         EstimateSectionHeight(5),   // 18 Tessellation
         EstimateSectionHeight(9),   // 19 Refraction
-        EstimateSectionHeight(7),   // 20 Surface Reflection
-        EstimateSectionHeight(4),   // 21 Caustics
+        EstimateSectionHeight(4),   // 20 Refraction / Tint Blur
+        EstimateSectionHeight(7),   // 21 Surface Reflection
+        EstimateSectionHeight(4),   // 22 Caustics
     };
     LayoutSections(sections, cachedH, estimates);
 

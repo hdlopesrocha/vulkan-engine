@@ -114,8 +114,9 @@ public:
         return (frameIndex < FRAMES) ? waterBodyImages[frameIndex] : VK_NULL_HANDLE;
     }
     // Water column attachment (color attachment 2 of the water geometry pass):
-    // R16F, R = measured water depth in meters. Drives the depth-guided water
-    // blur radius in the final composite (deeper columns blur more).
+    // RG16F, R = measured water depth (m), G = per-material blur radius in
+    // pixels (0 = crisp, computed from the layer's blur params). Drives the
+    // depth-guided water blur in the final composite.
     VkImageView getWaterColumnView(uint32_t frameIndex) const {
         return (frameIndex < FRAMES) ? waterColumnImageViews[frameIndex] : VK_NULL_HANDLE;
     }
@@ -302,7 +303,8 @@ private:
     std::array<VmaAllocation, FRAMES> waterBodyAllocations = {};
     std::array<VkDeviceMemory, FRAMES> waterBodyMemories = {};
     std::array<VkImageView, FRAMES> waterBodyImageViews = {};
-    // Water column attachment (color attachment 2): measured water depth (m).
+    // Water column attachment (color attachment 2): measured water depth (m)
+    // in R and the per-material blur radius (px) in G.
     std::array<VkImage, FRAMES> waterColumnImages = {};
     std::array<VmaAllocation, FRAMES> waterColumnAllocations = {};
     std::array<VkDeviceMemory, FRAMES> waterColumnMemories = {};

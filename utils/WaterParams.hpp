@@ -36,10 +36,10 @@ struct WaterParams {
     float tintShoreFadeDepth = 0.6f;
     int noiseOctaves = 4;
     float noisePersistence = 0.5f;
-    float noiseLacunarity = 2.0f;
+    float noiseLacunarity = 4.0f;
     // Noise feature PERIOD in world units (the shader converts to spatial
     // scale = 1 / period when packing to the GPU). Larger = broader features.
-    float noisePeriod = 32.0f;
+    float noisePeriod = 4.0f;
     float waterTint = 0.3f;
     float noiseTimeSpeed = 1.0f;
 
@@ -64,23 +64,20 @@ struct WaterParams {
     // Feature toggles
     bool enableReflection = true;
     bool enableRefraction = true;
-    // LEGACY (no effect): the PCF scene-color blur was removed when the water
-    // pass was decoupled from the solid pass (no scene texture to blur).
+    // ── Refraction/tint blur (final-pass, per material) ──
+    // The final composite blurs the refraction + tint BODY with a disc whose
+    // radius grows with the measured water depth (deeper water scatters more,
+    // the shoreline stays crisp). Reflections and surface highlights are never
+    // blurred. Per material, so one water layer can stay crisp while another
+    // blurs. blurRadius is the radius clamp in pixels, blurDepthScale the
+    // growth in pixels per meter of depth.
     bool enableBlur = true;
+    float blurRadius = 8.0f;       // max blur radius (pixels)
+    float blurDepthScale = 0.35f;  // blur growth (pixels per meter of depth)
     // If true, apply `reflectionStrength` uniformly across the surface
     // instead of modulating by Fresnel. Useful for debugging or stylized looks.
     bool uniformReflection = false;
 
-    // LEGACY (no effect, see enableBlur): blur kernel parameters.
-    float blurRadius = 8.0f;    // texel radius of blur kernel
-    int   blurSamples = 4;      // number of blur taps per axis (NxN kernel)
-
-    // Volume depth-based effect transitions
-    // LEGACY (no effect): volume blur was removed; the former volume-bump
-    // ramp is superseded by the thickness-zone wave model (shoal gain, breaker
-    // bump, shallow decay). Kept for API/layout stability.
-    float volumeBlurRate = 0.004f;   // exponential rate: blur ramps with water thickness
-    float volumeBumpRate = 0.05f;  // exponential rate: bump ramps with water thickness
     // Tessellation parameters (noise-adaptive water surface)
     // nearDist: camera distance at which tessellation reaches max level
     float tessNearDist = 128.0f;

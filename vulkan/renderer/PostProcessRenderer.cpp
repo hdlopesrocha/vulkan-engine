@@ -353,9 +353,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                    const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                    const glm::vec3& viewPos,
                                    uint32_t frameIdx,
-                                   VkImageView skyView,
-                                   float waterBlurScale,
-                                   float waterBlurMax) {
+                                   VkImageView skyView) {
     assert(skyView != VK_NULL_HANDLE);
     if (pipeline == VK_NULL_HANDLE) {
         std::cerr << "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping." << std::endl;
@@ -375,8 +373,6 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     ubo.screenSize = glm::vec4(renderWidth, renderHeight, 1.0f / renderWidth, 1.0f / renderHeight);
     ubo.brushAlpha = brushAlpha;
     ubo.brushMode = brushMode;
-    ubo.waterBlurScale = waterBlurScale;
-    ubo.waterBlurMax = waterBlurMax;
 
     void* data;
     data = uniformBuffer.map(0);
@@ -426,8 +422,8 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // Mesh bounding boxes offscreen color + depth
     imageInfos[13] = {linearSampler, bboxColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[14] = {linearSampler, bboxDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    // Water refraction+tint body (RGB + weight A) and measured depth (R16F)
-    // for the depth-guided water blur.
+    // Water refraction+tint body (RGB + weight A) and column (R depth,
+    // G per-material blur radius) for the depth-guided water blur.
     imageInfos[15] = {linearSampler, waterBodyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[16] = {linearSampler, waterColumnView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 

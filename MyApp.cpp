@@ -2905,9 +2905,7 @@ public:
                 invViewProj,
                 glm::vec3(uboStatic.viewPos),
                 frameIdx,
-                skyViewPP,
-                settings.waterBlurEnabled ? settings.waterBlurScale : 0.0f,
-                settings.waterBlurMax);
+                skyViewPP);
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 17);
         }

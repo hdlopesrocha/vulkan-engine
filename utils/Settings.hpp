@@ -123,14 +123,4 @@ public:
     // instead of the separate liquid pass. Default off (old path); consumed
     // by Phase-1b (draw routing + blend pipeline). No effect yet.
     bool waterInMainPass = false;
-
-    // ── Water blur (final composite pass) ──
-    // Depth-guided disc blur of the water REFRACTION + TINT body in
-    // postprocess.frag, driven by the packed water aux attachment (body RGB,
-    // depth in A): deeper water scatters more, the shoreline stays sharp,
-    // reflections and surface highlights are never blurred. Disabled when
-    // waterBlurEnabled is off or waterBlurScale <= 0.
-    bool waterBlurEnabled = true;
-    float waterBlurScale = 0.35f; // blur radius in pixels per meter of depth
-    float waterBlurMax = 8.0f;    // blur radius clamp (pixels)
 };

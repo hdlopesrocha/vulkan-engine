@@ -1497,14 +1497,18 @@ void shadeWaterSurface() {
     // final mix, i.e. coverage * (1 - reflection mix). The composite blurs
     // only this body and re-inserts it with this weight, so the reflection
     // lobe, specular highlights, caustics and foam stay sharp while the
-    // refracted bottom and its tint soften with depth.
-    // column = measured water depth in meters, the blur radius driver
-    // (16F is plenty: the radius is clamped to a few pixels).
+    // refracted bottom and its tint soften.
+    // column (RG) = measured water depth (m) and this material's blur radius
+    // in pixels (0 = crisp). The radius grows with the measured depth up to
+    // the per-material cap, so the blur is per water material (layer).
     float bodyWeight = (enableReflection
         ? clamp(1.0 - mirrorPresence, 0.0, 1.0)
         : 1.0) * clamp(alpha, 0.0, 1.0);
+    float blurPx = (wp.blurParams.x > 0.5)
+        ? clamp(regionDepth * max(wp.blurParams.z, 0.0), 0.0, max(wp.blurParams.y, 0.0))
+        : 0.0;
     outWaterBody = vec4(refractedColor, bodyWeight);
-    outWaterColumn = vec4(min(max(regionDepth, 0.0), 60000.0));
+    outWaterColumn = vec4(min(max(regionDepth, 0.0), 60000.0), blurPx, 0.0, 0.0);
 
     // ── Unified debug views (IDs shared with the solid path) ──
     // Canonical IDs live in includes/debug_modes.glsl (mirror of
