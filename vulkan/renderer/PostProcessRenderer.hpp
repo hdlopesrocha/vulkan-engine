@@ -21,12 +21,17 @@ public:
 
     /// Composite scene + water + brush into the swapchain framebuffer.
     /// Brush color/depth views come from the early brush pass offscreen targets.
+    /// waterBodyView is the water refraction+tint body (RGB) with the body
+    /// weight in A; waterColumnView is the measured water depth (m, R16F).
+    /// Together they drive the depth-guided water blur performed in this final
+    /// pass, which blurs only the body so reflections stay sharp.
     /// waterGeomDepthView is the raw water geometry depth buffer (D32).
     /// brushAlpha controls the brush overlay opacity (0.0 = invisible, 1.0 = fully opaque).
     /// brushMode: 0=overlay, 2=PAINT (replace solid texture within brush volume).
     void render(VulkanApp* app, VkCommandBuffer cmd,
                 VkImageView sceneColorView, VkImageView sceneDepthView,
                 VkImageView waterColorView,
+                VkImageView waterBodyView, VkImageView waterColumnView,
                 VkImageView brushColorView, VkImageView brushDepthView,
                 VkImageView brushBackFaceDepthView,
                 VkImageView waterGeomDepthView,
@@ -37,7 +42,9 @@ public:
                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
                 const glm::vec3& viewPos,
                 uint32_t frameIdx,
-                VkImageView skyView = VK_NULL_HANDLE);
+                VkImageView skyView = VK_NULL_HANDLE,
+                float waterBlurScale = 0.0f,
+                float waterBlurMax = 0.0f);
 
     bool isReady() const { return pipeline != VK_NULL_HANDLE; }
 
@@ -53,10 +60,10 @@ private:
     // buffers (one per frame slot). No-op when !app->useDescriptorBuffer().
     void createDescriptorBuffers(VulkanApp* app);
     void destroyDescriptorBuffers(VulkanApp* app);
-    // Write one frame slot's descriptor-buffer memory (bindings 0-14).
+    // Write one frame slot's descriptor-buffer memory (bindings 0-16).
     // Returns false when the DB path cannot be used (caller falls back).
     bool writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t slot,
-                                     const std::array<VkDescriptorImageInfo, 15>& imageInfos,
+                                     const std::array<VkDescriptorImageInfo, 17>& imageInfos,
                                      const VkDescriptorImageInfo& skyImageInfo,
                                      const VkDescriptorBufferInfo& bufferInfo);
 
@@ -68,11 +75,11 @@ private:
     std::array<TrackedHandle<VkDescriptorSet>, FRAMES_IN_FLIGHT> descriptorSets;
 
     // Descriptor-buffer state (live only when useDescriptorBuffer()).
-    // Layout = descriptorSetLayout (15 bindings: 14 images + 1 UBO).
+    // Layout = descriptorSetLayout (17 bindings: 16 images + 1 UBO).
     std::array<Buffer, FRAMES_IN_FLIGHT> descBuffers_{};
     std::array<VkDeviceAddress, FRAMES_IN_FLIGHT> descAddresses_{};
     VkDeviceSize descSetSize_ = 0;
-    std::array<VkDeviceSize, 15> descBindingOffsets_{};
+    std::array<VkDeviceSize, 17> descBindingOffsets_{};
     bool descReady_ = false;
 
     // Per-frame-slot cache of the last descriptor contents written by render().
@@ -88,9 +95,9 @@ private:
     // vkCmdBindDescriptorBuffersEXT): cache miss triggers direct
     // DescriptorBufferHelper host writes (plain memcpys, no driver validation).
     struct FrameDescriptorSignature {
-        std::array<VkSampler, 15> samplers{};
-        std::array<VkImageView, 15> views{};
-        std::array<VkImageLayout, 15> layouts{};
+        std::array<VkSampler, 17> samplers{};
+        std::array<VkImageView, 17> views{};
+        std::array<VkImageLayout, 17> layouts{};
         VkBuffer uboBuffer = VK_NULL_HANDLE;
         VkDeviceSize uboOffset = 0;
         VkDeviceSize uboRange = 0;

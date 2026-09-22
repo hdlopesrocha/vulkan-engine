@@ -40,6 +40,10 @@ layout(location = VARY_DEBUG) in vec3 fragTessLevel; // tessellation level heat 
 
 #include "includes/ubo.glsl"
 
+// Depth-region water tint ramp: shared by the raster water surface and the
+// water hit-shading inside RT rays (both include this helper).
+#include "includes/water_tint.glsl"
+
 #include "includes/debug_modes.glsl"
 
 #include "includes/textures.glsl"
@@ -50,6 +54,16 @@ layout(set = 1, binding = 1) uniform sampler2D brushBackFaceDepthTex;
 #endif
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
+
+#if WATER_MODE
+// Water aux outputs (color attachments 1 and 2 of the water geometry pass):
+//  body   = refraction + tint body (RGB) and body weight (A: coverage times
+//           the inverse reflection mix), the only part the final composite
+//           blurs — reflections and surface effects stay sharp.
+//  column = measured water depth in meters, the blur radius driver.
+layout(location = FRAG_OUT_WATER_BODY) out vec4 outWaterBody;
+layout(location = FRAG_OUT_WATER_COLUMN) out vec4 outWaterColumn;
+#endif
 
 #include "includes/common.glsl"
 

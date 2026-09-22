@@ -16,6 +16,28 @@ struct WaterParams {
     glm::vec3 shallowColor = glm::vec3(0.1f, 0.4f, 0.5f);
     glm::vec3 deepColor = glm::vec3(0.0f, 0.15f, 0.25f);
     float depthFalloff = 0.1f;
+
+    // ── Depth-region tint (default look) ────────────────────────────────
+    // The water tint is a 5-stop color ramp keyed to the measured water
+    // DEPTH and the shore-wave zone boundaries (zoneShallowDepth /
+    // zoneBreakDepth / zoneDeepDepth): the tint color at a pixel is the
+    // region color of its depth band, smoothly blended across the
+    // boundaries. Region order (shallow → deep): shore line, foam decay
+    // band, breaker line, shoaling band, open ocean. When disabled, the
+    // legacy shallow → deep → ocean ramp (colors above) is used instead.
+    bool regionTintEnabled = true;
+    glm::vec3 regionShoreColor = glm::vec3(0.20f, 0.50f, 0.52f);   // d < zoneShallowDepth
+    glm::vec3 regionShallowColor = glm::vec3(0.10f, 0.40f, 0.50f); // foam decay band
+    glm::vec3 regionBreakerColor = glm::vec3(0.18f, 0.52f, 0.56f); // breaker line
+    glm::vec3 regionShoalColor = glm::vec3(0.03f, 0.20f, 0.32f);   // shoaling band
+    glm::vec3 regionDeepColor = glm::vec3(0.0f, 0.10f, 0.20f);     // open ocean
+    // Boundary blend half-width as a fraction [0..0.5] of the adjacent zone
+    // spans: 0 = hard region edges, 0.5 = fully soft ramp.
+    float regionBlendSoftness = 0.35f;
+    // Water depth (m) over which the tint fades to 0 at the waterline, so
+    // the last water pixels near the shore are transparent and show the
+    // bottom with no tint. 0 = disable the tint shoreline fade.
+    float tintShoreFadeDepth = 0.6f;
     int noiseOctaves = 4;
     float noisePersistence = 0.5f;
     float noiseLacunarity = 2.0f;

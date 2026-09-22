@@ -77,6 +77,22 @@ void SettingsWidget::render() {
             // toggled
         }
         TooltipOnHover("When off, water passes are skipped and only the solid scene is composited");
+        if (ImGui::Checkbox("Water blur (final pass)", &settings.waterBlurEnabled)) {
+            // toggled
+        }
+        TooltipOnHover("Depth-guided disc blur of the water REFRACTION + TINT in the final\n"
+                       "composite (reflections and surface highlights stay sharp).\n"
+                       "Deeper water scatters more, the shoreline stays sharp.\n"
+                       "No effect while 'Water in main pass' is enabled (no aux target).");
+        FieldLabel("Blur radius / m", "Blur radius in pixels per meter of water depth");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Water blur radius", &settings.waterBlurScale, 0.0f, 4.0f, "%.3f");
+        TooltipOnHover("Blur radius in pixels per meter of packed water depth.\n"
+                       "0 disables the blur (same as the checkbox).");
+        FieldLabel("Blur radius max (px)", "Clamp on the depth-scaled blur radius");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Water blur max", &settings.waterBlurMax, 0.0f, 32.0f, "%.1f");
+        TooltipOnHover("Clamp on the depth-scaled blur radius (pixels).");
         if (ImGui::Checkbox("Render Vegetation", &settings.vegetationEnabled)) {
             // toggled
         }

@@ -631,6 +631,9 @@ public:
             wp.tessMaxLevel = 16.0f;
             wp.reflectionStrength = 0.5f;
             wp.fresnelPower = 1.0f;
+            // Keep this demo layer's custom green shallow/deep look: opt out of
+            // the depth-region tint ramp (which owns the default layer).
+            wp.regionTintEnabled = false;
             waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
         }
         {
@@ -652,6 +655,8 @@ public:
             wp.fresnelPower = 1.0f;
             wp.tessMinLevel = 1.0f;
             wp.tessMaxLevel = 1.0f;
+            // Keep this demo layer's black/white tint: opt out of the region ramp.
+            wp.regionTintEnabled = false;
             waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
         }
 
@@ -2874,6 +2879,15 @@ public:
                 settings.waterInMainPass
                     ? sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()
                     : sceneRenderer->mainLiquidRenderer->getWaterDepthView(frameIdx),
+                // Water refraction+tint body (RGB+weight) and measured depth
+                // for the final-pass depth-guided water blur (water-in-main
+                // has no aux targets).
+                settings.waterInMainPass
+                    ? sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()
+                    : sceneRenderer->mainLiquidRenderer->getWaterBodyView(frameIdx),
+                settings.waterInMainPass
+                    ? sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()
+                    : sceneRenderer->mainLiquidRenderer->getWaterColumnView(frameIdx),
                 brushColorView,
                 brushDepthView,
                 brushBackFaceDepthView,
@@ -2890,7 +2904,9 @@ public:
                 invViewProj,
                 glm::vec3(uboStatic.viewPos),
                 frameIdx,
-                skyViewPP);
+                skyViewPP,
+                settings.waterBlurEnabled ? settings.waterBlurScale : 0.0f,
+                settings.waterBlurMax);
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 17);
         }

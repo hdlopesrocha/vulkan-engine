@@ -27,6 +27,8 @@
 // was removed, so they were dropped).
 static VkImageLayout waterDepthImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
 static VkImageLayout waterGeomDepthImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
+static VkImageLayout waterBodyImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
+static VkImageLayout waterColumnImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
 
 WaterRenderer::WaterRenderer() {}
 
@@ -138,6 +140,15 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     gpu.oceanParams = glm::vec4(p.oceanDepthScale, 0.0f, 0.0f, 0.0f);
     gpu.volumetricParams = glm::vec4(p.volumetricStrength, p.volumetricDensity, p.volumetricPhaseG, 0.0f);
     gpu.volumetricColor = glm::vec4(p.volumetricColor, 0.0f);
+    gpu.regionShoreColor = glm::vec4(p.regionShoreColor, 0.0f);
+    gpu.regionShallowColor = glm::vec4(p.regionShallowColor, 0.0f);
+    gpu.regionBreakerColor = glm::vec4(p.regionBreakerColor, 0.0f);
+    gpu.regionShoalColor = glm::vec4(p.regionShoalColor, 0.0f);
+    gpu.regionDeepColor = glm::vec4(p.regionDeepColor, 0.0f);
+    gpu.regionTintParams = glm::vec4(p.regionTintEnabled ? 1.0f : 0.0f,
+                                     p.regionBlendSoftness,
+                                     p.tintShoreFadeDepth,
+                                     0.0f);
     return gpu;
 }
 
@@ -287,6 +298,8 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     for (uint32_t i = 0; i < FRAMES; ++i) {
         waterDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         waterGeomDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        waterBodyImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        waterColumnImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     // Create per-frame scene offscreen render targets (2 sets for 2 frames in flight)
@@ -345,6 +358,39 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         // Back-face depth image will be created by SceneRenderer-owned WaterBackFaceRenderer
     }
 
+    // Water body + column attachments (color attachments 1 and 2 of the water
+    // geometry pass):
+    //  * body (RGBA16F): RGB = refraction + tint body (pre-reflection),
+    //    A = body weight = coverage * (1 - reflection mix).
+    //  * column (R16F): measured water depth (m), the blur radius driver.
+    // The final composite blurs the body with a depth-scaled kernel and
+    // re-inserts it with its stored weight, so the reflection lobe and the
+    // surface effects stay sharp. Both live in SHADER_READ_ONLY between frames
+    // like the water color target.
+    for (uint32_t frameIdx = 0; frameIdx < FRAMES; ++frameIdx) {
+        createImage(VK_FORMAT_R16G16B16A16_SFLOAT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    waterBodyImages[frameIdx], waterBodyAllocations[frameIdx], waterBodyMemories[frameIdx], waterBodyImageViews[frameIdx]);
+        waterBodyImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (waterBodyImages[frameIdx] != VK_NULL_HANDLE && app) {
+            app->transitionImageLayoutLayerForce(waterBodyImages[frameIdx], VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(waterBodyImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            waterBodyImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+
+        createImage(VK_FORMAT_R16_SFLOAT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    waterColumnImages[frameIdx], waterColumnAllocations[frameIdx], waterColumnMemories[frameIdx], waterColumnImageViews[frameIdx]);
+        waterColumnImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (waterColumnImages[frameIdx] != VK_NULL_HANDLE && app) {
+            app->transitionImageLayoutLayerForce(waterColumnImages[frameIdx], VK_FORMAT_R16_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(waterColumnImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            waterColumnImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+    }
+
     // Back-face depth targets are owned/created by SceneRenderer
 
     // NOTE: the per-frame scene-texture descriptor set (waterDepthDescriptorSets) is
@@ -380,6 +426,14 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
         waterGeomDepthAllocations[i] = VK_NULL_HANDLE;
         waterGeomDepthMemories[i] = VK_NULL_HANDLE;
         waterGeomDepthImageViews[i] = VK_NULL_HANDLE;
+        waterBodyImages[i] = VK_NULL_HANDLE;
+        waterBodyAllocations[i] = VK_NULL_HANDLE;
+        waterBodyMemories[i] = VK_NULL_HANDLE;
+        waterBodyImageViews[i] = VK_NULL_HANDLE;
+        waterColumnImages[i] = VK_NULL_HANDLE;
+        waterColumnAllocations[i] = VK_NULL_HANDLE;
+        waterColumnMemories[i] = VK_NULL_HANDLE;
+        waterColumnImageViews[i] = VK_NULL_HANDLE;
     }
     // Back-face depth targets are destroyed by SceneRenderer
 
@@ -419,10 +473,13 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
     // rendering begin/end pass and requires TRANSFER_DST on both images.
     VkImage colorImg = waterDepthImages[frameIndex];
     VkImage depthImg = waterGeomDepthImages[frameIndex];
+    VkImage bodyImg = waterBodyImages[frameIndex];
+    VkImage columnImg = waterColumnImages[frameIndex];
 
-    if (colorImg == VK_NULL_HANDLE && depthImg == VK_NULL_HANDLE) return;
+    if (colorImg == VK_NULL_HANDLE && depthImg == VK_NULL_HANDLE &&
+        bodyImg == VK_NULL_HANDLE && columnImg == VK_NULL_HANDLE) return;
 
-    // Transition both images to TRANSFER_DST_OPTIMAL for the clear.
+    // Transition all images to TRANSFER_DST_OPTIMAL for the clear.
     if (colorImg != VK_NULL_HANDLE) {
         app->recordTransitionImageLayoutLayer(cmd, colorImg, VK_FORMAT_R32G32B32A32_SFLOAT,
             waterDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
@@ -431,14 +488,30 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
         app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT,
             waterGeomDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
     }
+    if (bodyImg != VK_NULL_HANDLE) {
+        app->recordTransitionImageLayoutLayer(cmd, bodyImg, VK_FORMAT_R16G16B16A16_SFLOAT,
+            waterBodyImageLayouts[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
+    }
+    if (columnImg != VK_NULL_HANDLE) {
+        app->recordTransitionImageLayoutLayer(cmd, columnImg, VK_FORMAT_R16_SFLOAT,
+            waterColumnImageLayouts[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
+    }
 
-    // Clear water color to transparent black and depth to 1.0.
+    // Clear water color + body + column to transparent black and depth to 1.0.
     VkClearColorValue clearValue{};
     clearValue.float32[0] = 0.0f; clearValue.float32[1] = 0.0f;
     clearValue.float32[2] = 0.0f; clearValue.float32[3] = 0.0f;
     if (colorImg != VK_NULL_HANDLE) {
         VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdClearColorImage(cmd, colorImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearValue, 1, &range);
+    }
+    if (bodyImg != VK_NULL_HANDLE) {
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, bodyImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearValue, 1, &range);
+    }
+    if (columnImg != VK_NULL_HANDLE) {
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, columnImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearValue, 1, &range);
     }
     if (depthImg != VK_NULL_HANDLE) {
         VkClearDepthStencilValue depthClear{1.0f, 0};
@@ -457,6 +530,16 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
         waterGeomDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
+    if (bodyImg != VK_NULL_HANDLE) {
+        app->recordTransitionImageLayoutLayer(cmd, bodyImg, VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        waterBodyImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    if (columnImg != VK_NULL_HANDLE) {
+        app->recordTransitionImageLayoutLayer(cmd, columnImg, VK_FORMAT_R16_SFLOAT,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        waterColumnImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
 }
 
 VkImageLayout WaterRenderer::getWaterGeomDepthLayout(uint32_t frameIndex) const {
@@ -466,6 +549,24 @@ VkImageLayout WaterRenderer::getWaterGeomDepthLayout(uint32_t frameIndex) const 
 
 void WaterRenderer::setWaterGeomDepthLayout(uint32_t frameIndex, VkImageLayout layout) {
     if (frameIndex < 3) waterGeomDepthImageLayouts[frameIndex] = layout;
+}
+
+VkImageLayout WaterRenderer::getWaterBodyLayout(uint32_t frameIndex) const {
+    if (frameIndex < FRAMES) return waterBodyImageLayouts[frameIndex];
+    return VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+void WaterRenderer::setWaterBodyLayout(uint32_t frameIndex, VkImageLayout layout) {
+    if (frameIndex < FRAMES) waterBodyImageLayouts[frameIndex] = layout;
+}
+
+VkImageLayout WaterRenderer::getWaterColumnLayout(uint32_t frameIndex) const {
+    if (frameIndex < FRAMES) return waterColumnImageLayouts[frameIndex];
+    return VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+void WaterRenderer::setWaterColumnLayout(uint32_t frameIndex, VkImageLayout layout) {
+    if (frameIndex < FRAMES) waterColumnImageLayouts[frameIndex] = layout;
 }
 
 void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<WaterParams>& waterParams) {
@@ -729,8 +830,10 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
 
-    // Water render pass has 1 color attachment — need a blend state for it
-    std::array<VkPipelineColorBlendAttachmentState, 1> colorBlendAttachments{};
+    // Water render pass has 3 color attachments — need a blend state for each:
+    //  0 = water color (RGBA32F), 1 = water body (RGBA16F, body+weight),
+    //  2 = water column (R16F, measured depth in meters).
+    std::array<VkPipelineColorBlendAttachmentState, 3> colorBlendAttachments{};
     for (auto& att : colorBlendAttachments) {
         att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -753,11 +856,19 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 
     // Dynamic rendering (no render pass)
-    VkFormat waterColorFmt = VK_FORMAT_R32G32B32A32_SFLOAT;
+    // Attachment 0 = water color (RGBA32F), attachment 1 = water body
+    // (RGBA16F: refraction+tint body + body weight), attachment 2 = water
+    // column (R16F: measured depth in meters). The final composite blurs the
+    // body with a depth-scaled kernel and re-inserts it with its weight.
+    std::array<VkFormat, 3> waterColorFmts = {
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_FORMAT_R16_SFLOAT
+    };
     VkPipelineRenderingCreateInfo pipelineRenderingInfo{};
     pipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    pipelineRenderingInfo.colorAttachmentCount = 1;
-    pipelineRenderingInfo.pColorAttachmentFormats = &waterColorFmt;
+    pipelineRenderingInfo.colorAttachmentCount = static_cast<uint32_t>(waterColorFmts.size());
+    pipelineRenderingInfo.pColorAttachmentFormats = waterColorFmts.data();
     pipelineRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
     pipelineInfo.pNext = &pipelineRenderingInfo;
     pipelineInfo.renderPass = VK_NULL_HANDLE;
@@ -811,6 +922,9 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 
     VkFormat mainColorFmt = app->getSwapchainImageFormat();
     VkPipelineRenderingCreateInfo mainRenderingInfo = pipelineRenderingInfo;
+    // The water-in-main variant targets the single main solid color attachment
+    // (the aux packing only exists on the offscreen water pass).
+    mainRenderingInfo.colorAttachmentCount = 1;
     mainRenderingInfo.pColorAttachmentFormats = &mainColorFmt;
     mainRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
 
@@ -881,20 +995,28 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex, bool loadExisting) {
     if (getWaterGeometryPipeline() == VK_NULL_HANDLE) return;
     if (frameIndex >= 3) return;
+    // The geometry pipeline declares three color attachments (water color +
+    // body + column), so all must exist to begin the pass.
     if (waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
+    if (waterBodyImages[frameIndex] == VK_NULL_HANDLE || waterBodyImageViews[frameIndex] == VK_NULL_HANDLE) return;
+    if (waterColumnImages[frameIndex] == VK_NULL_HANDLE || waterColumnImageViews[frameIndex] == VK_NULL_HANDLE) return;
 
     activeWaterFrameIndex = frameIndex;
 
-    // Batched begin barriers (single vkCmdPipelineBarrier2 for color+depth;
-    // was: one call per image). Transitions: water color SHADER_READ_ONLY →
-    // COLOR_ATTACHMENT_OPTIMAL (water pipeline writes EVSM output) and water
-    // geometry depth tracked → DEPTH_STENCIL_ATTACHMENT_OPTIMAL (occlusion
-    // testing). Same stage/access mapping as the single transitions; entries
-    // already in the target layout (e.g. depth re-entered with LOAD ops for
-    // the brush-liquid overlay) resolve to no-ops inside the same call.
+    // Batched begin barriers (single vkCmdPipelineBarrier2 for
+    // color+body+column+depth; was: one call per image). Transitions: water
+    // color SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL (water pipeline writes
+    // the composed output), water body SHADER_READ_ONLY →
+    // COLOR_ATTACHMENT_OPTIMAL (refraction+tint body + weight) and water
+    // column SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL (measured depth for
+    // the composite blur), plus water geometry depth tracked →
+    // DEPTH_STENCIL_ATTACHMENT_OPTIMAL (occlusion testing). Same stage/access
+    // mapping as the single transitions; entries already in the target layout
+    // (e.g. depth re-entered with LOAD ops for the brush-liquid overlay)
+    // resolve to no-ops inside the same call.
     {
         std::vector<VulkanApp::BatchTransition> batch;
-        batch.reserve(2);
+        batch.reserve(4);
         VulkanApp::BatchTransition colorBegin{};
         colorBegin.image     = waterDepthImages[frameIndex];
         colorBegin.format    = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -902,6 +1024,24 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
         colorBegin.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         colorBegin.mipLevels = 1;
         batch.push_back(colorBegin);
+        if (waterBodyImages[frameIndex] != VK_NULL_HANDLE) {
+            VulkanApp::BatchTransition bodyBegin{};
+            bodyBegin.image     = waterBodyImages[frameIndex];
+            bodyBegin.format    = VK_FORMAT_R16G16B16A16_SFLOAT;
+            bodyBegin.oldLayout = waterBodyImageLayouts[frameIndex];
+            bodyBegin.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            bodyBegin.mipLevels = 1;
+            batch.push_back(bodyBegin);
+        }
+        if (waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
+            VulkanApp::BatchTransition columnBegin{};
+            columnBegin.image     = waterColumnImages[frameIndex];
+            columnBegin.format    = VK_FORMAT_R16_SFLOAT;
+            columnBegin.oldLayout = waterColumnImageLayouts[frameIndex];
+            columnBegin.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            columnBegin.mipLevels = 1;
+            batch.push_back(columnBegin);
+        }
         if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
             VulkanApp::BatchTransition depthBegin{};
             depthBegin.image     = waterGeomDepthImages[frameIndex];
@@ -924,6 +1064,32 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
 
+    // Attachment 1: water body (refraction+tint body RGB, weight A) for the
+    // composite's depth-guided blur (blurred and re-inserted by weight, so the
+    // reflection stays sharp). Preserved alongside the color target when the
+    // brush-liquid overlay re-enters this pass with LOAD ops.
+    VkRenderingAttachmentInfo bodyAttachment{};
+    bodyAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    bodyAttachment.imageView = waterBodyImageViews[frameIndex];
+    bodyAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    bodyAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    bodyAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    bodyAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
+    // Attachment 2: water column (measured water depth in meters) driving the
+    // composite blur radius.
+    VkRenderingAttachmentInfo columnAttachment{};
+    columnAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    columnAttachment.imageView = waterColumnImageViews[frameIndex];
+    columnAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    columnAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    columnAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    columnAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
+    std::array<VkRenderingAttachmentInfo, 3> colorAttachments = {
+        colorAttachment, bodyAttachment, columnAttachment
+    };
+
     VkRenderingAttachmentInfo depthAttachment{};
     depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     depthAttachment.imageView = waterGeomDepthImageViews[frameIndex];
@@ -945,8 +1111,8 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     renderingInfo.renderArea.offset = {0, 0};
     renderingInfo.renderArea.extent = {renderWidth, renderHeight};
     renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size());
+    renderingInfo.pColorAttachments = colorAttachments.data();
     renderingInfo.pDepthAttachment = &depthAttachment;
 
     vkCmdBeginRendering(cmd, &renderingInfo);
@@ -974,31 +1140,14 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
     endWaterRendering(cmd);
 
     uint32_t frameIndex = activeWaterFrameIndex;
-    if (waterDepthImages[frameIndex] != VK_NULL_HANDLE && appPtr) {
-        // Barrier: transition water color output from COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
-        // after the geometry pass so the forward swapchain pass can sample it.
-        appPtr->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex],
-            VK_FORMAT_R32G32B32A32_SFLOAT,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            1, 0, 1);
-        waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    }
-}
+    if (waterDepthImages[frameIndex] == VK_NULL_HANDLE || !appPtr) return;
 
-void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t frameIndex) {
-    endWaterRendering(cmd);
-    if (!appPtr || waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
-
-    // Batched end barriers (single vkCmdPipelineBarrier2 for color+depth):
-    // water color COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL (sampled
-    // by the composite) together with the water geometry depth
-    // DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL (sampled by
-    // the composite at postprocess binding 7). Was: endWaterGeometryPass plus
-    // a second lone depth transition (two calls). Same mapping as the single
-    // transitions; the geom depth shares the pass boundary, so one call covers
-    // both resources.
+    // Batched end barriers: water color + body + column
+    // COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL (sampled by the
+    // forward swapchain/postprocess pass, which blurs the body using the
+    // packed water column depth).
     std::vector<VulkanApp::BatchTransition> batch;
-    batch.reserve(2);
+    batch.reserve(3);
     VulkanApp::BatchTransition colorEnd{};
     colorEnd.image     = waterDepthImages[frameIndex];
     colorEnd.format    = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -1006,6 +1155,73 @@ void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t 
     colorEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     colorEnd.mipLevels = 1;
     batch.push_back(colorEnd);
+    if (waterBodyImages[frameIndex] != VK_NULL_HANDLE) {
+        VulkanApp::BatchTransition bodyEnd{};
+        bodyEnd.image     = waterBodyImages[frameIndex];
+        bodyEnd.format    = VK_FORMAT_R16G16B16A16_SFLOAT;
+        bodyEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        bodyEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bodyEnd.mipLevels = 1;
+        batch.push_back(bodyEnd);
+    }
+    if (waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
+        VulkanApp::BatchTransition columnEnd{};
+        columnEnd.image     = waterColumnImages[frameIndex];
+        columnEnd.format    = VK_FORMAT_R16_SFLOAT;
+        columnEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        columnEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        columnEnd.mipLevels = 1;
+        batch.push_back(columnEnd);
+    }
+    appPtr->recordTransitionBatch(cmd, batch);
+    waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (waterBodyImages[frameIndex] != VK_NULL_HANDLE)
+        waterBodyImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (waterColumnImages[frameIndex] != VK_NULL_HANDLE)
+        waterColumnImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
+void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t frameIndex) {
+    endWaterRendering(cmd);
+    if (!appPtr || waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
+
+    // Batched end barriers (single vkCmdPipelineBarrier2 for
+    // color+body+column+depth): water color COLOR_ATTACHMENT_OPTIMAL →
+    // SHADER_READ_ONLY_OPTIMAL (sampled by the composite), water body +
+    // column COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    // (depth-guided blur inputs) together with the water geometry depth
+    // DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL (sampled by
+    // the composite at postprocess binding 7). Was: endWaterGeometryPass plus
+    // a second lone depth transition (two calls). Same mapping as the single
+    // transitions; the geom depth shares the pass boundary, so one call covers
+    // all resources.
+    std::vector<VulkanApp::BatchTransition> batch;
+    batch.reserve(4);
+    VulkanApp::BatchTransition colorEnd{};
+    colorEnd.image     = waterDepthImages[frameIndex];
+    colorEnd.format    = VK_FORMAT_R32G32B32A32_SFLOAT;
+    colorEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    colorEnd.mipLevels = 1;
+    batch.push_back(colorEnd);
+    if (waterBodyImages[frameIndex] != VK_NULL_HANDLE) {
+        VulkanApp::BatchTransition bodyEnd{};
+        bodyEnd.image     = waterBodyImages[frameIndex];
+        bodyEnd.format    = VK_FORMAT_R16G16B16A16_SFLOAT;
+        bodyEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        bodyEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bodyEnd.mipLevels = 1;
+        batch.push_back(bodyEnd);
+    }
+    if (waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
+        VulkanApp::BatchTransition columnEnd{};
+        columnEnd.image     = waterColumnImages[frameIndex];
+        columnEnd.format    = VK_FORMAT_R16_SFLOAT;
+        columnEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        columnEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        columnEnd.mipLevels = 1;
+        batch.push_back(columnEnd);
+    }
     if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
         VulkanApp::BatchTransition depthEnd{};
         depthEnd.image     = waterGeomDepthImages[frameIndex];
@@ -1017,6 +1233,10 @@ void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t 
     }
     appPtr->recordTransitionBatch(cmd, batch);
     waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (waterBodyImages[frameIndex] != VK_NULL_HANDLE)
+        waterBodyImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (waterColumnImages[frameIndex] != VK_NULL_HANDLE)
+        waterColumnImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE)
         waterGeomDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }

@@ -279,16 +279,44 @@ void WaterWidget::render() {
     }});
 
     sections.push_back({[&]() {
-        ImGui::Text("Water Color");
+        ImGui::Text("Water Color (Depth Regions)");
         ColSeparator();
-        ColorEdit3Field("Shallow Color", &layerParams.shallowColor.x);
-        ColorEdit3Field("Deep Color", &layerParams.deepColor.x);
-        SliderFloatField("Depth Falloff", &layerParams.depthFalloff, 0.001f, 1.0f);
-        ColorEdit3Field("Ocean Color", &layerParams.oceanColor.x,
-            "Third color stop: deep-ocean tint beyond Ocean Color Start.");
-        SliderFloatField("Ocean Color Start", &layerParams.oceanColorStart, 0.0f, 512.0f, "%.1f");
-        SliderFloatField("Ocean Depth Scale", &layerParams.oceanDepthScale, 1.0f, 512.0f, "%.1f",
-            "Thickness ramp over which the deep tint blends to the ocean color.");
+        CheckboxField("Region Tint Ramp", &layerParams.regionTintEnabled,
+            "Tint the water from the 5 depth-region colors below, keyed to the\n"
+            "wave-zone depths: shore line, foam decay band, breaker line, shoaling\n"
+            "band and open ocean, smoothly blended across the region boundaries.\n"
+            "The ramp follows the measured water depth, so the tint color changes\n"
+            "with the bottom slope. Off = legacy shallow/deep/ocean ramp.");
+        if (layerParams.regionTintEnabled) {
+            ColorEdit3Field("Shore Color", &layerParams.regionShoreColor.x,
+                "Tint at the waterline (depth 0).");
+            ColorEdit3Field("Shallow Color", &layerParams.regionShallowColor.x,
+                "Foam-decay band tint (Zone Shallow Depth .. Zone Break Depth).");
+            ColorEdit3Field("Breaker Color", &layerParams.regionBreakerColor.x,
+                "Breaker-line tint (around Zone Break Depth).");
+            ColorEdit3Field("Shoal Color", &layerParams.regionShoalColor.x,
+                "Shoaling-band tint (Zone Break Depth .. Zone Deep Depth).");
+            ColorEdit3Field("Deep Color", &layerParams.regionDeepColor.x,
+                "Open-ocean tint (at/above Zone Deep Depth).");
+            SliderFloatField("Region Blend", &layerParams.regionBlendSoftness, 0.0f, 0.5f, "%.3f",
+                "Blend softness between region colors, as a fraction of the\n"
+                "adjacent zone spans. 0 = hard region edges, 0.5 = soft ramp.");
+            SliderFloatField("Shore Tint Fade", &layerParams.tintShoreFadeDepth, 0.0f, 8.0f, "%.2f",
+                "Water depth (m) over which the tint fades to 0 at the waterline,\n"
+                "so shore water near the border is transparent and shows the bottom\n"
+                "with no water color. 0 = disable the tint shoreline fade.");
+        } else {
+            ColorEdit3Field("Shallow Color", &layerParams.shallowColor.x);
+            ColorEdit3Field("Deep Color", &layerParams.deepColor.x);
+            ColorEdit3Field("Ocean Color", &layerParams.oceanColor.x,
+                "Third color stop: deep-ocean tint beyond Ocean Color Start.");
+            SliderFloatField("Ocean Color Start", &layerParams.oceanColorStart, 0.0f, 512.0f, "%.1f");
+            SliderFloatField("Ocean Depth Scale", &layerParams.oceanDepthScale, 1.0f, 512.0f, "%.1f",
+                "Thickness ramp over which the deep tint blends to the ocean color.");
+        }
+        SliderFloatField("Depth Falloff", &layerParams.depthFalloff, 0.001f, 1.0f,
+            "Rate at which the tint weight grows with water depth\n"
+            "(applies to both the region and legacy ramps).");
     }});
 
     sections.push_back({[&]() {
@@ -346,7 +374,7 @@ void WaterWidget::render() {
         EstimateSectionHeight(6),
         EstimateSectionHeight(5),
         EstimateSectionHeight(9),
-        EstimateSectionHeight(6),
+        EstimateSectionHeight(12),
         EstimateSectionHeight(7),
         EstimateSectionHeight(5),
     };

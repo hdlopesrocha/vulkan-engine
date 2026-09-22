@@ -513,6 +513,11 @@ vec2 waterDirToEquirectUV(vec3 dir) {
 }
 
 void shadeWaterSurface() {
+    // Default aux outputs: every early-return debug view leaves a defined
+    // value (zeros = no body, no weighted contribution, no measured depth).
+    outWaterBody = vec4(0.0);
+    outWaterColumn = vec4(0.0);
+
     // Get water parameters from SSBO indexed by fragment brushIndex.
     // Brush ids are TERRAIN paint ids (0..N textures) while the water SSBO
     // holds only a few layers: out-of-range ids (e.g. painted shore rings)
@@ -903,10 +908,35 @@ void shadeWaterSurface() {
             }
 #endif
             if (!refrRecovered) {
-                // Sky fallback (also the non-RT path): refracted sky through
-                // the surface, no thickness (back-face raster method covers
-                // thickness). Explicit LOD: per-fragment control flow.
-                sceneColor = textureLod(skyEquirectTex, waterDirToEquirectUV(refrRay), 0.0).rgb;
+                // Non-RT / no-cover fallback, split by RT availability:
+                //  * RT refraction unavailable (non-RT build, RT off, or the
+                //    refraction ray path disabled): recover the bottom in
+                //    screen space — sample the solid pass color at the
+                //    Perlin-distorted UV, exactly like the legacy raster
+                //    water. The reflection lobe below stays the sky fallback,
+                //    so both lobes are still combined by Fresnel/strength.
+                //  * RT available but this pixel was budget-skipped with no
+                //    raster recovery: sample the refracted sky (the exact ray
+                //    was intentionally not cast).
+                bool rtRefrAvailable = false;
+#ifdef RT_ENABLED
+                rtRefrAvailable = rtReady && (rt.toggles.y > 0.5);
+#endif
+                bool refrServed = false;
+                if (!rtRefrAvailable) {
+                    vec2 refrUV = clamp(screenUV + refractionOffset, 0.001, 0.999);
+                    if (textureLod(solidSceneDepthTex, refrUV, 0.0).r < 1.0) {
+                        sceneColor = textureLod(solidSceneColorTex, refrUV, 0.0).rgb;
+                        refrServed = true;
+                    }
+                }
+                if (!refrServed) {
+                    // Sky fallback (also the no-bottom / skipped-ray path):
+                    // refracted sky through the surface, no thickness
+                    // (back-face raster method covers thickness). Explicit
+                    // LOD: per-fragment control flow.
+                    sceneColor = textureLod(skyEquirectTex, waterDirToEquirectUV(refrRay), 0.0).rgb;
+                }
                 if (refrMask == 0.0) refrMask = 1.0;
             }
         }
@@ -1252,26 +1282,45 @@ void shadeWaterSurface() {
     float causticIntensity = wp.causticParams.y;
     float causticSoftness = clamp(wp.causticParams.x, 0.02, 1.0);
 
-    // Tint color ramps shallow → deep with measured water thickness around the
-    // per-layer reference distance (Caustic Depth Scale doubles as the depth
-    // reference here). depthFade above already forces the blend to 0 at the
-    // shoreline, so shallowTint never paints the waterline.
-    float tintDepthScale = max(wp.causticParams.w, 0.0001);
-    float volumeFactor = 1.0 - exp(-waterThickness / tintDepthScale);
+    // Tint color. Region mode (default): 5-stop depth-region ramp keyed to
+    // the shore-wave zone boundaries, so the tint color follows the measured
+    // depth bands (shore line → foam band → breaker line → shoaling band →
+    // open ocean) via the shared waterRegionTint() helper. Legacy mode:
+    // shallow → deep around the Caustic Depth Scale reference, plus the
+    // ocean stop beyond oceanColorStart.
+    bool regionTintEnabled = wp.regionTintParams.x > 0.5;
+    // Depth signal the regions are defined on: the TES-measured vertical
+    // world-space drop (fragWaterDepth, always finite), with the composed
+    // thickness signal as a fallback when the measured value is unusable.
+    float regionDepth = (fragWaterDepth >= 0.0) ? fragWaterDepth : tintDepth;
+    vec3 waterTintColor;
+    if (regionTintEnabled) {
+        waterTintColor = waterRegionTint(wp, regionDepth);
+    } else {
+        float tintDepthScale = max(wp.causticParams.w, 0.0001);
+        float volumeFactor = 1.0 - exp(-waterThickness / tintDepthScale);
+        waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+        // Third color stop: beyond oceanColorStart the tint becomes the
+        // per-layer deep-ocean color (dark blue, independent of the pair).
+        float oceanF = 1.0 - exp(-max(waterThickness - wp.oceanColor.w, 0.0)
+                                  / max(wp.oceanParams.x, 1e-3));
+        waterTintColor = mix(waterTintColor, wp.oceanColor.rgb, oceanF);
+    }
 
-    // Water tint color transitions from shallow → deep depending on volume.
-    vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
-    // Third color stop: beyond oceanColorStart the tint becomes the per-layer
-    // deep-ocean color (dark blue, independent of the shallow/deep pair).
-    float oceanF = 1.0 - exp(-max(waterThickness - wp.oceanColor.w, 0.0)
-                              / max(wp.oceanParams.x, 1e-3));
-    waterTintColor = mix(waterTintColor, wp.oceanColor.rgb, oceanF);
+    // Shoreline tint fade (region-tint mode): the tint weight ramps to exactly
+    // 0 at the waterline over tintShoreFadeDepth meters, so shore water near
+    // the border is transparent and shows the bottom with no water color.
+    // Legacy mode keeps its own depth fade/shore fade (no double fade).
+    float tintShoreFade = 1.0;
+    if (regionTintEnabled && wp.regionTintParams.z > 0.0 && regionDepth > 1e-4) {
+        tintShoreFade = smoothstep(0.0, max(wp.regionTintParams.z, 1e-4), regionDepth);
+    }
 
 // Blend scene color with water tint: depthFade (Depth Falloff over the best
 // depth signal) sets the amount, Water Tint scales it, Transparency caps it
 // (1 = crystal clear keeps the refracted bottom, 0 = fully tintable).
     float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
-    float tintBlend = clamp(depthFade * waterTint, 0.0, tintMax);
+    float tintBlend = clamp(depthFade * waterTint * tintShoreFade, 0.0, tintMax);
     vec3 refractedColor = mix(sceneColor, waterTintColor, tintBlend);
     
     // Mix refracted color with reflection. By default, use Fresnel weighting
@@ -1291,6 +1340,11 @@ void shadeWaterSurface() {
         // angle (polished spheres), 0 = physical Fresnel-only water. Fresnel
         // still shapes partial strengths so low values keep the grazing
         // falloff instead of popping a flat reflection over the whole surface.
+        // RT on/off: skyColor is the traced scene when the RT lobes are
+        // available, else the sky-equirect fallback along the same reflect
+        // direction; refractedColor is the traced Snell bottom with RT on and
+        // the screen-space solid sample with RT off. The SAME Fresnel/strength
+        // weighting composes both cases, so only the lobe sources change.
         float reflMix = uniformReflection
             ? reflectionStrength
             : mix(fresnel, 1.0, clamp(reflectionStrength, 0.0, 1.0));
@@ -1443,12 +1497,34 @@ void shadeWaterSurface() {
     if (thicknessForAlpha > 1e-4 && shoreWidth > 1e-6) {
         alpha *= smoothstep(0.0, shoreWidth, thicknessForAlpha);
     }
+    // In region-tint mode the shoreline tint fade is also a coverage fade:
+    // the last water pixels approaching the border are transparent so the
+    // bottom shows with no water color. Only applied where a real depth
+    // signal exists (flat unmeasurable water keeps the transparency-floor
+    // alpha above); the contact-foam line is re-maxed after, so it survives
+    // the fade.
+    if (regionDepth > 1e-4) alpha *= tintShoreFade;
     // Shoreline contact foam is a surface line, not volume translucency: it
     // must stay visible where the water meets the solid even when the alpha
     // shoreline fade would otherwise erase the last water pixels.
     alpha = max(alpha, clamp(waveField.contact * wp.foamContact.z, 0.0, 1.0));
     if (captureMode) alpha = 1.0;
     outColor = vec4(waterColor, alpha);
+
+    // ── Water aux outputs (color attachments 1 and 2) ──
+    // body (RGB) = the refraction + tint BODY (refractedColor, pre-reflection).
+    // body weight (A) = composite coverage times the body's share of the
+    // final mix, i.e. coverage * (1 - reflection mix). The composite blurs
+    // only this body and re-inserts it with this weight, so the reflection
+    // lobe, specular highlights, caustics and foam stay sharp while the
+    // refracted bottom and its tint soften with depth.
+    // column = measured water depth in meters, the blur radius driver
+    // (16F is plenty: the radius is clamped to a few pixels).
+    float bodyWeight = (enableReflection
+        ? clamp(1.0 - mirrorPresence, 0.0, 1.0)
+        : 1.0) * clamp(alpha, 0.0, 1.0);
+    outWaterBody = vec4(refractedColor, bodyWeight);
+    outWaterColumn = vec4(min(max(regionDepth, 0.0), 60000.0));
 
     // ── Unified debug views (IDs shared with the solid path) ──
     // Canonical IDs live in includes/debug_modes.glsl (mirror of

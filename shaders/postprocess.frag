@@ -21,6 +21,8 @@ layout(set = 0, binding = 5) uniform WaterUBO {
     vec4 screenSize;
     float brushAlpha;
     float brushMode;         // 0=overlay, 2=PAINT (replace solid texture)
+    float waterBlurScale;    // water blur radius (pixels per meter of depth)
+    float waterBlurMax;      // water blur radius clamp (pixels)
 } ubo;
 
 layout(set = 0, binding = 6) uniform sampler2D sceneSkyTex;
@@ -37,6 +39,14 @@ layout(set = 0, binding = 12) uniform sampler2D sdfDepthTex;
 // Mesh bounding boxes offscreen color + depth (own async command buffer / queue).
 layout(set = 0, binding = 13) uniform sampler2D bboxColorTex;
 layout(set = 0, binding = 14) uniform sampler2D bboxDepthTex;
+// Water refraction/tint blur inputs (color attachments 1 and 2 of the water
+// geometry pass):
+//  body   = RGB refraction + tint body (pre-reflection), A = body weight
+//           (coverage times the body's share of the final mix). Only this
+//           body is blurred, so the reflection stays sharp.
+//  column = measured water depth (m), the blur radius driver.
+layout(set = 0, binding = 15) uniform sampler2D waterBodyTex;
+layout(set = 0, binding = 16) uniform sampler2D waterColumnTex;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -87,6 +97,42 @@ void main() {
     // 3. Water on top
     vec4 waterColor = texture(waterColorTex, uv);
     float waterAlpha = waterColor.a;
+    // Depth-guided water blur, performed here in the final pass. Only the
+    // REFRACTION + TINT body (waterBodyTex.rgb) is blurred and re-inserted
+    // with its stored weight (waterBodyTex.a = coverage * body share of the
+    // mix), so the reflection lobe, specular highlights, caustics and foam
+    // stay sharp. The measured water depth (waterColumnTex) scales the disc
+    // radius (deep columns scatter more, the shoreline stays crisp), and a
+    // bilateral depth weight keeps the blur from smearing across depth edges.
+    if (ubo.waterBlurScale > 0.0 && waterAlpha > 0.0) {
+        vec4 bodyCenter = textureLod(waterBodyTex, uv, 0.0);
+        float columnCenter = textureLod(waterColumnTex, uv, 0.0).r;
+        float blurPx = clamp(columnCenter * ubo.waterBlurScale, 0.0, max(ubo.waterBlurMax, 0.0));
+        if (blurPx > 0.5 && bodyCenter.a > 1e-4) {
+            vec2 texel = ubo.screenSize.zw;
+            // 9-tap disc: center + 4 axis at r + 4 diagonal at 0.7r.
+            const vec2 kOffs[8] = vec2[8](
+                vec2( 1.0,  0.0), vec2(-1.0,  0.0), vec2( 0.0,  1.0), vec2( 0.0, -1.0),
+                vec2( 0.7,  0.7), vec2(-0.7,  0.7), vec2( 0.7, -0.7), vec2(-0.7, -0.7));
+            vec3 accBody = bodyCenter.rgb * bodyCenter.a;
+            float wsum = bodyCenter.a;
+            for (int i = 0; i < 8; ++i) {
+                vec2 suv = clamp(uv + kOffs[i] * texel * blurPx, vec2(0.001), vec2(0.999));
+                vec4 s = textureLod(waterBodyTex, suv, 0.0);
+                float columnS = textureLod(waterColumnTex, suv, 0.0).r;
+                // Bilateral depth weight: preserve depth edges (shoreline).
+                float depthW = exp(-abs(columnS - columnCenter) * 0.5);
+                float w = s.a * depthW;
+                accBody += s.rgb * w;
+                wsum += w;
+            }
+            vec3 blurredBody = accBody / max(wsum, 1e-4);
+            // Replace only the body's share of the composed pixel: the
+            // reflection and surface terms in waterColor are untouched.
+            waterColor.rgb = max(waterColor.rgb + bodyCenter.a * (blurredBody - bodyCenter.rgb),
+                                 vec3(0.0));
+        }
+    }
     // Occlusion against solids (and vegetation): the water pass no longer samples
     // the solid depth texture (so it can be recorded/rendered independently of the
     // solid pass), so the depth test against solid geometry is resolved here

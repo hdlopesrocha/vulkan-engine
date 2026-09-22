@@ -58,8 +58,8 @@ void PostProcessRenderer::createSampler(VulkanApp* app) {
 void PostProcessRenderer::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    // Descriptor set layout – 15 bindings (14 image samplers + 1 UBO)
-    std::array<VkDescriptorSetLayoutBinding, 15> bindings{};
+    // Descriptor set layout – 17 bindings (16 image samplers + 1 UBO)
+    std::array<VkDescriptorSetLayoutBinding, 17> bindings{};
 
     for (int i = 0; i < 6; ++i) {
         bindings[i].binding = i;
@@ -120,6 +120,19 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     bindings[14].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[14].descriptorCount = 1;
     bindings[14].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Water refraction+tint body (RGB) + body weight (A) for the
+    // depth-guided water blur.
+    bindings[15].binding = 15;
+    bindings[15].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[15].descriptorCount = 1;
+    bindings[15].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Measured water depth (m, R16F): blur radius driver.
+    bindings[16].binding = 16;
+    bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[16].descriptorCount = 1;
+    bindings[16].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     DescriptorAllocator descAlloc{device, app};
     // Descriptor-buffer path: the layout must carry DESCRIPTOR_BUFFER_BIT_EXT
@@ -184,7 +197,7 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
     VkDescriptorPoolSize poolSizesDesc[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14 * FRAMES_IN_FLIGHT},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16 * FRAMES_IN_FLIGHT},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * FRAMES_IN_FLIGHT}
     };
     descriptorPool = descAlloc.createPool(
@@ -198,8 +211,8 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
 }
 
 // ─── Descriptor Buffers (VK_EXT_descriptor_buffer, Phase 2) ────────────────
-// 3 buffers (one per frame slot). Layout = descriptorSetLayout (15 bindings:
-// 14 images + 1 UBO). Static bindings 0-4, 6-14 are stable per frame slot;
+// 3 buffers (one per frame slot). Layout = descriptorSetLayout (17 bindings:
+// 16 images + 1 UBO). Static bindings 0-4, 6-16 are stable per frame slot;
 // binding 5 holds the UBO device address (written once — per-frame UBO
 // contents stream via memcpy into uniformBuffer, no descriptor update).
 
@@ -239,7 +252,7 @@ void PostProcessRenderer::createDescriptorBuffers(VulkanApp* app) {
         descBuffers_[i] = b;
         descAddresses_[i] = addr;
     }
-    for (uint32_t binding = 0; binding < 15; ++binding) {
+    for (uint32_t binding = 0; binding < 17; ++binding) {
         VkDeviceSize off = 0;
         app->fpGetDescriptorSetLayoutBindingOffsetEXT(device, descriptorSetLayout, binding, &off);
         descBindingOffsets_[binding] = off;
@@ -277,7 +290,7 @@ void PostProcessRenderer::destroyDescriptorBuffers(VulkanApp* app) {
 }
 
 bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t slot,
-                                    const std::array<VkDescriptorImageInfo, 15>& imageInfos,
+                                    const std::array<VkDescriptorImageInfo, 17>& imageInfos,
                                     const VkDescriptorImageInfo& skyImageInfo,
                                     const VkDescriptorBufferInfo& bufferInfo) {
     if (!app || !descReady_ || slot >= FRAMES_IN_FLIGHT) return false;
@@ -299,7 +312,7 @@ bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t s
                              info.sampler, info.imageView, info.imageLayout))
             ok = false;
     };
-    // Static image bindings 0-4, 6-14 (binding 6 = sky).
+    // Static image bindings 0-4, 6-16 (binding 6 = sky).
     for (uint32_t i = 0; i <= 4; ++i) wImg(i, imageInfos[i]);
     wImg(6, skyImageInfo);
     wImg(7, imageInfos[7]);
@@ -310,6 +323,8 @@ bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t s
     wImg(12, imageInfos[12]);
     wImg(13, imageInfos[13]);
     wImg(14, imageInfos[14]);
+    wImg(15, imageInfos[15]);
+    wImg(16, imageInfos[16]);
     // Dynamic binding 5 (UBO): address written once per slot; contents stream
     // via memcpy. vkGetDescriptorEXT forbids VK_WHOLE_SIZE, so the exact range
     // is passed.
@@ -327,6 +342,7 @@ bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t s
 void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                    VkImageView sceneColorView, VkImageView sceneDepthView,
                                    VkImageView waterColorView,
+                                   VkImageView waterBodyView, VkImageView waterColumnView,
                                    VkImageView brushColorView, VkImageView brushDepthView,
                                    VkImageView brushBackFaceDepthView,
                                    VkImageView waterGeomDepthView,
@@ -337,7 +353,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                    const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                    const glm::vec3& viewPos,
                                    uint32_t frameIdx,
-                                   VkImageView skyView) {
+                                   VkImageView skyView,
+                                   float waterBlurScale,
+                                   float waterBlurMax) {
     assert(skyView != VK_NULL_HANDLE);
     if (pipeline == VK_NULL_HANDLE) {
         std::cerr << "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping." << std::endl;
@@ -357,6 +375,8 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     ubo.screenSize = glm::vec4(renderWidth, renderHeight, 1.0f / renderWidth, 1.0f / renderHeight);
     ubo.brushAlpha = brushAlpha;
     ubo.brushMode = brushMode;
+    ubo.waterBlurScale = waterBlurScale;
+    ubo.waterBlurMax = waterBlurMax;
 
     void* data;
     data = uniformBuffer.map(0);
@@ -364,7 +384,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     uniformBuffer.unmap(); // VMA persistent mapping
 
     // Prepare image infos and only write descriptors for valid image views
-    std::array<VkDescriptorImageInfo, 15> imageInfos{};
+    std::array<VkDescriptorImageInfo, 17> imageInfos{};
     {
         static bool diagPrinted = false;
         if (!diagPrinted) {
@@ -406,6 +426,10 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // Mesh bounding boxes offscreen color + depth
     imageInfos[13] = {linearSampler, bboxColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[14] = {linearSampler, bboxDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Water refraction+tint body (RGB + weight A) and measured depth (R16F)
+    // for the depth-guided water blur.
+    imageInfos[15] = {linearSampler, waterBodyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    imageInfos[16] = {linearSampler, waterColumnView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
 
@@ -424,7 +448,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // updates. UBO contents stream via mapped memcpy above. `valid` starts
     // false, so the first frame always writes.
     FrameDescriptorSignature sig;
-    for (int i = 0; i < 15; ++i) {
+    for (int i = 0; i < 17; ++i) {
         if (i == 5) continue; // binding 5 is the UBO, stored separately below
         sig.samplers[i] = imageInfos[i].sampler;
         sig.views[i] = imageInfos[i].imageView;
@@ -440,7 +464,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     FrameDescriptorSignature& cached = descriptorWriteCache[slot];
     // Descriptor-buffer path: cache miss = host vkGetDescriptorEXT writes into
     // the slot's descriptor buffer (no vkUpdateDescriptorSets, no validation).
-    // Static bindings 0-4, 6-14 are stable per slot; binding 5 (UBO address)
+    // Static bindings 0-4, 6-16 are stable per slot; binding 5 (UBO address)
     // is written once and its contents stream via memcpy.
     if (useDescBuf) {
         if (!cached.valid || !cached.matches(sig)) {
@@ -527,6 +551,18 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
             writer.writeImage(currentDs, 14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                               imageInfos[14].sampler, imageInfos[14].imageView,
                               imageInfos[14].imageLayout);
+        }
+        // Water body (binding 15) — depth-guided water blur input
+        if (imageInfos[15].imageView != VK_NULL_HANDLE && imageInfos[15].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[15].sampler, imageInfos[15].imageView,
+                              imageInfos[15].imageLayout);
+        }
+        // Water column depth (binding 16) — blur radius driver
+        if (imageInfos[16].imageView != VK_NULL_HANDLE && imageInfos[16].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 16, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[16].sampler, imageInfos[16].imageView,
+                              imageInfos[16].imageLayout);
         }
 
         writer.flush();

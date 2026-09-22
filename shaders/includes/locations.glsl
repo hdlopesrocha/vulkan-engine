@@ -15,6 +15,10 @@
 #define FRAG_OUT_COLOR 0
 #define FRAG_OUT_NORMAL 1
 #define FRAG_OUT_DEPTH 2
+// Water aux attachments (color attachments 1 and 2 of the water geometry
+// pass): body = refraction+tint color + weight, column = measured depth (m).
+#define FRAG_OUT_WATER_BODY 1
+#define FRAG_OUT_WATER_COLUMN 2
 
 // Inter-stage varying locations.
 // Important: geometry stage input interfaces are limited to 64 components

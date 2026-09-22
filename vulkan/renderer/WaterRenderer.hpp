@@ -102,6 +102,30 @@ public:
     VkImageView getWaterDepthView(uint32_t frameIndex) const { return waterDepthImageViews[frameIndex]; }
     // Depth image view used as the depth/stencil attachment for the water geometry pass
     VkImageView getWaterGeomDepthView(uint32_t frameIndex) const { return waterGeomDepthImageViews[frameIndex]; }
+    // Water body attachment (color attachment 1 of the water geometry pass):
+    // RGBA16F, RGB = refraction + tint body (pre-reflection, sharp), A = body
+    // weight = composite coverage * (1 - reflection mix). The final composite
+    // blurs the body with a depth-scaled kernel and re-inserts it with this
+    // weight, so the reflection lobe and surface effects stay sharp.
+    VkImageView getWaterBodyView(uint32_t frameIndex) const {
+        return (frameIndex < FRAMES) ? waterBodyImageViews[frameIndex] : VK_NULL_HANDLE;
+    }
+    VkImage getWaterBodyImage(uint32_t frameIndex) const {
+        return (frameIndex < FRAMES) ? waterBodyImages[frameIndex] : VK_NULL_HANDLE;
+    }
+    // Water column attachment (color attachment 2 of the water geometry pass):
+    // R16F, R = measured water depth in meters. Drives the depth-guided water
+    // blur radius in the final composite (deeper columns blur more).
+    VkImageView getWaterColumnView(uint32_t frameIndex) const {
+        return (frameIndex < FRAMES) ? waterColumnImageViews[frameIndex] : VK_NULL_HANDLE;
+    }
+    VkImage getWaterColumnImage(uint32_t frameIndex) const {
+        return (frameIndex < FRAMES) ? waterColumnImages[frameIndex] : VK_NULL_HANDLE;
+    }
+    VkImageLayout getWaterBodyLayout(uint32_t frameIndex) const;
+    void setWaterBodyLayout(uint32_t frameIndex, VkImageLayout layout);
+    VkImageLayout getWaterColumnLayout(uint32_t frameIndex) const;
+    void setWaterColumnLayout(uint32_t frameIndex, VkImageLayout layout);
     // Expose the raw water geometry depth image (for layout transitions and sampling)
     VkImage getWaterGeomDepthImage(uint32_t frameIndex) const { return (frameIndex < 3) ? waterGeomDepthImages[frameIndex] : VK_NULL_HANDLE; }
     // Accessors for renderer-tracked layouts (used by widgets to record correct barriers)
@@ -272,6 +296,17 @@ private:
     std::array<VmaAllocation, FRAMES> waterGeomDepthAllocations = {};
     std::array<VkDeviceMemory, FRAMES> waterGeomDepthMemories = {};
     std::array<VkImageView, FRAMES> waterGeomDepthImageViews = {};
+    // Water body attachment (color attachment 1): refraction + tint body (RGB)
+    // and body weight (A, see getWaterBodyView).
+    std::array<VkImage, FRAMES> waterBodyImages = {};
+    std::array<VmaAllocation, FRAMES> waterBodyAllocations = {};
+    std::array<VkDeviceMemory, FRAMES> waterBodyMemories = {};
+    std::array<VkImageView, FRAMES> waterBodyImageViews = {};
+    // Water column attachment (color attachment 2): measured water depth (m).
+    std::array<VkImage, FRAMES> waterColumnImages = {};
+    std::array<VmaAllocation, FRAMES> waterColumnAllocations = {};
+    std::array<VkDeviceMemory, FRAMES> waterColumnMemories = {};
+    std::array<VkImageView, FRAMES> waterColumnImageViews = {};
 
     // Pipelines
     TrackedHandle<VkPipeline> waterGeometryPipeline;

@@ -42,4 +42,12 @@ struct WaterParamsGPU {
     glm::vec4 oceanParams;      // x=ocean depth scale, yzw=unused
     glm::vec4 volumetricParams; // x=strength, y=density, z=Henyey-Greenstein g, w=unused
     glm::vec4 volumetricColor;  // rgb=volumetric scatter tint, a=unused
+
+    // ── Depth-region tint (mirrors utils/WaterParams.hpp) ──
+    glm::vec4 regionShoreColor;   // rgb = tint at the waterline (d < zoneShallow)
+    glm::vec4 regionShallowColor; // rgb = foam-decay-band tint (zoneShallow..zoneBreak)
+    glm::vec4 regionBreakerColor; // rgb = breaker-line tint (around zoneBreak)
+    glm::vec4 regionShoalColor;   // rgb = shoaling-band tint (zoneBreak..zoneDeep)
+    glm::vec4 regionDeepColor;    // rgb = open-ocean tint (d >= zoneDeep)
+    glm::vec4 regionTintParams;   // x=enable region tint, y=blend softness, z=tint shore fade depth (m), w=unused
 };

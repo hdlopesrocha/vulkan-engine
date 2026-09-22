@@ -93,6 +93,14 @@ struct WaterParamsGPU {
     vec4 oceanParams;      // x=ocean depth scale, yzw=unused
     vec4 volumetricParams; // x=strength, y=density, z=Henyey-Greenstein g, w=unused
     vec4 volumetricColor;  // rgb=volumetric scatter tint, a=unused
+
+    // Depth-region tint (mirrors vulkan/ubo/WaterParamsGPU.hpp)
+    vec4 regionShoreColor;   // rgb = tint at the waterline (d < zoneShallow)
+    vec4 regionShallowColor; // rgb = foam-decay-band tint (zoneShallow..zoneBreak)
+    vec4 regionBreakerColor; // rgb = breaker-line tint (around zoneBreak)
+    vec4 regionShoalColor;   // rgb = shoaling-band tint (zoneBreak..zoneDeep)
+    vec4 regionDeepColor;    // rgb = open-ocean tint (d >= zoneDeep)
+    vec4 regionTintParams;   // x=enable region tint, y=blend softness, z=tint shore fade depth (m), w=unused
 };
 
 layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {
