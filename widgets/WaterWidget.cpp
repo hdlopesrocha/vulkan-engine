@@ -1,5 +1,6 @@
 #include "WaterWidget.hpp"
 #include <imgui.h>
+#include <algorithm>
 #include <cfloat>
 #include "components/ColumnLayout.hpp"
 #include "components/ImGuiHelpers.hpp"
@@ -29,7 +30,7 @@ void WaterWidget::render() {
     if (!wg.visible()) return;
 
     std::vector<ColumnSection> sections;
-    sections.reserve(17);
+    sections.reserve(22);
 
     sections.push_back({[&]() {
         ImGui::Text("Water Layer");
@@ -47,6 +48,103 @@ void WaterWidget::render() {
         } else {
             ImGui::TextWrapped("Single water layer (index 0).");
         }
+    }});
+
+    // ── Water depth regions: one subsection per region, ordered deep → shore.
+    // Each subsection carries the region's tint color and the distance/depth
+    // that defines it. The boundaries are the same thickness zones the wave
+    // system uses, so they are the single source of truth for both. ──
+    sections.push_back({[&]() {
+        ImGui::Text("Water Region Tint");
+        ColSeparator();
+        CheckboxField("Region Tint Ramp", &layerParams.regionTintEnabled,
+            "Tint the water from the 5 depth-region colors in the sections below,\n"
+            "ordered deep ocean -> shore. The ramp follows the measured water depth\n"
+            "and blends across the region boundaries. Off = legacy shallow/deep/ocean\n"
+            "ramp configured here.");
+        if (!layerParams.regionTintEnabled) {
+            ColorEdit3Field("Legacy Shallow Color", &layerParams.shallowColor.x);
+            ColorEdit3Field("Legacy Deep Color", &layerParams.deepColor.x);
+            ColorEdit3Field("Legacy Ocean Color", &layerParams.oceanColor.x,
+                "Third color stop: deep-ocean tint beyond Ocean Color Start.");
+            SliderFloatField("Ocean Color Start", &layerParams.oceanColorStart, 0.0f, 512.0f, "%.1f");
+            SliderFloatField("Ocean Depth Scale", &layerParams.oceanDepthScale, 1.0f, 512.0f, "%.1f",
+                "Thickness ramp over which the deep tint blends to the ocean color.");
+        }
+        SliderFloatField("Region Blend", &layerParams.regionBlendSoftness, 0.0f, 0.5f, "%.3f",
+            "Blend softness between region colors, as a fraction of the adjacent\n"
+            "zone spans. 0 = hard region edges, 0.5 = soft ramp.");
+        SliderFloatField("Depth Falloff", &layerParams.depthFalloff, 0.001f, 1.0f,
+            "Rate at which the tint weight grows with water depth\n"
+            "(applies to both the region and legacy ramps).");
+    }});
+
+    sections.push_back({[&]() {
+        ImGui::Text("Region 1: Deep Ocean");
+        ColSeparator();
+        const float zDeep = std::max(layerParams.zoneDeepDepth, 1.0f);
+        ImGui::TextDisabled("Depth: %.1f m and deeper", zDeep);
+        ColorEdit3Field("Deep Color", &layerParams.regionDeepColor.x,
+            "Open-ocean tint from the deep start depth upward.");
+        SliderFloatField("Deep Starts At (m)", &layerParams.zoneDeepDepth, 1.0f, 1024.0f, "%.1f",
+            "Water depth at/above which the deep-ocean region (and its tint) starts.\n"
+            "Also the depth of the full-strength open-ocean wave swell.");
+    }});
+
+    sections.push_back({[&]() {
+        ImGui::Text("Region 2: Shoaling");
+        ColSeparator();
+        const float zDeep = std::max(layerParams.zoneDeepDepth, 1.0f);
+        const float zBreak = std::min(std::max(layerParams.zoneBreakDepth, 0.0f), zDeep);
+        ImGui::TextDisabled("Depth: %.1f - %.1f m", zBreak, zDeep);
+        ColorEdit3Field("Shoal Color", &layerParams.regionShoalColor.x,
+            "Shoaling-band tint between the break start depth and the deep start depth.");
+        SliderFloatField("Break Starts At (m)", &layerParams.zoneBreakDepth, 1.0f, 512.0f, "%.1f",
+            "Water depth at/above which the shoaling region starts. The breaker\n"
+            "line sits at this depth (waves crash and foam is born around it).");
+    }});
+
+    sections.push_back({[&]() {
+        ImGui::Text("Region 3: Breaker Line");
+        ColSeparator();
+        const float zDeep = std::max(layerParams.zoneDeepDepth, 1.0f);
+        const float zBreak = std::min(std::max(layerParams.zoneBreakDepth, 0.0f), zDeep);
+        ImGui::TextDisabled("Depth: %.1f m +/- %.1f m", zBreak,
+                            std::max(layerParams.breakerWidth, 0.0f));
+        ColorEdit3Field("Breaker Color", &layerParams.regionBreakerColor.x,
+            "Tint of the breaker line at the break start depth above.");
+        SliderFloatField("Breaker Half-Width (m)", &layerParams.breakerWidth, 0.1f, 128.0f, "%.1f",
+            "Depth half-width of the breaker line band and of the breaker\n"
+            "amplitude bump around the break start depth.");
+    }});
+
+    sections.push_back({[&]() {
+        ImGui::Text("Region 4: Foam Band");
+        ColSeparator();
+        const float zDeep = std::max(layerParams.zoneDeepDepth, 1.0f);
+        const float zBreak = std::min(std::max(layerParams.zoneBreakDepth, 0.0f), zDeep);
+        const float zShallow = std::min(std::max(layerParams.zoneShallowDepth, 0.0f), zBreak);
+        ImGui::TextDisabled("Depth: %.1f - %.1f m", zShallow, zBreak);
+        ColorEdit3Field("Shallow Color", &layerParams.regionShallowColor.x,
+            "Foam-decay band tint between the shallow start depth and the break start depth.");
+        SliderFloatField("Shallow Starts At (m)", &layerParams.zoneShallowDepth, 0.0f, 256.0f, "%.1f",
+            "Water depth at/above which the foam band starts; below it only the\n"
+            "residual shore line wave remains.");
+    }});
+
+    sections.push_back({[&]() {
+        ImGui::Text("Region 5: Shore Line");
+        ColSeparator();
+        const float zDeep = std::max(layerParams.zoneDeepDepth, 1.0f);
+        const float zBreak = std::min(std::max(layerParams.zoneBreakDepth, 0.0f), zDeep);
+        const float zShallow = std::min(std::max(layerParams.zoneShallowDepth, 0.0f), zBreak);
+        ImGui::TextDisabled("Depth: 0 - %.1f m", zShallow);
+        ColorEdit3Field("Shore Color", &layerParams.regionShoreColor.x,
+            "Tint at the waterline (depth 0, fading in over the tint fade below).");
+        SliderFloatField("Tint Fade (m)", &layerParams.tintShoreFadeDepth, 0.0f, 8.0f, "%.2f",
+            "Water depth over which the tint fades to 0 at the waterline, so shore\n"
+            "water near the border is transparent and shows the bottom with no water\n"
+            "color. 0 = disable the tint shoreline fade.");
     }});
 
     sections.push_back({[&]() {
@@ -104,17 +202,11 @@ void WaterWidget::render() {
     }});
 
     sections.push_back({[&]() {
-        ImGui::Text("Wave Zones (Thickness)");
+        ImGui::Text("Wave Shaping (by Zone)");
         ColSeparator();
-        ImGui::TextWrapped("Waves are shaped by the measured water thickness: deep ocean swell above "
-                           "Zone Deep, shoaling and breakers toward Zone Break, foam and a decaying "
-                           "line wave below it, ending at the waterline.");
-        SliderFloatField("Zone Deep Depth", &layerParams.zoneDeepDepth, 1.0f, 1024.0f, "%.1f",
-            "Water thickness at/above which the open-ocean swell is at full strength.");
-        SliderFloatField("Zone Break Depth", &layerParams.zoneBreakDepth, 1.0f, 512.0f, "%.1f",
-            "Breaker line: waves crash and foam is born around this thickness.");
-        SliderFloatField("Zone Shallow Depth", &layerParams.zoneShallowDepth, 0.0f, 256.0f, "%.1f",
-            "Below this thickness only the residual shore line wave remains.");
+        ImGui::TextWrapped("Waves are shaped by the measured water thickness. The zone depth "
+                           "boundaries are edited in the Region sections above (deep, break, "
+                           "shallow); these controls shape the swell within them.");
         SliderFloatField("Shoal Gain", &layerParams.waveShoalGain, 0.0f, 4.0f, "%.2f",
             "Amplitude gain from the deep zone toward the breaker line.");
         SliderFloatField("Shoal Speed Drop", &layerParams.waveShoalSpeed, 0.0f, 1.0f, "%.2f",
@@ -125,7 +217,7 @@ void WaterWidget::render() {
             "Residual shore line wave height fraction below the shallow zone.");
         SliderFloatField("Height Falloff", &layerParams.waveHeightFalloff, 0.0f, 4.0f, "%.3f",
             "Global depth taper of the wave height for ALL waves:\n"
-            "pow(depth / Zone Deep, falloff), so the height decreases\n"
+            "pow(depth / Deep Starts At, falloff), so the height decreases\n"
             "from full in the deep zone to 0 at the waterline.\n"
             "0 = disabled (the zone envelope alone shapes the height).");
     }});
@@ -135,8 +227,6 @@ void WaterWidget::render() {
         ColSeparator();
         SliderFloatField("Breaker Amplitude", &layerParams.breakerAmplitude, 0.0f, 3.0f, "%.2f",
             "Extra crest height concentrated at the breaker line.");
-        SliderFloatField("Breaker Width", &layerParams.breakerWidth, 0.1f, 128.0f, "%.1f",
-            "Depth half-width of the breaker amplitude bump.");
         SliderFloatField("Breaker Curl", &layerParams.breakerCurl, -0.9f, 0.9f, "%.3f",
             "Forward-leaning lip of the breaking crest (profile skew).\n"
             "Sign flips the lean direction, 0 = symmetric crest.");
@@ -279,47 +369,6 @@ void WaterWidget::render() {
     }});
 
     sections.push_back({[&]() {
-        ImGui::Text("Water Color (Depth Regions)");
-        ColSeparator();
-        CheckboxField("Region Tint Ramp", &layerParams.regionTintEnabled,
-            "Tint the water from the 5 depth-region colors below, keyed to the\n"
-            "wave-zone depths: shore line, foam decay band, breaker line, shoaling\n"
-            "band and open ocean, smoothly blended across the region boundaries.\n"
-            "The ramp follows the measured water depth, so the tint color changes\n"
-            "with the bottom slope. Off = legacy shallow/deep/ocean ramp.");
-        if (layerParams.regionTintEnabled) {
-            ColorEdit3Field("Shore Color", &layerParams.regionShoreColor.x,
-                "Tint at the waterline (depth 0).");
-            ColorEdit3Field("Shallow Color", &layerParams.regionShallowColor.x,
-                "Foam-decay band tint (Zone Shallow Depth .. Zone Break Depth).");
-            ColorEdit3Field("Breaker Color", &layerParams.regionBreakerColor.x,
-                "Breaker-line tint (around Zone Break Depth).");
-            ColorEdit3Field("Shoal Color", &layerParams.regionShoalColor.x,
-                "Shoaling-band tint (Zone Break Depth .. Zone Deep Depth).");
-            ColorEdit3Field("Deep Color", &layerParams.regionDeepColor.x,
-                "Open-ocean tint (at/above Zone Deep Depth).");
-            SliderFloatField("Region Blend", &layerParams.regionBlendSoftness, 0.0f, 0.5f, "%.3f",
-                "Blend softness between region colors, as a fraction of the\n"
-                "adjacent zone spans. 0 = hard region edges, 0.5 = soft ramp.");
-            SliderFloatField("Shore Tint Fade", &layerParams.tintShoreFadeDepth, 0.0f, 8.0f, "%.2f",
-                "Water depth (m) over which the tint fades to 0 at the waterline,\n"
-                "so shore water near the border is transparent and shows the bottom\n"
-                "with no water color. 0 = disable the tint shoreline fade.");
-        } else {
-            ColorEdit3Field("Shallow Color", &layerParams.shallowColor.x);
-            ColorEdit3Field("Deep Color", &layerParams.deepColor.x);
-            ColorEdit3Field("Ocean Color", &layerParams.oceanColor.x,
-                "Third color stop: deep-ocean tint beyond Ocean Color Start.");
-            SliderFloatField("Ocean Color Start", &layerParams.oceanColorStart, 0.0f, 512.0f, "%.1f");
-            SliderFloatField("Ocean Depth Scale", &layerParams.oceanDepthScale, 1.0f, 512.0f, "%.1f",
-                "Thickness ramp over which the deep tint blends to the ocean color.");
-        }
-        SliderFloatField("Depth Falloff", &layerParams.depthFalloff, 0.001f, 1.0f,
-            "Rate at which the tint weight grows with water depth\n"
-            "(applies to both the region and legacy ramps).");
-    }});
-
-    sections.push_back({[&]() {
         ImGui::Text("Surface Reflection");
         ColSeparator();
         CheckboxField("Enable Reflection", &layerParams.enableReflection,
@@ -360,23 +409,28 @@ void WaterWidget::render() {
 
     static std::vector<float> cachedH;
     const std::vector<float> estimates = {
-        EstimateSectionHeight(3),
-        EstimateSectionHeight(6),
-        EstimateSectionHeight(5),
-        EstimateSectionHeight(5),
-        EstimateSectionHeight(9),
-        EstimateSectionHeight(7),
-        EstimateSectionHeight(5),
-        EstimateSectionHeight(11),
-        EstimateSectionHeight(4),
-        EstimateSectionHeight(6),
-        EstimateSectionHeight(5),
-        EstimateSectionHeight(6),
-        EstimateSectionHeight(5),
-        EstimateSectionHeight(9),
-        EstimateSectionHeight(12),
-        EstimateSectionHeight(7),
-        EstimateSectionHeight(5),
+        EstimateSectionHeight(3),   // 0  Water Layer
+        EstimateSectionHeight(6),   // 1  Water Region Tint (+ legacy when off)
+        EstimateSectionHeight(3),   // 2  Region 1: Deep Ocean
+        EstimateSectionHeight(3),   // 3  Region 2: Shoaling
+        EstimateSectionHeight(3),   // 4  Region 3: Breaker Line
+        EstimateSectionHeight(3),   // 5  Region 4: Foam Band
+        EstimateSectionHeight(3),   // 6  Region 5: Shore Line
+        EstimateSectionHeight(6),   // 7  Shore Waves
+        EstimateSectionHeight(5),   // 8  Cross Swell
+        EstimateSectionHeight(5),   // 9  Crest Detail
+        EstimateSectionHeight(6),   // 10 Wave Shaping (by Zone)
+        EstimateSectionHeight(6),   // 11 Breakers
+        EstimateSectionHeight(5),   // 12 Organic Mask
+        EstimateSectionHeight(11),  // 13 Foam
+        EstimateSectionHeight(4),   // 14 Contact Foam
+        EstimateSectionHeight(6),   // 15 Foam Noise
+        EstimateSectionHeight(5),   // 16 Noise Detail
+        EstimateSectionHeight(6),   // 17 Volumetric
+        EstimateSectionHeight(5),   // 18 Tessellation
+        EstimateSectionHeight(9),   // 19 Refraction
+        EstimateSectionHeight(7),   // 20 Surface Reflection
+        EstimateSectionHeight(5),   // 21 Caustics
     };
     LayoutSections(sections, cachedH, estimates);
 
