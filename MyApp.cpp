@@ -809,6 +809,8 @@ public:
         setupVegetationTextures();
         setupTextures();
 
+        // H9: the water offscreen targets render at Settings::waterRenderScale.
+        sceneRenderer->setWaterRenderScale(settings.waterRenderScale);
         sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
 
         // Re-wire impostors now that VegetationRenderer::init() has stored the render pass.
@@ -1176,6 +1178,19 @@ public:
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
+
+        // H9: a water render-scale change rebuilds the water-side offscreen
+        // targets (color/body/column, geometry depth, back-face depth). They are
+        // written on the water and brush-liquid queues and read by the composite
+        // on the graphics queue, so a graphics-queue-scoped wait would not cover
+        // every consumer — this is the "major resource rebuild" case where
+        // AGENTS.md allows a device idle. It runs once, on the frame the user
+        // changes the slider.
+        if (sceneRenderer && sceneRenderer->waterRenderScale() != settings.waterRenderScale) {
+            vkDeviceWaitIdle(getDevice());
+            sceneRenderer->setWaterRenderScale(settings.waterRenderScale);
+            sceneRenderer->recreateWaterTargets(this, getWidth(), getHeight());
+        }
 
         uint32_t frameIdx = getCurrentFrame();
 

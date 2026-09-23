@@ -80,6 +80,9 @@ public:
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
     std::unique_ptr<DebugSDFRenderer> debugSDFRenderer;
     std::unique_ptr<WireframeRenderer> waterWireframe;
+
+    // See setWaterRenderScale().
+    float waterRenderScale_ = 1.0f;
     // Sky settings owned by this renderer
     std::unique_ptr<SkySettings> skySettings;
     SkySettings& getSkySettings() { return *skySettings; }
@@ -341,6 +344,16 @@ public:
 
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height);
+
+    // Water offscreen render scale (Settings::waterRenderScale): the water
+    // color/body/column pair, the water geometry depth and the back-face depth
+    // are created at width*scale x height*scale. recreateWaterTargets() is the
+    // entry point for a runtime change; it does NOT wait for the GPU, so the
+    // caller must have done so (the water targets are written on the water and
+    // brush-liquid queues, which a graphics-queue-scoped wait would not cover).
+    void setWaterRenderScale(float scale) { waterRenderScale_ = scale; }
+    float waterRenderScale() const { return waterRenderScale_; }
+    void recreateWaterTargets(VulkanApp* app, uint32_t width, uint32_t height);
 
     // ── Parallel scene loading ─────────────────────────────────────────────────
     // Drains the shared pending mesh queue (main thread) into a caller-provided

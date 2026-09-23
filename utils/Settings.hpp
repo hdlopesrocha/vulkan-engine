@@ -131,4 +131,14 @@ public:
     // instead of the separate liquid pass. Default off (old path); consumed
     // by Phase-1b (draw routing + blend pipeline). No effect yet.
     bool waterInMainPass = false;
+
+    // ── Water offscreen render scale (perf report 20 H9) ──────────────────
+    // The water color/body/column pair, the water geometry depth and the
+    // back-face depth render at this fraction of the swapchain size; the
+    // composite upsamples (water color bilinear, water geometry depth with the
+    // CLOSEST of the 2x2 taps so terrain in front is never punched through).
+    // The water surface is a smooth translucent layer, so 0.5 is a cheap 4x cut
+    // in shaded water pixels; 1.0 keeps full resolution. Applied when the water
+    // targets are (re)created: immediately on change, or on a swapchain resize.
+    float waterRenderScale = 1.0f;
 };

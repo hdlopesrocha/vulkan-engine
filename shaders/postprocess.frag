@@ -143,8 +143,20 @@ void main() {
     // solid pass), so the depth test against solid geometry is resolved here
     // instead. If a solid surface (or vegetation) is in front of the water
     // surface, hide the water fragment.
-    {
-        float waterGeomDepth = texture(waterGeomDepthTex, uv).r;
+    // The water geometry depth target may be smaller than the screen
+    // (Settings::waterRenderScale), so a single bilinear tap would interpolate
+    // across the water/clear edge and report the water FARTHER than it is -
+    // which would hide water that is actually in front of the obstacle. Take the
+    // CLOSEST of the 2x2 taps instead: the closer depth keeps the water, the
+    // safe direction. Skipped where there is no water at all, so non-water
+    // pixels pay nothing.
+    if (waterAlpha > 0.0) {
+        vec2 wtexel = 1.0 / vec2(textureSize(waterGeomDepthTex, 0));
+        float wd00 = texture(waterGeomDepthTex, clamp(uv + vec2(-wtexel.x, -wtexel.y), vec2(0.0), vec2(1.0))).r;
+        float wd10 = texture(waterGeomDepthTex, clamp(uv + vec2( wtexel.x, -wtexel.y), vec2(0.0), vec2(1.0))).r;
+        float wd01 = texture(waterGeomDepthTex, clamp(uv + vec2(-wtexel.x,  wtexel.y), vec2(0.0), vec2(1.0))).r;
+        float wd11 = texture(waterGeomDepthTex, clamp(uv + vec2( wtexel.x,  wtexel.y), vec2(0.0), vec2(1.0))).r;
+        float waterGeomDepth = min(min(wd00, wd10), min(wd01, wd11));
         if (waterGeomDepth < 1.0 && obstacleDepth < waterGeomDepth) {
             waterAlpha = 0.0;
         }

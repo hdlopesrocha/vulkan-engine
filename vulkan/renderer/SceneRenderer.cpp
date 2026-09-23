@@ -166,6 +166,24 @@ void SceneRenderer::stopGenPools() {
     mainWaterGenPool.stop();
 }
 
+void SceneRenderer::recreateWaterTargets(VulkanApp* app, uint32_t width, uint32_t height) {
+    if (!app || !mainLiquidRenderer) return;
+    // Settings::waterRenderScale: the water offscreen pair (color + body +
+    // column, the geometry depth) and the back-face depth render at a fraction
+    // of the swapchain size. The pass viewport/scissor derive from the renderer's
+    // own renderWidth/renderHeight, so they follow automatically, and the
+    // fragment stage's screenUV/gl_FragCoord are resolution-independent.
+    const float scale = std::min(std::max(waterRenderScale_, 0.25f), 1.0f);
+    const uint32_t w = std::max(1u, static_cast<uint32_t>(width * scale + 0.5f));
+    const uint32_t h = std::max(1u, static_cast<uint32_t>(height * scale + 0.5f));
+    mainLiquidRenderer->createRenderTargets(app, w, h);
+    // Back-face targets owned by SceneRenderer (the 360 cubemap path is removed
+    // — reflections are hardware ray tracing now). Scaled too: the water
+    // fragment stage samples them at screen UV, so only their filtering
+    // footprint changes.
+    if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, w, h);
+}
+
 void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height) {
     // Recreate offscreen targets that depend on swapchain size
     if (mainSolidRenderer) {
@@ -178,10 +196,8 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         brushRenderer->onSwapchainResized(app, width, height);
     }
     if (mainLiquidRenderer) {
-        mainLiquidRenderer->createRenderTargets(app, width, height);
-        // Recreate back-face targets owned by SceneRenderer (the 360 cubemap
-        // path is removed — reflections are hardware ray tracing now).
-        if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, width, height);
+        // Water + back-face targets render at Settings::waterRenderScale.
+        recreateWaterTargets(app, width, height);
         if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, width, height);
         if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, width, height);
         // Hybrid RT outputs are swapchain-sized (half-res): recreate + re-point
@@ -482,9 +498,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Now that WaterRenderer has created its pipeline layout, allow the
     // back-face renderer to create pipelines that depend on it.
     if (backFaceRenderer) backFaceRenderer->createPipelines(app, mainLiquidRenderer->getWaterGeometryPipelineLayout());
-    // Create back-face render targets early so their image views are
-    // available before the first frame's water pass attempts to bind them.
-    if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    // (Water + back-face render targets are created later, by
+    // recreateWaterTargets(), once the water pipelines exist.)
+
     if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     // Hybrid RT: no cubemap targets — init the proxy BLAS/TLAS + water RT
@@ -822,11 +838,10 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             this->proxyAlbedoRefresh_.store(true, std::memory_order_relaxed);
         });
     }
-    mainLiquidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-
-    // Ensure back-face render targets are created as well so the
-    // `backFaceDepthView` is valid before the first frame's water pass.
-    if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    // Water + back-face targets (recreateWaterTargets creates both) so
+    // `backFaceDepthView` and the water targets are valid before the first
+    // frame's water pass.
+    recreateWaterTargets(app, app->getWidth(), app->getHeight());
     if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
 

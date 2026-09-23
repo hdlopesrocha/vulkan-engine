@@ -144,6 +144,14 @@ void SettingsWidget::render() {
         TooltipOnHover("Draw water with the alpha-blended main pipeline into the solid color/depth targets "
                        "(no separate water pass/composite water). Smoother work-in-progress: in-trace "
                        "screen lookups use the previous frame's solid/vegetation targets.");
+        FieldLabel("Water render scale", "Offscreen water resolution");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Water render scale", &settings.waterRenderScale, 0.25f, 1.0f, "%.2f");
+        TooltipOnHover("Water offscreen targets render at this fraction of the swapchain size\n"
+                       "(1.0 = full resolution). The water surface is a smooth translucent layer,\n"
+                       "so 0.5 cuts the shaded water pixels 4x. The composite upsamples the water\n"
+                       "color and takes the closest of the 2x2 depth taps for the occlusion test.\n"
+                       "Applied immediately (one device idle on the frame it changes).");
     });
 
     // 2: RT Distances (split out so the RT block packs into columns)
