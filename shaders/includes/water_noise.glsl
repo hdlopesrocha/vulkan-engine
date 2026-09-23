@@ -395,6 +395,31 @@ vec4 waterWaveSample(vec3 xyz, float time, float depth, float amp,
     return vec4(f.height, f.grad);
 }
 
+// Second directional derivative of the wave height along `u`, for the
+// wave-shape caustics (perf report 20 C3).
+//
+// The caustic term needs d²h/du². The original implementation central-
+// differenced the analytic gradient over ±ec about the sun-ray entry point:
+// TWO full field evaluations, i.e. 8 FBM chains and 32 four-dimensional Perlin
+// evaluations per pixel, because the curvature spectrum needs every chain —
+// the chop, the calm mask and both ridged trains all contribute, through the
+// direct term and through the amplitude-modulation product rule.
+//
+// This helper keeps the same field and the same analytic gradient but
+// differences it one-sidedly against an evaluation the shading normal has
+// ALREADY paid for: `dhduCenter` is dot(waveField.grad, u) at the shaded
+// surface point. The caustic therefore costs one extra evaluation instead of
+// two. A one-sided difference of the analytic derivative has no cancellation
+// (the gradient difference is O(step·h''), comparable to the gradients
+// themselves) and its O(step) truncation is far inside the caustic softness
+// clamp; the caller keeps its quarter-wavelength step, so the caustic detail
+// still follows the band-limited field the surface is displaced with.
+float waterWaveCurvature(vec3 pos, float time, float depth, float amp, vec2 shoreDir,
+                         vec3 u, float step, float dhduCenter, WaterParamsGPU wp) {
+    WaterWaveField f = waterWaveField(pos + u * step, time, depth, amp, shoreDir, wp, false);
+    return (dot(f.grad, u) - dhduCenter) / step;
+}
+
 // Two-channel refraction distortion (perf report 20 C2).
 //
 // The previous implementation chained four 4D FBMs (noise1 4 oct + noise2 3 +

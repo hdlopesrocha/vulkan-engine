@@ -1425,21 +1425,20 @@ void shadeWaterSurface() {
     // Jacobian of the map x -> x + D(x):
     //     E/E0 = 1 / |1 + d · K · d2h/du2|
     // so the caustic pattern is produced ONLY by the wave field — the same
-    // waterWaveSample() that displaces the surface and builds the analytic
-    // shading normal. No independent caustic noise, scale, or animation
+    // field that displaces the surface and builds the analytic shading
+    // normal. No independent caustic noise, scale, or animation
     // clock: the pattern rides the waves, moves with them, and inherits
     // their spectrum by construction. The added light is the EXCESS over
     // the flat-surface case and is attenuated by the same Beer-Lambert
     // transmittance as the bottom behind it.
-    vec3 backPos = fragPosWorld + worldRayDir * waterThickness;
     float caustic = 0.0;
     float causticGain = 1.0;   // bottom irradiance ratio 1/|J|
     // The caustic pattern feeds the final mask debug view, so keep it
     // computed while that view is selected even if the effect is disabled.
     bool causticDebugMode = (dbgMode == DEBUG_MODE_CAUSTICS);
     // Enter only when the effect can contribute: the pattern is produced ONLY
-    // by the wave field (waterWaveSample(), whose central difference is
-    // identically zero when wp.waveToggles.x < 0.5), and the column must be
+    // by the wave field (its curvature is identically zero when
+    // wp.waveToggles.x < 0.5), and the column must be
     // deep enough to focus sunlight (flat/no-volume water reports
     // waterThickness = 0, which makes the Jacobian exactly 1 and the excess
     // exactly 0). The debug view still forces the block so its mask stays
@@ -1460,23 +1459,27 @@ void shadeWaterSurface() {
             ? vec3(sunH2.x / sunLen, 0.0, sunH2.y / sunLen)
             : vec3(1.0, 0.0, 0.0);
         float depth = max(waterThickness, 0.0);
-        float tanT = sinT / max(cosT, 1e-4);
-        // Surface entry point that feeds the bottom beneath this pixel: the
-        // refracted ray is offset d·tan(theta_t) along the sun azimuth.
-        vec3 entry = backPos - sunHat * (depth * tanT);
-        // Wave curvature along u: central difference of the ANALYTIC wave
-        // gradient. The stencil resolves the FINEST octave of the wave
-        // spectrum (quarter wavelength), so the caustic detail follows the
-        // same band-limited field the surface is displaced with — no
-        // aliasing from an oversized step.
+        // Wave curvature along u: one-sided difference of the ANALYTIC wave
+        // gradient, taken against the shading field already evaluated at
+        // fragBasePos (perf report 20 C3). The stencil resolves the FINEST
+        // octave of the wave spectrum (quarter wavelength), so the caustic
+        // detail follows the same band-limited field the surface is displaced
+        // with — no aliasing from an oversized step.
+        //
+        // The stencil origin is the shaded surface point, not the sun-ray
+        // entry point (which sat depth·tan(theta_t) along the sun azimuth from
+        // the bottom — metres away in deep water), and the field is sampled
+        // with the shading field's own depth (fragWaterDepth). Both
+        // evaluations must share one depth signal: mixing the raster column
+        // into only one of them would leak the zone-envelope difference into
+        // the curvature. The caustic therefore becomes consistent with the
+        // surface actually rendered, at half the cost.
         float finestFreq = max(noiseScale * pow(max(noiseLacunarity, 1.0),
                               float(max(noiseOctaves - 1, 0))), 1e-4);
         float ec = clamp(0.25 / finestFreq, 0.02, 2.0);
-        vec4 waveP = waterWaveSample(entry + sunHat * ec, animTime,
-                                     depth, fragBasePos.w, fragShoreDir, wp);
-        vec4 waveM = waterWaveSample(entry - sunHat * ec, animTime,
-                                     depth, fragBasePos.w, fragShoreDir, wp);
-        float d2h = (dot(waveP.yzw, sunHat) - dot(waveM.yzw, sunHat)) / (2.0 * ec);
+        float d2h = waterWaveCurvature(fragBasePos.xyz, animTime, fragWaterDepth,
+                                       fragBasePos.w, fragShoreDir, sunHat, ec,
+                                       dot(waveField.grad, sunHat), wp);
         // Bottom irradiance ratio: inverse Jacobian of the refracted ray
         // map. Folds (|J| -> 0) are physically unbounded; causticSoftness is
         // the only artistic control (a clamp floor on |J|).
