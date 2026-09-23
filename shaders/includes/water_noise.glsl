@@ -15,7 +15,7 @@ float waterFbmNoise(vec3 xyz, float spatialScale, float time, float timeScale,
 
 // Gradient-aware FBM. Returns vec4(value, d/dx, d/dy, d/dz) from a SINGLE
 // noise evaluation; the analytic spatial gradient is propagated through the
-// FBM octave chain.  Used by the wave chop and by waterRefractionNoise.
+// FBM octave chain.  Used by the wave chop.
 vec4 waterFbmNoiseGrad(vec3 xyz, float spatialScale, float time, float timeScale,
                        int octaves, float persistence, float lacunarity, vec3 offset) {
     vec4 r = fbmGrad4D(vec4((xyz + offset) * spatialScale, time * timeScale),
@@ -395,17 +395,34 @@ vec4 waterWaveSample(vec3 xyz, float time, float depth, float amp,
     return vec4(f.height, f.grad);
 }
 
+// Two-channel refraction distortion (perf report 20 C2).
+//
+// The previous implementation chained four 4D FBMs (noise1 4 oct + noise2 3 +
+// noise3 2 + a separate 4-octave chain for nY) to produce a vec2: 13
+// four-dimensional Perlin evaluations per pixel, ~1,664 PCG hashes, and the
+// entire procedural cost of the default (waves-off) configuration. The
+// distortion is a SCREEN-SPACE offset, so the fine octaves it paid for were
+// sub-pixel at almost any camera distance.
+//
+// This version is two band-limited 3D FBMs: base scale matches the finest of
+// the old layers (noiseScale * 0.30), the octave count is clamped to two, and
+// the finest retained wavelength is therefore
+//     wavelength = noisePeriod / (0.30 * lacunarity)
+// (~3.3 m at the shipped defaults), which the caller uses to fade the whole
+// distortion out once a pixel's world footprint exceeds it. The removed 4D
+// time axis is replaced by a lateral world-space drift: a boiling pattern is
+// not what water does, and the drift gives the same apparent motion the 4D
+// axis did at a fraction of the cost. The 1.75 output scale preserves the old
+// headroom (1 + 0.5 + 0.25) so refractionStrength keeps its authored meaning.
 vec2 waterRefractionNoise(vec3 xyz, float noiseScale, float time,
                           int noiseOctaves, float noisePersistence, float noiseLacunarity) {
-    float noise1 = waterFbmNoise(xyz, noiseScale * 0.15, time, 0.4,
-                                 noiseOctaves, noisePersistence, noiseLacunarity, vec3(0.0));
-    float noise2 = waterFbmNoise(xyz, noiseScale * 0.08, time, 0.25,
-                                 max(noiseOctaves - 1, 1), noisePersistence, noiseLacunarity, vec3(100.0));
-    float noise3 = waterFbmNoise(xyz, noiseScale * 0.30, time, 0.6,
-                                 max(noiseOctaves - 2, 1), noisePersistence, noiseLacunarity, vec3(0.0));
-
-    float nX = noise1 + noise2 * 0.5 + noise3 * 0.25;
-    float nY = waterFbmNoise(xyz, noiseScale * 0.15, time, 0.4,
-                             noiseOctaves, noisePersistence, noiseLacunarity, vec3(50.0)) + noise2 * 0.5;
-    return vec2(nX, nY);
+    const int kRefractionOctaves = 2;
+    const float kRefractionAmplitude = 1.75;
+    const vec3 kRefractionDrift = vec3(0.5, 0.0, 0.3); // m/s, lateral only
+    int oct = clamp(noiseOctaves, 1, kRefractionOctaves);
+    vec3 p = xyz + kRefractionDrift * time;
+    float nX = fbm(p, oct, noisePersistence, noiseLacunarity);
+    // Same decorrelating lattice offset the old nY chain used.
+    float nY = fbm(p + vec3(50.0), oct, noisePersistence, noiseLacunarity);
+    return vec2(nX, nY) * kRefractionAmplitude;
 }

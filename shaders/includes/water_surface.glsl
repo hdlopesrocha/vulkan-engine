@@ -710,25 +710,42 @@ void shadeWaterSurface() {
     usePipe = (rt.debug.w > 0.5);
 #endif
 
-    // === PERLIN NOISE-BASED REFRACTION ===
-    // Generate refraction distortion from shared FBM helper. Only evaluated
-    // when the distortion can be used (refraction on, or the debug view that
-    // visualizes it): three FBM layers per pixel is not free.
+    // === NOISE-BASED REFRACTION (perf report 20 C2) ===
+    // One low-octave 3D FBM pair instead of four chained 4D FBM layers. Only
+    // evaluated when the distortion can contribute at all (refraction on AND a
+    // non-zero authored strength, or the debug view that visualizes it), and
+    // faded out once a pixel's world-space footprint exceeds the finest
+    // retained noise feature: past that point the offset is sub-pixel, so the
+    // noise is pure cost. The fade scales the offset rather than cutting it,
+    // so no pop appears at the fade distance.
     vec2 refractionNoise = vec2(0.0);
-    if (enableRefraction || dbgMode == DEBUG_MODE_WATER_NOISE) {
-        refractionNoise = waterRefractionNoise(
-            fragPos.xyz,
-            noiseScale,
-            animTime,
-            int(noiseOctaves),
-            noisePersistence,
-            noiseLacunarity
-        );
+    float refractionDetail = 0.0;
+    bool refractionNoiseWanted = (enableRefraction && refractionStrength > 0.0)
+        || dbgMode == DEBUG_MODE_WATER_NOISE;
+    if (refractionNoiseWanted) {
+        // Finest retained feature, matching waterRefractionNoise()'s base
+        // scale (0.30) and its 2-octave clamp: one lacunarity step.
+        float refrFinest = 1.0 / max(noiseScale * 0.30 * max(noiseLacunarity, 1.0), 1e-4);
+        float footprint = max(fwidth(fragPosWorld.x),
+                              max(fwidth(fragPosWorld.y), fwidth(fragPosWorld.z)));
+        refractionDetail = (dbgMode == DEBUG_MODE_WATER_NOISE)
+            ? 1.0
+            : 1.0 - smoothstep(0.25 * refrFinest, refrFinest, footprint);
+        if (refractionDetail > 0.0) {
+            refractionNoise = waterRefractionNoise(
+                fragPos.xyz,
+                noiseScale,
+                animTime,
+                int(noiseOctaves),
+                noisePersistence,
+                noiseLacunarity
+            );
+        }
     }
-    
+
     // Combine noise layers for complex refraction pattern
     vec2 refractionOffset = enableRefraction
-        ? refractionNoise * refractionStrength
+        ? refractionNoise * (refractionStrength * refractionDetail)
         : vec2(0.0);
     
     // Reduce refraction at edges (to avoid sampling outside screen)
