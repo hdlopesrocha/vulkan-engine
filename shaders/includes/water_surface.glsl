@@ -1247,22 +1247,40 @@ void shadeWaterSurface() {
     // never visible sparkle. This is not a wave cutoff.
     vec3 specularColor = vec3(0.0);
     if (wp.waveToggles.x > 0.5 && detail > 0.0) {
-        if (specularIntensity > 0.0 || glitterIntensity > 0.0) {
+        // Lobe terms FIRST (perf report 20 M10): every noise chain below exists
+        // only to perturb the highlight, so outside the sun lobe it is multiplied
+        // by a number that is already zero. pow(specAngle, 128) is zero for all
+        // but a ~22 deg cone around the mirror direction and pow(specAngle, 32)
+        // for all but ~42 deg, so most water pixels now pay no noise at all
+        // (previously 10 four-dimensional Perlin evaluations each). The
+        // threshold is on the final contribution, in linear light: 1e-4 is
+        // ~0.03/255, i.e. invisible.
+        const float kSpecNoiseMin = 1e-4;
+        float specLobe = pow(specAngle, specularPowerParam);
+        float glitterLobe = pow(specAngle, 32.0);
+
+        if (specularIntensity > 0.0 && specularIntensity * specLobe > kSpecNoiseMin) {
             // waveNoiseTail fades only the perturbation (the +/-0.4 term); the
             // analytic highlight itself is kept at every distance.
             float specNoise = 0.8 + 0.4 * waveNoiseTail * waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
                                                         max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
-            float specular = pow(specAngle, specularPowerParam) * specNoise;
-            specularColor = ubo.lightColor.xyz * specular * specularIntensity;
+            specularColor = ubo.lightColor.xyz * (specLobe * specNoise) * specularIntensity;
         }
+        // Below the threshold the highlight contributes less than the cut-off,
+        // so the unperturbed lobe is left out entirely rather than recomputed:
+        // the difference is invisible and the branch would cost another pow.
 
         // Sun glitter: high-frequency noise-based sparkles
-        if (glitterIntensity > 0.0) {
+        if (glitterIntensity > 0.0 && glitterIntensity * glitterLobe > kSpecNoiseMin) {
             float glitterNoise = waterFbmNoise(fragPos.xyz, noiseScale * 3.0, animTime, 3.0,
                                                max(int(noiseOctaves) - 2, 1), noisePersistence, noiseLacunarity, vec3(0.0));
+            // Threshold jitter: 2 octaves of the low-frequency chain instead of
+            // the full spectrum. It only breaks up the sparkle cut-off, and its
+            // 1 m / 25 cm octaves sit far below the glitter noise's own feature
+            // size, so they never show in the pattern (M10: halves this chain).
             float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xyz, noiseScale * 0.5, animTime, 0.5,
-                                                               max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
-            float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * pow(specAngle, 32.0);
+                                                               2, noisePersistence, noiseLacunarity, vec3(0.0));
+            float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * glitterLobe;
             specularColor += ubo.lightColor.xyz * glitter * glitterIntensity * waveNoiseTail;
         }
     } else if (specularIntensity > 0.0) {
