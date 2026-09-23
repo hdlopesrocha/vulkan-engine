@@ -760,6 +760,7 @@ void shadeWaterSurface() {
 #else
     float maxRefr = 300.0;
 #endif
+#ifdef RT_ENABLED
     // === RAY-BUDGET DECISIONS (perf: fewer inline rays, exactness kept) ===
     // Early Fresnel estimate (identical formula to the composite below) for
     // Fresnel-weighted single-ray selection. reflMixEst is the lobe weight the
@@ -784,13 +785,11 @@ void shadeWaterSurface() {
     bool waterRefMode = false;
     bool waterSingleRay = false;
     float waterContribMin = 0.02;
-#ifdef RT_ENABLED
     // Ray mask / depth source visualize the budgeted behavior itself, so they
     // must not force reference (otherwise they could never show the live cut).
     waterRefMode = debugModeForcesRtReference(int(rt.debug.x + 0.5));
     waterSingleRay = (rt.rayParams.z > 0.5) && !waterRefMode;
     waterContribMin = clamp(rt.rayParams.y, 0.0, 1.0);
-#endif
     // Single-ray ray budget (rt.rayParams.z): traces the reflection XOR
     // refraction stochastically with probability = reflMixEst (Schlick-weight)
     // to save one full-resolution ray on dual-lobe pixels. Only the
@@ -823,6 +822,7 @@ void shadeWaterSurface() {
     if (hasValidBackFace) {
         wantRefrInline = true;
     }
+#endif
     // Ray-mask for DEBUG_MODE_RAY_MASK (pixel-ratio counter): per lobe 0=disabled,
     // 1=sky fallback, 2=pipe hit, 3=inline traced, 4=skipped by budget gate.
     float refrMask = 0.0;
@@ -1203,12 +1203,6 @@ void shadeWaterSurface() {
     // the mirror traces even off-pick, so no pixel ends with two empty lobes
     // ("just tinted"). Sky covers the rest. No 360 cubemap.
     //
-    // Miss-recovery trigger: the bottom lobe has no pipe cover, no real
-    // inline hit, and no meaningful raster recovery — while refraction is
-    // enabled. (Refraction disabled means bottom-sky by user choice, not a
-    // miss, so the mirror keeps its own pick/gates.)
-    bool bottomEmpty = enableRefraction && !pipeRefrValid && !refrInlineHitReal
-        && !(depthSource > 1.5 && depthSource < 2.5 && rtThickness > 0.001);
     vec3 reflectDir = reflect(-viewDir, normal);
 
     vec3 skyColor = vec3(0.0);
