@@ -37,6 +37,12 @@ const int DEBUG_MODE_WATER_REGIONS = 29;
 const int DEBUG_MODE_WATER_DEPTH_SOURCES = 30;
 const int DEBUG_MODE_SCENE_DEPTH = 31;
 const int DEBUG_MODE_REFLECTION_SOURCE = 32;
+const int DEBUG_MODE_WATER_CHOP = 33;
+const int DEBUG_MODE_WATER_CALM_MASK = 34;
+const int DEBUG_MODE_WATER_SWELL = 35;
+const int DEBUG_MODE_WATER_FOAM_MASK = 36;
+const int DEBUG_MODE_WATER_AMPLITUDE = 37;
+const int DEBUG_MODE_WATER_SPECULAR_NOISE = 38;
 
 // Views whose displayed value is produced by traced reflection/refraction
 // rays force the full-quality reference path (full-rate + dual-trace) so the

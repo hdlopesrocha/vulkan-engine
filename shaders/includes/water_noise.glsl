@@ -145,6 +145,18 @@ struct WaterWaveField {
     vec3  grad;    // analytic d(height)/d(world position), y = 0 (height field)
     float foam;    // 0..1 whitewater coverage
     float contact; // 0..1 shoreline contact foam (water meets solid at depth 0)
+
+    // Raw component values, exposed so every water noise has its own debug view
+    // (see the DEBUG_MODE_WATER_* views in water_surface.glsl). The body already
+    // computes all of them, so returning them costs nothing in the production
+    // paths: the compiler drops the channels a call site never reads.
+    //   dbg.x  = chop FBM value (signed)      dbg.y  = organic calm mask [0,1]
+    //   dbg.z  = primary ridged profile       dbg.w  = cross ridged profile
+    //   dbg2.x = final amplitude envelope (env * mask * taper, PRE-floor)
+    //   dbg2.y = depth taper (heightTaper)    dbg2.z = zone envelope (env)
+    //   dbg2.w = |chop analytic gradient|
+    vec4 dbg;
+    vec4 dbg2;
 };
 
 // Thickness-zoned directional shore-wave field. The wave trains and their
@@ -176,6 +188,8 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     f.grad = vec3(0.0);
     f.foam = 0.0;
     f.contact = 0.0;
+    f.dbg = vec4(0.0);
+    f.dbg2 = vec4(0.0);
     if (wp.waveToggles.x < 0.5 || amp <= 0.0 || octBudget <= 0) return f;
     // One octave count for every chain, clamped by the caller's budget. The
     // per-layer spectrum (params2.z) stays the upper bound.
@@ -360,6 +374,8 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     float finalAmp = amp * max(env * mask * heightTaper, WAVE_DETAIL_FLOOR);
     f.height = finalAmp * h;
     f.grad = vec3(finalAmp * gxz.x, 0.0, finalAmp * gxz.y);
+    f.dbg = vec4(chopVal, mask, prof1, prof2);
+    f.dbg2 = vec4(env * mask * heightTaper, heightTaper, env, length(chopGrad));
 
     // ── Foam: born in the breaker band, carried shoreward by the crests and
     //    fades with depth; a residual line survives on the shallow band until

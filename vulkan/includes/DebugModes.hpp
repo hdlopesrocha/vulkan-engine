@@ -50,6 +50,16 @@ enum class DebugMode : int {
     WaterDepthSources,    // water only: R=solid-scene depth drop, G=water back-face drop, B=final depth (all / zDeep)
     SceneDepth,           // both: scene depth (solid: own fragment depth; water: solid depth behind), linear/far grayscale
     ReflectionSource,     // water only: which branch resolved the reflection (solid/water/guard/SSR/sky/equirect)
+    // Water wave-system components (one view per noise, so every term of the
+    // wave field can be inspected while tuning its period/amplitude).
+    WaterChop,            // water only: chop FBM value (R, signed) + analytic gradient magnitude (G)
+    WaterCalmMask,        // water only: organic calm-patch mask (0 = calm patch, waves fully off)
+    WaterSwell,           // water only: primary (R) and cross (G) ridged swell profiles, signed
+    WaterFoamMask,        // water only: whitewater (R) and shoreline contact (G) coverage
+    WaterAmplitude,       // water only: final amplitude envelope (R) = shore zones x calm mask x depth taper,
+                          //            with the depth taper (G) and the zone envelope (B) decomposed
+    WaterSpecularNoise,   // water only: highlight perturbation (R) + glitter (G) + sun-lobe gate (B) - shows
+                          //            WHERE the lobe lets them run (gated since perf report 20 M10)
     Count
 };
 
@@ -87,6 +97,12 @@ inline constexpr const char* kDebugModeNames[] = {
     "Water Depth Sources",
     "Scene Depth",
     "Reflection Source",
+    "Water Chop (Noise Detail)",
+    "Water Calm Mask",
+    "Water Swell (primary/cross)",
+    "Water Foam / Contact",
+    "Water Amplitude Envelope",
+    "Water Specular/Glitter Noise",
 };
 
 static_assert(sizeof(kDebugModeNames) / sizeof(kDebugModeNames[0])

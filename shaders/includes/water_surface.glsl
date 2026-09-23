@@ -1246,6 +1246,12 @@ void shadeWaterSurface() {
     // highlight is sub-pixel, so the FBM would only add shimmer on top of it,
     // never visible sparkle. This is not a wave cutoff.
     vec3 specularColor = vec3(0.0);
+    // Debug channels for DEBUG_MODE_WATER_SPECULAR_NOISE: R = specular
+    // perturbation, G = glitter (both 0.5 = the chain did not run), B = the
+    // sun-lobe gate that lets them run at all. They stay at their neutral
+    // values wherever the lobe gates the chains off, which is exactly what that
+    // view exists to show.
+    vec3 dbgHighlightNoise = vec3(0.5, 0.5, 0.0);
     if (wp.waveToggles.x > 0.5 && detail > 0.0) {
         // Lobe terms FIRST (perf report 20 M10): every noise chain below exists
         // only to perturb the highlight, so outside the sun lobe it is multiplied
@@ -1258,12 +1264,15 @@ void shadeWaterSurface() {
         const float kSpecNoiseMin = 1e-4;
         float specLobe = pow(specAngle, specularPowerParam);
         float glitterLobe = pow(specAngle, 32.0);
+        dbgHighlightNoise.z = max(specLobe, glitterLobe);
 
         if (specularIntensity > 0.0 && specularIntensity * specLobe > kSpecNoiseMin) {
             // waveNoiseTail fades only the perturbation (the +/-0.4 term); the
             // analytic highlight itself is kept at every distance.
-            float specNoise = 0.8 + 0.4 * waveNoiseTail * waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
-                                                        max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
+            float specNoiseRaw = waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
+                                               max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
+            dbgHighlightNoise.x = 0.5 + 0.5 * specNoiseRaw;
+            float specNoise = 0.8 + 0.4 * waveNoiseTail * specNoiseRaw;
             specularColor = ubo.lightColor.xyz * (specLobe * specNoise) * specularIntensity;
         }
         // Below the threshold the highlight contributes less than the cut-off,
@@ -1274,6 +1283,7 @@ void shadeWaterSurface() {
         if (glitterIntensity > 0.0 && glitterIntensity * glitterLobe > kSpecNoiseMin) {
             float glitterNoise = waterFbmNoise(fragPos.xyz, noiseScale * 3.0, animTime, 3.0,
                                                max(int(noiseOctaves) - 2, 1), noisePersistence, noiseLacunarity, vec3(0.0));
+            dbgHighlightNoise.y = 0.5 + 0.5 * glitterNoise;
             // Threshold jitter: 2 octaves of the low-frequency chain instead of
             // the full spectrum. It only breaks up the sparkle cut-off, and its
             // 1 m / 25 cm octaves sit far below the glitter noise's own feature
@@ -1785,6 +1795,56 @@ void shadeWaterSurface() {
     }
     if (dbgMode == DEBUG_MODE_WATER_NOISE) {
         outColor = vec4(refractionNoise, 0.5 + 0.5 * (refractionNoise.x - refractionNoise.y), 1.0);
+        return;
+    }
+    // ── One view per wave-system noise, so every term of the field can be
+    //    inspected while tuning its period / amplitude. All of them read the
+    //    raw components the field already computed (WaterWaveField::dbg /
+    //    dbg2). Note that the field runs through the same LOD as the shading,
+    //    so past the detail band these show the coarse evaluation. ──
+    if (dbgMode == DEBUG_MODE_WATER_CHOP) {
+        // Noise Detail spectrum. R = signed chop value (grey 0.5 = zero),
+        // G = |analytic gradient| x 0.25 (clamped). The gradient is what bends
+        // the shading normal, so G shows how much this noise actually matters.
+        outColor = vec4(0.5 + 0.5 * waveField.dbg.x,
+                        clamp(waveField.dbg2.w * 0.25, 0.0, 1.0), 0.0, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_WATER_CALM_MASK) {
+        // Organic calm-patch mask: BLACK = a calm patch, where the waves are
+        // removed entirely (the mask multiplies the whole field).
+        outColor = vec4(vec3(waveField.dbg.y), 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_WATER_SWELL) {
+        // The two ridged swell trains, signed (grey 0.5 = zero):
+        // R = primary (Wave Period), G = cross (Cross Period).
+        outColor = vec4(0.5 + 0.5 * waveField.dbg.z,
+                        0.5 + 0.5 * waveField.dbg.w, 0.0, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_WATER_FOAM_MASK) {
+        // R = whitewater coverage, G = shoreline contact line. Black where the
+        // layer has foam off or the zone never breaks.
+        outColor = vec4(waveField.foam, waveField.contact, 0.0, 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_WATER_AMPLITUDE) {
+        // Which factor damps the waves where they are missing:
+        //   R = final envelope (zone envelope x calm mask x depth taper)
+        //   G = depth taper      B = zone envelope x 0.5 (grey ~= the neutral 1.0)
+        // A dark R with a bright G therefore means the CALM MASK removed the
+        // waves, while a dark R with a dark G means SHALLOW water did.
+        outColor = vec4(clamp(waveField.dbg2.x, 0.0, 1.0),
+                        clamp(waveField.dbg2.y, 0.0, 1.0),
+                        clamp(waveField.dbg2.z * 0.5, 0.0, 1.0), 1.0);
+        return;
+    }
+    if (dbgMode == DEBUG_MODE_WATER_SPECULAR_NOISE) {
+        // Highlight noise inside the sun lobe: R = specular perturbation,
+        // G = glitter (0.5 = the chain did not run), B = the lobe gate itself.
+        // Black means the lobe gated both chains off there (perf report 20 M10).
+        outColor = vec4(dbgHighlightNoise, 1.0);
         return;
     }
     if (dbgMode == DEBUG_MODE_DISPLACEMENT) {
