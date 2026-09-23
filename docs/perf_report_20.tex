@@ -1,0 +1,1153 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+\title{Performance Report 20: Vulkan Engine \\
+\large Water Rendering After Report 19 --- Measuring and Attacking the Intrinsic Cost}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Reports~17--19 audited the water pipeline from the outside in: the hybrid ray-traced paths (17, 18) and then the
+frame-level machinery that survived the \textbf{Minimal} preset (19). Every one of report~19's twelve issues has now
+landed (\texttt{3771c50} $\rightarrow$ \texttt{fa7ecdb}), so the redundant work is gone: one cull instead of two, no
+tessellation stages when tessellation is off, a demand-gated back-face pass, single-attachment water passes when blur is
+off, one UBO write, cached descriptors, cleared fast paths. Water is still slow. This report therefore turns inward and
+\emph{measures} what is left, by compiling the shipped water modules and ablating them subsystem by subsystem.
+
+The result is that the remaining cost is not redundancy --- it is the constant factor of the procedural surface itself.
+The shipped non-RT water fragment module contains \textbf{46,320 SPIR-V instructions} and \textbf{3,073 inlined PCG hash
+sites}, i.e. \textbf{24 four-dimensional Perlin FBM call sites}, of which \textbf{33,432 instructions are integer hash
+ALU}. A wavy frame executes on the order of \textbf{75 four-dimensional Perlin evaluations per water pixel}
+($\sim$9,600 PCG hashes, $\sim$8.6$\times10^4$ integer ALU ops); the \emph{default} configuration, which has waves off,
+still executes 13 of them purely to wobble a screen-space refraction lookup. The non-tessellated water vertex shader is
+\textbf{8,464 instructions} against \textbf{137} for the solid vertex shader, and it runs twice per frame (geometry $+$
+back-face).
+
+The report finds \textbf{14 issues} and pairs each with a copy-pasteable implementation prompt. The headline is a single
+cross-cutting change: \emph{every} water noise evaluation is 4D Perlin (16 corners $\times$ 8 hashes) even though the
+animation is already carried by domain translation; ablating the fourth axis alone cuts the water fragment module from
+46,320 to \textbf{20,508} instructions ($-56\%$) and the hash ALU by $62.5\%$. Everything else --- cheap refraction
+noise, a band-limited caustic curvature, evaluation-time distance LOD, occlusion rejection against the solid depth, a
+smaller water target --- composes on top of it.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+\subsection{What Report 19 Fixed, and Why That Was Not Enough}
+
+Report~19's twelve items are all in the tree: C1 (non-tessellation pipeline family), C2 (caustics/specular/glitter
+gates), C3 (demand-gated back-face pass, single cull), H4 (single-attachment variant), H5 (RT-off suppression), H6
+(TES/VS gates and varying pruning), M7 (single UBO write $+$ cached descriptors), M8 (empty-water fast path), M9
+(auxiliary sync cleanup), M10 (\texttt{glslc -O} and dead chains), L11 (dead targets), L12 (water quality tier). They
+removed \emph{multiplicity} and \emph{dead work}: duplicated evaluations, unconditional passes, uncached CPU work.
+
+What they did not touch is the \emph{constant factor}. Every surviving evaluation is a four-dimensional Perlin noise
+built from a 16-corner hypercube whose every corner is an 8-hash PCG gradient. The water fragment stage performs 24 of
+these FBM chains; the water vertex stage performs 4 more per vertex. Report~19's gates decide \emph{whether} those chains
+run; they do not make them cheaper. With the default layer (\texttt{enableWaves = false}) the gated work is off, and the
+entire remaining procedural cost is one function --- \texttt{waterRefractionNoise} --- which costs 13 four-dimensional
+Perlin evaluations per pixel to offset a screen-space UV.
+
+\subsection{Measured Module Budget}
+
+All numbers below come from \texttt{spirv-dis} on the shipped modules (\texttt{bin/shaders/main\_water.frag.spv},
+\texttt{main\_water.tesc.spv}, \texttt{main\_water.tese.spv}, \texttt{main\_water\_no\_tess.vert.spv}) and from
+controlled ablations of the same sources compiled with the Makefile's exact flags
+(\texttt{glslc --target-env=vulkan1.3 -O -DWATER\_MODE=1}). The ablation protocol is in \S\ref{sec:method}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Shipped water module} & \textbf{SPIR-V instr.} & \textbf{Inlined PCG hash sites} \\
+\midrule
+\texttt{main\_water.frag} (non-RT water fragment) & 46,320 & 3,073 \\
+\texttt{main\_water.tese} (tessellated water vertex) & 8,604 & 513 \\
+\texttt{main\_water\_no\_tess.vert} (water vertex, tess off) & 8,464 & 513 \\
+\texttt{main\_water.tesc} (water tessellation control) & 7,682 & 513 \\
+\texttt{main\_water.vert} (plain water VS, tess path) & 137 & 0 \\
+\texttt{main.frag} (solid fragment, for scale) & --- & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Static module sizes. A ``PCG hash site'' is one inlined \texttt{pcgHash} (\texttt{perlin.glsl:9}); 128 of them
+make one four-dimensional Perlin evaluation (16 corners $\times$ \texttt{hash44} = 8 PCG each).}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Ablation of \texttt{main\_water.frag}} & \textbf{PCG sites} & $\Delta$ & \textbf{FBM sites removed} \\
+\midrule
+Baseline & 3,073 & --- & --- \\
+Remove \texttt{waterRefractionNoise} & 2,561 & $-512$ & 4 \\
+Remove specular $+$ glitter noise & 2,689 & $-384$ & 3 \\
+Remove the caustic field pair & 2,049 & $-1{,}024$ & 8 \\
+Wave field reduced to one ridged train & 1,409 & $-1{,}664$ & 13 \\
+Perlin 4D $\rightarrow$ 3D (drop the time axis) & 1,153 & $-1{,}920$ & $-62.5\%$ hash ALU, 20,508 instr. \\
+\bottomrule
+\end{tabular}
+\caption{Attribution. The 24 FBM call sites split exactly: 17 wave-field (5 shading $+$ 8 caustics $+$ 4 debug), 4
+refraction noise, 3 specular/glitter.}
+\end{table}
+
+\subsection{Per-Pixel Dynamic Cost}
+
+With the default spectrum (\texttt{noiseOctaves = 4}, \texttt{noiseLacunarity = 4.0}) each FBM site executes
+\texttt{octaves} four-dimensional Perlin evaluations:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrcr@{}}
+\toprule
+\textbf{Consumer} & \textbf{FBM sites} & \textbf{Perlin4D / pixel} & \textbf{Gate} \\
+\midrule
+Shading wave field (\texttt{withFoam=true}) & 5 & 20 & \texttt{waveToggles.x} \\
+Caustic curvature (2$\times$ \texttt{waterWaveSample}) & 8 & 32 & thickness $>0.05$, waves, intensity \\
+Refraction screen offset & 4 & 13 & \texttt{enableRefraction} \\
+Specular $+$ glitter & 3 & 10 & waves $+$ intensities \\
+Debug displacement view & 4 & 16 & debug mode only \\
+\midrule
+\textbf{Default preset} (waves off, refraction on) & --- & \textbf{13} & --- \\
+\textbf{Waves on, no caustics} & --- & \textbf{43} & --- \\
+\textbf{Waves on, thick water (caustics)} & --- & \textbf{75} & --- \\
+\bottomrule
+\end{tabular}
+\caption{Dynamic four-dimensional Perlin evaluations per shaded water pixel. One evaluation is $\sim$128 PCG hashes
+$\approx$ 1.1--1.4$\times10^3$ ALU ops.}
+\end{table}
+
+\begin{itemize}
+    \item \textbf{C1 --- The noise is 4D where it only needs to be 3D.} \texttt{hash44} (\texttt{perlin.glsl:34}) costs 8
+    PCG calls per corner and \texttt{perlinNoise4D} (\texttt{:70}) samples 16 corners, so every Perlin evaluation costs
+    128 PCG hashes. But the water field already animates by \emph{domain translation}: the chop, mask and foam FBMs
+    subtract \texttt{shoreDrift}/\texttt{foamDrift} (\texttt{water\_noise.glsl:225,239,361}) and both ridged trains fold
+    $-c\cdot t$ into their along-axis coordinate (\texttt{:76--93}). The fourth axis is a second, redundant animation
+    mechanism. Ablation: 3,073 $\rightarrow$ 1,153 PCG sites, 46,320 $\rightarrow$ 20,508 instructions.
+    \item \textbf{C2 --- \texttt{waterRefractionNoise} is 13 four-dimensional Perlin evaluations for a 2-channel
+    screen-space offset.} It is the \emph{entire} procedural cost of the default configuration, it is not distance-faded,
+    and with \texttt{noiseLacunarity = 4.0} its finest octave has a 6\,cm wavelength --- sub-pixel aliasing paid at full
+    ALU cost (\texttt{water\_noise.glsl:398--410}, call site \texttt{water\_surface.glsl:714--723}).
+    \item \textbf{C3 --- Caustics cost more than the surface they decorate.} The curvature term is a central difference
+    of the \emph{full} field (32 of the 75 evaluations), i.e. two complete wave fields per pixel, to obtain one scalar
+    $d^2h/du^2$ (\texttt{water\_surface.glsl:1458--1462}).
+    \item \textbf{C4 --- The distance LOD is applied to the result, not to the evaluation.} \texttt{water\_surface.glsl:688--689}
+    fades the wave normal to flat over 200--1000\,m, but the field is evaluated \emph{before} that at full octave count
+    for every water pixel --- including every pixel whose result is then discarded. Refraction noise, specular and
+    glitter have no distance gate at all.
+    \item \textbf{C5 --- Terrain-occluded water is shaded in full and thrown away at composite time.} The water pass has
+    no solid-depth rejection; the occlusion test lives in \texttt{postprocess.frag:147--150}. The water task already waits
+    \texttt{tlSolid} (\texttt{MyApp.cpp:2242}) and \texttt{solidSceneDepthTex} is already bound in set~2, so one fetch and
+    one \texttt{discard} at the top of the water fragment stage removes the whole shader for those pixels. (The stale
+    comment at \texttt{WaterRenderer.cpp:1250} still claims ``forward-pass depth-test handles solid occlusion''.)
+\end{itemize}
+
+\textbf{Recommended order:} C1 (drop the fourth axis) $\rightarrow$ C2 (cheap refraction noise) $\rightarrow$ C4
+(evaluation-time LOD) $\rightarrow$ C5 (occlusion rejection) $\rightarrow$ C3 (band-limited caustics) $\rightarrow$ H6
+(band-limit the vertex stage, undisplaced back faces) $\rightarrow$ H7 (cheap TCS modulation) $\rightarrow$ H8/H9
+(target format and resolution) $\rightarrow$ M10--M13 $\rightarrow$ L14.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Remaining water cost} & \textbf{Covered by} \\
+\midrule
+24$\times$ 4D-Perlin FBM chains, 33k integer ALU instructions & C1 \\
+13 Perlin4D for the refraction screen offset (default preset) & C2, L14 \\
+32 Perlin4D for the caustic curvature & C3 \\
+Full-cost evaluation at distances where the result is discarded & C4 \\
+Full shading of terrain-occluded water pixels & C5, H9 \\
+16 Perlin4D per water vertex, twice per frame & H6 \\
+3 full field evaluations per patch for tessellation modulation & H7 \\
+RGBA32F full-res water target (16\,B/px write $+$ read $+$ clear) & H8 \\
+Separate full-res water pass instead of water-in-main & H9 \\
+10 Perlin4D for specular/glitter with no lobe early-out & M10 \\
+Vertex and fragment evaluation of the same field & M11 \\
+Full-res \texttt{waterGeomDepth} fetch for every screen pixel & M12 \\
+Full pass for water that is resident but entirely frustum-culled & M13 \\
+One shared noise spectrum for five consumers & L14 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{Measurement Method}
+\label{sec:method}
+% =====================================================================
+
+Static counts are taken from the shipped SPIR-V:
+
+{\small
+\begin{verbatim}
+spirv-dis bin/shaders/main_water.frag.spv \
+  | grep -oE "uint_747796405" | wc -l      # PCG hash sites
+spirv-dis bin/shaders/main_water.frag.spv \
+  | grep -oE "Op[A-Za-z]+" | sort | uniq -c
+\end{verbatim}
+}
+
+\texttt{pcgHash} (\texttt{perlin.glsl:9--14}) multiplies by the literal \texttt{747796405u} exactly once, so counting that
+literal counts inlined hash evaluations. Each \texttt{hash44} performs 8 of them (4 chained over the lattice coordinates
+plus 4 for the output components); each four-dimensional Perlin evaluation performs 16 \texttt{hash44}. Hence
+$3{,}073 / 128 \approx 24$ FBM call sites in the fragment module.
+
+Ablations recompile \texttt{shaders/main.frag} from a scratch copy of \texttt{shaders/} with the Makefile's water flags
+(\texttt{glslc --target-env=vulkan1.3 -Iincludes -O -DWATER\_MODE=1}) and one subsystem stubbed at a time. Because the
+octave loops are dynamic (\texttt{octaves} is a UBO field), the compiler does \emph{not} unroll them: one FBM call site
+in the source is one Perlin body in the module, which is why static site counts map cleanly onto dynamic cost.
+
+Instruction mix of the shipped fragment module (dominant opcodes):
+
+\begin{center}
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+Opcode & count \\
+\midrule
+\texttt{OpShiftRightLogical} & 10,752 \\
+\texttt{OpIAdd} & 7,704 \\
+\texttt{OpBitwiseXor} & 7,296 \\
+\texttt{OpIMul} & 6,144 \\
+\texttt{OpFSub} & 2,574 \\
+\texttt{OpBitcast} & 1,921 \\
+\texttt{OpBitwiseOr} & 1,536 \\
+\texttt{OpExtInst} (of which \texttt{Pow} $\times$28) & 964 \\
+\texttt{OpFMix} & 531 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Integer hash ALU (shift $+$ iadd $+$ xor $+$ imul $+$ or) is \textbf{33,432} of the 46,320 instructions: \textbf{72\% of
+the water fragment module is spent computing random numbers}. That single fact drives the priority order below.
+
+% =====================================================================
+\section{Cost Model}
+\label{sec:cost}
+% =====================================================================
+
+Let $P$ be the four-dimensional Perlin evaluation ($\approx 128$ PCG hashes $\approx 1.3\times10^3$ ALU ops). With
+$O = \texttt{noiseOctaves}$:
+
+\begin{equation}
+C_{\mathrm{water}} = \underbrace{N_{\mathrm{px}} \cdot O \cdot (n_{\mathrm{field}} + n_{\mathrm{caustic}} + n_{\mathrm{refr}} + n_{\mathrm{spec}})\,P}_{\text{per-pixel procedural}}
+\;+\; \underbrace{N_{\mathrm{vtx}} \cdot O \cdot n_{\mathrm{vtx}}\,P}_{\text{per-vertex, $\times 2$ passes}}
+\;+\; \underbrace{N_{\mathrm{px}} \cdot C_{\mathrm{bw}}}_{\text{target bandwidth}}
+\;+\; C_{\mathrm{fixed}}
+\end{equation}
+
+with the default $O = 4$ and
+
+\[
+n_{\mathrm{field}} = 5,\quad n_{\mathrm{caustic}} = 8,\quad n_{\mathrm{refr}} = 4,\quad n_{\mathrm{spec}} = 3,\quad
+n_{\mathrm{vtx}} = 4 \ \text{(plus 3 more per patch in the TCS)}.
+\]
+
+At 1080p with 40\% water coverage and 60\,Hz that is $\sim 5\times10^7$ water-pixel invocations per second; at
+$13P \approx 1.7\times10^4$ dynamically executed instructions each (default preset) the water pixel shader alone issues
+$\sim 8\times10^{11}$ instructions/second, and at $75P$ (waves $+$ caustics) roughly $5\times10^{12}$ --- i.e. the water
+pass by itself can exceed the whole-device issue budget of a mid-range GPU, before any rasterisation, texturing, or
+bandwidth. This is consistent with the observed behaviour and explains why removing passes (report~19) improved things
+without fixing them.
+
+The three levers, in descending leverage:
+
+\begin{enumerate}
+    \item \textbf{Reduce $P$} --- the per-evaluation constant factor (C1: 4D $\rightarrow$ 3D, $-62.5\%$ hash ALU).
+    \item \textbf{Reduce the $n$'s} --- do not evaluate what is not used (C2, C3, C4, M10, H6, H7).
+    \item \textbf{Reduce $N$} --- shade fewer pixels (C5, H9) and move fewer bytes (H8).
+\end{enumerate}
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: Every Water Noise Evaluation Is Four-Dimensional, But the Animation Is Already Domain Translation}
+
+\textbf{Location:} \texttt{shaders/includes/perlin.glsl:9--14} (\texttt{pcgHash}), \texttt{:34--44} (\texttt{hash44}, 8 PCG
+per corner), \texttt{:70--113} (\texttt{perlinNoise4D}, 16 corners), \texttt{:156--236} (\texttt{perlinNoise4DGrad}),
+\texttt{:133--147}/\texttt{:244--259} (\texttt{fbm}/\texttt{fbmGrad4D}); consumers
+\texttt{shaders/includes/water\_noise.glsl:11--16} (\texttt{waterFbmNoise}), \texttt{:19--26}
+(\texttt{waterFbmNoiseGrad}), \texttt{:35--67} (\texttt{waterRidgedFbmGrad}).
+
+\begin{itemize}
+    \item A four-dimensional Perlin evaluation costs \textbf{16 corner hashes}, and \texttt{hash44} costs \textbf{8 PCG
+    calls} (four chained over the integer lattice coordinates, four for the output components). One evaluation is
+    therefore \textbf{128 PCG hashes} $\approx$ 700 integer ALU ops before the interpolation tree. The shipped water
+    fragment module contains 3,073 of them.
+    \item The fourth axis is the \emph{time} axis, and it is redundant: every consumer already animates by translating
+    its sample point. The chop, the calm mask and the foam texture subtract a drift term
+    (\texttt{water\_noise.glsl:225, 239, 361} --- \texttt{xyz - shoreDrift} / \texttt{xyz - foamDrift}); both ridged
+    trains fold the phase directly into their along-axis coordinate,
+    \texttt{along = dot(pos.xz, moveDir) + phaseOffset - speed * speedFactor * time} (\texttt{:76--93}). Passing
+    \texttt{time} as the fourth Perlin axis is a \emph{second}, independent animation mechanism on top of that.
+    \item Measured effect of removing the fourth axis (8 corners $\times$ \texttt{hash33} = 6 PCG $=48$ PCG per
+    evaluation): \textbf{3,073 $\rightarrow$ 1,153 PCG sites ($-62.5\%$)} and \textbf{46,320 $\rightarrow$ 20,508 SPIR-V
+    instructions ($-55.7\%$)}. This is a single, cross-cutting change that makes every other item cheaper too.
+    \item The only consumer with no drift of its own is \texttt{waterRefractionNoise}
+    (\texttt{water\_noise.glsl:398--410}), which passes a static \texttt{xyz}; it needs an explicit scroll term
+    (see C2).
+\end{itemize}
+
+\textbf{Technique:} add 3D gradient/noise entry points next to the 4D ones and switch the water FBM helpers to them,
+compensating the loss of the time axis with the drift each consumer already applies (and with an explicit scroll where
+there is none). Keep the 4D paths for non-water users so nothing else regresses.
+
+\begin{tcolorbox}[promptbox={Prompt: Drop the Fourth Noise Axis from the Water Field}]
+\textbf{Goal:} One water noise evaluation costs 48 PCG hashes instead of 128; the water fragment module drops below
+21{,}000 instructions; the animated look is unchanged in character.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Add \texttt{vec4 perlinNoise3DGrad(vec3 p)} to \texttt{perlin.glsl} beside \texttt{perlinNoise4DGrad}
+    (\texttt{:156}): 8 corners of \texttt{hash33}, same Hermite/$30f^2(1-f)^2$ derivative bookkeeping, returning
+    \texttt{vec4(value, d/dx, d/dy, d/dz)}. Mirror it with \texttt{vec4 fbmGrad3D(vec3 p, ...)} beside
+    \texttt{fbmGrad4D} (\texttt{:244}). Keep the 4D versions for the solid/vegetation users.
+    \item Switch \texttt{waterFbmNoise} / \texttt{waterFbmNoiseGrad} (\texttt{water\_noise.glsl:11--26}) to the 3D
+    entry points, feeding the existing \texttt{time} argument into the sample position as an explicit drift
+    (\texttt{xyz + driftDir * time * timeScale}) where the caller does not already subtract one --- the chop/mask/foam
+    call sites already pass \texttt{xyz - shoreDrift}, so bump their drift magnitude to restore the previous apparent
+    motion speed; \texttt{waterRefractionNoise} needs a new scroll term (C2).
+    \item Switch \texttt{waterRidgedFbmGrad} (\texttt{:35--67}) to \texttt{perlinNoise3DGrad} on
+    \texttt{vec3(q * freq, slice + phaseTime)}: the along-coordinate already carries $-c\,t$, and \texttt{slice}
+    (0.0 / 17.0 for the two trains) becomes a constant offset on the third axis, preserving the decorrelation between
+    trains. Verify the ridged crest geometry is unchanged in character (A/B screenshots at two times).
+    \item Keep \texttt{hash44}/\texttt{perlinNoise4D} in the file: they are still used elsewhere and deleting them
+    would move the solid path.
+    \item Re-measure with the \S\ref{sec:method} protocol: expect 1,153 PCG sites and $\sim$20.5k instructions for
+    \texttt{main\_water.frag}, and a proportional drop in \texttt{main\_water.tese} /
+    \texttt{main\_water\_no\_tess.vert}.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/perlin.glsl} (new 3D gradient entry points)
+    \item \texttt{shaders/includes/water\_noise.glsl} (FBM helpers, ridged FBM, refraction-noise scroll)
+    \item \texttt{Makefile} only if new variant rules are needed (none expected)
+\end{itemize}
+
+\textbf{Validation:} \texttt{spirv-dis} PCG-site count drops from 3,073 to $\sim$1,153 and instruction count to
+$\sim$20.5k; screenshot A/B at $t$ and $t+\Delta$ shows the same surface character and the same apparent wave speed
+(no frozen or boiling-in-place artefacts); the solid/vegetation passes are byte-identical in output; GPU timestamps
+14/15 drop measurably on water-dominated views; validation clean, and GPU-assisted validation clean via
+\texttt{VULKAN\_GPU\_ASSISTED=1 make run-debug}.
+\end{tcolorbox}
+
+\subsection{C2: \texttt{waterRefractionNoise} Spends 13 Four-Dimensional Perlin Evaluations on a Two-Channel Screen Offset}
+
+\textbf{Location:} \texttt{shaders/includes/water\_noise.glsl:398--410}; call site
+\texttt{shaders/includes/water\_surface.glsl:714--723}; consumers \texttt{:728--732} (screen-space offset) and
+\texttt{:846--850} (Snell-ray perturbation); defaults \texttt{utils/WaterParams.hpp:37,39}
+(\texttt{noiseOctaves = 4}, \texttt{noiseLacunarity = 4.0}).
+
+\begin{itemize}
+    \item The helper evaluates four separate FBM chains --- \texttt{noise1} (4 octaves), \texttt{noise2} (3),
+    \texttt{noise3} (2), and a second 4-octave chain for \texttt{nY} --- i.e. \textbf{13 four-dimensional Perlin
+    evaluations} to return a \texttt{vec2}. Measured ablation: 512 of the 3,073 PCG sites (17\% of the module's hash
+    ALU) live in this one function.
+    \item It is the \textbf{entire} procedural cost of the default configuration. Layer~0 ships with
+    \texttt{enableWaves = false}, so the wave field early-outs, caustics are gated off, and specular/glitter take the
+    flat branch (\texttt{water\_surface.glsl:1191--1194}). What is left of the water pixel shader is 13 Perlin4D
+    evaluations plus a handful of texture fetches.
+    \item Its product is a \emph{screen-space} quantity: \texttt{refractionOffset = refractionNoise *
+    refractionStrength} either offsets \texttt{screenUV} for the raster bottom lookup (\texttt{:972--976}) or tilts the
+    Snell direction (\texttt{:846--850}). It is not distance-faded, so water 3\,km away pays the same 13 evaluations for
+    an offset whose screen footprint is a fraction of a pixel.
+    \item With \texttt{noiseLacunarity = 4.0} and 4 octaves the finest octave is at $64\times$ the base frequency
+    (base wavelength 4\,m $\Rightarrow$ 6.25\,cm features). Those octaves are invisible or aliased on screen at almost
+    any distance, and they cost exactly as much as the octave that produces the visible motion.
+\end{itemize}
+
+\textbf{Technique:} replace the four chained FBMs with one cheap, band-limited, two-channel source: a single
+2--3-octave 3D/2D noise with a scroll term, or a pre-baked RG noise texture sampled in world-XZ with a time scroll (the
+engine already has a compute noise generator in \texttt{services/TextureMixer.cpp}). Gate it on
+\texttt{refractionStrength > 0} and fade it out with camera distance and with the screen-space footprint of the offset.
+
+\begin{tcolorbox}[promptbox={Prompt: Make the Refraction Distortion Cheap, Band-Limited and Distance-Aware}]
+\textbf{Goal:} The refraction offset costs at most one low-octave noise evaluation (or one texture fetch) and vanishes
+where it cannot be seen.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Early-out at the call site (\texttt{water\_surface.glsl:714}) when
+    \texttt{refractionStrength <= 0.0} (and, for the raster path, when the layer has no bottom to sample): today the
+    gate is only \texttt{enableRefraction || dbgMode}.
+    \item Replace the body of \texttt{waterRefractionNoise} with a single 2-octave 3D FBM sampled at
+    \texttt{xyz + drift}, returning two decorrelated channels from the same evaluation (e.g. two different
+    \texttt{offset} seeds through the cheap 3D helper, or one \texttt{fbmGrad3D} plus a rotated re-sample). Keep the
+    returned range and sign conventions so \texttt{refractionStrength} keeps its current meaning; document the look
+    change (fewer, larger features).
+    \item Alternative if a texture is preferred: add a 64$\times$64 RG16F (or RGBA8) tiling noise generated once at
+    startup with the existing \texttt{perlin\_noise.comp} machinery, sample it at
+    \texttt{fragPos.xz * scale + scroll * t}, and keep the two channels. Validate that tiling is invisible at the
+    authored \texttt{noisePeriod}.
+    \item Add a distance/footprint fade: compute the world-space size of a pixel at the fragment
+    (\texttt{fwidth(fragPosWorld)} or the depth-derived scale) and scale the offset --- and skip the noise entirely ---
+    once that footprint exceeds the finest retained octave's wavelength. This removes the cost on distant water, which
+    is where most water pixels are.
+    \item Revisit the defaults: \texttt{noiseLacunarity = 4.0} with 4 octaves is a $64\times$ frequency spread. Either
+    lower the default to $\sim$2.0--2.5 or split the spectrum per consumer (L14) so the refraction offset never pays for
+    octaves it cannot show.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_noise.glsl} (\texttt{waterRefractionNoise}, \texttt{:398--410})
+    \item \texttt{shaders/includes/water\_surface.glsl} (call site \texttt{:714--723}, distance fade)
+    \item \texttt{utils/WaterParams.hpp} / \texttt{vulkan/ubo/WaterParamsGPU.hpp} (defaults / new packed fields, if any)
+\end{itemize}
+
+\textbf{Validation:} PCG-site count drops by $\sim$512 (or by the full 4-site cost once C1 lands); a camera looking at
+distant water shows no refraction noise cost in the shader counters while near water is unchanged; screenshot A/B of
+still shallow water is within tolerance and the animated distortion still reads as water; validation clean, GPU-assisted
+validation clean.
+\end{tcolorbox}
+
+\subsection{C3: The Caustic Curvature Evaluates the Full Wave Field Twice --- More Than the Surface Itself}
+
+\textbf{Location:} \texttt{shaders/includes/water\_surface.glsl:1416--1470}, in particular the two
+\texttt{waterWaveSample} calls at \texttt{:1458--1462}; field implementation
+\texttt{shaders/includes/water\_noise.glsl:118--384}.
+
+\begin{itemize}
+    \item The caustic term needs one scalar, $d^2h/du^2$ along the sun azimuth. It obtains it as a central difference of
+    the analytic gradient, which means \textbf{two complete evaluations of the wave field} at
+    \texttt{entry $\pm$ sunHat * ec}. Each field evaluation is 4 FBM chains (chop, mask, train 1, train 2), so the
+    curvature costs \textbf{8 FBM sites = 32 four-dimensional Perlin evaluations per pixel} --- 43\% of the 75 evaluations
+    in a wavy, thick-water frame, and more than the 20 the shading normal costs. Measured ablation: removing the block
+    removes 1,024 of the 3,073 PCG sites.
+    \item The curvature is a \emph{second-derivative} quantity. It does not need the amplitude envelope, the calm mask,
+    the foam train, or the second ridged train to be resolved at full fidelity: the caustic pattern is dominated by the
+    primary crest geometry.
+    \item The report~19 gates (\texttt{causticIntensity > 0.001 \&\& waterThickness > 0.05 \&\& waveToggles.x > 0.5},
+    \texttt{water\_surface.glsl:1428--1429}) correctly prevent the cost on flat/thin water, but wherever the effect is
+    actually visible it is the single largest term in the shader.
+\end{itemize}
+
+\textbf{Technique:} compute the curvature from a reduced field and/or from a one-sided stencil. Two cheap options:
+(a) reuse the gradient already returned by the shading field at the shaded point and take a single one-sided difference
+(1 field evaluation instead of 2); (b) add a dedicated \texttt{waterWaveCurvature()} that evaluates \emph{only} the
+primary ridged train with a three-point stencil, skipping the chop, the mask, the second train and foam.
+
+\begin{tcolorbox}[promptbox={Prompt: Band-Limit the Caustic Curvature to One Reduced Field Evaluation}]
+\textbf{Goal:} The caustic term costs at most 4--8 four-dimensional Perlin evaluations instead of 32, with the same
+caustic pattern at the authored softness.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Add \texttt{float waterWaveCurvature(vec3 pos, float time, float depth, float amp, vec2 shoreDir, vec3 u,
+    float h, WaterParamsGPU wp)} to \texttt{water\_noise.glsl}: evaluate \emph{only} the primary ridged train
+    (\texttt{waterRidgedFbmGrad} on \texttt{coord1}) at \texttt{pos}, \texttt{pos + u*h}, \texttt{pos - u*h} and return
+    the second difference. Reuse \texttt{waterShoreWaveCoord} so the movement is identical to the surface. Cost: 3
+    single-train evaluations $\approx$ 12 Perlin4D (4 with C1's 3D noise).
+    \item Alternatively (cheaper, slightly different): reuse the analytic gradient \texttt{waveField.grad} already
+    computed for the shading normal at \texttt{fragBasePos} and take one one-sided difference against a single field
+    evaluation at the entry point. Document which approximation is chosen and why.
+    \item Replace the \texttt{waveP}/\texttt{waveM} pair at \texttt{water\_surface.glsl:1458--1462} with the chosen
+    helper; keep \texttt{ec} (the quarter-wavelength stencil from the finest retained octave) exactly as it is so the
+    caustic band-limiting is unchanged.
+    \item Preserve the \texttt{causticDebugMode} escape hatch: the debug view must still be able to force the accurate
+    path (or accept the reduced one --- document the choice).
+    \item Re-measure: expect the caustics block to fall from 1,024 PCG sites to $\sim$256--384.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_noise.glsl} (new \texttt{waterWaveCurvature}, or a
+    \texttt{waterWaveFieldReduced} variant)
+    \item \texttt{shaders/includes/water\_surface.glsl} (caustic block \texttt{:1416--1470})
+\end{itemize}
+
+\textbf{Validation:} \texttt{DEBUG\_MODE\_CAUSTICS} screenshots are within tolerance of the baseline at the default
+softness (compare the fold pattern's spatial frequency and contrast, not exact pixel values); the caustic animation
+still rides the waves; PCG-site count drops by $\geq$640; validation clean, GPU-assisted validation clean.
+\end{tcolorbox}
+
+\subsection{C4: The Distance LOD Is Applied to the Wave Field's Result, Not to Its Evaluation}
+
+\textbf{Location:} \texttt{shaders/includes/water\_surface.glsl:665--667} (field evaluation),
+\texttt{:686--694} (distance fade), \texttt{:714--723} (refraction noise), \texttt{:1174--1190} (specular/glitter),
+\texttt{:1416--1470} (caustics).
+
+\begin{itemize}
+    \item The water fragment stage evaluates the wave field first (\texttt{:665}) and only afterwards computes
+    \texttt{detail = 1.0 - smoothstep(200.0, 1000.0, camDist)} and mixes the resulting normal toward the flat base
+    normal (\texttt{:688--694}). Every water pixel beyond 1\,km therefore pays the \textbf{full 20 four-dimensional
+    Perlin evaluations} for a normal that is then discarded entirely, and every pixel in the 200--1000\,m band pays full
+    price for a partially used result.
+    \item Refraction noise (13), specular and glitter (10) and caustics (32) have \emph{no} distance gate whatsoever, so
+    distant water pays 75 evaluations per pixel while producing a nearly flat, sky-mirroring surface.
+    \item Distant water is not a small number of pixels: in a terrain view the water body recedes to the horizon, so the
+    far band routinely covers more screen area than the near band. This is the cheapest large win in the report after C1.
+\end{itemize}
+
+\textbf{Technique:} hoist the camera distance and the pixel footprint above the field evaluation and use them to (a) skip
+the field entirely past the fade distance, (b) reduce the octave count inside the fade band, and (c) gate the refraction,
+specular, glitter and caustic blocks on the same quantity.
+
+\begin{tcolorbox}[promptbox={Prompt: Evaluate at the LOD the Pixel Can Actually Resolve}]
+\textbf{Goal:} Water beyond the detail fade distance performs zero wave/specular/glitter/caustic noise work; water in the
+fade band performs a proportionally reduced octave count.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Move the \texttt{camDist}/\texttt{detail} computation to before the field call at
+    \texttt{water\_surface.glsl:665} and expose an integer \texttt{octBudget} (e.g. \texttt{4} near, \texttt{2} mid,
+    \texttt{0} beyond the fade) plus a hard \texttt{skipField} boolean. Pass \texttt{octBudget} into
+    \texttt{waterWaveField} (a new trailing parameter) and clamp \texttt{octavesN} with it.
+    \item When \texttt{skipField} is true, skip the field call entirely and use \texttt{flatN} as the normal; also skip
+    the refraction noise, the caustic block and the specular/glitter FBMs (keep the analytic highlight if it is still
+    wanted at range --- it costs one \texttt{pow}).
+    \item Prefer a \emph{footprint}-based criterion over raw distance where possible: the world-space extent of a pixel
+    (\texttt{fwidth(fragPosWorld)} or the depth-derived scale) is what actually band-limits the surface, and it
+    automatically handles both grazing far water and near-field zoom.
+    \item Apply the same budget to the vertex stage (see H6): the TES/no-tess VS currently evaluates the field at full
+    octave count for every vertex regardless of distance.
+    \item Keep the fade band's endpoints (200/1000\,m) as-is in the first iteration so the look is unchanged; A/B before
+    moving them.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_surface.glsl} (hoist LOD, gate the blocks)
+    \item \texttt{shaders/includes/water\_noise.glsl} (octave-budget parameter on \texttt{waterWaveField})
+    \item \texttt{shaders/main.vert} / \texttt{shaders/includes/water\_tese.glsl} (vertex-side budget, H6)
+\end{itemize}
+
+\textbf{Validation:} A view dominated by distant water shows the wave/refraction/specular blocks skipped in a RenderDoc
+capture (use the existing debug views or a temporary counter) while near water is pixel-identical; no popping appears at
+the 200\,m / 1000\,m boundaries (fade the octave count, never the amplitude); GPU time on horizon-heavy views drops
+measurably; validation clean.
+\end{tcolorbox}
+
+\subsection{C5: Terrain-Occluded Water Is Shaded in Full and Discarded Only at Composite Time}
+
+\textbf{Location:} \texttt{shaders/includes/water\_surface.glsl:606--610} (the note recording that the
+solid-occlusion discard was removed), \texttt{shaders/postprocess.frag:146--151} (the composite-side occlusion test),
+\texttt{vulkan/renderer/WaterRenderer.cpp:1246--1252} (depth attachment cleared to 1.0, with the stale comment
+``Forward-pass depth-test handles solid occlusion''), \texttt{MyApp.cpp:2242} and \texttt{:2678} (the water task waits
+\texttt{tlSolid}).
+
+\begin{itemize}
+    \item The water geometry pass has its own depth target, cleared to 1.0, and writes only water. Nothing in it
+    consults the solid depth, so a water surface hidden behind a ridge, a bank or an overhang is rasterised and shaded
+    with the \emph{full} water shader --- up to 75 four-dimensional Perlin evaluations per pixel --- and is then thrown
+    away by \texttt{postprocess.frag:148} (\texttt{if (waterGeomDepth < 1.0 \&\& obstacleDepth < waterGeomDepth)
+    waterAlpha = 0.0;}).
+    \item This is not a correctness requirement: the water task already waits on \texttt{tlSolid}, and
+    \texttt{solidSceneDepthTex} is already bound in the water set~2 and sampled elsewhere in the same shader
+    (\texttt{water\_surface.glsl:975, 922, 1091}). One fetch at the top of the water fragment stage is enough.
+    \item The pixel cost is ``free'' only in the sense that a discard still rasterises; what it saves is the entire
+    procedural shading stack, which is 72\% of the module.
+    \item The comment at \texttt{WaterRenderer.cpp:1250} is actively misleading and should be corrected in the same
+    change.
+\end{itemize}
+
+\textbf{Technique:} restore an explicit early rejection against the solid depth inside the water fragment stage, placed
+before the wave field; make it conditional on the solid depth actually being available (it is, whenever the water task
+runs after \texttt{tlSolid}, which is the only ordering in use).
+
+\begin{tcolorbox}[promptbox={Prompt: Reject Solid-Occluded Water Fragments Before Shading}]
+\textbf{Goal:} Water hidden behind terrain costs one depth fetch and a discard, not the full water shader.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item At the top of \texttt{shadeWaterSurface()} (right after \texttt{screenUV} is computed,
+    \texttt{water\_surface.glsl:601--604}), read \texttt{float solidD = textureLod(solidSceneDepthTex, screenUV,
+    0.0).r;} and \texttt{discard;} when \texttt{solidD < gl\_FragCoord.z - kDepthEps} with a small positive epsilon
+    (the same convention the composite uses, \texttt{postprocess.frag:148}, tightened so coplanar shorelines are not
+    rejected).
+    \item Guard the fetch so it cannot fire when the solid depth is not valid for this pass: add a UBO/pass flag (or
+    check \texttt{ubo.passParams} / the existing capture-mode conventions) so the 360-capture and any future
+    water-in-main variant skip the test (there the hardware depth test already does it).
+    \item Keep the composite test (it also covers vegetation and remains correct if the shader-level test is disabled).
+    \item Fix the comment at \texttt{WaterRenderer.cpp:1250} to state that occlusion is resolved by the shader
+    early-out plus the composite test, not by the forward pass.
+    \item Measure with a camera placed behind a ridge overlooking a lake: compare GPU timestamps 14/15 with and without
+    the change.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_surface.glsl} (early-out at \texttt{:601--604})
+    \item \texttt{vulkan/renderer/WaterRenderer.cpp} (comment at \texttt{:1250}; optional pass flag)
+    \item \texttt{vulkan/ubo/WaterRenderUBO.hpp} (only if a new flag channel is needed)
+\end{itemize}
+
+\textbf{Validation:} RenderDoc shows the discard in the water pipeline and a large drop in water-shader invocations for
+occluded views; screenshots with the camera above open water are pixel-identical (no shoreline is rejected --- verify at
+grazing angles and at the waterline); no validation errors from the depth fetch (the image is already in
+\texttt{SHADER\_READ\_ONLY}); GPU-assisted validation clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{High-Severity Issues}
+% =====================================================================
+
+\subsection{H6: The Water Vertex Stage Is 8.5k Instructions per Vertex and Runs Twice per Frame}
+
+\textbf{Location:} \texttt{shaders/main.vert:134--136} (\texttt{waterDisplaceWaterVertex} in the WATER\_NO\_TESS path;
+module \texttt{main\_water\_no\_tess.vert.spv} = 8,464 instructions, 513 PCG sites),
+\texttt{shaders/includes/water\_tese.glsl:113--152} (the shared core), \texttt{:345} (TES call site; module
+\texttt{main\_water.tese.spv} = 8,604 instructions); \texttt{vulkan/renderer/WaterBackFaceRenderer.cpp:243--254}
+(back-face pass re-runs the same vertex path with front-face culling).
+
+\begin{itemize}
+    \item With tessellation off --- the default --- the water vertex shader still calls
+    \texttt{waterDisplaceWaterVertex}, which evaluates the full wave field: 4 FBM sites $\times$ 4 octaves =
+    \textbf{16 four-dimensional Perlin evaluations $\approx$ 2,048 PCG hashes per vertex}. The module is 8,464
+    instructions against \textbf{137} for the solid vertex shader.
+    \item It runs \textbf{twice} per frame for every water vertex: once in the geometry pass and once in the back-face
+    depth pass, which draws the same mesh with \texttt{VK\_CULL\_MODE\_FRONT\_BIT}.
+    \item Most of that work cannot be represented by the geometry anyway. The base mesh is a chunk-resolution isosurface
+    whose vertices are metres apart, while the finest octave of the default spectrum has a 6.25\,cm wavelength: the top
+    octaves are pure aliasing on geometry. Band-limiting the per-vertex evaluation is both a correctness improvement
+    (no aliased silhouette) and a $\sim$2$\times$ saving.
+    \item The back-face pass needs a \emph{depth proxy}, not a displaced surface: it exists only so the fragment stage
+    can measure a water column. Displacing its vertices with the wave field is work whose only effect is to add noise to
+    that measurement.
+    \item The vertex stage additionally performs 2--6 depth-texture fetches per vertex (base depth, shore-gradient pair,
+    plus the displaced-UV refinement at \texttt{main.vert:110--133}), and the whole thing is gated only by
+    \texttt{wp.waveToggles.x > 0.5}, never by distance.
+\end{itemize}
+
+\textbf{Technique:} band-limit the per-vertex field (drop octaves finer than the local vertex spacing), gate the
+displacement by distance, and give the back-face pass an undisplaced vertex variant.
+
+\begin{tcolorbox}[promptbox={Prompt: Band-Limit the Vertex Wave Evaluation and Stop Displacing Back Faces}]
+\textbf{Goal:} The water vertex stage costs a few octaves instead of 16 Perlin4D per vertex, and the back-face pass pays
+no wave evaluation at all.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Add an explicit octave budget to \texttt{waterDisplaceWaterVertex}
+    (\texttt{water\_tese.glsl:113}) and clamp \texttt{octavesN} inside \texttt{waterWaveField} with it. Derive it from
+    the local vertex spacing: pass the patch edge length (TES) or use \texttt{fwidth}-free approximations such as the
+    camera-distance band already used for tessellation (VS), and drop every octave whose wavelength is below $\sim$2
+    vertex spacings.
+    \item Gate the displacement by distance: beyond the distance where the displacement subtends less than a pixel
+    (or beyond the existing 200--1000\,m detail band, consistent with C4), skip the field call entirely and emit the
+    base vertex. Keep \texttt{fragWaterDepth}/\texttt{fragShoreDir} --- the depth measurement still matters for the
+    region tint --- but skip the field.
+    \item Add an undisplaced back-face vertex variant: a \texttt{WATER\_BACKFACE} define (or a dedicated
+    \texttt{water\_backface} vertex module) that emits the base position and forwards
+    \texttt{fragWaterDepth}/\texttt{fragShoreDir} without calling \texttt{waterDisplaceWaterVertex}. Wire it into
+    \texttt{WaterBackFaceRenderer}'s pipeline family selection. Document that the back-face depth is a volume proxy and
+    that the wave displacement perturbs it by less than the 5\,cm validity threshold
+    (\texttt{water\_surface.glsl:638}).
+    \item Share the per-vertex result with the fragment stage where possible (M11) so the two evaluations stop
+    duplicating each other.
+    \item Re-measure: expect \texttt{main\_water\_no\_tess.vert} / \texttt{main\_water.tese} to drop from $\sim$8.5k
+    instructions to a fraction of that, and the PCG-site count from 513 to $\sim$128--256.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/main.vert} (no-tess path), \texttt{shaders/includes/water\_tese.glsl} (shared core, budget)
+    \item \texttt{vulkan/renderer/WaterBackFaceRenderer.cpp/hpp} (undisplaced variant)
+    \item \texttt{Makefile} (new vertex variant rule)
+\end{itemize}
+
+\textbf{Validation:} Wireframe and shoreline screenshots are unchanged (the silhouette must not visibly change where the
+displacement is retained); screenshots of distant water show no popping; the back-face depth debug view
+(\texttt{DEBUG\_MODE\_THICKNESS}) is within tolerance; validation clean (the new variant's vertex/fragment interface must
+match the back-face fragment stage), GPU-assisted validation clean.
+\end{tcolorbox}
+
+\subsection{H7: The TCS Evaluates the Full Wave Field Three Times per Patch to Nudge Tessellation by 30\%}
+
+\textbf{Location:} \texttt{shaders/includes/water\_tesc.glsl:84--106}; module \texttt{main\_water.tesc.spv} = 7,682
+instructions, 513 PCG sites; parameter \texttt{utils/WaterParams.hpp:91} (\texttt{tessNoiseInfluence = 0.3}).
+
+\begin{itemize}
+    \item For each of the three patch edges the TCS evaluates \texttt{waterWaveDisplacement} at the edge midpoint
+    (\texttt{water\_tesc.glsl:98--100}) --- a full field evaluation (4 FBM sites $\times$ 4 octaves = 16 Perlin4D) ---
+    purely to multiply the distance-derived tessellation level by
+    \texttt{1.0 + noiseInf * (noiseVal - 0.5)}, i.e. by at most $\pm30\%$ at the default.
+    \item That is \textbf{48 four-dimensional Perlin evaluations per input triangle}, on top of the TES evaluation for
+    every generated vertex, for a quantity whose only job is to bias triangle density by a few percent.
+    \item The noise must stay deterministic per shared edge (so adjacent patches agree and no cracks appear), which
+    rules out a screen-space or per-patch shortcut --- but not a cheaper field: the tessellation level does not need the
+    chop, the calm mask, the second train, or four octaves.
+    \item This cost only exists when \texttt{settings.tessellationEnabled} is true (default false), but it is the
+    dominant per-patch cost of the maximum-quality path.
+\end{itemize}
+
+\textbf{Technique:} add a dedicated single-train, one-or-two-octave tessellation probe that keeps the edge-midpoint
+determinism, or reuse the TES-driven density and drop the noise term when \texttt{tessNoiseInfluence} is small.
+
+\begin{tcolorbox}[promptbox={Prompt: Replace the TCS Wave Probe with a Single-Train, Low-Octave Estimate}]
+\textbf{Goal:} The noise-adaptive tessellation modulation costs $\leq$4 four-dimensional Perlin evaluations per patch
+instead of 48.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Add \texttt{float waterWaveTessProbe(vec3 pos, float time, WaterParamsGPU wp)} to
+    \texttt{water\_noise.glsl}: one \texttt{waterRidgedFbmGrad} on the \emph{primary} train only, with
+    \texttt{octaves = min(2, octavesN)}, no chop, no mask, no foam. Keep the same \texttt{shoreDir} fallback and the same
+    deep-water (\texttt{depth = -1}) convention so the probe tracks the real surface.
+    \item Use it at \texttt{water\_tesc.glsl:98--100}. Keep evaluating at the edge midpoint so the crack-free property
+    (identical value for both patches sharing an edge) is preserved exactly; add a comment restating why.
+    \item Skip the probe entirely when \texttt{noiseInf <= 0.0} or \texttt{wp.waveToggles.x < 0.5} (already partly
+    handled at \texttt{:93}) --- and consider folding \texttt{tessNoiseInfluence} into the distance term when it is
+    below a threshold, documenting the visual trade-off.
+    \item Re-measure: expect \texttt{main\_water.tesc} PCG sites to drop from 513 to $\sim$64--128.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_noise.glsl} (new probe), \texttt{shaders/includes/water\_tesc.glsl}
+    (call site \texttt{:98--100})
+\end{itemize}
+
+\textbf{Validation:} Tessellation debug heat view shows the same density distribution within a small tolerance; no cracks
+appear at patch borders (fly along a shoreline at maximum quality); PCG-site count drops; validation clean.
+\end{tcolorbox}
+
+\subsection{H8: The Water Color Target Is RGBA32F at Full Resolution}
+
+\textbf{Location:} \texttt{vulkan/renderer/WaterRenderer.cpp:340} (allocation, \texttt{VK\_FORMAT\_R32G32B32A32\_SFLOAT}),
+\texttt{:772, 861--869} (pipeline attachment formats), \texttt{:1171, 1308, 1358} (transitions),
+\texttt{shaders/postprocess.frag:98} (composite fetch).
+
+\begin{itemize}
+    \item The water color target is 128 bits per pixel at full resolution: 16 bytes written per water pixel, 16 bytes
+    read per screen pixel in the composite, plus a full-res clear and two layout transitions per frame. Nothing in the
+    shader needs float32: the color is a lit, tone-mapped-range value with a handful of \texttt{pow}-shaped highlights
+    and an alpha in $[0,1]$.
+    \item RGBA16F halves both the write and the read bandwidth and the clear cost, at the same time reducing the
+    pressure that makes the (already huge) water fragment shader memory-bound at 4K.
+    \item The body/column attachments are already 16F/16F and were made conditional by report~19's H4; the color target
+    is the last full-precision target in the water path.
+\end{itemize}
+
+\textbf{Technique:} switch the water color target and its pipeline attachment format to
+\texttt{VK\_FORMAT\_R16G16B16A16\_SFLOAT}; keep the dummy water color view format in sync.
+
+\begin{tcolorbox}[promptbox={Prompt: Move the Water Color Target to RGBA16F}]
+\textbf{Goal:} Half the water-target bandwidth with no visible change.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Replace \texttt{VK\_FORMAT\_R32G32B32A32\_SFLOAT} with \texttt{VK\_FORMAT\_R16G16B16A16\_SFLOAT} for the water
+    color image (\texttt{WaterRenderer.cpp:340}), its transitions (\texttt{:348, 487, 527}), the pipeline rendering
+    formats (\texttt{:861}) and the no-body variant (\texttt{:892}). Confirm the dummy water color image
+    (\texttt{:283--290}, already RGBA8) stays consistent with whatever the composite samples.
+    \item Update \texttt{renderMainTargets}' format handling if the water-in-main path shares this format constant.
+    \item Check the water-in-main path: there the attachment is the \emph{solid} color target, so no change is needed
+    there --- but confirm no code assumes the offscreen water format equals the solid one.
+    \item Verify no debug view needs the extra range (the displacement/thickness debug views write normalised values;
+    the compose view writes clamped fractions).
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{vulkan/renderer/WaterRenderer.cpp/hpp} (allocation, transitions, pipeline formats, dummy)
+\end{itemize}
+
+\textbf{Validation:} Screenshots are within 8-bit tolerance at both default and maximum quality (compare with
+\texttt{bin/screenshot.png} before/after); specular highlights and caustics do not clip; VRAM budget drops by
+$3\times$ (width $\times$ height $\times$ 8 bytes); validation clean (format/layout pairs must match everywhere).
+\end{tcolorbox}
+
+\subsection{H9: A Separate Full-Resolution Water Pass Survives Even Though the Water-in-Main Path Exists}
+
+\textbf{Location:} \texttt{MyApp.cpp:2583--2616} (\texttt{settings.waterInMainPass} selects
+\texttt{renderMainTargets} vs \texttt{renderPass}), \texttt{utils/Settings.hpp:133} (default \texttt{false}),
+\texttt{widgets/SettingsWidget.cpp:142} (the toggle), \texttt{vulkan/renderer/WaterRenderer.cpp:997--1120}
+(the offscreen pass), \texttt{shaders/postprocess.frag:98, 146--151} (composite water fetches).
+
+\begin{itemize}
+    \item In the default path water is rendered into its own full-resolution color $+$ depth pair, transitioned twice
+    per frame, cleared every frame, and then fetched twice more by the composite (water color at \texttt{:98}, water
+    geometry depth at \texttt{:147}) for every screen pixel.
+    \item The Phase-1 water-in-main path (\texttt{renderMainTargets}, the alpha-blended water pipeline) already exists
+    and is user-selectable. Drawing water into the main targets removes the offscreen pair, its transitions and clears,
+    and --- decisively --- gives the water draw \textbf{hardware early-Z against the solid depth buffer}, which is the
+    structural fix for C5 rather than a shader-level discard.
+    \item It is not free: the in-trace screen lookups then bind the previous frame's solid/vegetation views (1-frame
+    latency, as documented at \texttt{MyApp.cpp:2588--2592}), and the composite's separate-water branch is skipped.
+    \item Independently, a \textbf{water render scale} (e.g.\ 0.5) is a standard technique for translucent layers: the
+    water surface is smooth and low-frequency compared with the scene, and a bilinear upsample of color plus a
+    closest-depth upsample of the water depth is visually acceptable for the composite's occlusion test.
+\end{itemize}
+
+\textbf{Technique:} finish Phase~1b (make water-in-main the default, with the 1-frame latency documented and A/B'd) and,
+for the offscreen path, add a resolution scale.
+
+\begin{tcolorbox}[promptbox={Prompt: Make Water-in-Main the Default and Add a Water Resolution Scale}]
+\textbf{Goal:} Either water shares the main targets (no offscreen pair, hardware early-Z), or it is shaded at a
+fraction of the resolution --- in both cases the per-frame water cost drops substantially.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item \textbf{Phase 1b:} flip \texttt{Settings::waterInMainPass} to \texttt{true}, run the full smoke test, and
+    quantify the 1-frame latency on the in-trace lookups (camera motion near the waterline and under fast rotation).
+    Fix any ordering issue rather than reverting the default: the water task already waits \texttt{tlSolid}.
+    \item Verify the composite's dummy-water path
+    (\texttt{MyApp.cpp:3083--3092}) leaves a fully transparent water view so no ghosting appears, and that the brush
+    overlay and back-face depth paths still work on the in-main route.
+    \item \textbf{Resolution scale:} add \texttt{Settings::waterRenderScale} (1.0 / 0.5), pass
+    \texttt{width * scale} to \texttt{WaterRenderer::createRenderTargets} and
+    \texttt{WaterBackFaceRenderer::createRenderTargets}, and keep the viewport/scissor in device pixels (they already
+    derive from \texttt{renderWidth/renderHeight}).
+    \item In the composite, sample the water color with a bilinear fetch (it already is one) and sample the water
+    geometry depth with an explicit \texttt{textureLod(..., 0.0)}; for the occlusion test take the \emph{minimum} of the
+    2$\times$2 depth taps (closest-surface upsample) so terrain edges in front of water are never punched through.
+    Document the half-pixel waterline tolerance this introduces.
+    \item Keep the full-resolution path as the reference for A/B and for screenshots.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{utils/Settings.hpp}, \texttt{MyApp.cpp} (target sizes, in-main default), \texttt{shaders/postprocess.frag}
+    \item \texttt{vulkan/renderer/WaterRenderer.cpp/hpp}, \texttt{vulkan/renderer/WaterBackFaceRenderer.cpp/hpp}
+    \item \texttt{vulkan/renderer/SceneRenderer.cpp} (target creation at \texttt{:181--186, 487--489})
+\end{itemize}
+
+\textbf{Validation:} Water-in-main: screenshots match the offscreen path within tolerance on static views; no water
+ghosting; brush liquid still composites. Half-res: the waterline shows no terrain bleeding through (closest-depth
+upsample), and reflection/specular detail loss is documented and accepted; VRAM drops by $\sim$75\% of the water
+targets; validation clean including the new image sizes and layout transitions.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M10: Specular and Glitter Run 10 Perlin Evaluations per Pixel With No Lobe Early-Out}
+
+\textbf{Location:} \texttt{shaders/includes/water\_surface.glsl:1174--1190}; defaults
+\texttt{utils/WaterParams.hpp:57,59} (\texttt{specularIntensity = 2.0}, \texttt{glitterIntensity = 1.5}).
+
+\begin{itemize}
+    \item The block evaluates three FBM chains: the specular perturbation (4 octaves), the glitter noise
+    (\texttt{noiseOctaves - 2} = 2) and the glitter threshold (4) --- \textbf{10 four-dimensional Perlin evaluations},
+    measured at 384 of the module's 3,073 PCG sites.
+    \item Both lobes are multiplied by powers of \texttt{specAngle}: \texttt{pow(specAngle, specularPowerParam)} with
+    \texttt{specularPower = 128}, and \texttt{pow(specAngle, 32.0)} for the glitter. Outside the sun lobe those powers
+    are numerically zero, so the noise is computed to be multiplied by zero for the overwhelming majority of pixels.
+    \item Report~19 gated this block on \texttt{wp.waveToggles.x > 0.5}, which helps calm layers, but the lobe gate is
+    still missing: with waves on, every water pixel pays it.
+\end{itemize}
+
+\textbf{Technique:} hoist the cheap lobe term and early-out on it; scale the glitter noise cost by the lobe too.
+
+\begin{tcolorbox}[promptbox={Prompt: Gate the Specular/Glitter Noise on the Highlight Lobe}]
+\textbf{Goal:} Zero noise cost for the $\sim$99\% of water pixels outside the sun highlight.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Compute \texttt{specAngle} (already available at \texttt{water\_surface.glsl:1172}) and the lobe powers
+    \emph{before} the FBMs. Skip the specular FBM when \texttt{pow(specAngle, specularPowerParam) * specularIntensity}
+    is below a visible threshold (e.g.\ $10^{-4}$), and skip both glitter FBMs when \texttt{pow(specAngle, 32.0)} is
+    below theirs.
+    \item Merge the two glitter chains: the threshold FBM (4 octaves) exists only to jitter a cutoff. Reuse the glitter
+    noise value itself with an offset/threshold remap, halving the glitter cost.
+    \item Apply the distance budget from C4 to this block as well (glitter at 1\,km is invisible).
+    \item Keep the analytic highlight for the waves-off branch (\texttt{:1191--1194}) unchanged --- it is already free.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_surface.glsl} (\texttt{:1174--1190})
+\end{itemize}
+
+\textbf{Validation:} Screenshots with the sun in view are pixel-identical (the lobe is unchanged where it is visible);
+screenshots with the sun behind the camera show no change because the lobe was already $\sim$0; a profiling counter or
+debug view confirms the blocks are skipped outside the lobe; validation clean.
+\end{tcolorbox}
+
+\subsection{M11: The Vertex Stage and the Fragment Stage Evaluate the Same Field at the Same Position}
+
+\textbf{Location:} \texttt{shaders/includes/water\_tese.glsl:113--152} / \texttt{shaders/main.vert:134--136}
+(\texttt{waterDisplaceWaterVertex} $\rightarrow$ \texttt{waterWaveSample}), and
+\texttt{shaders/includes/water\_surface.glsl:665--667} (the fragment-stage \texttt{waterWaveField} at
+\texttt{fragBasePos.xyz} with the same \texttt{animTime}, \texttt{fragWaterDepth} and \texttt{fragBasePos.w}).
+
+\begin{itemize}
+    \item Both stages evaluate the identical field at the identical base position with identical parameters. The vertex
+    stage uses the result to displace geometry and to derive an interpolated normal; the fragment stage re-evaluates it
+    per pixel for the analytic normal, because interpolation cannot carry the fine octaves.
+    \item The duplication is not pure waste --- the per-pixel evaluation is what gives the surface its detail --- but the
+    \emph{coarse} part of the spectrum is computed twice at two different rates for the same answer.
+    \item With the octave budget from C4/H6 in place, the natural split becomes available: the vertex stage evaluates the
+    low octaves (which the geometry can represent) and forwards them; the fragment stage evaluates only the octaves above
+    that cutoff.
+\end{itemize}
+
+\textbf{Technique:} split the spectrum by evaluation rate once the octave budget exists; until then, at minimum, forward
+the vertex-stage height/gradient so the fragment stage can skip the octaves the vertex stage already resolved.
+
+\begin{tcolorbox}[promptbox={Prompt: Split the Wave Spectrum Between the Vertex and Fragment Rates}]
+\textbf{Goal:} Each octave of the wave field is evaluated exactly once per frame at the rate that can represent it.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Give \texttt{waterWaveField} an explicit \texttt{octLo}/\texttt{octHi} range (in addition to the C4 octave
+    budget) so a caller can request ``octaves 0--1 only'' or ``octaves 2--3 only''.
+    \item In the vertex stage, request the low band and forward its height and analytic gradient through two extra
+    varyings (or pack the gradient into the existing \texttt{fragDebug}/\texttt{fragBasePos} channels if locations are
+    scarce --- prefer new locations and update \texttt{vulkan/includes/locations.hpp}).
+    \item In the fragment stage, request only the high band and add the forwarded low-band gradient to it before
+    building the normal. The result must be identical to evaluating the full spectrum per pixel.
+    \item Verify the shore-zone envelope (\texttt{env}, \texttt{heightTaper}, \texttt{mask}) is applied consistently:
+    those are per-point scalars; compute them once (cheaply) in both stages or forward them too.
+    \item If the added varyings cost more than the saved octaves on your target (measure!), keep the current duplication
+    and instead rely on H6's band-limiting alone.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/includes/water\_noise.glsl} (octave range), \texttt{shaders/includes/water\_tese.glsl},
+    \texttt{shaders/main.vert}, \texttt{shaders/includes/water\_surface.glsl}
+    \item \texttt{vulkan/includes/locations.hpp} (new varyings, if taken)
+\end{itemize}
+
+\textbf{Validation:} \texttt{DEBUG\_MODE\_SHADING\_NORMAL} and \texttt{DEBUG\_MODE\_DISPLACEMENT} are identical to the
+baseline at near and far range; no discontinuity appears across chunk borders where the vertex density changes (this is
+the main risk --- test at a LoD transition); validation clean (varying interface must match in every water pipeline
+including the back-face and wireframe ones).
+\end{tcolorbox}
+
+\subsection{M12: The Composite Fetches the Water Geometry Depth for Every Screen Pixel}
+
+\textbf{Location:} \texttt{shaders/postprocess.frag:98} (water color fetch), \texttt{:146--151} (the occlusion block).
+
+\begin{itemize}
+    \item The occlusion block fetches \texttt{waterGeomDepthTex} unconditionally for every pixel of the frame --- sky,
+    terrain, vegetation, brush --- even though \texttt{waterAlpha == 0} makes the test a no-op there. Two full-res
+    fetches (color $+$ depth) are therefore paid on every non-water pixel.
+    \item The composite already runs at full resolution over the whole screen, so this is a bandwidth and latency cost
+    proportional to the display resolution.
+\end{itemize}
+
+\textbf{Technique:} guard both fetches and the occlusion test on \texttt{waterAlpha > 0.0}.
+
+\begin{tcolorbox}[promptbox={Prompt: Skip the Water Composite Work Where There Is No Water}]
+\textbf{Goal:} Zero water fetches for pixels the water pass did not cover.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Move the \texttt{waterGeomDepthTex} fetch and the occlusion test inside \texttt{if (waterAlpha > 0.0)}
+    (\texttt{postprocess.frag:146--151}). Note that \texttt{waterAlpha} comes from the color fetch, which must stay
+    unconditional (it is the coverage signal) --- but the depth fetch, the \texttt{waterGeomDepth} comparison and the
+    alpha zeroing do not.
+    \item Fold the blur block (\texttt{:112--140}) and the occlusion block into one guarded region, preserving the
+    current order (blur first, then occlusion).
+    \item Keep the \texttt{waterBlurEnabled} gate from report~19's H4 intact.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{shaders/postprocess.frag}
+\end{itemize}
+
+\textbf{Validation:} Screenshots pixel-identical on water and non-water regions; a camera with no water on screen shows
+zero water-depth fetches in a RenderDoc capture; validation clean.
+\end{tcolorbox}
+
+\subsection{M13: Water That Is Resident but Entirely Frustum-Culled Still Pays the Full Pass}
+
+\textbf{Location:} \texttt{MyApp.cpp:2214--2245} (the empty-water fast path), \texttt{:2224--2228}
+(\texttt{waterMeshCount} is the \emph{resident} mesh count).
+
+\begin{itemize}
+    \item Report~19's M8 fast path fires only when there are \emph{zero resident} water meshes. As soon as one water
+    chunk is loaded anywhere in the scene, every frame performs the full sequence even when the camera looks away from
+    all water: descriptor updates, the back-face path, three clears $+$ a depth clear, an indirect draw with count 0, and
+    the layout transitions.
+    \item The M8 comment (\texttt{MyApp.cpp:2216--2223}) explains why the GPU visible-count readback was rejected: it is
+    copied asynchronously and can lag several frames, so a stale zero cleared the targets while the current cull still
+    had visible chunks, producing flicker while chunks streamed in.
+    \item The fix is not to trust a single stale read but to require \emph{persistence}: a value that has been zero for
+    $k$ consecutive frames is safe, because the fast path only ever clears the targets to alpha 0 (so a wrong guess costs
+    one frame of missing water, and a persistent zero means the camera has been looking away for $k$ frames).
+\end{itemize}
+
+\textbf{Technique:} extend the fast path with an N-frame hysteresis on the GPU visible count, keeping the clear-to-alpha-0
+safety property.
+
+\begin{tcolorbox}[promptbox={Prompt: Add Hysteresis to the Empty-Water Fast Path}]
+\textbf{Goal:} The clear-only path also fires when the water is resident but has been invisible for several frames.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Read the water indirect renderer's visible count (the same source
+    \texttt{SceneRenderer::readVisibleCount} exposes) and keep a small per-frame history or a counter
+    \texttt{waterInvisibleFrames}.
+    \item Take the fast path when \texttt{waterInvisibleFrames >= k} (start with $k = 3$) \emph{and} no brush liquid is
+    pending. Reset the counter to 0 on any frame with a nonzero count. Because the fast path clears the water color to
+    $(0,0,0,0)$, a mistaken skip shows one frame of missing water at worst --- and with $k \ge 2$ a streamed-in chunk
+    cannot be missed, since the cull runs before the draw in the same frame.
+    \item Keep the existing zero-resident-meshes path unconditional (it needs no hysteresis).
+    \item Do not apply this to the water-in-main variant (the composite reads the main targets there).
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{MyApp.cpp} (water task, \texttt{:2214--2245}), \texttt{vulkan/renderer/SceneRenderer.hpp/cpp}
+    (expose the visible count if it is not already reachable)
+\end{itemize}
+
+\textbf{Validation:} Camera-away captures show no water raster passes after $k$ frames; spinning the camera back toward
+water shows no flicker or one-frame flash; chunk streaming does not produce flicker (reproduce the case the M8 comment
+describes); validation clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L14: One Noise Spectrum Serves Five Consumers With Wildly Different Band Requirements}
+
+\textbf{Location:} \texttt{utils/WaterParams.hpp:37--44} (\texttt{noiseOctaves = 4},
+\texttt{noisePersistence = 0.5}, \texttt{noiseLacunarity = 4.0}, \texttt{noisePeriod = 4.0}); consumers
+\texttt{shaders/includes/water\_noise.glsl:225} (chop), \texttt{:239} (calm mask), \texttt{:271,273} (ridged trains),
+\texttt{:361} (foam texture), \texttt{:400--410} (refraction offset); packing
+\texttt{vulkan/ubo/WaterParamsGPU.hpp:7}.
+
+\begin{itemize}
+    \item All five consumers read the same \texttt{params2.z} (octaves), \texttt{params2.w} (persistence) and
+    \texttt{params3.y} (lacunarity). A user who wants fine foam detail therefore buys four octaves of ridged swell they
+    cannot see, and a user who wants broad swell buys four octaves of foam texture.
+    \item \texttt{noiseLacunarity = 4.0} is unusual (2.0--2.5 is the conventional range). With four octaves it spans a
+    $64\times$ frequency range, so the top octaves are sub-pixel at almost any distance: paid in full, visible not at
+    all, and a source of the shimmer C4's footprint band-limiting would remove.
+    \item Splitting the spectrum is a small packing change with a large multiplier effect once C1--C4 land, because each
+    consumer can then be band-limited independently.
+\end{itemize}
+
+\textbf{Technique:} give the refraction offset, the chop/mask and the foam their own octave/lacunarity fields (or derive
+them from the existing ones with documented per-consumer clamps), and lower the lacunarity default.
+
+\begin{tcolorbox}[promptbox={Prompt: Give Each Noise Consumer Its Own Band}]
+\textbf{Goal:} No consumer pays for octaves it cannot show; the default lacunarity stops producing sub-pixel octaves.
+
+\textbf{Steps:}
+\begin{enumerate}
+    \item Lower \texttt{noiseLacunarity} to $\sim$2.2 and re-tune \texttt{noisePeriod} so the \emph{base} feature size is
+    unchanged; A/B the look and document the new defaults.
+    \item Add per-purpose octave counts: reuse the free channels of \texttt{WaterParamsGPU} (or extend the struct) with
+    \texttt{refractionOctaves}, \texttt{foamOctaves} and \texttt{detailOctaves}, defaulting each to a value derived from
+    the current \texttt{noiseOctaves} so the shipped look is unchanged.
+    \item Thread them through \texttt{WaterRenderer}'s packing into \texttt{water\_noise.glsl} and surface them in
+    \texttt{widgets/WaterWidget.cpp} under the existing noise section (optional but cheap).
+    \item Clamp every consumer's octave count against the footprint-based budget from C4 so a user cannot configure
+    their way back to sub-pixel octaves.
+\end{enumerate}
+
+\textbf{Files to modify:}
+\begin{itemize}
+    \item \texttt{utils/WaterParams.hpp}, \texttt{vulkan/ubo/WaterParamsGPU.hpp},
+    \texttt{vulkan/renderer/WaterRenderer.cpp} (packing)
+    \item \texttt{shaders/includes/water\_noise.glsl}, \texttt{shaders/includes/water\_surface.glsl}
+    \item \texttt{widgets/WaterWidget.cpp} (optional UI)
+\end{itemize}
+
+\textbf{Validation:} Default screenshots unchanged after the lacunarity re-tune (A/B required); the new octave fields
+default to the current look; no validation errors from the UBO layout change (check the SSBO stride and the
+\texttt{waterParams.length()} indexing used at \texttt{water\_surface.glsl:559}).
+\end{tcolorbox}
+
+% =====================================================================
+\section{Implementation Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}llp{6.6cm}@{}}
+\toprule
+\textbf{Order} & \textbf{Issue} & \textbf{Expected delta} \\
+\midrule
+1 & C1 & $-62.5\%$ hash ALU everywhere; 46.3k $\rightarrow$ 20.5k instructions in the water fragment module. \\
+2 & C2 & Removes 13 Perlin4D/pixel --- i.e. essentially all of the default preset's procedural water cost --- plus a distance fade. \\
+3 & C4 & Removes the field/spec/glitter/caustic cost on all water beyond the detail band (usually the majority of water pixels). \\
+4 & C5 & Removes the full shader for every terrain-occluded water pixel. \\
+5 & C3 & 32 $\rightarrow$ 4--8 Perlin4D/pixel for caustics; the largest single term in a wavy frame. \\
+6 & H6 & 16 $\rightarrow$ few Perlin4D per water vertex, and none at all in the back-face pass. \\
+7 & H7 & 48 $\rightarrow$ $\le$4 Perlin4D per tessellated patch. \\
+8 & H8 & Halves the water-target write, read and clear bandwidth. \\
+9 & H9 & Removes the offscreen pair entirely (water-in-main) or quarters the shaded pixels (half-res). \\
+10 & M10 & Removes 10 Perlin4D/pixel outside the sun lobe. \\
+11 & M11 & Removes the duplicated coarse spectrum between the two stages. \\
+12 & M12 & Removes two full-res fetches per non-water pixel. \\
+13 & M13 & Removes the pass, clears and transitions when water is resident but invisible. \\
+14 & L14 & Stops every consumer paying for octaves it cannot resolve. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Measurement protocol.} Keep the \S\ref{sec:method} ablation harness in the tree (a scratch copy of
+\texttt{shaders/} plus the \texttt{glslc} invocation) so each landing can be re-measured: PCG-site count, SPIR-V
+instruction count, and the op-code mix. Cross-check with the existing GPU timestamps 14/15 (back-face $+$ water
+geometry, \texttt{MyApp.cpp:2582, 2617}) and with RenderDoc (bound pipeline stages, texture-fetch counters,
+\texttt{indirect.comp} dispatches). Keep the RT-enabled presets as the regression baseline: no issue above is allowed to
+change their output. \texttt{AGENTS.md} rules apply to every prompt: runtime feature detection, Synchronization2,
+reverse-order destruction, no legacy render passes, and validation-clean runs
+(\texttt{VULKAN\_GPU\_ASSISTED=1 make run-debug}).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Water fragment module / frame} & \textbf{Today} & \textbf{After C1--C4} & \textbf{After all} \\
+\midrule
+SPIR-V instructions (static) & 46,320 & $\sim$20.5k & $\sim$12k \\
+Inlined PCG hash sites & 3,073 & $\sim$1,153 & $\sim$600 \\
+Perlin4D per pixel, default preset & 13 & 0--2 & 0--2 \\
+Perlin4D per pixel, waves $+$ caustics & 75 & $\sim$10 near, 0 far & $\sim$6 near, 0 far \\
+Perlin4D per water vertex ($\times 2$ passes) & 16 & 4 & 0--2 (front only) \\
+Water target bytes per pixel (write $+$ read) & 32 & 32 & 0--16 \\
+\bottomrule
+\end{tabular}
+\caption{Qualitative budget; exact counts depend on the final variant choices and on the ABI of L14's spectrum split.}
+\end{table}
+
+\end{document}
