@@ -1269,10 +1269,12 @@ public:
             }
             // Reset only the slots owned by THIS command buffer. The solid pass
             // now records on its own command buffer (solidQueue) and resets its
-            // own slots 6-13 there; the water pass owns 14-15 (never written in
-            // practice) and the postprocess/ImGui passes own 16-19. Splitting the
-            // reset across command buffers avoids a cross-queue reset/write race.
-            vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 0, 6);   // 0-5:  shadow/cull/brush
+            // own slots 6-13 there; the water pass owns 14-15 and the
+            // postprocess/ImGui passes own 16-19. Splitting the reset across
+            // command buffers avoids a cross-queue reset/write race. Slots 0-5
+            // (shadow/cull/brush) are written by no pass at all, so they are no
+            // longer reset: an unwritten slot already reads back unavailable and
+            // the readback skips it.
             vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 16, 4);  // 16-19: postprocess/imgui
             queryPoolReady[frameIdx] = true;
         }
@@ -1437,8 +1439,11 @@ public:
         //                    solid pass — see the cull task)
         //   shadow task    : shadow map + cascade cull + blur, restores visibleLods/UBO
         //                    (runs after cull on the worker) -> tlShadow
+        //                    (not enqueued when shadows are disabled; consumers
+        //                    then wait tlCull@v directly)
         //   backface+water : back-face depth pass + water geometry pass + RT dispatch
-        //                    (waits tlSolid + tlSky) -> tlWater
+        //                    (waits tlSolid + tlSky) -> tlWater, or a clear-only
+        //                    fast path when the previous cull saw no water
         //   vegetation task: own offscreen color+depth (runs after shadow on the
         //                    worker, so the shadow map is current) -> tlVeg
         //   sdf task       : own offscreen color+depth (debug SDF cubes) -> tlSdf
@@ -1609,6 +1614,10 @@ public:
         // main CB must wait on semShadow before sampling the shadow map / restored
         // UBO / visibleLods. It runs on the same graphics queue, after the cull
         // task (worker ordering), so the visibleLods are current when it reads them.
+        // Shadows disabled: no task is enqueued (renderParallel would only submit
+        // an empty CB relaying tlCull -> tlShadow). Nothing signals tlShadow on
+        // those frames, so its consumers wait tlCull@v directly instead and no
+        // worker is joined.
         {
             const bool shEnableShadows = settings.enableShadows;
             const bool shRenderSolid = settings.renderSolid;
@@ -1617,24 +1626,27 @@ public:
             const float shLodBias = settings.lodBias;
             const float shMaxTargetLod = settings.maxTargetLod;
             const glm::vec3 shCamPos = camera.getPosition();
-            asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, v]() {
-                // The shadow producer signals a single timeline semaphore tlShadow@v.
-                // The shadow producer signals a single timeline semaphore tlShadow@v.
-                // Its internal cascade/blur sub-passes use their own (persistent binary)
-                // semaphores; only the cross-queue edge becomes a timeline wait. The
-                // composite does NOT wait on tlShadow (it only samples the final images,
-                // not the shadow map), so registerSignal is false; solid/veg/water/
-                // solid360 wait tlShadow@v via their own wait lists.
-                // Render each cascade on its own command buffer (parallel on distinct
-                // cube queues); the EVSM blur + main-camera cull restore run serially in
-                // a final CB that raises tlShadow once the shadow map is ready. Waits on
-                // tlCull@v so the cull GPU buffers are visible before the cascade draws
-                // read them.
-                this->sceneRenderer->shadowMapper->renderParallel(this, frameIdx,
-                    sceneRenderer->mainUniformBuffers[frameIdx], uboStatic,
-                    shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shCamPos, shMaxTargetLod,
-                    tlCull, v, tlShadow, v);
-            });
+            if (shEnableShadows) {
+                asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, v]() {
+                    // The shadow producer signals a single timeline semaphore tlShadow@v.
+                    // The shadow producer signals a single timeline semaphore tlShadow@v.
+                    // Its internal cascade/blur sub-passes use their own (persistent binary)
+                    // semaphores; only the cross-queue edge becomes a timeline wait. The
+                    // composite does NOT wait on tlShadow (it only samples the final images,
+                    // not the shadow map), so registerSignal is false; solid/veg/water/
+                    // solid360 wait tlShadow@v via their own wait lists (tlCull@v when
+                    // shadows are disabled and tlShadow is never signaled).
+                    // Render each cascade on its own command buffer (parallel on distinct
+                    // cube queues); the EVSM blur + main-camera cull restore run serially in
+                    // a final CB that raises tlShadow once the shadow map is ready. Waits on
+                    // tlCull@v so the cull GPU buffers are visible before the cascade draws
+                    // read them.
+                    this->sceneRenderer->shadowMapper->renderParallel(this, frameIdx,
+                        sceneRenderer->mainUniformBuffers[frameIdx], uboStatic,
+                        shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shCamPos, shMaxTargetLod,
+                        tlCull, v, tlShadow, v);
+                });
+            }
         }
 
         // --- Solid scene pass on its OWN command buffer (submitted to solidQueue) ---
@@ -1647,10 +1659,12 @@ public:
         // three DISTINCT binary semaphores so none is waited twice. Submitting to
         // solidQueue (which may alias graphicsQueue on HW that exposes few graphics
         // queues) keeps the solid shading decoupled from the composite/postprocess work.
-        // The solid task waits on semShadowSolid, signaled by the shadow task (on
-        // graphicsQueue). Join the shadow task first so its signal submit is guaranteed
-        // to precede the solid task's wait submit (binary semaphores can't be waited
-        // before their signal has been submitted for execution).
+        // The solid task waits on the shadow task's timeline signal (on
+        // graphicsQueue) when shadows are enabled. Join the shadow task first so
+        // its signal submit is guaranteed to precede the solid task's wait submit
+        // (binary semaphores can't be waited before their signal has been submitted
+        // for execution). Shadows disabled: no shadow task exists, so this join is
+        // skipped and the solid task waits tlCull@v directly.
         if (asyncShadowFuture.valid())
             asyncShadowFuture.get();
 
@@ -1926,16 +1940,18 @@ public:
                 // results, then signal tlSolid@v (registered so the main composite CB
                 // waits on it). tlSolid@v is also waited by the water and solid360 tasks.
                 // Solid waits on the shadow map (tlShadow) and brush-solid depth
-                // (tlBrushSolid); tlCull is transitively implied by both, so it is
-                // dropped. tlSolid is not registered for the composite (implied by
-                // tlBrushLiquid via Water).
+                // (tlBrushSolid); tlCull is transitively implied by both when shadows
+                // are enabled, so it is dropped then. Shadows disabled: nothing
+                // signals tlShadow, so the solid pass waits tlCull@v directly instead
+                // (cull buffers + restored UBO). tlSolid is not registered for the
+                // composite (implied by tlBrushLiquid via Water).
                 //
                 // Solid SSR: main.frag samples the *previous* frame's solid
                 // color/depth (bindings 19/20), so the solid CB additionally
                 // waits on tlSolid@(v-1) — the previous frame's solid pass must
                 // have completed before its images are marched.
                 {
-                    std::vector<VkSemaphore> solidWaitSemaphores = {tlShadow, tlBrushSolid};
+                    std::vector<VkSemaphore> solidWaitSemaphores = {settings.enableShadows ? tlShadow : tlCull, tlBrushSolid};
                     std::vector<uint64_t> solidWaitValues = {v, v};
                     if (v > 0) {
                         solidWaitSemaphores.push_back(tlSolid);
@@ -1987,7 +2003,10 @@ public:
                 VkImageView vegColorView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegColorView(frameIdx) : VK_NULL_HANDLE;
                 VkImageView vegDepthView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegDepthView(frameIdx) : VK_NULL_HANDLE;
                 if (vegColorView == VK_NULL_HANDLE || vegDepthView == VK_NULL_HANDLE) {
-                app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg, {tlShadow}, true, {}, {v}, v, {}, true);
+                // Shadows disabled: no shadow task signals tlShadow, so wait the
+                // cull timeline directly (same frame value).
+                app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg,
+                    {settings.enableShadows ? tlShadow : tlCull}, true, {}, {v}, v, {}, true);
                     return;
                 }
                 // Render area must match the vegetation offscreen targets' backing size
@@ -2086,15 +2105,17 @@ public:
                 sceneRenderer->vegetationRenderer->setVegDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
                 // Run on the dedicated vegetation queue (separate from graphicsQueue) so it
-                // parallelizes with the solid/shadow passes. Wait on semCullVeg so the cull
-                // task's GPU-written vegetation instance/indirect buffers are visible before
-                // the veg pass reads them, and on semShadowVeg so the shadow map written by
-                // the shadow task (on graphicsQueue) is visible before the veg pass samples
-                // it. These are the veg task's OWN binary semaphores (the main CB consumes
-                // semMainCull/semShadow); the semaphores provide the cross-queue
-                // (graphics→vegetation) memory dependency, and being the same queue family
-                // no ownership transfer is required.
-                app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg, {tlShadow}, true, {}, {v}, v, {}, true);
+                // parallelizes with the solid/shadow passes. Wait on the cull task's
+                // GPU-written vegetation instance/indirect buffers (tlCull@v) so they are
+                // visible before the veg pass reads them, and on the shadow task's timeline
+                // signal (tlShadow@v) so the shadow map written by the shadow task (on
+                // graphicsQueue) is visible before the veg pass samples it. Shadows
+                // disabled: nothing signals tlShadow, so the wait becomes tlCull@v (the
+                // shadow map is not sampled with shadowEffects.w == 0). The wait provides
+                // the cross-queue (graphics→vegetation) memory dependency, and being the
+                // same queue family no ownership transfer is required.
+                app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg,
+                    {settings.enableShadows ? tlShadow : tlCull}, true, {}, {v}, v, {}, true);
             });
         }
 
@@ -2164,6 +2185,8 @@ public:
 
         // Back-face depth + water geometry pass on a shared command buffer.
         // (waits semMainCull + semSolid360; signals semWater at the end of the task)
+        // Frames whose previous cull produced zero visible water chunks and that
+        // have no brush-liquid geometry take a clear-only fast path instead (M8).
         if (waterEnabled && sceneRenderer) {
             asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
                 MyApp* app = this;
@@ -2176,13 +2199,50 @@ public:
                     app->freeCommandBuffer(cmd);
                     return;
                 }
-                // Reset the query slots owned by the water pass (14-15 water,
-                // 20-21 hybrid-RT water dispatch) so the GPU profiling
-                // timestamps below start from a clean state.
+                // Reset the query slots owned by the water pass (14-15) so the GPU
+                // profiling timestamps below start from a clean state. The hybrid-RT
+                // dispatch slots (20-21) are reset inside their own gate below, next
+                // to the timestamps that write them.
                 if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE) {
                     vkCmdResetQueryPool(cmd, queryPools[frameIdx], 14, 2);
-                    vkCmdResetQueryPool(cmd, queryPools[frameIdx], 20, 2);
                 }
+
+                // ── Empty-water fast path (perf_report_19 M8) ──────────────────
+                // brushLiquidPresent: the brush-liquid overlay re-enters the water
+                // geometry pass, so any brush liquid forces the full path.
+                const bool brushLiquidPresent = this->sceneRenderer->brushRenderer
+                    && this->sceneRenderer->brushRenderer->getLiquidIR().getMeshCount() > 0;
+                // waterPassEmpty is gated on the CPU-side resident water mesh
+                // count, NOT on the GPU visible-count readback: that readback is
+                // copied asynchronously and can lag several frames, so a stale
+                // zero cleared the water targets while the current cull still
+                // had visible chunks — already-loaded water flickered while
+                // chunks streamed in. With zero resident meshes the pass could
+                // not draw anything anyway, so the clear-only path is
+                // unconditionally safe. Water-in-main writes the MAIN targets,
+                // so it must never take this path.
+                const size_t waterMeshCount = this->sceneRenderer->mainLiquidRenderer
+                    ? this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer().getMeshCount()
+                    : 0;
+                const bool waterPassEmpty = waterMeshCount == 0 && !brushLiquidPresent;
+                if (waterPassEmpty && !settings.waterInMainPass) {
+                    // Record ONLY the water-target clears (color/body/column to
+                    // transparent black, depth to 1.0) plus their layout
+                    // transitions. Skip the task-local cull, the back-face
+                    // set/render, the water descriptor updates, the water
+                    // geometry pass, the RT dispatch and timestamps 14/15.
+                    this->sceneRenderer->mainLiquidRenderer->clearRenderTargets(this, cmd, frameIdx);
+                    // The brush-liquid overlay (normally the composite's
+                    // transitive waiter for tlWater) does not run on this path,
+                    // so register tlWater for the composite directly. Submit with
+                    // the same waits/signal as the full path so the
+                    // composite/brush-liquid chain stays valid.
+                    lastWaterSignal = v;
+                    app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater,
+                        {tlSolid, tlSky, tlVeg}, true, {}, {v, v, v}, v, {}, true);
+                    return;
+                }
+
                 // Dedicated command-buffer state for this async command buffer (see cull task).
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
@@ -2381,7 +2441,9 @@ public:
                 // for the shared-cull path below: this command buffer waits
                 // tlSolid@v (submit at the end of the task), tlSolid is signaled
                 // by the solid pass which waits tlShadow, and tlShadow is
-                // signaled by the shadow task after waiting tlCull. The main
+                // signaled by the shadow task after waiting tlCull (with shadows
+                // disabled the solid pass waits tlCull@v directly, so tlCull is
+                // still transitively implied here). The main
                 // water cull ran in the cull task BEFORE tlCull was signaled,
                 // and a timeline semaphore wait makes those SSBO writes visible
                 // to this queue, so the main cull output is complete before this
@@ -2576,8 +2638,13 @@ public:
                             this->sceneRenderer->rayTracing &&
                             this->sceneRenderer->rayTracing->isPipelineReady() &&
                             settings.waterEnabled) {
-                            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                            // Reset the dispatch's own slots here, next to the
+                            // timestamps that write them, so a skipped dispatch
+                            // records no reset at all.
+                            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE) {
+                                vkCmdResetQueryPool(cmd, queryPools[frameIdx], 20, 2);
                                 vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 20);
+                            }
                             this->sceneRenderer->rayTracing->dispatchWaterRT(this, cmd, frameIdx,
                                 uboStatic.invViewProjection, glm::vec3(uboStatic.viewPos));
                             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -2589,30 +2656,37 @@ public:
                 // Submit to the dedicated water queue. The ring slot's buffers/set are
                 // NOT defer-destroyed: they are reused ASYNC_RING_SIZE tasks later, by
                 // which time this submission has completed (guaranteed by the frame-fence
-                // chain described on cachedBackfaceRing). Signal semWater, which is
-                // registered in m_extraWaitSemaphores so drawFrame's main command buffer
-                // waits on it before compositing.
+                // chain described on cachedBackfaceRing). Signal tlWater@v.
                 // Hybrid RT: the 360 cubemap is gone. Water waits on the solid pass
                 // (tlSolid, covering shadow + brush + cull transitively) and the sky
                 // (tlSky, sampled by water shading + the RT dispatch). tlCull /
                 // tlShadow / tlBrushSolid are transitively implied — dropped.
-                // Signal tlWater@v; tlWater is NOT registered for the composite
-                // (it is implied by tlBrushLiquid).
+                // The brush-liquid overlay (when it runs) waits tlWater and registers
+                // tlBrushLiquid for the composite, so tlWater reaches the composite
+                // through it. When the overlay does NOT run (no brush-liquid
+                // geometry), nothing else registers tlWater, so register it here as a
+                // persistent composite timeline wait to keep the water targets
+                // synchronized with the composite. Water-in-main never samples the
+                // water targets in the composite and keeps its previous behavior.
                 // Wait on the vegetation pass too: water.frag's reflection
                 // lookup samples the vegetation color/depth targets, which are
                 // written on the vegetation queue and signaled by tlVeg@v.
                 // Record the value so a later RT AS build waits for this
                 // frame's water consumers before overwriting TLAS/metas.
                 lastWaterSignal = v;
-                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater, {tlSolid, tlSky, tlVeg}, false, {}, {v, v, v}, v, {}, false);
+                const bool registerWaterForComposite = !brushLiquidPresent && !settings.waterInMainPass;
+                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater, {tlSolid, tlSky, tlVeg},
+                    registerWaterForComposite, {}, {v, v, v}, v, {}, registerWaterForComposite);
 
                 // Brush-liquid overlay: re-enter the water geometry pass on its own
                 // queue, AFTER the main water pass completes (semWater), and draw the
                 // brush liquid IR on top of the preserved water targets. Signaled via
                 // semBrushLiquid (registered, so the composite waits on it). This lets
                 // the composite run in parallel with the brush-liquid overlay instead
-                // of serializing behind it on the water queue.
-                if (settings.waterEnabled && this->sceneRenderer->brushRenderer && !settings.waterInMainPass) {
+                // of serializing behind it on the water queue. Skipped entirely when
+                // there is no brush-liquid geometry (M9) or on the empty-water fast
+                // path (waterPassEmpty implies !brushLiquidPresent).
+                if (settings.waterEnabled && brushLiquidPresent && !waterPassEmpty && !settings.waterInMainPass) {
                     VkImageView blsky = (this->sceneRenderer->skyRenderer)
                         ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
                     VkCommandBuffer brushLiquidCmd = app->allocatePrimaryCommandBuffer();
