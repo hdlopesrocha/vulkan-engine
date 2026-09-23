@@ -1127,8 +1127,9 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Back-face pipeline creation moved to WaterBackFaceRenderer
 }
 
-void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex, bool loadExisting) {
-    if (frameIndex >= 3) return;
+bool WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex, bool loadExisting,
+                                           BodyAttachments bodyAttachments) {
+    if (frameIndex >= 3) return false;
 
     // H4: the body/column aux attachments only exist in the blur-capable
     // pipeline variant. In no-body mode the pass requires (and touches) only
@@ -1136,17 +1137,27 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     // their tracked layouts stay untouched so a later blur-on frame resumes
     // from the last SHADER_READ_ONLY state. Cached before the early-outs so
     // endWaterGeometryPass always matches the selected mode.
-    activePassBodyAttachments_ = geometryBodyAttachmentsActive();
+    if (bodyAttachments == BodyAttachments::ForceOn) {
+        activePassBodyAttachments_ = true;
+    } else if (bodyAttachments == BodyAttachments::ForceOff) {
+        // Requires a single-attachment pipeline to bind; without one the pass
+        // would declare one colour attachment while a three-format pipeline is
+        // bound (VUID-vkCmdDrawIndirect-colorAttachmentCount-06179).
+        if (!noBodyVariantsAvailable()) return false;
+        activePassBodyAttachments_ = false;
+    } else {
+        activePassBodyAttachments_ = geometryBodyAttachmentsActive();
+    }
     const bool useBody = activePassBodyAttachments_;
 
-    if (getWaterGeometryPipeline() == VK_NULL_HANDLE) return;
+    if (getWaterGeometryPipeline() == VK_NULL_HANDLE) return false;
 
     // The water color target is always required. The body/column images are
     // required only when the selected variant writes them.
-    if (waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
+    if (waterDepthImages[frameIndex] == VK_NULL_HANDLE) return false;
     if (useBody) {
-        if (waterBodyImages[frameIndex] == VK_NULL_HANDLE || waterBodyImageViews[frameIndex] == VK_NULL_HANDLE) return;
-        if (waterColumnImages[frameIndex] == VK_NULL_HANDLE || waterColumnImageViews[frameIndex] == VK_NULL_HANDLE) return;
+        if (waterBodyImages[frameIndex] == VK_NULL_HANDLE || waterBodyImageViews[frameIndex] == VK_NULL_HANDLE) return false;
+        if (waterColumnImages[frameIndex] == VK_NULL_HANDLE || waterColumnImageViews[frameIndex] == VK_NULL_HANDLE) return false;
     }
 
     activeWaterFrameIndex = frameIndex;
@@ -1286,6 +1297,7 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     scissor.offset = {0, 0};
     scissor.extent = {renderWidth, renderHeight};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
+    return true;
 }
 
 void WaterRenderer::endWaterRendering(VkCommandBuffer cmd) {
@@ -1635,7 +1647,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     // Back-face pre-pass is executed by SceneRenderer's WaterBackFaceRenderer
     // before calling WaterRenderer::render. No-op here.
 
-    beginWaterGeometryPass(cmd, frameIndex);
+    if (!beginWaterGeometryPass(cmd, frameIndex)) return;
 
     // Bind descriptor sets (shared between depth pre-pass and main pass)
     VkDescriptorSet mainDs = app->getMainDescriptorSet();
@@ -1806,7 +1818,7 @@ void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint3
 
     // Re-enter the water geometry pass with LOAD ops so the main water EVSM color
     // and geom depth are preserved; the brush liquid draws on top of them.
-    beginWaterGeometryPass(cmd, frameIndex, /*loadExisting=*/true);
+    if (!beginWaterGeometryPass(cmd, frameIndex, /*loadExisting=*/true)) return;
 
     VkPipeline waterPipe = getWaterGeometryPipeline();
     VkPipelineLayout waterLayout = getWaterGeometryPipelineLayout();
@@ -1937,10 +1949,14 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
         // Wireframe path: use WaterRenderer for setup/pass management,
         // but bind the wireframe pipeline instead of the normal one.
         prepareRender(app, commandBuffer, frameIdx, sceneColorView, skyView);
-        beginWaterGeometryPass(commandBuffer, frameIdx);
 
-        // First render filled water geometry to populate the water depth
-        // buffer so the wireframe can depth-test against actual water depth.
+        // Scope 1: filled water geometry, in whatever configuration the H4
+        // blur gate selects, so the pass always matches the bound geometry
+        // pipeline. It populates the water depth buffer the overlay below
+        // depth-tests against, and the body/column aux targets the composite
+        // blur reads.
+        if (!beginWaterGeometryPass(commandBuffer, frameIdx)) return;
+
         VkPipeline waterPipe = getWaterGeometryPipeline();
         VkPipelineLayout waterLayout = getWaterGeometryPipelineLayout();
         if (waterPipe != VK_NULL_HANDLE && waterLayout != VK_NULL_HANDLE) {
@@ -1961,8 +1977,19 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
             if (drawBrushLiquid && brushRenderer_) brushRenderer_->getLiquidIR().drawPrepared(commandBuffer);
         }
 
-        // Draw wireframe overlay on top, inside the same render pass,
-        // reusing the depth buffer populated by the filled geometry pass.
+        endWaterGeometryPass(commandBuffer);
+
+        // Scope 2: the wireframe overlay, in its OWN single-attachment scope
+        // (colour + the depth written above, both LOADed). The overlay pipeline
+        // declares one colour format, and its fragment stage declares a single
+        // output: drawing it inside the 3-attachment blur-capable pass would
+        // write UNDEFINED values into the body/column aux targets, and the
+        // attachments cannot be masked off because without the independentBlend
+        // feature every attachment must share attachment 0's blend state
+        // (VUID-VkPipelineColorBlendStateCreateInfo-pAttachments-00605).
+        if (!beginWaterGeometryPass(commandBuffer, frameIdx, /*loadExisting=*/true,
+                                    BodyAttachments::ForceOff)) return;
+
         // Bind descriptor sets individually with null checks (same pattern
         // as the filled water pipeline) to handle missing sets gracefully.
         VkPipeline waterWfPipe = waterWireframe_->getPipeline();

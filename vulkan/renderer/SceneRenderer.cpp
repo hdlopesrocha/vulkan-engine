@@ -839,6 +839,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             app->getMaterialDescriptorSetLayout(),
             mainLiquidRenderer->getWaterDepthDescriptorSetLayout()
         };
+        // Single colour attachment: the overlay is drawn in its own
+        // single-attachment rendering scope (see WaterRenderer::renderPass),
+        // never inside the blur-capable 3-attachment water pass.
         waterWireframe->createPipeline(app, {VK_FORMAT_R32G32B32A32_SFLOAT},
             waterSetLayouts,
             "shaders/main_water.vert.spv", "shaders/water_wireframe.frag.spv",

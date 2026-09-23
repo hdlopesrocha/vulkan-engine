@@ -119,7 +119,12 @@ void WireframeRenderer::createPipeline(VulkanApp* app,
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
 
-    // Color blend attachments — one per color attachment in the render pass
+    // Color blend attachments — one per color attachment in the render pass.
+    // NOTE: these must all be IDENTICAL unless the independentBlend device
+    // feature is enabled (VUID-VkPipelineColorBlendStateCreateInfo-pAttachments-00605),
+    // so a wireframe overlay must never be drawn into a pass whose extra
+    // attachments it cannot write: the caller gives it a single-attachment
+    // rendering scope instead (WaterRenderer::renderPass).
     std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments(colorAttachmentCount);
     for (auto& att : colorBlendAttachments) {
         att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |

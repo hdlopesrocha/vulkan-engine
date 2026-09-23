@@ -75,7 +75,24 @@ public:
     IndirectRenderer& getIndirectRenderer() { return waterIndirectRenderer; }
 
     // Begin water geometry pass (renders water depth/normals to offscreen target)
-    void beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex, bool loadExisting = false);
+    // Body/column aux attachment selection for beginWaterGeometryPass.
+    //   Auto     - follow the H4 blur gate, so the pass always matches
+    //              activeGeometryPipeline().
+    //   ForceOn  - always attach body+column (the 3-attachment pipelines).
+    //   ForceOff - never attach them (the single-attachment no-body
+    //              pipelines). Used by the wireframe overlay, which is drawn in
+    //              its own single-attachment scope: its fragment stage declares
+    //              one output and, without the independentBlend device feature,
+    //              every attachment must share attachment 0's blend state, so
+    //              the overlay cannot mask off the aux attachments it does not
+    //              write.
+    enum class BodyAttachments { Auto, ForceOn, ForceOff };
+
+    // Begins the water geometry pass. Returns false when the pass could not be
+    // begun (no pipeline / missing target), in which case the caller must not
+    // record any draw.
+    bool beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex, bool loadExisting = false,
+                                BodyAttachments bodyAttachments = BodyAttachments::Auto);
     void endWaterGeometryPass(VkCommandBuffer cmd);
     // Merged end for the brush-liquid overlay path: water color + water
     // geometry depth → SHADER_READ_ONLY_OPTIMAL in a single barrier call
@@ -336,6 +353,18 @@ private:
             return waterGeometryPipelineRtProf.handle;
         return (rtShadingEnabled_ && waterGeometryPipelineRt != VK_NULL_HANDLE)
             ? waterGeometryPipelineRt.handle : waterGeometryPipeline.handle;
+    }
+
+    // Whether the single-attachment (WATER_NO_BODY) geometry variants were
+    // built. ForceOff requires one of them, or the pass would declare one
+    // colour attachment while a three-format pipeline is bound.
+    bool noBodyVariantsAvailable() const {
+        if (!tessellationEnabled_) {
+            return (rtShadingEnabled_ && waterGeometryPipelineRtNoTessNoBody != VK_NULL_HANDLE)
+                || waterGeometryPipelineNoTessNoBody != VK_NULL_HANDLE;
+        }
+        return (rtShadingEnabled_ && waterGeometryPipelineRtNoBody != VK_NULL_HANDLE)
+            || waterGeometryPipelineNoBody != VK_NULL_HANDLE;
     }
 
     // Whether the currently selectable geometry pipeline writes the body and
