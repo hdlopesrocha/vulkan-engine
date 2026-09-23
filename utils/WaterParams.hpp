@@ -181,8 +181,8 @@ struct WaterParams {
 
     // Organic amplitude mask: low-frequency noise that can remove waves
     // entirely in patches (some places stay calm).
-    float waveMaskPeriod = 256.0f;
-    float waveMaskThreshold = 0.5f;
+    float waveMaskPeriod = 1024.0f;
+    float waveMaskThreshold = 0.25f;
     float waveMaskSoftness = 0.18f;
     float waveMaskSpeed = 0.05f;
 
