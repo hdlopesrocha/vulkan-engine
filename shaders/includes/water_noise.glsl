@@ -8,6 +8,11 @@
 // displacement, the per-pixel analytic shading normal and the wave-shape
 // caustics, so geometry, lighting and caustics can never disagree.
 
+// Octave-budget sentinel for callers that must evaluate the full spectrum
+// (vertex stages, and any caller without its own distance LOD). The fragment
+// stage passes its own budget instead — see waterWaveField()'s octBudget.
+const int WATER_OCT_FULL = 64;
+
 float waterFbmNoise(vec3 xyz, float spatialScale, float time, float timeScale,
                     int octaves, float persistence, float lacunarity, vec3 offset) {
     return fbm(vec4((xyz + offset) * spatialScale, time * timeScale), octaves, persistence, lacunarity);
@@ -115,14 +120,24 @@ struct WaterWaveField {
 //   ~ zBreak   : breaker line (extra crest + foam birth)
 //   zShallow..zBreak : foam rides shoreward and fades, amplitude decays
 //   d < zShallow : residual line wave ending at the waterline (d = 0)
+// `octBudget` caps the octave count of EVERY noise chain in the field (chop,
+// calm mask, both ridged trains and the foam texture) and, at 0, skips the
+// field entirely. It is the evaluation-time LOD hook (perf report 20 C4): the
+// fragment stage passes its distance-derived budget so water whose wave detail
+// is faded out anyway does not pay for the noise. Pass WATER_OCT_FULL where
+// no LOD applies (vertex stages).
 WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
-                              vec2 shoreDirIn, WaterParamsGPU wp, bool withFoam) {
+                              vec2 shoreDirIn, WaterParamsGPU wp, bool withFoam,
+                              int octBudget) {
     WaterWaveField f;
     f.height = 0.0;
     f.grad = vec3(0.0);
     f.foam = 0.0;
     f.contact = 0.0;
-    if (wp.waveToggles.x < 0.5 || amp <= 0.0) return f;
+    if (wp.waveToggles.x < 0.5 || amp <= 0.0 || octBudget <= 0) return f;
+    // One octave count for every chain, clamped by the caller's budget. The
+    // per-layer spectrum (params2.z) stays the upper bound.
+    int octavesN = max(min(int(max(wp.params2.z, 1.0)), octBudget), 1);
 
     float zDeep = max(wp.waveZones.x, 1.0);
     float zBreak = clamp(wp.waveZones.y, 0.0, zDeep);
@@ -223,7 +238,7 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     vec2 chopGrad = vec2(0.0);
     if (chopAmount > 0.0 || warpAmount != 0.0 || ampVar > 0.0) {
         vec4 chop = waterFbmNoiseGrad(xyz - shoreDrift, wp.params2.y, time, wp.params3.x,
-                                      int(max(wp.params2.z, 1.0)), wp.params2.w,
+                                      octavesN, wp.params2.w,
                                       wp.params3.y, vec3(0.0));
         chopVal = chop.x;
         chopGrad = vec2(chop.y, chop.w); // d/dx, d/dz (offset is constant)
@@ -237,7 +252,7 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     float mask = 1.0;
     if (wp.waveMask.x > 0.0 && wp.waveMask.z > 0.0) {
         float m = waterFbmNoise(xyz - shoreDrift, wp.waveMask.x, time, wp.waveMask.w,
-                                int(max(wp.params2.z, 1.0)), wp.params2.w, wp.params3.y,
+                                octavesN, wp.params2.w, wp.params3.y,
                                 vec3(11.0)) * 0.5 + 0.5;
         mask = smoothstep(wp.waveMask.y,
                           wp.waveMask.y + wp.waveMask.z, m);
@@ -248,7 +263,6 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
 
     float ridgeStretch = max(wp.waveWarp.z, 1.0);
     float sharpC = max(sharp, 0.25);
-    int octavesN = int(max(wp.params2.z, 1.0));
     float persistenceN = wp.params2.w;
     float lacunarityN = wp.params3.y;
     float warp = warpAmount * chopVal;
@@ -359,7 +373,7 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
             float foamSpeedRel = mix(1.0, clamp(wp.foamShape.z, 0.0, 1.0), shoreBand);
             vec3 foamDrift = shoreDir3 * (c1 * speedFactor * foamSpeedRel * time);
             float fn = waterFbmNoise(xyz - foamDrift, wp.foamNoise.x, time, wp.foamNoise.y,
-                                     int(max(wp.params2.z, 1.0)), wp.params2.w,
+                                     octavesN, wp.params2.w,
                                      wp.params3.y, vec3(37.0)) * 0.5 + 0.5;
             float fnMix = mix(1.0, fn, clamp(wp.foamNoise.z, 0.0, 1.0));
             foam *= fnMix;
@@ -383,15 +397,17 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
 // Height-only entry point (tessellation adaptation, debug views).
 float waterWaveDisplacement(vec3 xyz, float time, float depth, float amp,
                             vec2 shoreDir, WaterParamsGPU wp) {
-    return waterWaveField(xyz, time, depth, amp, shoreDir, wp, false).height;
+    return waterWaveField(xyz, time, depth, amp, shoreDir, wp, false, WATER_OCT_FULL).height;
 }
 
 // Height + analytic gradient, vec4(height, dHeight/dx, dHeight/dy, dHeight/dz).
 // The y component is 0: the field is a height field over xz.  This is the
-// single wave field the TES displacement, per-pixel normal and caustics use.
+// single wave field the TES displacement, the per-pixel normal and the
+// caustic curvature all derive from. `octBudget` forwards the caller's
+// evaluation-time LOD (WATER_OCT_FULL where none applies).
 vec4 waterWaveSample(vec3 xyz, float time, float depth, float amp,
-                     vec2 shoreDir, WaterParamsGPU wp) {
-    WaterWaveField f = waterWaveField(xyz, time, depth, amp, shoreDir, wp, false);
+                     vec2 shoreDir, WaterParamsGPU wp, int octBudget) {
+    WaterWaveField f = waterWaveField(xyz, time, depth, amp, shoreDir, wp, false, octBudget);
     return vec4(f.height, f.grad);
 }
 
@@ -415,8 +431,10 @@ vec4 waterWaveSample(vec3 xyz, float time, float depth, float amp,
 // clamp; the caller keeps its quarter-wavelength step, so the caustic detail
 // still follows the band-limited field the surface is displaced with.
 float waterWaveCurvature(vec3 pos, float time, float depth, float amp, vec2 shoreDir,
-                         vec3 u, float step, float dhduCenter, WaterParamsGPU wp) {
-    WaterWaveField f = waterWaveField(pos + u * step, time, depth, amp, shoreDir, wp, false);
+                         vec3 u, float step, float dhduCenter, WaterParamsGPU wp,
+                         int octBudget) {
+    WaterWaveField f = waterWaveField(pos + u * step, time, depth, amp, shoreDir, wp, false,
+                                      octBudget);
     return (dot(f.grad, u) - dhduCenter) / step;
 }
 

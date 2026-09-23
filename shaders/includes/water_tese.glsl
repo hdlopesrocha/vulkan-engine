@@ -118,13 +118,16 @@ WaterVertexWave waterDisplaceWaterVertex(vec3 pos, vec3 normal, float animTime,
     vec3 T = normalize(cross(upVec, normal));
     vec3 B = cross(normal, T);
 
+    // Vertex stages have no distance LOD of their own yet (perf report 20 H6),
+    // so they always evaluate the full spectrum.
     vec4 wave = waterWaveSample(
         pos.xyz,
         animTime,
         waterDepth,
         bumpAmp,
         shoreDir,
-        wp
+        wp,
+        WATER_OCT_FULL
     );
 
     // Project the analytic gradient onto the tangent basis to get the
