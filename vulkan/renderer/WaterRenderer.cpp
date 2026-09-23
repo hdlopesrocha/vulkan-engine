@@ -79,8 +79,31 @@ float waterPeriodToScale(float period) {
 }
 
 // Convert the period-valued slots of a packed GPU block into the shader's
-// spatial scales. Called only right before the buffer write.
+// spatial scales, and turn the authored component amplitudes into CONSTANT
+// STEEPNESSES. Called only right before the buffer write.
+//
+// A water surface is self-similar: every component's slope, not its height, is
+// what stays constant as the spectrum scales. The shader used to multiply the
+// chop and both ridged trains by a FIXED fraction of the wave height, so a
+// longer period only made the surface flatter (slope proportional to
+// 1/period) - the period sliders read as flatness knobs even though they are
+// documented as feature-size knobs. Scaling each amplitude by its own
+// wavelength (period / reference period) makes the period a SIZE knob: the
+// component grows and stretches together, keeping its slope, which is both
+// what the widget says and the physically realistic behaviour.
+//
+// The reference periods are the WaterParams defaults, so the shipped look is
+// unchanged at the default settings.
 void waterGpuPeriodsToScales(WaterParamsGPU& gpu) {
+    static const WaterParams kRef{};
+    // Amplitudes first: they read the periods that are overwritten below.
+    if (kRef.noisePeriod > 0.0f)
+        gpu.waveBreaker.y *= gpu.params2.y / kRef.noisePeriod;        // chop
+    if (kRef.wavePeriod > 0.0f)
+        gpu.waveComponent1.z *= gpu.waveComponent1.x / kRef.wavePeriod; // primary swell
+    if (kRef.crossWavePeriod > 0.0f)
+        gpu.waveComponent2.z *= gpu.waveComponent2.x / kRef.crossWavePeriod; // cross swell
+
     gpu.params2.y = waterPeriodToScale(gpu.params2.y);
     gpu.waveComponent1.x = waterPeriodToScale(gpu.waveComponent1.x);
     gpu.waveComponent2.x = waterPeriodToScale(gpu.waveComponent2.x);

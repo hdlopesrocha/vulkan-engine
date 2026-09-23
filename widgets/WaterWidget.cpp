@@ -146,7 +146,9 @@ void WaterWidget::render() {
         SliderFloatField("Wave Speed", &layerParams.waveSpeed, 0.0f, 30.0f, "%.2f",
             "Deep-water phase speed of the primary swell (m/s).");
         SliderFloatField("Wave Period", &layerParams.wavePeriod, 5.0f, 4096.0f, "%.1f",
-            "Primary swell wavelength (world units). Larger = longer, slower waves.",
+            "Primary swell wavelength (world units). Larger = longer, slower waves.\n"
+            "The swell's HEIGHT follows the wavelength (constant steepness), so this\n"
+            "scales the whole swell up, not just its wavelength.",
             ImGuiSliderFlags_Logarithmic);
         SliderFloatField("Shore Direction (deg)", &layerParams.shoreWaveAngle, 0.0f, 360.0f, "%.1f",
             "FALLBACK wave propagation direction toward the shore.\n"
@@ -165,10 +167,13 @@ void WaterWidget::render() {
         ColSeparator();
         ImGui::TextWrapped("Breaks up the crest lines.");
         SliderFloatField("Cross Period", &layerParams.crossWavePeriod, 2.0f, 4096.0f, "%.1f",
-            "Cross train wavelength (world units).",
+            "Cross train wavelength (world units). Its height follows the wavelength\n"
+            "(constant steepness), like the primary swell.",
             ImGuiSliderFlags_Logarithmic);
         SliderFloatField("Cross Speed", &layerParams.crossWaveSpeed, 0.0f, 30.0f, "%.2f");
-        SliderFloatField("Cross Amplitude", &layerParams.crossWaveAmplitude, 0.0f, 2.0f, "%.2f");
+        SliderFloatField("Cross Amplitude", &layerParams.crossWaveAmplitude, 0.0f, 2.0f, "%.2f",
+            "Steepness of the cross train relative to the primary swell: its height\n"
+            "is this times the Cross Period (so the slope is what you set).");
         SliderFloatField("Cross Phase Offset", &layerParams.crossWavePhase, -256.0f, 256.0f, "%.1f",
             "Offset of the cross train along the shore direction (world units).\n"
             "Both trains move along the same shore direction; this shifts them apart.");
@@ -178,7 +183,8 @@ void WaterWidget::render() {
         ImGui::Text("Crest Detail");
         ColSeparator();
         SliderFloatField("Chop Amount", &layerParams.waveChopAmount, 0.0f, 2.0f, "%.2f",
-            "FBM chop mixed into the ridged crests (uses the Noise Detail spectrum).");
+            "Steepness of the FBM chop (uses the Noise Detail spectrum): its height\n"
+            "is this times the Noise Period, so the slope is what you set.");
         SliderFloatField("Ridge Stretch", &layerParams.waveRidgeStretch, 1.0f, 24.0f, "%.2f",
             "Anisotropy of the ridged Perlin crests: along/across frequency ratio.\n"
             "Higher = long, wave-like crest lines; 1 = isotropic ridge blobs.");
@@ -303,7 +309,8 @@ void WaterWidget::render() {
         ColSeparator();
         SliderFloatField("Noise Period", &layerParams.noisePeriod, 0.25f, 4096.0f, "%.3f",
             "Chop/refraction/specular noise feature period (world units).\n"
-            "Larger = broader noise, 0 = disabled.",
+            "Larger = broader AND taller chop (its height follows the wavelength,\n"
+            "constant steepness), so this is a feature-SIZE knob. 0 = disabled.",
             ImGuiSliderFlags_Logarithmic);
         SliderIntField("Noise Octaves", &layerParams.noiseOctaves, 1, 8);
         SliderFloatField("Noise Persistence", &layerParams.noisePersistence, 0.1f, 0.9f);
