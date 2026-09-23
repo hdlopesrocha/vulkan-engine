@@ -383,17 +383,7 @@ private:
     // Indirect renderer for water geometry
     IndirectRenderer waterIndirectRenderer;
 
-    // Scene offscreen render target (render main scene here before water)
-    // Per-frame offscreen render targets for main scene (color + depth) - 2 frames in flight
     static constexpr uint32_t FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
-    std::array<VkImage, FRAMES> sceneColorImages = {};
-    std::array<VmaAllocation, FRAMES> sceneColorAllocations = {};
-    std::array<VkDeviceMemory, FRAMES> sceneColorMemories = {};
-    std::array<VkImageView, FRAMES> sceneColorImageViews = {};
-    std::array<VkImage, FRAMES> sceneDepthImages = {};
-    std::array<VmaAllocation, FRAMES> sceneDepthAllocations = {};
-    std::array<VkDeviceMemory, FRAMES> sceneDepthMemories = {};
-    std::array<VkImageView, FRAMES> sceneDepthImageViews = {};
     std::array<VkImage, FRAMES> waterDepthImages = {};
     std::array<VmaAllocation, FRAMES> waterDepthAllocations = {};
     std::array<VkDeviceMemory, FRAMES> waterDepthMemories = {};
