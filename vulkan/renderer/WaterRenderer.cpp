@@ -812,6 +812,17 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrDescs.size());
     vertexInputInfo.pVertexAttributeDescriptions = attrDescs.data();
 
+    // Non-tessellated family vertex input: the WATER_NO_TESS vertex shader
+    // consumes only POS/NORMAL/BRUSH_INDEX/HSV (COLOR/UV are unused and are
+    // pruned by the -O SPIR-V pass), so the pipeline must not declare the
+    // pruned attributes or VVL reports
+    // "Vertex attribute at location N not consumed by vertex shader".
+    auto noTessAttrDescs = vk_layouts::defaultAttributesFiltered(
+        { ATTR_POS, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV });
+    VkPipelineVertexInputStateCreateInfo noTessVertexInputInfo = vertexInputInfo;
+    noTessVertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(noTessAttrDescs.size());
+    noTessVertexInputInfo.pVertexAttributeDescriptions = noTessAttrDescs.data();
+
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1031,6 +1042,9 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         familyPipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
         familyPipelineInfo.pStages = stages.data();
         familyPipelineInfo.pInputAssemblyState = &familyInputAssembly;
+        // The non-tess family's vertex shader consumes only a subset of the
+        // default attributes (see noTessVertexInputInfo above).
+        familyPipelineInfo.pVertexInputState = tess ? &vertexInputInfo : &noTessVertexInputInfo;
         // pTessellationState stays null for the non-tessellated family.
         if (tess) familyPipelineInfo.pTessellationState = &tessState;
 
@@ -1038,6 +1052,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         familyMainPipelineInfo.stageCount = familyPipelineInfo.stageCount;
         familyMainPipelineInfo.pStages = stages.data();
         familyMainPipelineInfo.pInputAssemblyState = &familyInputAssembly;
+        familyMainPipelineInfo.pVertexInputState = familyPipelineInfo.pVertexInputState;
         if (tess) familyMainPipelineInfo.pTessellationState = &tessState;
 
         // H4 no-body geometry-only variant: same family state, one color

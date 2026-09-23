@@ -200,13 +200,17 @@ void WaterBackFaceRenderer::createBackFacePipeline(VulkanApp* app, VkPipelineLay
     fs.pName = "main";
     bfStages.push_back(fs);
 
-    // Vertex input
+    // Vertex input. The non-tessellated WATER_NO_TESS vertex shader consumes
+    // only POS/NORMAL/BRUSH_INDEX/HSV, so its pipeline must not declare the
+    // pruned COLOR/UV attributes (VVL performance warning otherwise).
     VkVertexInputBindingDescription bindingDesc{};
     bindingDesc.binding = 0;
     bindingDesc.stride = sizeof(Vertex);
     bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    auto attrDescs = vk_layouts::defaultAttributes();
+    auto attrDescs = tess
+        ? vk_layouts::defaultAttributes()
+        : vk_layouts::defaultAttributesFiltered({ ATTR_POS, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV });
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
