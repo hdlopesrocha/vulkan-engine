@@ -229,6 +229,34 @@ struct WaterParams {
     glm::vec3 volumetricColor = glm::vec3(0.10f, 0.35f, 0.40f); // scatter tint
 };
 
+// Per-layer water look tier driven by the graphics-quality presets. Not
+// packed to the GPU: the shaders gate on the existing per-feature fields
+// (enableVolumetric/enableFoam/causticIntensity/glitterIntensity), which
+// this helper sets.
+enum class WaterQuality { Full, Minimal };
+
+// Applies one tier to one layer:
+//   Minimal — volumetric scattering, foam, caustics and glitter off.
+//   Full    — those four fields back to their WaterParams{} struct defaults
+//             (reset-to-defaults semantics: a per-layer authored override of
+//             any of the four is not restored, it is reset). Colors,
+//             amplitudes, waves and every other per-layer field are never
+//             touched.
+inline void applyWaterQuality(WaterParams& params, WaterQuality quality) {
+    if (quality == WaterQuality::Minimal) {
+        params.enableVolumetric = false;
+        params.enableFoam = false;
+        params.causticIntensity = 0.0f;
+        params.glitterIntensity = 0.0f;
+    } else {
+        const WaterParams defaults{};
+        params.enableVolumetric = defaults.enableVolumetric;
+        params.enableFoam = defaults.enableFoam;
+        params.causticIntensity = defaults.causticIntensity;
+        params.glitterIntensity = defaults.glitterIntensity;
+    }
+}
+
 // CPU mirror of shaders/includes/water_tint.glsl: the 5-stop depth-region
 // tint ramp (shore → foam band → breaker line → shoaling → deep ocean), keyed
 // to the same wave-zone boundaries with the same soft blending. Used where the

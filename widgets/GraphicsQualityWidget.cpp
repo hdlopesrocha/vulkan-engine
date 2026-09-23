@@ -38,13 +38,15 @@ void GraphicsQualityWidget::render() {
         eventManager->queue(std::make_shared<SetGraphicsQualityEvent>(GraphicsQuality::Maximum));
     }
     ImGuiHelpers::SetTooltipIfHovered(
-        "RT reflections/refraction/thickness/depth, water blur, tessellation and shadows on.");
+        "RT reflections/refraction/thickness/depth, water blur, tessellation and shadows on. "
+        "Water volumetric scattering, caustics, glitter and foam restored.");
 
     if (ImGui::Button("Minimal", ImVec2(120.0f, 0.0f))) {
         eventManager->queue(std::make_shared<SetGraphicsQualityEvent>(GraphicsQuality::Minimal));
     }
     ImGuiHelpers::SetTooltipIfHovered(
-        "No RT refraction/reflection/depth/thickness, no water blur, no tessellation, no shadows.");
+        "No RT refraction/reflection/depth/thickness, no water blur, no tessellation, no shadows. "
+        "Water volumetric scattering, caustics, glitter and foam disabled.");
 
     ImGui::End();
 }

@@ -3266,11 +3266,19 @@ public:
         }
         if (auto qualityEvent = std::dynamic_pointer_cast<SetGraphicsQualityEvent>(event)) {
             // Runs on the queued-event drain (main thread, before frame
-            // recording). Presets edit global Settings gates only; the
-            // authored per-layer WaterParams stay untouched (the shaders AND
-            // the global gate with the material flag).
+            // recording). The preset edits the global Settings gates and
+            // applies the water look tier (perf_report_19 L12) to every
+            // layer; the upload callback pushes the touched layers to the
+            // water GPU params so the change takes effect even when the
+            // Water Settings widget is hidden.
             GraphicsSettingsCommand command(qualityEvent->quality);
-            command.execute(settings);
+            command.execute(settings, waterParams,
+                [this](std::size_t layer, const WaterParams& params) {
+                    if (sceneRenderer && sceneRenderer->mainLiquidRenderer) {
+                        sceneRenderer->mainLiquidRenderer->updateGPUParamsForLayer(
+                            static_cast<uint32_t>(layer), params);
+                    }
+                });
             return;
         }
         if (auto rebuildEvent = std::dynamic_pointer_cast<RebuildBrushEvent>(event)) {

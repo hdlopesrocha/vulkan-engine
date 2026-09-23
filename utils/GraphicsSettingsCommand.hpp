@@ -2,40 +2,72 @@
 
 #include "GraphicsQuality.hpp"
 #include "Settings.hpp"
+#include "WaterParams.hpp"
+
+#include <cstddef>
+#include <functional>
+#include <vector>
 
 // Command that applies a graphics-quality preset to the runtime settings:
 //   Maximum — every secondary-visibility ray path on (RT solid/water
 //             reflections, water refraction, thickness, ray-traced depth),
 //             global water blur on, geometry/wave tessellation on,
-//             shadows on.
+//             shadows on, and the Full water look tier: volumetric
+//             scattering, foam, caustics and glitter restored to their
+//             WaterParams{} defaults.
 //   Minimal — all of the above off (blur and tessellation included), so the
-//             renderer falls back to the cheapest raster paths.
+//             renderer falls back to the cheapest raster paths, and the
+//             Minimal water look tier: volumetric scattering, foam, caustics
+//             and glitter disabled, which makes the per-pixel water shader
+//             gates take their cheap paths.
 //
 // Global-only and renderer-agnostic: the preset edits Settings fields that
 // gate the per-material water features (blurEnabled, rtWaterReflections,
-// rtRefractions), so the authored per-layer WaterParams are NEVER modified —
-// the shaders combine the global gate with the material flag. Keeping the
-// command free of renderer types also lets the headless server include it
-// without any Vulkan linkage.
+// rtRefractions) without holding renderer types, so the headless server can
+// still include it. The opt-in execute() overload below additionally applies
+// the water look tier to every layer via applyWaterQuality() and reports each
+// touched layer through the optional callback so the owner can re-upload the
+// packed GPU params.
 class GraphicsSettingsCommand {
 public:
+    // Called once per water layer the preset changed (index + updated
+    // params), after the edit, so the caller can push it to the GPU.
+    using WaterLayerUpload =
+        std::function<void(std::size_t layer, const WaterParams& params)>;
+
     explicit GraphicsSettingsCommand(GraphicsQuality quality) : quality_(quality) {}
 
     GraphicsQuality quality() const { return quality_; }
 
+    // Global Settings only; the authored per-layer WaterParams stay untouched.
     void execute(Settings& settings) const {
         switch (quality_) {
         case GraphicsQuality::Maximum:
-            applyMaximum(settings);
+            applyMaximum(settings, nullptr, {});
             break;
         case GraphicsQuality::Minimal:
-            applyMinimal(settings);
+            applyMinimal(settings, nullptr, {});
+            break;
+        }
+    }
+
+    // Global Settings plus the water look tier on every layer (Full for
+    // Maximum, Minimal for Minimal).
+    void execute(Settings& settings, std::vector<WaterParams>& waterLayers,
+                 const WaterLayerUpload& onLayerChanged = {}) const {
+        switch (quality_) {
+        case GraphicsQuality::Maximum:
+            applyMaximum(settings, &waterLayers, onLayerChanged);
+            break;
+        case GraphicsQuality::Minimal:
+            applyMinimal(settings, &waterLayers, onLayerChanged);
             break;
         }
     }
 
 private:
-    static void applyMaximum(Settings& settings) {
+    static void applyMaximum(Settings& settings, std::vector<WaterParams>* waterLayers,
+                             const WaterLayerUpload& onLayerChanged) {
         settings.rtReflections = true;
         settings.rtWaterReflections = true;
         settings.rtRefractions = true;
@@ -45,9 +77,20 @@ private:
         settings.tessellationEnabled = true;
         settings.shadowTessellationEnabled = true;
         settings.enableShadows = true;
+
+        // Per-layer water look tier. Full resets the four look fields to
+        // their WaterParams{} defaults; the rest of the layer is preserved.
+        if (waterLayers) {
+            for (std::size_t i = 0; i < waterLayers->size(); ++i) {
+                WaterParams& params = (*waterLayers)[i];
+                applyWaterQuality(params, WaterQuality::Full);
+                if (onLayerChanged) onLayerChanged(i, params);
+            }
+        }
     }
 
-    static void applyMinimal(Settings& settings) {
+    static void applyMinimal(Settings& settings, std::vector<WaterParams>* waterLayers,
+                             const WaterLayerUpload& onLayerChanged) {
         // Local contact shadows are disabled as well so SceneRenderer's RT
         // runtime gate (any ray path on) turns the RT pipeline off entirely.
         settings.rtReflections = false;
@@ -64,6 +107,16 @@ private:
         // Shadow maps + cascade passes off (the solid pass then uses the
         // unshadowed direct-lighting path).
         settings.enableShadows = false;
+
+        // Per-layer water look tier. Minimal turns volumetric scattering,
+        // foam, caustics and glitter off; the rest of the layer is preserved.
+        if (waterLayers) {
+            for (std::size_t i = 0; i < waterLayers->size(); ++i) {
+                WaterParams& params = (*waterLayers)[i];
+                applyWaterQuality(params, WaterQuality::Minimal);
+                if (onLayerChanged) onLayerChanged(i, params);
+            }
+        }
     }
 
     GraphicsQuality quality_;
