@@ -92,12 +92,13 @@ void main() {
 
             if (noiseInf > 0.0 && wp.waveToggles.x > 0.5) {
                 // Noise at edge midpoint — deterministic, identical for both
-                // adjacent patches sharing this edge. The TCS has no thickness
-                // signal, so the field is sampled as deep water (-1).
+                // adjacent patches sharing this edge, so the two can never
+                // disagree on the shared tess level (no cracks). The TCS has no
+                // thickness signal, so the probe runs as deep water (-1).
+                // H7: one ridged train of two octaves instead of the full
+                // field — this is a triangle-density bias, not a look.
                 vec3 edgeMid = (va + vb) * 0.5;
-                float noiseVal = waterWaveDisplacement(
-                    edgeMid, timeVal, -1.0, 1.0, wp.waveDirection.xy, wp
-                );
+                float noiseVal = waterWaveTessProbe(edgeMid, timeVal, wp);
                 float noiseMod = 1.0 + noiseInf * (noiseVal - 0.5);
                 outer[e] = clamp(distTess * noiseMod, minLevel, maxLevel);
             } else {

@@ -438,10 +438,47 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     return f;
 }
 
-// Height-only entry point (tessellation adaptation, debug views).
+// Height-only entry point (debug views). The tessellation probe uses
+// waterWaveTessProbe() below instead: it needs a density bias, not the full
+// field.
 float waterWaveDisplacement(vec3 xyz, float time, float depth, float amp,
                             vec2 shoreDir, WaterParamsGPU wp) {
     return waterWaveField(xyz, time, depth, amp, shoreDir, wp, false, WATER_OCT_FULL).height;
+}
+
+// Cheap tessellation probe: the primary ridged train only, at most two octaves
+// (perf report 20 H7).
+//
+// The TCS runs this once per patch EDGE purely to bias the distance-derived
+// tessellation level by +/-tessNoiseInfluence (30% by default). It must stay
+// deterministic per shared edge - both patches sharing an edge evaluate the
+// same midpoint - which a cheaper field does not change, but the full field is
+// wasted here: the chop, the calm mask, the second train and the foam texture
+// carry nothing a triangle-density bias can use, and their fine octaves sit far
+// below the patch's own vertex spacing anyway. This is 1 FBM chain of 2 octaves
+// instead of 4 chains of 4: 48 -> 6 four-dimensional Perlin evaluations per
+// patch.
+//
+// Same conventions as the waterWaveDisplacement() call it replaces: depth -1
+// (the TCS has no thickness signal, so the probe runs as deep water - full
+// amplitude, no shore taper) and the configured shore direction as the
+// fallback. The returned range matches that call's (about [-1.5, 1.5]), so the
+// resulting density bias keeps its authored meaning.
+float waterWaveTessProbe(vec3 pos, float time, WaterParamsGPU wp) {
+    const int kProbeOctaves = 2;
+    vec2 shoreDir = normalize(wp.waveDirection.xy + vec2(1e-5, 0.0));
+    float k1 = max(wp.waveComponent1.x, 1e-4);
+    float c1 = wp.waveComponent1.y;
+    // Same shore movement helper as the field's primary train, with the warp
+    // and curl hooks disabled: they only shape the crest look.
+    WaterWaveCoord coord = waterShoreWaveCoord(pos, shoreDir, k1, c1, 0.0, 1.0, time,
+                                               max(wp.waveWarp.z, 1.0), 0.0, vec2(0.0), 0.0);
+    int oct = clamp(int(max(wp.params2.z, 1.0)), 1, kProbeOctaves);
+    vec4 r1 = waterRidgedFbmGrad(coord.q, time, oct, wp.params2.w, wp.params3.y,
+                                 max(wp.waveShape.x, 0.25), 0.0);
+    // Odd profile skew, matching the field's primary train (minus the amplitude
+    // modulators the probe deliberately skips).
+    return 2.0 * r1.x - 1.0;
 }
 
 // Height + analytic gradient, vec4(height, dHeight/dx, dHeight/dy, dHeight/dz).
