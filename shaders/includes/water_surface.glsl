@@ -688,23 +688,31 @@ void shadeWaterSurface() {
     vec3 T  = normalize(cross(up, flatN));
     vec3 B  = cross(flatN, T);
 
-    // ── Evaluation-time wave LOD (perf report 20 C4) ──────────────────────
-    // The normal detail has always been faded to the flat base normal over
-    // this band; computing the distance BEFORE the field call makes the same
-    // LOD gate the field EVALUATION instead of only its result. Past the band
-    // the octave budget is 0, which waterWaveField() early-outs on, so the
-    // whole per-pixel wave stack — shading field, caustic curvature and the
-    // specular/glitter FBMs — disappears for distant water instead of being
-    // computed and thrown away.
+    // ── Wave detail LOD: NO distance cutoff (perf report 20 C4, revised) ──
+    // The wave field is evaluated at EVERY distance and the normal is never
+    // faded to the flat base normal. Past the detail band the octave budget
+    // drops to a coarse spectrum, and inside the band the analytic gradient
+    // blends smoothly from the coarse evaluation to the full one, so distant
+    // water keeps its large swell — visible, and alias-free because the
+    // sub-pixel octaves are gone — instead of becoming a flat mirror (the old
+    // fade-to-flat) or shimmer (full detail where the finest chop octaves are
+    // far below a pixel and randomize the mirror direction).
+    //
+    // Cost: one evaluation normally, two inside the band (the coarse one is
+    // cheap), one coarse past it — still less than the pre-LOD code, which ran
+    // the full spectrum at every distance.
     const float kWaterDetailNear = 200.0;
     const float kWaterDetailFar  = 1000.0;
     float camDist = length(ubo.viewPos.xyz - fragPosWorld);
     float detail = 1.0 - smoothstep(kWaterDetailNear, kWaterDetailFar, camDist);
-    int waveOctBudget = (detail > 0.0) ? noiseOctaves : 0;
-    // Field-derived effects that the normal does NOT carry (foam, the contact
-    // line, caustics) fade over the tail of the same band, so nothing pops
-    // where the field stops being evaluated.
-    float waveLodTail = 1.0 - smoothstep(0.8 * kWaterDetailFar, kWaterDetailFar, camDist);
+    // Far-field spectrum: drop the layer's two finest octaves.
+    int waveCoarseOct = clamp(noiseOctaves - 2, 1, noiseOctaves);
+    int waveFieldOct = (detail > 0.0) ? noiseOctaves : waveCoarseOct;
+    // Sub-pixel noise terms (highlight perturbation, glitter, caustics) fade
+    // over the tail of the band so they stop without a step where the detail
+    // band ends. The WAVES do not use this: the field and its normal run at
+    // every distance.
+    float waveNoiseTail = 1.0 - smoothstep(0.8 * kWaterDetailFar, kWaterDetailFar, camDist);
 
     vec3 normal;
     // Same single thickness-zoned wave field the TES displaced the geometry
@@ -716,7 +724,15 @@ void shadeWaterSurface() {
     // used by the foam shading below.
     WaterWaveField waveField = waterWaveField(
         fragBasePos.xyz, animTime, fragWaterDepth, fragBasePos.w, fragShoreDir, wp, true,
-        waveOctBudget);
+        waveFieldOct);
+    if (detail > 0.0 && detail < 1.0) {
+        // Detail band: blend the analytic gradient toward the COARSE spectrum
+        // rather than toward a flat normal, so the swell survives at range.
+        WaterWaveField coarse = waterWaveField(
+            fragBasePos.xyz, animTime, fragWaterDepth, fragBasePos.w, fragShoreDir, wp, true,
+            waveCoarseOct);
+        waveField.grad = mix(coarse.grad, waveField.grad, detail);
+    }
     {
         float dhdT = dot(waveField.grad, T);
         float dhdB = dot(waveField.grad, B);
@@ -730,18 +746,6 @@ void shadeWaterSurface() {
     // Keep the normal facing the visible side to avoid flat/dark lighting from flipped orientation.
     if (dot(normal, viewDir) < 0.0) normal = -normal;
 
-    // Distance-based normal LOD: at range one pixel spans many wave features,
-    // so the per-fragment analytic gradient aliases badly (especially with
-    // fine noise spectra) and randomizes the mirror direction — far water then
-    // reflects a noisy mix of terrain/bed and sky instead of the stable sky.
-    // Fade the wave-normal detail toward the smooth base normal with camera
-    // distance, the same band-limiting the raster needs for stable specular
-    // and reflections. Near water keeps the full per-pixel ripple detail.
-    if (detail < 1.0) {
-        vec3 baseN = flatN;
-        if (dot(baseN, viewDir) < 0.0) baseN = -baseN;
-        normal = normalize(mix(baseN, normal, detail));
-    }
     vec3 lightDir = normalize(-ubo.lightDir.xyz);
     
     // Base screen UV already computed at the top of main() and reused above.
@@ -1235,13 +1239,18 @@ void shadeWaterSurface() {
     // layer actually has a wave field to perturb: with waves off
     // (wp.waveToggles.x < 0.5) waterWaveField() returns identically zero, so
     // the FBM perturbation and the glitter sparkles only add noise to a flat
-    // surface. The unperturbed analytic highlight is kept instead. The same
-    // holds past the wave LOD band (waveOctBudget == 0, C4): the field is not
-    // evaluated there, so there is nothing to perturb.
+    // surface. The unperturbed analytic highlight is kept instead.
+    //
+    // Unlike the wave field itself (which is evaluated at every distance), the
+    // highlight PERTURBATION stops at the detail band: at that range the
+    // highlight is sub-pixel, so the FBM would only add shimmer on top of it,
+    // never visible sparkle. This is not a wave cutoff.
     vec3 specularColor = vec3(0.0);
-    if (wp.waveToggles.x > 0.5 && waveOctBudget > 0) {
+    if (wp.waveToggles.x > 0.5 && detail > 0.0) {
         if (specularIntensity > 0.0 || glitterIntensity > 0.0) {
-            float specNoise = 0.8 + 0.4 * waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
+            // waveNoiseTail fades only the perturbation (the +/-0.4 term); the
+            // analytic highlight itself is kept at every distance.
+            float specNoise = 0.8 + 0.4 * waveNoiseTail * waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
                                                         max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
             float specular = pow(specAngle, specularPowerParam) * specNoise;
             specularColor = ubo.lightColor.xyz * specular * specularIntensity;
@@ -1254,7 +1263,7 @@ void shadeWaterSurface() {
             float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xyz, noiseScale * 0.5, animTime, 0.5,
                                                                max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
             float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * pow(specAngle, 32.0);
-            specularColor += ubo.lightColor.xyz * glitter * glitterIntensity;
+            specularColor += ubo.lightColor.xyz * glitter * glitterIntensity * waveNoiseTail;
         }
     } else if (specularIntensity > 0.0) {
         // Waves off: no field to perturb, so no FBM and no glitter; the
@@ -1495,7 +1504,7 @@ void shadeWaterSurface() {
     // exactly 0). The debug view still forces the block so its mask stays
     // populated.
     if ((causticIntensity > 0.001 && waterThickness > 0.05 && wp.waveToggles.x > 0.5
-         && waveOctBudget > 0)
+         && detail > 0.0)
         || causticDebugMode) {
         // Sun geometry (flat-surface incidence): stable coefficient, the
         // wave slopes enter through the curvature term only.
@@ -1531,7 +1540,7 @@ void shadeWaterSurface() {
         float ec = clamp(0.25 / finestFreq, 0.02, 2.0);
         float d2h = waterWaveCurvature(fragBasePos.xyz, animTime, fragWaterDepth,
                                        fragBasePos.w, fragShoreDir, sunHat, ec,
-                                       dot(waveField.grad, sunHat), wp, waveOctBudget);
+                                       dot(waveField.grad, sunHat), wp, waveFieldOct);
         // Bottom irradiance ratio: inverse Jacobian of the refracted ray
         // map. Folds (|J| -> 0) are physically unbounded; causticSoftness is
         // the only artistic control (a clamp floor on |J|).
@@ -1540,9 +1549,7 @@ void shadeWaterSurface() {
         // Only CONVERGED light (gain > 1) adds to the flat-surface
         // irradiance, scaled by the sun elevation (no sun -> no caustics).
         float excess = max(causticGain - 1.0, 0.0) * cosI;
-        // waveLodTail: the caustic is a wave-field product, so it fades out
-        // with the field's evaluation LOD instead of popping at the band edge.
-        caustic = excess * causticIntensity * (1.0 - shadow) * waveLodTail;
+        caustic = excess * causticIntensity * (1.0 - shadow) * waveNoiseTail;
     }
     // Attenuated by the water column (the focused light travels down to the
     // bottom and back to the eye through the same absorption).
@@ -1584,9 +1591,7 @@ void shadeWaterSurface() {
         float foamLight = wp.foamExtra.y + (1.0 - wp.foamExtra.y) * foamDiff;
         vec3 foamLit = wp.foamColor.rgb
             * (ubo.lightColor.rgb * foamLight + vec3(wp.foamExtra.z));
-        // waveLodTail: foam is a wave-field product; fade it with the field's
-        // evaluation LOD so it does not pop where the field stops running.
-        float foamMix = clamp(waveField.foam * wp.foamParams.w, 0.0, 1.0) * waveLodTail;
+        float foamMix = clamp(waveField.foam * wp.foamParams.w, 0.0, 1.0);
         waterColor = mix(waterColor, foamLit, foamMix);
     }
 
@@ -1627,8 +1632,7 @@ void shadeWaterSurface() {
     // Shoreline contact foam is a surface line, not volume translucency: it
     // must stay visible where the water meets the solid even when the alpha
     // shoreline fade would otherwise erase the last water pixels.
-    // waveLodTail: the contact line is field-derived too (see the foam note).
-    alpha = max(alpha, clamp(waveField.contact * wp.foamContact.z, 0.0, 1.0) * waveLodTail);
+    alpha = max(alpha, clamp(waveField.contact * wp.foamContact.z, 0.0, 1.0));
     if (captureMode) alpha = 1.0;
     outColor = vec4(waterColor, alpha);
 
@@ -1774,7 +1778,7 @@ void shadeWaterSurface() {
         float animTimeDbg = timeDebug * wp.params3.x;
         vec4 waveDbg = waterWaveSample(
             fragPos.xyz, animTimeDbg, waterThickness, bumpAmpDbg, fragShoreDir, wp,
-            waveOctBudget);
+            waveFieldOct);
         float maxExpected = max(bumpAmpDbg * (1.0 + wp.waveShape.w + wp.waveBreaker.x), 1e-3);
         float normDisp = clamp((waveDbg.x / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
         vec3 debugCol = fragDebug;
