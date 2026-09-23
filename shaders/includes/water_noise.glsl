@@ -36,6 +36,25 @@ const int WATER_OCT_FULL = 64;
 // the back-face pass. It is a single constant so it can be A/B'd cheaply.
 const int WATER_VERTEX_OCT = 2;
 
+// Minimum fine-detail fraction of the per-layer wave height.
+//
+// The shore-zone envelope (env), the calm mask and the depth taper are the
+// SWELL envelope: they legitimately damp the wave height in shallow water and
+// in the authored calm patches. Applied to the whole field they also delete
+// the fine chop, and a height field with a zero gradient is a PERFECT MIRROR:
+// the reflection stops following the wave normal and the water reads as a flat
+// sheet with no movement. With the shipped zones (32/64/128 m) the envelope is
+// below this floor for water shallower than ~24 m -- i.e. for any lake-scale
+// water body -- and exactly 0 in a calm patch.
+//
+// This floor keeps the smallest fraction of the authored Wave Height alive, so
+// the surface always has a live normal and the mirror always ripples. It is a
+// fraction of the per-layer bumpAmplitude, applied to the height AND the
+// gradient together, so the geometry, the analytic normal and the two
+// rasterised surfaces (front/back co-movement) all stay consistent. 0 restores
+// the old behaviour (fully dead calm).
+const float WAVE_DETAIL_FLOOR = 0.02;
+
 float waterFbmNoise(vec3 xyz, float spatialScale, float time, float timeScale,
                     int octaves, float persistence, float lacunarity, vec3 offset) {
     return fbm(vec4((xyz + offset) * spatialScale, time * timeScale), octaves, persistence, lacunarity);
@@ -336,7 +355,9 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         gxz += chopAmount * chopGrad;
     }
 
-    float finalAmp = amp * env * mask * heightTaper;
+    // Floor the envelope (see WAVE_DETAIL_FLOOR): the swell may calm to
+    // nothing, the surface normal may not, or the water becomes a mirror.
+    float finalAmp = amp * max(env * mask * heightTaper, WAVE_DETAIL_FLOOR);
     f.height = finalAmp * h;
     f.grad = vec3(finalAmp * gxz.x, 0.0, finalAmp * gxz.y);
 
