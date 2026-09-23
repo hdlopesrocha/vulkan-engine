@@ -51,6 +51,7 @@ layout(set = 0, binding = 6) uniform SkyUBO {
 
 layout(set = 0, binding = 10) uniform WaterRenderUBO {
     vec4 timeParams; // x=waterTime, y=water refraction allowed, z=water reflection allowed, w=water blur allowed
+    vec4 depthParams; // x = solidSceneDepthTex is THIS frame's solid depth (1/0); yzw unused
 } waterRenderUBO;
 
 

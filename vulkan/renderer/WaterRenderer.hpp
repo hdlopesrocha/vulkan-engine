@@ -197,6 +197,14 @@ public:
     // never calls renderPass) flushes them lazily from renderMainTargets().
     void setRtFeatureFlags(bool reflections, bool refractions, bool blur);
 
+    // Declare whether the solid depth bound in set 2 is THIS frame's (true, the
+    // offscreen water pass, which runs after the solid pass) or a stale one
+    // (false, the water-in-main variant, which binds the previous frame's depth
+    // for its in-trace lookups). Gates the shader-side solid-occlusion
+    // rejection (perf report 20 C5). Bumps the UBO dirty bit on change so the
+    // water-in-main flush picks it up.
+    void setSolidDepthCurrentFrame(bool current);
+
     // Get the descriptor set layout for scene textures (set 2)
     VkDescriptorSetLayout getWaterDepthDescriptorSetLayout() const { return waterDepthDescriptorSetLayout; }
 
@@ -540,4 +548,8 @@ private:
 
     // Water render time UBO (binding 10)
     Buffer waterRenderUBO_;
+
+    // True while the solid depth bound in set 2 belongs to the current frame
+    // (see setSolidDepthCurrentFrame). The offscreen path is the default.
+    bool solidDepthCurrentFrame_ = true;
 };

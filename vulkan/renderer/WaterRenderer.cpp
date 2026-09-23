@@ -1247,10 +1247,14 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     depthAttachment.imageView = waterGeomDepthImageViews[frameIndex];
     depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     // Clear depth to 1.0 so every water fragment passes the depth test
-    // (self-occlusion only). Forward-pass depth-test handles solid occlusion.
-    // No scene-depth copy is needed. When LOADing, the main water geom depth is
-    // preserved so the brush overlay depth-tests against it (storeOp STORE keeps
-    // the overlay visible to the composite).
+    // (self-occlusion only). This target holds the WATER geometry depth the
+    // composite samples; occlusion against solid geometry is resolved by the
+    // fragment stage's eye-space rejection against solidSceneDepthTex (perf
+    // report 20 C5, gated by WaterRenderUBO::depthParams.x) and, as a
+    // backstop, by the composite's own depth test. No scene-depth copy is
+    // needed. When LOADing, the main water geom depth is preserved so the
+    // brush overlay depth-tests against it (storeOp STORE keeps the overlay
+    // visible to the composite).
     depthAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     // STORE (not DONT_CARE) so the geom depth survives the pass: the composite samples
     // it (postprocess.frag binding 7) and the brush-liquid overlay re-enters this pass
@@ -1846,9 +1850,22 @@ void WaterRenderer::flushWaterRenderUBO(float waterTime, bool preserveTime) {
                                      rtRefractionsEnabled_ ? 1.0f : 0.0f,
                                      rtReflectionsEnabled_ ? 1.0f : 0.0f,
                                      blurEnabled_ ? 1.0f : 0.0f);
+    // C5: gates the shader-side solid-occlusion rejection. False while the
+    // water-in-main variant binds the previous frame's solid depth.
+    renderUbo.depthParams = glm::vec4(solidDepthCurrentFrame_ ? 1.0f : 0.0f,
+                                      0.0f, 0.0f, 0.0f);
     memcpy(data, &renderUbo, sizeof(WaterRenderUBO));
     waterRenderUBO_.unmap(); // VMA persistent mapping
     waterRenderUboDirty_ = false;
+}
+
+void WaterRenderer::setSolidDepthCurrentFrame(bool current) {
+    if (solidDepthCurrentFrame_ == current) return;
+    solidDepthCurrentFrame_ = current;
+    // The water-in-main flush is dirty-driven, so a change here must schedule
+    // its own write; the offscreen renderPass() rewrites the UBO every frame
+    // regardless.
+    waterRenderUboDirty_ = true;
 }
 
 void WaterRenderer::setRtFeatureFlags(bool reflections, bool refractions, bool blur) {

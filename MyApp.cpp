@@ -2603,6 +2603,11 @@ public:
                                 ? this->sceneRenderer->vegetationRenderer->getVegDepthView(prevIdx) : VK_NULL_HANDLE;
                             this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, frameIdx,
                                 wBack, wRefl, wRefr, wsky, pSolid, pSolidDepth, pVegC, pVegD);
+                            // The bound solid depth is the PREVIOUS frame's, so
+                            // the shader-side occlusion rejection (C5) must stay
+                            // off here; the main targets' hardware depth test
+                            // already rejects occluded water.
+                            this->sceneRenderer->mainLiquidRenderer->setSolidDepthCurrentFrame(false);
                             this->sceneRenderer->mainLiquidRenderer->renderMainTargets(this, cmd, frameIdx,
                                 this->sceneRenderer->mainSolidRenderer->getColorImage(frameIdx),
                                 this->sceneRenderer->mainSolidRenderer->getColorView(frameIdx),
@@ -2610,6 +2615,10 @@ public:
                                 this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx),
                                 wsky, slot.waterDs2);
                         } else {
+                            // Offscreen path: the water task waits tlSolid, so the
+                            // bound solid depth is this frame's and the shader may
+                            // reject terrain-occluded fragments (C5).
+                            this->sceneRenderer->mainLiquidRenderer->setSolidDepthCurrentFrame(true);
                             this->sceneRenderer->mainLiquidRenderer->renderPass(this, cmd, frameIdx,
                                 settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2, /*drawBrushLiquid=*/false);
                         }

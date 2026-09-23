@@ -603,18 +603,52 @@ void shadeWaterSurface() {
     // is identical for every use below).
     vec2 screenUV = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
 
-    // NOTE: solid-occlusion discard (was: if solid depth < fragment depth,
-    // discard) has been REMOVED from this shader. The water pass no longer reads
-    // the solid depth texture; occlusion against solid geometry is now resolved
-    // at the composite stage (postprocess.frag) where both the solid depth and
-    // the water geometry depth are available.
+    // === SOLID-OCCLUSION REJECTION (perf report 20 C5) ===
+    // The water pass is a separate pass that runs AFTER the solid pass (the
+    // water task waits tlSolid) and solidSceneDepthTex is bound and in
+    // SHADER_READ_ONLY, so a water fragment the terrain already covers can be
+    // rejected here instead of being fully shaded and thrown away by the
+    // composite's identical test (postprocess.frag: obstacleDepth <
+    // waterGeomDepth -> waterAlpha = 0). Nothing is rejected that the
+    // composite would have kept: the eye-space ordering below is the same
+    // ordering the composite compares, the 5 cm bias only makes this test
+    // stricter, and a discarded fragment leaves the water targets at their
+    // clear values (colour alpha 0, depth 1.0) - exactly what the composite
+    // expects of an uncovered pixel.
+    //
+    // Compared in EYE SPACE with a 5 cm bias: an absolute NDC epsilon is
+    // useless at this near/far ratio (1e-5 NDC is ~100 m at 1 km), and the
+    // bias keeps two surfaces that are within a few centimetres of each other
+    // (the shoreline, where the water meets the bank) from flickering between
+    // accepted and rejected. depthParams.x gates the whole test: it is set
+    // only when solidSceneDepthTex holds THIS frame's solid depth. The
+    // water-in-main variant binds the PREVIOUS frame's depth for its in-trace
+    // lookups, so a discard there would punch holes under camera motion, and
+    // in that variant the hardware depth test already does this job.
+    //
+    // Cost: one depth fetch and two linearisations, against the whole water
+    // shading stack for every occluded pixel. The `discard` does disable
+    // hardware early-Z for this pipeline, but the water depth target starts
+    // cleared and the surface is a single layer, so the early-Z it loses is
+    // self-occlusion that barely happens.
+    if (waterRenderUBO.depthParams.x > 0.5) {
+        float solidDepthRaw = textureLod(solidSceneDepthTex, screenUV, 0.0).r;
+        if (solidDepthRaw < 1.0) {
+            float solidEye = linearizeDepth(solidDepthRaw);
+            float waterEye = linearizeDepth(gl_FragCoord.z);
+            if (solidEye < waterEye - 0.05) {
+                discard;
+                return;
+            }
+        }
+    }
 
     // === WATER VOLUME THICKNESS ===
     // Compute volume thickness from back-face depth (rendered with reversed winding)
     // before the normal computation, so we can modulate bump amplitude.
-    // The solid scene depth is no longer available here; thickness is therefore
-    // measured entirely from the water front/back faces. This means a flat
-    // height-field surface (back-face ≈ front-face) reports ~0 thickness, which
+    // The thickness is measured entirely from the water front/back faces (the
+    // solid depth is only used for the occlusion rejection above). This means
+    // a flat height-field surface (back-face ≈ front-face) reports ~0 thickness, which
     // is the expected "thin water" case; genuinely thick water bodies (where the
     // back-face pass renders a distant bottom) keep their measured thickness.
     float backFaceDepthRaw = texture(waterBackDepthTex, screenUV).r;
