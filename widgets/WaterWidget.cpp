@@ -145,8 +145,9 @@ void WaterWidget::render() {
             "Overall vertical amplitude of the wave displacement (world units).");
         SliderFloatField("Wave Speed", &layerParams.waveSpeed, 0.0f, 30.0f, "%.2f",
             "Deep-water phase speed of the primary swell (m/s).");
-        SliderFloatField("Wave Period", &layerParams.wavePeriod, 5.0f, 500.0f, "%.1f",
-            "Primary swell wavelength (world units). Larger = longer, slower waves.");
+        SliderFloatField("Wave Period", &layerParams.wavePeriod, 5.0f, 4096.0f, "%.1f",
+            "Primary swell wavelength (world units). Larger = longer, slower waves.",
+            ImGuiSliderFlags_Logarithmic);
         SliderFloatField("Shore Direction (deg)", &layerParams.shoreWaveAngle, 0.0f, 360.0f, "%.1f",
             "FALLBACK wave propagation direction toward the shore.\n"
             "The shader normally derives the local shore direction from the\n"
@@ -163,8 +164,9 @@ void WaterWidget::render() {
         ImGui::Text("Cross Swell");
         ColSeparator();
         ImGui::TextWrapped("Breaks up the crest lines.");
-        SliderFloatField("Cross Period", &layerParams.crossWavePeriod, 2.0f, 250.0f, "%.1f",
-            "Cross train wavelength (world units).");
+        SliderFloatField("Cross Period", &layerParams.crossWavePeriod, 2.0f, 4096.0f, "%.1f",
+            "Cross train wavelength (world units).",
+            ImGuiSliderFlags_Logarithmic);
         SliderFloatField("Cross Speed", &layerParams.crossWaveSpeed, 0.0f, 30.0f, "%.2f");
         SliderFloatField("Cross Amplitude", &layerParams.crossWaveAmplitude, 0.0f, 2.0f, "%.2f");
         SliderFloatField("Cross Phase Offset", &layerParams.crossWavePhase, -256.0f, 256.0f, "%.1f",
@@ -231,8 +233,9 @@ void WaterWidget::render() {
         ImGui::Text("Organic Mask");
         ColSeparator();
         ImGui::TextWrapped("Low-frequency noise mask: in calm patches the wave amplitude can drop to zero.");
-        SliderFloatField("Mask Period", &layerParams.waveMaskPeriod, 10.0f, 2000.0f, "%.1f",
-            "Calm-patch feature period (world units). Larger = broader patches.");
+        SliderFloatField("Mask Period", &layerParams.waveMaskPeriod, 10.0f, 4096.0f, "%.1f",
+            "Calm-patch feature period (world units). Larger = broader patches.",
+            ImGuiSliderFlags_Logarithmic);
         SliderFloatField("Mask Threshold", &layerParams.waveMaskThreshold, 0.0f, 1.0f, "%.3f");
         SliderFloatField("Mask Softness", &layerParams.waveMaskSoftness, 0.0f, 1.0f, "%.3f");
         SliderFloatField("Mask Speed", &layerParams.waveMaskSpeed, 0.0f, 1.0f, "%.3f");
@@ -285,8 +288,9 @@ void WaterWidget::render() {
     sections.push_back({[&]() {
         ImGui::Text("Foam Noise");
         ColSeparator();
-        SliderFloatField("Foam Noise Period", &layerParams.foamNoisePeriod, 1.0f, 200.0f, "%.2f",
-            "Foam breakup feature period (world units).");
+        SliderFloatField("Foam Noise Period", &layerParams.foamNoisePeriod, 1.0f, 4096.0f, "%.2f",
+            "Foam breakup feature period (world units).",
+            ImGuiSliderFlags_Logarithmic);
         SliderFloatField("Foam Noise Speed", &layerParams.foamNoiseSpeed, 0.0f, 2.0f, "%.3f");
         SliderFloatField("Foam Noise Amount", &layerParams.foamNoiseAmount, 0.0f, 1.0f, "%.3f");
         SliderFloatField("Foam Mask Floor", &layerParams.foamMaskFloor, 0.0f, 1.0f, "%.3f");
@@ -297,9 +301,10 @@ void WaterWidget::render() {
     sections.push_back({[&]() {
         ImGui::Text("Noise Detail");
         ColSeparator();
-        SliderFloatField("Noise Period", &layerParams.noisePeriod, 0.25f, 100.0f, "%.3f",
+        SliderFloatField("Noise Period", &layerParams.noisePeriod, 0.25f, 4096.0f, "%.3f",
             "Chop/refraction/specular noise feature period (world units).\n"
-            "Larger = broader noise, 0 = disabled.");
+            "Larger = broader noise, 0 = disabled.",
+            ImGuiSliderFlags_Logarithmic);
         SliderIntField("Noise Octaves", &layerParams.noiseOctaves, 1, 8);
         SliderFloatField("Noise Persistence", &layerParams.noisePersistence, 0.1f, 0.9f);
         SliderFloatField("Noise Lacunarity", &layerParams.noiseLacunarity, 1.0f, 4.0f);

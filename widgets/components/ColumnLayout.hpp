@@ -41,11 +41,12 @@ inline bool CheckboxField(const char* label, bool* value, const char* desc = nul
 }
 
 inline bool SliderFloatField(const char* label, float* value, float min, float max,
-                             const char* format = "%.3f", const char* desc = nullptr) {
+                             const char* format = "%.3f", const char* desc = nullptr,
+                             ImGuiSliderFlags flags = 0) {
     FieldLabel(label, desc);
     ImGui::SetNextItemWidth(kColumnWidth);
     ImGui::PushID(label);
-    const bool changed = ImGui::SliderFloat("##v", value, min, max, format);
+    const bool changed = ImGui::SliderFloat("##v", value, min, max, format, flags);
     ImGui::PopID();
     TooltipOnHover(desc);
     return changed;
