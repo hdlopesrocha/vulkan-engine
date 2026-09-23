@@ -7,7 +7,11 @@
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
 #include <glm/glm.hpp>
+#include <array>
+#include <cstdint>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
 #include "../../utils/Scene.hpp"
 #include "../ubo/UniformObject.hpp"
@@ -187,8 +191,10 @@ public:
     // Global feature gates (from Settings) forwarded to the water shader via
     // the water render UBO so they apply in BOTH fragment variants (the non-RT
     // variant cannot see the RT params block, which is why the gates are not
-    // read from `rt.*`). Writers go through immediately so the water-in-main
-    // path (which does not rewrite the UBO) sees them too.
+    // read from `rt.*`). Pure state store (M7): the flags plus a dirty bit are
+    // kept here — no immediate UBO write. The offscreen path folds them into
+    // renderPass()'s single per-frame UBO write; the water-in-main path (which
+    // never calls renderPass) flushes them lazily from renderMainTargets().
     void setRtFeatureFlags(bool reflections, bool refractions, bool blur);
 
     // Get the descriptor set layout for scene textures (set 2)
@@ -210,7 +216,14 @@ public:
     // Writes into `ds` (the caller chooses the per-command-buffer set so the set is
     // never shared between the async back-face task and the main command buffer).
     // Missing RT views fall back to internal 1x1 dummies (never NULL — the
-    // shader statically uses every binding).
+    // shader statically uses every binding). Inputs are cached per set (M7):
+    // the DescriptorWriter update is skipped when all eight effective views and
+    // samplers are unchanged. INVARIANT: external sets passed by the caller
+    // must be stable for the process lifetime (verified in MyApp: the
+    // per-ring-slot async sets are allocated once and reused); renderer-owned
+    // sets are invalidated on allocation/free via
+    // invalidateSceneTexturesBinding(), which every other writer/freer of a
+    // cached set must call first.
     void updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, uint32_t frameIndex,
                                      VkImageView backFaceDepthView = VK_NULL_HANDLE,
                                      VkImageView rtReflectView = VK_NULL_HANDLE,
@@ -220,6 +233,13 @@ public:
                                      VkImageView solidDepthView = VK_NULL_HANDLE,
                                      VkImageView vegColorView = VK_NULL_HANDLE,
                                      VkImageView vegDepthView = VK_NULL_HANDLE);
+
+    // Drop the cached binding key for `ds` (and the back-face binding-0 patch
+    // cache entry, since its binding 0 is written by the same update). Call
+    // whenever `ds` is freed, reallocated, or its bindings are written outside
+    // updateSceneTexturesBinding(), so a recycled VkDescriptorSet handle can
+    // never hit a stale cache entry.
+    void invalidateSceneTexturesBinding(VkDescriptorSet ds);
 
     // Allocate a fresh per-frame scene-texture descriptor set, free the previous
     // one, and update it with the given views. Returns the new set (or
@@ -329,6 +349,14 @@ private:
     // Recompute waterBlurNeeded_ from the tracked per-layer gates.
     void refreshWaterBlurNeeded();
 
+    // Single writer of waterRenderUBO_ (M7): builds the full WaterRenderUBO
+    // (timeParams.x = waterTime or the preserved current value, y/z/w from the
+    // stored gates) and memcpys it in one map/unmap, then clears
+    // waterRenderUboDirty_. `preserveTime` keeps the existing timeParams.x: the
+    // water-in-main flush has no per-frame time source and must not zero the
+    // wave clock written by an earlier renderPass().
+    void flushWaterRenderUBO(float waterTime, bool preserveTime);
+
     VkPipeline activeMainPipeline() const {
         if (!tessellationEnabled_) {
             if (rtShadingEnabled_ && rtProfilingEnabled_ && waterMainPipelineRtProfNoTess != VK_NULL_HANDLE)
@@ -425,6 +453,12 @@ private:
     // Global gate for the per-material refraction/tint blur (Settings::
     // blurEnabled): delivered as WaterRenderUBO.timeParams.w.
     bool blurEnabled_ = true;
+    // M7: true while the UBO does not yet carry the current feature gates.
+    // Starts true so the first frame of either path writes the (initially
+    // zeroed) UBO. renderPass() clears it after its unconditional write;
+    // renderMainTargets() flushes + clears it when setRtFeatureFlags()
+    // changed a gate.
+    bool waterRenderUboDirty_ = true;
 
     // H4 per-layer blur gate: layerBlurNeeded_[i] = layer i's enableBlur &&
     // blurRadius > 0, kept in sync with the SSBO upload; waterBlurNeeded_ is
@@ -450,9 +484,27 @@ private:
     // vkUpdateDescriptorSets — never freed or deferred-destroyed in the
     // render loop (zero vkFreeDescriptorSets). With VK_EXT_descriptor_buffer
     // the same update becomes a plain host memory write (vkGetDescriptorEXT)
-    // into descriptor-buffer memory: no set allocation/free, no cache needed,
-    // so the bindings are rewritten unconditionally on every call.
+    // into descriptor-buffer memory; either way the per-set input cache below
+    // skips the write when no input changed (M7).
     std::array<VkDescriptorSet, FRAMES> waterDepthDescriptorSets{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+
+    // M7 CPU-only cache: last scene-texture bindings written per descriptor
+    // set, so an unchanged set (same eight effective image views + samplers)
+    // skips the DescriptorWriter/descriptor-buffer write entirely. Pure state;
+    // no GPU work. Entries are dropped by invalidateSceneTexturesBinding()
+    // whenever a cached set is freed, reallocated, or written elsewhere.
+    struct SceneTexturesBindingKey {
+        std::array<VkImageView, 8> imageViews{};
+        std::array<VkSampler, 8> samplers{};
+        bool operator==(const SceneTexturesBindingKey& other) const {
+            return imageViews == other.imageViews && samplers == other.samplers;
+        }
+    };
+    // Keyed by the raw VkDescriptorSet handle value (stable uint64_t key).
+    // Guarded because the update can run on the async water task thread while
+    // a resize/cleanup path invalidates from another thread.
+    std::unordered_map<uint64_t, SceneTexturesBindingKey> sceneTexturesBindingCache_;
+    std::mutex sceneTexturesCacheMutex_;
 
     // NOTE (hybrid RT §12): the cubemap water pass (dedicated pipeline +
     // set-2 dummy set for solid-360 faces) was deleted with Solid360Renderer.

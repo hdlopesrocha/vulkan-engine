@@ -4,6 +4,9 @@
 #include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
 #include <array>
+#include <cstdint>
+#include <mutex>
+#include <unordered_map>
 #include "CommandBufferState.hpp"
 
 class WaterBackFaceRenderer : public Renderer {
@@ -49,8 +52,16 @@ public:
     VkImageView getDummyDepthView() const { return dummyDepthView; }
 
     // Patch binding #3 of a descriptor set (set 2) to point to `newView`.
-    // Used to swap between the dummy and the real back-face depth.
+    // Used to swap between the dummy and the real back-face depth. The last
+    // patched view is cached per set (M7), so the vkUpdateDescriptorSets is
+    // skipped while it is unchanged. Any other writer of that set's binding 0
+    // (WaterRenderer::updateSceneTexturesBinding) invalidates the entry.
     void patchBinding0(VkDescriptorSet ds, VkImageView newView);
+
+    // Drop the cached binding-0 patch view for `ds`. Call when `ds` is freed/
+    // reallocated or when another writer changes its binding 0, so a rewrite
+    // can never be skipped.
+    void invalidatePatchedBinding0(VkDescriptorSet ds);
 
 private:
     // Build one back-face pipeline variant (tess: PATCH_LIST + TCS/TES, else
@@ -88,4 +99,12 @@ private:
     VkImageView dummyDepthView = VK_NULL_HANDLE;
     TrackedHandle<VkSampler> nearestSampler;
     VulkanApp* appPtr = nullptr;
+
+    // M7 CPU-only cache: last view written to set-2 binding 0 per descriptor
+    // set (the async back-face sets are created once per ring slot and
+    // reused). Pure state; no GPU work. Cleared by cleanup/destroy paths.
+    // Guarded because patching runs on the async water task thread while the
+    // invalidator may be called from another thread.
+    std::unordered_map<uint64_t, VkImageView> patchedBinding0Views_;
+    std::mutex patchedBinding0Mutex_;
 };

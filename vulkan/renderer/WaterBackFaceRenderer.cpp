@@ -88,20 +88,52 @@ void WaterBackFaceRenderer::destroyDummyDepthView(VulkanApp* app) {
     dummyDepthImage = VK_NULL_HANDLE;
     dummyDepthAllocation = VK_NULL_HANDLE;
     dummyDepthMemory = VK_NULL_HANDLE;
+    // M7: cached patch views may reference the destroyed dummy; drop them.
+    {
+        std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+        patchedBinding0Views_.clear();
+    }
 }
 
 void WaterBackFaceRenderer::patchBinding0(VkDescriptorSet ds, VkImageView newView) {
     if (!appPtr || ds == VK_NULL_HANDLE || newView == VK_NULL_HANDLE || nearestSampler == VK_NULL_HANDLE) {
         return;
     }
+    // M7: the async sets are patched with the same dummy view every frame;
+    // skip the vkUpdateDescriptorSets while the last patched view is
+    // unchanged. WaterRenderer::updateSceneTexturesBinding() invalidates this
+    // entry when it rewrites binding 0 of the same set, so a real->dummy
+    // rewrite can never be skipped.
+    const uint64_t dsKey = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ds));
+    {
+        std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+        auto it = patchedBinding0Views_.find(dsKey);
+        if (it != patchedBinding0Views_.end() && it->second == newView) {
+            return;
+        }
+    }
     DescriptorWriter(appPtr->getDevice())
         .writeImage(ds, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                     nearestSampler, newView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
         .flush();
+    {
+        std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+        patchedBinding0Views_[dsKey] = newView;
+    }
+}
+
+void WaterBackFaceRenderer::invalidatePatchedBinding0(VkDescriptorSet ds) {
+    if (ds == VK_NULL_HANDLE) return;
+    std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+    patchedBinding0Views_.erase(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ds)));
 }
 
 void WaterBackFaceRenderer::cleanup(VulkanApp* app) {
     destroyDummyDepthView(app);
+    {
+        std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+        patchedBinding0Views_.clear();
+    }
     nearestSampler = VK_NULL_HANDLE;
     appPtr = nullptr;
 }
@@ -311,6 +343,11 @@ void WaterBackFaceRenderer::destroyRenderTargets(VulkanApp* app) {
         backFaceDepthMemories[i] = VK_NULL_HANDLE;
         backFaceDepthImageViews[i] = VK_NULL_HANDLE;
         backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+    // M7: cached patch views may reference the destroyed depth views.
+    {
+        std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+        patchedBinding0Views_.clear();
     }
 }
 

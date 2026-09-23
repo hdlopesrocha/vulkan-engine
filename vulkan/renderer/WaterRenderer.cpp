@@ -154,6 +154,13 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     return gpu;
 }
 
+// Stable numeric key for a VkDescriptorSet handle (non-dispatchable handles
+// are pointers on 64-bit, plain uint64_t elsewhere). Used only for the M7
+// CPU-side binding caches.
+uint64_t descriptorSetKey(VkDescriptorSet ds) {
+    return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ds));
+}
+
 } // namespace
 
 
@@ -193,6 +200,12 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
 void WaterRenderer::cleanup(VulkanApp* app) {
     waterIndirectRenderer.cleanup(app);
     destroyRenderTargets(app);
+    // M7: drop every cached binding key (renderer-owned sets were already
+    // erased by destroyRenderTargets; external sets end here too).
+    {
+        std::lock_guard<std::mutex> lock(sceneTexturesCacheMutex_);
+        sceneTexturesBindingCache_.clear();
+    }
     // Hybrid RT dummy views (owned here, destroyed with the device alive).
     if (app) {
         VkDevice device = app->getDevice();
@@ -479,9 +492,13 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
         }
     }
     // The per-slot scene-texture sets live in waterDepthDescriptorPool, so the
-    // reset above frees them; just drop the dangling handles. No write cache
-    // exists to clear: bindings are rewritten unconditionally (descriptor-
-    // buffer style plain writes), so a reused handle is always rewritten.
+    // reset above frees them. M7: drop their cached binding keys (and the
+    // back-face binding-0 patch entries via invalidateSceneTexturesBinding)
+    // BEFORE dropping the handles, so a later set that recycles a freed handle
+    // value can never hit a stale cache entry. A reused handle is then always
+    // rewritten because the cache has no entry for it.
+    for (uint32_t i = 0; i < FRAMES; ++i)
+        invalidateSceneTexturesBinding(waterDepthDescriptorSets[i]);
     for (uint32_t i = 0; i < FRAMES; ++i) waterDepthDescriptorSets[i] = VK_NULL_HANDLE;
 }
 
@@ -1474,12 +1491,29 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
     imageInfos[7].imageView = effVegDepth;
     imageInfos[7].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Descriptor-buffer style update: rewrite the bindings unconditionally.
-    // No write cache, no set allocation/free, no deferred destruction — the
-    // per-frame set is allocated once (see prepareSceneTexturesForFrame) and
-    // updated in place here. With VK_EXT_descriptor_buffer this same call
-    // becomes plain host memory writes (vkGetDescriptorEXT); the classic
-    // vkUpdateDescriptorSets below is the fallback until the layout carries
+    // M7: skip the write entirely when this set already holds exactly these
+    // inputs (eight effective image views + samplers). Pure CPU state, no GPU
+    // work; entries are dropped by invalidateSceneTexturesBinding() on any free
+    // or reallocation, and by the write below for the back-face patch cache.
+    const uint64_t dsKey = descriptorSetKey(ds);
+    SceneTexturesBindingKey key{};
+    for (uint32_t i = 0; i < 8; ++i) {
+        key.imageViews[i] = imageInfos[i].imageView;
+        key.samplers[i] = imageInfos[i].sampler;
+    }
+    {
+        std::lock_guard<std::mutex> lock(sceneTexturesCacheMutex_);
+        auto cached = sceneTexturesBindingCache_.find(dsKey);
+        if (cached != sceneTexturesBindingCache_.end() && cached->second == key) {
+            return;
+        }
+    }
+
+    // Descriptor-buffer style update: the per-frame set is allocated once (see
+    // prepareSceneTexturesForFrame) and updated in place here. With
+    // VK_EXT_descriptor_buffer this same call becomes plain host memory writes
+    // (vkGetDescriptorEXT); the classic vkUpdateDescriptorSets below is the
+    // fallback until the layout carries
     // VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT.
     DescriptorWriter writer(app->getDevice());
     for (uint32_t i = 0; i < 8; ++i) {
@@ -1488,6 +1522,27 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
                           imageInfos[i].imageLayout);
     }
     writer.flush();
+    {
+        std::lock_guard<std::mutex> lock(sceneTexturesCacheMutex_);
+        sceneTexturesBindingCache_[dsKey] = key;
+    }
+
+    // This write replaced binding 0 (back-face depth) of `ds`, so the
+    // back-face renderer's dummy-patch cache for that set is stale: its next
+    // patchBinding0() must not be skipped.
+    if (backFaceRenderer_) backFaceRenderer_->invalidatePatchedBinding0(ds);
+}
+
+void WaterRenderer::invalidateSceneTexturesBinding(VkDescriptorSet ds) {
+    if (ds == VK_NULL_HANDLE) return;
+    {
+        std::lock_guard<std::mutex> lock(sceneTexturesCacheMutex_);
+        sceneTexturesBindingCache_.erase(descriptorSetKey(ds));
+    }
+    // The same handle may be reallocated from any pool (including one owned by
+    // the caller), so drop the back-face binding-0 patch entry as well: a
+    // recycled handle must never be treated as already patched.
+    if (backFaceRenderer_) backFaceRenderer_->invalidatePatchedBinding0(ds);
 }
 
 VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint32_t frameIndex,
@@ -1515,6 +1570,9 @@ VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint
                                &waterDepthDescriptorSets[frameIndex],
                                "WaterRenderer: waterDepthDescriptorSet");
         if (waterDepthDescriptorSets[frameIndex] == VK_NULL_HANDLE) return VK_NULL_HANDLE;
+        // M7: a freshly allocated handle may recycle the value of a previously
+        // freed set; drop any stale cache entry before writing the new bindings.
+        invalidateSceneTexturesBinding(waterDepthDescriptorSets[frameIndex]);
     }
 
     updateSceneTexturesBinding(app, waterDepthDescriptorSets[frameIndex], frameIndex,
@@ -1640,6 +1698,13 @@ void WaterRenderer::renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint3
     if (frameIndex >= FRAMES) return;
     if (colorImage == VK_NULL_HANDLE || colorView == VK_NULL_HANDLE ||
         depthImage == VK_NULL_HANDLE || depthView == VK_NULL_HANDLE) return;
+
+    // Water-in-main path (M7): it never calls renderPass(), so it owns the
+    // flush of the feature gates stored by setRtFeatureFlags(). Only when a
+    // gate changed; timeParams.x is preserved (no per-frame time source here).
+    if (waterRenderUboDirty_) {
+        flushWaterRenderUBO(0.0f, /*preserveTime=*/true);
+    }
 
     // The caller (MyApp, water command buffer) has already waited on the solid
     // pass semaphore, so the main targets are complete and in SHADER_READ_ONLY.
@@ -1785,22 +1850,44 @@ void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint3
     endWaterGeometryPassWithDepth(cmd, frameIndex);
 }
 
+// Single writer of waterRenderUBO_ (M7). Builds the full WaterRenderUBO and
+// memcpys it in one map/unmap, then clears the dirty bit. `preserveTime` keeps
+// the existing timeParams.x for the water-in-main flush, which has no
+// per-frame time argument and must not zero the wave clock.
+void WaterRenderer::flushWaterRenderUBO(float waterTime, bool preserveTime) {
+    if (waterRenderUBO_.buffer == VK_NULL_HANDLE) return;
+    void* data = waterRenderUBO_.map(0);
+    if (!data) return;
+    const float time = preserveTime
+        ? static_cast<WaterRenderUBO*>(data)->timeParams.x
+        : waterTime;
+    WaterRenderUBO renderUbo{};
+    renderUbo.timeParams = glm::vec4(time,
+                                     rtRefractionsEnabled_ ? 1.0f : 0.0f,
+                                     rtReflectionsEnabled_ ? 1.0f : 0.0f,
+                                     blurEnabled_ ? 1.0f : 0.0f);
+    memcpy(data, &renderUbo, sizeof(WaterRenderUBO));
+    waterRenderUBO_.unmap(); // VMA persistent mapping
+    waterRenderUboDirty_ = false;
+}
+
 void WaterRenderer::setRtFeatureFlags(bool reflections, bool refractions, bool blur) {
+    // Pure state store (M7): no UBO map here. The offscreen path folds the
+    // stored flags into renderPass()'s single per-frame UBO write; the
+    // water-in-main path (which never calls renderPass) flushes them lazily
+    // from renderMainTargets() through the dirty bit. Setting the bit only on
+    // an actual change keeps the steady state map-free for water-in-main;
+    // the bit starts true so the first flush of an initially zeroed UBO
+    // always happens.
+    if (rtReflectionsEnabled_ == reflections &&
+        rtRefractionsEnabled_ == refractions &&
+        blurEnabled_ == blur) {
+        return;
+    }
     rtReflectionsEnabled_ = reflections;
     rtRefractionsEnabled_ = refractions;
     blurEnabled_ = blur;
-    // Write through immediately (read-modify-write keeps the time): the
-    // water-in-main path renders without calling renderPass(), so it relies
-    // on these flags already being in the UBO.
-    if (waterRenderUBO_.buffer == VK_NULL_HANDLE) return;
-    void* data = waterRenderUBO_.map(0);
-    if (data) {
-        auto* ubo = static_cast<WaterRenderUBO*>(data);
-        ubo->timeParams.y = refractions ? 1.0f : 0.0f;
-        ubo->timeParams.z = reflections ? 1.0f : 0.0f;
-        ubo->timeParams.w = blur ? 1.0f : 0.0f;
-    }
-    waterRenderUBO_.unmap();
+    waterRenderUboDirty_ = true;
 }
 
 void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
@@ -1811,19 +1898,9 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
         return;
     }
 
-    // Update the water render UBO with the active layer time value and the
-    // global feature gates (readable from both fragment variants).
-    if (waterRenderUBO_.buffer != VK_NULL_HANDLE) {
-        WaterRenderUBO renderUbo{};
-        renderUbo.timeParams = glm::vec4(waterTime,
-                                         rtRefractionsEnabled_ ? 1.0f : 0.0f,
-                                         rtReflectionsEnabled_ ? 1.0f : 0.0f,
-                                         blurEnabled_ ? 1.0f : 0.0f);
-        void* data = nullptr;
-        data = waterRenderUBO_.map(0);
-        memcpy(data, &renderUbo, sizeof(WaterRenderUBO));
-        waterRenderUBO_.unmap(); // VMA persistent mapping
-    }
+    // The only UBO write on the offscreen path (M7): the stored feature gates
+    // are folded into this single write and the dirty bit is cleared inside.
+    flushWaterRenderUBO(waterTime, /*preserveTime=*/false);
 
     // Record the water offscreen work on the same command buffer so the solid
     // pass outputs are available for sampling.
