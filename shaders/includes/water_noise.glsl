@@ -9,9 +9,32 @@
 // caustics, so geometry, lighting and caustics can never disagree.
 
 // Octave-budget sentinel for callers that must evaluate the full spectrum
-// (vertex stages, and any caller without its own distance LOD). The fragment
-// stage passes its own budget instead — see waterWaveField()'s octBudget.
+// (any caller without its own LOD). The fragment stage passes its own budget
+// instead — see waterWaveField()'s octBudget.
 const int WATER_OCT_FULL = 64;
+
+// Octave budget for the PER-VERTEX wave displacement (perf report 20 H6).
+//
+// The geometry can only represent features down to roughly its vertex spacing,
+// so the finest octaves of the displacement are aliasing on the mesh: the
+// per-layer spectrum's top octaves are sub-vertex-spacing on every chain
+// (chop 0.25 m / 6 cm, cross train 2 m / 0.5 m, swell 8 m / 2 m, calm mask
+// 16 m / 4 m, foam 1 m / 0.25 m), while the fragment stage re-derives the full
+// spectrum per pixel for the shading normal anyway.
+//
+// This is ONE global cut applied to every vertex stage rather than a
+// per-vertex spacing-derived budget, deliberately: the water pass measures its
+// column from the distance between the FRONT and the BACK rasterised surface
+// (waterBackDepthTex), so the two surfaces must be displaced by the SAME
+// function or the measured column gains a wave-dependent term. A per-vertex
+// budget (spacing- or distance-derived) differs between the two faces, which
+// would inject metres of wave into the thickness where the water is thin and
+// flip hasValidBackFace on and off.
+//
+// 2 of 4 octaves keeps ~80% of the linear spectrum amplitude (persistence 0.5)
+// while removing half of the per-vertex noise cost in BOTH the geometry and
+// the back-face pass. It is a single constant so it can be A/B'd cheaply.
+const int WATER_VERTEX_OCT = 2;
 
 float waterFbmNoise(vec3 xyz, float spatialScale, float time, float timeScale,
                     int octaves, float persistence, float lacunarity, vec3 offset) {

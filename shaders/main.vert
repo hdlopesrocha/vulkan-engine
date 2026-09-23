@@ -132,7 +132,8 @@ void main() {
     // Per-vertex wave displacement + analytic normal via the SHARED core.
     float animTime = waterRenderUBO.timeParams.x * wp.params3.x;
     WaterVertexWave wv = waterDisplaceWaterVertex(pos, normal, animTime,
-                                                  waterDepth, shoreDir, bumpAmp, wp);
+                                                  waterDepth, shoreDir, bumpAmp, wp,
+                                                  WATER_VERTEX_OCT);
 
     // Refine the measured depth at the DISPLACED vertex, exactly like the TES
     // (water_tese.glsl): the depth above was read at the base vertex's UV,

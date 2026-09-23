@@ -110,16 +110,20 @@ struct WaterVertexWave {
     float displacement; // signed height displacement along the base normal
 };
 
+// `octBudget` is the caller's vertex-displacement spectrum cut (perf report 20
+// H6): the TES and the WATER_NO_TESS vertex shader both pass WATER_VERTEX_OCT,
+// which is global on purpose — the front and back rasterised surfaces must be
+// displaced by the same function or the measured water column gains a
+// wave-dependent term (see WATER_VERTEX_OCT in water_noise.glsl).
 WaterVertexWave waterDisplaceWaterVertex(vec3 pos, vec3 normal, float animTime,
                                          float waterDepth, vec2 shoreDir,
-                                         float bumpAmp, WaterParamsGPU wp) {
+                                         float bumpAmp, WaterParamsGPU wp,
+                                         int octBudget) {
     // Surface basis (tangent plane) for projecting the analytic gradient.
     vec3 upVec = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 T = normalize(cross(upVec, normal));
     vec3 B = cross(normal, T);
 
-    // Vertex stages have no distance LOD of their own yet (perf report 20 H6),
-    // so they always evaluate the full spectrum.
     vec4 wave = waterWaveSample(
         pos.xyz,
         animTime,
@@ -127,7 +131,7 @@ WaterVertexWave waterDisplaceWaterVertex(vec3 pos, vec3 normal, float animTime,
         bumpAmp,
         shoreDir,
         wp,
-        WATER_OCT_FULL
+        octBudget
     );
 
     // Project the analytic gradient onto the tangent basis to get the
@@ -346,7 +350,8 @@ void main() {
     // so both geometry paths cannot drift.
     float animTime = time * noiseTimeSpeed;
     WaterVertexWave wv = waterDisplaceWaterVertex(pos, normal, animTime,
-                                                  waterDepth, shoreDir, bumpAmp, wp);
+                                                  waterDepth, shoreDir, bumpAmp, wp,
+                                                  WATER_VERTEX_OCT);
     float waveDisplacement = wv.displacement;
     pos = wv.pos;
     fragNormal = wv.normal;
