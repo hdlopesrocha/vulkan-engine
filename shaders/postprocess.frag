@@ -22,7 +22,36 @@ layout(set = 0, binding = 5) uniform WaterUBO {
     float brushAlpha;
     float brushMode;         // 0=overlay, 2=PAINT (replace solid texture)
     float waterBlurEnabled;  // 1 = body/column written this frame, fetch/blur allowed
-} ubo;
+} uboPacked;
+
+// Named view over the packed WaterUBO - same data, descriptive names. The builder below is the
+// only place the packed component letters are read; every other access uses the
+// named attributes.
+struct WaterFrameNamed {
+    mat4 viewProjection;
+    mat4 invViewProjection;
+    vec3 viewPosition;
+    vec2 screenSize;
+    vec2 invScreenSize;
+    float brushAlpha;
+    float brushMode;
+    float waterBlurEnabled;
+};
+
+WaterFrameNamed waterFrameNamed() {
+    WaterFrameNamed n;
+    n.viewProjection = uboPacked.viewProjection;
+    n.invViewProjection = uboPacked.invViewProjection;
+    n.viewPosition = uboPacked.viewPos.xyz;
+    n.screenSize = uboPacked.screenSize.xy;
+    n.invScreenSize = uboPacked.screenSize.zw;
+    n.brushAlpha = uboPacked.brushAlpha;
+    n.brushMode = uboPacked.brushMode;
+    n.waterBlurEnabled = uboPacked.waterBlurEnabled;
+    return n;
+}
+
+WaterFrameNamed ubo = waterFrameNamed();
 
 layout(set = 0, binding = 6) uniform sampler2D sceneSkyTex;
 layout(set = 0, binding = 7) uniform sampler2D waterGeomDepthTex;
@@ -60,7 +89,7 @@ vec2 dirToEquirectUV(vec3 dir) {
 }
 
 void main() {
-    vec2 uv = gl_FragCoord.xy / ubo.screenSize.xy;
+    vec2 uv = gl_FragCoord.xy / ubo.screenSize;
 
     vec4 sceneColor = texture(sceneColorTex, uv);
     float sceneDepth = texture(sceneDepthTex, uv).r;
@@ -69,7 +98,7 @@ void main() {
     vec4 clipPos = vec4(ndc, sceneDepth, 1.0);
     vec4 worldPos = ubo.invViewProjection * clipPos;
     worldPos /= worldPos.w;
-    vec3 viewDir = normalize(worldPos.xyz - ubo.viewPos.xyz);
+    vec3 viewDir = normalize(worldPos.xyz - ubo.viewPosition);
 
     vec2 skyUV = dirToEquirectUV(viewDir);
     vec3 skyColor = texture(sceneSkyTex, skyUV).rgb;
@@ -114,7 +143,7 @@ void main() {
         vec2 columnCenter = textureLod(waterColumnTex, uv, 0.0).rg;
         float blurPx = columnCenter.g;
         if (blurPx > 0.5 && bodyCenter.a > 1e-4) {
-            vec2 texel = ubo.screenSize.zw;
+            vec2 texel = ubo.invScreenSize;
             // 9-tap disc: center + 4 axis at r + 4 diagonal at 0.7r.
             const vec2 kOffs[8] = vec2[8](
                 vec2( 1.0,  0.0), vec2(-1.0,  0.0), vec2( 0.0,  1.0), vec2( 0.0, -1.0),

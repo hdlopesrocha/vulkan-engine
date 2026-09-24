@@ -20,7 +20,54 @@ layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 windTurbulence;
     vec4 densityParams;
     vec4 cameraPosAndFalloff;
-} windParams;
+} windParamsPacked;
+
+// Named view over the packed WindParamsUBO - same data, descriptive names. The builder below is the
+// only place the packed component letters are read; every other access uses the
+// named attributes.
+struct WindParamsNamed {
+    vec2 windDirection;
+    float windStrength;
+    float windBaseFrequency;
+    float windSpeed;
+    float gustFrequency;
+    float gustStrength;
+    float skewAmount;
+    float trunkStiffness;
+    float noiseScale;
+    float verticalFlutter;
+    float turbulence;
+    bool densityEnabled;
+    float nearDistance;
+    float farDistance;
+    float minFactor;
+    vec3 cameraPosition;
+    float densityFalloff;
+};
+
+WindParamsNamed windParamsNamed() {
+    WindParamsNamed n;
+    n.windDirection = windParamsPacked.windDirAndStrength.xz;
+    n.windStrength = windParamsPacked.windDirAndStrength.w;
+    n.windBaseFrequency = windParamsPacked.windNoise.x;
+    n.windSpeed = windParamsPacked.windNoise.y;
+    n.gustFrequency = windParamsPacked.windNoise.z;
+    n.gustStrength = windParamsPacked.windNoise.w;
+    n.skewAmount = windParamsPacked.windShape.x;
+    n.trunkStiffness = windParamsPacked.windShape.y;
+    n.noiseScale = windParamsPacked.windShape.z;
+    n.verticalFlutter = windParamsPacked.windShape.w;
+    n.turbulence = windParamsPacked.windTurbulence.x;
+    n.densityEnabled = windParamsPacked.densityParams.x > 0.5;
+    n.nearDistance = windParamsPacked.densityParams.y;
+    n.farDistance = windParamsPacked.densityParams.z;
+    n.minFactor = windParamsPacked.densityParams.w;
+    n.cameraPosition = windParamsPacked.cameraPosAndFalloff.xyz;
+    n.densityFalloff = windParamsPacked.cameraPosAndFalloff.w;
+    return n;
+}
+
+WindParamsNamed windParams = windParamsNamed();
 
 layout(push_constant) uniform PushConstants {
     float billboardScale;
@@ -32,7 +79,24 @@ layout(push_constant) uniform PushConstants {
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 viewProjection;
     vec4 viewPos;
-} ubo;
+} uboPacked;
+
+// Named view over the packed SolidParamsUBO - same data, descriptive names. The builder below is the
+// only place the packed component letters are read; every other access uses the
+// named attributes.
+struct UniformObjectNamed {
+    mat4 viewProjection;
+    vec3 viewPosition;
+};
+
+UniformObjectNamed uniformObjectNamed() {
+    UniformObjectNamed n;
+    n.viewProjection = uboPacked.viewProjection;
+    n.viewPosition = uboPacked.viewPos.xyz;
+    return n;
+}
+
+UniformObjectNamed ubo = uniformObjectNamed();
 
 #include "includes/perlin2d.glsl"
 #include "includes/vegetation_common.glsl"
@@ -49,7 +113,7 @@ void main() {
 
     vec3 worldPos = instanceData.xyz;
 
-    if (impostorDistance > 0.0 && distance(windParams.cameraPosAndFalloff.xyz, worldPos) >= impostorDistance) {
+    if (impostorDistance > 0.0 && distance(windParams.cameraPosition, worldPos) >= impostorDistance) {
         outWorldPos = worldPos;
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
         return;
@@ -68,19 +132,19 @@ void main() {
     float heightFactor = (cornerType == 2 || cornerType == 3) ? 1.0 : 0.0;
 
     // Wind (same as vegetation.vert)
-    vec2 windDirXZ = windParams.windDirAndStrength.xz;
+    vec2 windDirXZ = windParams.windDirection;
     float dirLen = length(windDirXZ);
     if (dirLen > 0.0001) windDirXZ /= dirLen; else windDirXZ = vec2(0.0);
-    float amplitude = windParams.windDirAndStrength.w;
-    float baseFreq = windParams.windNoise.x;
-    float speed = windParams.windNoise.y;
-    float gustFreq = windParams.windNoise.z;
-    float gustStrength = windParams.windNoise.w;
-    float skewAmount = windParams.windShape.x;
-    float trunkStiffness = windParams.windShape.y;
-    float noiseScale = windParams.windShape.z;
-    float verticalFlutter = windParams.windShape.w;
-    float turbulence = windParams.windTurbulence.x;
+    float amplitude = windParams.windStrength;
+    float baseFreq = windParams.windBaseFrequency;
+    float speed = windParams.windSpeed;
+    float gustFreq = windParams.gustFrequency;
+    float gustStrength = windParams.gustStrength;
+    float skewAmount = windParams.skewAmount;
+    float trunkStiffness = windParams.trunkStiffness;
+    float noiseScale = windParams.noiseScale;
+    float verticalFlutter = windParams.verticalFlutter;
+    float turbulence = windParams.turbulence;
     float bendWeight = pow(clamp(heightFactor, 0.0, 1.0), mix(4.0, 1.0, clamp(trunkStiffness, 0.0, 1.0)));
     vec2 windMotion = windDirXZ * (windTime * speed);
     vec2 p = worldPos.xz * (baseFreq * noiseScale);

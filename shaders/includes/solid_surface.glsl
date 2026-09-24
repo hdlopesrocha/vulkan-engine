@@ -1,3 +1,4 @@
+#include "sky_view.glsl"
 // Solid (terrain) surface shading — extracted from main.frag so the
 // fragment entry point stays a thin dispatcher (see Phase-1 water-in-main
 // migration). Writes the global outColor; early returns (debug views,
@@ -18,8 +19,8 @@
 // nearly tangent to the view direction (silhouettes) are where screen-space
 // marching is least reliable, so they fade out.
 vec4 traceSSR(vec3 origin, vec3 dir, vec3 eyeDir, mat4 prevVP, vec2 selfUV) {
-    float nearP = ubo.passParams.z;
-    float farP  = ubo.passParams.w;
+    float nearP = ubo.nearPlane;
+    float farP  = ubo.farPlane;
     float facing = clamp(abs(dot(dir, eyeDir)), 0.0, 1.0);
     float prevT = 0.0;
     float t = 0.25;
@@ -71,20 +72,20 @@ void shadeSolidSurface() {
     vec3 hsvColor = fragHSV;
     float brushRedFade = 0.0;
 #ifndef BRUSH_PASS
-    bool isPaintMode = ubo.brushParams.y > 1.5;
-    bool isRemoveMode = ubo.brushParams.y > 0.5 && ubo.brushParams.y < 1.5;
+    bool isPaintMode = ubo.brushMode > 1.5;
+    bool isRemoveMode = ubo.brushMode > 0.5 && ubo.brushMode < 1.5;
     if (isPaintMode || isRemoveMode) {
         vec2 brushUV = gl_FragCoord.xy / vec2(textureSize(brushDepthTex, 0));
         float brushFront = texture(brushDepthTex, brushUV).r;
         float brushBack = texture(brushBackFaceDepthTex, brushUV).r;
         float fragDepth = gl_FragCoord.z;
         if (fragDepth >= brushFront && fragDepth <= brushBack) {
-            int brushTexIndex = int(ubo.brushParams.x + 0.5);
+            int brushTexIndex = int(ubo.brushTextureIndex + 0.5);
             texIndices = ivec3(brushTexIndex);
             // Override vertex HSV with the brush's HSV so painted areas get the brush tint
-            hsvColor = ubo.brushHSV.xyz;
+            hsvColor = ubo.brushHsv;
             if (isRemoveMode) {
-                brushRedFade = (sin(ubo.brushParams.w * 6.28318) + 1.0) * 0.5;
+                brushRedFade = (sin(ubo.brushPhase * 6.28318) + 1.0) * 0.5;
             }
         }
     }
@@ -106,11 +107,11 @@ void shadeSolidSurface() {
     vec3 triW = abs(geomN);
 
     // Subtract threshold and clamp so small components remain zero until threshold is exceeded
-    float t = ubo.triplanarSettings.x; // threshold (0..1)
+    float t = ubo.triplanarThreshold; // threshold (0..1)
     vec3 wt = max(vec3(0.0), triW - vec3(t));
 
     // Apply exponent to make transitions steeper
-    float e = max(1.0, ubo.triplanarSettings.y);
+    float e = max(1.0, ubo.triplanarExponent);
     wt = pow(wt, vec3(e));
     float triWSum = wt.x + wt.y + wt.z + 1e-6;
     triW = wt / triWSum;
@@ -122,7 +123,7 @@ void shadeSolidSurface() {
     vec3 tripNormal2;
 
     // Mix triplanar flag across the three materials
-    float triFlag = dot(vec3(materials[texIndices.x].triplanarParams.z, materials[texIndices.y].triplanarParams.z, materials[texIndices.z].triplanarParams.z), w);
+    float triFlag = dot(vec3(float(materialNamed(materials[texIndices.x]).triplanarEnabled), float(materialNamed(materials[texIndices.y]).triplanarEnabled), float(materialNamed(materials[texIndices.z]).triplanarEnabled)), w);
 
     // Compute triplanar UVs once per material and reuse across all map fetches below.
     vec2 uv0X, uv0Y, uv0Z;
@@ -140,10 +141,10 @@ void shadeSolidSurface() {
         vec3 a2 = w.z > 0.0 ? computeTriplanarAlbedoUVs(triW, texIndices.z, uv2X, uv2Y, uv2Z) : vec3(0.0);
         albedoColor = a0 * w.x + a1 * w.y + a2 * w.z;
         // If normal mapping/triplanar normal enabled per-material or global, compute blended triplanar normal
-        float mapFlag0 = materials[texIndices.x].mappingParams.x;
-        float mapFlag1 = materials[texIndices.y].mappingParams.x;
-        float mapFlag2 = materials[texIndices.z].mappingParams.x;
-        if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || ubo.materialFlags.w > 0.5) {
+        float mapFlag0 = float(materialNamed(materials[texIndices.x]).mappingEnabled);
+        float mapFlag1 = float(materialNamed(materials[texIndices.y]).mappingEnabled);
+        float mapFlag2 = float(materialNamed(materials[texIndices.z]).mappingEnabled);
+        if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || ubo.normalMappingEnabled) {
             tripNormal0 = w.x > 0.0 ? computeTriplanarNormalUVs(triW, texIndices.x, N, uv0X, uv0Y, uv0Z) : vec3(0.0);
             tripNormal1 = w.y > 0.0 ? computeTriplanarNormalUVs(triW, texIndices.y, N, uv1X, uv1Y, uv1Z) : vec3(0.0);
             tripNormal2 = w.z > 0.0 ? computeTriplanarNormalUVs(triW, texIndices.z, N, uv2X, uv2Y, uv2Z) : vec3(0.0);
@@ -166,7 +167,7 @@ void shadeSolidSurface() {
     }
 
     // Compute normal mapping if enabled (per-material or global toggle)
-    if (!usedTriplanar && ((materials[texIndices.x].mappingParams.x * w.x + materials[texIndices.y].mappingParams.x * w.y + materials[texIndices.z].mappingParams.x * w.z) > 0.5 || ubo.materialFlags.w > 0.5)) {
+    if (!usedTriplanar && ((float(materialNamed(materials[texIndices.x]).mappingEnabled) * w.x + float(materialNamed(materials[texIndices.y]).mappingEnabled) * w.y + float(materialNamed(materials[texIndices.z]).mappingEnabled) * w.z) > 0.5 || ubo.normalMappingEnabled)) {
         // Sample normal map per-layer and blend in tangent space
         vec3 n0 = texture(normalArray, vec3(uv, float(texIndices.x))).rgb * 2.0 - 1.0;
         vec3 n1 = texture(normalArray, vec3(uv, float(texIndices.y))).rgb * 2.0 - 1.0;
@@ -214,7 +215,7 @@ void shadeSolidSurface() {
     }
 
     // Lighting calculation
-    vec3 toLight = -normalize(ubo.lightDir.xyz);
+    vec3 toLight = -normalize(ubo.lightDirection);
     float NdotL = max(dot(worldNormal, toLight), 0.0);
 
     // Shadow calculation (CSM authoritative macro sun-shadow — NEVER replaced
@@ -223,7 +224,7 @@ void shadeSolidSurface() {
     float shadow = 0.0;
 #ifndef BRUSH_PASS
     vec4 adjustedPosLightSpace = fragPosLightSpace;
-    if (ubo.shadowEffects.w > 0.5) {
+    if (ubo.shadowsEnabled) {
         if (NdotL > 0.01) {
             float bias = max(0.002 * (1.0 - NdotL), 0.0005);
             shadow = ShadowCalculation(adjustedPosLightSpace, fragPosWorld, bias);
@@ -239,10 +240,10 @@ void shadeSolidSurface() {
     // Compiled out without RT_ENABLED (rtLocalShadow stays 0 = CSM-only).
     float rtLocalShadow = 0.0;
 #if !defined(BRUSH_PASS) && defined(RT_ENABLED)
-    bool rtReady = (rt.debug.y > 0.5);
-    if (rtReady && rt.toggles.w > 0.5 && shadow < 0.5 && NdotL > 0.01) {
-        vec3 sunDir = -normalize(ubo.lightDir.xyz);
-        float shadowDist = max(rt.distances.z, 0.5);
+    bool rtReady = rt.tlasReady;
+    if (rtReady && rt.localShadowsEnabled && shadow < 0.5 && NdotL > 0.01) {
+        vec3 sunDir = -normalize(ubo.lightDirection);
+        float shadowDist = max(rt.maxShadowDistance, 0.5);
         RT_PROF_BEGIN(rtProfShadow, RT_PROFILE_OP_CONTACT_SHADOW);
         rayQueryEXT shadowRQ;
         rayQueryInitializeEXT(shadowRQ, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_ALL,
@@ -283,10 +284,10 @@ void shadeSolidSurface() {
     float aoBlend = (useAOf > 0.5 && aoEnabled) ? ambientOcclusion : 1.0;
     aoBlend = mix(1.0, aoBlend, aoFactor);
     vec3 ambient = albedoColor * blendedMatFlags.z * aoBlend;
-    vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL * (1.0 - totalShadow);
+    vec3 diffuse = albedoColor * ubo.lightColor * NdotL * (1.0 - totalShadow);
 
     // Specular
-    vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
+    vec3 viewDir = normalize(ubo.viewPosition - fragPosWorld);
     vec3 reflectDir = reflect(-toLight, worldNormal);
     vec4 spec0 = materials[texIndices.x].specularParams;
     vec4 spec1 = materials[texIndices.y].specularParams;
@@ -300,7 +301,7 @@ void shadeSolidSurface() {
     float specPower = mix(shininess, 1.0, roughnessValue * roughnessFactor);
     specPower = max(specPower, 1.0);
     float spec = (NdotL > 0.0) ? pow(max(dot(viewDir, reflectDir), 0.0), specPower) : 0.0;
-    vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * blendedSpec.x;
+    vec3 specular = ubo.lightColor * spec * (1.0 - totalShadow) * blendedSpec.x;
 
     // Environment reflection via HARDWARE RAY TRACING (hybrid RT §7).
     // The rasterized world position + shading normal seed one secondary ray
@@ -317,10 +318,10 @@ void shadeSolidSurface() {
     // reflective surface, 1 = skipped by roughness/contrib gate, 2 = skipped
     // by checkerboard half-rate, 3 = inline ray traced.
     float rtTraceMask = 0.0;
-    if (ubo.materialFlags.x < 0.5) {
-        float refStrength0 = materials[texIndices.x].tessLevelParams.z;
-        float refStrength1 = materials[texIndices.y].tessLevelParams.z;
-        float refStrength2 = materials[texIndices.z].tessLevelParams.z;
+    if (!ubo.cubemapCapture) {
+        float refStrength0 = materialNamed(materials[texIndices.x]).reflectionStrength;
+        float refStrength1 = materialNamed(materials[texIndices.y]).reflectionStrength;
+        float refStrength2 = materialNamed(materials[texIndices.z]).reflectionStrength;
         blendedRefStrength = refStrength0 * w.x + refStrength1 * w.y + refStrength2 * w.z;
         // Skip non-reflective surfaces (the mix factor below collapses to zero).
         if (blendedRefStrength > 1e-4) {
@@ -341,8 +342,8 @@ void shadeSolidSurface() {
             // Procedural horizon/zenith gradient from the sky UBO — also the
             // RT miss value, so toggling RT never pops the miss baseline, and
             // solid reflections still come "from the sky" in raster-only mode.
-            vec3 skyApprox = rtProceduralSky(normalize(reflDir), sky.skyHorizon.rgb,
-                                             sky.skyZenith.rgb, sky.skyParams.y);
+            vec3 skyApprox = rtProceduralSky(normalize(reflDir), sky.horizonColor,
+                                             sky.zenithColor, sky.exponent);
             skyApprox *= aoBlend * (1.0 - rough * 0.5);
             vec3 rtColor = skyApprox;
             // Set when the ray-query resolved the reflection to a WATER proxy:
@@ -356,27 +357,27 @@ void shadeSolidSurface() {
             // half-rate + global toggle + TLAS readiness (ray queries compiled
             // out without RT_ENABLED — sky fallback). contrib = the exact lobe
             // weight mixed into the final color below, so skipping contrib <
-            // contribMin (rt.rayParams.y, default 0.02) only drops rays whose
-            // result would be invisible. Checkerboard (rt.rayParams.x > 0.5)
+            // contribMin (rt.reflectionContribMin, default 0.02) only drops rays whose
+            // result would be invisible. Checkerboard (rt.checkerboardReflections)
             // traces even (x+y) pixels only; strong mirrors (contrib > 0.5)
             // stay full-rate so polished surfaces never dither, and any debug
             // view of a traced result (see debugModeForcesRtReference) forces
-            // full-rate reference. The null-TLAS skip path (rt.debug.y) is
+            // full-rate reference. The null-TLAS skip path (rt.tlasReady) is
             // unchanged.
             float roughThreshold = 0.6;
 #ifdef RT_ENABLED
-            roughThreshold = clamp(rt.distances.w, 0.0, 1.0);
+            roughThreshold = clamp(rt.roughnessThreshold, 0.0, 1.0);
             float contrib = clamp(blendedRefStrength, 0.0, 1.0) * fresnel
                 * (1.0 - clamp(rough, 0.0, 1.0));
-            float contribMin = clamp(rt.rayParams.y, 0.0, 1.0);
+            float contribMin = clamp(rt.reflectionContribMin, 0.0, 1.0);
             // Ray mask / depth source visualize the budgeted behavior itself,
             // so they must not force reference (otherwise the counters could
             // never show the live behavior).
-            bool refMode = debugModeForcesRtReference(int(rt.debug.x + 0.5));
-            bool checkerOn = (rt.rayParams.x > 0.5) && !refMode;
+            bool refMode = debugModeForcesRtReference(rt.debugMode);
+            bool checkerOn = rt.checkerboardReflections && !refMode;
             // Checkerboard only claims pixels that survived every other gate
             // (else gated pixels would misreport as half-rate in the mask).
-            bool gatedOut = !((rt.debug.y > 0.5) && rt.toggles.x > 0.5
+            bool gatedOut = !((rt.tlasReady) && rt.reflectionsEnabled
                 && rough <= roughThreshold && contrib >= contribMin);
             bool checkerSkip = checkerOn && !gatedOut
                 && ((int(gl_FragCoord.x) + int(gl_FragCoord.y)) & 1) == 1
@@ -394,7 +395,7 @@ void shadeSolidSurface() {
                 // position + base normal so the ray starts on the BLAS surface.
                 // A small bias clears it; no displacement-dependent bias is
                 // needed (the BLAS itself must not displace, per design).
-                float selfSkip = max(rt.debug.z, 0.15);
+                float selfSkip = max(rt.selfSkipDist, 0.15);
                 vec3 origin = fragPosWorldNotDisplaced + reflN * selfSkip;
                 RT_PROF_BEGIN(rtProfRefl, RT_PROFILE_OP_SOLID_REFLECTION);
                 rayQueryEXT rq;
@@ -494,7 +495,7 @@ void shadeSolidSurface() {
                             int nWLM = max(waterParams.length(), 1);
                             int wIdM = int(rtSceneAlbedo[lo].w + 0.5);
                             int wLayer = (wIdM >= 0 && wIdM < nWLM) ? wIdM : 0;
-                            WaterParamsGPU wp = waterParams[wLayer];
+                            WaterParamsNamed wp = waterParamsNamed(waterParams[wLayer]);
                             rtColor = rtResolveWaterHit(wp, hitPos, hitN, reflDir);
                             waterHit = true;
                             // No bounce off water hits (see rtHitReflectivity):
@@ -522,14 +523,14 @@ void shadeSolidSurface() {
                         // Full shading for the reflected hit: real texture
                         // albedo, real interpolated normal, sun diffuse (CSM
                         // shadowed) + sky ambient.
-                        vec3 toLight = -normalize(ubo.lightDir.xyz);
+                        vec3 toLight = -normalize(ubo.lightDirection);
                         float ndl = max(dot(hitN, toLight), 0.0);
                         float hitShadow = ShadowCalculation(
                             ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
                         // Albedo-scaled sky ambient (raster convention), not
                         // a dark constant: grazing/off-screen terrain hits in
                         // mirrors no longer read as near-black plates.
-                        rtColor = hitAlbedo * (ubo.lightColor.rgb * ndl * (1.0 - hitShadow)
+                        rtColor = hitAlbedo * (ubo.lightColor * ndl * (1.0 - hitShadow)
                                                + vec3(0.26));
                         // A mirror's reflection is not occluded by AO nor dimmed by
                             // the surface roughness (the RT roughness gate already
@@ -541,9 +542,9 @@ void shadeSolidSurface() {
                         } // terrain else
                         // Reflection-inside-reflection: when the primary hit is
                         // itself reflective, chain extra mirror rays up to the
-                        // configured bounce count (rt.water.w, 0 = single).
+                        // configured bounce count (rt.maxReflectionBounces, 0 = single).
                         {
-                            int extraBounces = clamp(int(rt.water.w + 0.5), 0, 3) - 1;
+                            int extraBounces = clamp(rt.maxReflectionBounces, 0, 3) - 1;
                             if (hitReflectivity > 0.02 && extraBounces >= 0) {
                                 vec3 nextDir = normalize(reflect(normalize(reflDir), hitN));
                                 vec3 bounceCol = rtTraceMirror(hitPos + hitN * 0.05,
@@ -585,13 +586,13 @@ void shadeSolidSurface() {
     // vulkan/includes/DebugModes.hpp). Water-only views (sky/refraction/
     // noise/displacement/thickness/absorption/caustics/depth/compose) fall
     // through to normal shading here; 0 = normal render.
-    int debugMode = int(ubo.debugParams.x + 0.5);
+    int debugMode = ubo.debugMode;
     if (debugMode == DEBUG_MODE_SCENE_DEPTH) {
         // Linear eye-space depth / far (white = far/clear). Shows whether the
         // opaque pass actually writes the terrain (e.g. the lake bed) behind
         // the water.
-        float nearP = max(ubo.passParams.z, 1e-4);
-        float farP = max(ubo.passParams.w, nearP + 1.0);
+        float nearP = max(ubo.nearPlane, 1e-4);
+        float farP = max(ubo.farPlane, nearP + 1.0);
         float zEye = (nearP * farP) / (farP - gl_FragCoord.z * (farP - nearP));
         outColor = vec4(vec3(clamp(zEye / farP, 0.0, 1.0)), 1.0);
         return;

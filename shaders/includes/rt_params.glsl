@@ -27,12 +27,74 @@ struct RayTracingParamsGLSL {
                        // face). yzw reserved.
 };
 
+// Named view over the packed RayTracingParamsGLSL - same data, descriptive names. The builder below is the
+// only place the packed component letters are read; every other access uses the
+// named attributes.
+
+
+struct RayTracingParamsNamed {
+    bool reflectionsEnabled;
+    bool refractionsEnabled;
+    bool thicknessEnabled;
+    bool localShadowsEnabled;
+    float maxRefractDistance;
+    float maxShadowDistance;
+    float roughnessThreshold;
+    float waterIor;
+    float maxWaterThickness;
+    float coarseBoxSize;
+    int maxReflectionBounces;
+    int debugMode;
+    bool tlasReady;
+    float selfSkipDist;
+    bool useWaterPipeline;
+    bool checkerboardReflections;
+    float reflectionContribMin;
+    bool singleRay;
+    bool waterReflections;
+    bool rayTracedWaterDepth;
+    vec3 viewPosition;
+    vec3 sunDirection;
+    vec3 sunColor;
+    mat4 invViewProj;
+};
+
+RayTracingParamsNamed rayTracingParamsNamed(RayTracingParamsGLSL p) {
+    RayTracingParamsNamed n;
+    n.reflectionsEnabled = p.toggles.x > 0.5;
+    n.refractionsEnabled = p.toggles.y > 0.5;
+    n.thicknessEnabled = p.toggles.z > 0.5;
+    n.localShadowsEnabled = p.toggles.w > 0.5;
+    n.maxRefractDistance = p.distances.y;
+    n.maxShadowDistance = p.distances.z;
+    n.roughnessThreshold = p.distances.w;
+    n.waterIor = p.water.x;
+    n.maxWaterThickness = p.water.y;
+    n.coarseBoxSize = p.water.z;
+    n.maxReflectionBounces = int(p.water.w + 0.5);
+    n.debugMode = int(p.debug.x + 0.5);
+    n.tlasReady = p.debug.y > 0.5;
+    n.selfSkipDist = p.debug.z;
+    n.useWaterPipeline = p.debug.w > 0.5;
+    n.checkerboardReflections = p.rayParams.x > 0.5;
+    n.reflectionContribMin = p.rayParams.y;
+    n.singleRay = p.rayParams.z > 0.5;
+    n.waterReflections = p.rayParams.w > 0.5;
+    n.rayTracedWaterDepth = p.waterDepth.x > 0.5;
+    n.viewPosition = p.viewPos.xyz;
+    n.sunDirection = p.sunDir.xyz;
+    n.sunColor = p.sunColor.rgb;
+    n.invViewProj = p.invViewProj;
+    return n;
+}
+
 // Shared ray payload (rgen + rmiss + rchit). MUST stay a single variable:
 // SPIR-V allows at most one IncomingRayPayloadKHR per entry point
 // (VUID-StandaloneSpirv-IncomingRayPayloadKHR-04700).
 struct RTPayload {
-    vec4 data;     // rgb=hit color (or sky on miss), a=hitT (or -1 on miss)
-    float coarseF; // 0=fine box (use hit as-is), 1=coarse (feather to deep/sky)
+    vec3 color;        // hit color (or sky on miss)
+    float hitDistance; // hitT (or -1 on miss)
+    float coarseF;     // 0=fine box (use hit as-is), 1=coarse (feather to deep/sky)
 };
 
 struct RTProxyMetaGLSL {    vec4 minAndMatId;  // xyz=AABB min, w=material id
@@ -40,6 +102,37 @@ struct RTProxyMetaGLSL {    vec4 minAndMatId;  // xyz=AABB min, w=material id
     vec4 albedoRough;  // rgb=avg albedo, a=roughness
     vec4 extra;        // x=horizontal footprint (max x/z extent, for coarse-box fallback), yzw reserved
 };
+
+// Named view over the packed RTProxyMetaGLSL - same data, descriptive names. The builder below is the
+// only place the packed component letters are read; every other access uses the
+// named attributes.
+struct RTProxyMetaNamed {
+    vec3 boxMin;
+    vec2 boxMinXZ;   // horizontal extent of boxMin
+    float materialId;
+    vec3 boxMax;
+    vec2 boxMaxXZ;   // horizontal extent of boxMax
+    float boxTop;    // boxMax.y: the box top edge
+    bool isWater;
+    vec3 albedo;
+    float roughness;
+    float footprint;
+};
+
+RTProxyMetaNamed rtProxyMetaNamed(RTProxyMetaGLSL p) {
+    RTProxyMetaNamed n;
+    n.boxMin = p.minAndMatId.xyz;
+    n.boxMinXZ = p.minAndMatId.xz;
+    n.materialId = p.minAndMatId.w;
+    n.boxMax = p.maxAndFlags.xyz;
+    n.boxMaxXZ = p.maxAndFlags.xz;
+    n.boxTop = p.maxAndFlags.y;
+    n.isWater = p.maxAndFlags.w > 0.5;
+    n.albedo = p.albedoRough.rgb;
+    n.roughness = p.albedoRough.a;
+    n.footprint = p.extra.x;
+    return n;
+}
 
 // Proxy layout: solid boxes occupy metadata slots [0, RT_WATER_BOX_START),
 // water volumes [RT_WATER_BOX_START, ...). The TLAS carries one instance per

@@ -6,24 +6,25 @@ layout(location = VARY_POSWORLD) in vec3 fragPosWorld;
 layout(location = VARY_NORMAL) in vec3 fragNormal;
 
 #include "includes/ubo.glsl"
+#include "includes/sky_view.glsl"
 #include "includes/perlin.glsl"
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 void main() {
     // Compute direction from camera to fragment (UBO exposes viewPos)
-    vec3 viewDir = normalize(fragPosWorld - ubo.viewPos.xyz);
+    vec3 viewDir = normalize(fragPosWorld - ubo.viewPosition);
     // Use the Y component for gradient (up = 1, down = -1)
     float t = clamp(viewDir.y * 0.5 + 0.5, 0.0, 1.0);
 
     // Read colors from Sky UBO (set by SkyWidget)
-    vec3 horizonColor = sky.skyHorizon.rgb;
-    vec3 zenithColor = sky.skyZenith.rgb;
+    vec3 horizonColor = sky.horizonColor;
+    vec3 zenithColor = sky.zenithColor;
 
     // Warmth factor based on light elevation: when sun is low (lightDir.y near 0 or negative), increase warmth
-    float userWarmth = clamp(sky.skyParams.x, 0.0, 1.0);
+    float userWarmth = clamp(sky.warmth, 0.0, 1.0);
     // Flip lightDir.y so positive elevation corresponds to sun above the horizon
-    float sunElev = -clamp(ubo.lightDir.y, -1.0, 1.0); // 1=overhead, 0=horizon, -1=below
+    float sunElev = -clamp(ubo.lightElevation, -1.0, 1.0); // 1=overhead, 0=horizon, -1=below
     // compute a smooth factor in [0,1] where 1 means sun at horizon or below (warm sunsets)
     float sunFactor = clamp((1.0 - sunElev) * 0.75, 0.0, 1.0);
     sunFactor = pow(sunFactor, 1.5); // bias towards stronger effect when very low
@@ -35,7 +36,7 @@ void main() {
     zenithColor = mix(zenithColor, warmTint * 0.6, zenithWarm);
 
     // Apply exponent to control gradient falloff (allow widget override)
-    float exponent = max(sky.skyParams.y, 0.01);
+    float exponent = max(sky.exponent, 0.01);
     // Optionally bias exponent by sun elevation so sunsets have longer transition
     exponent *= mix(1.0, 1.6, pow(sunFactor, 0.8));
     float tt = pow(t, exponent);
@@ -45,10 +46,10 @@ void main() {
     // Compute a smooth day factor from sun elevation (sunElev in [-1,1])
     float dayFactor = smoothstep(-0.2, 0.2, sunElev);
     // Read night colors and intensity from Sky UBO
-    vec3 nightHor = sky.nightHorizon.rgb;
-    vec3 nightZen = sky.nightZenith.rgb;
-    float nightIntensity = clamp(sky.nightParams.x, 0.0, 1.0);
-    float starIntensity = clamp(sky.nightParams.y, 0.0, 1.0);
+    vec3 nightHor = sky.nightHorizonColor;
+    vec3 nightZen = sky.nightZenithColor;
+    float nightIntensity = clamp(sky.nightIntensity, 0.0, 1.0);
+    float starIntensity = clamp(sky.starIntensity, 0.0, 1.0);
     vec3 nightColor = mix(nightHor, nightZen, tt);
 
     // Blend final color between night and day based on dayFactor
@@ -65,11 +66,11 @@ void main() {
     float stars = smoothstep(0.995, 0.9995, starSeed) * starMask;
     // --- Sun flare/glow ---
     // Sun direction in world space (normalized)
-    vec3 sunDir = -normalize(ubo.lightDir.xyz); // flip sun direction in all axes
+    vec3 sunDir = -normalize(ubo.lightDirection); // flip sun direction in all axes
     // Project sun direction into view space (from camera)
     float sunDot = dot(viewDir, sunDir);
     // Sun flare: strong when looking at sun, fades with angle
-    float sunFlare = clamp(sky.skyParams.z, 0.0, 2.0); // z = user sun flare intensity
+    float sunFlare = clamp(sky.sunFlare, 0.0, 2.0); // z = user sun flare intensity
     float flare = pow(max(sunDot, 0.0), 800.0 * (1.0 - sunElev * 0.5)) * sunFlare * dayFactor;
     // Sun color: warm white, modulated by sun elevation
     vec3 sunColor = mix(vec3(1.0, 0.95, 0.8), warmTint, sunFactor * 0.5);

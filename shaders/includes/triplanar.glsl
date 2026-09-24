@@ -4,7 +4,7 @@
 // Compute triplanar UVs from world-space position using triplanarParams.x/y as scale.
 // Uses the geometric normal sign to match CPU-side orientation.
 void computeTriplanarUVs(in vec3 fragPosWorld, in int brushIndex, in vec3 geomN, out vec2 uvX, out vec2 uvY, out vec2 uvZ) {
-    vec2 scale = vec2(materials[brushIndex].triplanarParams.x, materials[brushIndex].triplanarParams.y);
+    vec2 scale = vec2(materialNamed(materials[brushIndex]).triplanarScaleU, materialNamed(materials[brushIndex]).triplanarScaleV);
     // X projection -> sample YZ. Match CPU mapping: positive X => (-z, -y), negative X => (z, -y)
     if (geomN.x >= 0.0) uvX = vec2(-fragPosWorld.z, -fragPosWorld.y) * scale;
     else               uvX = vec2( fragPosWorld.z, -fragPosWorld.y) * scale;

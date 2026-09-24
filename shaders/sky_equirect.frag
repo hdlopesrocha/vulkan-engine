@@ -9,6 +9,7 @@
 // a 3D direction converted to equirect UV coordinates.
 
 #include "includes/ubo.glsl"
+#include "includes/sky_view.glsl"
 
 // Push constant with equirect target resolution
 layout(push_constant) uniform PushConstants {
@@ -44,12 +45,12 @@ void main() {
     float t = clamp(viewDir.y * 0.5 + 0.5, 0.0, 1.0);
 
     // Read colors from Sky UBO
-    vec3 horizonColor = sky.skyHorizon.rgb;
-    vec3 zenithColor  = sky.skyZenith.rgb;
+    vec3 horizonColor = sky.horizonColor;
+    vec3 zenithColor  = sky.zenithColor;
 
     // Warmth factor based on light elevation
-    float userWarmth = clamp(sky.skyParams.x, 0.0, 1.0);
-    float sunElev = -clamp(ubo.lightDir.y, -1.0, 1.0);
+    float userWarmth = clamp(sky.warmth, 0.0, 1.0);
+    float sunElev = -clamp(ubo.lightElevation, -1.0, 1.0);
     float sunFactor = clamp((1.0 - sunElev) * 0.75, 0.0, 1.0);
     sunFactor = pow(sunFactor, 1.5);
     vec3 warmTint = vec3(1.0, 0.45, 0.2);
@@ -60,17 +61,17 @@ void main() {
     zenithColor = mix(zenithColor, warmTint * 0.6, zenithWarm);
 
     // Apply exponent to control gradient falloff
-    float exponent = max(sky.skyParams.y, 0.01);
+    float exponent = max(sky.exponent, 0.01);
     exponent *= mix(1.0, 1.6, pow(sunFactor, 0.8));
     float tt = pow(t, exponent);
     vec3 dayColor = mix(horizonColor, zenithColor, tt);
 
     // --- Night blending ---
     float dayFactor = smoothstep(-0.2, 0.2, sunElev);
-    vec3 nightHor = sky.nightHorizon.rgb;
-    vec3 nightZen = sky.nightZenith.rgb;
-    float nightIntensity = clamp(sky.nightParams.x, 0.0, 1.0);
-    float starIntensity  = clamp(sky.nightParams.y, 0.0, 1.0);
+    vec3 nightHor = sky.nightHorizonColor;
+    vec3 nightZen = sky.nightZenithColor;
+    float nightIntensity = clamp(sky.nightIntensity, 0.0, 1.0);
+    float starIntensity  = clamp(sky.starIntensity, 0.0, 1.0);
     vec3 nightColor = mix(nightHor, nightZen, tt);
 
     vec3 baseColor = mix(nightColor * (1.0 - nightIntensity), dayColor, dayFactor);
@@ -81,9 +82,9 @@ void main() {
     float stars = smoothstep(0.995, 0.9995, starSeed) * starMask;
 
     // --- Sun flare/glow ---
-    vec3 sunDir = -normalize(ubo.lightDir.xyz);
+    vec3 sunDir = -normalize(ubo.lightDirection);
     float sunDot = dot(viewDir, sunDir);
-    float sunFlare = clamp(sky.skyParams.z, 0.0, 2.0);
+    float sunFlare = clamp(sky.sunFlare, 0.0, 2.0);
     float flare = pow(max(sunDot, 0.0), 800.0 * (1.0 - sunElev * 0.5)) * sunFlare * dayFactor;
     vec3 sunColor = mix(vec3(1.0, 0.95, 0.8), warmTint, sunFactor * 0.5);
 

@@ -36,7 +36,7 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias) {
     // Without this guard a disabled CSM still darkens every secondary hit
     // through its stale or zero-initialized cascade maps — the "shadow
     // underwater" that survives turning shadows off.
-    if (ubo.shadowEffects.w < 0.5) return 0.0;
+    if (!ubo.shadowsEnabled) return 0.0;
 
     const float BLEND_MARGIN = 0.04;
 

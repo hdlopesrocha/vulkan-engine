@@ -1,3 +1,4 @@
+#include "sky_view.glsl"
 // Multi-bounce mirror tracing for the hybrid RT reflection paths.
 //
 // Requires (declared by the includer, all under RT_ENABLED): rt_params.glsl,
@@ -8,7 +9,7 @@
 // A reflection ray that hits a reflective surface (solid with a material
 // mirror strength, or a water mesh with its layer reflection enabled) spawns
 // another mirror ray from the hit point, up to the configured bounce count
-// (rt.water.w). GLSL forbids recursion, so the bounce chain is an iterative
+// (rt.maxReflectionBounces). GLSL forbids recursion, so the bounce chain is an iterative
 // loop carrying a throughput factor.
 
 #ifndef RT_REFLECTION_GLSL
@@ -31,22 +32,22 @@ float rtHitReflectivity(uint lo) {
 // the sky reflection along reflect(incident, hitN) by the layer's
 // Fresnel/strength mirror mix. This keeps water seen inside a reflection
 // looking like the water surface itself.
-vec3 rtWaterSurfaceLook(WaterParamsGPU wp, vec3 hitN, vec3 incidentDir,
+vec3 rtWaterSurfaceLook(WaterParamsNamed wp, vec3 hitN, vec3 incidentDir,
                         vec3 skyAtReflection) {
-    float thickness = max(wp.refractionParams.y, 0.0);
+    float thickness = max(wp.maxThickness, 0.0);
     // Same depth-region tint ramp as the raster surface (thickness here is
     // the layer's column cap: water seen in a mirror has no measured depth).
     vec3 tintColor = waterRegionTint(wp, thickness);
-    float depthFade = 1.0 - exp(-thickness * max(wp.waveParams.w, 1e-4));
-    float tintMax = clamp(1.0 - wp.params1.z, 0.0, 1.0);
-    float tintBlend = clamp(depthFade * wp.params2.x, 0.0, tintMax);
+    float depthFade = 1.0 - exp(-thickness * max(wp.depthFalloff, 1e-4));
+    float tintMax = clamp(1.0 - wp.transparency, 0.0, 1.0);
+    float tintBlend = clamp(depthFade * wp.waterTint, 0.0, tintMax);
     vec3 refractTerm = tintColor * tintBlend;
-    if (wp.reserved1.x < 0.5) return refractTerm; // reflection disabled
+    if (!wp.enableReflection) return refractTerm; // reflection disabled
     float viewCos = clamp(dot(hitN, -normalize(incidentDir)), 0.0, 1.0);
-    float fres = 0.02 + 0.98 * pow(1.0 - viewCos, clamp(wp.params1.y, 1.0, 8.0));
-    float reflMix = (wp.reserved2.w > 0.5)
-        ? clamp(wp.params1.w, 0.0, 1.0)
-        : mix(fres, 1.0, clamp(wp.params1.w, 0.0, 1.0));
+    float fres = 0.02 + 0.98 * pow(1.0 - viewCos, clamp(wp.fresnelPower, 1.0, 8.0));
+    float reflMix = wp.uniformReflection
+        ? clamp(wp.reflectionStrength, 0.0, 1.0)
+        : mix(fres, 1.0, clamp(wp.reflectionStrength, 0.0, 1.0));
     return mix(refractTerm, skyAtReflection, reflMix);
 }
 
@@ -54,9 +55,9 @@ vec3 rtWaterSurfaceLook(WaterParamsGPU wp, vec3 hitN, vec3 incidentDir,
 vec3 rtShadeWaterHit(uint lo, vec3 hitN, vec3 incoming) {
     int nWL = max(waterParams.length(), 1);
     int layer = clamp(int(rtSceneAlbedo[lo].w + 0.5), 0, nWL - 1);
-    WaterParamsGPU wp = waterParams[layer];
+    WaterParamsNamed wp = waterParamsNamed(waterParams[layer]);
     vec3 skyR = rtProceduralSky(normalize(reflect(incoming, hitN)),
-                                sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
+                                sky.horizonColor, sky.zenithColor, sky.exponent);
     return rtWaterSurfaceLook(wp, hitN, incoming, skyR);
 }
 
@@ -78,7 +79,7 @@ vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit) {
         RT_PROF_END(rtProfBounce);
 
         vec3 skyCol = rtProceduralSky(normalize(dir),
-            sky.skyHorizon.rgb, sky.skyZenith.rgb, sky.skyParams.y);
+            sky.horizonColor, sky.zenithColor, sky.exponent);
         if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
             accum += throughput * skyCol;
             break;
@@ -123,11 +124,11 @@ vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit) {
         } else {
             int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
             vec3 albedo = rtSceneSampleReflectionAlbedo(i0, i1, i2, bary, hitPos, hitN, maxLayer, 0.0);
-            vec3 toSun = normalize(-ubo.lightDir.xyz);
+            vec3 toSun = normalize(-ubo.lightDirection);
             float ndl = max(dot(hitN, toSun), 0.0);
             float hitShadow = ShadowCalculation(
                 ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
-            lit = albedo * (ubo.lightColor.rgb * ndl * (1.0 - hitShadow) + vec3(0.26));
+            lit = albedo * (ubo.lightColor * ndl * (1.0 - hitShadow) + vec3(0.26));
         }
 
         float refl = rtHitReflectivity(lo);
@@ -157,10 +158,10 @@ vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit) {
 //
 // Not recursive: the mirror chain shades water hits with rtShadeWaterHit()
 // (look only), never with this function.
-vec3 rtResolveWaterHit(WaterParamsGPU wp, vec3 hitPos, vec3 hitN, vec3 incidentDir) {
+vec3 rtResolveWaterHit(WaterParamsNamed wp, vec3 hitPos, vec3 hitN, vec3 incidentDir) {
     vec3 inc = normalize(incidentDir);
-    float ior = clamp(wp.refractionParams.x, 1.0, 2.5);
-    float thickCap = max(wp.refractionParams.y, 0.0);
+    float ior = clamp(wp.waterIor, 1.0, 2.5);
+    float thickCap = max(wp.maxThickness, 0.0);
 
     // --- Refraction: nearest scene triangle behind the surface along Snell ---
     vec3 refrDir = refract(inc, hitN, 1.0 / ior);
@@ -220,11 +221,11 @@ vec3 rtResolveWaterHit(WaterParamsGPU wp, vec3 hitPos, vec3 hitN, vec3 incidentD
                 int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
                 vec3 alb = rtSceneSampleReflectionAlbedo(i0, i1, i2, bestBary, hp, bN,
                                                          maxLayer, 0.0);
-                vec3 toSun = normalize(-ubo.lightDir.xyz);
+                vec3 toSun = normalize(-ubo.lightDirection);
                 float ndl = max(dot(bN, toSun), 0.0);
                 float bShadow = ShadowCalculation(
                     ubo.lightSpaceMatrix * vec4(hp, 1.0), hp, 0.0015);
-                refrColor = alb * (ubo.lightColor.rgb * ndl * (1.0 - bShadow)
+                refrColor = alb * (ubo.lightColor * ndl * (1.0 - bShadow)
                                    + vec3(0.26));
                 haveBottom = true;
             }
@@ -244,39 +245,39 @@ vec3 rtResolveWaterHit(WaterParamsGPU wp, vec3 hitPos, vec3 hitN, vec3 incidentD
     // beside it sat in shadow.
     float waterShadow = ShadowCalculation(
         ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
-    float depthFade = 1.0 - exp(-thickness * max(wp.waveParams.w, 1e-4));
+    float depthFade = 1.0 - exp(-thickness * max(wp.depthFalloff, 1e-4));
     // Shoreline tint fade, matching the raster surface: no tint at the
     // waterline (thickness -> 0), ramping in over the tint shore fade depth.
-    if (wp.regionTintParams.y > 0.0 && thickness > 1e-4) {
-        depthFade *= smoothstep(0.0, max(wp.regionTintParams.y, 1e-4), thickness);
+    if (wp.tintShoreFadeDepth > 0.0 && thickness > 1e-4) {
+        depthFade *= smoothstep(0.0, max(wp.tintShoreFadeDepth, 1e-4), thickness);
     }
-    float tintMax = clamp(1.0 - wp.params1.z, 0.0, 1.0);
-    float tintBlend = clamp(depthFade * wp.params2.x, 0.0, tintMax);
+    float tintMax = clamp(1.0 - wp.transparency, 0.0, 1.0);
+    float tintBlend = clamp(depthFade * wp.waterTint, 0.0, tintMax);
 
     vec3 refractTerm;
     if (haveBottom) {
         vec3 transmittance = exp(-min(
-            wp.absorptionParams.rgb * max(thickness * wp.absorptionParams.a, 0.0),
+            wp.absorption * max(thickness * wp.absorptionScale, 0.0),
             vec3(2.5)));
         refractTerm = mix(refrColor * transmittance, tintColor, tintBlend);
     } else {
         // Deep / no bottom resolved: sky along the refraction direction,
         // saturated to the deep tint (primary water's miss continuity).
-        vec3 deepScene = rtProceduralSky(refrDir, sky.skyHorizon.rgb,
-                                         sky.skyZenith.rgb, sky.skyParams.y);
+        vec3 deepScene = rtProceduralSky(refrDir, sky.horizonColor,
+                                         sky.zenithColor, sky.exponent);
         refractTerm = mix(deepScene, tintColor, max(tintBlend, 0.85));
     }
 
-    if (wp.reserved1.x < 0.5) return refractTerm * mix(1.0, 0.55, waterShadow); // reflection disabled
+    if (!wp.enableReflection) return refractTerm * mix(1.0, 0.55, waterShadow); // reflection disabled
 
     // --- Reflection: one bounded mirror chain (water hits there are look-only) ---
     vec3 reflDir = normalize(reflect(inc, hitN));
     vec3 reflColor = rtTraceMirror(hitPos + hitN * 0.05, reflDir, 0, 0.05);
     float viewCos = clamp(dot(hitN, -inc), 0.0, 1.0);
-    float fres = 0.02 + 0.98 * pow(1.0 - viewCos, clamp(wp.params1.y, 1.0, 8.0));
-    float reflMix = (wp.reserved2.w > 0.5)
-        ? clamp(wp.params1.w, 0.0, 1.0)
-        : mix(fres, 1.0, clamp(wp.params1.w, 0.0, 1.0));
+    float fres = 0.02 + 0.98 * pow(1.0 - viewCos, clamp(wp.fresnelPower, 1.0, 8.0));
+    float reflMix = wp.uniformReflection
+        ? clamp(wp.reflectionStrength, 0.0, 1.0)
+        : mix(fres, 1.0, clamp(wp.reflectionStrength, 0.0, 1.0));
     return mix(refractTerm, reflColor, reflMix) * mix(1.0, 0.55, waterShadow);
 }
 

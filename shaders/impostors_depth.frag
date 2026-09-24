@@ -8,7 +8,24 @@ layout(location = VARY_TANGENTWS) flat in vec3 inInstanceOffset;
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 viewProjection; // light VP
     vec4 viewPos;
-} ubo;
+} uboPacked;
+
+// Named view over the packed SolidParamsUBO - same data, descriptive names. The builder below is the
+// only place the packed component letters are read; every other access uses the
+// named attributes.
+struct UniformObjectNamed {
+    mat4 viewProjection;
+    vec3 viewPosition;
+};
+
+UniformObjectNamed uniformObjectNamed() {
+    UniformObjectNamed n;
+    n.viewProjection = uboPacked.viewProjection;
+    n.viewPosition = uboPacked.viewPos.xyz;
+    return n;
+}
+
+UniformObjectNamed ubo = uniformObjectNamed();
 
 layout(set = 1, binding = 0) uniform sampler2DArray depthArray;
 
@@ -24,6 +41,7 @@ layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 densityParams;
     vec4 cameraPosAndFalloff;
 } windParams;
+
 
 layout(push_constant) uniform PushConstants {
     float billboardScale;
@@ -52,7 +70,7 @@ void main() {
     // Note: uses inInstanceOffset (flat, single per instance) instead of
     // the per-fragment worldPos so the distance matches the color pass exactly.
     if (impostorDistance > 0.0) {
-        float dist       = distance(ubo.viewPos.xyz, inInstanceOffset);
+        float dist       = distance(ubo.viewPosition, inInstanceOffset);
         float fadeAlpha  = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);
         const int M[16]  = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
         float threshold  = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;

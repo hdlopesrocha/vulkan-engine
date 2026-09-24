@@ -38,7 +38,7 @@ vec3 rtSceneSampleReflectionAlbedo(uint i0, uint i1, uint i2, vec2 bary,
     // Slot 0
     if (um0 >= 0 && blendW.x > 1e-5) {
         int m = clamp(um0, 0, maxLayer);
-        vec3 c = (materials[m].triplanarParams.z > 0.5)
+        vec3 c = (materialNamed(materials[m]).triplanarEnabled)
             ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, lod)
             : textureLod(albedoArray, vec3(uvInt, float(m)), lod).rgb;
         acc += c * blendW.x;
@@ -47,7 +47,7 @@ vec3 rtSceneSampleReflectionAlbedo(uint i0, uint i1, uint i2, vec2 bary,
     // Slot 1
     if (um1 >= 0 && blendW.y > 1e-5) {
         int m = clamp(um1, 0, maxLayer);
-        vec3 c = (materials[m].triplanarParams.z > 0.5)
+        vec3 c = (materialNamed(materials[m]).triplanarEnabled)
             ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, lod)
             : textureLod(albedoArray, vec3(uvInt, float(m)), lod).rgb;
         acc += c * blendW.y;
@@ -56,7 +56,7 @@ vec3 rtSceneSampleReflectionAlbedo(uint i0, uint i1, uint i2, vec2 bary,
     // Slot 2
     if (um2 >= 0 && blendW.z > 1e-5) {
         int m = clamp(um2, 0, maxLayer);
-        vec3 c = (materials[m].triplanarParams.z > 0.5)
+        vec3 c = (materialNamed(materials[m]).triplanarEnabled)
             ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, lod)
             : textureLod(albedoArray, vec3(uvInt, float(m)), lod).rgb;
         acc += c * blendW.z;

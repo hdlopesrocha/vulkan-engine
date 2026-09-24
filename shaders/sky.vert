@@ -12,7 +12,7 @@ layout(location = VARY_NORMAL) out vec3 fragNormal;
 
 void main() {
     // Center sphere at camera position (UBO exposes viewPos)
-    vec3 worldPos = inPosition * 50.0 + ubo.viewPos.xyz; // Large radius
+    vec3 worldPos = inPosition * 50.0 + ubo.viewPosition; // Large radius
     fragPosWorld = worldPos;
     fragNormal = inNormal;
     gl_Position = ubo.viewProjection * vec4(worldPos, 1.0);

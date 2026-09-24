@@ -11,7 +11,7 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 void main() {
     // Direction from camera to fragment (world-space)
-    vec3 viewDir = normalize(fragPosWorld - ubo.viewPos.xyz);
+    vec3 viewDir = normalize(fragPosWorld - ubo.viewPosition);
     
     // Grid parameters
     float gridScale = 5.0; // spacing between grid lines (in degrees or similar)

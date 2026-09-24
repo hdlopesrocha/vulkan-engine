@@ -10,7 +10,8 @@
 
 #include "includes/rt_params.glsl"
 
-layout(set = 0, binding = 3) uniform RTBlock { RayTracingParamsGLSL rt; };
+layout(set = 0, binding = 3) uniform RTBlock { RayTracingParamsGLSL rtPacked; };
+RayTracingParamsNamed rt = rayTracingParamsNamed(rtPacked);
 layout(set = 0, binding = 4) readonly buffer ProxyMeta { RTProxyMetaGLSL metas[]; };
 layout(set = 0, binding = 6) uniform sampler2D skyEquirectTex;
 
@@ -19,17 +20,17 @@ hitAttributeEXT vec3 bary;
 
 void main() {
     uint boxIdx = rtBoxIndex(uint(gl_PrimitiveID), gl_InstanceCustomIndexEXT);
-    RTProxyMetaGLSL meta = metas[boxIdx];
+    RTProxyMetaNamed meta = rtProxyMetaNamed(metas[boxIdx]);
     vec3 hitPos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
     bool exiting = (gl_HitKindEXT == gl_HitKindBackFacingTriangleEXT);
-    vec3 N = rtBoxNormal(hitPos, meta.minAndMatId.xyz, meta.maxAndFlags.xyz, exiting);
-    vec3 sunDir = normalize(rt.sunDir.xyz);
+    vec3 N = rtBoxNormal(hitPos, meta.boxMin, meta.boxMax, exiting);
+    vec3 sunDir = normalize(rt.sunDirection);
     // Constant UP normal for water lighting: the box-face normal varies
     // between the wall's side/top faces per-hit → ndl flickers.
-    float ndl = (meta.maxAndFlags.w > 0.5)
+    float ndl = meta.isWater
         ? max(dot(vec3(0.0, 1.0, 0.0), sunDir), 0.0)
         : max(dot(N, sunDir), 0.0);
-    vec3 tint = meta.albedoRough.rgb;
+    vec3 tint = meta.albedo;
     // Water proxies (flags=1): blend the SKY into the flat tint (Fresnel grows
     // toward grazing). The sky part is a SURFACE mirror and must NOT be
     // multiplied by the sun term — sunlighting the whole mix turned proxies
@@ -37,13 +38,13 @@ void main() {
     vec3 dir = normalize(gl_WorldRayDirectionEXT);
     vec3 skyR = vec3(0.0);
     float skyMix = 0.0;
-    if (meta.maxAndFlags.w > 0.5) {
+    if (meta.isWater) {
         // Own-body guard: a box containing the ray origin is the fragment's
         // own lake surface (the ray starts inside it) — a flat water surface
         // reflects the sky, not itself.
-        vec3 o = gl_WorldRayOriginEXT;
-        bool ownBody = (o.x >= meta.minAndMatId.x && o.x <= meta.maxAndFlags.x &&
-                        o.z >= meta.minAndMatId.z && o.z <= meta.maxAndFlags.z);
+        vec2 oXZ = gl_WorldRayOriginEXT.xz;
+        bool ownBody = all(greaterThanEqual(oXZ, meta.boxMinXZ)) &&
+                       all(lessThanEqual(oXZ, meta.boxMaxXZ));
         skyR = texture(skyEquirectTex, rtDirToEquirectUV(dir)).rgb;
         if (ownBody) {
             skyMix = 1.0;
@@ -56,7 +57,7 @@ void main() {
             // camera moves — a hard switch that flickers. Fade toward the sky
             // near the top so the boundary is continuous.
             float topFade = smoothstep(
-                meta.maxAndFlags.y - 15.0, meta.maxAndFlags.y, hitPos.y);
+                meta.boxTop - 15.0, meta.boxTop, hitPos.y);
             skyMix = mix(skyMix, 1.0, topFade);
         }
     }
@@ -64,13 +65,13 @@ void main() {
     // (albedo * ambient) so reflections read as lit scenery, not dark plates.
     // Shadows stay CSM-owned (§2/§21): RT hits do not recompute the macro
     // sun-shadow solution.
-    vec3 litTint = tint * (rt.sunColor.rgb * (0.55 + 0.45 * ndl) + vec3(0.26));
-    vec3 color = (meta.maxAndFlags.w > 0.5)
+    vec3 litTint = tint * (rt.sunColor * (0.55 + 0.45 * ndl) + vec3(0.26));
+    vec3 color = meta.isWater
         ? mix(litTint, skyR, clamp(skyMix, 0.0, 1.0))
         : litTint;
     // Coarse boxes (huge flat tops in the far field) cannot resolve shallow
     // detail. Report the raw hit plus a feather factor; rgen blends toward
     // deep/sky smoothly so box-size contours never print as razor lines.
-    rtPayload.coarseF = rtCoarseFeather(meta.extra.x, rt.water.z);
-    rtPayload.data = vec4(color, gl_HitTEXT);
+    rtPayload.coarseF = rtCoarseFeather(meta.footprint, rt.coarseBoxSize);
+    rtPayload.color = color; rtPayload.hitDistance = gl_HitTEXT;
 }

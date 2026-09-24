@@ -20,7 +20,24 @@ layout(location = VARY_POSWORLD) out vec3 fragWorldPos;
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 viewProjection;
     vec4 viewPos;
-} ubo;
+} uboPacked;
+
+// Named view over the packed SolidParamsUBO - same data, descriptive names. The builder below is the
+// only place the packed component letters are read; every other access uses the
+// named attributes.
+struct UniformObjectNamed {
+    mat4 viewProjection;
+    vec3 viewPosition;
+};
+
+UniformObjectNamed uniformObjectNamed() {
+    UniformObjectNamed n;
+    n.viewProjection = uboPacked.viewProjection;
+    n.viewPosition = uboPacked.viewPos.xyz;
+    return n;
+}
+
+UniformObjectNamed ubo = uniformObjectNamed();
 
 void main() {
     vec3 worldPos = instanceData.xyz;

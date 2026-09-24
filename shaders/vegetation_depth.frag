@@ -21,6 +21,7 @@ layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 cameraPosAndFalloff;
 } windParams;
 
+
 layout(push_constant) uniform PushConstants {
     float billboardScale;
     float windEnabled;
@@ -49,7 +50,7 @@ void main() {
 
     // Cross-fade with impostors: same dithering as vegetation.frag.
     if (impostorDistance > 0.0) {
-        float dist       = distance(ubo.viewPos.xyz, inWorldPos);
+        float dist       = distance(ubo.viewPosition, inWorldPos);
         float fadeAlpha  = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);
         const int M[16]  = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
         float threshold  = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;

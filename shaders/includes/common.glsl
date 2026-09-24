@@ -3,10 +3,10 @@
 // Sample height helper that respects per-material height interpretation
 float sampleHeight(vec2 texCoords, int brushIndex) {
     vec2 tc = texCoords;
-    if (materials[brushIndex].mappingParams.z > 0.5) {
+    if (materialNamed(materials[brushIndex]).invertHeight) {
         tc.y = 1.0 - tc.y;
     }
-    if (materials[brushIndex].normalParams.z > 0.5) {
+    if (materialNamed(materials[brushIndex]).invertWidth) {
         tc.x = 1.0 - tc.x;
     }
     float h = texture(heightArray, vec3(tc, float(brushIndex))).r;
@@ -19,9 +19,9 @@ float sampleHeight(vec2 texCoords, int brushIndex) {
 vec3 computeTriplanarWeights(vec3 normal) {
     vec3 w = abs(normal);
     // apply threshold (dead-zone) and exponent (steepness)
-    float t = ubo.triplanarSettings.x; // threshold
+    float t = ubo.triplanarThreshold; // threshold
     vec3 wt = max(vec3(0.0), w - vec3(t));
-    float e = max(1.0, ubo.triplanarSettings.y);
+    float e = max(1.0, ubo.triplanarExponent);
     wt = pow(wt, vec3(e));
     float sum = wt.x + wt.y + wt.z + 1e-6;
     return wt / sum;
@@ -30,11 +30,11 @@ vec3 computeTriplanarWeights(vec3 normal) {
 // Triplanar height sampling with precomputed blend weights (and the world normal
 // used only for projection sign selection)
 float sampleHeightTriplanarW(vec3 worldPos, vec3 normal, vec3 w, int brushIndex) {
-    vec2 scale = vec2(materials[brushIndex].triplanarParams.x, materials[brushIndex].triplanarParams.y);
-    if (materials[brushIndex].mappingParams.z > 0.5) {
+    vec2 scale = vec2(materialNamed(materials[brushIndex]).triplanarScaleU, materialNamed(materials[brushIndex]).triplanarScaleV);
+    if (materialNamed(materials[brushIndex]).invertHeight) {
         scale.y = -scale.y;
     }
-    if (materials[brushIndex].normalParams.z > 0.5) {
+    if (materialNamed(materials[brushIndex]).invertWidth) {
         scale.x = -scale.x;
     }
 

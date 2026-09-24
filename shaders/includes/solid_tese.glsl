@@ -37,7 +37,7 @@ layout(location = VARY_DEBUG) out vec3 fragTessLevel;
 
 
 void main() {
-    bool isDepthPass = ubo.passParams.x > 0.5;
+    bool isDepthPass = ubo.isShadowPass;
 
     // barycentric coordinates
     vec3 bc = gl_TessCoord;
@@ -56,8 +56,8 @@ void main() {
     vec3 worldNormal = normalize(localNormal);
     vec4 worldPos = vec4(localPos, 1.0);
     
-    float mappingFlag = materials[texIndices.x].mappingParams.x * weights.x + materials[texIndices.y].mappingParams.x * weights.y + materials[texIndices.z].mappingParams.x * weights.z;
-    mappingFlag *= ubo.passParams.y;
+    float mappingFlag = float(materialNamed(materials[texIndices.x]).mappingEnabled) * weights.x + float(materialNamed(materials[texIndices.y]).mappingEnabled) * weights.y + float(materialNamed(materials[texIndices.z]).mappingEnabled) * weights.z;
+    mappingFlag *= float(ubo.tessellationEnabled);
     vec3 displacedLocalPos = mappingFlag > 0.5 ? applyDisplacement(localPos, localNormal, worldPos.xyz, worldNormal, uv, texIndices, weights) : localPos;
     
     gl_Position = ubo.viewProjection * vec4(displacedLocalPos, 1.0);

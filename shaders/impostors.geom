@@ -19,7 +19,24 @@ layout(location = VARY_POSLIGHT) flat out vec3 outInstanceOffset; // instance wo
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 viewProjection;
     vec4 viewPos;
-} ubo;
+} uboPacked;
+
+// Named view over the packed SolidParamsUBO - same data, descriptive names. The builder below is the
+// only place the packed component letters are read; every other access uses the
+// named attributes.
+struct UniformObjectNamed {
+    mat4 viewProjection;
+    vec3 viewPosition;
+};
+
+UniformObjectNamed uniformObjectNamed() {
+    UniformObjectNamed n;
+    n.viewProjection = uboPacked.viewProjection;
+    n.viewPosition = uboPacked.viewPos.xyz;
+    return n;
+}
+
+UniformObjectNamed ubo = uniformObjectNamed();
 
 layout(push_constant) uniform PushConstants {
     float billboardScale;
@@ -35,7 +52,54 @@ layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 windTurbulence;
     vec4 densityParams;
     vec4 cameraPosAndFalloff;
-} windParams;
+} windParamsPacked;
+
+// Named view over the packed WindParamsUBO - same data, descriptive names. The builder below is the
+// only place the packed component letters are read; every other access uses the
+// named attributes.
+struct WindParamsNamed {
+    vec2 windDirection;
+    float windStrength;
+    float windBaseFrequency;
+    float windSpeed;
+    float gustFrequency;
+    float gustStrength;
+    float skewAmount;
+    float trunkStiffness;
+    float noiseScale;
+    float verticalFlutter;
+    float turbulence;
+    bool densityEnabled;
+    float nearDistance;
+    float farDistance;
+    float minFactor;
+    vec3 cameraPosition;
+    float densityFalloff;
+};
+
+WindParamsNamed windParamsNamed() {
+    WindParamsNamed n;
+    n.windDirection = windParamsPacked.windDirAndStrength.xz;
+    n.windStrength = windParamsPacked.windDirAndStrength.w;
+    n.windBaseFrequency = windParamsPacked.windNoise.x;
+    n.windSpeed = windParamsPacked.windNoise.y;
+    n.gustFrequency = windParamsPacked.windNoise.z;
+    n.gustStrength = windParamsPacked.windNoise.w;
+    n.skewAmount = windParamsPacked.windShape.x;
+    n.trunkStiffness = windParamsPacked.windShape.y;
+    n.noiseScale = windParamsPacked.windShape.z;
+    n.verticalFlutter = windParamsPacked.windShape.w;
+    n.turbulence = windParamsPacked.windTurbulence.x;
+    n.densityEnabled = windParamsPacked.densityParams.x > 0.5;
+    n.nearDistance = windParamsPacked.densityParams.y;
+    n.farDistance = windParamsPacked.densityParams.z;
+    n.minFactor = windParamsPacked.densityParams.w;
+    n.cameraPosition = windParamsPacked.cameraPosAndFalloff.xyz;
+    n.densityFalloff = windParamsPacked.cameraPosAndFalloff.w;
+    return n;
+}
+
+WindParamsNamed windParams = windParamsNamed();
 
 #include "includes/perlin2d.glsl"
 #include "includes/vegetation_common.glsl"
@@ -45,7 +109,7 @@ void main() {
     int  billboardIdx = inBillboardIndex[0];
     outInstanceOffset = worldPos;
 
-    vec3 camPos = ubo.viewPos.xyz;
+    vec3 camPos = ubo.viewPosition;
     float dist  = distance(worldPos, camPos);
 
     // Skip if feature disabled OR instance is within near-vegetation distance

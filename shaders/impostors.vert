@@ -14,7 +14,24 @@ layout(location = VARY_POSLIGHT) flat out vec3 outInstanceOffset;
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 viewProjection;
     vec4 viewPos;
-} ubo;
+} uboPacked;
+
+// Named view over the packed SolidParamsUBO - same data, descriptive names. The builder below is the
+// only place the packed component letters are read; every other access uses the
+// named attributes.
+struct UniformObjectNamed {
+    mat4 viewProjection;
+    vec3 viewPosition;
+};
+
+UniformObjectNamed uniformObjectNamed() {
+    UniformObjectNamed n;
+    n.viewProjection = uboPacked.viewProjection;
+    n.viewPosition = uboPacked.viewPos.xyz;
+    return n;
+}
+
+UniformObjectNamed ubo = uniformObjectNamed();
 
 layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 windDirAndStrength;
@@ -23,7 +40,54 @@ layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 windTurbulence;
     vec4 densityParams;
     vec4 cameraPosAndFalloff;
-} windParams;
+} windParamsPacked;
+
+// Named view over the packed WindParamsUBO - same data, descriptive names. The builder below is the
+// only place the packed component letters are read; every other access uses the
+// named attributes.
+struct WindParamsNamed {
+    vec2 windDirection;
+    float windStrength;
+    float windBaseFrequency;
+    float windSpeed;
+    float gustFrequency;
+    float gustStrength;
+    float skewAmount;
+    float trunkStiffness;
+    float noiseScale;
+    float verticalFlutter;
+    float turbulence;
+    bool densityEnabled;
+    float nearDistance;
+    float farDistance;
+    float minFactor;
+    vec3 cameraPosition;
+    float densityFalloff;
+};
+
+WindParamsNamed windParamsNamed() {
+    WindParamsNamed n;
+    n.windDirection = windParamsPacked.windDirAndStrength.xz;
+    n.windStrength = windParamsPacked.windDirAndStrength.w;
+    n.windBaseFrequency = windParamsPacked.windNoise.x;
+    n.windSpeed = windParamsPacked.windNoise.y;
+    n.gustFrequency = windParamsPacked.windNoise.z;
+    n.gustStrength = windParamsPacked.windNoise.w;
+    n.skewAmount = windParamsPacked.windShape.x;
+    n.trunkStiffness = windParamsPacked.windShape.y;
+    n.noiseScale = windParamsPacked.windShape.z;
+    n.verticalFlutter = windParamsPacked.windShape.w;
+    n.turbulence = windParamsPacked.windTurbulence.x;
+    n.densityEnabled = windParamsPacked.densityParams.x > 0.5;
+    n.nearDistance = windParamsPacked.densityParams.y;
+    n.farDistance = windParamsPacked.densityParams.z;
+    n.minFactor = windParamsPacked.densityParams.w;
+    n.cameraPosition = windParamsPacked.cameraPosAndFalloff.xyz;
+    n.densityFalloff = windParamsPacked.cameraPosAndFalloff.w;
+    return n;
+}
+
+WindParamsNamed windParams = windParamsNamed();
 
 layout(push_constant) uniform PushConstants {
     float billboardScale;
@@ -41,7 +105,7 @@ void main() {
     float rotFrac = fract(instanceData.w);
     outRotFrac = rotFrac;
 
-    vec3 camPos = ubo.viewPos.xyz;
+    vec3 camPos = ubo.viewPosition;
     float dist = distance(worldPos, camPos);
 
     if (impostorDistance <= 0.0 || dist < impostorDistance * 0.50) {
@@ -127,9 +191,9 @@ void main() {
     // Crop UV to the plant's bounding box within the captured image.
     // The plant occupies UV.V in [0.327, 0.673] (vertical) and UV.U projects
     // via the instance's world-space position × hs (horizontal).
-    float uFrac = hs * 1.5 / (2.886751346); // hs * 1.5 / (2 * 2.5 * tan(30°))
-    float vFrac = 1.0 / (2.886751346);      // billboardScale / (2 * 2.5 * billboardScale * tan(30°))
-    float vOff  = 0.5 - 0.5 / (2.886751346);
+    float uFrac = hs * 1.5 / 2.886751346; // hs * 1.5 / (2 * 2.5 * tan(30°))
+    float vFrac = 1.0 / 2.886751346;      // billboardScale / (2 * 2.5 * billboardScale * tan(30°))
+    float vOff  = 0.5 - 0.5 / 2.886751346;
     outTexCoord = vec3(0.5 + (inCornerUV.x - 0.5) * uFrac,
                        inCornerUV.y * vFrac + vOff,
                        float(layerIdx));

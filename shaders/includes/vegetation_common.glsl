@@ -17,11 +17,11 @@ float vegetationHeightScale(vec2 worldXZ) {
 // Distance-based density thinning shared by vegetation and impostor shaders.
 // Requires WindParamsUBO (windParams) to be declared before this include.
 float densityFactorForDistance(float distanceToCamera) {
-    if (windParams.densityParams.x < 0.5) return 1.0;
+    if (!windParams.densityEnabled) return 1.0;
 
-    float nearDistance = max(0.0, windParams.densityParams.y);
-    float minFactor    = clamp(windParams.densityParams.w, 0.0, 1.0);
-    float falloff      = windParams.cameraPosAndFalloff.w;
+    float nearDistance = max(0.0, windParams.nearDistance);
+    float minFactor    = clamp(windParams.minFactor, 0.0, 1.0);
+    float falloff      = windParams.densityFalloff;
     if (distanceToCamera <= nearDistance || minFactor >= 1.0 || falloff <= 0.0) {
         return 1.0;
     }

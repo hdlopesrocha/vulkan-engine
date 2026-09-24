@@ -28,6 +28,7 @@ layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 cameraPosAndFalloff;
 } windParams;
 
+
 layout(push_constant) uniform PushConstants {
     float billboardScale;
     float windEnabled;
@@ -70,7 +71,7 @@ void main() {
     // The impostor shader uses the inverse condition, so together they cover 100% of pixels.
     // Depends only on geometry/distance, so it runs before the background fetches.
     if (!shadowPass && impostorDistance > 0.0) {
-        float dist       = distance(ubo.viewPos.xyz, inWorldPos);
+        float dist       = distance(ubo.viewPosition, inWorldPos);
         float fadeAlpha  = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);
         const int M[16]  = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
         float threshold  = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;
@@ -111,22 +112,22 @@ void main() {
     // Lighting: ambient + Lambertian diffuse + Blinn-Phong specular.
     // ubo.lightDir points FROM the light source toward the scene.
     // ---------------------------------------------------------------
-    vec3  L     = normalize(-ubo.lightDir.xyz);
+    vec3  L     = normalize(-ubo.lightDirection);
     float NdotL = max(dot(worldNormal, L), 0.0);
 
-    vec3  V     = normalize(ubo.viewPos.xyz - inWorldPos);
+    vec3  V     = normalize(ubo.viewPosition - inWorldPos);
     vec3  H     = normalize(L + V);
     float NdotH = (NdotL > 0.0) ? max(dot(worldNormal, H), 0.0) : 0.0;
 
     const float kAmbient  = 0.30;
     const float kSpecular = 0.08;
     const float kShine    = 16.0;
-    vec3 ambient  = kAmbient            * ubo.lightColor.rgb;
-    vec3 diffuse  = NdotL               * ubo.lightColor.rgb;
-    vec3 specular = pow(NdotH, kShine) * kSpecular * ubo.lightColor.rgb;
+    vec3 ambient  = kAmbient            * ubo.lightColor;
+    vec3 diffuse  = NdotL               * ubo.lightColor;
+    vec3 specular = pow(NdotH, kShine) * kSpecular * ubo.lightColor;
 
     float shadow = 0.0;
-    if (!shadowPass && ubo.shadowEffects.w > 0.5) {
+    if (!shadowPass && ubo.shadowsEnabled) {
         if (NdotL > 0.01) {
             float bias = max(0.0005 * (1.0 - NdotL), 0.00005);
             vec4 fragPosLightSpace = ubo.lightSpaceMatrix * vec4(inWorldPos, 1.0);

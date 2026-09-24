@@ -21,6 +21,7 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     vec4 lightColor;
 } ubo;
 
+
 layout(set = 1, binding = 0) uniform sampler2DArray albedoArray;
 layout(set = 1, binding = 1) uniform sampler2DArray normalArray;
 layout(set = 1, binding = 2) uniform sampler2DArray opacityArray;

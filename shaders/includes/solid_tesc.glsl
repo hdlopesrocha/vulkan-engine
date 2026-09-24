@@ -41,22 +41,22 @@ float computeEdgeTess(vec3 a, vec3 b, int brushA, int brushB) {
     else if (brushB >= 0)            edgeBrush = brushB;
     else                             edgeBrush = 0;
 
-    float nearDist = ubo.tessParams.x;
-    float farDist  = ubo.tessParams.y;
-    float factor_g = ubo.tessParams.z;
+    float nearDist = ubo.tessNearDist;
+    float farDist  = ubo.tessFarDist;
+    float factor_g = ubo.tessellationFactor;
 
     // Per-edge tessellation enable: if globally off or this edge's material
     // does not request tessellation, return 1.0.  Both adjacent patches
     // compute the same edgeBrush so they reach the same decision.
-    if (ubo.passParams.y < 0.5 || materials[edgeBrush].mappingParams.x < 0.5)
+    if (!ubo.tessellationEnabled || !materialNamed(materials[edgeBrush]).mappingEnabled)
         return 1.0;
 
-    float minLevel = materials[edgeBrush].tessLevelParams.x * factor_g;
-    float maxLevel = materials[edgeBrush].tessLevelParams.y * factor_g;
-    float matBoost = materials[edgeBrush].mappingParams.y;
+    float minLevel = materialNamed(materials[edgeBrush]).minLevel * factor_g;
+    float maxLevel = materialNamed(materials[edgeBrush]).maxLevel * factor_g;
+    float matBoost = materialNamed(materials[edgeBrush]).tessLevel;
 
-    float da = length(a - ubo.viewPos.xyz);
-    float db = length(b - ubo.viewPos.xyz);
+    float da = length(a - ubo.viewPosition);
+    float db = length(b - ubo.viewPosition);
     float d  = min(da, db);
     float t  = clamp(1.0 - smoothstep(nearDist, farDist, d), 0.0, 1.0);
     return mix(minLevel, maxLevel, t) + matBoost * t;
