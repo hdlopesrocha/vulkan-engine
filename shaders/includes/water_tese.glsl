@@ -1,3 +1,4 @@
+#include "water_render_view.glsl"
 // Water TES (moved from water.tese). Requires: ubo, locations,
 // perlin, water_noise. Defines the stage's main().
 //
@@ -54,13 +55,14 @@ layout(set = 2, binding = 5) uniform sampler2D solidSceneDepthTex;
 layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex;
 
 #ifdef RT_ENABLED
-// Inline ray-query water depth (optional, toggled by rt.waterDepth.x): trace
+// Inline ray-query water depth (optional, toggled by rt.rayTracedWaterDepth): trace
 // the view ray to the exact solid bottom and take the world-space vertical
 // drop. Same world-space definition as the raster path, so the shore-wave
 // region zones are identical between modes.
 #include "rt_params.glsl"
 layout(set = 0, binding = 14) uniform accelerationStructureEXT rtTlas;
-layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rt; };
+layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rtPacked; };
+RayTracingParamsNamed rt = rayTracingParamsNamed(rtPacked);
 // Per-op RT profiling (RT_PROFILE variants only): set 0 binding 26 + macros.
 #include "rt_profile.glsl"
 #endif
@@ -108,6 +110,7 @@ struct WaterVertexWave {
     vec3 normal;        // analytic wave normal at the displaced surface
     vec3 basePos;       // undisplaced base world position
     float displacement; // signed height displacement along the base normal
+    float worldHeight;  // pos.y: world-space height of the displaced surface
 };
 
 // `octBudget` is the caller's vertex-displacement spectrum cut (perf report 20
@@ -117,42 +120,46 @@ struct WaterVertexWave {
 // wave-dependent term (see WATER_VERTEX_OCT in water_noise.glsl).
 WaterVertexWave waterDisplaceWaterVertex(vec3 pos, vec3 normal, float animTime,
                                          float waterDepth, vec2 shoreDir,
-                                         float bumpAmp, WaterParamsGPU wp,
+                                         float bumpAmp, WaterParamsNamed wp,
                                          int octBudget) {
     // Surface basis (tangent plane) for projecting the analytic gradient.
     vec3 upVec = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 T = normalize(cross(upVec, normal));
     vec3 B = cross(normal, T);
 
-    vec4 wave = waterWaveSample(
+    // The Gerstner surface, exactly: the height AND the horizontal pinch. The
+    // fragment stage evaluates this same field at this same base position, so
+    // the per-pixel analytic normal below describes the very surface the
+    // rasterizer draws.
+    WaterWaveField wf = waterWaveField(
         pos.xyz,
         animTime,
         waterDepth,
         bumpAmp,
         shoreDir,
         wp,
-        octBudget
+        false,
+        octBudget,
+        vec2(0.0),
+        vec2(0.0)
     );
 
     // Project the analytic gradient onto the tangent basis to get the
     // height-field slopes along T and B.
-    float dhdT = dot(wave.yzw, T);
-    float dhdB = dot(wave.yzw, B);
+    float dhdT = dot(wf.grad, T);
+    float dhdB = dot(wf.grad, B);
 
     vec3 bumpedN = normalize(normal - dhdT * T - dhdB * B);
     if (dot(bumpedN, normal) < 0.0) bumpedN = -bumpedN;
 
     WaterVertexWave v;
-    v.displacement = wave.x;
-    // Displace along the FLAT base normal, not the perturbed one. The analytic
-    // normal `bumpedN = N - dHdT*T - dHdB*B` is the exact surface normal only for
-    // a height field defined as `base + N * h`. Displacing along the tilted
-    // `bumpedN` instead would build a different surface whose true normal no
-    // longer matches `bumpedN`, so lighting would disagree with the geometry
-    // (visible especially on steep/large waves). Keeping the displacement axis
-    // fixed at `normal` makes the rasterized surface and the shading normal
-    // consistent.
-    v.pos = pos + wave.x * normal;
+    v.displacement = wf.height;
+    // Vertical part along the FLAT base normal (not the perturbed one: the
+    // analytic normal is exact only for a height field built as `base + N*h`),
+    // plus the Gerstner horizontal pinch in the xz plane. Together they are the
+    // same surface the analytic normal is derived from.
+    v.pos = pos + wf.height * normal + vec3(wf.disp.x, 0.0, wf.disp.y);
+    v.worldHeight = v.pos.y;
     v.basePos = pos;
     v.normal = bumpedN;
     return v;
@@ -191,7 +198,7 @@ void main() {
     // Load selected WaterParams from SSBO, falling back to layer 0 for
     // out-of-range terrain paint ids (see water.frag).
     int nWL = max(waterParams.length(), 1);
-    WaterParamsGPU wp = waterParams[(chosenIdx >= 0 && chosenIdx < nWL) ? chosenIdx : 0];
+    WaterParamsNamed wp = waterParamsNamed(waterParams[(chosenIdx >= 0 && chosenIdx < nWL) ? chosenIdx : 0]);
 
     // ── C1 fast path: global tessellation toggle is OFF ────────────────
     // The TCS already clamped every tessellation level to 1, so this stage
@@ -200,15 +207,15 @@ void main() {
     // refinement and the full wave field. The fragment stage derives its own
     // analytic wave normal from fragBasePos/fragWaterDepth/fragShoreDir, so
     // the base normal below is only a fallback.
-    if (ubo.passParams.y < 0.5) {
+    if (!ubo.tessellationEnabled) {
         fragBaseNormal = normal;                      // undisplaced base normal
-        fragBasePos = vec4(pos, wp.waveParams.z);     // base pos + raw bump amplitude
-        // Shallow safe fallback depth (the TES-only depth textures are not
-        // sampled here): finite waves, no deep swell, no contact foam.
-        fragWaterDepth = clamp(wp.waveZones.z, 0.0, max(wp.waveZones.x, 1.0));
-        fragShoreDir = normalize(wp.waveDirection.xy + vec2(1e-5, 0.0));
+        fragBasePos = vec4(pos, wp.bumpAmplitude);     // base pos + raw bump amplitude
+        // Safe fallback depth (the TES-only depth textures are not sampled
+        // here): full swell amplitude, no contact foam.
+        fragWaterDepth = 2.0 * max(wp.shoreWaveFade, 1.0);
+        fragShoreDir = normalize(wp.waveDirection + vec2(1e-5, 0.0));
         fragNormal = normal;
-        fragDebug = vec3(0.5);                        // zero displacement envelope
+        fragDebug = vec3(0.5, 0.5, 0.0);              // no displacement, no gradient
         fragPos = pos;
         fragPosWorld = pos;
         vec4 fastClipPos = ubo.viewProjection * vec4(pos, 1.0);
@@ -218,10 +225,10 @@ void main() {
     }
 
     // Get the water parameters driving the single wave field.
-    float time = waterRenderUBO.timeParams.x;
-    float noiseTimeSpeed = wp.params3.x;
+    float time = waterRenderUBO.waterTime;
+    float noiseTimeSpeed = wp.noiseTimeSpeed;
 
-    float bumpAmp = wp.waveParams.z; // bump amplitude provided via Water widget
+    float bumpAmp = wp.bumpAmplitude; // bump amplitude provided via Water widget
 
     // --- Screen-space UV of the undisplaced base vertex ---
     // Used to sample the water back-face depth (thickness) below.
@@ -244,7 +251,7 @@ void main() {
     //     underside), both reconstructed to world space. The shallowest valid
     //     drop wins, so the SDF-biased volume underside cannot deepen the
     //     zones and a missing solid falls back to the volume.
-    //   * RT (rt.waterDepth.x, needs a built TLAS): the same view ray is
+    //   * RT (rt.rayTracedWaterDepth, needs a built TLAS): the same view ray is
     //     traced to the exact solid bottom and the same vertical drop is
     //     computed, so the zone definition is identical between modes. On a
     //     miss the raster value stands.
@@ -260,7 +267,7 @@ void main() {
     // (whose constant SDF bias is vertical and does not change the horizontal
     // gradient direction) provides the direction fallback. Finally the
     // configured shoreWaveAngle is used when neither measures a slope.
-    vec2 shoreDir = normalize(wp.waveDirection.xy + vec2(1e-5, 0.0));
+    vec2 shoreDir = normalize(wp.waveDirection + vec2(1e-5, 0.0));
     // Raster drop candidates (-1 = not measurable: clear depth, or a solid
     // sample above the water = terrain in front of the water).
     float solidDrop = -1.0;
@@ -288,9 +295,9 @@ void main() {
     float waterDepth = max(solidDrop, backDrop);
     bool waterDepthFromRt = false;
 #ifdef RT_ENABLED
-    if (rt.waterDepth.x > 0.5 && rt.debug.y > 0.5) {
+    if (rt.rayTracedWaterDepth && rt.tlasReady) {
         // Exact solid bottom along the same view ray the raster sample uses.
-        vec3 rayD = normalize(pos - ubo.viewPos.xyz);
+        vec3 rayD = normalize(pos - ubo.viewPosition);
         RT_PROF_BEGIN(rtProfDepth, RT_PROFILE_OP_WATER_DEPTH);
         rayQueryEXT rq;
         rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SCENE,
@@ -314,14 +321,19 @@ void main() {
         // depth and an RT miss): stay finite so the wave field never enters
         // its unknown -> full-deep-swell default. Shallow zone boundary:
         // finite waves, no deep swell, no contact foam.
-        waterDepth = clamp(wp.waveZones.z, 0.0, max(wp.waveZones.x, 1.0));
+        waterDepth = 2.0 * max(wp.shoreWaveFade, 1.0);
     }
 
-    // Calm layers (waveToggles.x < 0.5) have no wave zones/shore travel, so
-    // the shore-direction solve is dead work; shoreDir keeps the configured
-    // waveDirection fallback set above.
-    if (haveScreen && wp.waveToggles.x > 0.5) {
-        float gradStep = max(wp.waveWarp.w, 0.0);
+    // Shore direction: the direction of DECREASING depth, measured per point
+    // from the raster depth (i.e. toward the shore), with the configured Shore
+    // Direction angle as the fallback where the bottom cannot be measured. The
+    // wave PHASE is driven by the depth itself (see the field), so a varying
+    // direction cannot scramble the crests any more - it only aims the wave
+    // faces at the local shore, which is what makes the swell run head-on into
+    // every part of the coastline.
+    float shoreMeasured = 0.0;
+    if (haveScreen && wp.enableWaves) {
+        float gradStep = max(wp.shoreGradientStep, 0.0);
         if (gradStep > 0.0) {
             vec2 texel = 1.0 / vec2(textureSize(solidSceneDepthTex, 0));
             vec2 uvX = clamp(screenUV + vec2(texel.x * gradStep, 0.0), 0.0, 1.0);
@@ -339,7 +351,10 @@ void main() {
                     texture(waterBackDepthTex, uvY).r,
                     screenUV, uvX, uvY, pos);
             }
-            if (dot(dir, dir) > 1e-6) shoreDir = dir;
+            if (dot(dir, dir) > 1e-6) {
+                shoreDir = dir;
+                shoreMeasured = 1.0;
+            }
         }
     }
     fragShoreDir = shoreDir;
@@ -375,7 +390,7 @@ void main() {
     // this block would re-sample the exact same texels as the base depth
     // measurement above, producing the same value: a pure no-op. Skip it and
     // keep the base measurement.
-    if (!waterDepthFromRt && wp.waveToggles.x > 0.5) {
+    if (!waterDepthFromRt && wp.enableWaves) {
         vec4 dispClip = ubo.viewProjection * vec4(pos, 1.0);
         if (dispClip.w > 0.001) {
             vec2 uvD = clamp(dispClip.xy / dispClip.w * 0.5 + 0.5, 0.001, 0.999);
@@ -400,9 +415,9 @@ void main() {
 
     // Debug: encode displacement as color (normalized against the largest
     // possible envelope: deep + shoal gain + breaker bump).
-    float maxExpected = max(bumpAmp * (1.0 + wp.waveShape.w + wp.waveBreaker.x), 1e-3);
+    float maxExpected = max(bumpAmp * wp.waveAmplitude, 1e-3);
     float normDisp = clamp((waveDisplacement / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
-    fragDebug = vec3(normDisp);
+    fragDebug = vec3(normDisp, normDisp, shoreMeasured);
     
     fragPos = pos;
     fragPosWorld = pos;

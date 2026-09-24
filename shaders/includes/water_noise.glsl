@@ -52,11 +52,10 @@ const int WATER_VERTEX_OCT = 2;
 //
 // This floor keeps the smallest fraction of the authored Wave Height alive, so
 // the surface always has a live normal and the mirror always ripples. It is a
-// fraction of the per-layer bumpAmplitude, applied to the height AND the
+// fraction of the per-layer waveAmplitude, applied to the height AND the
 // gradient together, so the geometry, the analytic normal and the two
 // rasterised surfaces (front/back co-movement) all stay consistent. 0 restores
 // the old behaviour (fully dead calm).
-const float WAVE_DETAIL_FLOOR = 0.02;
 
 // Value/magnitude normalisation for every water FBM.
 //
@@ -93,427 +92,135 @@ float waterFbmNoise(vec3 xyz, float spatialScale, float time, float timeScale,
          * WAVE_FBM_GAIN;
 }
 
-// Gradient-aware FBM. Returns vec4(value, d/dx, d/dy, d/dz) from a SINGLE
-// noise evaluation; the analytic spatial gradient is propagated through the
-// FBM octave chain.  Used by the wave chop.
-vec4 waterFbmNoiseGrad(vec3 xyz, float spatialScale, float time, float timeScale,
-                       int octaves, float persistence, float lacunarity, vec3 offset) {
-    vec4 r = fbmGrad4D(vec4((xyz + offset) * spatialScale, time * timeScale),
-                       octaves, persistence, lacunarity);
-    r.yzw *= spatialScale; // chain rule through the spatial scaling
-    return r; // value NOT gained here: see WAVE_FBM_GAIN
-}
 
-// Ridged Perlin multifractal for the sharp wave crests. `q` is the 2D
-// along/across wave coordinate (along = propagation direction). Returns
-// vec4(value, d/dq.x, d/dq.y, 0): value in [0,1] with sharp ridge lines at
-// the Perlin zero crossings, amplified by the multifractal weighting
-// (each octave multiplied by the previous ridge), and `ridgeSharpness`
-// controls how narrow the crests are. The `slice` offset decorrelates the
-// components sampled on the same z plane. Analytic spatial gradient is
-// propagated through the |.| kink, the power and the octave chain rule.
-vec4 waterRidgedFbmGrad(vec2 q, float time, int octaves, float persistence,
-                        float lacunarity, float ridgeSharpness, float slice) {
-    float s = max(ridgeSharpness, 0.25);
-    float sum = 0.0;
-    vec2 grad = vec2(0.0);
-    float freq = 1.0;
-    float amp = 1.0;
-    float prev = 1.0;
-    vec2 prevGrad = vec2(0.0);
-    float norm = 0.0;
-    for (int i = 0; i < octaves; i++) {
-        vec4 n = perlinNoise4DGrad(vec4(q * freq, slice, time));
-        float r = max(1.0 - abs(n.x), 0.0);
-        float rp = pow(r, s);
-        // d((1-|n|)^s)/dq = s*(1-|n|)^(s-1)*(-sign(n))*dn/dq, chained with
-        // the octave frequency.
-        vec2 dr = -s * pow(max(r, 1e-4), max(s - 1.0, 0.0))
-                  * sign(n.x) * n.yz * freq;
-        // Multifractal weighting: term = amp * prev * rp.
-        sum += amp * prev * rp;
-        grad += amp * (prevGrad * rp + prev * dr);
-        norm += amp;
-        prev = rp;
-        prevGrad = dr;
-        amp *= persistence;
-        freq *= lacunarity;
-    }
-    return vec4(sum / max(norm, 1e-4), grad / max(norm, 1e-4), 0.0);
-}
 
-// Shared shore movement for every wave component. ALL trains reuse this:
-// anisotropic ridged-noise coordinates whose along axis is the shore
-// direction, scrolled toward the shore at the component speed (with the
-// zone shoaling factor), plus the shared Perlin domain warp and the curly
-// breaker hook. Returns the sample coordinate and its analytic world
-// gradients (d q.x/d xz, d q.y/d xz).
-struct WaterWaveCoord {
-    vec2 q;    // ridged-noise sample coordinate (along, across)
-    vec2 dqx;  // d(q.x)/d(world xz)
-    vec2 dqy;  // d(q.y)/d(world xz)
-};
-
-WaterWaveCoord waterShoreWaveCoord(vec3 pos, vec2 moveDir, float freq, float speed,
-                                   float phaseOffset, float speedFactor, float time,
-                                   float ridgeStretch, float warp, vec2 warpGrad,
-                                   float curlCurve) {
-    WaterWaveCoord c;
-    vec2 perp = vec2(-moveDir.y, moveDir.x);
-    float kc = freq / ridgeStretch;
-    float acrossN = kc * dot(pos.xz, perp);
-    // Bounded parabolic crest hook (curly breaker), with its derivative where
-    // the clamp is inactive.
-    float hook = min(acrossN * acrossN, 9.0);
-    float dhook = (acrossN * acrossN < 9.0) ? 2.0 * acrossN : 0.0;
-    float along = dot(pos.xz, moveDir) + phaseOffset - speed * speedFactor * time;
-    c.q = vec2(freq * along + warp + curlCurve * hook, acrossN);
-    c.dqx = freq * moveDir + warpGrad + curlCurve * dhook * (kc * perp);
-    c.dqy = kc * perp;
-    return c;
-}
 
 struct WaterWaveField {
-    float height;  // vertical displacement along the base normal
-    vec3  grad;    // analytic d(height)/d(world position), y = 0 (height field)
-    float foam;    // 0..1 whitewater coverage
-    float contact; // 0..1 shoreline contact foam (water meets solid at depth 0)
-
-    // Raw component values, exposed so every water noise has its own debug view
-    // (see the DEBUG_MODE_WATER_* views in water_surface.glsl). The body already
-    // computes all of them, so returning them costs nothing in the production
-    // paths: the compiler drops the channels a call site never reads.
-    //   dbg.x  = chop FBM value (signed)      dbg.y  = organic calm mask [0,1]
-    //   dbg.z  = primary ridged profile       dbg.w  = cross ridged profile
-    //   dbg2.x = final amplitude envelope (env * mask * taper, PRE-floor)
-    //   dbg2.y = depth taper (heightTaper)    dbg2.z = zone envelope (env)
-    //   dbg2.w = |chop analytic gradient|
-    vec4 dbg;
-    vec4 dbg2;
+    float height;     // vertical displacement along the base normal
+    vec3  grad;       // analytic d(height)/d(world position), y = 0 (height field)
+    float foam;       // 0..1 whitewater coverage (breaking driven)
+    float contact;    // 0..1 shoreline contact foam (water meets solid at depth 0)
+    float calmMask;   // 1 when the field ran (waves active), 0 when it early-outed
+    float swell;      // signed sine profile (the shore swell)
+    float swellSlope; // its along-shore slope (the cosine)
+    float breaking;   // unused (one sine, no breaking) - kept for the debug views
+    float steepness;  // unused (one sine, no steepening) - kept for the debug views
+    vec2  disp;       // Gerstner horizontal displacement (world xz) - applied by the vertex stages
 };
 
-// Thickness-zoned directional shore-wave field. The wave trains and their
-// foam propagate along `shoreDirIn`, the per-point direction of decreasing
-// water depth (toward the shore, computed from the depth gradient by the
-// caller; the configured shoreWaveAngle is the fallback). Zones, shape,
-// shoaling, mask and foam are all per-layer params (see WaterParamsGPU), no
-// shader magic numbers beyond numerical guards.
+
+// ── ONE shore sine ───────────────────────────────────────────────────────
+// A single sine swell travels toward the shore along the local shore direction
+// (the measured direction of decreasing water depth, falling back to the
+// configured shore angle) and its amplitude fades to zero over the last
+// `shoreWaveFade` metres of water depth: the wave approaches the shore and
+// dies out there. There is no spectrum, no shoaling, no breaking and no region
+// shaping - one sine on one water region. The only foam is the shoreline
+// contact line.
+// ONE swell with its ripples: a Gerstner train travelling toward the shore.
 //
-//   depth < 0  : explicit "deep water" request (the tessellation-control
-//                stage has no thickness signal and samples the field as deep);
-//                the water TESE/fragment paths always pass a measured depth
-//   d >= zDeep : full open-ocean swell
-//   zBreak..zDeep : shoaling band (gains height, sharpens, whitecaps)
-//   ~ zBreak   : breaker line (extra crest + foam birth)
-//   zShallow..zBreak : foam rides shoreward and fades, amplitude decays
-//   d < zShallow : residual line wave ending at the waterline (d = 0)
-// `octBudget` caps the octave count of EVERY noise chain in the field (chop,
-// calm mask, both ridged trains and the foam texture) and, at 0, skips the
-// field entirely. It is the evaluation-time LOD hook (perf report 20 C4): the
-// fragment stage passes its distance-derived budget so water whose wave detail
-// is faded out anyway does not pay for the noise. Pass WATER_OCT_FULL where
-// no LOD applies (vertex stages).
+//   shoreDist = water depth / beach slope   (how far this point is from the shore)
+//   phase_i   = k_i * shoreDist + omega_i * t
+//   height    = sum  A_i * sin(phase_i)
+//   xz       += sum  Q_i * A_i * shoreDir * cos(phase_i)     (the Gerstner pinch)
+//
+// Every band rides the SAME depth-derived phase, so the crests of the swell and
+// of its ripples all lie on the depth contours - they follow the shoreline and
+// bend with the bottom - and all of them travel in the shore direction
+// together. The shading normal is the exact normal of the resulting Gerstner
+// surface (the 2x2 Jacobian of the horizontal displacement is inverted), aimed
+// along the local shore direction. `depth` is the measured water column; a
+// negative value is the deep sentinel (no thickness signal).
+const int   WAVE_BANDS = 4;
+// Band 0 is the swell (Wave Period / Wave Height); bands 1..3 are its ripples
+// at 1/3, 1/7 and 1/16 of the swell wavelength and 30/16/8.5 % of its height.
+const float WAVE_BAND_K[WAVE_BANDS]     = float[WAVE_BANDS](1.0, 3.1, 7.3, 15.7);
+const float WAVE_BAND_AMP[WAVE_BANDS]   = float[WAVE_BANDS](1.0, 0.30, 0.16, 0.085);
+const float WAVE_BAND_STEEP[WAVE_BANDS] = float[WAVE_BANDS](1.0, 0.85, 0.75, 0.70);
+const float WAVE_BAND_PHASE[WAVE_BANDS] = float[WAVE_BANDS](0.0, 1.9, 4.2, 2.7);
+
 WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
-                              vec2 shoreDirIn, WaterParamsGPU wp, bool withFoam,
-                              int octBudget) {
+                              vec2 shoreDirIn, WaterParamsNamed wp, bool withFoam,
+                              int octBudget, vec2 dPosdx, vec2 dPosdy) {
     WaterWaveField f;
     f.height = 0.0;
     f.grad = vec3(0.0);
     f.foam = 0.0;
     f.contact = 0.0;
-    f.dbg = vec4(0.0);
-    f.dbg2 = vec4(0.0);
-    if (wp.waveToggles.x < 0.5 || amp <= 0.0 || octBudget <= 0) return f;
-    // One octave count for every chain, clamped by the caller's budget. The
-    // per-layer spectrum (params2.z) stays the upper bound.
-    int octavesN = max(min(int(max(wp.params2.z, 1.0)), octBudget), 1);
+    f.calmMask = 0.0;
+    f.swell = 0.0;
+    f.swellSlope = 0.0;
+    f.breaking = 0.0;
+    f.steepness = 0.0;
+    f.disp = vec2(0.0);
+    if (!wp.enableWaves || amp <= 0.0 || octBudget <= 0) return f;
 
-    float zDeep = max(wp.waveZones.x, 1.0);
-    float zBreak = clamp(wp.waveZones.y, 0.0, zDeep);
-    float zShallow = clamp(wp.waveZones.z, 0.0, zBreak);
-    float d = (depth < 0.0) ? zDeep : max(depth, 0.0);
+    // Local water depth (m); a negative value is the deep sentinel.
+    float d = (depth < 0.0) ? max(wp.shoreWaveFade, 1.0) * 4.0 : max(depth, 0.0);
 
-    // Global depth taper of the wave HEIGHT: full in the deep zone, falling
-    // monotonically to 0 at the waterline, applied to EVERY component (both
-    // ridged trains, the chop and the curl). The smoothstep base gives a
-    // zero-slope fade at BOTH ends, so there is no visible seam where the
-    // taper starts (a raw pow() had a slope jump at zDeep). 0 disables it.
-    float heightFalloff = max(wp.waveBreaker.w, 0.0);
-    float heightTaper = (heightFalloff > 0.0)
-        ? pow(smoothstep(0.0, zDeep, d), heightFalloff)
-        : 1.0;
-
-    // ── Thickness zones: amplitude, crest sharpness, shoaling celerity and
-    //    breaker activity. Every parameter is interpolated with a smoothstep,
-    //    so both the value AND its slope match across zDeep, zBreak and
-    //    zShallow — the fades between zones have no visible seams. ──
-    float env;         // amplitude envelope
-    float sharp;       // crest sharpness
-    float speedFactor; // phase-speed multiplier (1 = deep water)
-    float breaking;    // 0..1 foam generation from the breaker
-    float shoreBand;   // 0..1 progress through the sub-shallow shore band
-    float tBreakDeep = max(zDeep - zBreak, 1e-3);
-    float tShallowBreak = max(zBreak - zShallow, 1e-3);
-    if (d >= zDeep) {
-        env = 1.0;
-        sharp = wp.waveShape.x;
-        speedFactor = 1.0;
-        breaking = 0.0;
-        shoreBand = 0.0;
-    } else if (d >= zBreak) {
-        // Shoaling band: the wave gains height and gets sharper as it
-        // approaches the break line; whitecaps ignite toward the end.
-        float t = clamp((zDeep - d) / tBreakDeep, 0.0, 1.0);
-        float e = t * t * (3.0 - 2.0 * t);
-        env = mix(1.0, 1.0 + wp.waveShape.w, e);
-        sharp = mix(wp.waveShape.x, wp.waveShape.y, e);
-        speedFactor = mix(1.0, 1.0 - wp.waveShoal.x, e);
-        breaking = smoothstep(wp.waveBreaker.z, 1.0, t);
-        shoreBand = 0.0;
-    } else if (d >= zShallow) {
-        // After the crash: amplitude decays shoreward, foam rides and fades.
-        float t = clamp((zBreak - d) / tShallowBreak, 0.0, 1.0);
-        float e = t * t * (3.0 - 2.0 * t);
-        float breakEnv = 1.0 + wp.waveShape.w;
-        env = mix(breakEnv, wp.waveShoal.z,
-                  pow(e, max(wp.waveShoal.y, 1e-3)));
-        sharp = mix(wp.waveShape.y, wp.waveShape.z, e);
-        speedFactor = 1.0 - wp.waveShoal.x;
-        breaking = 1.0 - e;
-        shoreBand = e;
-    } else {
-        // Residual "line" wave that ends at the waterline (d -> 0).
-        float t = clamp(d / max(zShallow, 1e-3), 0.0, 1.0);
-        float e = t * t * (3.0 - 2.0 * t);
-        env = wp.waveShoal.z * e;
-        sharp = wp.waveShape.z;
-        speedFactor = 1.0 - wp.waveShoal.x;
-        breaking = 0.0;
-        shoreBand = 1.0;
-    }
-
-    // Breaker bump: an extra, sharp crest concentrated at the break depth.
-    if (wp.waveBreaker.x > 0.0) {
-        float x = (d - zBreak) / max(wp.waveShoal.w, 1e-3);
-        env += wp.waveBreaker.x * exp(-x * x);
-    }
-
-    // ── Shore movement (shared by every train and the detail noise) ──
-    // Shore direction: the direction of DECREASING water depth, computed per
-    // point from the solid-depth gradient by the caller (falls back to the
-    // configured shoreWaveAngle when the bottom cannot be measured). Every
-    // component below reuses the SAME movement: it scrolls toward the shore
-    // along this direction; the second train only differs in scale, speed,
-    // phase offset and noise seed.
     vec2 shoreDir = (dot(shoreDirIn, shoreDirIn) > 1e-6)
         ? normalize(shoreDirIn)
-        : normalize(wp.waveDirection.xy + vec2(1e-5, 0.0));
-    vec3 shoreDir3 = vec3(shoreDir.x, 0.0, shoreDir.y);
+        : normalize(wp.waveDirection + vec2(1e-5, 0.0));
 
-    float k1 = max(wp.waveComponent1.x, 1e-4);
-    float c1 = wp.waveComponent1.y;
-    float k2 = max(wp.waveComponent2.x, 1e-4);
-    float c2 = wp.waveComponent2.y;
+    const float TWO_PI = 6.28318530718;
+    float kSw = TWO_PI * max(wp.wavePeriodScale, 1e-6);   // swell wavenumber
+    float omSw = kSw * max(wp.waveSpeed, 0.0);            // swell angular frequency
+    float shoreSlope = max(wp.shoreWaveSlope, 1e-4);
+    float shoreDist = (depth >= 0.0) ? (d / shoreSlope) : dot(xyz.xz, shoreDir);
 
-    vec3 shoreDrift = shoreDir3 * (c1 * speedFactor * time);
+    // Amplitude: the layer height, the period-derived steepness scale, and the
+    // fade to nothing at the waterline.
+    float shoreFade = (wp.shoreWaveFade > 0.0)
+        ? smoothstep(0.0, wp.shoreWaveFade, d)
+        : 1.0;
+    float ampSwell = amp * max(wp.waveAmplitude, 0.0) * shoreFade;
 
-    // ── Organic calm patches: a COMPLETE GATE, evaluated first. ──
-    // A low-frequency noise mask removes the waves entirely in some places. It
-    // rides the SAME shore movement as the waves (advected with the primary
-    // drift), so the pattern of where waves exist also travels toward the shore
-    // instead of being geographically fixed. Octaves/persistence/lacunarity
-    // reuse the per-layer noise spectrum.
-    //
-    // The mask is evaluated BEFORE every other chain and a zero mask returns
-    // immediately: a calm patch then costs ONE FBM chain (the mask itself)
-    // instead of all five (mask + chop + two ridged trains + foam). Everything
-    // downstream - displacement, shading normal, foam, caustics - is
-    // identically zero there anyway, because the mask is applied as a pure
-    // multiplier at the end.
-    float mask = 1.0;
-    if (wp.waveMask.x > 0.0 && wp.waveMask.z > 0.0) {
-        float m = waterFbmNoise(xyz - shoreDrift, wp.waveMask.x, time, wp.waveMask.w,
-                                octavesN, wp.params2.w, wp.params3.y,
-                                vec3(11.0)) * 0.5 + 0.5;
-        mask = smoothstep(wp.waveMask.y,
-                          wp.waveMask.y + wp.waveMask.z, m);
-        if (mask <= 0.0) return f;
-    }
+    float h = 0.0;
+    vec2 gParam = vec2(0.0);
+    vec2 disp = vec2(0.0);
+    mat2 jac = mat2(1.0);
+    for (int i = 0; i < WAVE_BANDS; ++i) {
+        float ki = kSw * WAVE_BAND_K[i];
+        float omegai = omSw * WAVE_BAND_K[i];   // every band rides the swell
+        // Analytic anti-aliasing: drop a band once its phase varies by more
+        // than about half a cycle per pixel (the screen derivative of the
+        // phase under the uniform beach-slope model).
+        float phaseFw = ki * (abs(dot(dPosdx, shoreDir)) + abs(dot(dPosdy, shoreDir)));
+        float aaFade = 1.0 - smoothstep(1.1, 2.4, phaseFw);
+        if (aaFade <= 0.0) continue;
 
-    // ── Organic modulation: one gradient-aware Perlin FBM drives the local
-    //    crest amplitude variation and the chop detail. The chop rides the
-    //    same shore movement as the trains (advected at the primary speed),
-    //    so no part of the surface drifts across the shore direction. ──
-    float chopAmount = wp.waveBreaker.y;
-    float ampVar = clamp(wp.waveWarp.y, 0.0, 0.95);
-    float warpAmount = wp.waveWarp.x;
-    float chopVal = 0.0;
-    vec2 chopGrad = vec2(0.0);
-    if (chopAmount > 0.0 || warpAmount != 0.0 || ampVar > 0.0) {
-        vec4 chop = waterFbmNoiseGrad(xyz - shoreDrift, wp.params2.y, time, wp.params3.x,
-                                      octavesN, wp.params2.w,
-                                      wp.params3.y, vec3(0.0));
-        chopVal = chop.x;
-        chopGrad = vec2(chop.y, chop.w); // d/dx, d/dz (offset is constant)
-    }
+        float Ai = ampSwell * WAVE_BAND_AMP[i] * aaFade;
+        float Qi = clamp(wp.waveSteepness * WAVE_BAND_STEEP[i], 0.0, 0.92);
+        float phase = ki * shoreDist + omegai * time + WAVE_BAND_PHASE[i];
+        float s = sin(phase);
+        float c = cos(phase);
 
-    float ampMod = 1.0 + ampVar * chopVal;
-    vec2 ampModGrad = ampVar * chopGrad;
-
-    float ridgeStretch = max(wp.waveWarp.z, 1.0);
-    float sharpC = max(sharp, 0.25);
-    float persistenceN = wp.params2.w;
-    float lacunarityN = wp.params3.y;
-    float warp = warpAmount * chopVal;
-    vec2 warpGrad = warpAmount * chopGrad;
-
-    // Curly plunging breaker, shared by both trains: the lip leans forward
-    // (odd profile skew) and the crest line hooks (bounded parabolic
-    // curvature across the movement direction).
-    float curlSkew = clamp(wp.waveCurl.x, -0.9, 0.9) * breaking;
-    float curlCurve = max(wp.waveCurl.y, 0.0) * breaking;
-
-    // Both trains reuse the same shore movement helper.
-    WaterWaveCoord coord1 = waterShoreWaveCoord(xyz, shoreDir, k1, c1, 0.0,
-                                                speedFactor, time, ridgeStretch,
-                                                warp, warpGrad, curlCurve);
-    WaterWaveCoord coord2 = waterShoreWaveCoord(xyz, shoreDir, k2, c2,
-                                                wp.waveComponent2.w, speedFactor,
-                                                time, ridgeStretch, warp, warpGrad,
-                                                curlCurve);
-    vec4 r1 = waterRidgedFbmGrad(coord1.q, time, octavesN, persistenceN,
-                                 lacunarityN, sharpC, 0.0);
-    vec4 r2 = waterRidgedFbmGrad(coord2.q, time, octavesN, persistenceN,
-                                 lacunarityN, sharpC, 17.0);
-    vec2 g1 = r1.y * coord1.dqx + r1.z * coord1.dqy;
-    vec2 g2 = r2.y * coord2.dqx + r2.z * coord2.dqy;
-
-    // Odd profile skew s + curl*s*|s|: steepens/stretches one face of the
-    // crest (the lip) without moving the mean level. ds is its derivative.
-    float s1 = 2.0 * r1.x - 1.0;
-    float s2 = 2.0 * r2.x - 1.0;
-    float ds1 = max(1.0 + 2.0 * curlSkew * abs(s1), 0.1);
-    float ds2 = max(1.0 + 2.0 * curlSkew * abs(s2), 0.1);
-    float prof1 = s1 + curlSkew * s1 * abs(s1);
-    float prof2 = s2 + curlSkew * s2 * abs(s2);
-
-    float amp1 = wp.waveComponent1.z;
-    float amp2 = wp.waveComponent2.z;
-    float am1 = amp1 * ampMod;
-    float am2 = amp2 * ampMod;
-    float h = am1 * prof1 + am2 * prof2;
-    vec2 gxz = 2.0 * (am1 * ds1 * g1 + am2 * ds2 * g2);
-    // Product rule for the amplitude-modulation envelope.
-    gxz += (amp1 * prof1 + amp2 * prof2) * ampModGrad;
-
-    // ── Chop detail rides on top (same FBM sample, same shore drift). ──
-    if (chopAmount > 0.0) {
-        h += chopAmount * chopVal;
-        gxz += chopAmount * chopGrad;
-    }
-
-    // The calm mask is a PURE multiplier so it stays a complete gate (a zero
-    // mask already returned above); WAVE_DETAIL_FLOOR only guards the
-    // depth/zone damping, keeping shallow water from becoming a perfect mirror.
-    float finalAmp = amp * mask * max(env * heightTaper, WAVE_DETAIL_FLOOR);
-    f.height = finalAmp * h;
-    f.grad = vec3(finalAmp * gxz.x, 0.0, finalAmp * gxz.y);
-    f.dbg = vec4(chopVal, mask, prof1, prof2);
-    f.dbg2 = vec4(env * mask * heightTaper, heightTaper, env, length(chopGrad));
-
-    // ── Foam: born in the breaker band, carried shoreward by the crests and
-    //    fades with depth; a residual line survives on the shallow band until
-    //    the line wave reaches the waterline. ──
-    //
-    // Foam (whitewater) exists ONLY in the Foam Band region:
-    //     zShallow <= d < zBreak
-    // The Shore Line region keeps only its separate contact line, and the
-    // Breaker Line, Shoaling and Deep Ocean regions get no foam at all. Outside
-    // those two bands the whole block - the crest/trail algebra, the exp()
-    // extinction and the noise chain - is never evaluated.
-    bool inFoamBand = (d >= zShallow) && (d < zBreak);
-    bool inContactBand = d < max(wp.foamContact.x, 1e-3);
-    if (withFoam && wp.waveToggles.y > 0.5 && (inFoamBand || inContactBand)) {
-        // Global coverage multiplier (translucency/airiness), hoisted so the
-        // noise chain below can be skipped when it is 0.
-        float coverage = clamp(wp.foamShape.y, 0.0, 1.0);
-        float thr = clamp(wp.foamParams.x, 0.0, 0.98);
-        float trailPhase = wp.foamParams.y;
-        float lagGrowth = max(wp.foamShape.w, 0.0);
-        // Defined foam edges: the threshold window narrows with Edge hardness.
-        float edgeW = mix(0.35, 0.01, clamp(wp.foamShape.x, 0.0, 1.0));
-        float thrHi = max(min(thr + edgeW, 1.0), thr + 1e-3);
-
-        // Foam sits AFTER the curled lip: the trailing band is a first-order
-        // lag of the SKEWED crest profile behind the crest, along the shore
-        // direction, and the lag grows as the wave approaches the shore so the
-        // foam falls behind (decelerates). Gradients are the analytic
-        // d(prof)/dx = 2*ds*g, so no extra noise evaluation is needed.
-        float crest = clamp(0.5 + 0.5 * max(prof1, prof2), 0.0, 1.0);
-        float lag1 = (trailPhase / k1) * (1.0 + lagGrowth * shoreBand);
-        float lag2 = (trailPhase / k2) * (1.0 + lagGrowth * shoreBand);
-        float trailProf1 = clamp(prof1 - dot(2.0 * ds1 * g1, shoreDir) * lag1, -1.0, 1.0);
-        float trailProf2 = clamp(prof2 - dot(2.0 * ds2 * g2, shoreDir) * lag2, -1.0, 1.0);
-        float trail = max(0.5 + 0.5 * trailProf1, 0.5 + 0.5 * trailProf2);
-
-        // Whitewater exists only inside the Foam Band. The Shore Line region
-        // stays at 0 here (contact-only), which is also why the old persistent
-        // shore-band foam line is gone.
-        float foam = 0.0;
-        if (inFoamBand) {
-            float whitecap = smoothstep(thr, thrHi, crest) * breaking;
-            float trailing = smoothstep(thr, thrHi, trail) * breaking * breaking;
-            foam = max(whitecap, trailing);
-            // Extinction with distance below the break line, then soft band
-            // edges: fade in over the lower quarter and out over the upper
-            // quarter of the band, so "foam only in the Foam Band" does not
-            // print two hard foam lines at its boundaries.
-            foam *= exp(-(zBreak - d) * max(wp.foamParams.z, 0.0));
-            float bandSpan = max(zBreak - zShallow, 1e-3);
-            foam *= smoothstep(zShallow, zShallow + 0.25 * bandSpan, d)
-                  * (1.0 - smoothstep(zBreak - 0.25 * bandSpan, zBreak, d));
+        h += Ai * s;
+        gParam += Ai * ki * c * shoreDir;
+        // The Gerstner pinch: the surface point slides toward the crest, and
+        // its derivative is what makes the analytic normal exact.
+        disp += (Qi * Ai * c) * shoreDir;
+        jac += (-Qi * Ai * ki * s) * outerProduct(shoreDir, shoreDir);
+        if (i == 0) {
+            f.swell = s;
+            f.swellSlope = c;
         }
-        // Shoreline contact foam: the final line where the water meets the
-        // solid. It arrives IN WAVES: each incoming crest pushes the line
-        // further up the shore (wider band) and strengthens it, then it
-        // recedes to the configured floor between crests. The foam noise/mask
-        // break it up below, and the fragment stage forces the composite alpha
-        // up for it so the last water pixels render the line.
-        float contactWave = max(crest, trail);
-        float contactPulse = mix(clamp(wp.foamContact.w, 0.0, 1.0), 1.0,
-                                 smoothstep(thr, thrHi, contactWave));
-        float contactWidth = max(wp.foamContact.x, 1e-3) * (0.5 + 0.5 * contactWave);
-        float contact = (1.0 - smoothstep(0.0, contactWidth, d))
-                      * clamp(wp.foamContact.y, 0.0, 1.0)
-                      * contactPulse;
-        // Broken-up foam texture. The foam advects at its own speed profile:
-        // fast at/after the curl, decaying toward the shore (foamShoreSpeed),
-        // so whitewater races off the breaker and slows as it runs up.
-        // ... and skip the noise chain where both outputs are already zero (the
-        // band's faded edges, the shore's contact-free stretch, or coverage
-        // switched off): it is only a multiplier, so it cannot revive a zero.
-        if (wp.foamNoise.z > 0.0 && coverage > 0.0 && (foam > 0.0 || contact > 0.0)) {
-            float foamSpeedRel = mix(1.0, clamp(wp.foamShape.z, 0.0, 1.0), shoreBand);
-            vec3 foamDrift = shoreDir3 * (c1 * speedFactor * foamSpeedRel * time);
-            // 0..1 clamp: this is a MULTIPLIER (foam *= fnMix, contact *= fnMix),
-            // so the normalised noise's tails must not push it negative.
-            float fn = clamp(waterFbmNoise(xyz - foamDrift, wp.foamNoise.x, time, wp.foamNoise.y,
-                                           octavesN, wp.params2.w,
-                                           wp.params3.y, vec3(37.0)) * 0.5 + 0.5, 0.0, 1.0);
-            float fnMix = mix(1.0, fn, clamp(wp.foamNoise.z, 0.0, 1.0));
-            foam *= fnMix;
-            contact *= fnMix;
-        }
-        // Calm patches carry only the configured floor of foam.
-        float maskMix = mix(clamp(wp.foamExtra.x, 0.0, 1.0), 1.0, mask);
-        foam *= maskMix;
-        contact *= maskMix;
-        foam *= coverage;
-        contact *= coverage;
-        f.contact = clamp(contact, 0.0, 1.0);
-        f.foam = clamp(max(foam, f.contact), 0.0, 1.0);
     }
 
+    // Exact surface gradient of the Gerstner sum: J^-T * gParam (2x2 inverse).
+    float det = jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0];
+    det = (abs(det) < 1e-4) ? 1e-4 : det;
+    vec2 g = vec2(jac[1][1] * gParam.x - jac[0][1] * gParam.y,
+                  -jac[1][0] * gParam.x + jac[0][0] * gParam.y) / det;
+
+    f.height = h;
+    f.grad = vec3(g.x, 0.0, g.y);
+    f.disp = disp;
+    f.calmMask = 1.0;
+
+    // No foam: the surface is this one Gerstner train and nothing else.
+    f.foam = 0.0;
+    f.contact = 0.0;
     return f;
 }
 
@@ -521,43 +228,22 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
 // waterWaveTessProbe() below instead: it needs a density bias, not the full
 // field.
 float waterWaveDisplacement(vec3 xyz, float time, float depth, float amp,
-                            vec2 shoreDir, WaterParamsGPU wp) {
-    return waterWaveField(xyz, time, depth, amp, shoreDir, wp, false, WATER_OCT_FULL).height;
+                            vec2 shoreDir, WaterParamsNamed wp) {
+    return waterWaveField(xyz, time, depth, amp, shoreDir, wp, false, WATER_OCT_FULL,
+                          vec2(0.0), vec2(0.0)).height;
 }
 
-// Cheap tessellation probe: the primary ridged train only, at most two octaves
-// (perf report 20 H7).
-//
-// The TCS runs this once per patch EDGE purely to bias the distance-derived
-// tessellation level by +/-tessNoiseInfluence (30% by default). It must stay
-// deterministic per shared edge - both patches sharing an edge evaluate the
-// same midpoint - which a cheaper field does not change, but the full field is
-// wasted here: the chop, the calm mask, the second train and the foam texture
-// carry nothing a triangle-density bias can use, and their fine octaves sit far
-// below the patch's own vertex spacing anyway. This is 1 FBM chain of 2 octaves
-// instead of 4 chains of 4: 48 -> 6 four-dimensional Perlin evaluations per
-// patch.
-//
-// Same conventions as the waterWaveDisplacement() call it replaces: depth -1
-// (the TCS has no thickness signal, so the probe runs as deep water - full
-// amplitude, no shore taper) and the configured shore direction as the
-// fallback. The returned range matches that call's (about [-1.5, 1.5]), so the
-// resulting density bias keeps its authored meaning.
-float waterWaveTessProbe(vec3 pos, float time, WaterParamsGPU wp) {
-    const int kProbeOctaves = 2;
-    vec2 shoreDir = normalize(wp.waveDirection.xy + vec2(1e-5, 0.0));
-    float k1 = max(wp.waveComponent1.x, 1e-4);
-    float c1 = wp.waveComponent1.y;
-    // Same shore movement helper as the field's primary train, with the warp
-    // and curl hooks disabled: they only shape the crest look.
-    WaterWaveCoord coord = waterShoreWaveCoord(pos, shoreDir, k1, c1, 0.0, 1.0, time,
-                                               max(wp.waveWarp.z, 1.0), 0.0, vec2(0.0), 0.0);
-    int oct = clamp(int(max(wp.params2.z, 1.0)), 1, kProbeOctaves);
-    vec4 r1 = waterRidgedFbmGrad(coord.q, time, oct, wp.params2.w, wp.params3.y,
-                                 max(wp.waveShape.x, 0.25), 0.0);
-    // Odd profile skew, matching the field's primary train (minus the amplitude
-    // modulators the probe deliberately skips).
-    return 2.0 * r1.x - 1.0;
+// Cheap tessellation probe: the same single sine the field displaces with
+// (one evaluation, no noise chain). The mask is deliberately skipped - a
+// triangle-density bias only needs the crest curvature - and the result is
+// deterministic per shared edge, so both patches meeting at an edge agree.
+// The range matches waterWaveDisplacement() (about [-1, 1]), so the density
+// bias keeps its authored meaning.
+// Cheap tessellation probe: the same single sine, deep-water phase.
+float waterWaveTessProbe(vec3 pos, float time, WaterParamsNamed wp) {
+    vec2 shoreDir = normalize(wp.waveDirection + vec2(1e-5, 0.0));
+    float k = 6.28318530718 * max(wp.wavePeriodScale, 1e-6);
+    return sin(k * dot(pos.xz, shoreDir) - k * max(wp.waveSpeed, 0.0) * time);
 }
 
 // Height + analytic gradient, vec4(height, dHeight/dx, dHeight/dy, dHeight/dz).
@@ -566,8 +252,10 @@ float waterWaveTessProbe(vec3 pos, float time, WaterParamsGPU wp) {
 // caustic curvature all derive from. `octBudget` forwards the caller's
 // evaluation-time LOD (WATER_OCT_FULL where none applies).
 vec4 waterWaveSample(vec3 xyz, float time, float depth, float amp,
-                     vec2 shoreDir, WaterParamsGPU wp, int octBudget) {
-    WaterWaveField f = waterWaveField(xyz, time, depth, amp, shoreDir, wp, false, octBudget);
+                     vec2 shoreDir, WaterParamsNamed wp, int octBudget,
+                     vec2 dPosdx, vec2 dPosdy) {
+    WaterWaveField f = waterWaveField(xyz, time, depth, amp, shoreDir, wp, false, octBudget,
+                                      dPosdx, dPosdy);
     return vec4(f.height, f.grad);
 }
 
@@ -591,10 +279,10 @@ vec4 waterWaveSample(vec3 xyz, float time, float depth, float amp,
 // clamp; the caller keeps its quarter-wavelength step, so the caustic detail
 // still follows the band-limited field the surface is displaced with.
 float waterWaveCurvature(vec3 pos, float time, float depth, float amp, vec2 shoreDir,
-                         vec3 u, float step, float dhduCenter, WaterParamsGPU wp,
-                         int octBudget) {
+                         vec3 u, float step, float dhduCenter, WaterParamsNamed wp,
+                         int octBudget, vec2 dPosdx, vec2 dPosdy) {
     WaterWaveField f = waterWaveField(pos + u * step, time, depth, amp, shoreDir, wp, false,
-                                      octBudget);
+                                      octBudget, dPosdx, dPosdy);
     return (dot(f.grad, u) - dhduCenter) / step;
 }
 

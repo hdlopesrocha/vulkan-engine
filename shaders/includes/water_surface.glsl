@@ -1,3 +1,4 @@
+#include "water_render_view.glsl"
 // Water surface shading + ray helpers — extracted from water.frag so the
 // water pass and the future main-pass water variant share one
 // implementation (Phase-1 water-in-main migration). Writes the global
@@ -36,8 +37,8 @@ vec4 rtRasterBottom(vec3 O, vec3 S, vec2 suv) {
             if (huvL.x >= 0.0 && huvL.x <= 1.0 && huvL.y >= 0.0 && huvL.y <= 1.0) {
                 float hdL = textureLod(solidSceneDepthTex, huvL, 0.0).r;
                 if (hdL < 1.0) {
-                    const float nearB = ubo.passParams.z;
-                    const float farB = ubo.passParams.w;
+                    const float nearB = ubo.nearPlane;
+                    const float farB = ubo.farPlane;
                     float sceneEyeL = (nearB * farB) / (farB - hdL * (farB - nearB));
                     if (abs(clipL.w - sceneEyeL) < max(2.0, sceneEyeL * 0.02)) {
                         // Snell-consistent sample (+veg layer, exactly like
@@ -93,7 +94,7 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // Hit selection: refraction runs one OPAQUE early-out query over solids;
     // reflection keeps the staged chain. The BLAS holds undisplaced geometry
     // while the raster shows tessellated/displaced surfaces (waves up to
-    // bumpAmplitude off the base plane), so refraction uses NO cull flags:
+    // waveAmplitude off the base plane), so refraction uses NO cull flags:
     // opacity and face culling are independent, and not culling keeps
     // flipped (displaced) faces visible while hardware still early-outs at
     // the nearest accepted hit. The reported length IS the visible water
@@ -313,8 +314,8 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             // shadows, detail) instead of the chunk's single dominant-material
             // sample (a flat dirt blob). The water pass runs after the solid
             // pass, so the targets are current.
-            const float nearP = ubo.passParams.z;
-            const float farP = ubo.passParams.w;
+            const float nearP = ubo.nearPlane;
+            const float farP = ubo.farPlane;
             // World-to-clip projection is viewProjection (NOT its inverse:
             // invViewProjection maps clip->world, e.g. sky_fullscreen.vert;
             // main.frag's traceSSR projects with prevVP * world the same
@@ -377,7 +378,7 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             int nWLL = max(waterParams.length(), 1);
             int wId = int(rtSceneAlbedo[lo].w + 0.5);
             int wLayer = (wId >= 0 && wId < nWLL) ? wId : 0;
-            WaterParamsGPU wp = waterParams[wLayer];
+            WaterParamsNamed wp = waterParamsNamed(waterParams[wLayer]);
             vec3 waterColor = rtResolveWaterHit(wp, hitPos, hitN, dir);
             // No bounce off water hits: the water look already includes its
             // mirror, and recursive water rays self-intersect the flat BLAS
@@ -431,21 +432,21 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         // interpolated normal, sun diffuse (CSM shadowed) + sky ambient.
         // Refraction and reflection share it: both show lit scenery, not a
         // flat fill.
-        vec3 toSun = normalize(rt.sunDir.xyz);
+        vec3 toSun = normalize(rt.sunDirection);
         float ndl = max(dot(hitN, toSun), 0.0);
         float hitShadow = ShadowCalculation(
             ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
         // Sky ambient scaled by the hit albedo (the raster's convention is
         // albedo * ambient): the old dark constant left grazing/off-screen
         // hits near-black — the mirror darkening near the shore.
-        vec3 color = albedo * (rt.sunColor.rgb * ndl * (1.0 - hitShadow)
+        vec3 color = albedo * (rt.sunColor * ndl * (1.0 - hitShadow)
                                + vec3(0.26));
         // Reflection-inside-reflection: a reflective solid hit chains extra
         // mirror rays using the chunk's mirror strength (packed in
         // rtSceneAlbedo[].w).
         if (!refraction) {
             float refl = clamp(rtSceneAlbedo[lo].w, 0.0, 1.0);
-            int extraBounces = clamp(int(rt.water.w + 0.5), 0, 3) - 1;
+            int extraBounces = clamp(rt.maxReflectionBounces, 0, 3) - 1;
             if (refl > 0.02 && extraBounces >= 0) {
                 vec3 nextDir = normalize(reflect(normalize(dir), hitN));
                 vec3 bounceCol = rtTraceMirror(hitPos + hitN * 0.05, nextDir,
@@ -472,8 +473,8 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
 // With GLM_FORCE_DEPTH_ZERO_TO_ONE the projection maps z_eye to [0,1]:
 //   d = f*(z - n) / (z*(f - n))   =>   z = n*f / (f - d*(f - n))
 float linearizeDepth(float depth) {
-    float nearPlane = ubo.passParams.z;
-    float farPlane  = ubo.passParams.w;
+    float nearPlane = ubo.nearPlane;
+    float farPlane  = ubo.farPlane;
     return (nearPlane * farPlane) / (farPlane - depth * (farPlane - nearPlane));
 }
 
@@ -488,8 +489,8 @@ float linearizeDepth(float depth) {
 // (invViewProjection maps clip->world).
 vec4 traceSSR(vec3 origin, vec3 dir, float maxT, out vec3 hitPos) {
     hitPos = vec3(0.0);
-    float nearP = ubo.passParams.z;
-    float farP  = ubo.passParams.w;
+    float nearP = ubo.nearPlane;
+    float farP  = ubo.farPlane;
     float prevT = 0.0;
     float t = 0.25;
     for (int i = 0; i < 64; ++i) {
@@ -558,42 +559,42 @@ void shadeWaterSurface() {
     // so DEBUG_MODE_MATERIAL_INDEX can still show the true id distribution.
     int nWaterLayers = max(waterParams.length(), 1);
     int waterLi = (fragBrushIndex >= 0 && fragBrushIndex < nWaterLayers) ? fragBrushIndex : 0;
-    WaterParamsGPU wp = waterParams[waterLi];
-    float time = waterRenderUBO.timeParams.x;
+    WaterParamsNamed wp = waterParamsNamed(waterParams[waterLi]);
+    float time = waterRenderUBO.waterTime;
 
     // Water rendering parameters from selected water params
-    float refractionStrength = wp.params1.x;
-    float fresnelPower = wp.params1.y;
-    float transparency = wp.params1.z;
-    float waterTint = wp.params2.x;
-    float noiseScale = wp.params2.y;
-    int noiseOctaves = int(max(wp.params2.z, 1.0));
-    float noisePersistence = wp.params2.w;
-    float noiseTimeSpeed = wp.params3.x;
-    float noiseLacunarity = wp.params3.y;
-    float reflectionStrength = wp.params1.w;
-    float specularIntensity = wp.params3.z;
-    float specularPowerParam = wp.params3.w;
-    float glitterIntensity = wp.glitterParams.x;
+    float refractionStrength = wp.refractionStrength;
+    float fresnelPower = wp.fresnelPower;
+    float transparency = wp.transparency;
+    float waterTint = wp.waterTint;
+    float noiseScale = wp.noiseScale;
+    int noiseOctaves = int(max(wp.noiseOctaves, 1.0));
+    float noisePersistence = wp.noisePersistence;
+    float noiseTimeSpeed = wp.noiseTimeSpeed;
+    float noiseLacunarity = wp.noiseLacunarity;
+    float reflectionStrength = wp.reflectionStrength;
+    float specularIntensity = wp.specularIntensity;
+    float specularPowerParam = wp.specularPower;
+    float glitterIntensity = wp.glitterIntensity;
 
     // Feature toggles
-    bool enableReflection = wp.reserved1.x > 0.5;
-    bool enableRefraction = wp.reserved1.y > 0.5;
+    bool enableReflection = wp.enableReflection;
+    bool enableRefraction = wp.enableRefraction;
     // Blur is a two-way gate like refraction: the per-material flag
-    // (blurParams.x) AND the global Settings toggle (waterRenderUBO.timeParams.w)
+    // (blurParams.x) AND the global Settings toggle (waterRenderUBO.blurAllowed)
     // must both be on, so the Minimal preset can disable blur without
     // overwriting the authored per-layer params.
-    bool enableBlur = (wp.blurParams.x > 0.5) && (waterRenderUBO.timeParams.w > 0.5);
+    bool enableBlur = wp.enableBlur && waterRenderUBO.blurAllowed;
     // Global ray-path gates from Settings, delivered via the water render UBO
     // so they apply in BOTH fragment variants (the non-RT variant has no `rt`
     // block). Refraction off must mean NO refraction at all — including the
     // Snell/Perlin sky fallback that previously kept rendering.
-    enableRefraction = enableRefraction && (waterRenderUBO.timeParams.y > 0.5);
+    enableRefraction = enableRefraction && waterRenderUBO.refractionAllowed;
     // Reflection stays ON with the RT ray off: the mirror falls back to the
     // sky equirect (sky-only reflection), which is the requested raster
-    // behavior. The ray itself is gated at the trace site (`rt.rayParams.w`).
+    // behavior. The ray itself is gated at the trace site (`rt.waterReflections`).
     // During 360 cubemap capture, skip reflection/refraction to avoid feedback.
-    const bool captureMode = ubo.materialFlags.x > 0.5;
+    const bool captureMode = ubo.cubemapCapture;
     if (captureMode) { enableReflection = false; enableRefraction = false; }
 
     // Apply noise time speed
@@ -631,7 +632,7 @@ void shadeWaterSurface() {
     // hardware early-Z for this pipeline, but the water depth target starts
     // cleared and the surface is a single layer, so the early-Z it loses is
     // self-occlusion that barely happens.
-    if (waterRenderUBO.depthParams.x > 0.5) {
+    if (waterRenderUBO.solidDepthIsCurrent) {
         float solidDepthRaw = textureLod(solidSceneDepthTex, screenUV, 0.0).r;
         if (solidDepthRaw < 1.0) {
             float solidEye = linearizeDepth(solidDepthRaw);
@@ -661,7 +662,7 @@ void shadeWaterSurface() {
     vec3 backFaceWorld = backFaceWorldH.xyz / backFaceWorldH.w;
 
     vec3 worldFrontPos = fragPosWorld;
-    vec3 worldRayDir = normalize(worldFrontPos - ubo.viewPos.xyz);
+    vec3 worldRayDir = normalize(worldFrontPos - ubo.viewPosition);
     float backFaceThickness = max(dot(backFaceWorld - worldFrontPos, worldRayDir), 0.0);
     // A single-layer height-field surface (flat plane or tessellated waves) has
     // backFaceThickness ≈ 0 because the back-face geometry is co-planar with the
@@ -689,25 +690,21 @@ void shadeWaterSurface() {
     vec3 B  = cross(flatN, T);
 
     // ── Wave detail LOD: NO distance cutoff (perf report 20 C4, revised) ──
-    // The wave field is evaluated at EVERY distance and the normal is never
-    // faded to the flat base normal. Past the detail band the octave budget
-    // drops to a coarse spectrum, and inside the band the analytic gradient
-    // blends smoothly from the coarse evaluation to the full one, so distant
-    // water keeps its large swell — visible, and alias-free because the
-    // sub-pixel octaves are gone — instead of becoming a flat mirror (the old
-    // fade-to-flat) or shimmer (full detail where the finest chop octaves are
-    // far below a pixel and randomize the mirror direction).
+    // The wave field is the single sine swell and is evaluated at EVERY
+    // distance; the normal is never faded to the flat base normal. The octave
+    // budget below feeds the FOAM NOISE chain only (a sine has no octaves), so
+    // the swell's shape and its alias-free analytic slope survive at any
+    // range instead of turning into a flat mirror.
     //
     // Cost: one evaluation normally, two inside the band (the coarse one is
     // cheap), one coarse past it — still less than the pre-LOD code, which ran
     // the full spectrum at every distance.
     const float kWaterDetailNear = 200.0;
     const float kWaterDetailFar  = 1000.0;
-    float camDist = length(ubo.viewPos.xyz - fragPosWorld);
+    float camDist = length(ubo.viewPosition - fragPosWorld);
     float detail = 1.0 - smoothstep(kWaterDetailNear, kWaterDetailFar, camDist);
-    // Far-field spectrum: drop the layer's two finest octaves.
-    int waveCoarseOct = clamp(noiseOctaves - 2, 1, noiseOctaves);
-    int waveFieldOct = (detail > 0.0) ? noiseOctaves : waveCoarseOct;
+    // Foam-noise octave budget (the swell itself needs no octaves).
+    int waveFieldOct = noiseOctaves;
     // Sub-pixel noise terms (highlight perturbation, glitter, caustics) fade
     // over the tail of the band so they stop without a step where the detail
     // band ends. The WAVES do not use this: the field and its normal run at
@@ -722,17 +719,22 @@ void shadeWaterSurface() {
     // rasterized surface exactly while still resolving detail far below the
     // tessellation density. waveField.foam carries the whitewater coverage
     // used by the foam shading below.
+    // Screen-space world footprint of this pixel, for the analytic band AA.
+    vec2 waveDx = dFdx(fragBasePos.xz);
+    vec2 waveDy = dFdy(fragBasePos.xz);
     WaterWaveField waveField = waterWaveField(
-        fragBasePos.xyz, animTime, fragWaterDepth, fragBasePos.w, fragShoreDir, wp, true,
-        waveFieldOct);
-    if (detail > 0.0 && detail < 1.0) {
-        // Detail band: blend the analytic gradient toward the COARSE spectrum
-        // rather than toward a flat normal, so the swell survives at range.
-        WaterWaveField coarse = waterWaveField(
-            fragBasePos.xyz, animTime, fragWaterDepth, fragBasePos.w, fragShoreDir, wp, true,
-            waveCoarseOct);
-        waveField.grad = mix(coarse.grad, waveField.grad, detail);
-    }
+        fragBasePos.xyz, 
+        animTime, 
+        fragWaterDepth, 
+        fragBasePos.w, 
+        fragShoreDir, 
+        wp, 
+        true,
+        waveFieldOct,
+        waveDx,
+        waveDy);
+    // The swell is a single sine: it has no octave spectrum, so no coarse/
+    // full blend is needed - the closed form IS the wave at every distance.
     {
         float dhdT = dot(waveField.grad, T);
         float dhdB = dot(waveField.grad, B);
@@ -744,29 +746,33 @@ void shadeWaterSurface() {
     // the mask returns early there). dbg.y is the calm mask, and it is 0
     // whenever the field did not run for any reason - calm patch, waves off,
     // octave budget 0 - so everything wave-derived can be skipped together.
-    bool wavesActive = waveField.dbg.y > 0.0;
+    bool wavesActive = waveField.calmMask > 0.0;
 
     
     // Normalize vectors
-    vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
-    // Keep the normal facing the visible side to avoid flat/dark lighting from flipped orientation.
-    if (dot(normal, viewDir) < 0.0) normal = -normal;
+    vec3 viewDir = normalize(ubo.viewPosition - fragPosWorld);
+    // Two-sided shading: which side of the surface we are looking at is decided
+    // by the UNDISPLACED base normal (the back-face pass sees the underside).
+    // Testing the wave-perturbed normal instead flips every steep wave face that
+    // points away from the camera, lighting the backs of the crests like the
+    // fronts - that is what made the surface read as crumpled / striped.
+    if (dot(flatN, viewDir) < 0.0) normal = -normal;
 
-    vec3 lightDir = normalize(-ubo.lightDir.xyz);
+    vec3 lightDir = normalize(-ubo.lightDirection);
     
     // Base screen UV already computed at the top of main() and reused above.
-    int dbgMode = int(ubo.debugParams.x + 0.5);
+    int dbgMode = ubo.debugMode;
 
     // === HYBRID RT STATE ===
     // Per-lobe precedence is documented in the header above (reflection:
     // exact-inline-wins with pipe covering budget skips; refraction:
-    // pipe-first with inline fallback). rt.debug.w carries
+    // pipe-first with inline fallback). rt.useWaterPipeline carries
     // settings.rtWaterPipeline.
     bool rtReady = false;
     bool usePipe = false;
 #ifdef RT_ENABLED
-    rtReady = (rt.debug.y > 0.5);
-    usePipe = (rt.debug.w > 0.5);
+    rtReady = rt.tlasReady;
+    usePipe = rt.useWaterPipeline;
 #endif
 
     // === NOISE-BASED REFRACTION (perf report 20 C2) ===
@@ -777,35 +783,12 @@ void shadeWaterSurface() {
     // retained noise feature: past that point the offset is sub-pixel, so the
     // noise is pure cost. The fade scales the offset rather than cutting it,
     // so no pop appears at the fade distance.
+    // One wave: the refraction samples the scene straight through the surface -
+    // the FBM screen-space wobble (an extra ripple system on top of the sine)
+    // is gone. `refractionNoise` is kept for the noise debug view.
     vec2 refractionNoise = vec2(0.0);
     float refractionDetail = 0.0;
-    bool refractionNoiseWanted = (enableRefraction && refractionStrength > 0.0 && wavesActive)
-        || dbgMode == DEBUG_MODE_WATER_NOISE;
-    if (refractionNoiseWanted) {
-        // Finest retained feature, matching waterRefractionNoise()'s base
-        // scale (0.30) and its 2-octave clamp: one lacunarity step.
-        float refrFinest = 1.0 / max(noiseScale * 0.30 * max(noiseLacunarity, 1.0), 1e-4);
-        float footprint = max(fwidth(fragPosWorld.x),
-                              max(fwidth(fragPosWorld.y), fwidth(fragPosWorld.z)));
-        refractionDetail = (dbgMode == DEBUG_MODE_WATER_NOISE)
-            ? 1.0
-            : 1.0 - smoothstep(0.25 * refrFinest, refrFinest, footprint);
-        if (refractionDetail > 0.0) {
-            refractionNoise = waterRefractionNoise(
-                fragPos.xyz,
-                noiseScale,
-                animTime,
-                int(noiseOctaves),
-                noisePersistence,
-                noiseLacunarity
-            );
-        }
-    }
-
-    // Combine noise layers for complex refraction pattern
-    vec2 refractionOffset = enableRefraction
-        ? refractionNoise * (refractionStrength * refractionDetail)
-        : vec2(0.0);
+    vec2 refractionOffset = vec2(0.0);
     
     // Reduce refraction at edges (to avoid sampling outside screen)
     float edgeFade = smoothstep(0.0, 0.1, screenUV.x) * smoothstep(1.0, 0.9, screenUV.x) *
@@ -825,14 +808,14 @@ void shadeWaterSurface() {
     // (not a proxy average): the hash dither against proxy terracing must
     // not touch it.
     bool rtThickFromScene = false;
-    float waterIor = clamp(wp.refractionParams.x, 1.0, 2.5);
-    float refrThickCap = max(wp.refractionParams.y, 0.0);
-    vec3 absorbCoeff = wp.absorptionParams.rgb;
-    float absorbScaleBase = max(wp.absorptionParams.a, 0.0);
+    float waterIor = clamp(wp.waterIor, 1.0, 2.5);
+    float refrThickCap = max(wp.maxThickness, 0.0);
+    vec3 absorbCoeff = wp.absorption;
+    float absorbScaleBase = max(wp.absorptionScale, 0.0);
 #ifdef RT_ENABLED
     // Shared ray constant (also read by the Beer-Lambert block below:
     // the deep-water marker substitutes maxRefr as a caustic/viz thickness).
-    float maxRefr = max(rt.distances.y, 1.0);
+    float maxRefr = max(rt.maxRefractDistance, 1.0);
 #else
     float maxRefr = 300.0;
 #endif
@@ -847,7 +830,7 @@ void shadeWaterSurface() {
     float fresnelEarlyCurve = pow(1.0 - clamp(dot(viewDir, normal), 0.0, 1.0),
                                  clamp(fresnelPower, 1.0, 8.0));
     float fresnelEarly = clamp(0.02 + 0.98 * fresnelEarlyCurve, 0.0, 1.0);
-    bool uniformEarly = wp.reserved2.w > 0.5;
+    bool uniformEarly = wp.uniformReflection;
     float reflMixEst = uniformEarly
         ? clamp(reflectionStrength, 0.0, 1.0)
         : mix(fresnelEarly, 1.0, clamp(reflectionStrength, 0.0, 1.0));
@@ -863,17 +846,17 @@ void shadeWaterSurface() {
     float waterContribMin = 0.02;
     // Ray mask / depth source visualize the budgeted behavior itself, so they
     // must not force reference (otherwise they could never show the live cut).
-    waterRefMode = debugModeForcesRtReference(int(rt.debug.x + 0.5));
-    waterSingleRay = (rt.rayParams.z > 0.5) && !waterRefMode;
-    waterContribMin = clamp(rt.rayParams.y, 0.0, 1.0);
-    // Single-ray ray budget (rt.rayParams.z): traces the reflection XOR
+    waterRefMode = debugModeForcesRtReference(rt.debugMode);
+    waterSingleRay = rt.singleRay && !waterRefMode;
+    waterContribMin = clamp(rt.reflectionContribMin, 0.0, 1.0);
+    // Single-ray ray budget (rt.singleRay): traces the reflection XOR
     // refraction stochastically with probability = reflMixEst (Schlick-weight)
     // to save one full-resolution ray on dual-lobe pixels. Only the
     // REFRACTION lobe honors the cut: a skipped refraction ray falls back to
     // the raster bottom (zero rays) or sky, whereas a skipped reflection is a
     // missing mirror (the shoreline artifact the reflection lobe must not
     // reintroduce), so reflection always traces. Checkerboard
-    // (rt.rayParams.x) is intentionally NOT applied to water: an invalid
+    // (rt.checkerboardReflections) is intentionally NOT applied to water: an invalid
     // pipe texel has no cover and must trace, and dithering mirrors is
     // visible. Solid reflections keep their own checkerboard gate.
     bool wantRefrInline = true;
@@ -936,7 +919,7 @@ void shadeWaterSurface() {
         haveRefrRayW = true;
         bool refrResolved = false;
 #ifdef RT_ENABLED
-        if (usePipe && rt.toggles.y > 0.5) {
+        if (usePipe && rt.refractionsEnabled) {
             // Half-res single-mip pipeline output: explicit LOD 0 (also safe
             // under the per-fragment pipe-validity branch).
             vec4 pipeRefr = textureLod(rtRefractTex, screenUV, 0.0);
@@ -945,7 +928,7 @@ void shadeWaterSurface() {
                 // Thickness only when the RT-thickness toggle is on: the
                 // ray still runs for the refracted color, but its path
                 // length is not consumed as a water column when disabled.
-                rtThickness = (rt.toggles.z > 0.5) ? pipeRefr.a : -1.0;
+                rtThickness = rt.thicknessEnabled ? pipeRefr.a : -1.0;
                 refrResolved = true;
                 refrMask = 2.0;
                 depthSource = 5.0;
@@ -959,7 +942,7 @@ void shadeWaterSurface() {
         // bottom is never replaced with black.
         bool refrBudgetSkip = (refrContribEst < waterContribMin) || !wantRefrInline;
         if (waterRefMode) refrBudgetSkip = false;
-        if (!refrResolved && rtReady && rt.toggles.y > 0.5 && !refrBudgetSkip) {
+        if (!refrResolved && rtReady && rt.refractionsEnabled && !refrBudgetSkip) {
             float refrSceneTMax = hasValidBackFace
                 ? (backFaceThickness * 1.5 + 2.0)
                 : min(maxRefr, max(refrThickCap * 3.0, 8.0));
@@ -972,13 +955,13 @@ void shadeWaterSurface() {
             // a >= 0 always from rtTraceWater: capped path length on hit, or
             // RT_DEEP_WATER marker on miss (deep, unresolved water). Only a
             // real triangle hit counts as bottom content for miss-recovery.
-            rtThickness = (rt.toggles.z > 0.5) ? hit.a : -1.0;
+            rtThickness = rt.thicknessEnabled ? hit.a : -1.0;
             rtThickFromScene = true;
             refrResolved = true;
             refrMask = 3.0;
             depthSource = 1.0;
             refrInlineHitReal = (hit.a < RT_DEEP_WATER);
-        } else if (!refrResolved && rtReady && rt.toggles.y > 0.5 && refrBudgetSkip) {
+        } else if (!refrResolved && rtReady && rt.refractionsEnabled && refrBudgetSkip) {
             refrMask = 4.0;
         }
 #endif
@@ -1017,7 +1000,7 @@ void shadeWaterSurface() {
             // stands (non-RT build, RT off, negligible lobe).
             bool refrRecovered = false;
 #ifdef RT_ENABLED
-            if (rtReady && rt.toggles.y > 0.5 && haveRefrRayW
+            if (rtReady && rt.refractionsEnabled && haveRefrRayW
                 && refrContribEst >= waterContribMin) {
                 vec4 rb = rtRasterBottom(fragPosWorld, refrRayW, screenUV);
                 if (rb.a >= 0.0) {
@@ -1043,7 +1026,7 @@ void shadeWaterSurface() {
                 //    was intentionally not cast).
                 bool rtRefrAvailable = false;
 #ifdef RT_ENABLED
-                rtRefrAvailable = rtReady && (rt.toggles.y > 0.5);
+                rtRefrAvailable = rtReady && rt.refractionsEnabled;
 #endif
                 bool refrServed = false;
                 if (!rtRefrAvailable) {
@@ -1096,11 +1079,11 @@ void shadeWaterSurface() {
     // noise. Miss marker and "no RT" (-1) are never touched. Skipped for
     // exact scene-triangle hits (rtThickFromScene): dithering those would
     // reintroduce the noise the exact geometry just removed.
-    if (rtReady && rt.toggles.z > 0.5 && !rtThickFromScene && rtThickness >= 0.0 && rtThickness < RT_DEEP_WATER) {
+    if (rtReady && rt.thicknessEnabled && !rtThickFromScene && rtThickness >= 0.0 && rtThickness < RT_DEEP_WATER) {
         float h = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
         rtThickness = max(rtThickness + (h - 0.5) * 0.6, 0.0);
     }
-    if (rtReady && rt.toggles.z > 0.5 && rtThickness >= 0.0) {
+    if (rtReady && rt.thicknessEnabled && rtThickness >= 0.0) {
         rtDeepMiss = (rtThickness >= RT_DEEP_WATER);
         if (rtDeepMiss) {
             // Miss continuity (no thresholds, hence no seams): a refraction
@@ -1219,7 +1202,7 @@ void shadeWaterSurface() {
     // depthDiff is 0 there). Both signals collapse to 0 at the shoreline, so
     // the fade (like alpha) vanishes at the waterline. RT steps arrive
     // pre-dithered as grain, the same tradeoff Beer-Lambert already accepts.
-    float depthFalloff = wp.waveParams.w;
+    float depthFalloff = wp.depthFalloff;
     if (depthFalloff <= 0.0) depthFalloff = 0.02;
     float tintDepth = max(depthDiff, waterThickness);
     float depthFade = 1.0 - exp(-tintDepth * depthFalloff);
@@ -1243,7 +1226,7 @@ void shadeWaterSurface() {
     // Main specular highlight with noise perturbation. The noise FBM only
     // runs when the highlight/glitter can contribute (intensity > 0) AND the
     // layer actually has a wave field to perturb: with waves off
-    // (wp.waveToggles.x < 0.5) waterWaveField() returns identically zero, so
+    // (!wp.enableWaves) waterWaveField() returns identically zero, so
     // the FBM perturbation and the glitter sparkles only add noise to a flat
     // surface. The unperturbed analytic highlight is kept instead.
     //
@@ -1260,7 +1243,7 @@ void shadeWaterSurface() {
     vec3 dbgHighlightNoise = vec3(0.5, 0.5, 0.0);
     // wavesActive: a calm patch has no wave field to perturb, so it takes the
     // unperturbed analytic highlight below (same branch as waves-off).
-    if (wp.waveToggles.x > 0.5 && detail > 0.0 && wavesActive) {
+    if (wp.enableWaves && detail > 0.0 && wavesActive) {
         // Lobe terms FIRST (perf report 20 M10): every noise chain below exists
         // only to perturb the highlight, so outside the sun lobe it is multiplied
         // by a number that is already zero. pow(specAngle, 128) is zero for all
@@ -1274,39 +1257,18 @@ void shadeWaterSurface() {
         float glitterLobe = pow(specAngle, 32.0);
         dbgHighlightNoise.z = max(specLobe, glitterLobe);
 
+        // One wave: the highlight is the analytic specular lobe on the sine
+        // normal - the FBM perturbation and the glitter sparkles (two more
+        // ripple systems) are gone.
+        dbgHighlightNoise.x = 0.5;
+        dbgHighlightNoise.y = 0.5;
         if (specularIntensity > 0.0 && specularIntensity * specLobe > kSpecNoiseMin) {
-            // waveNoiseTail fades only the perturbation (the +/-0.4 term); the
-            // analytic highlight itself is kept at every distance.
-            float specNoiseRaw = waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
-                                               max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
-            dbgHighlightNoise.x = 0.5 + 0.5 * specNoiseRaw;
-            // 0.4 was tuned against the UNGAINED noise; divide by the gain so
-            // the highlight perturbation keeps exactly its previous strength.
-            float specNoise = 0.8 + (0.4 / WAVE_FBM_GAIN) * waveNoiseTail * specNoiseRaw;
-            specularColor = ubo.lightColor.xyz * (specLobe * specNoise) * specularIntensity;
-        }
-        // Below the threshold the highlight contributes less than the cut-off,
-        // so the unperturbed lobe is left out entirely rather than recomputed:
-        // the difference is invisible and the branch would cost another pow.
-
-        // Sun glitter: high-frequency noise-based sparkles
-        if (glitterIntensity > 0.0 && glitterIntensity * glitterLobe > kSpecNoiseMin) {
-            float glitterNoise = waterFbmNoise(fragPos.xyz, noiseScale * 3.0, animTime, 3.0,
-                                               max(int(noiseOctaves) - 2, 1), noisePersistence, noiseLacunarity, vec3(0.0));
-            dbgHighlightNoise.y = 0.5 + 0.5 * glitterNoise;
-            // Threshold jitter: 2 octaves of the low-frequency chain instead of
-            // the full spectrum. It only breaks up the sparkle cut-off, and its
-            // 1 m / 25 cm octaves sit far below the glitter noise's own feature
-            // size, so they never show in the pattern (M10: halves this chain).
-            float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xyz, noiseScale * 0.5, animTime, 0.5,
-                                                               2, noisePersistence, noiseLacunarity, vec3(0.0));
-            float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * glitterLobe;
-            specularColor += ubo.lightColor.xyz * glitter * glitterIntensity * waveNoiseTail;
+            specularColor = ubo.lightColor * specLobe * specularIntensity;
         }
     } else if (specularIntensity > 0.0) {
         // Waves off: no field to perturb, so no FBM and no glitter; the
         // unperturbed analytic highlight is the whole specular lobe.
-        specularColor = ubo.lightColor.xyz * pow(specAngle, specularPowerParam) * specularIntensity;
+        specularColor = ubo.lightColor * pow(specAngle, specularPowerParam) * specularIntensity;
     }
     
     // === REFLECTION (hardware RT §9) ===
@@ -1342,7 +1304,7 @@ void shadeWaterSurface() {
     bool reflDidTrace = false;
     vec4 reflHit = vec4(0.0);
     vec3 reflOrigin = vec3(0.0);
-    if (enableReflection && !reflBudgetSkip && rtReady && rt.rayParams.w > 0.5) {
+    if (enableReflection && !reflBudgetSkip && rtReady && rt.waterReflections) {
         // Origin on the UNDISPLACED base surface, biased along the base
         // normal (mirrors main.frag): the BLAS holds the undisplaced CPU
         // mesh, so tracing from the displaced (tessellated wave) surface
@@ -1392,7 +1354,7 @@ void shadeWaterSurface() {
         }
         reflMaskDbg = 3.0;
         reflResolved = true;
-    } else if (!reflResolved && rtReady && rt.rayParams.w > 0.5 && reflBudgetSkip) {
+    } else if (!reflResolved && rtReady && rt.waterReflections && reflBudgetSkip) {
         reflMaskDbg = 4.0;
     }
 #endif
@@ -1423,8 +1385,8 @@ void shadeWaterSurface() {
 
     // Uniform reflection toggle: when set, apply reflectionStrength uniformly
     // instead of modulating by Fresnel. This flag is stored in reserved2.w
-    // (see WaterParamsGPU.reserved2.w).
-    bool uniformReflection = wp.reserved2.w > 0.5;
+    // (see wp.uniformReflection).
+    bool uniformReflection = wp.uniformReflection;
 
 
     // === SHADOW ON WATER ===
@@ -1445,9 +1407,9 @@ void shadeWaterSurface() {
     // block below). Only color, strength and the fold softness remain: the
     // pattern, its spatial scale and its animation all come from the wave
     // height field itself (no separate noise/scale/velocity knobs).
-    vec3 causticColor = wp.causticColor.rgb;
-    float causticIntensity = wp.causticParams.y;
-    float causticSoftness = clamp(wp.causticParams.x, 0.02, 1.0);
+    vec3 causticColor = wp.causticColor;
+    float causticIntensity = wp.causticIntensity;
+    float causticSoftness = clamp(wp.causticSoftness, 0.02, 1.0);
 
     // Tint color: 5-stop depth-region ramp keyed to the shore-wave zone
     // boundaries, so the tint color follows the measured depth bands (shore
@@ -1463,8 +1425,8 @@ void shadeWaterSurface() {
     // waterline over the per-layer tint shore fade depth, so shore water near
     // the border is transparent and shows the bottom with no water color.
     float tintShoreFade = 1.0;
-    if (wp.regionTintParams.y > 0.0 && regionDepth > 1e-4) {
-        tintShoreFade = smoothstep(0.0, max(wp.regionTintParams.y, 1e-4), regionDepth);
+    if (wp.tintShoreFadeDepth > 0.0 && regionDepth > 1e-4) {
+        tintShoreFade = smoothstep(0.0, max(wp.tintShoreFadeDepth, 1e-4), regionDepth);
     }
 
 // Blend scene color with water tint: depthFade (Depth Falloff over the best
@@ -1473,6 +1435,7 @@ void shadeWaterSurface() {
     float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
     float tintBlend = clamp(depthFade * waterTint * tintShoreFade, 0.0, tintMax);
     vec3 refractedColor = mix(sceneColor, waterTintColor, tintBlend);
+
     
     // Mix refracted color with reflection. By default, use Fresnel weighting
     // to increase reflection at grazing angles. If `uniformReflection` is
@@ -1536,59 +1499,11 @@ void shadeWaterSurface() {
     bool causticDebugMode = (dbgMode == DEBUG_MODE_CAUSTICS);
     // Enter only when the effect can contribute: the pattern is produced ONLY
     // by the wave field (its curvature is identically zero when
-    // wp.waveToggles.x < 0.5), and the column must be
+    // !wp.enableWaves), and the column must be
     // deep enough to focus sunlight (flat/no-volume water reports
     // waterThickness = 0, which makes the Jacobian exactly 1 and the excess
     // exactly 0). The debug view still forces the block so its mask stays
     // populated.
-    if ((causticIntensity > 0.001 && waterThickness > 0.05 && wp.waveToggles.x > 0.5
-         && detail > 0.0 && wavesActive)
-        || causticDebugMode) {
-        // Sun geometry (flat-surface incidence): stable coefficient, the
-        // wave slopes enter through the curvature term only.
-        vec3 Lprop = normalize(ubo.lightDir.xyz);       // light travel dir
-        float cosI = clamp(-Lprop.y, 0.0, 1.0);
-        float sinI = sqrt(max(1.0 - cosI * cosI, 0.0));
-        float sinT = sinI / waterIor;
-        float cosT = sqrt(max(1.0 - sinT * sinT, 1e-4));
-        float K = cosI / max(waterIor * cosT * cosT * cosT, 1e-4);
-        vec2 sunH2 = vec2(Lprop.x, Lprop.z);
-        float sunLen = length(sunH2);
-        vec3 sunHat = (sunLen > 1e-5)
-            ? vec3(sunH2.x / sunLen, 0.0, sunH2.y / sunLen)
-            : vec3(1.0, 0.0, 0.0);
-        float depth = max(waterThickness, 0.0);
-        // Wave curvature along u: one-sided difference of the ANALYTIC wave
-        // gradient, taken against the shading field already evaluated at
-        // fragBasePos (perf report 20 C3). The stencil resolves the FINEST
-        // octave of the wave spectrum (quarter wavelength), so the caustic
-        // detail follows the same band-limited field the surface is displaced
-        // with — no aliasing from an oversized step.
-        //
-        // The stencil origin is the shaded surface point, not the sun-ray
-        // entry point (which sat depth·tan(theta_t) along the sun azimuth from
-        // the bottom — metres away in deep water), and the field is sampled
-        // with the shading field's own depth (fragWaterDepth). Both
-        // evaluations must share one depth signal: mixing the raster column
-        // into only one of them would leak the zone-envelope difference into
-        // the curvature. The caustic therefore becomes consistent with the
-        // surface actually rendered, at half the cost.
-        float finestFreq = max(noiseScale * pow(max(noiseLacunarity, 1.0),
-                              float(max(noiseOctaves - 1, 0))), 1e-4);
-        float ec = clamp(0.25 / finestFreq, 0.02, 2.0);
-        float d2h = waterWaveCurvature(fragBasePos.xyz, animTime, fragWaterDepth,
-                                       fragBasePos.w, fragShoreDir, sunHat, ec,
-                                       dot(waveField.grad, sunHat), wp, waveFieldOct);
-        // Bottom irradiance ratio: inverse Jacobian of the refracted ray
-        // map. Folds (|J| -> 0) are physically unbounded; causticSoftness is
-        // the only artistic control (a clamp floor on |J|).
-        float jac = 1.0 + depth * K * d2h;
-        causticGain = 1.0 / max(abs(jac), causticSoftness);
-        // Only CONVERGED light (gain > 1) adds to the flat-surface
-        // irradiance, scaled by the sun elevation (no sun -> no caustics).
-        float excess = max(causticGain - 1.0, 0.0) * cosI;
-        caustic = excess * causticIntensity * (1.0 - shadow) * waveNoiseTail;
-    }
     // Attenuated by the water column (the focused light travels down to the
     // bottom and back to the eye through the same absorption).
     waterColor += causticColor * (caustic * transmittance);
@@ -1608,15 +1523,15 @@ void shadeWaterSurface() {
     // Beer-Lambert transmittance the bottom light travels through. The phase
     // is scaled by 4*pi so 1.0 is the isotropic limit (g = 0). Amount, tint,
     // density and anisotropy are all per-layer parameters.
-    if (wp.waveToggles.z > 0.5 && wp.volumetricParams.x > 0.0) {
+    if (wp.enableVolumetric && wp.volumetricStrength > 0.0) {
         float volDepth = max(waterThickness, 0.0);
-        float volAtt = 1.0 - exp(-volDepth * max(wp.volumetricParams.y, 0.0));
+        float volAtt = 1.0 - exp(-volDepth * max(wp.volumetricDensity, 0.0));
         float volCos = clamp(dot(viewDir, lightDir), -1.0, 1.0);
-        float volG = clamp(wp.volumetricParams.z, -0.95, 0.95);
+        float volG = clamp(wp.volumetricPhaseG, -0.95, 0.95);
         float volDenom = max(1.0 + volG * volG - 2.0 * volG * volCos, 1e-4);
         float volPhase = (1.0 - volG * volG) / pow(volDenom, 1.5);
-        waterColor += wp.volumetricColor.rgb * ubo.lightColor.rgb
-                    * volPhase * volAtt * wp.volumetricParams.x * transmittance;
+        waterColor += wp.volumetricColor * ubo.lightColor
+                    * volPhase * volAtt * wp.volumetricStrength * transmittance;
     }
 
     // === FOAM / WHITEWATER ===
@@ -1624,15 +1539,6 @@ void shadeWaterSurface() {
     // shaded the surface (waveField.foam). Lit by the sun with a configurable
     // ambient floor, composited over the water color per layer. Foam is a
     // surface effect, so it lands after the volume terms (caustics/scatter).
-    if (wp.waveToggles.y > 0.5 && waveField.foam > 0.0) {
-        float foamDiff = max(dot(normal, lightDir), 0.0);
-        float foamLight = wp.foamExtra.y + (1.0 - wp.foamExtra.y) * foamDiff;
-        vec3 foamLit = wp.foamColor.rgb
-            * (ubo.lightColor.rgb * foamLight + vec3(wp.foamExtra.z));
-        float foamMix = clamp(waveField.foam * wp.foamParams.w, 0.0, 1.0);
-        waterColor = mix(waterColor, foamLit, foamMix);
-    }
-
     // === FINAL OUTPUT ===
     // True translucency through the composite blend (mix(baseColor,
     // waterColor, waterAlpha)): shallow water reveals the bright rasterized
@@ -1656,7 +1562,7 @@ void shadeWaterSurface() {
     // shallows and puddles lose their sky entirely (real puddles mirror!).
     // Top-down views are unaffected (mirrorPresence ≈ 0 there).
     alpha = max(alpha, mirrorPresence);
-    float shoreWidth = max(wp.refractionParams.z, 0.0);
+    float shoreWidth = max(wp.shoreFadeDepth, 0.0);
     if (thicknessForAlpha > 1e-4 && shoreWidth > 1e-6) {
         alpha *= smoothstep(0.0, shoreWidth, thicknessForAlpha);
     }
@@ -1670,7 +1576,6 @@ void shadeWaterSurface() {
     // Shoreline contact foam is a surface line, not volume translucency: it
     // must stay visible where the water meets the solid even when the alpha
     // shoreline fade would otherwise erase the last water pixels.
-    alpha = max(alpha, clamp(waveField.contact * wp.foamContact.z, 0.0, 1.0));
     if (captureMode) alpha = 1.0;
     outColor = vec4(waterColor, alpha);
 
@@ -1692,7 +1597,7 @@ void shadeWaterSurface() {
         ? clamp(1.0 - mirrorPresence, 0.0, 1.0)
         : 1.0) * clamp(alpha, 0.0, 1.0);
     float blurPx = enableBlur
-        ? clamp(regionDepth * max(wp.blurParams.z, 0.0), 0.0, max(wp.blurParams.y, 0.0))
+        ? clamp(regionDepth * max(wp.blurDepthScale, 0.0), 0.0, max(wp.blurRadius, 0.0))
         : 0.0;
     outWaterBody = vec4(refractedColor, bodyWeight);
     outWaterColumn = vec4(min(max(regionDepth, 0.0), 60000.0), blurPx, 0.0, 0.0);
@@ -1807,47 +1712,32 @@ void shadeWaterSurface() {
         outColor = vec4(refractionNoise, 0.5 + 0.5 * (refractionNoise.x - refractionNoise.y), 1.0);
         return;
     }
-    // ── One view per wave-system noise, so every term of the field can be
-    //    inspected while tuning its period / amplitude. All of them read the
-    //    raw components the field already computed (WaterWaveField::dbg /
-    //    dbg2). Note that the field runs through the same LOD as the shading,
-    //    so past the detail band these show the coarse evaluation. ──
-    if (dbgMode == DEBUG_MODE_WATER_CHOP) {
-        // Noise Detail spectrum. R = signed chop value (grey 0.5 = zero),
-        // G = |analytic gradient| x 0.25 (clamped). The gradient is what bends
-        // the shading normal, so G shows how much this noise actually matters.
-        outColor = vec4(0.5 + 0.5 * waveField.dbg.x,
-                        clamp(waveField.dbg2.w * 0.25, 0.0, 1.0), 0.0, 1.0);
+    // ── The single sine swell and its gate, so the wave can be inspected:
+    //    the amplitude mask (calm bands), the sine itself and its slope. ──
+    if (dbgMode == DEBUG_MODE_WATER_SLOPE) {
+        // Along-shore slope of the swell: R = signed (grey 0.5 = crest or
+        // trough, where the slope is zero), G = |slope| (1 = max steepness).
+        outColor = vec4(0.5 + 0.5 * waveField.swellSlope,
+                        clamp(abs(waveField.swellSlope), 0.0, 1.0), 0.0, 1.0);
         return;
     }
-    if (dbgMode == DEBUG_MODE_WATER_CALM_MASK) {
-        // Organic calm-patch mask: BLACK = a calm patch, where the waves are
-        // removed entirely (the mask multiplies the whole field).
-        outColor = vec4(vec3(waveField.dbg.y), 1.0);
+    if (dbgMode == DEBUG_MODE_WATER_CONTACT) {
+        // Shore sine: R = swell profile (signed), G = shoreline contact foam.
+        outColor = vec4(0.5 + 0.5 * waveField.swell,
+                        clamp(waveField.contact, 0.0, 1.0), 0.0, 1.0);
         return;
     }
     if (dbgMode == DEBUG_MODE_WATER_SWELL) {
-        // The two ridged swell trains, signed (grey 0.5 = zero):
-        // R = primary (Wave Period), G = cross (Cross Period).
-        outColor = vec4(0.5 + 0.5 * waveField.dbg.z,
-                        0.5 + 0.5 * waveField.dbg.w, 0.0, 1.0);
+        // The sine swell, signed (grey 0.5 = mean level):
+        // R = profile (sin), G = along-shore slope (cos).
+        outColor = vec4(0.5 + 0.5 * waveField.swell,
+                        0.5 + 0.5 * waveField.swellSlope, 0.0, 1.0);
         return;
     }
     if (dbgMode == DEBUG_MODE_WATER_FOAM_MASK) {
         // R = whitewater coverage, G = shoreline contact line. Black where the
         // layer has foam off or the zone never breaks.
         outColor = vec4(waveField.foam, waveField.contact, 0.0, 1.0);
-        return;
-    }
-    if (dbgMode == DEBUG_MODE_WATER_AMPLITUDE) {
-        // Which factor damps the waves where they are missing:
-        //   R = final envelope (zone envelope x calm mask x depth taper)
-        //   G = depth taper      B = zone envelope x 0.5 (grey ~= the neutral 1.0)
-        // A dark R with a bright G therefore means the CALM MASK removed the
-        // waves, while a dark R with a dark G means SHALLOW water did.
-        outColor = vec4(clamp(waveField.dbg2.x, 0.0, 1.0),
-                        clamp(waveField.dbg2.y, 0.0, 1.0),
-                        clamp(waveField.dbg2.z * 0.5, 0.0, 1.0), 1.0);
         return;
     }
     if (dbgMode == DEBUG_MODE_WATER_SPECULAR_NOISE) {
@@ -1857,21 +1747,43 @@ void shadeWaterSurface() {
         outColor = vec4(dbgHighlightNoise, 1.0);
         return;
     }
+    if (dbgMode == DEBUG_MODE_SHORE_DIRECTION) {
+        // The shore direction: the direction of DECREASING water depth, which
+        // the wave field uses as the movement direction of every component -
+        // both ridged trains, the chop, the calm mask drift and the foam drift
+        // - in EVERY depth region (the zones only change the amplitude).
+        //   R/G = dir.x / dir.z packed to 0..1 (same convention as Light Vector)
+        //   B   = 1 where the direction came from the measured water-depth
+        //         gradient, 0 where it fell back to the configured Shore
+        //         Direction angle.
+        // The flag is exact: the vertex stage that solved the gradient reports
+        // it through fragDebug.z. If B is 0 everywhere, either the water has no
+        // measurable depth slope (deep water: a clear solid depth and a clear
+        // back face), or Shore Gradient Step is 0, which disables the gradient
+        // by design.
+        float shoreMeasured = (fragDebug.z > 0.5) ? 1.0 : 0.0;
+        outColor = vec4(fragShoreDir.x * 0.5 + 0.5,
+                        fragShoreDir.y * 0.5 + 0.5,
+                        shoreMeasured, 1.0);
+        return;
+    }
     if (dbgMode == DEBUG_MODE_DISPLACEMENT) {
         // Prefer the tessellation-provided debug value (fragDebug); fall back
         // to a per-fragment evaluation of the same single wave field so the
         // view works without tessellation.
-        float timeDebug = waterRenderUBO.timeParams.x;
-        float bumpAmpDbg = wp.waveParams.z;
-        float animTimeDbg = timeDebug * wp.params3.x;
+        float timeDebug = waterRenderUBO.waterTime;
+        float bumpAmpDbg = wp.bumpAmplitude;
+        float animTimeDbg = timeDebug * wp.noiseTimeSpeed;
         vec4 waveDbg = waterWaveSample(
             fragPos.xyz, animTimeDbg, waterThickness, bumpAmpDbg, fragShoreDir, wp,
-            waveFieldOct);
-        float maxExpected = max(bumpAmpDbg * (1.0 + wp.waveShape.w + wp.waveBreaker.x), 1e-3);
+            waveFieldOct, waveDx, waveDy);
+        float maxExpected = max(bumpAmpDbg * wp.waveAmplitude, 1e-3);
         float normDisp = clamp((waveDbg.x / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
-        vec3 debugCol = fragDebug;
-        if (length(debugCol) < 0.001) debugCol = vec3(normDisp);
-        outColor = vec4(debugCol, 1.0);
+        // fragDebug.xy carries the displacement; .z carries the shore-direction
+        // source and must not leak into this view.
+        vec2 debugCol = fragDebug.xy;
+        if (length(debugCol) < 0.001) debugCol = vec2(normDisp);
+        outColor = vec4(vec3(debugCol.x), 1.0);
         return;
     }
     if (dbgMode == DEBUG_MODE_THICKNESS) {
@@ -1913,32 +1825,9 @@ void shadeWaterSurface() {
     }
 
 
-    if (dbgMode == DEBUG_MODE_WATER_REGIONS) {
-        // Thickness-zone region palette, using the SAME boundaries and the
-        // SAME depth signal (fragWaterDepth) as the wave field itself. An
-        // unknown thickness (-1) is what the field treats as open deep water,
-        // shown here in purple so unmeasured water is distinguishable from
-        // measured deep water (blue).
-        float zDeep = max(wp.waveZones.x, 1.0);
-        float zBreak = clamp(wp.waveZones.y, 0.0, zDeep);
-        float zShallow = clamp(wp.waveZones.z, 0.0, zBreak);
-        float breakerHalf = max(wp.waveShoal.w, 1e-3);
-        float d = fragWaterDepth;
-        vec3 regionColor;
-        if (d < 0.0) {
-            regionColor = vec3(0.45, 0.10, 0.60);            // unknown -> deep
-        } else if (d >= zDeep) {
-            regionColor = vec3(0.10, 0.20, 0.65);            // deep ocean
-        } else if (d >= zBreak) {
-            regionColor = vec3(0.15, 0.75, 0.25);            // shoaling band
-        } else if (d >= zShallow) {
-            regionColor = (abs(d - zBreak) <= breakerHalf)
-                ? vec3(1.00, 0.25, 0.00)                     // breaker line
-                : vec3(0.15, 0.85, 0.95);                    // foam decay band
-        } else {
-            regionColor = vec3(1.00, 1.00, 1.00);            // shore line wave
-        }
-        outColor = vec4(regionColor, 1.0);
+    if (dbgMode == DEBUG_MODE_WATER_COLOR) {
+        // One region: the single water colour.
+        outColor = vec4(wp.waterColor, 1.0);
         return;
     }
     if (dbgMode == DEBUG_MODE_WATER_DEPTH_SOURCES) {
@@ -1948,7 +1837,7 @@ void shadeWaterSurface() {
         //   otherwise      = real data, scaled to 1/4 of the deep zone so it
         //                    can never saturate into a flag color:
         //                    R = solid drop, G = back-face drop, B = final depth
-        float zScale = 4.0 * max(wp.waveZones.x, 1.0);
+        float zScale = 4.0 * max(wp.shoreWaveFade, 1.0);   // depth display scale
         float sd = textureLod(solidSceneDepthTex, screenUV, 0.0).r;
         if (sd >= 1.0) {
             outColor = vec4(1.0, 0.0, 0.0, 1.0);
@@ -1975,7 +1864,7 @@ void shadeWaterSurface() {
         // Solid scene depth behind the water (linear eye-space / far).
         // White = clear: the opaque pass wrote no terrain at this pixel.
         float sd = textureLod(solidSceneDepthTex, screenUV, 0.0).r;
-        float farP = max(ubo.passParams.w, 1.0);
+        float farP = max(ubo.farPlane, 1.0);
         outColor = (sd >= 1.0)
             ? vec4(1.0, 1.0, 1.0, 1.0)
             : vec4(vec3(clamp(linearizeDepth(sd) / farP, 0.0, 1.0)), 1.0);

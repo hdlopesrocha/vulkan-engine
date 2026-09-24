@@ -2,6 +2,7 @@
 #extension GL_ARB_shader_draw_parameters : require
 
 #include "includes/ubo.glsl"
+#include "includes/water_render_view.glsl"
 #include "includes/locations.glsl"
 
 // Stage dispatcher (Phase-1 merge): WATER_MODE selects the water vertex path.
@@ -61,9 +62,9 @@ void main() {
     int chosenIdx = inBrushIndex;
     if (chosenIdx < 0) chosenIdx = 0;
     int nWL = max(waterParams.length(), 1);
-    WaterParamsGPU wp = waterParams[(chosenIdx >= 0 && chosenIdx < nWL) ? chosenIdx : 0];
+    WaterParamsNamed wp = waterParamsNamed(waterParams[(chosenIdx >= 0 && chosenIdx < nWL) ? chosenIdx : 0]);
 
-    float bumpAmp = wp.waveParams.z; // bump amplitude provided via Water widget
+    float bumpAmp = wp.bumpAmplitude; // bump amplitude provided via Water widget
 
     // --- Base screen UV of the undisplaced vertex (same as the TES) ---
     vec2 screenUV = vec2(0.0);
@@ -79,7 +80,7 @@ void main() {
     // --- Water depth + shore direction (identical set-2 samples and sign
     //     rules as the TES; the no-tess path has no RT depth branch, so this
     //     is the measured raster depth only) ---
-    vec2 shoreDir = normalize(wp.waveDirection.xy + vec2(1e-5, 0.0));
+    vec2 shoreDir = normalize(wp.waveDirection + vec2(1e-5, 0.0));
     float solidDrop = -1.0;
     float backDrop = -1.0;
     float solidDepthRaw = 1.0;
@@ -98,16 +99,21 @@ void main() {
     }
     float waterDepth = max(solidDrop, backDrop);
     if (waterDepth < 0.0) {
-        // Same guard as the TES: stay finite so the wave field never enters
-        // its unknown -> full-deep-swell default (shallow zone boundary).
-        waterDepth = clamp(wp.waveZones.z, 0.0, max(wp.waveZones.x, 1.0));
+        // Same guard as the TES: stay finite so the swell keeps its full
+        // amplitude without triggering the shoreline contact foam.
+        waterDepth = 2.0 * max(wp.shoreWaveFade, 1.0);
     }
 
-    // Calm layers (waveToggles.x < 0.5) have no wave zones/shore travel, so
-    // the shore-direction solve is dead work; shoreDir keeps the configured
-    // waveDirection fallback set above.
-    if (haveScreen && wp.waveToggles.x > 0.5) {
-        float gradStep = max(wp.waveWarp.w, 0.0);
+    // Shore direction: the direction of DECREASING depth, measured per point
+    // from the raster depth (i.e. toward the shore), with the configured Shore
+    // Direction angle as the fallback where the bottom cannot be measured. The
+    // wave PHASE is driven by the depth itself (see the field), so a varying
+    // direction cannot scramble the crests any more - it only aims the wave
+    // faces at the local shore, which is what makes the swell run head-on into
+    // every part of the coastline.
+    float shoreMeasured = 0.0;
+    if (haveScreen && wp.enableWaves) {
+        float gradStep = max(wp.shoreGradientStep, 0.0);
         if (gradStep > 0.0) {
             vec2 texel = 1.0 / vec2(textureSize(solidSceneDepthTex, 0));
             vec2 uvX = clamp(screenUV + vec2(texel.x * gradStep, 0.0), 0.0, 1.0);
@@ -125,56 +131,26 @@ void main() {
                     texture(waterBackDepthTex, uvY).r,
                     screenUV, uvX, uvY, pos);
             }
-            if (dot(dir, dir) > 1e-6) shoreDir = dir;
+            if (dot(dir, dir) > 1e-6) {
+                shoreDir = dir;
+                shoreMeasured = 1.0;
+            }
         }
     }
+    fragShoreDir = shoreDir;
 
-    // Per-vertex wave displacement + analytic normal via the SHARED core.
-    float animTime = waterRenderUBO.timeParams.x * wp.params3.x;
+    float animTime = waterRenderUBO.waterTime * wp.noiseTimeSpeed;
     WaterVertexWave wv = waterDisplaceWaterVertex(pos, normal, animTime,
                                                   waterDepth, shoreDir, bumpAmp, wp,
                                                   WATER_VERTEX_OCT);
-
-    // Refine the measured depth at the DISPLACED vertex, exactly like the TES
-    // (water_tese.glsl): the depth above was read at the base vertex's UV,
-    // which at a grazing view can land far from the shaded fragment. There is
-    // no RT depth path in the no-tess VS, so this is gated only by waves.
-    //
-    // Calm layers (waveToggles.x < 0.5): waterWaveField() early-outs to an
-    // identically zero field (water_noise.glsl), so waterDisplaceWaterVertex()
-    // leaves wv.pos unchanged. The displaced UV then equals the base UV and
-    // this block would re-sample the exact same texels as the base depth
-    // measurement above, producing the same value: a pure no-op.
-    if (wp.waveToggles.x > 0.5) {
-        vec4 dispClip = ubo.viewProjection * vec4(wv.pos, 1.0);
-        if (dispClip.w > 0.001) {
-            vec2 uvD = clamp(dispClip.xy / dispClip.w * 0.5 + 0.5, 0.001, 0.999);
-            float sd = texture(solidSceneDepthTex, uvD).r;
-            float bd = texture(waterBackDepthTex, uvD).r;
-            float sDrop = -1.0;
-            float bDrop = -1.0;
-            if (sd < 1.0) {
-                vec4 w = ubo.invViewProjection * vec4(uvD * 2.0 - 1.0, sd, 1.0);
-                float drop = wv.pos.y - w.y / w.w;
-                sDrop = (drop >= 0.0) ? drop : -1.0;
-            }
-            if (bd < 1.0) {
-                vec4 w = ubo.invViewProjection * vec4(uvD * 2.0 - 1.0, bd, 1.0);
-                bDrop = max(wv.pos.y - w.y / w.w, 0.0);
-            }
-            float refined = max(sDrop, bDrop);
-            if (refined >= 0.0) waterDepth = refined;
-        }
-    }
-
-    fragBrushIndex = chosenIdx;
-    fragHSV = inHSV;
-    fragBaseNormal = normal;                  // undisplaced (flat) base normal
-    fragBasePos = vec4(wv.basePos, bumpAmp);  // base pos + raw amplitude
-    fragWaterDepth = waterDepth;
-    fragShoreDir = shoreDir;
     fragNormal = wv.normal;
-    fragDebug = vec3(0.5);                    // zero displacement envelope
+    // Displacement debug value (same normalization as the TES) plus the
+    // shore-direction source in .z.
+    {
+        float maxExpected = max(bumpAmp * wp.waveAmplitude, 1e-3);
+        float normDisp = clamp((wv.displacement / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
+        fragDebug = vec3(normDisp, normDisp, shoreMeasured);
+    }
     fragPos = wv.pos;
     fragPosWorld = wv.pos;
     vec4 clipPos = ubo.viewProjection * vec4(wv.pos, 1.0);

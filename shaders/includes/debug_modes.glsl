@@ -33,16 +33,16 @@ const int DEBUG_MODE_ABSORPTION = 25;
 const int DEBUG_MODE_CAUSTICS = 26;
 const int DEBUG_MODE_DEPTH_SOURCE = 27;
 const int DEBUG_MODE_WATER_COMPOSE = 28;
-const int DEBUG_MODE_WATER_REGIONS = 29;
+const int DEBUG_MODE_WATER_COLOR = 29;
 const int DEBUG_MODE_WATER_DEPTH_SOURCES = 30;
 const int DEBUG_MODE_SCENE_DEPTH = 31;
 const int DEBUG_MODE_REFLECTION_SOURCE = 32;
-const int DEBUG_MODE_WATER_CHOP = 33;
-const int DEBUG_MODE_WATER_CALM_MASK = 34;
+const int DEBUG_MODE_WATER_SLOPE = 33;
+const int DEBUG_MODE_WATER_CONTACT = 34;
 const int DEBUG_MODE_WATER_SWELL = 35;
 const int DEBUG_MODE_WATER_FOAM_MASK = 36;
-const int DEBUG_MODE_WATER_AMPLITUDE = 37;
-const int DEBUG_MODE_WATER_SPECULAR_NOISE = 38;
+const int DEBUG_MODE_WATER_SPECULAR_NOISE = 37;
+const int DEBUG_MODE_SHORE_DIRECTION = 38;
 
 // Views whose displayed value is produced by traced reflection/refraction
 // rays force the full-quality reference path (full-rate + dual-trace) so the

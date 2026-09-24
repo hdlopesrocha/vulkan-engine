@@ -83,7 +83,7 @@ layout(location = FRAG_OUT_WATER_COLUMN) out vec4 outWaterColumn;
 
 // Hybrid RT declarations (bindings 14/17/18 — TLAS, params, proxy metadata).
 // The TLAS holds the stable solid-proxy boxes; water surface is excluded by
-// design (origins, never targets). Shaders gate all sampling on rt.debug.y
+// design (origins, never targets). Shaders gate all sampling on rt.tlasReady
 // (tlasReady): before the first BLAS/TLAS build completes everything falls
 // back to sky/CSM so no invalid acceleration structure is ever traced.
 // rt_params.glsl is included UNCONDITIONALLY (structs + rtProceduralSky): the
@@ -92,7 +92,8 @@ layout(location = FRAG_OUT_WATER_COLUMN) out vec4 outWaterColumn;
 #include "includes/rt_params.glsl"
 #ifdef RT_ENABLED
 layout(set = 0, binding = 14) uniform accelerationStructureEXT rtTlas;
-layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rt; };
+layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rtPacked; };
+RayTracingParamsNamed rt = rayTracingParamsNamed(rtPacked);
 layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]; };
 // Real scene-geometry lookups. The scene is split across two TLAS instances
 // by content — solids (instance RT_SCENE_INSTANCE) and the real water mesh
@@ -143,8 +144,8 @@ layout(set = 0, binding = 20) uniform sampler2D ssrDepthTex;
 
 
 // Global toggles
-bool roughnessEnabled = ubo.debugParams.y > 0.5;
-bool aoEnabled = ubo.debugParams.z > 0.5;
+bool roughnessEnabled = ubo.roughnessEnabled;
+bool aoEnabled = ubo.ambientOcclusionEnabled;
 
 #if WATER_MODE
 // Water fragment stage (varyings + set-2 scene textures + shadeWaterSurface
@@ -164,7 +165,7 @@ void main() {
     // water pipeline (alpha-blended into the main color target).
     shadeWaterSurface();
 #else
-    bool isShadowPass = ubo.passParams.x > 0.5;
+    bool isShadowPass = ubo.isShadowPass;
     // Provide a default color so early debug/special-case returns still
     // produce a valid output for downstream passes.
     outColor = vec4(0.0);

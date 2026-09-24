@@ -1,3 +1,4 @@
+#include "water_render_view.glsl"
 // Water TCS (moved from water.tesc). Requires: ubo, locations,
 // perlin, water_noise, waterParams/waterRenderUBO (ubo.glsl).
 // Defines the stage's main().
@@ -51,7 +52,7 @@ void main() {
 
     if (gl_InvocationID == 0) {
         // Respect the global tessellation toggle from settings.
-        if (ubo.passParams.y < 0.5) {
+        if (!ubo.tessellationEnabled) {
             gl_TessLevelOuter[0] = 1.0;
             gl_TessLevelOuter[1] = 1.0;
             gl_TessLevelOuter[2] = 1.0;
@@ -65,14 +66,14 @@ void main() {
         // instead of reading past the allocation.
         int idx = max(pc_inBrushIndex[0], 0);
         int nWL = max(waterParams.length(), 1);
-        WaterParamsGPU wp = waterParams[(idx >= 0 && idx < nWL) ? idx : 0];
+        WaterParamsNamed wp = waterParamsNamed(waterParams[(idx >= 0 && idx < nWL) ? idx : 0]);
 
-        float nearDist   = wp.tessParams.x;
-        float farDist    = wp.tessParams.y;
-        float minLevel   = wp.tessParams.z;
-        float maxLevel   = wp.tessParams.w;
-        float noiseInf   = wp.waveParams.x;
-        float timeVal    = waterRenderUBO.timeParams.x * wp.params3.x;
+        float nearDist   = wp.tessNearDist;
+        float farDist    = wp.tessFarDist;
+        float minLevel   = wp.tessMinLevel;
+        float maxLevel   = wp.tessMaxLevel;
+        float noiseInf   = wp.tessNoiseInfluence;
+        float timeVal    = waterRenderUBO.waterTime * wp.noiseTimeSpeed;
 
         // Per-edge tessellation: evaluate noise at each edge's midpoint so
         // adjacent patches sharing an edge compute the same midpoint, the same
@@ -86,11 +87,11 @@ void main() {
             vec3 vb = inPos[(e + 1) % 3];
 
             // min(da,db) is symmetric: both adjacent patches get the same value
-            float da = length(ubo.viewPos.xyz - va);
-            float db = length(ubo.viewPos.xyz - vb);
+            float da = length(ubo.viewPosition - va);
+            float db = length(ubo.viewPosition - vb);
             float distTess = clamp(farDist / max(min(da, db), 1.0), minLevel, maxLevel);
 
-            if (noiseInf > 0.0 && wp.waveToggles.x > 0.5) {
+            if (noiseInf > 0.0 && wp.enableWaves) {
                 // Noise at edge midpoint — deterministic, identical for both
                 // adjacent patches sharing this edge, so the two can never
                 // disagree on the shared tess level (no cracks). The TCS has no
