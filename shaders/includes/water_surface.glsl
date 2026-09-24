@@ -1058,12 +1058,23 @@ void shadeWaterSurface() {
                     // noise offset involved. Only when no ray is available does
                     // this fall back to the straight-through sample.
 #ifdef RT_ENABLED
-                    vec4 rbFb = haveRefrRayW
-                        ? rtRasterBottom(fragPosWorld, refrRayW, screenUV)
-                        : vec4(0.0, 0.0, 0.0, -1.0);
-                    if (rbFb.a >= 0.0) {
-                        sceneColor = rbFb.rgb;
-                        refrServed = true;
+                    if (haveRefrRayW) {
+                        // rtRasterBottom() measures the column along the ray but
+                        // samples the color at THIS pixel. Refraction needs the
+                        // lateral shift, so take its thickness, land the Snell
+                        // ray on the bottom and sample there. The ray is bent by
+                        // the per-pixel Gerstner normal (refrRayW), so the
+                        // displaced bottom is exactly what the shading sees.
+                        vec4 rbFb = rtRasterBottom(fragPosWorld, refrRayW, screenUV);
+                        if (rbFb.a >= 0.0) {
+                            vec3 landing = fragPosWorld + refrRayW * rbFb.a;
+                            vec4 clipL = ubo.viewProjection * vec4(landing, 1.0);
+                            if (clipL.w > 1e-4) {
+                                vec2 uvL = clamp((clipL.xy / clipL.w) * 0.5 + 0.5, 0.001, 0.999);
+                                sceneColor = textureLod(solidSceneColorTex, uvL, 0.0).rgb;
+                                refrServed = true;
+                            }
+                        }
                     }
 #endif
                     if (!refrServed) {
