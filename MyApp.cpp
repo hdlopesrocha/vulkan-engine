@@ -625,12 +625,8 @@ public:
             wp.noiseOctaves = 1;
             wp.waveScale = 8.0f;
             wp.causticColor = glm::vec3(1.0f, 0.98f, 0.9f); // sunlight tint
-            // Green depth-region ramp for this demo layer.
-            wp.regionShoreColor = glm::vec3(0.20f, 0.55f, 0.20f);
-            wp.regionShallowColor = glm::vec3(0.10f, 0.50f, 0.10f);
-            wp.regionBreakerColor = glm::vec3(0.15f, 0.55f, 0.15f);
-            wp.regionShoalColor = glm::vec3(0.03f, 0.28f, 0.05f);
-            wp.regionDeepColor = glm::vec3(0.0f, 0.10f, 0.0f);
+            // One water region: a single green tint for this demo layer.
+            wp.waterColor = glm::vec3(0.03f, 0.30f, 0.12f);
             wp.waterTint = 0.6f;
             wp.causticIntensity = 0.2f;
             wp.causticSoftness = 0.5f;
@@ -648,14 +644,10 @@ public:
             wp.noisePeriod = 0.0f;
             wp.causticColor = glm::vec3(1.0f, 1.0f, 1.0f);
             // White -> black depth-region ramp for this stylized demo layer.
-            wp.regionShoreColor = glm::vec3(1.0f, 1.0f, 1.0f);
-            wp.regionShallowColor = glm::vec3(1.0f, 1.0f, 1.0f);
-            wp.regionBreakerColor = glm::vec3(1.0f, 1.0f, 1.0f);
-            wp.regionShoalColor = glm::vec3(0.4f, 0.4f, 0.4f);
-            wp.regionDeepColor = glm::vec3(0.0f, 0.0f, 0.0f);
+            wp.waterColor = glm::vec3(0.04f, 0.22f, 0.36f); // one water region
             wp.waterTint = 1.0f;
             wp.causticIntensity = 0.0f; // caustics off on this layer
-            wp.bumpAmplitude = 0.0f;
+            wp.waveAmplitude = 0.0f;
             wp.blurRadius = 4.0f;
             wp.enableBlur = true;
             wp.reflectionStrength = 1.0f;
