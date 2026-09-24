@@ -131,13 +131,19 @@ struct WaterWaveField {
 // surface (the 2x2 Jacobian of the horizontal displacement is inverted), aimed
 // along the local shore direction. `depth` is the measured water column; a
 // negative value is the deep sentinel (no thickness signal).
-const int   WAVE_BANDS = 4;
-// Band 0 is the swell (Wave Period / Wave Height); bands 1..3 are its ripples
-// at 1/3, 1/7 and 1/16 of the swell wavelength and 30/16/8.5 % of its height.
-const float WAVE_BAND_K[WAVE_BANDS]     = float[WAVE_BANDS](1.0, 3.1, 7.3, 15.7);
-const float WAVE_BAND_AMP[WAVE_BANDS]   = float[WAVE_BANDS](1.0, 0.30, 0.16, 0.085);
-const float WAVE_BAND_STEEP[WAVE_BANDS] = float[WAVE_BANDS](1.0, 0.85, 0.75, 0.70);
-const float WAVE_BAND_PHASE[WAVE_BANDS] = float[WAVE_BANDS](0.0, 1.9, 4.2, 2.7);
+const int   WAVE_BANDS = 7;
+// Band 0 is the swell (Wave Period / Wave Height). Bands 1..6 are its ripples
+// at a ~1.7x wavenumber step (a geometric progression, so the crests never
+// beat into a regular pattern). Their amplitudes are graded so that every band
+// carries a comparable SLOPE - which is what the eye reads as ripple detail -
+// while its height falls off with the wavelength.
+const float WAVE_BAND_K[WAVE_BANDS]     = float[WAVE_BANDS](1.0, 1.7, 2.9, 4.9, 8.3, 14.1, 24.0);
+const float WAVE_BAND_AMP[WAVE_BANDS]   = float[WAVE_BANDS](1.0, 0.26, 0.12, 0.057, 0.027, 0.013, 0.0063);
+// Gerstner pinch: only the swell and the first ripple displace the surface
+// horizontally. The fine bands are pure shading detail - pinching them too
+// would fold the Jacobian and break the normal they are meant to add.
+const float WAVE_BAND_STEEP[WAVE_BANDS] = float[WAVE_BANDS](1.0, 0.5, 0.25, 0.0, 0.0, 0.0, 0.0);
+const float WAVE_BAND_PHASE[WAVE_BANDS] = float[WAVE_BANDS](0.0, 1.9, 4.2, 2.7, 5.6, 0.8, 3.3);
 
 WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
                               vec2 shoreDirIn, WaterParamsNamed wp, bool withFoam,
