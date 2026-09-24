@@ -593,11 +593,14 @@ void shadeWaterSurface() {
     bool enableBlur = wp.enableBlur && waterRenderUBO.blurAllowed;
     // Global ray-path gates from Settings, delivered via the water render UBO
     // so they apply in BOTH fragment variants (the non-RT variant has no `rt`
-    // block). They gate the RAY-TRACED paths only: the raster Snell-landing
-    // refraction below is geometry + projection work, needs no TLAS, and used
-    // to be switched off with them - which is why refraction appeared to be
-    // broken whenever the RT preset was off (the shipped default).
-    // (RT paths stay gated by rtReady / rt.refractionsEnabled below.)
+    // block). Refraction folds the settings gate in: Minimal ships
+    // rtRefractions = false and must not refract at all, while Maximum sets it
+    // true and gets the full Snell path (inline ray, or the raster landing when
+    // the RT is unavailable). The REFLECTION deliberately does not fold it in -
+    // with the ray off it falls back to the sky equirect, which is exactly the
+    // sky-only mirror Minimal wants. The surface shading (Gerstner swell + FBM
+    // ripples) is preset-independent and identical in both modes.
+    enableRefraction = enableRefraction && waterRenderUBO.refractionAllowed;
     // Reflection stays ON with the RT ray off: the mirror falls back to the
     // sky equirect (sky-only reflection), which is the requested raster
     // behavior. The ray itself is gated at the trace site (`rt.waterReflections`).
