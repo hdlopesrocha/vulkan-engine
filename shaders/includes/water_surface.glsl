@@ -1030,10 +1030,27 @@ void shadeWaterSurface() {
 #endif
                 bool refrServed = false;
                 if (!rtRefrAvailable) {
-                    vec2 refrUV = clamp(screenUV + refractionOffset, 0.001, 0.999);
-                    if (textureLod(solidSceneDepthTex, refrUV, 0.0).r < 1.0) {
-                        sceneColor = textureLod(solidSceneColorTex, refrUV, 0.0).rgb;
+                    // One wave: the lookup lands where the SNELL ray meets the
+                    // real bottom. refrRayW is produced by refract() against the
+                    // per-pixel Gerstner normal, so the bottom is displaced by
+                    // the wave and its ripples exactly like the shading - no
+                    // noise offset involved. Only when no ray is available does
+                    // this fall back to the straight-through sample.
+#ifdef RT_ENABLED
+                    vec4 rbFb = haveRefrRayW
+                        ? rtRasterBottom(fragPosWorld, refrRayW, screenUV)
+                        : vec4(0.0, 0.0, 0.0, -1.0);
+                    if (rbFb.a >= 0.0) {
+                        sceneColor = rbFb.rgb;
                         refrServed = true;
+                    }
+#endif
+                    if (!refrServed) {
+                        vec2 refrUV = clamp(screenUV, 0.001, 0.999);
+                        if (textureLod(solidSceneDepthTex, refrUV, 0.0).r < 1.0) {
+                            sceneColor = textureLod(solidSceneColorTex, refrUV, 0.0).rgb;
+                            refrServed = true;
+                        }
                     }
                 }
                 if (!refrServed) {
