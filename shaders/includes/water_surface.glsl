@@ -1626,6 +1626,18 @@ void shadeWaterSurface() {
     // the normal depth-driven alpha over shoreFadeDepth meters. Without any
     // depth signal (non-RT flat water reports 0 everywhere) the fade is
     // skipped so the water stays visible via the transparency floor above.
+#ifndef RT_ENABLED
+    // ── Minimal: the non-RT build has no rays and no refraction, so make the
+    //    water unambiguous - a SKY MIRROR with the sky showing through the
+    //    surface, tinted by the layer colour. Deterministic: never black, never
+    //    vanishing, and it keeps the Gerstner swell + FBM ripple shading above.
+    {
+        vec3 skyMirror  = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
+        vec3 skyThrough = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(-viewDir)), 0.0).rgb;
+        waterColor = mix(mix(skyThrough, waterTintColor, tintBlend),
+                         skyMirror, clamp(mirrorPresence, 0.0, 1.0));
+    }
+#endif
     float thicknessFrac = clamp(thicknessForAlpha / 3.0, 0.0, 1.0); // ~3 m -> opaque
     float alpha = mix(1.0, thicknessFrac, clamp(transparency, 0.0, 1.0));
     // Refraction off keeps the surface TRANSPARENT: the (undistorted) solid
@@ -1636,6 +1648,12 @@ void shadeWaterSurface() {
     // shallows and puddles lose their sky entirely (real puddles mirror!).
     // Top-down views are unaffected (mirrorPresence ≈ 0 there).
     alpha = max(alpha, mirrorPresence);
+#ifndef RT_ENABLED
+    // The sky mirror is a surface, not volume translucency: keep the Minimal
+    // water opaque (the shoreline fade below still dissolves it at the
+    // waterline).
+    alpha = 1.0;
+#endif
     float shoreWidth = max(wp.shoreFadeDepth, 0.0);
     if (thicknessForAlpha > 1e-4 && shoreWidth > 1e-6) {
         alpha *= smoothstep(0.0, shoreWidth, thicknessForAlpha);
