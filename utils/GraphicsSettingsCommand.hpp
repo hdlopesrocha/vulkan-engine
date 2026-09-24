@@ -73,6 +73,16 @@ private:
         settings.rtRefractions = true;
         settings.rtThickness = true;
         settings.rtWaterDepth = true;
+        // Ray quality: Maximum means the full-rate, dual-trace reference. The
+        // shipped defaults are the budgeted shortcuts - rtRayScale = 1
+        // (checkerboard half-rate inline rays) and rtSingleRay = true (water
+        // traces reflection XOR refraction as a stochastic pick). With the xor
+        // on ~96% of pixels pick the reflection lobe (reflMixEst is Fresnel
+        // weighted and reflectionStrength pushes it toward 1), so the water
+        // reads as a pure mirror and refraction looks broken. Maximum traces
+        // both lobes at full rate instead.
+        settings.rtRayScale = 0;
+        settings.rtSingleRay = false;
         settings.blurEnabled = true;
         settings.tessellationEnabled = true;
         settings.shadowTessellationEnabled = true;
@@ -98,6 +108,9 @@ private:
         settings.rtRefractions = false;
         settings.rtThickness = false;
         settings.rtWaterDepth = false;
+        // Keep the budgeted ray shortcuts explicit on the low preset.
+        settings.rtRayScale = 1;
+        settings.rtSingleRay = true;
         settings.rtLocalShadows = false;
         settings.blurEnabled = false;
         // The global tessellation toggle drives both the solid and the water
