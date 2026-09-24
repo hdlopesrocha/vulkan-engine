@@ -38,14 +38,17 @@ const int WATER_VERTEX_OCT = 2;
 
 // Minimum fine-detail fraction of the per-layer wave height.
 //
-// The shore-zone envelope (env), the calm mask and the depth taper are the
-// SWELL envelope: they legitimately damp the wave height in shallow water and
-// in the authored calm patches. Applied to the whole field they also delete
-// the fine chop, and a height field with a zero gradient is a PERFECT MIRROR:
+// The shore-zone envelope (env) and the depth taper are the SWELL envelope:
+// they legitimately damp the wave height in shallow water. Applied to the whole
+// field they also delete the fine chop, and a height field with a zero gradient
+// is a PERFECT MIRROR:
 // the reflection stops following the wave normal and the water reads as a flat
 // sheet with no movement. With the shipped zones (32/64/128 m) the envelope is
 // below this floor for water shallower than ~24 m -- i.e. for any lake-scale
-// water body -- and exactly 0 in a calm patch.
+// water body.
+//
+// The CALM MASK is deliberately NOT covered by this floor: it is a complete
+// gate (see waterWaveField), so a calm patch is exactly calm.
 //
 // This floor keeps the smallest fraction of the authored Wave Height alive, so
 // the surface always has a live normal and the mirror always ripples. It is a
@@ -312,6 +315,31 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     float k2 = max(wp.waveComponent2.x, 1e-4);
     float c2 = wp.waveComponent2.y;
 
+    vec3 shoreDrift = shoreDir3 * (c1 * speedFactor * time);
+
+    // ── Organic calm patches: a COMPLETE GATE, evaluated first. ──
+    // A low-frequency noise mask removes the waves entirely in some places. It
+    // rides the SAME shore movement as the waves (advected with the primary
+    // drift), so the pattern of where waves exist also travels toward the shore
+    // instead of being geographically fixed. Octaves/persistence/lacunarity
+    // reuse the per-layer noise spectrum.
+    //
+    // The mask is evaluated BEFORE every other chain and a zero mask returns
+    // immediately: a calm patch then costs ONE FBM chain (the mask itself)
+    // instead of all five (mask + chop + two ridged trains + foam). Everything
+    // downstream - displacement, shading normal, foam, caustics - is
+    // identically zero there anyway, because the mask is applied as a pure
+    // multiplier at the end.
+    float mask = 1.0;
+    if (wp.waveMask.x > 0.0 && wp.waveMask.z > 0.0) {
+        float m = waterFbmNoise(xyz - shoreDrift, wp.waveMask.x, time, wp.waveMask.w,
+                                octavesN, wp.params2.w, wp.params3.y,
+                                vec3(11.0)) * 0.5 + 0.5;
+        mask = smoothstep(wp.waveMask.y,
+                          wp.waveMask.y + wp.waveMask.z, m);
+        if (mask <= 0.0) return f;
+    }
+
     // ── Organic modulation: one gradient-aware Perlin FBM drives the local
     //    crest amplitude variation and the chop detail. The chop rides the
     //    same shore movement as the trains (advected at the primary speed),
@@ -319,7 +347,6 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     float chopAmount = wp.waveBreaker.y;
     float ampVar = clamp(wp.waveWarp.y, 0.0, 0.95);
     float warpAmount = wp.waveWarp.x;
-    vec3 shoreDrift = shoreDir3 * (c1 * speedFactor * time);
     float chopVal = 0.0;
     vec2 chopGrad = vec2(0.0);
     if (chopAmount > 0.0 || warpAmount != 0.0 || ampVar > 0.0) {
@@ -328,20 +355,6 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
                                       wp.params3.y, vec3(0.0));
         chopVal = chop.x;
         chopGrad = vec2(chop.y, chop.w); // d/dx, d/dz (offset is constant)
-    }
-
-    // Organic calm patches: a low-frequency noise mask can remove the waves
-    // entirely in some places. It rides the SAME shore movement as the waves
-    // (advected with the primary drift), so the pattern of where waves exist
-    // also travels toward the shore instead of being geographically fixed.
-    // Octaves/persistence/lacunarity reuse the per-layer noise spectrum.
-    float mask = 1.0;
-    if (wp.waveMask.x > 0.0 && wp.waveMask.z > 0.0) {
-        float m = waterFbmNoise(xyz - shoreDrift, wp.waveMask.x, time, wp.waveMask.w,
-                                octavesN, wp.params2.w, wp.params3.y,
-                                vec3(11.0)) * 0.5 + 0.5;
-        mask = smoothstep(wp.waveMask.y,
-                          wp.waveMask.y + wp.waveMask.z, m);
     }
 
     float ampMod = 1.0 + ampVar * chopVal;
@@ -399,9 +412,10 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         gxz += chopAmount * chopGrad;
     }
 
-    // Floor the envelope (see WAVE_DETAIL_FLOOR): the swell may calm to
-    // nothing, the surface normal may not, or the water becomes a mirror.
-    float finalAmp = amp * max(env * mask * heightTaper, WAVE_DETAIL_FLOOR);
+    // The calm mask is a PURE multiplier so it stays a complete gate (a zero
+    // mask already returned above); WAVE_DETAIL_FLOOR only guards the
+    // depth/zone damping, keeping shallow water from becoming a perfect mirror.
+    float finalAmp = amp * mask * max(env * heightTaper, WAVE_DETAIL_FLOOR);
     f.height = finalAmp * h;
     f.grad = vec3(finalAmp * gxz.x, 0.0, finalAmp * gxz.y);
     f.dbg = vec4(chopVal, mask, prof1, prof2);

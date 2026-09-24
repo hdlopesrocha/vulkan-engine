@@ -740,6 +740,12 @@ void shadeWaterSurface() {
         normal = normalize(flatN - dhdT * T - dhdB * B);
     }
 
+    // Calm-patch gate for the wave-derived NOISE chains (see waterWaveField:
+    // the mask returns early there). dbg.y is the calm mask, and it is 0
+    // whenever the field did not run for any reason - calm patch, waves off,
+    // octave budget 0 - so everything wave-derived can be skipped together.
+    bool wavesActive = waveField.dbg.y > 0.0;
+
     
     // Normalize vectors
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
@@ -773,7 +779,7 @@ void shadeWaterSurface() {
     // so no pop appears at the fade distance.
     vec2 refractionNoise = vec2(0.0);
     float refractionDetail = 0.0;
-    bool refractionNoiseWanted = (enableRefraction && refractionStrength > 0.0)
+    bool refractionNoiseWanted = (enableRefraction && refractionStrength > 0.0 && wavesActive)
         || dbgMode == DEBUG_MODE_WATER_NOISE;
     if (refractionNoiseWanted) {
         // Finest retained feature, matching waterRefractionNoise()'s base
@@ -1252,7 +1258,9 @@ void shadeWaterSurface() {
     // values wherever the lobe gates the chains off, which is exactly what that
     // view exists to show.
     vec3 dbgHighlightNoise = vec3(0.5, 0.5, 0.0);
-    if (wp.waveToggles.x > 0.5 && detail > 0.0) {
+    // wavesActive: a calm patch has no wave field to perturb, so it takes the
+    // unperturbed analytic highlight below (same branch as waves-off).
+    if (wp.waveToggles.x > 0.5 && detail > 0.0 && wavesActive) {
         // Lobe terms FIRST (perf report 20 M10): every noise chain below exists
         // only to perturb the highlight, so outside the sun lobe it is multiplied
         // by a number that is already zero. pow(specAngle, 128) is zero for all
@@ -1534,7 +1542,7 @@ void shadeWaterSurface() {
     // exactly 0). The debug view still forces the block so its mask stays
     // populated.
     if ((causticIntensity > 0.001 && waterThickness > 0.05 && wp.waveToggles.x > 0.5
-         && detail > 0.0)
+         && detail > 0.0 && wavesActive)
         || causticDebugMode) {
         // Sun geometry (flat-surface incidence): stable coefficient, the
         // wave slopes enter through the curvature term only.
