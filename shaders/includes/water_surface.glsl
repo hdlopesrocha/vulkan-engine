@@ -818,14 +818,11 @@ void shadeWaterSurface() {
     // One wave: the refraction samples the scene straight through the surface -
     // the FBM screen-space wobble (an extra ripple system on top of the sine)
     // is gone. `refractionNoise` is kept for the noise debug view.
-    vec2 refractionNoise = vec2(0.0);
-    float refractionDetail = 0.0;
-    vec2 refractionOffset = vec2(0.0);
+    vec2 refractionNoise = vec2(0.0);   // noise debug view only
     
     // Reduce refraction at edges (to avoid sampling outside screen)
     float edgeFade = smoothstep(0.0, 0.1, screenUV.x) * smoothstep(1.0, 0.9, screenUV.x) *
                      smoothstep(0.0, 0.1, screenUV.y) * smoothstep(1.0, 0.9, screenUV.y);
-    refractionOffset *= edgeFade;
     
     // Sample refraction via HARDWARE RAY TRACING (§10: Snell).
     // Path selection: async RT pipeline outputs (half-res, 1-frame latency)
@@ -934,6 +931,20 @@ void shadeWaterSurface() {
     // (hitT along refrRay) and miss pixels share one world-space depth.
     vec3 refrRayW = vec3(0.0);
     bool haveRefrRayW = false;
+    // Refraction perturbation: the SAME directional FBM that shades the ripples
+    // also perturbs the transmitted ray, so the refracted image is distorted by
+    // the surface noise - the ripple slopes warp the lookup, exactly like the
+    // normal they were derived from. One FBM evaluation, sampled on the same
+    // shore-directed drift as the swell and the ripples.
+    vec2 refractionOffset = vec2(0.0);
+    if (enableRefraction && wp.noiseScale > 0.0) {
+        const int kRefrNoiseOctaves = 3;
+        vec3 drift = vec3(fragShoreDir.x, 0.0, fragShoreDir.y) * (wp.waveSpeed * animTime);
+        vec4 n = fbmGrad4D(vec4((fragBasePos.xyz - drift) * wp.noiseScale,
+                                animTime * wp.noiseTimeSpeed),
+                           kRefrNoiseOctaves, wp.noisePersistence, wp.noiseLacunarity);
+        refractionOffset = vec2(n.y, n.w) * wp.noiseScale * 0.5; // ripple slope -> angle
+    }
     if (enableRefraction) {
         // Approximate air->water refraction. GLSL `refract` expects the incident
         // vector (eye -> surface), i.e. -viewDir; the result is the true
@@ -948,12 +959,11 @@ void shadeWaterSurface() {
         // refraction. This is the layer's control over the effect - it used to
         // only scale the removed Perlin distortion, which left the knob dead and
         // the refraction fixed at full strength for every layer.
-        refrRay = normalize(mix(normalize(-viewDir), refrRay,
-                                clamp(wp.refractionStrength, 0.0, 1.0)));
-        // Apply Perlin-based angular distortion so refractionStrength visibly
-        // warps the lookup. The offset is expressed in the surface tangent
-        // frame (T,B) so the distortion follows the wave orientation.
-        refrRay = normalize(refrRay + T * refractionOffset.x + B * refractionOffset.y);
+        float refrAmount = clamp(wp.refractionStrength, 0.0, 1.0);
+        refrRay = normalize(mix(normalize(-viewDir), refrRay, refrAmount));
+        // Noise perturbation in the surface tangent frame: the ripple noise bends
+        // the ray too, so the bottom warps with the same detail the surface has.
+        refrRay = normalize(refrRay + (T * refractionOffset.x + B * refractionOffset.y) * refrAmount);
         refrRayW = refrRay;
         haveRefrRayW = true;
         bool refrResolved = false;
