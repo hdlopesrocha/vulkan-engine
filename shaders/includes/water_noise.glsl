@@ -424,7 +424,19 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     // ── Foam: born in the breaker band, carried shoreward by the crests and
     //    fades with depth; a residual line survives on the shallow band until
     //    the line wave reaches the waterline. ──
-    if (withFoam && wp.waveToggles.y > 0.5) {
+    //
+    // Foam (whitewater) exists ONLY in the Foam Band region:
+    //     zShallow <= d < zBreak
+    // The Shore Line region keeps only its separate contact line, and the
+    // Breaker Line, Shoaling and Deep Ocean regions get no foam at all. Outside
+    // those two bands the whole block - the crest/trail algebra, the exp()
+    // extinction and the noise chain - is never evaluated.
+    bool inFoamBand = (d >= zShallow) && (d < zBreak);
+    bool inContactBand = d < max(wp.foamContact.x, 1e-3);
+    if (withFoam && wp.waveToggles.y > 0.5 && (inFoamBand || inContactBand)) {
+        // Global coverage multiplier (translucency/airiness), hoisted so the
+        // noise chain below can be skipped when it is 0.
+        float coverage = clamp(wp.foamShape.y, 0.0, 1.0);
         float thr = clamp(wp.foamParams.x, 0.0, 0.98);
         float trailPhase = wp.foamParams.y;
         float lagGrowth = max(wp.foamShape.w, 0.0);
@@ -444,9 +456,23 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         float trailProf2 = clamp(prof2 - dot(2.0 * ds2 * g2, shoreDir) * lag2, -1.0, 1.0);
         float trail = max(0.5 + 0.5 * trailProf1, 0.5 + 0.5 * trailProf2);
 
-        float whitecap = smoothstep(thr, thrHi, crest) * breaking;
-        float trailing = smoothstep(thr, thrHi, trail) * breaking * breaking;
-        float foam = max(whitecap, trailing);
+        // Whitewater exists only inside the Foam Band. The Shore Line region
+        // stays at 0 here (contact-only), which is also why the old persistent
+        // shore-band foam line is gone.
+        float foam = 0.0;
+        if (inFoamBand) {
+            float whitecap = smoothstep(thr, thrHi, crest) * breaking;
+            float trailing = smoothstep(thr, thrHi, trail) * breaking * breaking;
+            foam = max(whitecap, trailing);
+            // Extinction with distance below the break line, then soft band
+            // edges: fade in over the lower quarter and out over the upper
+            // quarter of the band, so "foam only in the Foam Band" does not
+            // print two hard foam lines at its boundaries.
+            foam *= exp(-(zBreak - d) * max(wp.foamParams.z, 0.0));
+            float bandSpan = max(zBreak - zShallow, 1e-3);
+            foam *= smoothstep(zShallow, zShallow + 0.25 * bandSpan, d)
+                  * (1.0 - smoothstep(zBreak - 0.25 * bandSpan, zBreak, d));
+        }
         // Shoreline contact foam: the final line where the water meets the
         // solid. It arrives IN WAVES: each incoming crest pushes the line
         // further up the shore (wider band) and strengthens it, then it
@@ -460,20 +486,13 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         float contact = (1.0 - smoothstep(0.0, contactWidth, d))
                       * clamp(wp.foamContact.y, 0.0, 1.0)
                       * contactPulse;
-        if (d < zBreak) {
-            // Extinction with distance below the break line.
-            foam *= exp(-(zBreak - d) * max(wp.foamParams.z, 0.0));
-            // Persistent foam line on the shallow band, vanishing with the
-            // line wave at the waterline.
-            float shoreFade = (d < zShallow)
-                ? clamp(d / max(zShallow, 1e-3), 0.0, 1.0) : 1.0;
-            foam = max(foam, wp.foamNoise.w * shoreBand * shoreFade *
-                smoothstep(thr, thrHi, trail));
-        }
         // Broken-up foam texture. The foam advects at its own speed profile:
         // fast at/after the curl, decaying toward the shore (foamShoreSpeed),
         // so whitewater races off the breaker and slows as it runs up.
-        if (wp.foamNoise.z > 0.0) {
+        // ... and skip the noise chain where both outputs are already zero (the
+        // band's faded edges, the shore's contact-free stretch, or coverage
+        // switched off): it is only a multiplier, so it cannot revive a zero.
+        if (wp.foamNoise.z > 0.0 && coverage > 0.0 && (foam > 0.0 || contact > 0.0)) {
             float foamSpeedRel = mix(1.0, clamp(wp.foamShape.z, 0.0, 1.0), shoreBand);
             vec3 foamDrift = shoreDir3 * (c1 * speedFactor * foamSpeedRel * time);
             // 0..1 clamp: this is a MULTIPLIER (foam *= fnMix, contact *= fnMix),
@@ -489,8 +508,6 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         float maskMix = mix(clamp(wp.foamExtra.x, 0.0, 1.0), 1.0, mask);
         foam *= maskMix;
         contact *= maskMix;
-        // Lighter foam: global coverage multiplier (translucency/airiness).
-        float coverage = clamp(wp.foamShape.y, 0.0, 1.0);
         foam *= coverage;
         contact *= coverage;
         f.contact = clamp(contact, 0.0, 1.0);

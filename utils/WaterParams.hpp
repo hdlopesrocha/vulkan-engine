@@ -203,7 +203,11 @@ struct WaterParams {
     float foamNoisePeriod = 16.0f;    // texture feature period (world units)
     float foamNoiseSpeed = 0.15f;     // texture advection speed
     float foamNoiseAmount = 0.3f;     // how strongly noise breaks the foam
-    float foamShoreAmount = 1.0f;     // persistent foam line near the shore
+    // LEGACY (no effect, kept for layout/API stability): the persistent
+    // shore-band foam line was removed when the foam was confined to the Foam
+    // Band region - the Shore Line region is contact-only now. Use
+    // foamContact* for the shoreline line.
+    float foamShoreAmount = 1.0f;
     // Shoreline contact foam: the final line where the water meets the solid.
     // Peaks at zero depth and falls off over foamContactWidth; the fragment
     // stage forces the composite alpha up for it so the last visible water

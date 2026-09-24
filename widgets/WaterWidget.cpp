@@ -271,8 +271,10 @@ void WaterWidget::render() {
             "approaches the shore.");
         SliderFloatField("Foam Decay", &layerParams.foamDecay, 0.0f, 0.5f, "%.4f",
             "Foam extinction per meter below the breaker line.");
-        SliderFloatField("Shore Foam", &layerParams.foamShoreAmount, 0.0f, 1.0f, "%.3f",
-            "Persistent foam line on the shallow band (fades with the line wave).");
+        SliderFloatField("Shore Foam (legacy)", &layerParams.foamShoreAmount, 0.0f, 1.0f, "%.3f",
+            "LEGACY - no effect. The persistent shore-band foam line was removed when\n"
+            "the foam was confined to the Foam Band region (zShallow..zBreak); the\n"
+            "Shore Line region is contact-only now. Use Contact Foam for that line.");
     }});
 
     sections.push_back({[&]() {
