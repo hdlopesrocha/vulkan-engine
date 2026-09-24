@@ -109,16 +109,23 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         float phase = ki * shoreDist + omegai * time + WAVE_BAND_PHASE[i];
         float s = sin(phase);
         float c = cos(phase);
+        // Crest sharpness: |sin|^e keeps the extremes and pulls the profile
+        // toward them, so the crests (and troughs) narrow and the faces between
+        // them steepen. e = 1 degenerates to the plain Gerstner profile.
+        float sharp = max(wp.waveCrestSharpness, 1.0);
+        float a = max(abs(s), 1e-5);
+        float prof = sign(s) * pow(a, sharp);
+        float dprof = sharp * pow(a, sharp - 1.0) * c;
 
-        h += Ai * s;
-        gParam += Ai * ki * c * shoreDir;
+        h += Ai * prof;
+        gParam += Ai * ki * dprof * shoreDir;
         // The Gerstner pinch: the surface point slides toward the crest, and
         // its derivative is what makes the analytic normal exact.
         disp += (Qi * Ai * c) * shoreDir;
         jac += (-Qi * Ai * ki * s) * outerProduct(shoreDir, shoreDir);
         if (i == 0) {
-            f.swell = s;
-            f.swellSlope = c;
+            f.swell = prof;
+            f.swellSlope = dprof;
         }
     }
 

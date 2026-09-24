@@ -116,6 +116,10 @@ struct WaterParams {
     // Gerstner steepness: how far the crests pinch forward (0 = pure sine, the
     // crests stay symmetric; 1 = very sharp, forward-leaning crests).
     float waveSteepness = 0.7f;
+    // Crest sharpness: exponent on the wave profile (|sin|^e). 1 = the plain
+    // Gerstner profile, higher = narrower, spikier crests and troughs with
+    // steeper faces between them.
+    float waveCrestSharpness = 1.6f;
     float shoreWaveFade = 40.0f;    // depth (m) over which the swell fades out at the shore
     // Beach slope: metres of water depth per metre of horizontal distance from
     // the waterline. The wave phase runs on depth / slope (= the shore

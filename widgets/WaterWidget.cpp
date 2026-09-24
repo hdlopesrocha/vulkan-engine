@@ -69,6 +69,9 @@ void WaterWidget::render() {
         SliderFloatField("Wave Steepness", &layerParams.waveSteepness, 0.0f, 0.95f, "%.2f",
             "Gerstner pinch: how sharp and forward-leaning the crests are.\n"
             "0 = a pure sine (symmetric crests).");
+        SliderFloatField("Crest Sharpness", &layerParams.waveCrestSharpness, 1.0f, 4.0f, "%.2f",
+            "Exponent on the wave profile: 1 = plain Gerstner, higher = narrower,\n"
+            "spikier crests and troughs with steeper faces between them.");
         SliderFloatField("Shore Slope (m/m)", &layerParams.shoreWaveSlope, 0.002f, 0.2f, "%.4f",
             "Beach slope: metres of depth per metre from the shore. The wave phase runs\n"
             "on depth / slope, i.e. on the distance to the waterline, so the crests follow\n"

@@ -24,7 +24,7 @@ struct WaterParamsGPU {
     glm::vec4 waveToggles;      // x=enableWaves, y=enableFoam, z=enableVolumetric, w=unused
     glm::vec4 waveZones;        // x=deep depth(>=), y=break depth, z=shallow depth, w=unused
     glm::vec4 waveDirection;    // xy=shore direction fallback (unit, world XZ), zw=unused
-    glm::vec4 waveShape;        // x=shoreWaveSlope (m depth per m), yzw=unused
+    glm::vec4 waveShape;        // x=shoreWaveSlope (m depth per m), y=waveCrestSharpness, zw=unused
     glm::vec4 waveShoal;        // z=waveSteepness (Gerstner pinch), xyw=unused
     glm::vec4 waveComponent1;   // x=dominant swell period (scale at upload), y=dispersion scale, z=height scale, w=unused
     glm::vec4 waveComponent2;   // reserved

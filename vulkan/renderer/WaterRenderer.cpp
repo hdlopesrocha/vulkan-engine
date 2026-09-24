@@ -145,7 +145,7 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
                                 p.enableVolumetric ? 1.0f : 0.0f, 0.0f);
     gpu.waveZones = glm::vec4(0.0f);                       // reserved (was: zone depths)
     gpu.waveDirection = glm::vec4(shoreDir.x, shoreDir.y, 0.0f, 0.0f);
-    gpu.waveShape = glm::vec4(p.shoreWaveSlope, 0.0f, 0.0f, 0.0f);
+    gpu.waveShape = glm::vec4(p.shoreWaveSlope, p.waveCrestSharpness, 0.0f, 0.0f);
     gpu.waveShoal = glm::vec4(0.0f, 0.0f, p.waveSteepness, 0.0f);
     gpu.waveComponent1 = glm::vec4(p.wavePeriod, p.waveSpeed, 1.0f, 0.0f);
     gpu.waveComponent2 = glm::vec4(0.0f);                  // reserved
