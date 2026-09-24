@@ -35,7 +35,10 @@ struct WaterParams {
     // bottom with no tint. 0 = disable the tint shoreline fade.
     float tintShoreFadeDepth = 0.6f;
     int noiseOctaves = 4;
-    float noisePersistence = 0.5f;
+    // Persistence = 1/lacunarity keeps the SLOPE per octave constant, which is the
+    // realistic gravity-wave falloff and spreads the surface detail across the
+    // spectrum instead of concentrating it in the finest (sub-pixel) octave.
+    float noisePersistence = 0.25f;
     float noiseLacunarity = 4.0f;
     // Noise feature PERIOD in world units (the shader converts to spatial
     // scale = 1 / period when packing to the GPU). Larger = broader features.
@@ -145,7 +148,11 @@ struct WaterParams {
     //  - crestCurve: hooks the breaking crest line into a curl
     float breakerCurl = 0.6f;       // lip skew [-0.9..0.9]
     float breakerCrestCurve = 0.4f; // crest-line hook (0 = straight crests)
-    float waveChopAmount = 0.25f;   // FBM chop mixed into the directional swell
+    // Height fraction of the FBM chop. 0.84 restores the previous surface SLOPE
+    // (0.245 mean gradient) after the persistence change above: the old 0.25 was
+    // calibrated against the fine-octave-dominated spectrum, which carried ~3.3x
+    // more slope per unit of chop height than the even falloff does.
+    float waveChopAmount = 0.84f;   // FBM chop mixed into the directional swell
     float whitecapOnset = 0.15f;    // shoal progress where whitecaps start [0..1]
     // Organic variation of the sharp crests. The crests themselves are ridged
     // Perlin multifractal (see the shader); these control the extra noise
@@ -155,8 +162,10 @@ struct WaterParams {
     //  - amplitude variation: local crest height variation [0..1]
     //  - ridge stretch: along/across frequency ratio; higher = longer crest
     //    lines (more wave-like, less blob-like)
-    float waveWarpAmount = 0.5f;    // crest phase warp (feature units)
-    float waveAmpVariation = 0.5f;  // local crest amplitude variation [0..1]
+    // 0.15 preserves the previous (subtle) magnitude now that the chop value is
+    // normalised - raise it for a more visibly organic crest line.
+    float waveWarpAmount = 0.15f;   // crest phase warp (feature units)
+    float waveAmpVariation = 0.15f; // local crest amplitude variation [0..1]
     float waveRidgeStretch = 4.0f;  // ridged-crest anisotropy (along/across)
 
     // Second shoreward train (different scale/speed; breaks up the crest

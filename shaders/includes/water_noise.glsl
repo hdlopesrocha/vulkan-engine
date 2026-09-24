@@ -55,9 +55,39 @@ const int WATER_VERTEX_OCT = 2;
 // the old behaviour (fully dead calm).
 const float WAVE_DETAIL_FLOOR = 0.02;
 
+// Value/magnitude normalisation for every water FBM.
+//
+// fbm() divides by the sum of the octave amplitudes, but the Perlin gradients
+// cancel across that sum, so the PRACTICAL range of the result is only about
+// +/-0.43 (std 0.115) - not the +/-1 every parameter name implies. Measured
+// consequences of reading it as if it were +/-1 / 0..1:
+//
+//   * sun glitter: smoothstep(threshold ~0.7, 1.0, noise) never fired at all
+//     (the noise's 99.9th percentile is 0.32), so Glitter Intensity has never
+//     produced a single sparkle;
+//   * calm mask: m = noise*0.5+0.5 spans only 0.29..0.66, so with the shipped
+//     default threshold 0.5 / softness 0.18 the mask could NEVER reach 1 (the
+//     noise never gets to 0.68): every water pixel was damped and the waves
+//     were fully removed over half the world. Lowering the threshold works
+//     around the coverage, but the parameter semantics stay compressed until
+//     the value is normalised;
+//   * foam breakup: fn varied by +/-0.05 around 0.5, so Foam Noise Amount did
+//     almost nothing.
+//
+// WAVE_FBM_GAIN maps the VALUE onto its nominal range. It is applied to the
+// value only, NOT to the analytic gradient, deliberately: the gradient's
+// per-octave weighting is what the surface shading was tuned against, so
+// rescaling it would change the water's normal everywhere. The two are
+// therefore not exact derivatives of each other any more - the value feeds the
+// calm mask, the foam breakup, the amplitude/warp modulators and the debug
+// views, the gradient feeds the normal and the caustics, and no consumer
+// relates them.
+const float WAVE_FBM_GAIN = 2.5;
+
 float waterFbmNoise(vec3 xyz, float spatialScale, float time, float timeScale,
                     int octaves, float persistence, float lacunarity, vec3 offset) {
-    return fbm(vec4((xyz + offset) * spatialScale, time * timeScale), octaves, persistence, lacunarity);
+    return fbm(vec4((xyz + offset) * spatialScale, time * timeScale), octaves, persistence, lacunarity)
+         * WAVE_FBM_GAIN;
 }
 
 // Gradient-aware FBM. Returns vec4(value, d/dx, d/dy, d/dz) from a SINGLE
@@ -68,7 +98,7 @@ vec4 waterFbmNoiseGrad(vec3 xyz, float spatialScale, float time, float timeScale
     vec4 r = fbmGrad4D(vec4((xyz + offset) * spatialScale, time * timeScale),
                        octaves, persistence, lacunarity);
     r.yzw *= spatialScale; // chain rule through the spatial scaling
-    return r;
+    return r; // value NOT gained here: see WAVE_FBM_GAIN
 }
 
 // Ridged Perlin multifractal for the sharp wave crests. `q` is the 2D
@@ -432,9 +462,11 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         if (wp.foamNoise.z > 0.0) {
             float foamSpeedRel = mix(1.0, clamp(wp.foamShape.z, 0.0, 1.0), shoreBand);
             vec3 foamDrift = shoreDir3 * (c1 * speedFactor * foamSpeedRel * time);
-            float fn = waterFbmNoise(xyz - foamDrift, wp.foamNoise.x, time, wp.foamNoise.y,
-                                     octavesN, wp.params2.w,
-                                     wp.params3.y, vec3(37.0)) * 0.5 + 0.5;
+            // 0..1 clamp: this is a MULTIPLIER (foam *= fnMix, contact *= fnMix),
+            // so the normalised noise's tails must not push it negative.
+            float fn = clamp(waterFbmNoise(xyz - foamDrift, wp.foamNoise.x, time, wp.foamNoise.y,
+                                           octavesN, wp.params2.w,
+                                           wp.params3.y, vec3(37.0)) * 0.5 + 0.5, 0.0, 1.0);
             float fnMix = mix(1.0, fn, clamp(wp.foamNoise.z, 0.0, 1.0));
             foam *= fnMix;
             contact *= fnMix;

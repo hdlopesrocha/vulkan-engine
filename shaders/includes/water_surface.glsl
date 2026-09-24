@@ -1272,7 +1272,9 @@ void shadeWaterSurface() {
             float specNoiseRaw = waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
                                                max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
             dbgHighlightNoise.x = 0.5 + 0.5 * specNoiseRaw;
-            float specNoise = 0.8 + 0.4 * waveNoiseTail * specNoiseRaw;
+            // 0.4 was tuned against the UNGAINED noise; divide by the gain so
+            // the highlight perturbation keeps exactly its previous strength.
+            float specNoise = 0.8 + (0.4 / WAVE_FBM_GAIN) * waveNoiseTail * specNoiseRaw;
             specularColor = ubo.lightColor.xyz * (specLobe * specNoise) * specularIntensity;
         }
         // Below the threshold the highlight contributes less than the cut-off,
