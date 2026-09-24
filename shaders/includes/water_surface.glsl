@@ -742,6 +742,27 @@ void shadeWaterSurface() {
         normal = normalize(flatN - dhdT * T - dhdB * B);
     }
 
+    // Ripples: directional FBM detail, PER PIXEL only. The vertices keep the
+    // Gerstner swell; this is the sub-tessellation roughness, so it exists on
+    // the shading normal alone. It advects toward the shore with the same
+    // motion as the swell (the noise is sampled upstream of the shore drift),
+    // its strength follows the wave steepness, and it fades with the distance
+    // LOD so its finest octaves can never alias.
+    {
+        const float kRippleSlope = 0.35;   // ripple gradient at full steepness
+        const int   kRippleOctaves = 3;
+        float rippleAmp = kRippleSlope * clamp(wp.waveSteepness, 0.0, 1.0) * detail;
+        if (rippleAmp > 0.0 && wp.noiseScale > 0.0) {
+            vec3 drift = vec3(fragShoreDir.x, 0.0, fragShoreDir.y) * (wp.waveSpeed * animTime);
+            vec4 n = fbmGrad4D(vec4((fragBasePos.xyz - drift) * wp.noiseScale,
+                                    animTime * wp.noiseTimeSpeed),
+                               kRippleOctaves, wp.noisePersistence, wp.noiseLacunarity);
+            vec3 rg = vec3(n.y, 0.0, n.w) * wp.noiseScale;   // d/dx, d/dz
+            normal = normalize(normal - dot(rg, T) * rippleAmp * T
+                                      - dot(rg, B) * rippleAmp * B);
+        }
+    }
+
     // Calm-patch gate for the wave-derived NOISE chains (see waterWaveField:
     // the mask returns early there). dbg.y is the calm mask, and it is 0
     // whenever the field did not run for any reason - calm patch, waves off,
