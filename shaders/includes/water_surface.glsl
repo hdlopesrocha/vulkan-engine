@@ -1501,6 +1501,13 @@ void shadeWaterSurface() {
 // (1 = crystal clear keeps the refracted bottom, 0 = fully tintable).
     float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
     float tintBlend = clamp(depthFade * waterTint * tintShoreFade, 0.0, tintMax);
+    // No refraction (Minimal): nothing filled the refracted color, and leaving
+    // it at its zero value rendered the water black-transparent. Fall back to
+    // the sky along the view direction, so the water is tinted transparency -
+    // the sky shows through it - instead of black.
+    if (!enableRefraction) {
+        sceneColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(-viewDir)), 0.0).rgb;
+    }
     vec3 refractedColor = mix(sceneColor, waterTintColor, tintBlend);
 
     
