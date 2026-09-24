@@ -106,7 +106,7 @@ struct WaterParams {
 
     // Swell
     float wavePeriod = 512.0f;      // swell wavelength (world units)
-    float waveAmplitude = 2.0f;
+    float waveAmplitude = 8.0f;
 
     // ── Shore wave: ONE sine ─────────────────────────────────────────────
     // A single sine swell travels toward the shore along the local shore
