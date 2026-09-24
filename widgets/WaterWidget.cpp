@@ -55,196 +55,48 @@ void WaterWidget::render() {
     // that defines it. The boundaries are the same thickness zones the wave
     // system uses, so they are the single source of truth for both. ──
     sections.push_back({[&]() {
-        ImGui::Text("Water Region Tint");
+        ImGui::Text("Water");
         ColSeparator();
-        ImGui::TextWrapped("The water tint is a 5-stop color ramp over the measured water depth. "
-                           "Each region below owns its color and the depth boundary that defines "
-                           "it, ordered deep ocean -> shore.");
-        SliderFloatField("Region Blend", &layerParams.regionBlendSoftness, 0.0f, 0.5f, "%.3f",
-            "Blend softness between region colors, as a fraction of the adjacent\n"
-            "zone spans. 0 = hard region edges, 0.5 = soft ramp.");
-        SliderFloatField("Depth Falloff", &layerParams.depthFalloff, 0.001f, 1.0f,
-            "Rate at which the tint weight grows with water depth.");
-    }});
-
-    sections.push_back({[&]() {
-        ImGui::Text("Region 1: Deep Ocean");
-        ColSeparator();
-        const float zDeep = std::max(layerParams.zoneDeepDepth, 1.0f);
-        ImGui::TextDisabled("Depth: %.1f m and deeper", zDeep);
-        ColorEdit3Field("Deep Color", &layerParams.regionDeepColor.x,
-            "Open-ocean tint from the deep start depth upward.");
-        SliderFloatField("Deep Starts At (m)", &layerParams.zoneDeepDepth, 1.0f, 1024.0f, "%.1f",
-            "Water depth at/above which the deep-ocean region (and its tint) starts.\n"
-            "Also the depth of the full-strength open-ocean wave swell.");
-    }});
-
-    sections.push_back({[&]() {
-        ImGui::Text("Region 2: Shoaling");
-        ColSeparator();
-        const float zDeep = std::max(layerParams.zoneDeepDepth, 1.0f);
-        const float zBreak = std::min(std::max(layerParams.zoneBreakDepth, 0.0f), zDeep);
-        ImGui::TextDisabled("Depth: %.1f - %.1f m", zBreak, zDeep);
-        ColorEdit3Field("Shoal Color", &layerParams.regionShoalColor.x,
-            "Shoaling-band tint between the break start depth and the deep start depth.");
-        SliderFloatField("Break Starts At (m)", &layerParams.zoneBreakDepth, 1.0f, 512.0f, "%.1f",
-            "Water depth at/above which the shoaling region starts. The breaker\n"
-            "line sits at this depth (waves crash and foam is born around it).");
-    }});
-
-    sections.push_back({[&]() {
-        ImGui::Text("Region 3: Breaker Line");
-        ColSeparator();
-        const float zDeep = std::max(layerParams.zoneDeepDepth, 1.0f);
-        const float zBreak = std::min(std::max(layerParams.zoneBreakDepth, 0.0f), zDeep);
-        ImGui::TextDisabled("Depth: %.1f m +/- %.1f m", zBreak,
-                            std::max(layerParams.breakerWidth, 0.0f));
-        ColorEdit3Field("Breaker Color", &layerParams.regionBreakerColor.x,
-            "Tint of the breaker line at the break start depth above.");
-        SliderFloatField("Breaker Half-Width (m)", &layerParams.breakerWidth, 0.1f, 128.0f, "%.1f",
-            "Depth half-width of the breaker line band and of the breaker\n"
-            "amplitude bump around the break start depth.");
-    }});
-
-    sections.push_back({[&]() {
-        ImGui::Text("Region 4: Foam Band");
-        ColSeparator();
-        const float zDeep = std::max(layerParams.zoneDeepDepth, 1.0f);
-        const float zBreak = std::min(std::max(layerParams.zoneBreakDepth, 0.0f), zDeep);
-        const float zShallow = std::min(std::max(layerParams.zoneShallowDepth, 0.0f), zBreak);
-        ImGui::TextDisabled("Depth: %.1f - %.1f m", zShallow, zBreak);
-        ColorEdit3Field("Shallow Color", &layerParams.regionShallowColor.x,
-            "Foam-decay band tint between the shallow start depth and the break start depth.");
-        SliderFloatField("Shallow Starts At (m)", &layerParams.zoneShallowDepth, 0.0f, 256.0f, "%.1f",
-            "Water depth at/above which the foam band starts; below it only the\n"
-            "residual shore line wave remains.");
-    }});
-
-    sections.push_back({[&]() {
-        ImGui::Text("Region 5: Shore Line");
-        ColSeparator();
-        const float zDeep = std::max(layerParams.zoneDeepDepth, 1.0f);
-        const float zBreak = std::min(std::max(layerParams.zoneBreakDepth, 0.0f), zDeep);
-        const float zShallow = std::min(std::max(layerParams.zoneShallowDepth, 0.0f), zBreak);
-        ImGui::TextDisabled("Depth: 0 - %.1f m", zShallow);
-        ColorEdit3Field("Shore Color", &layerParams.regionShoreColor.x,
-            "Tint at the waterline (depth 0, fading in over the tint fade below).");
-        SliderFloatField("Tint Fade (m)", &layerParams.tintShoreFadeDepth, 0.0f, 8.0f, "%.2f",
-            "Water depth over which the tint fades to 0 at the waterline, so shore\n"
-            "water near the border is transparent and shows the bottom with no water\n"
-            "color. 0 = disable the tint shoreline fade.");
+        ImGui::TextWrapped("One water region: a single tint colour, and one sine swell that travels "
+                           "toward the shore and fades out before the waterline.");
+        ColorEdit3Field("Water Color", &layerParams.waterColor.x,
+            "The water tint (one region - there is no depth-band palette any more).");
+        SliderFloatField("Tint Shore Fade (m)", &layerParams.tintShoreFadeDepth, 0.0f, 8.0f, "%.2f",
+            "Water depth over which the tint fades to 0 at the waterline.");
+        SliderFloatField("Shore Wave Fade (m)", &layerParams.shoreWaveFade, 0.0f, 512.0f, "%.1f",
+            "Water depth over which the swell fades out approaching the shore.\n"
+            "0 = no fade (the sine runs to the waterline).");
+        SliderFloatField("Wave Steepness", &layerParams.waveSteepness, 0.0f, 0.95f, "%.2f",
+            "Gerstner pinch: how sharp and forward-leaning the crests are.\n"
+            "0 = a pure sine (symmetric crests).");
+        SliderFloatField("Shore Slope (m/m)", &layerParams.shoreWaveSlope, 0.002f, 0.2f, "%.4f",
+            "Beach slope: metres of depth per metre from the shore. The wave phase runs\n"
+            "on depth / slope, i.e. on the distance to the waterline, so the crests follow\n"
+            "the depth contours (the shoreline).");
     }});
 
     sections.push_back({[&]() {
         ImGui::Text("Shore Waves");
         ColSeparator();
         CheckboxField("Enable Waves", &layerParams.enableWaves,
-            "Master toggle for the thickness-zoned shore-wave system.\n"
+            "Master toggle for the sine swell.\n"
             "Only the first water material enables it by default.");
-        SliderFloatField("Wave Height", &layerParams.bumpAmplitude, 0.0f, 64.0f, "%.2f",
+        SliderFloatField("Wave Height", &layerParams.waveAmplitude, 0.0f, 64.0f, "%.2f",
             "Overall vertical amplitude of the wave displacement (world units).");
-        SliderFloatField("Wave Speed", &layerParams.waveSpeed, 0.0f, 30.0f, "%.2f",
-            "Deep-water phase speed of the primary swell (m/s).");
+        SliderFloatField("Wave Speed (m/s)", &layerParams.waveSpeed, 0.0f, 30.0f, "%.2f",
+            "Phase speed of the sine swell.");
         SliderFloatField("Wave Period", &layerParams.wavePeriod, 5.0f, 4096.0f, "%.1f",
-            "Primary swell wavelength (world units). Larger = longer, slower waves.\n"
+            "Wavelength of the sine swell (world units).\n"
             "The swell's HEIGHT follows the wavelength (constant steepness), so this\n"
             "scales the whole swell up, not just its wavelength.",
             ImGuiSliderFlags_Logarithmic);
         SliderFloatField("Shore Direction (deg)", &layerParams.shoreWaveAngle, 0.0f, 360.0f, "%.1f",
-            "FALLBACK wave propagation direction toward the shore.\n"
-            "The shader normally derives the local shore direction from the\n"
-            "water-depth gradient (toward thinning water); this angle is used\n"
-            "only where the bottom cannot be measured.\n"
+            "Direction the sine wave travels, toward the shore.\n"
             "0 = +Z, 90 = +X, 180 = -Z, 270 = -X.");
         SliderFloatField("Shore Gradient Step", &layerParams.shoreGradientStep, 0.0f, 64.0f, "%.1f",
-            "Screen-texel step used to sample the water-depth gradient that\n"
-            "yields the shore direction. Wider = more stable deep-ocean direction.\n"
-            "0 = disable the gradient and always use the fixed Shore Direction angle.");
-    }});
-
-    sections.push_back({[&]() {
-        ImGui::Text("Cross Swell");
-        ColSeparator();
-        ImGui::TextWrapped("Breaks up the crest lines.");
-        SliderFloatField("Cross Period", &layerParams.crossWavePeriod, 2.0f, 4096.0f, "%.1f",
-            "Cross train wavelength (world units). Its height follows the wavelength\n"
-            "(constant steepness), like the primary swell.",
-            ImGuiSliderFlags_Logarithmic);
-        SliderFloatField("Cross Speed", &layerParams.crossWaveSpeed, 0.0f, 30.0f, "%.2f");
-        SliderFloatField("Cross Amplitude", &layerParams.crossWaveAmplitude, 0.0f, 2.0f, "%.2f",
-            "Steepness of the cross train relative to the primary swell: its height\n"
-            "is this times the Cross Period (so the slope is what you set).");
-        SliderFloatField("Cross Phase Offset", &layerParams.crossWavePhase, -256.0f, 256.0f, "%.1f",
-            "Offset of the cross train along the shore direction (world units).\n"
-            "Both trains move along the same shore direction; this shifts them apart.");
-    }});
-
-    sections.push_back({[&]() {
-        ImGui::Text("Crest Detail");
-        ColSeparator();
-        SliderFloatField("Chop Amount", &layerParams.waveChopAmount, 0.0f, 2.0f, "%.2f",
-            "Steepness of the FBM chop (uses the Noise Detail spectrum): its height\n"
-            "is this times the Noise Period, so the slope is what you set.");
-        SliderFloatField("Ridge Stretch", &layerParams.waveRidgeStretch, 1.0f, 24.0f, "%.2f",
-            "Anisotropy of the ridged Perlin crests: along/across frequency ratio.\n"
-            "Higher = long, wave-like crest lines; 1 = isotropic ridge blobs.");
-        SliderFloatField("Crest Phase Warp", &layerParams.waveWarpAmount, 0.0f, 3.0f, "%.3f",
-            "Extra Perlin domain-warp drift of the ridged crests (feature units).\n"
-            "Uses the same Noise Detail spectrum as the chop.");
-        SliderFloatField("Crest Amp Variation", &layerParams.waveAmpVariation, 0.0f, 0.95f, "%.3f",
-            "Perlin-driven local crest height variation (0 = uniform crests).");
-        SliderFloatField("Whitecap Onset", &layerParams.whitecapOnset, 0.0f, 0.95f, "%.3f",
-            "Shoaling progress at which whitecaps start to appear (0..1).");
-    }});
-
-    sections.push_back({[&]() {
-        ImGui::Text("Wave Shaping (by Zone)");
-        ColSeparator();
-        ImGui::TextWrapped("Waves are shaped by the measured water thickness. The zone depth "
-                           "boundaries are edited in the Region sections above (deep, break, "
-                           "shallow); these controls shape the swell within them.");
-        SliderFloatField("Shoal Gain", &layerParams.waveShoalGain, 0.0f, 4.0f, "%.2f",
-            "Amplitude gain from the deep zone toward the breaker line.");
-        SliderFloatField("Shoal Speed Drop", &layerParams.waveShoalSpeed, 0.0f, 1.0f, "%.2f",
-            "How much the phase speed drops as the water shallows [0..1].");
-        SliderFloatField("Shallow Decay", &layerParams.waveShallowDecay, 0.05f, 6.0f, "%.2f",
-            "Amplitude decay exponent between the breaker line and the shallow zone.");
-        SliderFloatField("Line Wave Amplitude", &layerParams.waveLineAmplitude, 0.0f, 1.0f, "%.3f",
-            "Residual shore line wave height fraction below the shallow zone.");
-        SliderFloatField("Height Falloff", &layerParams.waveHeightFalloff, 0.0f, 4.0f, "%.3f",
-            "Global depth taper of the wave height for ALL waves:\n"
-            "pow(depth / Deep Starts At, falloff), so the height decreases\n"
-            "from full in the deep zone to 0 at the waterline.\n"
-            "0 = disabled (the zone envelope alone shapes the height).");
-    }});
-
-    sections.push_back({[&]() {
-        ImGui::Text("Breakers");
-        ColSeparator();
-        SliderFloatField("Breaker Amplitude", &layerParams.breakerAmplitude, 0.0f, 3.0f, "%.2f",
-            "Extra crest height concentrated at the breaker line.");
-        SliderFloatField("Breaker Curl", &layerParams.breakerCurl, -0.9f, 0.9f, "%.3f",
-            "Forward-leaning lip of the breaking crest (profile skew).\n"
-            "Sign flips the lean direction, 0 = symmetric crest.");
-        SliderFloatField("Crest Curvature", &layerParams.breakerCrestCurve, 0.0f, 2.0f, "%.3f",
-            "Hooks the breaking crest line into a curl around the break line\n"
-            "(0 = straight crests). Only active where the wave is breaking.");
-        SliderFloatField("Sharpness Deep", &layerParams.waveSharpDeep, 0.25f, 12.0f, "%.2f",
-            "Crest sharpness in deep water (1 = cosine, higher = peaked).");
-        SliderFloatField("Sharpness Break", &layerParams.waveSharpBreak, 0.25f, 16.0f, "%.2f");
-        SliderFloatField("Sharpness Shallow", &layerParams.waveSharpShallow, 0.25f, 12.0f, "%.2f");
-    }});
-
-    sections.push_back({[&]() {
-        ImGui::Text("Organic Mask");
-        ColSeparator();
-        ImGui::TextWrapped("Low-frequency noise mask: in calm patches the wave amplitude can drop to zero.");
-        SliderFloatField("Mask Period", &layerParams.waveMaskPeriod, 10.0f, 4096.0f, "%.1f",
-            "Calm-patch feature period (world units). Larger = broader patches.",
-            ImGuiSliderFlags_Logarithmic);
-        SliderFloatField("Mask Threshold", &layerParams.waveMaskThreshold, 0.0f, 1.0f, "%.3f");
-        SliderFloatField("Mask Softness", &layerParams.waveMaskSoftness, 0.0f, 1.0f, "%.3f");
-        SliderFloatField("Mask Speed", &layerParams.waveMaskSpeed, 0.0f, 1.0f, "%.3f");
+            "Screen-texel step used to measure the local direction of decreasing depth\n"
+            "(the direction to the shore). The wave faces aim along it, so the swell\n"
+            "runs head-on into every part of the coastline. 0 = use the fixed angle above.");
     }});
 
     sections.push_back({[&]() {
@@ -263,18 +115,10 @@ void WaterWidget::render() {
             "0 = soft gradients, 1 = hard, well-defined foam edges.");
         SliderFloatField("Foam Coverage", &layerParams.foamCoverage, 0.0f, 1.0f, "%.3f",
             "Global foam coverage multiplier (lighter/airier foam < 1).");
-        SliderFloatField("Foam Shore Speed", &layerParams.foamShoreSpeed, 0.0f, 1.0f, "%.3f",
-            "Foam advection speed factor at the shoreline (1 = same as\n"
-            "the breaker). Foam races off the curl and slows near shore.");
-        SliderFloatField("Foam Lag Growth", &layerParams.foamLagGrowth, 0.0f, 6.0f, "%.3f",
-            "How much the trailing foam falls behind the lip as the wave\n"
-            "approaches the shore.");
         SliderFloatField("Foam Decay", &layerParams.foamDecay, 0.0f, 0.5f, "%.4f",
             "Foam extinction per meter below the breaker line.");
         SliderFloatField("Shore Foam (legacy)", &layerParams.foamShoreAmount, 0.0f, 1.0f, "%.3f",
-            "LEGACY - no effect. The persistent shore-band foam line was removed when\n"
-            "the foam was confined to the Foam Band region (zShallow..zBreak); the\n"
-            "Shore Line region is contact-only now. Use Contact Foam for that line.");
+            "LEGACY - no effect. The shoreline line is the Contact Foam below.");
     }});
 
     sections.push_back({[&]() {

@@ -96,13 +96,9 @@ float waterPeriodToScale(float period) {
 // unchanged at the default settings.
 void waterGpuPeriodsToScales(WaterParamsGPU& gpu) {
     static const WaterParams kRef{};
-    // Amplitudes first: they read the periods that are overwritten below.
-    if (kRef.noisePeriod > 0.0f)
-        gpu.waveBreaker.y *= gpu.params2.y / kRef.noisePeriod;        // chop
+    // Amplitude first: it reads the period that is overwritten below.
     if (kRef.wavePeriod > 0.0f)
-        gpu.waveComponent1.z *= gpu.waveComponent1.x / kRef.wavePeriod; // primary swell
-    if (kRef.crossWavePeriod > 0.0f)
-        gpu.waveComponent2.z *= gpu.waveComponent2.x / kRef.crossWavePeriod; // cross swell
+        gpu.waveComponent1.z *= gpu.waveComponent1.x / kRef.wavePeriod; // swell height
 
     gpu.params2.y = waterPeriodToScale(gpu.params2.y);
     gpu.waveComponent1.x = waterPeriodToScale(gpu.waveComponent1.x);
@@ -129,7 +125,7 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
                                p.blurRadius,
                                p.blurDepthScale,
                                0.0f);
-    gpu.waveParams = glm::vec4(p.tessNoiseInfluence, 0.0f, p.bumpAmplitude, p.depthFalloff);
+    gpu.waveParams = glm::vec4(p.tessNoiseInfluence, 0.0f, p.waveAmplitude, p.depthFalloff);
     gpu.reserved1 = glm::vec4(p.enableReflection ? 1.0f : 0.0f,
                               p.enableRefraction ? 1.0f : 0.0f,
                               0.0f,
@@ -147,33 +143,30 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     gpu.waveToggles = glm::vec4(p.enableWaves ? 1.0f : 0.0f,
                                 p.enableFoam ? 1.0f : 0.0f,
                                 p.enableVolumetric ? 1.0f : 0.0f, 0.0f);
-    gpu.waveZones = glm::vec4(p.zoneDeepDepth, p.zoneBreakDepth, p.zoneShallowDepth, 0.0f);
+    gpu.waveZones = glm::vec4(0.0f);                       // reserved (was: zone depths)
     gpu.waveDirection = glm::vec4(shoreDir.x, shoreDir.y, 0.0f, 0.0f);
-    gpu.waveShape = glm::vec4(p.waveSharpDeep, p.waveSharpBreak, p.waveSharpShallow, p.waveShoalGain);
-    gpu.waveShoal = glm::vec4(p.waveShoalSpeed, p.waveShallowDecay, p.waveLineAmplitude, p.breakerWidth);
+    gpu.waveShape = glm::vec4(p.shoreWaveSlope, 0.0f, 0.0f, 0.0f);
+    gpu.waveShoal = glm::vec4(0.0f, 0.0f, p.waveSteepness, 0.0f);
     gpu.waveComponent1 = glm::vec4(p.wavePeriod, p.waveSpeed, 1.0f, 0.0f);
-    gpu.waveComponent2 = glm::vec4(p.crossWavePeriod, p.crossWaveSpeed, p.crossWaveAmplitude, p.crossWavePhase);
-    gpu.waveBreaker = glm::vec4(p.breakerAmplitude, p.waveChopAmount, p.whitecapOnset, p.waveHeightFalloff);
-    gpu.waveCurl = glm::vec4(p.breakerCurl, p.breakerCrestCurve, 0.0f, 0.0f);
-    gpu.waveWarp = glm::vec4(p.waveWarpAmount, p.waveAmpVariation, p.waveRidgeStretch, p.shoreGradientStep);
-    gpu.waveMask = glm::vec4(p.waveMaskPeriod, p.waveMaskThreshold, p.waveMaskSoftness, p.waveMaskSpeed);
+    gpu.waveComponent2 = glm::vec4(0.0f);                  // reserved
+    gpu.waveBreaker = glm::vec4(0.0f);                     // reserved
+    gpu.waveCurl = glm::vec4(0.0f);                        // reserved
+    gpu.waveWarp = glm::vec4(0.0f, 0.0f, 0.0f, p.shoreGradientStep);
+    gpu.waveMask = glm::vec4(p.shoreWaveFade, 0.0f, 0.0f, 0.0f);
     gpu.foamParams = glm::vec4(p.foamCrestThreshold, p.foamTrailPhase, p.foamDecay, p.foamColorAmount);
     gpu.foamNoise = glm::vec4(p.foamNoisePeriod, p.foamNoiseSpeed, p.foamNoiseAmount, p.foamShoreAmount);
     gpu.foamExtra = glm::vec4(p.foamMaskFloor, p.foamDiffuseFloor, p.foamAmbient, 0.0f);
     gpu.foamContact = glm::vec4(p.foamContactWidth, p.foamContactAmount, p.foamContactAlpha, p.foamContactFloor);
-    gpu.foamShape = glm::vec4(p.foamEdge, p.foamCoverage, p.foamShoreSpeed, p.foamLagGrowth);
+    gpu.foamShape = glm::vec4(p.foamEdge, p.foamCoverage, 0.0f, 0.0f);
     gpu.foamColor = glm::vec4(p.foamColor, 0.0f);
     gpu.volumetricParams = glm::vec4(p.volumetricStrength, p.volumetricDensity, p.volumetricPhaseG, 0.0f);
     gpu.volumetricColor = glm::vec4(p.volumetricColor, 0.0f);
-    gpu.regionShoreColor = glm::vec4(p.regionShoreColor, 0.0f);
-    gpu.regionShallowColor = glm::vec4(p.regionShallowColor, 0.0f);
-    gpu.regionBreakerColor = glm::vec4(p.regionBreakerColor, 0.0f);
-    gpu.regionShoalColor = glm::vec4(p.regionShoalColor, 0.0f);
-    gpu.regionDeepColor = glm::vec4(p.regionDeepColor, 0.0f);
-    gpu.regionTintParams = glm::vec4(p.regionBlendSoftness,
-                                     p.tintShoreFadeDepth,
-                                     0.0f,
-                                     0.0f);
+    gpu.regionShoreColor = glm::vec4(p.waterColor, 0.0f);   // the single water colour
+    gpu.regionShallowColor = glm::vec4(0.0f);               // reserved
+    gpu.regionBreakerColor = glm::vec4(0.0f);               // reserved
+    gpu.regionShoalColor = glm::vec4(0.0f);                 // reserved
+    gpu.regionDeepColor = glm::vec4(0.0f);                  // reserved
+    gpu.regionTintParams = glm::vec4(0.0f, p.tintShoreFadeDepth, 0.0f, 0.0f);
     return gpu;
 }
 
@@ -801,12 +794,12 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     vertexInputInfo.pVertexAttributeDescriptions = attrDescs.data();
 
     // Non-tessellated family vertex input: the WATER_NO_TESS vertex shader
-    // consumes only POS/NORMAL/BRUSH_INDEX/HSV (COLOR/UV are unused and are
-    // pruned by the -O SPIR-V pass), so the pipeline must not declare the
-    // pruned attributes or VVL reports
+    // consumes only POS/NORMAL/BRUSH_INDEX (COLOR/UV/HSV are unused in this
+    // path and are pruned by the SPIR-V pass), so the pipeline must not declare
+    // the pruned attributes or VVL reports
     // "Vertex attribute at location N not consumed by vertex shader".
     auto noTessAttrDescs = vk_layouts::defaultAttributesFiltered(
-        { ATTR_POS, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV });
+        { ATTR_POS, ATTR_NORMAL, ATTR_BRUSH_INDEX });
     VkPipelineVertexInputStateCreateInfo noTessVertexInputInfo = vertexInputInfo;
     noTessVertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(noTessAttrDescs.size());
     noTessVertexInputInfo.pVertexAttributeDescriptions = noTessAttrDescs.data();
