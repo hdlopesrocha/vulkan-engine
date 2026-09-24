@@ -940,6 +940,13 @@ void shadeWaterSurface() {
             // fallback to reflection if total internal reflection occurs
             refrRay = reflect(-viewDir, normal);
         }
+        // Refraction Strength is the amount of bending: 1 = the full Snell ray,
+        // 0 = straight through (no refraction), in between = the classic partial
+        // refraction. This is the layer's control over the effect - it used to
+        // only scale the removed Perlin distortion, which left the knob dead and
+        // the refraction fixed at full strength for every layer.
+        refrRay = normalize(mix(normalize(-viewDir), refrRay,
+                                clamp(wp.refractionStrength, 0.0, 1.0)));
         // Apply Perlin-based angular distortion so refractionStrength visibly
         // warps the lookup. The offset is expressed in the surface tangent
         // frame (T,B) so the distortion follows the wave orientation.

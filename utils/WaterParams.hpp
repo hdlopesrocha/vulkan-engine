@@ -10,7 +10,7 @@ struct WaterParams {
     // LEGACY (no effect, kept for layout/API stability): never uploaded to
     // the GPU — shaders use a neutral 1.0. Use Wave Height / Noise Scale.
     float waveScale = 0.03f;
-    float refractionStrength = 0.03f;
+    float refractionStrength = 1.0f;   // amount of Snell bending (0 = straight through)
     float fresnelPower = 5.0f;
     float transparency = 0.7f;
     float depthFalloff = 0.1f;
