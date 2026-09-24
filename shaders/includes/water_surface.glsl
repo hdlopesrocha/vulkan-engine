@@ -1727,6 +1727,19 @@ void shadeWaterSurface() {
                         clamp(waveField.contact, 0.0, 1.0), 0.0, 1.0);
         return;
     }
+    if (dbgMode == DEBUG_MODE_WATER_GERSTNER) {
+        // The per-pixel Gerstner wave - exactly what the shading normal is
+        // built from, evaluated at this pixel's base position and depth.
+        //   R = wave height (grey 0.5 = mean level)
+        //   G = |analytic slope| (the normal's tilt, 2.0 = white)
+        //   B = horizontal pinch (the Gerstner displacement that sharpens
+        //       the crests), normalised by the crest height
+        float maxExpected = max(fragBasePos.w * max(wp.waveAmplitude, 1e-3), 1e-3);
+        outColor = vec4(0.5 + 0.5 * clamp(waveField.height / maxExpected, -1.0, 1.0),
+                        clamp(length(waveField.grad) * 0.5, 0.0, 1.0),
+                        clamp(length(waveField.disp) / maxExpected, 0.0, 1.0), 1.0);
+        return;
+    }
     if (dbgMode == DEBUG_MODE_WATER_SWELL) {
         // The sine swell, signed (grey 0.5 = mean level):
         // R = profile (sin), G = along-shore slope (cos).

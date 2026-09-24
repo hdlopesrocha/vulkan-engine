@@ -60,6 +60,9 @@ enum class DebugMode : int {
                           //            WHERE the lobe lets them run (gated since perf report 20 M10)
     ShoreDirection,       // water only: the shore direction (direction of DECREASING depth), which drives the
                           //            wave movement in every region, packed to RGB + a measured/fallback flag
+    WaterGerstner,        // water only: the per-pixel Gerstner evaluation the shading normal is built from:
+                          //            R = wave height (grey 0.5 = mean level), G = analytic slope magnitude,
+                          //            B = horizontal pinch (the Gerstner crest sharpening)
     Count
 };
 
@@ -103,6 +106,7 @@ inline constexpr const char* kDebugModeNames[] = {
     "Water Foam / Contact",
     "Water Specular/Glitter Noise",
     "Water Shore Direction",
+    "Water Gerstner",
 };
 
 static_assert(sizeof(kDebugModeNames) / sizeof(kDebugModeNames[0])

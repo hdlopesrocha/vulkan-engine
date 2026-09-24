@@ -43,6 +43,7 @@ const int DEBUG_MODE_WATER_SWELL = 35;
 const int DEBUG_MODE_WATER_FOAM_MASK = 36;
 const int DEBUG_MODE_WATER_SPECULAR_NOISE = 37;
 const int DEBUG_MODE_SHORE_DIRECTION = 38;
+const int DEBUG_MODE_WATER_GERSTNER = 39;
 
 // Views whose displayed value is produced by traced reflection/refraction
 // rays force the full-quality reference path (full-rate + dual-trace) so the
