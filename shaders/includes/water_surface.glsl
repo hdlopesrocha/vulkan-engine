@@ -580,6 +580,12 @@ void shadeWaterSurface() {
     // Feature toggles
     bool enableReflection = wp.enableReflection;
     bool enableRefraction = wp.enableRefraction;
+    // NOTE: do NOT fold waterRenderUBO.refractionAllowed into this. That flag is
+    // settings.rtRefractions - it exists to gate the RAY-TRACED refraction paths
+    // (which need the pipeline/TLAS). The raster Snell-landing refraction below
+    // works without any ray tracing, so gating it on the RT toggle disabled
+    // water refraction completely whenever the RT preset was off (the default),
+    // which is exactly what "refraction not working" looked like.
     // Blur is a two-way gate like refraction: the per-material flag
     // (blurParams.x) AND the global Settings toggle (waterRenderUBO.blurAllowed)
     // must both be on, so the Minimal preset can disable blur without
@@ -587,9 +593,11 @@ void shadeWaterSurface() {
     bool enableBlur = wp.enableBlur && waterRenderUBO.blurAllowed;
     // Global ray-path gates from Settings, delivered via the water render UBO
     // so they apply in BOTH fragment variants (the non-RT variant has no `rt`
-    // block). Refraction off must mean NO refraction at all — including the
-    // Snell/Perlin sky fallback that previously kept rendering.
-    enableRefraction = enableRefraction && waterRenderUBO.refractionAllowed;
+    // block). They gate the RAY-TRACED paths only: the raster Snell-landing
+    // refraction below is geometry + projection work, needs no TLAS, and used
+    // to be switched off with them - which is why refraction appeared to be
+    // broken whenever the RT preset was off (the shipped default).
+    // (RT paths stay gated by rtReady / rt.refractionsEnabled below.)
     // Reflection stays ON with the RT ray off: the mirror falls back to the
     // sky equirect (sky-only reflection), which is the requested raster
     // behavior. The ray itself is gated at the trace site (`rt.waterReflections`).
