@@ -39,7 +39,7 @@ struct WaterParams {
     float ior = 1.333f;              // index of refraction for Snell air<->water
     glm::vec3 absorption = glm::vec3(0.35f, 0.12f, 0.08f); // Beer-Lambert RGB coefficients
     float absorptionScale = 0.3f;    // thickness multiplier for absorption
-    float maxThickness = 6.0f;       // clamp for RT hit thickness (kills far-hit blackouts)
+    float maxThickness = 64.0f;      // RT refraction hit clamp (m): deeper hits unresolved
     float shoreFadeDepth = 0.25f;    // water depth (m) over which the shoreline fades from fully transparent
 
     // Reflection / specular controls

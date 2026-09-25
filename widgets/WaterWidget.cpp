@@ -23,7 +23,7 @@ void WaterWidget::render() {
     WaterParams &layerParams = (*params)[currentLayer];
 
     ImGui::SetNextWindowPos(ImVec2(0, 24), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(1280, 720), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1280, 680), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(320, 300), ImVec2(FLT_MAX, FLT_MAX));
     ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen,
         ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -211,8 +211,10 @@ void WaterWidget::render() {
             "Beer-Lambert absorption coefficients: how fast refracted light fades with water depth.");
         SliderFloatField("Absorption Scale", &layerParams.absorptionScale, 0.0f, 4.0f, "%.2f",
             "Thickness multiplier for absorption (tuning).");
-        SliderFloatField("Max Thickness", &layerParams.maxThickness, 0.5f, 20.0f, "%.1f",
-            "Clamp for RT hit thickness: kills far-hit blackouts, keeps deep ground visible.");
+        SliderFloatField("Max Thickness (m)", &layerParams.maxThickness, 1.0f, 512.0f, "%.1f",
+            "Deepest water column the refraction resolves. A ray hit deeper than\n"
+            "this is treated as unresolved deep water (no refracted bottom), so\n"
+            "keep it above the deepest water you want to see through.");
         SliderFloatField("Shore Fade Depth", &layerParams.shoreFadeDepth, 0.0f, 2.0f, "%.2f",
             "Water depth over which the shoreline fades from fully transparent (waterline shows the bottom with no water color).");
     }});
