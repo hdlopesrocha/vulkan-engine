@@ -330,6 +330,7 @@ struct WaterParamsNamed {
     float shoreWaveSlope;
     float waveSteepness;
     float waveCrestSharpness;
+    float rippleHeight;
     vec3 waterColor;
     float waveSpeed;
     float waveAmplitude;
@@ -405,6 +406,7 @@ WaterParamsNamed waterParamsNamed(WaterParamsGPU p) {
     n.shoreWaveSlope = p.waveShape.x;
     n.waveSteepness = p.waveShoal.z;
     n.waveCrestSharpness = p.waveShape.y;
+    n.rippleHeight = p.waveCurl.x;
     n.waterColor = p.regionShoreColor.rgb;
     n.waveSpeed = p.waveComponent1.y;
     n.waveAmplitude = p.waveComponent1.z;

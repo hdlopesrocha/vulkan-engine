@@ -760,17 +760,21 @@ void shadeWaterSurface() {
     // its strength follows the wave steepness, and it fades with the distance
     // LOD so its finest octaves can never alias.
     {
-        const float kRippleSlope = 0.35;   // ripple gradient at full steepness
-        const int   kRippleOctaves = 3;
-        float rippleAmp = kRippleSlope * clamp(wp.waveSteepness, 0.0, 1.0) * detail;
-        if (rippleAmp > 0.0 && wp.noiseScale > 0.0) {
+        const int kRippleOctaves = 3;
+        // Ripple HEIGHT in metres, faded by the distance LOD and scaled by the
+        // steepness. Treating it as a height (not a slope) is what lets the
+        // normal be the one the surface would have with infinite tessellation:
+        // the displacement the vertices cannot afford is still in the normal.
+        float rippleHeight = max(wp.rippleHeight, 0.0)
+                           * clamp(wp.waveSteepness, 0.0, 1.0) * detail;
+        if (rippleHeight > 0.0 && wp.noiseScale > 0.0) {
             vec3 drift = vec3(fragShoreDir.x, 0.0, fragShoreDir.y) * (wp.waveSpeed * animTime);
             vec4 n = fbmGrad4D(vec4((fragBasePos.xyz - drift) * wp.noiseScale,
                                     animTime * wp.noiseTimeSpeed),
                                kRippleOctaves, wp.noisePersistence, wp.noiseLacunarity);
             vec3 rg = vec3(n.y, 0.0, n.w) * wp.noiseScale;   // d/dx, d/dz
-            normal = normalize(normal - dot(rg, T) * rippleAmp * T
-                                      - dot(rg, B) * rippleAmp * B);
+            normal = normalize(normal - dot(rg, T) * rippleHeight * T
+                                      - dot(rg, B) * rippleHeight * B);
         }
     }
 

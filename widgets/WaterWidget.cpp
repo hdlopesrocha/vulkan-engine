@@ -66,6 +66,11 @@ void WaterWidget::render() {
         SliderFloatField("Shore Wave Fade (m)", &layerParams.shoreWaveFade, 0.0f, 512.0f, "%.1f",
             "Water depth over which the swell fades out approaching the shore.\n"
             "0 = no fade (the sine runs to the waterline).");
+        SliderFloatField("Ripple Height (m)", &layerParams.rippleHeight, 0.0f, 4.0f, "%.3f",
+            "Height of the per-pixel ripple field (metres, trough to crest at full\n"
+            "steepness). The shading normal is derived from it, so it is the normal\n"
+            "the surface would have if the ripples were displaced at infinite\n"
+            "tessellation. 0 = a smooth Gerstner swell.");
         SliderFloatField("Wave Steepness", &layerParams.waveSteepness, 0.0f, 0.95f, "%.2f",
             "Gerstner pinch: how sharp and forward-leaning the crests are.\n"
             "0 = a pure sine (symmetric crests).");

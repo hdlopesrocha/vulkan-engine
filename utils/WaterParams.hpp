@@ -121,6 +121,11 @@ struct WaterParams {
     // Gerstner profile, higher = narrower, spikier crests and troughs with
     // steeper faces between them.
     float waveCrestSharpness = 1.6f;
+    // Ripple HEIGHT in metres (trough-to-crest at full Wave Steepness). The
+    // ripples are a height field, not just a normal perturbation: the shading
+    // normal is derived from this height, i.e. the normal the surface would
+    // have if it were displaced by the ripples at infinite tessellation.
+    float rippleHeight = 0.4f;
     float shoreWaveFade = 40.0f;    // depth (m) over which the swell fades out at the shore
     // Beach slope: metres of water depth per metre of horizontal distance from
     // the waterline. The wave phase runs on depth / slope (= the shore

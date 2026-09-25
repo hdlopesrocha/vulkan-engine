@@ -150,7 +150,7 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     gpu.waveComponent1 = glm::vec4(p.wavePeriod, p.waveSpeed, 1.0f, 0.0f);
     gpu.waveComponent2 = glm::vec4(0.0f);                  // reserved
     gpu.waveBreaker = glm::vec4(0.0f);                     // reserved
-    gpu.waveCurl = glm::vec4(0.0f);                        // reserved
+    gpu.waveCurl = glm::vec4(p.rippleHeight, 0.0f, 0.0f, 0.0f);
     gpu.waveWarp = glm::vec4(0.0f, 0.0f, 0.0f, p.shoreGradientStep);
     gpu.waveMask = glm::vec4(p.shoreWaveFade, 0.0f, 0.0f, 0.0f);
     gpu.foamParams = glm::vec4(p.foamCrestThreshold, p.foamTrailPhase, p.foamDecay, p.foamColorAmount);
