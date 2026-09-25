@@ -150,9 +150,8 @@ public:
 
         {
             std::cout << "\ttransparentLayer.add(sphere)"<< std::endl;
-            glm::vec3 min = glm::vec3(1500,0,500);
-            glm::vec3 len = glm::vec3(512.0f);
-            BoundingSphere sphere = BoundingSphere(min+len, 64);
+            glm::vec3 center = glm::vec3(1500+512.0f,512.0f,500+512.0f);
+            BoundingSphere sphere = BoundingSphere(center, 64);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
             transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
@@ -160,9 +159,8 @@ public:
 
         {
             std::cout << "\ttransparentLayer.add(sphere)"<< std::endl;
-            glm::vec3 min = glm::vec3(1500,0,1500);
-            glm::vec3 len = glm::vec3(1024.0f);
-            BoundingSphere sphere = BoundingSphere(min+len, 256);
+            glm::vec3 center = glm::vec3(1500+256.0f,256.0f,500+512.0f + 256.0f);
+            BoundingSphere sphere = BoundingSphere(center, 128);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
             transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(2), minSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
