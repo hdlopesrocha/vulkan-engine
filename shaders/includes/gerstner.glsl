@@ -100,8 +100,13 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         // Analytic anti-aliasing: drop a band once its phase varies by more
         // than about half a cycle per pixel (the screen derivative of the
         // phase under the uniform beach-slope model).
+        // Nyquist is pi radians per pixel. The old window (1.1 .. 2.4) faded the
+        // band out well BEFORE that, and at grazing views the world footprint per
+        // pixel is large enough that the whole swell lost its slope within a few
+        // hundred metres - the normal went flat at range while looking correct up
+        // close. Window it at the actual limit instead.
         float phaseFw = ki * (abs(dot(dPosdx, shoreDir)) + abs(dot(dPosdy, shoreDir)));
-        float aaFade = 1.0 - smoothstep(1.1, 2.4, phaseFw);
+        float aaFade = 1.0 - smoothstep(2.8, 5.6, phaseFw);
         if (aaFade <= 0.0) continue;
 
         float Ai = ampSwell * WAVE_BAND_AMP[i] * aaFade;
