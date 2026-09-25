@@ -88,3 +88,4 @@ Thumbs.db
 # debug information files
 *.dwo
 .deepcode/
+imgui.ini
