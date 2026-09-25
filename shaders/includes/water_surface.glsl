@@ -705,7 +705,11 @@ void shadeWaterSurface() {
     // is enabled the geometry is displaced (silhouette/refraction look right)
     // but the normals are still evaluated per fragment at full resolution,
     // instead of being limited to the interpolated per-vertex normal.
+    // A degenerate base normal would make every normalize() below NaN, and NaN
+    // renders black in the shaded colour AND in every view that uses the normal
+    // (while the ray-mask view, which does not, stayed correct). Guard it here.
     vec3 flatN = normalize(fragBaseNormal);
+    if (!(dot(flatN, flatN) > 0.25)) flatN = vec3(0.0, 1.0, 0.0);
     vec3 up = abs(flatN.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 T  = normalize(cross(up, flatN));
     vec3 B  = cross(flatN, T);
@@ -785,6 +789,9 @@ void shadeWaterSurface() {
             vec3 rg = vec3(n.y, 0.0, n.w) * wp.noiseScale;   // d/dx, d/dz
             normal = normalize(normal - dot(rg, T) * rippleHeight * T
                                       - dot(rg, B) * rippleHeight * B);
+            // Same guard after the ripple perturbation: a collapsed direction
+            // here is what turned the water black in the normal view.
+            if (!(dot(normal, normal) > 0.25)) normal = flatN;
         }
     }
 
