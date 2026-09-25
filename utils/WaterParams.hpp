@@ -185,14 +185,6 @@ struct WaterParams {
     glm::vec3 volumetricColor = glm::vec3(0.10f, 0.35f, 0.40f); // scatter tint
 };
 
-// Per-layer water look tier driven by the graphics-quality presets. Not
-// packed to the GPU: the shaders gate on the existing per-feature fields
-// (enableVolumetric/enableFoam/causticIntensity/glitterIntensity), which
-// this helper sets.
-enum class WaterQuality { Full, Minimal };
-
-
-
 // CPU mirror of shaders/includes/water_tint.glsl: ONE water region, so this is
 // a single colour. `depth` is kept in the signature because the callers pass
 // their depth signal in, but there is no depth-band palette any more.

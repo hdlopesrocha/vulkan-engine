@@ -63,6 +63,7 @@
 #include "utils/MainSceneLoader.hpp"
 #include "space/UniqueChangeCollector.hpp"
 #include "utils/Settings.hpp"
+#include "utils/WaterParams.hpp"
 #include "utils/GraphicsSettingsCommand.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "widgets/RadialMenu.hpp"
@@ -3282,19 +3283,11 @@ public:
         }
         if (auto qualityEvent = std::dynamic_pointer_cast<SetGraphicsQualityEvent>(event)) {
             // Runs on the queued-event drain (main thread, before frame
-            // recording). The preset edits the global Settings gates and
-            // applies the water look tier (perf_report_19 L12) to every
-            // layer; the upload callback pushes the touched layers to the
-            // water GPU params so the change takes effect even when the
-            // Water Settings widget is hidden.
+            // recording). The preset edits the global Settings gates only;
+            // the authored per-layer WaterParams are left untouched, so
+            // nothing has to be re-uploaded to the water GPU params.
             GraphicsSettingsCommand command(qualityEvent->quality);
-            command.execute(settings, waterParams,
-                [this](std::size_t layer, const WaterParams& params) {
-                    if (sceneRenderer && sceneRenderer->mainLiquidRenderer) {
-                        sceneRenderer->mainLiquidRenderer->updateGPUParamsForLayer(
-                            static_cast<uint32_t>(layer), params);
-                    }
-                });
+            command.execute(settings);
             return;
         }
         if (auto rebuildEvent = std::dynamic_pointer_cast<RebuildBrushEvent>(event)) {

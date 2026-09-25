@@ -2,36 +2,22 @@
 
 #include "GraphicsQuality.hpp"
 #include "Settings.hpp"
-#include "WaterParams.hpp"
-
-#include <cstddef>
-#include <functional>
-#include <vector>
 
 // Command that applies a graphics-quality preset to the runtime settings:
 //   Maximum — every secondary-visibility ray path on (RT solid/water
 //             reflections, water refraction, thickness, ray-traced depth),
-//             global water blur on, geometry/wave tessellation on,
-//             shadows on, and the Full water look tier: volumetric
-//             scattering, foam, caustics and glitter restored to their
-//             WaterParams{} defaults.
+//             global water blur on, geometry/wave tessellation on, shadows
+//             on, full-rate dual-trace rays.
 //   Minimal — all of the above off (blur and tessellation included), so the
-//             renderer falls back to the cheapest raster paths, and the
-//             Minimal water look tier: volumetric scattering, foam, caustics
-//             and glitter disabled, which makes the per-pixel water shader
-//             gates take their cheap paths.
+//             renderer falls back to the cheapest raster paths.
 //
 // Global-only and renderer-agnostic: the preset edits Settings fields that
 // gate the per-material water features (blurEnabled, rtWaterReflections,
 // rtRefractions) without holding renderer types, so the headless server can
-// still include it.
+// still include it. The per-layer WaterParams are authored values and are
+// never touched.
 class GraphicsSettingsCommand {
 public:
-    // Called once per water layer the preset changed (index + updated
-    // params), after the edit, so the caller can push it to the GPU.
-    using WaterLayerUpload =
-        std::function<void(std::size_t layer, const WaterParams& params)>;
-
     explicit GraphicsSettingsCommand(GraphicsQuality quality) : quality_(quality) {}
 
     GraphicsQuality quality() const { return quality_; }
@@ -40,31 +26,16 @@ public:
     void execute(Settings& settings) const {
         switch (quality_) {
         case GraphicsQuality::Maximum:
-            applyMaximum(settings, nullptr, {});
+            applyMaximum(settings);
             break;
         case GraphicsQuality::Minimal:
-            applyMinimal(settings, nullptr, {});
-            break;
-        }
-    }
-
-    // Global Settings plus the water look tier on every layer (Full for
-    // Maximum, Minimal for Minimal).
-    void execute(Settings& settings, std::vector<WaterParams>& waterLayers,
-                 const WaterLayerUpload& onLayerChanged = {}) const {
-        switch (quality_) {
-        case GraphicsQuality::Maximum:
-            applyMaximum(settings, &waterLayers, onLayerChanged);
-            break;
-        case GraphicsQuality::Minimal:
-            applyMinimal(settings, &waterLayers, onLayerChanged);
+            applyMinimal(settings);
             break;
         }
     }
 
 private:
-    static void applyMaximum(Settings& settings, std::vector<WaterParams>* waterLayers,
-                             const WaterLayerUpload& onLayerChanged) {
+    static void applyMaximum(Settings& settings) {
         settings.rtReflections = true;
         settings.rtWaterReflections = true;
         settings.rtRefractions = true;
@@ -84,11 +55,9 @@ private:
         settings.tessellationEnabled = true;
         settings.shadowTessellationEnabled = true;
         settings.enableShadows = true;
-
     }
 
-    static void applyMinimal(Settings& settings, std::vector<WaterParams>* waterLayers,
-                             const WaterLayerUpload& onLayerChanged) {
+    static void applyMinimal(Settings& settings) {
         // Local contact shadows are disabled as well so SceneRenderer's RT
         // runtime gate (any ray path on) turns the RT pipeline off entirely.
         settings.rtReflections = false;
@@ -108,7 +77,6 @@ private:
         // Shadow maps + cascade passes off (the solid pass then uses the
         // unshadowed direct-lighting path).
         settings.enableShadows = false;
-
     }
 
     GraphicsQuality quality_;
