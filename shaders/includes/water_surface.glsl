@@ -646,12 +646,19 @@ void shadeWaterSurface() {
     // hardware early-Z for this pipeline, but the water depth target starts
     // cleared and the surface is a single layer, so the early-Z it loses is
     // self-occlusion that barely happens.
-    if (waterRenderUBO.solidDepthIsCurrent) {
+    // Debug views must see the water: the rejection below discards fragments,
+    // and a discard returns before the debug dispatch, so a mis-firing test
+    // showed up as black water in every view (Reflection Vector first).
+    if (ubo.debugMode == 0 && waterRenderUBO.solidDepthIsCurrent) {
         float solidDepthRaw = textureLod(solidSceneDepthTex, screenUV, 0.0).r;
         if (solidDepthRaw < 1.0) {
             float solidEye = linearizeDepth(solidDepthRaw);
             float waterEye = linearizeDepth(gl_FragCoord.z);
-            if (solidEye < waterEye - 0.05) {
+            // Tolerance in eye space proportional to distance: at range the
+            // depth precision alone exceeds a fixed 5 cm, which rejected whole
+            // distant water areas. 0.5% of the eye depth plus the fixed floor.
+            float tol = 0.05 + 0.005 * waterEye;
+            if (solidEye < waterEye - tol) {
                 discard;
                 return;
             }
