@@ -210,7 +210,7 @@ void WaterBackFaceRenderer::createBackFacePipeline(VulkanApp* app, VkPipelineLay
 
     auto attrDescs = tess
         ? vk_layouts::defaultAttributes()
-        : vk_layouts::defaultAttributesFiltered({ ATTR_POS, ATTR_NORMAL, ATTR_BRUSH_INDEX });
+        : vk_layouts::defaultAttributesFiltered({ ATTR_POS, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV });
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
