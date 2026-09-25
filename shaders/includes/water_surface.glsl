@@ -1714,6 +1714,8 @@ void shadeWaterSurface() {
     // (grazing angles) must composite even where the water is thin, or
     // shallows and puddles lose their sky entirely (real puddles mirror!).
     // Top-down views are unaffected (mirrorPresence ≈ 0 there).
+    // NOTE: this floor is multiplied straight back down by the two shoreline
+    // fades below, so a TOTAL mirror is re-applied after them (see there).
     alpha = max(alpha, mirrorPresence);
 #ifndef RT_ENABLED
     // The sky mirror is a surface, not volume translucency: keep the Minimal
@@ -1732,6 +1734,19 @@ void shadeWaterSurface() {
     // alpha above); the contact-foam line is re-maxed after, so it survives
     // the fade.
     if (regionDepth > 1e-4) alpha *= tintShoreFade;
+    // Total-mirror restore: a surface with mirrorPresence == 1 (reflection
+    // Strength 1 - a polished mirror, not water) reflects ALL the light, so
+    // there is no transmitted component left for the two fades above to
+    // reveal. Those fades are a waterline signal: they must dissolve volume
+    // water at the bottom, but they have nothing to say about a mirror. This
+    // is re-applied AFTER them because the max() above gets multiplied
+    // straight back down: against the sky a floating mirror has no solid
+    // depth behind the fragment (solidDrop unmeasurable), so fragWaterDepth
+    // falls back to the sub-metre back-face drop, lands inside the 0.6 m tint
+    // shore fade and collapsed alpha to ~0 - the mirror sphere rendered
+    // transparent exactly where its reflection should show the sky. Partial
+    // mirrors (the lake at 0.3) keep the shoreline dissolve unchanged.
+    if (mirrorPresence >= 1.0 - 1e-3) alpha = max(alpha, mirrorPresence);
     // Shoreline contact foam is a surface line, not volume translucency: it
     // must stay visible where the water meets the solid even when the alpha
     // shoreline fade would otherwise erase the last water pixels.
