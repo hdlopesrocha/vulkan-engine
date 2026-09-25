@@ -18,7 +18,7 @@ TextureMixerWidget::TextureMixerWidget(std::shared_ptr<TextureMixer> textures_, 
 
 void TextureMixerWidget::render() {
     ImGui::SetNextWindowPos(ImVec2(0, 24), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(1280, 720), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1280, 680), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(320, 300), ImVec2(FLT_MAX, FLT_MAX));
     ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen,
         ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);

@@ -760,7 +760,7 @@ void BillboardCreator::render() {
         }
     }
 
-    ImGui::SetNextWindowSize(ImVec2(900, 700), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1280, 680), ImGuiCond_FirstUseEver);
     ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
     if (!wg.visible()) return;
 
