@@ -608,8 +608,11 @@ void shadeWaterSurface() {
     const bool captureMode = ubo.cubemapCapture;
     if (captureMode) { enableReflection = false; enableRefraction = false; }
 
-    // Apply noise time speed
-    float animTime = time * noiseTimeSpeed;
+    // animTime is the RAW water time. Wave Speed alone drives the swell (the
+    // Gerstner phase and the shore drift); Noise Time Speed alone drives the
+    // noise chains, which multiply it in explicitly below. Folding the noise
+    // speed in here coupled the two and double-scaled the noise axis.
+    float animTime = time;
 
     // Compute the clip → screen UV once and reuse it everywhere (the conversion
     // is identical for every use below).
@@ -1905,7 +1908,7 @@ void shadeWaterSurface() {
         // view works without tessellation.
         float timeDebug = waterRenderUBO.waterTime;
         float bumpAmpDbg = wp.bumpAmplitude;
-        float animTimeDbg = timeDebug * wp.noiseTimeSpeed;
+        float animTimeDbg = timeDebug;
         vec4 waveDbg = waterWaveSample(
             fragPos.xyz, animTimeDbg, waterThickness, bumpAmpDbg, fragShoreDir, wp,
             waveFieldOct, waveDx, waveDy);

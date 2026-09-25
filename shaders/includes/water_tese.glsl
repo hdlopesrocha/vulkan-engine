@@ -363,7 +363,7 @@ void main() {
     // spatial gradient (single wave field: directional swell + chop + mask).
     // Shared with the WATER_NO_TESS vertex path via waterDisplaceWaterVertex()
     // so both geometry paths cannot drift.
-    float animTime = time * noiseTimeSpeed;
+    float animTime = time;   // raw water time: Wave Speed drives the swell
     WaterVertexWave wv = waterDisplaceWaterVertex(pos, normal, animTime,
                                                   waterDepth, shoreDir, bumpAmp, wp,
                                                   WATER_VERTEX_OCT);

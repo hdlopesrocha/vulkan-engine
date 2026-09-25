@@ -139,7 +139,7 @@ void main() {
     }
     fragShoreDir = shoreDir;
 
-    float animTime = waterRenderUBO.waterTime * wp.noiseTimeSpeed;
+    float animTime = waterRenderUBO.waterTime;   // raw: Wave Speed drives the swell
     WaterVertexWave wv = waterDisplaceWaterVertex(pos, normal, animTime,
                                                   waterDepth, shoreDir, bumpAmp, wp,
                                                   WATER_VERTEX_OCT);
