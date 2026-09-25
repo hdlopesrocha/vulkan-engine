@@ -1451,12 +1451,12 @@ void shadeWaterSurface() {
 #endif
     if (!reflResolved) {
         // Explicit LOD: per-fragment fallback branch (see refraction above).
-        // Skipped entirely when reflection is off (the sampled sky would be
-        // discarded by the final mix), except for the debug view that shows it.
-        if (enableReflection || dbgMode == DEBUG_MODE_REFLECTION_COLOR) {
-            skyColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
-            reflSource = 6.0;
-        }
+        // ALWAYS sampled: when the rays are off this is the water's only light
+        // source, and leaving it conditional meant a false `enableReflection`
+        // (or any future gate) rendered the water black. One texture fetch on
+        // the ray-less path is cheap; a black lake is not.
+        skyColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
+        reflSource = 6.0;
         if (reflMaskDbg == 0.0) reflMaskDbg = 1.0;
     }
 
