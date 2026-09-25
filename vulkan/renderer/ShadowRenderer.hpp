@@ -117,6 +117,15 @@ private:
     // Shadow pipeline (writes EVSM moments to color)
     TrackedHandle<VkPipeline> shadowPipeline;
     TrackedHandle<VkPipelineLayout> shadowPipelineLayout;
+    // No-tessellation twin (perf report 21 C1): TRIANGLE_LIST + SOLID_NO_TESS
+    // vertex shader, no TCS/TES. Bound while shadow tessellation is off
+    // (passParams.y == 0 in the shadow UBO): the TES would emit level 1.0
+    // with no displacement then. Layout is a matching duplicate; bind sites
+    // keep using shadowPipelineLayout.
+    TrackedHandle<VkPipeline> shadowPipelineNoTess;
+    // Set per recordCascade from its shadowTessellationEnabled argument and
+    // consumed by beginShadowRendering's pipeline selection.
+    bool shadowTessOff_ = false;
 
     // Blur resources
     TrackedHandle<VkPipeline> blurPipeline;

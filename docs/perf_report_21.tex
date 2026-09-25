@@ -1,0 +1,809 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+\title{Performance Report 21: Vulkan Engine \\
+\large Solid and Water Rasterization --- Double Geometry, Always-On Tessellation, and the Fragment Fetch Multiplier}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Reports~17--20 audited the hybrid ray-tracing paths (17, 18), the frame-level
+water machinery (19), and the water noise constant factor (20). The
+\emph{raster} core --- the solid terrain forward/deferred passes and the water
+geometry pass that every preset executes --- has never had a dedicated report.
+This report closes that gap with a static audit of the shipped solid and water
+rasterization code plus SPIR-V measurements of the built modules.
+
+It finds \textbf{15 issues}: the solid pass has no non-tessellation pipeline
+family, so the default configuration (tessellation off) still runs every solid
+triangle through the TCS, the fixed-function tessellator and the TES (C1); the
+deferred depth$+$color scheme draws the full tessellated mesh \emph{twice},
+and the depth pass pays the full height-map displacement sampling even though
+its fragment shader is 240 words long (C2); triplanar shading multiplies every
+material map fetch by up to $3\times$ projections $\times$ $3\times$ materials
+(36 fetches per pixel worst case), confirmed by 34 static sample sites in
+\texttt{main.frag.spv} (C3). Behind them: a 3-cascade shadow pass that also
+runs the full tessellation$+$displacement pipeline plus six fullscreen EVSM
+blurs (H4), an unconditional per-pixel RGB$\rightarrow$HSV$\rightarrow$RGB
+round-trip with divergent branches (H5), secondary CSM lookups from inside RT
+hit shading (H6), a dead 12-byte-per-vertex color attribute carried through
+four stages (H7), and a TCS that computes every edge level three times (H8).
+The water findings are residual by design (reports~19--20 already landed):
+implicit-LOD taps in divergent composite flow (M9), a \texttt{waterRenderScale}
+that defaults to 1.0 and that neither preset touches (M10), a second full
+water cull dispatch whenever shadows are on (M11), and vertex-texture-fetch
+shore measurement in the no-tess water vertex shader (M12).
+
+Each issue is paired with the standard technique that fixes it and a
+copy-pasteable prompt (goal, steps, files, validation) preserving
+validation-clean execution, Synchronization2, runtime feature detection, and
+the raster$+$CSM fallback required by \texttt{AGENTS.md}. The application
+scores \textbf{6.9/10} overall (\S\ref{sec:score}): a strong submission and
+culling architecture held back by geometry that is processed two to three
+times per frame and a fragment stage that fetches the same texel families
+repeatedly instead of once.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+\subsection{Scope and Method}
+
+This report covers \emph{only} the rasterization-time cost of the two surfaces
+that exist in every frame: solid terrain
+(\texttt{SolidRenderer}, \texttt{main.vert}/\texttt{main.tesc}/\texttt{main.tese}/\texttt{main.frag},
+\texttt{includes/solid\_surface.glsl}, the CSM shadow path) and water
+(\texttt{WaterRenderer}, the water variants of the same stages, the water
+geometry pass and the \texttt{postprocess.frag} composite). Ray-tracing paths
+(reports~17--18), water frame machinery (report~19) and water noise ALU
+(report~20) are referenced but not re-audited; where this report touches them
+it is only at the interface (e.g.\ secondary CSM lookups from hit shading).
+
+Method: full reads of the renderer sources and shader includes cited below,
+plus measurements of the shipped \texttt{bin/shaders/*.spv} modules with
+\texttt{spirv-dis} (disassembled-operation counts and static
+\texttt{OpImageSample} sites). The application was \emph{not} executed: no GPU
+timestamps are quoted, and every dynamic magnitude is an analytic estimate
+from verified code structure, clearly labelled as such. No finding is reported
+without a file, a line number and a code quote.
+
+\subsection{What Previous Reports Left on the Table}
+
+\begin{itemize}
+    \item Report~19's C1 built a \textbf{non-tessellation pipeline family for
+    water} and report~20 confirms all twelve report~19 items landed. The
+    \textbf{solid} pass never received the same treatment: every solid
+    pipeline unconditionally includes the TCS/TCS/TES stages (C1).
+    \item The deferred depth$+$color solid scheme (depth prepass $\rightarrow$
+    sky $\rightarrow$ color with loaded depth) is \emph{correct} --- the color
+    pass enjoys near-perfect early-$z$ rejection --- but its price is paid in
+    the vertex/tessellation front-end, which runs twice, displacement
+    included (C2).
+    \item Report~20 measured fragment \emph{ALU} (46k-instruction water
+    module). This report measures fragment \emph{fetch multiplicity} on the
+    solid side: the ALU was gated, the fetches were not (C3).
+\end{itemize}
+
+\subsection{Measured Module Budget}
+
+\texttt{spirv-dis} on the shipped modules (exact flags as the Makefile,
+\texttt{glslc --target-env=vulkan1.3 -O}):
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrrl@{}}
+\toprule
+\textbf{Module} & \textbf{Words} & \textbf{Disasm.\ ops} & \textbf{Static image samples} & \textbf{Role} \\
+\midrule
+\texttt{main.frag.spv} & 22\,726 & 5\,394 & \textbf{34} & solid surface (non-RT) \\
+\texttt{main.vert.spv} & 3\,232 & --- & --- & solid VS (trivial) \\
+\texttt{main.tesc.spv} & 5\,233 & --- & --- & solid TCS \\
+\texttt{main.tese.spv} & 7\,881 & --- & --- & solid TES $+$ displacement \\
+\texttt{depth\_only.frag.spv} & 240 & --- & 0 & solid depth prepass FS \\
+\texttt{main\_water.frag.spv} & 27\,876 & 5\,750 & 12 & water surface (non-RT) \\
+\texttt{main\_water\_no\_tess.vert.spv} & 4\,038 & 858 & --- & water no-tess VS \\
+\bottomrule
+\end{tabular}
+\caption{Shipped module sizes. The solid depth-prepass FS is 240 words
+($\sim$1\% of the solid FS) but its pipeline runs the same 13k-word
+VS$+$TCS$+$TES front-end as the color pass (C2).}
+\end{table}
+
+\subsection{Recommended Order}
+
+Port the water C1 treatment to solid (C1) $\rightarrow$ stop displacing the
+depth prepass (C2) $\rightarrow$ collapse the triplanar fetch fan-out (C3)
+$\rightarrow$ cheapen the shadow path (H4) $\rightarrow$ gate the HSV
+round-trip (H5). The water items (M9--M12) and hygiene items (L13--L15) are
+independent and cheap.
+
+% =====================================================================
+\section{Cost Model}
+% =====================================================================
+
+Per-frame raster cost of the two surfaces:
+
+\begin{equation}
+C = \underbrace{G_{\mathrm{passes}} \times V \times C_{\mathrm{vert}}}_{\text{geometry, \S3}}
+  + \underbrace{\sum_{\mathrm{px}} F_{\mathrm{fetch}} \times C_{\mathrm{tex}}}_{\text{fragment fetches, \S3}}
+  + \underbrace{\sum_{\mathrm{px}} A_{\mathrm{alu}}}_{\text{fragment ALU (report~20)}}
+  + \underbrace{C_{\mathrm{shadow}} + C_{\mathrm{composite}} + C_{\mathrm{cpu}}}_{\text{\S4--\S5}}
+\end{equation}
+
+with $G_{\mathrm{passes}} \approx 2$ (solid, deferred) $+ 3$ (shadow cascades,
+tessellated) $+ 1$--$2$ (water geometry, plus back-face when volume is
+needed). The dominant, least-gated term is $G_{\mathrm{passes}}$: each pass
+re-runs vertex fetch, tessellation and (for solid) height-map displacement.
+The second is $F_{\mathrm{fetch}}$ on solid pixels, where triplanar projection
+turns 4 map reads into up to 36.
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: Solid Has No Non-Tessellation Pipeline Family --- Tessellation Off Still Pays TCS $+$ Tessellator $+$ TES}
+\label{sec:c1}
+
+\textbf{Severity: Critical.}
+
+Report~19 C1 built a \texttt{TRIANGLE\_LIST}, TCS/TES-free pipeline family for
+water and measured the win. The solid pass never got one. Every solid pipeline
+in \texttt{SolidRenderer::createPipelines} unconditionally chains the
+tessellation stages:
+
+\begin{lstlisting}[basicstyle=\footnotesize\ttfamily]
+auto [pipeline, layout] = app->createGraphicsPipeline(
+    { vertexShader.info, tescShader.info, teseShader.info,
+      fragmentShader.info }, ... );           // SolidRenderer.cpp:268-280
+\end{lstlisting}
+
+and the same four-stage chain is repeated for the RT variant (:287--302), the
+profiling variant (:305--321), the depth prepass (:326--340), the deferred
+depth (:353--363) and deferred color (:370--378) pipelines, the brush variants
+(:422--456) and the wireframe pipeline (\texttt{SolidRenderer.cpp:618--625}).
+A \texttt{grep} for \texttt{NoTess}/\texttt{NO\_TESS} in
+\texttt{SolidRenderer.*} returns nothing: no non-tessellation solid pipeline
+exists.
+
+Meanwhile tessellation defaults to \textbf{off}:
+\texttt{utils/Settings.hpp:62} (\texttt{tessellationEnabled = false}) and the
+Minimal preset explicitly disables it
+(\texttt{utils/GraphicsSettingsCommand.hpp}: \texttt{applyMinimal} sets
+\texttt{tessellationEnabled = false}). So the default configuration pushes
+every solid triangle through three TCS invocations per patch, the
+fixed-function tessellator, and the full TES (7\,881 words, including the
+barycentric interpolation of nine varyings in
+\texttt{solid\_tese.glsl:46--52}) just to emit tessellation level 1.0. The
+water path proves the fix works and the plumbing pattern (variant selection at
+bind time) already exists in both renderers.
+
+\textit{Technique: pipeline-family specialization on a static toggle.}
+Build \texttt{TRIANGLE\_LIST} solid pipelines without TCS/TES (reusing the
+water C1 pattern), select them when \texttt{ubo.tessellationEnabled} is false,
+and move the TES-only computations (light-space position, sharp normal) into
+the VS for that family. Keep the tessellated family for Maximum.
+
+\begin{tcolorbox}[promptbox={Prompt --- C1: non-tessellation solid pipeline family}]
+Goal: bind a TCS/TES-free solid pipeline family whenever tessellation is off,
+mirroring report~19 C1 for water. Steps: (1) add a \texttt{WATER\_NO\_TESS}-style
+compile path (e.g.\ \texttt{SOLID\_NO\_TESS}) to \texttt{main.vert} that writes
+the fragment interface directly (\texttt{fragPosLightSpace},
+\texttt{fragSharpNormal} from derivatives or the vertex normal,
+\texttt{fragTexWeights} from the vertex brush index); (2) create the matching
+pipelines in \texttt{SolidRenderer::createPipelines} for the forward, deferred
+depth/color and shadow-entry configurations; (3) select the family at bind time
+from the same toggle that already collapses tess levels to 1.0. Files:
+\texttt{vulkan/renderer/SolidRenderer.cpp}, \texttt{shaders/main.vert},
+\texttt{shaders/includes/solid\_tese.glsl}. Validation: validation-clean run,
+screenshots identical with tessellation off except multi-material boundary
+triangles (approach A, implemented: flat provoking-vertex material in
+\texttt{main\_solid\_no\_tess.vert.spv} --- exact for single-material
+triangles, which a VS cannot distinguish on indexed draws; RT/profiling/brush
+paths keep the tessellated pipelines as a correct fallback), timestamp queries
+showing the solid passes shrinking; Maximum (tessellation on) must be
+pixel-identical.
+\\ \textbf{Correction after implementation:} approach A was reverted for the
+color passes. \texttt{LandBrush::paint} assigns materials per vertex by slope
+and height bands (\texttt{utils/LandBrush.cpp}), so multi-material triangles
+cover entire mountainsides --- flat-shading them visibly breaks blending far
+beyond boundary pixels. The shipped fix keeps the tessellated family for all
+color passes (blending intact) and binds the no-tess twin only where the
+fragment shader samples no materials and the twin is exactly equivalent: the
+deferred depth prepass and the EVSM shadow pass. The exact path for the color
+pass remains a geometry-shader compression stage (all three corners visible)
+or a mesh split at material seams.
+\end{tcolorbox}
+
+\subsection{C2: Deferred Depth $+$ Color Draws the Full Tessellated Mesh Twice --- the Depth Pass Displaces Too}
+\label{sec:c2}
+
+\textbf{Severity: Critical.}
+
+\texttt{MyApp.cpp:1790} records \texttt{drawDepth} (depth-only,
+\texttt{LESS}, no color attachment) and \texttt{MyApp.cpp:1869} records
+\texttt{drawColor} (full \texttt{main.frag}, \texttt{LESS\_OR\_EQUAL}, no depth
+write) over the same culled command list. The design intent is sound: the
+color pass loads prepass depth and gets near-zero overdraw of the expensive
+fragment shader. But both passes run the \emph{entire} VS$+$TCS$+$TES
+front-end, and the TES displaces unconditionally:
+
+\begin{lstlisting}[basicstyle=\footnotesize\ttfamily]
+vec3 displacedLocalPos = mappingFlag > 0.5
+    ? applyDisplacement(localPos, localNormal, ...) : localPos;  // solid_tese.glsl:61
+\end{lstlisting}
+
+\texttt{applyDisplacement} samples up to three height maps
+(\texttt{displacement.glsl:22--36}, triplanar height sampling per material)
+\emph{per tessellated vertex} --- in the depth pass, whose fragment shader is
+240 words and writes nothing. Concretely, with tessellation on, the most
+expensive vertex work in the engine (tessellation $+$ 3 height fetches per
+generated vertex) executes twice per frame; with tessellation off, the
+redundant TCS/TES stages of C1 execute twice per frame. The depth pass exists
+to save fragment work, but it doubles vertex work that, at high tess levels,
+dominates.
+
+\textit{Technique: cheap-depth prepass.} Two composable options: (a) a
+depth-only TES variant that skips \texttt{applyDisplacement} (conservative
+depth: displace by the per-patch \emph{minimum} height instead, or accept the
+undisplaced mesh when displacement amplitude is small --- depth only needs to
+be conservative, not exact); (b) skip the prepass entirely when the solid
+overdraw estimate is low (tessellation off $+$ shadows off already implies a
+cheap fragment stage: no CSM fetches, \S\ref{sec:h6}). Option (a) preserves the
+early-$z$ benefit for the color pass at a fraction of the vertex cost.
+
+\begin{tcolorbox}[promptbox={Prompt --- C2: displacement-free (conservative) depth prepass}]
+Goal: the depth prepass must never pay full displacement sampling. Steps:
+(1) add a \texttt{DEPTH\_PASS} compile path to the solid TES that replaces
+\texttt{applyDisplacement} with the undisplaced position (or a per-patch
+minimum-height displacement for conservatism); (2) build the deferred depth
+pipeline (\texttt{SolidRenderer.cpp:342--363}) with it; (3) optionally gate the
+whole prepass on (tessellation on \emph{or} shadows on \emph{or} RT on) so
+Minimal runs a single forward pass. Files:
+\texttt{shaders/includes/solid\_tese.glsl},
+\texttt{vulkan/renderer/SolidRenderer.cpp}, \texttt{MyApp.cpp} ($\sim$1790,
+$\sim$1869). Validation: depth-buffer screenshots identical within one depth
+quantum, color pass pixel-identical, timestamp queries on query slots 6/7 vs
+10/11 showing the depth pass shrinking; validation-clean.
+\end{tcolorbox}
+
+\subsection{C3: Triplanar Shading Multiplies Every Map Fetch by up to $9\times$ --- 36 Fetches per Pixel Worst Case}
+\label{sec:c3}
+
+\textbf{Severity: Critical.}
+
+The solid fragment shader samples four map families (albedo, normal,
+roughness, AO) and triplanar projection samples \emph{each} family on up to
+three projections (\texttt{triplanar.glsl:23--29},
+\texttt{83--109}, \texttt{119--139}), for up to three materials blended by
+barycentric weights (\texttt{solid\_surface.glsl:139--150},
+\texttt{191--200}, \texttt{205--215}). Worst case per pixel:
+
+\begin{center}
+3 materials $\times$ 4 maps $\times$ 3 projections $=$ \textbf{36 texture fetches},
+\end{center}
+
+plus a full tangent-basis construction per projection per material
+(\texttt{computeProjectionNormal}, \texttt{triplanar.glsl:71--79}: two
+crosses, three normalizes, a normal-map fetch and convention fix-up). The
+\texttt{w.x > 0.0} guards skip zero-weight materials, so the common case is
+24 fetches (two live materials at triangle boundaries), but single-material
+interiors still pay 12 where 4 would do if roughness/AO were not triplanar.
+The shipped \texttt{main.frag.spv} contains \textbf{34 static
+\texttt{OpImageSample} sites} (measured, \S1) --- the highest fetch-site count
+of any non-RT module in the build. Two structural observations:
+
+\begin{itemize}
+    \item Roughness and AO are low-frequency signals sampled at full
+    triplanar rate. Nothing in the lighting model needs per-projection
+    roughness: a single-projection (dominant-axis) sample, or a UV-space
+    sample, is visually indistinguishable.
+    \item The normal path blends three world-space normals that were each
+    built from their own TBN basis, then renormalizes
+    (\texttt{triplanar.glsl:107--108}). Blending the \emph{normal-map texels}
+    first and building one basis would cut the basis constructions by $3\times$.
+\end{itemize}
+
+\textit{Technique: fetch-rate tiering + texel-domain blending.} Sample
+roughness/AO once per material on the dominant projection (weight-renormalize
+the remaining two for albedo/normal only); blend normal-map texels before the
+single TBN transform; consider packing roughness$+$AO$+$height into one
+texture so one fetch serves three consumers.
+
+\begin{tcolorbox}[promptbox={Prompt --- C3: collapse the triplanar fetch fan-out}]
+Goal: cut worst-case solid fragment fetches from 36 toward 12 with no visible
+change. Steps: (1) add \texttt{computeTriplanarRoughnessDominant} /
+\texttt{AODominant} helpers sampling only the max-weight projection;
+(2) rework \texttt{computeTriplanarNormalUVs} to blend the three normal-map
+texels first, then run one \texttt{computeProjectionNormal}-style basis;
+(3) keep full-rate paths behind a quality toggle for Maximum. Files:
+\texttt{shaders/includes/triplanar.glsl},
+\texttt{shaders/includes/solid\_surface.glsl}. Validation: A/B screenshots at
+grazing angles (where triplanar matters), static \texttt{OpImageSample} count
+in \texttt{main.frag.spv} dropping by at least 40\%, validation-clean.
+\end{tcolorbox}
+
+\subsection{H4: The Shadow Pass Runs Full Tessellation $+$ Displacement Into Three Cascades, Then Six Fullscreen EVSM Blurs}
+\label{sec:h4}
+
+\textbf{Severity: High.}
+
+With shadows enabled (Maximum default), solid geometry is drawn a third and
+fourth time: once per cascade cull stream
+(\texttt{ShadowRenderer.cpp:801}, \texttt{drawCascadeOnly}) with the full
+\texttt{main.vert} $+$ \texttt{main.tesc} $+$ \texttt{main.tese} $+$
+\texttt{shadow\_evsm.frag} chain (\texttt{ShadowRenderer.cpp:138--147}), i.e.\
+\emph{with} tessellation and \emph{with} displacement height sampling --- the
+very work C2 removes from the depth prepass is still paid three times here.
+Cascade sizes are 2048/1024/512
+(\texttt{ShadowRenderer.cpp:25--26}), and each cascade's moments texture then
+pays a horizontal and a vertical 9-tap separable blur
+(\texttt{ShadowRenderer.cpp:464--466}, \texttt{evsm\_blur.frag:18,36--38}):
+six fullscreen blur passes per frame. Two mitigations already exist and bound
+the damage: water is deliberately \emph{not} a shadow caster
+(\texttt{ShadowRenderer.cpp} after :801), and Minimal disables shadows
+entirely. What remains is the Maximum-default cost: tessellated, displaced
+geometry $\times 3$ plus $2048^2 + 1024^2 + 512^2$ blur fragments $\times 2$.
+
+\textit{Technique: cheap shadow-depth geometry + blur gating.} Bind the C2
+conservative-depth TES variant (or a no-displacement variant) for the shadow
+pipelines --- shadow depth is tolerant to centimetre error, and the existing
+depth bias dominates it. Gate the EVSM blur per cascade on screen coverage
+(skip the 512-cascade blur when its texel density is below the visible
+threshold) and consider a single 5-tap kernel for the two outer cascades.
+
+\begin{tcolorbox}[promptbox={Prompt --- H4: cheap shadow geometry and gated EVSM blur}]
+Goal: cut the shadow path to a fraction of its current vertex and blur cost.
+Steps: (1) reuse the C2 conservative-depth TES for the shadow pipelines
+(\texttt{ShadowRenderer.cpp:138--147}); (2) add per-cascade blur toggles driven
+by cascade screen coverage, defaulting the outer cascade to a 5-tap kernel;
+(3) keep full quality behind the Maximum preset. Files:
+\texttt{vulkan/renderer/ShadowRenderer.cpp},
+\texttt{shaders/evsm\_blur.frag}, \texttt{shaders/includes/solid\_tese.glsl}.
+Validation: shadow-acne and light-bleed A/B screenshots, timestamp queries on
+the cascade and blur passes showing the shadow path shrinking;
+validation-clean.
+\end{tcolorbox}
+
+\subsection{H5: Every Solid Pixel Pays an RGB-to-HSV-to-RGB Round-Trip With Divergent Branches}
+\label{sec:h5}
+
+\textbf{Severity: High.}
+
+The last thing \texttt{shadeSolidSurface} does before writing
+\texttt{outColor} is a full color-space round-trip on \emph{every} pixel
+(\texttt{solid\_surface.glsl:770--774}):
+
+\begin{lstlisting}[basicstyle=\footnotesize\ttfamily]
+vec3 texHSV = rgbToHsv(finalColor);        // 3-way if-chain, mod, divides
+texHSV.x = mod(texHSV.x + hsvColor.x, 360.0);
+texHSV.y = clamp(texHSV.y * (hsvColor.y * 2.0), 0.0, 1.0);
+texHSV.z *= hsvColor.z * 2.0;
+finalColor = hsvToRgb(texHSV);             // 6-way if-chain
+\end{lstlisting}
+
+\texttt{rgbToHsv} (\texttt{hsv.glsl:24--42}) contains a nested 3-way branch on
+the dominant channel plus \texttt{mod}; \texttt{hsvToRgb}
+(\texttt{hsv.glsl:4--21}) a 6-way branch. Adjacent pixels routinely take
+different paths (channel dominance flips at texture detail), so warps diverge
+on top of the ALU. Yet the default vertex tint is identity
+(\texttt{math/Vertex.hpp:41}: \texttt{hsv(0.0f, 0.5f, 0.5f)}), for which the
+whole round-trip is a no-op (hue $+0$, saturation $\times 1$, value $\times
+1$). Paint mode overrides the tint per pixel, but that is already a
+uniform-gated branch (\texttt{solid\_surface.glsl:75--91}).
+
+\textit{Technique: hoist the identity test.} Add a single UBO bit
+(\texttt{globalHsvIdentity}) set when no painted/brush tint is active and all
+resident materials use the default tint; when set, skip both conversions.
+Finer: quantize the tint to a $16^3$ LUT indexed in the fragment shader, which
+also removes the divergence (one fetch, no branches).
+
+\begin{tcolorbox}[promptbox={Prompt --- H5: gate the per-pixel HSV round-trip}]
+Goal: pixels with the identity tint skip both conversions. Steps: (1) add a
+UBO flag set by the paint/material system when every active tint is
+$(0, 0.5, 0.5)$; (2) wrap \texttt{solid\_surface.glsl:770--774} in it;
+(3) optionally replace the conversion pair with a small 3D LUT for
+non-identity tints. Files: \texttt{shaders/includes/solid\_surface.glsl},
+\texttt{shaders/includes/ubo.glsl}, the UBO upload path. Validation:
+pixel-identical screenshots in both states, disassembly showing the
+conversions compiled out on the fast path, validation-clean.
+\end{tcolorbox}
+
+\subsection{H6: CSM Cascade Selection Burns up to Three Matrix Projections per Pixel --- and RT Hit Shading Repeats It}
+\label{sec:h6}
+
+\textbf{Severity: High.}
+
+\texttt{ShadowCalculation} (\texttt{shadows.glsl:32--87}) evaluates
+\texttt{fragPosLightSpace.xyz / w} for cascade~0, then up to two full
+\texttt{projectToShadowMap} \texttt{mat4} $\times$ \texttt{vec4} multiplies
+(:59, :75) for cascades~1--2, plus one or two EVSM fetches with \texttt{exp},
+division-heavy Chebyshev math and a light-bleed remap per fetch
+(\texttt{evsm.glsl:17--34}). This runs per primary solid pixel \emph{and} per
+secondary hit: solid reflection shading calls \texttt{ShadowCalculation} again
+for every ray hit (\texttt{solid\_surface.glsl:528--529}), and water RT hits
+sample the CSM the same way (report~18 chain). A reflective pixel therefore
+pays the cascade-selection prologue two to four times for nearly the same
+world position.
+
+\textit{Technique: cascade-index reuse + hit-space amortization.} Pass the
+primary pixel's already-computed cascade index (or its projected coordinates)
+into the reflection-hit shading path instead of recomputing the selection from
+\texttt{worldPos}; hits are centimetres-to-metres from the primary surface and
+almost always land in the same cascade. Longer term, replace the three-matrix
+ladder with a single atlas transform plus index bits.
+
+\begin{tcolorbox}[promptbox={Prompt --- H6: reuse the primary cascade decision in secondary hits}]
+Goal: one cascade selection per pixel, shared by primary and secondary
+shading. Steps: (1) refactor \texttt{ShadowCalculation} into
+\texttt{selectCascade} (returns index $+$ projected coords) and
+\texttt{sampleCascade}; (2) thread the primary result through
+\texttt{rtSceneSampleReflectionAlbedo} / \texttt{rtResolveWaterHit} call
+sites, reusing it when the hit is within the same cascade bounds and
+re-selecting otherwise; (3) verify no double-darkening (combine rule at
+\texttt{solid\_surface.glsl:265} unchanged). Files:
+\texttt{shaders/includes/shadows.glsl},
+\texttt{shaders/includes/solid\_surface.glsl},
+\texttt{shaders/includes/rt\_scene\_sample.glsl}. Validation: reflection
+screenshots identical, static ALU reduction in the RT fragment variants,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{H7: A Dead 12-Byte Color Attribute Rides Four Shader Stages in a 64-Byte Vertex}
+\label{sec:h7}
+
+\textbf{Severity: High (bandwidth) / Low (effort).}
+
+\texttt{sizeof(Vertex)} is 64~bytes: position 12, \textbf{color 12}, uv 8,
+normal 12, brush index 4, pad 4, hsv 12 (\texttt{math/Vertex.hpp:29--39},
+\texttt{vulkan/includes/vertex\_layouts.hpp}). The color attribute is fetched
+from the merged vertex pool, interpolated by the tessellator, and passed
+VS $\rightarrow$ TCS $\rightarrow$ TES $\rightarrow$ FS --- but nothing reads
+it: \texttt{main.frag:28} declares \texttt{in vec3 fragColor} and
+\texttt{solid\_surface.glsl} never references it (the only \texttt{fragColor}
+hit in the solid path is the declaration itself). Dropping the attribute from
+the solid pipelines eliminates 12~bytes per vertex of attribute-fetch traffic
+and one interpolant across the TCS/TES/FS --- the TES interpolates a dead
+varying per generated vertex, which at high tess levels is the dominant
+multiplier. Note the subtlety: with \texttt{alignas(16)}, deleting the color
+alone leaves \texttt{sizeof(Vertex)} at 64 (52 rounds up), so the stride
+itself shrinks only with a repack (e.g.\ fold \texttt{brushIndex} into the
+remaining pad, compress \texttt{hsv}) down to 48.
+
+\textit{Technique: delete the attribute, then repack.} Remove
+\texttt{ATTR\_COLOR} from the solid pipelines' \texttt{defaultAttributes} (the
+\texttt{defaultAttributesFiltered} helper already exists for exactly this),
+drop the VS/TCS/TES passthrough, and repack the struct to a 48-byte stride.
+If any debug view wants a flat color, use a push constant.
+
+\begin{tcolorbox}[promptbox={Prompt --- H7: remove the dead color attribute}]
+Goal: 12~bytes/vertex less attribute traffic, one fewer interpolant, and a
+48-byte stride after repacking. Steps: (1) switch the solid pipelines to
+\texttt{defaultAttributesFiltered} without \texttt{ATTR\_COLOR}; (2) delete the \texttt{fragColor} passthrough in
+\texttt{main.vert}, \texttt{solid\_tesc.glsl}, \texttt{solid\_tese.glsl} and
+the \texttt{main.frag:28} declaration; (3) confirm no widget/debug consumer
+reads it. Files: \texttt{vulkan/includes/vertex\_layouts.hpp},
+\texttt{vulkan/renderer/SolidRenderer.cpp}, \texttt{shaders/main.vert},
+\texttt{shaders/main.frag}, \texttt{shaders/includes/solid\_tesc.glsl},
+\texttt{shaders/includes/solid\_tese.glsl}. Validation: stride assert
+($\mathtt{sizeof(Vertex)}$ or a slimmer solid vertex), pixel-identical
+screenshots, vertex-fetch-bytes counters down, validation-clean.
+\end{tcolorbox}
+
+\subsection{H8: The Solid TCS Computes Every Edge Level Three Times --- the Water TCS Does It Once}
+\label{sec:h8}
+
+\textbf{Severity: High (waste) / trivial (fix).}
+
+\texttt{solid\_tesc.glsl:115--118} computes \texttt{outer0/outer1/outer2} and
+writes \texttt{gl\_TessLevelOuter/Inner} unconditionally --- in \emph{all three}
+TCS invocations per patch. Each computation is two \texttt{length()} calls,
+three material-struct fetches and a smoothstep mix
+(\texttt{solid\_tesc.glsl:34--63}), so the patch pays it $3\times$. The water
+TCS guards the whole block with \texttt{if (gl\_InvocationID == 0)}
+(\texttt{water\_tesc.glsl}), leaving the other two invocations to do pure
+passthrough. This is a copy-paste asymmetry, not a design constraint.
+
+\textit{Technique: invocation-0 guard.} Wrap the edge block exactly like the
+water TCS does. Alternatively hoist edge-level computation to the CPU per
+chunk (levels change slowly), but the guard alone removes two thirds of the
+TCS ALU.
+
+\begin{tcolorbox}[promptbox={Prompt --- H8: guard the solid TCS edge block}]
+Goal: patch-level work runs once per patch, not three times. Steps:
+(1) wrap \texttt{solid\_tesc.glsl:112--129} in
+\texttt{if (gl\_InvocationID == 0)} mirroring \texttt{water\_tesc.glsl};
+(2) confirm crack-free LOD transitions are unaffected (edge math unchanged,
+only placement). Files: \texttt{shaders/includes/solid\_tesc.glsl}.
+Validation: tessellation heatmap view identical, TCS instruction count down in
+disassembly, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M9: The Composite Uses Implicit-LOD Fetches Inside Divergent Flow}
+\label{sec:m9}
+
+\textbf{Severity: Medium.}
+
+The \texttt{postprocess.frag} water composite takes the closest of four
+\texttt{waterGeomDepthTex} taps with implicit-LOD \texttt{texture()} inside
+\texttt{if (waterAlpha > 0.0 \&\& ...)} --- divergent control flow, since
+\texttt{waterAlpha} varies per pixel. Implicit derivatives there are
+per-quad estimates that go wrong exactly at water silhouettes, the place the
+closest-of-four logic exists to protect. The rest of the water path already
+learned this lesson: the triplanar helpers carry explicit
+\texttt{...Lod} variants precisely because implicit LOD is illegal inside
+non-uniform flow (\texttt{triplanar.glsl:31--37}).
+
+\textit{Technique: \texttt{textureLod(..., 0.0)}.} Four-character-class fix;
+also hoists cleanly into the H4-style gating (skip the taps where the blur
+block already determined there is no water).
+
+\begin{tcolorbox}[promptbox={Prompt --- M9: explicit LOD in the composite depth taps}]
+Goal: LOD-correct water-silhouette compositing. Steps: replace the four
+\texttt{texture(waterGeomDepthTex, ...)} calls in \texttt{postprocess.frag}
+with \texttt{textureLod(..., 0.0)}. Files:
+\texttt{shaders/postprocess.frag}. Validation: shoreline A/B screenshots at
+pixel zoom, validation-clean (derivative-uniformity warnings gone on strict
+drivers).
+\end{tcolorbox}
+
+\subsection{M10: \texttt{waterRenderScale} Defaults to 1.0 and Neither Preset Touches It}
+\label{sec:m10}
+
+\textbf{Severity: Medium.}
+
+The water offscreen targets honor \texttt{Settings::waterRenderScale}
+(\texttt{SceneRenderer.cpp:171--176}, slider $0.25$--$1.0$ in
+\texttt{widgets/SettingsWidget.cpp:149}) --- but the default is
+\texttt{1.0f} (\texttt{utils/Settings.hpp:143}) and neither
+\texttt{applyMaximum} nor \texttt{applyMinimal} sets it
+(\texttt{utils/GraphicsSettingsCommand.hpp}). So Minimal pays full-resolution
+water geometry, body, column and composite for a surface whose refraction body
+is then 9-tap blurred anyway (\S1 composite listing): blur-tolerant work at
+full rate by default. Halving the water resolution quarters water fragment,
+bandwidth and target-memory cost at a quality loss the blur largely hides.
+
+\textit{Technique: preset-wired render scale.} Set \texttt{waterRenderScale =
+0.5} in \texttt{applyMinimal} (keep 1.0 in Maximum), and document the slider
+as the override. The composite's closest-of-four depth logic already handles
+mismatched target/screen sizes.
+
+\begin{tcolorbox}[promptbox={Prompt --- M10: wire waterRenderScale into the presets}]
+Goal: Minimal renders water at half resolution by default. Steps: set
+\texttt{settings.waterRenderScale} in \texttt{applyMinimal} ($0.5$) and
+\texttt{applyMaximum} ($1.0$); confirm \texttt{SceneRenderer::setWaterRenderScale}
+propagation (\texttt{MyApp.cpp:806,1182--1184}) recreates targets correctly.
+Files: \texttt{utils/GraphicsSettingsCommand.hpp}. Validation: VRAM and water-pass
+timestamps down $\sim$4$\times$ on Minimal, shoreline screenshots acceptable,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{M11: The Back-Face Pass Re-Dispatches a Full Water Cull Whenever Shadows Are On}
+\label{sec:m11}
+
+\textbf{Severity: Medium.}
+
+The water back-face pass (volume thickness) needs culled water commands. With
+shadows off it reuses the main water cull output
+(\texttt{MyApp.cpp:2469--2473}); with shadows on, the shadow cascade cull
+contends for the same buffers, so a second full cull dispatch over the water
+slot capacity is recorded every frame (\texttt{MyApp.cpp:2332--2345},
+\texttt{taskLocalBackFaceCull}). Cull cost scales with slot \emph{capacity},
+not the visible count, so this doubles one of the frame's largest dispatches
+in exactly the configuration (Maximum) that is already the most expensive.
+
+\textit{Technique: cull-output sharing across passes.} The cascade cull and
+the back-face cull test the same bounds against different frustums; at minimum
+give the back-face dispatch its own persistent scratch and compact buffers
+sized to the water entry count (not the shared pool), and investigate keying
+the back-face draw off the main-pass visible set (back faces are needed only
+where front faces survived).
+
+\begin{tcolorbox}[promptbox={Prompt --- M11: stop paying a second full water cull}]
+Goal: one water cull dispatch per frame regardless of shadow state. Steps:
+(1) scope the task-local back-face cull buffers to the water entry count;
+(2) evaluate deriving the back-face draw list from the main water visible set
+instead of re-culling; (3) keep the reuse fast path
+(\texttt{MyApp.cpp:2469--2473}) as the shadows-off behavior. Files:
+\texttt{MyApp.cpp} ($\sim$2332--2345, $\sim$2462--2474),
+\texttt{vulkan/renderer/IndirectRenderer.hpp}. Validation: back-face thickness
+screenshots identical, one fewer full-capacity dispatch on Maximum,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{M12: The No-Tess Water Vertex Shader Does up to Six Depth Fetches and Two Inverse-VP Reconstructs per Vertex}
+\label{sec:m12}
+
+\textbf{Severity: Medium.}
+
+\texttt{main.vert:87--139} (the \texttt{WATER\_NO\_TESS} path Minimal binds)
+samples the solid and back-face depth textures up to six times per vertex and
+runs two full inverse-view-projection reconstructions to measure thickness and
+shore direction --- vertex-texture-fetch latency plus heavy ALU on every water
+vertex, before the fragment stage re-measures depth per pixel anyway
+(\texttt{water\_surface.glsl:678}). The vertex measurement seeds only the wave
+amplitude fade and foam proximity, both low-frequency signals.
+
+\textit{Technique: chunk-granularity measurement.} Compute per-chunk depth and
+shore direction once on the CPU (or in a tiny compute pre-pass) and upload
+them as per-draw constants; the VS then does a table lookup instead of six
+fetches and two matrix reconstructs. Alternatively quantize the measurement to
+a coarse screen-space grid refreshed at half rate.
+
+\begin{tcolorbox}[promptbox={Prompt --- M12: hoist water-vertex depth measurement out of the VS}]
+Goal: near-zero texture/ALU cost in the no-tess water VS. Steps: (1) compute
+per-chunk water depth $+$ shore direction on the CPU alongside the existing
+bounds publication; (2) deliver via the water render UBO or a small storage
+buffer indexed by draw id; (3) simplify \texttt{main.vert:87--139} to the
+lookup. Files: \texttt{shaders/main.vert},
+\texttt{shaders/includes/water\_tese.glsl}, the chunk publication path.
+Validation: shoreline foam/wave-fade screenshots identical, VS disassembly
+shrinking toward the 682-word tess-path vertex shader, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L13: Per-Pixel Triplanar \texttt{pow} and Renormalization}
+\label{sec:l13}
+
+\texttt{solid\_surface.glsl:110--117} raises the thresholded weights to
+\texttt{ubo.triplanarExponent} with \texttt{pow} per pixel, then divides by
+the sum. Restrict the exponent to $\{1, 2, 4, 8\}$ (repeated squaring, no
+\texttt{pow}) or fold common exponents into a 1D LUT. Minor ALU per pixel,
+trivial fix.
+
+\subsection{L14: NaN Diagnostics Execute in Shipping Shaders}
+\label{sec:l14}
+
+\texttt{solid\_surface.glsl:156} and \texttt{:182} run
+\texttt{isnan}+\texttt{length} checks on every pixel to paint degenerate
+normals red. Gate them on \texttt{ubo.debugMode != 0} (or a dedicated
+\texttt{NORMAL\_CHECK} build) so the production path pays nothing.
+
+\subsection{L15: Body/Column Targets Are Always Allocated, Even in No-Body Mode}
+\label{sec:l15}
+
+\texttt{WaterRenderer::createRenderTargets} unconditionally creates the
+full-resolution RGBA16F body and RG16F column targets
+(\texttt{WaterRenderer.cpp:398--419}) although report~19 H4 added a
+single-attachment pass that never writes them. VRAM-only (no bandwidth when
+unused), but at 4K it is $\sim$130\,MB of dead allocation across three
+frames. Allocate lazily on first use of the blur-capable variant.
+
+% =====================================================================
+\section{Implementation Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}llc@{}}
+\toprule
+\textbf{Item} & \textbf{Change} & \textbf{Est.\ frame delta} \\
+\midrule
+C1 & No-tess depth $+$ shadow (color stays tess.) & $-2$ TCS/TES traversals (depth, 3 shadow) \\
+C2 & Conservative depth prepass / prepass gate & $-$50--80\% of depth-pass vertex cost \\
+C3 & Triplanar fetch tiering & $-40$--$65$\% solid fragment fetches \\
+H4 & Shadow geometry $+$ blur gating & $-30$--$50$\% of shadow path \\
+H5 & HSV gate & $-$1 round-trip + divergence per solid px \\
+H6 & Cascade reuse in secondary hits & $-$1--3 projections per reflective px \\
+H7 & Drop dead color attribute & $-12$\,B/vtx traffic, stride 64$\rightarrow$48 \\
+H8 & TCS invocation guard & $-67$\% solid TCS ALU \\
+M9--M12 & Composite LOD, scale, cull, VS VTF & additive, each 2--10\% \\
+L13--L15 & Hygiene & noise-floor / VRAM \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C1 and C2 compose on the geometry front-end: together they
+remove the TCS/TES stages and displacement sampling from the depth prepass
+and the three shadow passes, while the color pass keeps the tessellated
+family to preserve material blending. C3 is the largest
+single fragment-side win. None of the items changes the lighting model, the
+CSM authority, or the RT fallback structure, so each can land independently
+behind its existing preset toggle.
+
+% =====================================================================
+\section{Overall Score}
+\label{sec:score}
+% =====================================================================
+
+\subsection{Rubric}
+
+Each category is scored 0--10 against a modern explicit-API engine baseline
+(dynamic rendering, GPU-driven submission, LOD-graded shading). Weights
+reflect frame-time impact for this application's typical scene (dense
+tessellated terrain, water, 3-cascade shadows).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcp{7.2cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Wt.} & \textbf{Score and justification} \\
+\midrule
+Submission \& culling & 15\% & \textbf{9.0} --- merged GPU cull with stable
+slots, indirect-count draws, vegetation/SDF/bbox streams folded into one
+dispatch, batched barriers (reports~19--20 work preserved). \\
+CPU overhead \& sync & 10\% & \textbf{8.0} --- cached descriptors, single UBO
+writes, per-frame mutex discipline; residual per-frame snapshots noted in
+report~18 remain. \\
+Vertex / geometry & 20\% & \textbf{5.0} --- C1 (always-tessellated solid),
+C2 (double geometry), H4 (triple shadow geometry), H7/H8. The front-end is
+the weakest subsystem. \\
+Fragment fetch efficiency & 20\% & \textbf{5.5} --- C3 (36-fetch worst case),
+H5/H6 secondaries; ALU itself is well gated (report~20). \\
+Bandwidth \& targets & 15\% & \textbf{6.5} --- RGBA32F water target (report~20
+H8) still default-full-res (M10), dead no-body allocations (L15); solid
+targets otherwise sane, no MSAA tax. \\
+Scalability controls & 10\% & \textbf{7.5} --- presets genuinely disable
+subsystems (Minimal), distance LOD, contribution/checkerboard RT gates;
+\texttt{waterRenderScale} not preset-wired (M10). \\
+Correctness posture & 10\% & \textbf{8.5} --- validation-clean discipline,
+feature detection, conservative fallbacks documented in-shader throughout. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Overall: 6.9/10 --- Good, Held Back by Geometry Multiplicity}
+
+\begin{equation}
+0.15(9.0) + 0.10(8.0) + 0.20(5.0) + 0.20(5.5) + 0.15(6.5) + 0.10(7.5) + 0.10(8.5) = \mathbf{6.9}
+\end{equation}
+
+The engine's submission architecture (9.0) and correctness posture (8.5) are
+its strengths; the score is dragged down by two concentrated weaknesses, both
+fixable without architectural changes: geometry is processed two to five
+times per frame depending on the pass (5.0), and the solid fragment stage
+re-fetches the same texel families instead of once (5.5). Landing C1--C3
+alone would move those categories to roughly 7.0/7.5 and the overall score to
+\textbf{$\sim$7.8/10}. Nothing in this report suggests a redesign: the fixes
+are pipeline variants, shader gates, and attribute deletions behind toggles
+that already exist.
+
+\end{document}

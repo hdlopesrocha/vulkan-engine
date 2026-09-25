@@ -69,6 +69,15 @@ public:
     void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
     bool rtShadingEnabled() const { return rtShadingEnabled_; }
 
+    // Runtime tessellation selector (Settings::tessellationEnabled, perf
+    // report 21 C1). Only the deferred-depth pass has a no-tess twin (its
+    // fragment shader samples no materials, so the twin is exact); the color
+    // passes keep the tessellated family to preserve the TCS material blend.
+    // RT/profiling/brush/wireframe paths never had a twin. All fallbacks bind
+    // the tessellated pipelines, which is always correct.
+    void setTessellationEnabled(bool enabled) { tessellationEnabled_ = enabled; }
+    bool tessellationEnabled() const { return tessellationEnabled_; }
+
     // Per-op RT profiling selector (RT_PROFILE variant, built only when the
     // device supports VK_KHR_shader_clock). Opt-in: instrumented shaders carry
     // atomics + device-clock reads, so they are only bound while the user has
@@ -108,6 +117,13 @@ private:
         return (rtShadingEnabled_ && deferredColorPipelineRt != VK_NULL_HANDLE)
             ? deferredColorPipelineRt.handle : deferredColorPipeline.handle;
     }
+    // Active deferred-depth pipeline: the no-tess twin while tessellation is
+    // off (same depth_only.frag, no TCS/TES/displacement sampling).
+    VkPipeline activeDeferredDepthPipeline() const {
+        if (!tessellationEnabled_ && deferredDepthPipelineNoTess != VK_NULL_HANDLE)
+            return deferredDepthPipelineNoTess.handle;
+        return deferredDepthPipeline.handle;
+    }
 
     IndirectRenderer indirectRenderer;
     TrackedHandle<VkPipeline> graphicsPipeline;
@@ -128,8 +144,21 @@ private:
     // VK_KHR_shader_clock is supported).
     TrackedHandle<VkPipeline> graphicsPipelineRtProf;
     TrackedHandle<VkPipeline> deferredColorPipelineRtProf;
+    // No-tessellation twin (perf report 21 C1): TRIANGLE_LIST, SOLID_NO_TESS
+    // vertex shader, no TCS/TES. Only the deferred-depth pipeline has one:
+    // depth_only.frag samples no materials, so the twin is exact there. The
+    // color pipelines keep the tessellated family because the TCS 3-corner
+    // material compression cannot be reproduced in a VS and flat shading it
+    // visibly breaks slope/height-band blending. Layout is a matching
+    // duplicate of the tessellated pipeline's layout (same setLayouts), so
+    // the bind sites keep using deferredDepthPipelineLayout.
+    TrackedHandle<VkPipeline> deferredDepthPipelineNoTess;
     bool rtShadingEnabled_ = true;
     bool rtProfilingEnabled_ = false;
+    // Tessellation family selector (Settings::tessellationEnabled, perf
+    // report 21 C1). True = bind the PATCH_LIST TCS/TES pipelines; false =
+    // bind the TRIANGLE_LIST no-tess twin where one exists (deferred depth).
+    bool tessellationEnabled_ = true;
     // Brush color pipeline (alpha blending enabled)
     TrackedHandle<VkPipeline> brushDeferredColorPipeline;
     TrackedHandle<VkPipelineLayout> brushDeferredColorPipelineLayout;

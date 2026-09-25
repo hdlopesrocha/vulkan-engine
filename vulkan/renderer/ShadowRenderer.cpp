@@ -168,6 +168,27 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
     );
     shadowPipeline = pipeline;
     shadowPipelineLayout = layout;
+    // No-tessellation twin (perf report 21 C1): same EVSM config, SOLID_NO_TESS
+    // vertex shader, no TCS/TES. The duplicate layout is discarded; bind sites
+    // keep using shadowPipelineLayout (identical setLayouts).
+    {
+        ShaderStage noTessVertexShader(
+            app->getOrCreateShaderModule("shaders/main_solid_no_tess.vert.spv"),
+            VK_SHADER_STAGE_VERTEX_BIT);
+        auto [noTessPipeline, noTessLayout] = app->createGraphicsPipeline(
+            { noTessVertexShader.info, evsmFragment.info },
+            std::vector<VkVertexInputBindingDescription>{
+                VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX }
+            },
+            vk_layouts::defaultAttributes(),
+            setLayouts,
+            nullptr,
+            cfg
+        );
+        shadowPipelineNoTess = noTessPipeline;
+        (void)noTessLayout;
+        noTessVertexShader.info.module = VK_NULL_HANDLE;
+    }
     vertexShader.info.module   = VK_NULL_HANDLE;
     tescShader.info.module     = VK_NULL_HANDLE;
     teseShader.info.module     = VK_NULL_HANDLE;
@@ -403,9 +424,15 @@ void ShadowRenderer::beginShadowRendering(VkCommandBuffer commandBuffer, uint32_
 
     vkCmdSetDepthBias(commandBuffer, 1.5f, 0.0f, 2.5f);
 
-    if (shadowPipeline != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, shadowPipeline);
-        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
+    // C1: bind the no-tess twin while shadow tessellation is off (same EVSM
+    // config and layout; the SOLID_NO_TESS VS writes the POSWORLD input the
+    // EVSM fragment shader reads).
+    VkPipeline shadowPipe = shadowPipeline.handle;
+    if (shadowTessOff_ && shadowPipelineNoTess != VK_NULL_HANDLE)
+        shadowPipe = shadowPipelineNoTess.handle;
+    if (shadowPipe != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, shadowPipe);
+        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipe);
     }
 }
 
@@ -752,6 +779,10 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
                                    bool renderSolid, bool vegetationEnabled,
                                    bool shadowTessellationEnabled, float lodBias,
                                    const glm::vec3& cameraPos) {
+    // C1 pipeline selection: the shadow UBO carries shadowTessellationEnabled
+    // in passParams.y, so with it off the TES would emit level 1.0 without
+    // displacement — bind the no-tess twin instead (see beginShadowRendering).
+    shadowTessOff_ = !shadowTessellationEnabled;
     // Per-cascade UBO: viewProjection = cascade light matrix; passParams.x must be
     // 0 so the TES emits fragPosWorld (required by the EVSM fragment shader).
     UniformObject shadowUBO = uboStatic;

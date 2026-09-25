@@ -359,6 +359,25 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         );
         deferredDepthPipeline = dp;
         deferredDepthPipelineLayout = dl;
+        // No-tessellation twin of the deferred depth pipeline (C1): same
+        // depth_only.frag, TRIANGLE_LIST + SOLID_NO_TESS VS, so the prepass
+        // skips TCS/TES and the TES displacement sampling entirely.
+        {
+            ShaderStage noTessVertexShader = ShaderStage(
+                app->getOrCreateShaderModule("shaders/main_solid_no_tess.vert.spv"),
+                VK_SHADER_STAGE_VERTEX_BIT
+            );
+            auto [noTessDp, noTessDl] = app->createGraphicsPipeline(
+                { noTessVertexShader.info, depthFrag.info },
+                std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+                vk_layouts::defaultAttributes(),
+                setLayouts, nullptr,
+                ddCfg
+            );
+            deferredDepthPipelineNoTess = noTessDp;
+            (void)noTessDl;
+            noTessVertexShader.info.module = VK_NULL_HANDLE;
+        }
         depthFrag.info.module = VK_NULL_HANDLE;
     }
     {
@@ -524,9 +543,9 @@ void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp
 }
 
 void SolidRenderer::drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet descSet) {
-    if (!appArg || deferredDepthPipeline == VK_NULL_HANDLE) return;
-    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, deferredDepthPipeline);
-    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipeline);
+    if (!appArg || activeDeferredDepthPipeline() == VK_NULL_HANDLE) return;
+    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, activeDeferredDepthPipeline());
+    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, activeDeferredDepthPipeline());
     if (descSet != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
@@ -548,9 +567,9 @@ void SolidRenderer::drawColor(VkCommandBuffer &commandBuffer, VulkanApp* appArg,
 }
 
 void SolidRenderer::drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect) {
-    if (deferredDepthPipeline == VK_NULL_HANDLE) return;
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, deferredDepthPipeline);
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipeline);
+    if (activeDeferredDepthPipeline() == VK_NULL_HANDLE) return;
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, activeDeferredDepthPipeline());
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeDeferredDepthPipeline());
     if (descSet != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
         else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);

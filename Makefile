@@ -131,6 +131,7 @@ OUT_SPVS = \
 	$(OUT_DIR)/shaders/main_water_rt_nobody.frag.spv \
 	$(OUT_DIR)/shaders/main_water.vert.spv \
 	$(OUT_DIR)/shaders/main_water_no_tess.vert.spv \
+	$(OUT_DIR)/shaders/main_solid_no_tess.vert.spv \
 	$(OUT_DIR)/shaders/main_water.tesc.spv \
 	$(OUT_DIR)/shaders/main_water.tese.spv \
 	$(OUT_DIR)/shaders/main_water_rt.tese.spv \
@@ -216,6 +217,19 @@ $(OUT_DIR)/shaders/main_water_no_tess.vert.spv: shaders/main.vert $(SHADER_INCLU
 		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 -DWATER_NO_TESS=1 $< -o $@; \
 	else \
 		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 --D WATER_NO_TESS=1 $< -o $@; \
+	fi
+# C1 (perf report 21): non-tessellation solid vertex path (TRIANGLE_LIST, no
+# TCS/TES), selected by SolidRenderer/ShadowRenderer when tessellation is off.
+# Same FS interface as the TES so no fragment shader changes. Material blend
+# is approach A (provoking-vertex flat material): exact for single-material
+# triangles; multi-material boundary triangles render flat instead of blended.
+$(OUT_DIR)/shaders/main_solid_no_tess.vert.spv: shaders/main.vert $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (SOLID_NO_TESS=1)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DSOLID_NO_TESS=1 $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D SOLID_NO_TESS=1 $< -o $@; \
 	fi
 $(OUT_DIR)/shaders/main_water.tesc.spv: shaders/main.tesc $(SHADER_INCLUDES)
 	@echo "Compiling shader: $< -> $@ (WATER_MODE=1)"

@@ -174,6 +174,54 @@ void main() {
     fragPosClip = clipPos;
     gl_Position = clipPos;
 }
+#elif !WATER_MODE && defined(SOLID_NO_TESS)
+// ── Non-tessellation solid VS (shaders/main_solid_no_tess.vert.spv) ───────
+// Direct VS -> FS interface: writes every varying the depth_only.frag and
+// EVSM shadow fragment shaders consume, so the TRIANGLE_LIST depth/shadow
+// pipelines need no TCS/TES. Valid only when tessellation is off: the TES
+// displacement collapses to the undisplaced position then
+// (mappingFlag *= tessellationEnabled), and tess levels are 1. Only passes
+// whose fragment shaders sample no materials use this VS: the TCS 3-corner
+// material compression cannot be reproduced in a VS (one invocation per
+// vertex, indexed draws), so the color passes keep the tessellated family to
+// preserve slope/height-band blending. The slot/weight outputs below are flat
+// provoking-vertex material (exact for single-material triangles) and exist
+// only for stage linkage; no bound FS reads them for shading.
+layout(location = VARY_COLOR) out vec3 fragColor;
+layout(location = VARY_UV) out vec2 fragUV;
+layout(location = VARY_NORMAL) out vec3 fragNormal;
+layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
+layout(location = VARY_BRUSHPATCH) flat out ivec3 fragTexIndices;
+layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace;
+layout(location = VARY_LOCALPOS) out vec3 fragPosWorldNotDisplaced;
+layout(location = VARY_TEXWEIGHTS) out vec3 fragTexWeights;
+layout(location = VARY_SHARPNORMAL) out vec3 fragSharpNormal; // unread by every solid FS; written for linkage
+layout(location = VARY_HSV) out vec3 fragHSV;
+layout(location = VARY_DEBUG) out vec3 fragTessLevel; // 1/16: what the TCS emits when tess is off
+
+void main() {
+    fragColor = inColor;
+    fragUV = inUV;
+    // Identity model (models removed): inPos is already world space.
+    vec3 normal = normalize(inNormal);
+    fragNormal = normal;
+    vec3 worldPos = inPos;
+    fragPosWorld = worldPos;
+    fragPosWorldNotDisplaced = worldPos;
+    fragPosLightSpace = ubo.lightSpaceMatrix * vec4(worldPos, 1.0);
+    if (inBrushIndex < 0) {
+        fragTexIndices = ivec3(0);
+        fragTexWeights = vec3(0.0);
+    } else {
+        int b = inBrushIndex;
+        fragTexIndices = ivec3(b, b, b);
+        fragTexWeights = vec3(1.0, 0.0, 0.0);
+    }
+    fragHSV = inHSV;
+    fragSharpNormal = normal;
+    fragTessLevel = vec3(1.0 / 16.0);
+    gl_Position = ubo.viewProjection * vec4(worldPos, 1.0);
+}
 #else
 layout(location = VARY_COLOR) out vec3 fragColor;
 layout(location = VARY_UV) out vec2 fragUV;

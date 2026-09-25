@@ -2574,6 +2574,15 @@ public:
                             settings.rtWaterReflections, settings.rtRefractions,
                             settings.blurEnabled);
                     }
+                    // Global tessellation gate for the solid family (perf
+                    // report 21 C1): mirrors the water gate above. Delivered
+                    // per frame so a preset switch takes effect immediately;
+                    // the selectors fall back to the tessellated pipelines
+                    // wherever no no-tess twin exists (RT/profiling/brush),
+                    // which is always correct.
+                    if (this->sceneRenderer->mainSolidRenderer) {
+                        this->sceneRenderer->mainSolidRenderer->setTessellationEnabled(settings.tessellationEnabled);
+                    }
 
                     if (slot.waterDs2 != VK_NULL_HANDLE) {
                         VkImageView wsky = (this->sceneRenderer->skyRenderer)
