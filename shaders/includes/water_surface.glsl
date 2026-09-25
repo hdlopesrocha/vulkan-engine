@@ -1371,7 +1371,13 @@ void shadeWaterSurface() {
     // the mirror traces even off-pick, so no pixel ends with two empty lobes
     // ("just tinted"). Sky covers the rest. No 360 cubemap.
     //
-    vec3 reflectDir = reflect(-viewDir, normal);
+    // Reflection direction, taken about the normal that faces the VIEWER. The
+    // water volume is drawn front and back, and the back-face pass carries a
+    // downward normal: reflecting about it pointed the mirror into the ground
+    // half of the equirect and rendered the reflection (and the Reflection
+    // Vector debug view) black.
+    vec3 reflNormal = (dot(normal, viewDir) < 0.0) ? -normal : normal;
+    vec3 reflectDir = reflect(-viewDir, reflNormal);
 
     vec3 skyColor = vec3(0.0);
     bool reflResolved = false;
