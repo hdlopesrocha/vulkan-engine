@@ -1789,7 +1789,12 @@ void shadeWaterSurface() {
         return;
     }
     if (dbgMode == DEBUG_MODE_REFLECTION_VECTOR) {
-        outColor = vec4(reflectDir * 0.5 + 0.5, 1.0);
+        // Computed right here from the shaded surface instead of reading
+        // reflectDir: that variable is filled by the reflection bookkeeping,
+        // which the ray-less build compiles out, so the view rendered black on
+        // Minimal. viewDir and the wave normal are always valid.
+        vec3 nVis = (dot(normal, viewDir) < 0.0) ? -normal : normal;
+        outColor = vec4(reflect(-viewDir, nVis) * 0.5 + 0.5, 1.0);
         return;
     }
     if (dbgMode == DEBUG_MODE_FRESNEL) {
