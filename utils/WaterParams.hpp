@@ -43,7 +43,8 @@ struct WaterParams {
     float shoreFadeDepth = 0.25f;    // water depth (m) over which the shoreline fades from fully transparent
 
     // Reflection / specular controls
-    float reflectionStrength = 0.6f;  // How much reflection mixes into the surface [0..1]
+    float reflectionStrength = 0.3f;  // How much reflection mixes into the surface [0..1]
+
     float specularIntensity = 2.0f;   // Brightness of specular highlight
     float specularPower = 128.0f;     // Sharpness of specular highlight
     float glitterIntensity = 1.5f;    // Brightness of sun glitter sparkles
