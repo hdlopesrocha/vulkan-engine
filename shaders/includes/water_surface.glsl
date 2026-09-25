@@ -1530,7 +1530,11 @@ void shadeWaterSurface() {
     // the sky along the view direction, so the water is tinted transparency -
     // the sky shows through it - instead of black.
     if (!enableRefraction) {
-        sceneColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(-viewDir)), 0.0).rgb;
+        // Sky source for the transmission term. The view direction points down
+        // and an equirect's lower half is ground/black, so this samples the
+        // sky along the reflected direction - the same sky the mirror uses, so
+        // both terms stay lit and vary per pixel with the Gerstner + FBM normal.
+        sceneColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
     }
     vec3 refractedColor = mix(sceneColor, waterTintColor, tintBlend);
 
@@ -1650,21 +1654,6 @@ void shadeWaterSurface() {
     // the normal depth-driven alpha over shoreFadeDepth meters. Without any
     // depth signal (non-RT flat water reports 0 everywhere) the fade is
     // skipped so the water stays visible via the transparency floor above.
-#ifndef RT_ENABLED
-    // ── Minimal: the non-RT build has no rays and no refraction, so make the
-    //    water unambiguous - a SKY MIRROR with the sky showing through the
-    //    surface, tinted by the layer colour. Deterministic: never black, never
-    //    vanishing, and it keeps the Gerstner swell + FBM ripple shading above.
-    {
-        // Both lookups use the REFLECTED direction, i.e. the sky above the
-        // horizon. The view direction points down, and an equirect's lower half
-        // is ground/black, so sampling it for the "through" term made the water
-        // dark instead of sky - which is why Minimal showed no sky.
-        vec3 skyMirror = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
-        waterColor = mix(mix(skyMirror, waterTintColor, tintBlend),
-                         skyMirror, clamp(mirrorPresence, 0.0, 1.0));
-    }
-#endif
     float thicknessFrac = clamp(thicknessForAlpha / 3.0, 0.0, 1.0); // ~3 m -> opaque
     float alpha = mix(1.0, thicknessFrac, clamp(transparency, 0.0, 1.0));
     // Refraction off keeps the surface TRANSPARENT: the (undistorted) solid
