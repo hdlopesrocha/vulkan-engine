@@ -1868,6 +1868,14 @@ void shadeWaterSurface() {
                         clamp(abs(waveField.swellSlope), 0.0, 1.0), 0.0, 1.0);
         return;
     }
+    if (dbgMode == DEBUG_MODE_SHADING_NORMAL) {
+        // The water's shading normal, directly. Without this case the view fell
+        // through to the shaded colour, so a black result read as "the normal
+        // is zero" when it was the colour that was black. This makes the view a
+        // direct read-out: grey = flat up, ripples visible as the FBM slope.
+        outColor = vec4(normal * 0.5 + 0.5, 1.0);
+        return;
+    }
     if (dbgMode == DEBUG_MODE_WATER_CONTACT) {
         // Shore sine: R = swell profile (signed), G = shoreline contact foam.
         outColor = vec4(0.5 + 0.5 * waveField.swell,
