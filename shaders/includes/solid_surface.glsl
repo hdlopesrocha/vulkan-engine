@@ -772,12 +772,19 @@ void shadeSolidSurface() {
     // outColor = vec4(vec3(NdotL), 1.0); return; // Show N·L term
     
     // Apply per-vertex HSV: rotate hue, offset saturation, scale value
-    // In paint mode, hsvColor is overridden with the brush's HSV from the UBO
-    vec3 texHSV = rgbToHsv(finalColor);
-    texHSV.x = mod(texHSV.x + hsvColor.x, 360.0);
-    texHSV.y = clamp(texHSV.y * (hsvColor.y * 2.0), 0.0, 1.0);
-    texHSV.z *= hsvColor.z * 2.0;
-    finalColor = hsvToRgb(texHSV);
+    // In paint mode, hsvColor is overridden with the brush's HSV from the UBO.
+    // H5: skip the round-trip for the identity tint (0, 0.5, 0.5), which the
+    // conversion pair leaves unchanged. Baked non-identity tints
+    // (Simple/NormalBrush paintHSV) and brush-tint pixels still convert; the
+    // compare is uniform wherever the tint is uniform, and inexact
+    // interpolation safely falls into the conversion path.
+    if (hsvColor.x != 0.0 || hsvColor.y != 0.5 || hsvColor.z != 0.5) {
+        vec3 texHSV = rgbToHsv(finalColor);
+        texHSV.x = mod(texHSV.x + hsvColor.x, 360.0);
+        texHSV.y = clamp(texHSV.y * (hsvColor.y * 2.0), 0.0, 1.0);
+        texHSV.z *= hsvColor.z * 2.0;
+        finalColor = hsvToRgb(texHSV);
+    }
     
     // Final output (single color target)
     outColor = vec4(finalColor, 1.0);

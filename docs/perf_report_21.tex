@@ -487,6 +487,19 @@ non-identity tints. Files: \texttt{shaders/includes/solid\_surface.glsl},
 \texttt{shaders/includes/ubo.glsl}, the UBO upload path. Validation:
 pixel-identical screenshots in both states, disassembly showing the
 conversions compiled out on the fast path, validation-clean.
+\\ \textbf{Implemented as a per-pixel identity early-out, not a UBO bit:}
+baked non-identity vertex tints exist (\texttt{Simple/NormalBrush::paintHSV},
+baked at \texttt{space/Octree.cpp:1210}), so a uniform gate would need global
+tracking of resident tint state with staleness hazards. The per-pixel compare
+is uniform wherever the tint is uniform (everywhere except tint boundaries),
+always correct with no CPU plumbing, and applies in \texttt{BRUSH\_PASS} too;
+inexact interpolation safely falls into the conversion path. Same fix applied
+to the identical pattern in \texttt{water\_surface.glsl:1659--1665} (H5 was
+solid-only; the water instantiation matched). Static size grows $\sim$100
+words (branch around kept code) --- the win is dynamic: $\sim$5 ALU compare
+vs $\sim$60 ALU divergent round-trip per pixel. Side effect: identity pixels
+no longer pay float round-trip error ($\sim$1e-7 diff vs before, an
+improvement; set A/B thresholds accordingly).
 \end{tcolorbox}
 
 \subsection{H6: CSM Cascade Selection Burns up to Three Matrix Projections per Pixel --- and RT Hit Shading Repeats It}
@@ -771,7 +784,7 @@ C1 & No-tess depth $+$ shadow (color stays tess.) & $-2$ TCS/TES traversals (dep
 C2 & Prepass gate: opt-in single pass (default on) & $-1$ full traversal when flipped (tess-on regime) \\
 C3 & Triplanar fetch tiering (shipped) & $-33$\% worst-case, $-67$\% single-mat \\
 H4 & Shadow TES prune $+$ 5-tap outer blur (shipped) & $-40$ ALU/vtx, $-44$\% outer-blur taps \\
-H5 & HSV gate & $-$1 round-trip + divergence per solid px \\
+H5 & HSV gate: per-pixel identity skip (shipped, +water) & $-60$ ALU/px at uniform tint \\
 H6 & Cascade reuse in secondary hits & $-$1--3 projections per reflective px \\
 H7 & Drop dead color attribute & $-12$\,B/vtx traffic, stride 64$\rightarrow$48 \\
 H8 & TCS invocation guard & $-67$\% solid TCS ALU \\

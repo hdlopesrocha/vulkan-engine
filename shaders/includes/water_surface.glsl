@@ -1656,13 +1656,18 @@ void shadeWaterSurface() {
     // bottom and back to the eye through the same absorption).
     waterColor += causticColor * (caustic * transmittance);
 
-    // Apply per-vertex HSV: rotate hue, offset saturation, scale value
+    // Apply per-vertex HSV: rotate hue, offset saturation, scale value.
+    // H5: skip the round-trip for the identity tint (0, 0.5, 0.5), which the
+    // conversion pair leaves unchanged (same argument as the solid path:
+    // uniform compare, baked/brush tints still convert).
     vec3 hsvColor = fragHSV;
-    vec3 texHSV = rgbToHsv(waterColor);
-    texHSV.x = mod(texHSV.x + hsvColor.x, 360.0);
-    texHSV.y = clamp(texHSV.y * (hsvColor.y * 2.0), 0.0, 1.0);
-    texHSV.z *= hsvColor.z * 2.0;
-    waterColor = hsvToRgb(texHSV);
+    if (hsvColor.x != 0.0 || hsvColor.y != 0.5 || hsvColor.z != 0.5) {
+        vec3 texHSV = rgbToHsv(waterColor);
+        texHSV.x = mod(texHSV.x + hsvColor.x, 360.0);
+        texHSV.y = clamp(texHSV.y * (hsvColor.y * 2.0), 0.0, 1.0);
+        texHSV.z *= hsvColor.z * 2.0;
+        waterColor = hsvToRgb(texHSV);
+    }
 
     // === VOLUMETRIC SCATTERING ===
     // Single-scattering approximation of sunlight scattered inside the
