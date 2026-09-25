@@ -938,12 +938,19 @@ void shadeWaterSurface() {
     // shore-directed drift as the swell and the ripples.
     vec2 refractionOffset = vec2(0.0);
     if (enableRefraction && wp.noiseScale > 0.0) {
-        const int kRefrNoiseOctaves = 3;
+        const int   kRefrNoiseOctaves = 3;
+        // The distortion runs finer than the surface ripples (the classic water
+        // refraction warp): 2.5x the ripple frequency.
+        const float kRefrNoiseScale = 2.5;
+        float refrNoiseScale = wp.noiseScale * kRefrNoiseScale;
         vec3 drift = vec3(fragShoreDir.x, 0.0, fragShoreDir.y) * (wp.waveSpeed * animTime);
-        vec4 n = fbmGrad4D(vec4((fragBasePos.xyz - drift) * wp.noiseScale,
+        // fbmGrad4D returns vec4(value, d/dx, d/dy, d/dz) over (x, y, z, t), so
+        // (n.y, n.w) is the world-xz gradient; scaling by the sample scale gives
+        // the world-space slope, which is what bends the ray.
+        vec4 n = fbmGrad4D(vec4((fragBasePos.xyz - drift) * refrNoiseScale,
                                 animTime * wp.noiseTimeSpeed),
                            kRefrNoiseOctaves, wp.noisePersistence, wp.noiseLacunarity);
-        refractionOffset = vec2(n.y, n.w) * wp.noiseScale * 0.5; // ripple slope -> angle
+        refractionOffset = vec2(n.y, n.w) * refrNoiseScale * 0.5;
     }
     if (enableRefraction) {
         // Approximate air->water refraction. GLSL `refract` expects the incident

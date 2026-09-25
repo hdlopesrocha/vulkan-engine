@@ -29,7 +29,7 @@ struct WaterParams {
     float noiseLacunarity = 4.0f;
     // Noise feature PERIOD in world units (the shader converts to spatial
     // scale = 1 / period when packing to the GPU). Larger = broader features.
-    float noisePeriod = 256.0f;
+    float noisePeriod = 8.0f;
     float waterTint = 0.3f;
     float noiseTimeSpeed = 8.0f;
 
