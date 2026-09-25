@@ -1818,7 +1818,13 @@ void shadeWaterSurface() {
         return;
     }
     if (dbgMode == DEBUG_MODE_WATER_NOISE) {
-        outColor = vec4(refractionNoise, 0.5 + 0.5 * (refractionNoise.x - refractionNoise.y), 1.0);
+        // The refracted-ray perturbation as actually applied (tangent frame):
+        //   R/G = the offset components (grey 0.5 = zero), B = its magnitude.
+        // If this is BLACK the noise is not reaching the ray; if it has colour
+        // the perturbation is live and the problem is downstream of the ray.
+        outColor = vec4(clamp(refractionOffset.x * 2.0 + 0.5, 0.0, 1.0),
+                        clamp(refractionOffset.y * 2.0 + 0.5, 0.0, 1.0),
+                        clamp(length(refractionOffset) * 4.0, 0.0, 1.0), 1.0);
         return;
     }
     // ── The single sine swell and its gate, so the wave can be inspected:
