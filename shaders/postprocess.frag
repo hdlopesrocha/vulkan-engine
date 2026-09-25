@@ -179,7 +179,13 @@ void main() {
     // CLOSEST of the 2x2 taps instead: the closer depth keeps the water, the
     // safe direction. Skipped where there is no water at all, so non-water
     // pixels pay nothing.
-    if (waterAlpha > 0.0) {
+    // Only valid when the water pass actually wrote its geometry-depth target:
+    // the single-attachment (body/column-less) variant that Minimal binds never
+    // writes it, so this test compared against whatever the target last held
+    // and hid the water entirely - black water in Minimal, correct in Maximum,
+    // which is the signature that led here. waterBlurEnabled is exactly "the
+    // aux attachments were written this frame" (H4).
+    if (waterAlpha > 0.0 && ubo.waterBlurEnabled > 0.5) {
         vec2 wtexel = 1.0 / vec2(textureSize(waterGeomDepthTex, 0));
         float wd00 = texture(waterGeomDepthTex, clamp(uv + vec2(-wtexel.x, -wtexel.y), vec2(0.0), vec2(1.0))).r;
         float wd10 = texture(waterGeomDepthTex, clamp(uv + vec2( wtexel.x, -wtexel.y), vec2(0.0), vec2(1.0))).r;
