@@ -420,6 +420,23 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             deferredColorPipelineRtProf = profCp;
             (void)profCl;
         }
+        // Depth-write twin for the gated single-pass path (perf report 21
+        // C2): same main.frag and TCS/TES stages, depth write on with LESS
+        // compare (standard forward semantics over the cleared depth target).
+        {
+            GraphicsPipelineConfig dwCfg = dcCfg;
+            dwCfg.depthWriteEnable = true;
+            dwCfg.depthCompareOp = VK_COMPARE_OP_LESS;
+            auto [dwCp, dwCl] = app->createGraphicsPipeline(
+                { vertexShader.info, tescShader.info, teseShader.info, fragmentShader.info },
+                std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+                vk_layouts::defaultAttributes(),
+                setLayouts, nullptr,
+                dwCfg
+            );
+            deferredColorPipelineDepthWrite = dwCp;
+            (void)dwCl;
+        }
     }
     {
         // Brush pipeline does not need set=1 (brush depth textures)

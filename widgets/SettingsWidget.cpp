@@ -323,6 +323,10 @@ void SettingsWidget::render() {
             // toggled globally
         }
         TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
+        if (ImGui::Checkbox("Solid Depth Prepass", &settings.solidDepthPrepass)) {
+            // toggled globally; takes effect on the next frame
+        }
+        TooltipOnHover("Off = single forward pass with depth write (perf report 21 C2). Consider off when tessellation is on; forced on while solid RT paths run.");
         if (ImGui::Checkbox("Adaptive Tessellation", &settings.adaptiveTessellation)) {
         }
         TooltipOnHover("Enable camera-distance driven tessellation level");

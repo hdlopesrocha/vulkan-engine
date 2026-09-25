@@ -61,6 +61,14 @@ public:
     // Tessellation
     bool tessellationEnabled = false; // user-enabled (was default false)
     bool shadowTessellationEnabled = false;
+    // Deferred depth prepass for the solid pass (perf report 21 C2 gate).
+    // true = depth prepass, then color with loaded depth (current behavior);
+    // false = single forward pass, color writes depth. Consider false when
+    // tessellation is on (vertex-bound regime: the prepass then doubles the
+    // dominant stage). Forced on while solid RT paths run (the RT color
+    // variants have no depth-write twin, and uncaptured depth would break
+    // the water/composite passes that sample it).
+    bool solidDepthPrepass = true;
     bool adaptiveTessellation = true;
     float tessellationFactor = 1.0f;
     float tessMaxDistance = 512.0f;

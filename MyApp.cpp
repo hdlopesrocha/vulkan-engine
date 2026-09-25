@@ -1741,6 +1741,18 @@ public:
                 VkClearValue depthClear{};
                 depthClear.depthStencil = {1.0f, 0};
 
+                // C2 gate: skip the depth prepass and run a single forward
+                // pass (color writes depth) when disabled in settings. Forced
+                // on while solid RT paths run: the RT color variants have no
+                // depth-write twin, and an unwritten depth target would break
+                // the water/composite passes that sample it. The depth layout
+                // transition below still runs in both modes (Instance 2 needs
+                // it when Instance 1 is skipped).
+                const bool skipSolidPrepass = !settings.solidDepthPrepass
+                    && !settings.rtReflections && !settings.rtLocalShadows;
+                if (settings.renderSolid && this->sceneRenderer->mainSolidRenderer)
+                    this->sceneRenderer->mainSolidRenderer->setDeferredColorDepthWrite(skipSolidPrepass);
+
                 // Transition solid depth to DEPTH_STENCIL_ATTACHMENT_OPTIMAL for the pre-pass.
                 {
                     VkImage solidDepthImg = this->sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx);
@@ -1757,7 +1769,8 @@ public:
                 }
 
                 // ── Instance 1: Deferred depth pre-pass (no color attachment) ──
-                {
+                // Skipped by the C2 gate (single forward pass instead).
+                if (!skipSolidPrepass) {
                     VkRenderingAttachmentInfo depthAtt{};
                     depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                     depthAtt.imageView = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
@@ -1822,7 +1835,11 @@ public:
                     depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                     depthAtt.imageView = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
                     depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                    // C2 gate: CLEAR when the prepass was skipped (single
+                    // forward pass, color writes depth), LOAD otherwise.
+                    // STORE is kept in both modes: the water pass samples
+                    // this depth later in the frame.
+                    depthAtt.loadOp = skipSolidPrepass ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
                     // STORE (not DONT_CARE): the solid depth is sampled later in
                     // this same frame by the water pass (SSR/shore clamps,
                     // raster water-region depth) and by debug/preview views.
@@ -1867,6 +1884,10 @@ public:
                     if (settings.renderSolid) {
                         VkDescriptorSet brushDepthSet = this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx);
                         this->sceneRenderer->mainSolidRenderer->drawColor(solidCmd, this, getMainDescriptorSet(), brushDepthSet);
+                        // C2: release the single-pass selector so later
+                        // external draws (brush) never inherit the depth-write
+                        // twin. Scoped to this draw; the default stays off.
+                        this->sceneRenderer->mainSolidRenderer->setDeferredColorDepthWrite(false);
                     }
 
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)

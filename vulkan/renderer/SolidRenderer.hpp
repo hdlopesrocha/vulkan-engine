@@ -85,6 +85,11 @@ public:
     void setRtProfilingEnabled(bool enabled) { rtProfilingEnabled_ = enabled; }
     bool rtProfilingEnabled() const { return rtProfilingEnabled_; }
 
+    // Single-pass selector (perf report 21 C2). While set, the color binds
+    // use the depth-write twin; MyApp sets it only around the solid color
+    // draw so external draws (brush) never inherit it. Defaults off.
+    void setDeferredColorDepthWrite(bool enabled) { colorDepthWrite_ = enabled; }
+    bool deferredColorDepthWrite() const { return colorDepthWrite_; }
     // Deferred depth test: draw only depth (no color)
     void drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet);
     // Deferred depth test: draw only color with LESS_OR_EQUAL compare, no depth write
@@ -114,8 +119,14 @@ private:
     VkPipeline activeDeferredColorPipeline() const {
         if (rtShadingEnabled_ && rtProfilingEnabled_ && deferredColorPipelineRtProf != VK_NULL_HANDLE)
             return deferredColorPipelineRtProf.handle;
-        return (rtShadingEnabled_ && deferredColorPipelineRt != VK_NULL_HANDLE)
-            ? deferredColorPipelineRt.handle : deferredColorPipeline.handle;
+        if (rtShadingEnabled_ && deferredColorPipelineRt != VK_NULL_HANDLE)
+            return deferredColorPipelineRt.handle;
+        // Single-pass path (C2 gate): depth-write twin while the prepass is
+        // skipped. RT variants above take precedence (MyApp forces the
+        // prepass on while solid RT paths run, so this never starves them).
+        if (colorDepthWrite_ && deferredColorPipelineDepthWrite != VK_NULL_HANDLE)
+            return deferredColorPipelineDepthWrite.handle;
+        return deferredColorPipeline.handle;
     }
     // Active deferred-depth pipeline: the no-tess twin while tessellation is
     // off (same depth_only.frag, no TCS/TES/displacement sampling).
@@ -144,6 +155,12 @@ private:
     // VK_KHR_shader_clock is supported).
     TrackedHandle<VkPipeline> graphicsPipelineRtProf;
     TrackedHandle<VkPipeline> deferredColorPipelineRtProf;
+    // Deferred color depth-write twin (perf report 21 C2): same main.frag,
+    // depth write on with LESS compare (standard forward semantics over a
+    // cleared target) — the single-forward-pass pipeline used when the depth
+    // prepass is gated off. Layout is a matching duplicate (same setLayouts),
+    // so the color bind sites keep using deferredColorPipelineLayout.
+    TrackedHandle<VkPipeline> deferredColorPipelineDepthWrite;
     // No-tessellation twin (perf report 21 C1): TRIANGLE_LIST, SOLID_NO_TESS
     // vertex shader, no TCS/TES. Only the deferred-depth pipeline has one:
     // depth_only.frag samples no materials, so the twin is exact there. The
@@ -159,6 +176,8 @@ private:
     // report 21 C1). True = bind the PATCH_LIST TCS/TES pipelines; false =
     // bind the TRIANGLE_LIST no-tess twin where one exists (deferred depth).
     bool tessellationEnabled_ = true;
+    // Single-pass flag (perf report 21 C2); see setDeferredColorDepthWrite.
+    bool colorDepthWrite_ = false;
     // Brush color pipeline (alpha blending enabled)
     TrackedHandle<VkPipeline> brushDeferredColorPipeline;
     TrackedHandle<VkPipelineLayout> brushDeferredColorPipelineLayout;

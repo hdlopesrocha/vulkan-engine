@@ -304,6 +304,21 @@ Minimal runs a single forward pass. Files:
 $\sim$1869). Validation: depth-buffer screenshots identical within one depth
 quantum, color pass pixel-identical, timestamp queries on query slots 6/7 vs
 10/11 showing the depth pass shrinking; validation-clean.
+\\ \textbf{Correction after implementation:} sub-item (a) --- an undisplaced
+(depth-only) prepass --- was declined as unsound and not implemented. The
+color pass tests \texttt{LESS\_OR\_EQUAL} against prepass depth, so prepass
+depth must equal color depth per pixel: wherever displacement pushes the
+surface \emph{away} from the camera, an undisplaced prepass records a nearer
+depth, the true surface fails the test, and sky shows through the terrain. A
+prepass is either exact or harmful; no cheap approximation preserves both
+correctness and the early-$z$ benefit. What shipped instead is (b) as an
+opt-in gate: \texttt{Settings::solidDepthPrepass} (default \texttt{true} =
+current behavior) skips Instance~1 and binds a depth-write color twin
+(\texttt{LESS} over cleared depth), forced back on while solid RT paths run
+(the RT variants have no depth-write twin). Tessellation-off frames already
+pay almost nothing for the prepass via the C1 no-tess twin, so the gate's
+expected win is the tessellation-on, vertex-bound regime --- confirm via the
+query slots before flipping the default.
 \end{tcolorbox}
 
 \subsection{C3: Triplanar Shading Multiplies Every Map Fetch by up to $9\times$ --- 36 Fetches per Pixel Worst Case}
@@ -727,7 +742,7 @@ frames. Allocate lazily on first use of the blur-capable variant.
 \textbf{Item} & \textbf{Change} & \textbf{Est.\ frame delta} \\
 \midrule
 C1 & No-tess depth $+$ shadow (color stays tess.) & $-2$ TCS/TES traversals (depth, 3 shadow) \\
-C2 & Conservative depth prepass / prepass gate & $-$50--80\% of depth-pass vertex cost \\
+C2 & Prepass gate: opt-in single pass (default on) & $-1$ full traversal when flipped (tess-on regime) \\
 C3 & Triplanar fetch tiering & $-40$--$65$\% solid fragment fetches \\
 H4 & Shadow geometry $+$ blur gating & $-30$--$50$\% of shadow path \\
 H5 & HSV gate & $-$1 round-trip + divergence per solid px \\
