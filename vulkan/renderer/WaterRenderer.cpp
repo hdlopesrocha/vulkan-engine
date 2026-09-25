@@ -794,12 +794,14 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     vertexInputInfo.pVertexAttributeDescriptions = attrDescs.data();
 
     // Non-tessellated family vertex input: the WATER_NO_TESS vertex shader
-    // consumes only POS/NORMAL/BRUSH_INDEX (COLOR/UV/HSV are unused in this
-    // path and are pruned by the SPIR-V pass), so the pipeline must not declare
-    // the pruned attributes or VVL reports
+    // consumes POS/NORMAL/BRUSH_INDEX/HSV (COLOR/UV are unused in this path and
+    // are pruned by the SPIR-V pass), so the pipeline must not declare the
+    // pruned attributes or VVL reports
     // "Vertex attribute at location N not consumed by vertex shader".
+    // HSV is consumed: the VS forwards it as fragHSV, the water fragment
+    // stage's tint input (same as the TES path writes from inHSV).
     auto noTessAttrDescs = vk_layouts::defaultAttributesFiltered(
-        { ATTR_POS, ATTR_NORMAL, ATTR_BRUSH_INDEX });
+        { ATTR_POS, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV });
     VkPipelineVertexInputStateCreateInfo noTessVertexInputInfo = vertexInputInfo;
     noTessVertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(noTessAttrDescs.size());
     noTessVertexInputInfo.pVertexAttributeDescriptions = noTessAttrDescs.data();
