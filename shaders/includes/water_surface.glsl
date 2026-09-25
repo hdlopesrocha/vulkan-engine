@@ -1656,9 +1656,12 @@ void shadeWaterSurface() {
     //    surface, tinted by the layer colour. Deterministic: never black, never
     //    vanishing, and it keeps the Gerstner swell + FBM ripple shading above.
     {
-        vec3 skyMirror  = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
-        vec3 skyThrough = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(-viewDir)), 0.0).rgb;
-        waterColor = mix(mix(skyThrough, waterTintColor, tintBlend),
+        // Both lookups use the REFLECTED direction, i.e. the sky above the
+        // horizon. The view direction points down, and an equirect's lower half
+        // is ground/black, so sampling it for the "through" term made the water
+        // dark instead of sky - which is why Minimal showed no sky.
+        vec3 skyMirror = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
+        waterColor = mix(mix(skyMirror, waterTintColor, tintBlend),
                          skyMirror, clamp(mirrorPresence, 0.0, 1.0));
     }
 #endif
