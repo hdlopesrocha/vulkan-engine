@@ -77,6 +77,35 @@ vec4 rtRasterBottom(vec3 O, vec3 S, vec2 suv) {
 //   (forward culled, reverse culled, forward unculled); it DOES see the
 //   water mesh (other water bodies must appear in mirrors); a = 1 on a hit,
 //   0 on a miss.
+//
+// Reflection-hit rule: a solid hit is a valid reflection only while the mirror
+// ray stays on the AIR side of the water surface.
+//
+//   Horizontal reflector (a lake: the undisplaced base normal is up): the
+//   water body is a horizontal slab, so a hit below the reflector's level is
+//   inside it - the submerged bed - and is not scenery. A hit above the level
+//   stays valid even when a wave-tipped ray is pointing down (a wave crest
+//   legitimately mirrors the far bank). This also covers a trough displaced
+//   under the bed, which no orientation test can see.
+//
+//   Curved reflector (a water blob - the mirror spheres): there is no slab, so
+//   the test is the ray's orientation against the UNDISPLACED base normal. A
+//   ray that points into the surface re-enters the water, and anything beyond
+//   it is seen through the column. The height test cannot be used here: an
+//   elevated reflector legitimately mirrors terrain far below its own height,
+//   and the unconditional height test erased that entire ground reflection -
+//   the lower mirror filled with horizon sky and read as capped.
+//
+// The base normal/position are used, never the displaced surface or the
+// shading normal, so a wave displacement cannot move the boundary.
+bool reflectionHitInAir(vec3 dir, vec3 hitPos) {
+    vec3 baseN = fragBaseNormal;                  // sign test only, no normalize
+    if (baseN.y > 0.9) {                          // horizontal slab (lake)
+        return hitPos.y >= fragBasePos.y - 0.05;
+    }
+    return dot(dir, baseN) >= 0.0;                // curved volume: stay outside
+}
+
 // Macro shadows stay CSM-owned: hits get ambient + sun diffuse only.
 vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thickCap, float waterMinHit) {
     // Refraction rays start AT the displaced water surface and go down.
@@ -286,19 +315,16 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
         // vertices also live in the WATER pools, so the solid vertex/index
         // reads in the off-screen fallback are only valid for gi.w == 0.
         uvec4 gi = rtSceneGeomInfo[lo];
-        // Below-waterline guard (reflection only): wave slopes can tip a
-        // grazing mirror ray slightly below the surface, where it hits the
-        // submerged lake bed instead of the scenery above the water. Shading
-        // that hit paints the underwater terrain over the water — the
-        // "far geometry has no reflection / dark far water" artifact. Treat
-        // any SOLID hit clearly below the reflector's water level as a miss so
-        // the mirror falls back to the sky (the ray direction is left
-        // untouched, so genuine above-water terrain hits still reflect
-        // normally). The reference is the UNDISPLACED base position
-        // (fragBasePos.y = the local waterline), not the displaced origin:
-        // in shallow water a wave trough can dip below the bed, which would
-        // let a bed hit sit above the displaced surface and slip through.
-        if (!refraction && gi.w == 0u && hitPos.y < fragBasePos.y - 0.05) {
+        // Below-surface guard (reflection only): a mirror ray that left the
+        // surface into the water (wave-tipped grazing rays, the in-facing lobe
+        // of a curved volume) sees the submerged bed, and shading that hit
+        // paints the underwater terrain over the water - the "far geometry has
+        // no reflection / dark far water" artifact. Treat such SOLID hits as
+        // misses so the mirror falls back to the sky; the ray direction is
+        // left untouched, so genuine above-water terrain hits still reflect
+        // normally. See reflectionHitInAir() for the rule itself and why it is
+        // not a bare height test.
+        if (!refraction && gi.w == 0u && !reflectionHitInAir(dir, hitPos)) {
             // Mirror ray dipped below the waterline: return the horizon sky as
             // a resolved reflection (a=0.6 > 0.5, source=guard for the
             // reflection-source debug view) so the fallback does not re-march
@@ -1449,14 +1475,14 @@ void shadeWaterSurface() {
     if (!reflResolved && reflDidTrace) {
         // Inline miss. Screen-space fallback for the on-screen solids the
         // exact-triangle ray misses (coarse LoD / undisplaced-BLAS slips):
-        // without it those solids vanish from the reflection. Hits BELOW the
-        // local water level are the submerged bed and are rejected (sky), so
-        // the far-water "terrain painted as reflection" artifact cannot come
-        // back. The march is distance-capped.
+        // without it those solids vanish from the reflection. The same
+        // water-side rule as the trace (reflectionHitInAir) rejects the
+        // submerged bed here too, so the far-water "terrain painted as
+        // reflection" artifact cannot come back. The march is distance-capped.
         const float kSsrMaxDist = 2000.0;
         vec3 ssrWorld;
         vec4 ssr = traceSSR(reflOrigin, normalize(reflectDir), kSsrMaxDist, ssrWorld);
-        if (ssr.a > 0.02 && ssrWorld.y >= fragBasePos.y - 0.05) {
+        if (ssr.a > 0.02 && reflectionHitInAir(reflectDir, ssrWorld)) {
             skyColor = ssr.rgb;
             reflSource = 4.0;
         } else {
