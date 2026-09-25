@@ -29,13 +29,32 @@ float cascadeBlendZ(float z, float margin) {
     return clamp(distFromFar / margin, 0.0, 1.0);
 }
 
+// Shared blend margin (was a body-local const).
+const float SHADOW_BLEND_MARGIN = 0.04;
+
+// Forward declaration: the 4-arg core is defined below; the wrapper needs it
+// in scope (GLSL free functions must be declared before use).
+float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias, out int cascadeHint);
+
 float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias) {
+    int hint;
+    return ShadowCalculation(fragPosLightSpace, worldPos, bias, hint);
+}
+
+// Cascade selection + sampling with the selected cascade reported (perf
+// report 21 H6). Bit-identical values to the historical behavior; the hint
+// seeds the secondary-hit fast path below at negligible primary cost.
+float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias, out int cascadeHint) {
     // Global shadow toggle. The raster solid/vegetation/impostor paths gate
     // their own calls, but the RT reflection/refraction shading (inline ray
     // hits and the mirror/bounce chains) samples the CSM unconditionally.
     // Without this guard a disabled CSM still darkens every secondary hit
     // through its stale or zero-initialized cascade maps — the "shadow
     // underwater" that survives turning shadows off.
+    // Hint default: cascade 0 (also covers the disabled-shadows early-out,
+    // whose hint would otherwise be undefined). Overwritten below wherever
+    // the selection lands in cascade 1 or 2.
+    cascadeHint = 0;
     if (!ubo.shadowsEnabled) return 0.0;
 
     const float BLEND_MARGIN = 0.04;
@@ -69,12 +88,13 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias) {
         float blendXY = cascadeBlendFactor(proj1.xy, BLEND_MARGIN);
         float blendZ  = cascadeBlendZ(proj1.z, BLEND_MARGIN);
         float blend1  = min(blendXY, blendZ);
-        if (blend1 >= 1.0) return s1;
+        if (blend1 >= 1.0) { cascadeHint = 1; return s1; }
 
         // Blend with cascade 2
         vec3 proj2 = projectToShadowMap(ubo.lightSpaceMatrix2, worldPos);
         float s2 = insideShadowMap(proj2, 0.0)
             ? ShadowEVSM(shadowMap2, proj2, bias) : s1;
+        cascadeHint = 1;
         return mix(s2, s1, smoothstep(0.0, 1.0, blend1));
     }
 
@@ -83,9 +103,51 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias) {
     // value even near cascade boundaries where light-space projections
     // may fall just outside all cascade AABBs.
     vec3 proj2 = projectToShadowMap(ubo.lightSpaceMatrix2, worldPos);
+    cascadeHint = 2;
     return ShadowEVSM(shadowMap2, proj2, bias);
 }
 
 float ShadowCalculationHard(vec4 fragPosLightSpace, vec3 worldPos, float bias) {
     return ShadowCalculation(fragPosLightSpace, worldPos, bias);
+}
+
+// Strict-inside test (perf report 21 H6): the full path returns its
+// single-cascade early-out exactly when the blend factor reaches 1.0, i.e.
+// XY at least one blend margin inside and Z short of the far plane by the
+// same margin. A strict-inside hit therefore resolves to the identical
+// single sample — the fast path below is never approximate. Anything else
+// (edge zones, behind-light projections) falls back to the full blend path.
+bool insideShadowMapStrict(vec3 p) {
+    return p.x >= SHADOW_BLEND_MARGIN && p.x <= 1.0 - SHADOW_BLEND_MARGIN &&
+           p.y >= SHADOW_BLEND_MARGIN && p.y <= 1.0 - SHADOW_BLEND_MARGIN &&
+           p.z >= 0.0                 && p.z <= 1.0 - SHADOW_BLEND_MARGIN;
+}
+
+// Secondary-hit shadow with a primary-cascade hint (H6). EXACT, not
+// approximate: the full path always tests cascade 0 first, so this
+// reproduces that test (one matvec, as today) and only past it lets the hint
+// skip the remaining selection — project the hinted cascade directly and
+// take the strict-inside single sample, which the blend math proves is the
+// value the full path would return (blend factor 1.0). Edge hits, wrong
+// hints and hint < 1 (unknown, cascade 0, water entries) fall back to the
+// single full-path call below with the projection reused, i.e. textually
+// today's call. Savings land on strict cascade-1/2 secondaries: up to one
+// matvec, the blend-factor ALU and the blend-zone second fetch.
+float ShadowCalculationSecondary(vec3 hitPos, int hintCascade, float bias) {
+    vec4 hitProj0 = ubo.lightSpaceMatrix * vec4(hitPos, 1.0);
+    vec3 p0 = hitProj0.xyz / hitProj0.w;
+    p0.xy = p0.xy * 0.5 + 0.5;
+    // Fast lane needs cascade 0 missed AND a usable hint; the hint
+    // projection is evaluated only then (pure ALU, safe under divergence).
+    bool useHint = !insideShadowMap(p0, -SHADOW_BLEND_MARGIN)
+                && (hintCascade == 1 || hintCascade == 2);
+    vec3 hp = useHint
+        ? projectToShadowMap(hintCascade == 1 ? ubo.lightSpaceMatrix1 : ubo.lightSpaceMatrix2, hitPos)
+        : vec3(0.0);
+    if (useHint && insideShadowMapStrict(hp)) {
+        if (hintCascade == 1) return ShadowEVSM(shadowMap1, hp, bias);
+        return ShadowEVSM(shadowMap2, hp, bias);
+    }
+    int unusedHint;
+    return ShadowCalculation(hitProj0, hitPos, bias, unusedHint);
 }

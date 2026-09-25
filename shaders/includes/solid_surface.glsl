@@ -228,12 +228,15 @@ void shadeSolidSurface() {
     // by RT; see §2/§21). RT adds an optional selective local/contact term
     // below, combined without double-darkening.
     float shadow = 0.0;
+    // Primary cascade hint for the secondary-hit fast path below (H6).
+    // Default 0 reproduces today's secondary behavior wherever unused.
+    int solidCascadeHint = 0;
 #ifndef BRUSH_PASS
     vec4 adjustedPosLightSpace = fragPosLightSpace;
     if (ubo.shadowsEnabled) {
         if (NdotL > 0.01) {
             float bias = max(0.002 * (1.0 - NdotL), 0.0005);
-            shadow = ShadowCalculation(adjustedPosLightSpace, fragPosWorld, bias);
+            shadow = ShadowCalculation(adjustedPosLightSpace, fragPosWorld, bias, solidCascadeHint);
         } else {
             shadow = 1.0;
         }
@@ -502,7 +505,7 @@ void shadeSolidSurface() {
                             int wIdM = int(rtSceneAlbedo[lo].w + 0.5);
                             int wLayer = (wIdM >= 0 && wIdM < nWLM) ? wIdM : 0;
                             WaterParamsNamed wp = waterParamsNamed(waterParams[wLayer]);
-                            rtColor = rtResolveWaterHit(wp, hitPos, hitN, reflDir);
+                            rtColor = rtResolveWaterHit(wp, hitPos, hitN, reflDir, solidCascadeHint);
                             waterHit = true;
                             // No bounce off water hits (see rtHitReflectivity):
                             // the water look already includes its mirror and
@@ -531,8 +534,9 @@ void shadeSolidSurface() {
                         // shadowed) + sky ambient.
                         vec3 toLight = -normalize(ubo.lightDirection);
                         float ndl = max(dot(hitN, toLight), 0.0);
-                        float hitShadow = ShadowCalculation(
-                            ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
+                        // H6: primary-cascade hint; strict hits resolve to the
+                        // exact single sample, others take the full path.
+                        float hitShadow = ShadowCalculationSecondary(hitPos, solidCascadeHint, 0.0015);
                         // Albedo-scaled sky ambient (raster convention), not
                         // a dark constant: grazing/off-screen terrain hits in
                         // mirrors no longer read as near-black plates.
@@ -555,7 +559,7 @@ void shadeSolidSurface() {
                                 vec3 nextDir = normalize(reflect(normalize(reflDir), hitN));
                                 vec3 bounceCol = rtTraceMirror(hitPos + hitN * 0.05,
                                                                nextDir, extraBounces,
-                                                               selfSkip);
+                                                               selfSkip, solidCascadeHint);
                                 rtColor = mix(rtColor, bounceCol, hitReflectivity);
                             }
                         }

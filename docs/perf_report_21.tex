@@ -537,9 +537,26 @@ re-selecting otherwise; (3) verify no double-darkening (combine rule at
 \texttt{solid\_surface.glsl:265} unchanged). Files:
 \texttt{shaders/includes/shadows.glsl},
 \texttt{shaders/includes/solid\_surface.glsl},
-\texttt{shaders/includes/rt\_scene\_sample.glsl}. Validation: reflection
+\texttt{shaders/includes/rt\_reflection.glsl}. Validation: reflection
 screenshots identical, static ALU reduction in the RT fragment variants,
 validation-clean.
+\\ \textbf{Implemented with two corrections:} (1) \emph{Exactness by
+construction.} A first cut skipped the cascade-0 test on hinted hits, which
+is wrong where cascade boxes overlap: the full path always tests cascade 0
+first, so the shipped fast path reproduces that test (one matvec, as today)
+and only past it projects the hinted cascade. Strict-inside then provably
+equals the blend-1.0 early-out (same coordinates, same fetch); all other
+cases fall back to the single full-path call with the projection reused.
+No visual change is possible, by proof rather than by testing. (2)
+\emph{Honest sizing.} The win lands only on strict cascade-1/2 secondaries
+(up to one matvec + blend ALU + blend-zone fetch each); cascade-0 and edge
+hits cost exactly today's path, wrong-hint edge hits pay one extra
+projection. Static size \emph{grows} ($\sim$+5\% on the water RT module from
+inliner-duplicated fallback bodies) --- the win is dynamic, and the report's
+``up to three projections'' was the worst case, not the common one. Water
+call sites keep the old signatures via overload wrappers (bit-identical);
+only the solid chain (free primary hint) and the bounce recursion (hint
+forwarded) convert.
 \end{tcolorbox}
 
 \subsection{H7: A Dead 12-Byte Color Attribute Rides Four Shader Stages in a 64-Byte Vertex}
@@ -785,7 +802,7 @@ C2 & Prepass gate: opt-in single pass (default on) & $-1$ full traversal when fl
 C3 & Triplanar fetch tiering (shipped) & $-33$\% worst-case, $-67$\% single-mat \\
 H4 & Shadow TES prune $+$ 5-tap outer blur (shipped) & $-40$ ALU/vtx, $-44$\% outer-blur taps \\
 H5 & HSV gate: per-pixel identity skip (shipped, +water) & $-60$ ALU/px at uniform tint \\
-H6 & Cascade reuse in secondary hits & $-$1--3 projections per reflective px \\
+H6 & Cascade reuse in secondary hits (shipped, exact) & $\le$1 matvec + blend per c1/c2-strict hit \\
 H7 & Drop dead color attribute & $-12$\,B/vtx traffic, stride 64$\rightarrow$48 \\
 H8 & TCS invocation guard & $-67$\% solid TCS ALU \\
 M9--M12 & Composite LOD, scale, cull, VS VTF & additive, each 2--10\% \\

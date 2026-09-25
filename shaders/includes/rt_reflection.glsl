@@ -15,6 +15,21 @@
 #ifndef RT_REFLECTION_GLSL
 #define RT_REFLECTION_GLSL
 
+// Forward declarations for the H6 hint overloads below (GLSL free functions
+// must be declared before use; the 5-arg cores are defined further down).
+vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit, int hintCascade);
+vec3 rtResolveWaterHit(WaterParamsNamed wp, vec3 hitPos, vec3 hitN, vec3 incidentDir, int hintCascade);
+
+// 4-arg compatibility wrappers (perf report 21 H6): historic call sites
+// without a primary-cascade hint (water entries) keep working; hint < 0
+// takes the full blend path inside the secondary helper.
+vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit) {
+    return rtTraceMirror(origin, dir, extraBounces, minHit, -1);
+}
+vec3 rtResolveWaterHit(WaterParamsNamed wp, vec3 hitPos, vec3 hitN, vec3 incidentDir) {
+    return rtResolveWaterHit(wp, hitPos, hitN, incidentDir, -1);
+}
+
 // Mirror strength of a scene-geometry hit. Water hits return 0: a water
 // surface's mirror is already composed inside rtWaterSurfaceLook, and letting
 // a reflection ray bounce off the flat BLAS water mesh spawned secondary rays
@@ -65,7 +80,7 @@ vec3 rtShadeWaterHit(uint lo, vec3 hitN, vec3 incoming) {
 // beyond this call's own trace (0 = trace once, no bounce; 1 = reflection
 // inside the reflection; ... clamped to 3). Returns the accumulated color,
 // sky on miss. `minHit` biases the origin out of the reflector's own surface.
-vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit) {
+vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit, int hintCascade) {
     vec3 accum = vec3(0.0);
     float throughput = 1.0;
     int traces = clamp(extraBounces, 0, 3) + 1;
@@ -126,8 +141,9 @@ vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit) {
             vec3 albedo = rtSceneSampleReflectionAlbedo(i0, i1, i2, bary, hitPos, hitN, maxLayer, 0.0);
             vec3 toSun = normalize(-ubo.lightDirection);
             float ndl = max(dot(hitN, toSun), 0.0);
-            float hitShadow = ShadowCalculation(
-                ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
+            // H6: primary-cascade hint; strict hits resolve to the exact
+            // single sample, others take the full path.
+            float hitShadow = ShadowCalculationSecondary(hitPos, hintCascade, 0.0015);
             lit = albedo * (ubo.lightColor * ndl * (1.0 - hitShadow) + vec3(0.26));
         }
 
@@ -158,7 +174,7 @@ vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit) {
 //
 // Not recursive: the mirror chain shades water hits with rtShadeWaterHit()
 // (look only), never with this function.
-vec3 rtResolveWaterHit(WaterParamsNamed wp, vec3 hitPos, vec3 hitN, vec3 incidentDir) {
+vec3 rtResolveWaterHit(WaterParamsNamed wp, vec3 hitPos, vec3 hitN, vec3 incidentDir, int hintCascade) {
     vec3 inc = normalize(incidentDir);
     float ior = clamp(wp.waterIor, 1.0, 2.5);
     float thickCap = max(wp.maxThickness, 0.0);
@@ -223,8 +239,8 @@ vec3 rtResolveWaterHit(WaterParamsNamed wp, vec3 hitPos, vec3 hitN, vec3 inciden
                                                          maxLayer, 0.0);
                 vec3 toSun = normalize(-ubo.lightDirection);
                 float ndl = max(dot(bN, toSun), 0.0);
-                float bShadow = ShadowCalculation(
-                    ubo.lightSpaceMatrix * vec4(hp, 1.0), hp, 0.0015);
+                // H6: hinted secondary (exact via strict test + fallback).
+                float bShadow = ShadowCalculationSecondary(hp, hintCascade, 0.0015);
                 refrColor = alb * (ubo.lightColor * ndl * (1.0 - bShadow)
                                    + vec3(0.26));
                 haveBottom = true;
@@ -243,8 +259,8 @@ vec3 rtResolveWaterHit(WaterParamsNamed wp, vec3 hitPos, vec3 hitN, vec3 inciden
     // through the water while deep water darkens via this factor. Without it,
     // water seen inside a reflection stayed fully lit while the raster surface
     // beside it sat in shadow.
-    float waterShadow = ShadowCalculation(
-        ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, 0.0015);
+    // H6: hinted secondary (exact via strict test + fallback).
+    float waterShadow = ShadowCalculationSecondary(hitPos, hintCascade, 0.0015);
     float depthFade = 1.0 - exp(-thickness * max(wp.depthFalloff, 1e-4));
     // Shoreline tint fade, matching the raster surface: no tint at the
     // waterline (thickness -> 0), ramping in over the tint shore fade depth.
@@ -272,7 +288,7 @@ vec3 rtResolveWaterHit(WaterParamsNamed wp, vec3 hitPos, vec3 hitN, vec3 inciden
 
     // --- Reflection: one bounded mirror chain (water hits there are look-only) ---
     vec3 reflDir = normalize(reflect(inc, hitN));
-    vec3 reflColor = rtTraceMirror(hitPos + hitN * 0.05, reflDir, 0, 0.05);
+    vec3 reflColor = rtTraceMirror(hitPos + hitN * 0.05, reflDir, 0, 0.05, hintCascade);
     float viewCos = clamp(dot(hitN, -inc), 0.0, 1.0);
     float fres = 0.02 + 0.98 * pow(1.0 - viewCos, clamp(wp.fresnelPower, 1.0, 8.0));
     float reflMix = wp.uniformReflection
