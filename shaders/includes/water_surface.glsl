@@ -1801,7 +1801,15 @@ void shadeWaterSurface() {
         // which the ray-less build compiles out, so the view rendered black on
         // Minimal. viewDir and the wave normal are always valid.
         vec3 nVis = (dot(normal, viewDir) < 0.0) ? -normal : normal;
-        outColor = vec4(reflect(-viewDir, nVis) * 0.5 + 0.5, 1.0);
+        vec3 rVis = reflect(-viewDir, nVis);
+        // NaN/degenerate guard: a NaN anywhere in the reflected vector renders
+        // as pure black in this view (and poisons the shaded colour too), which
+        // is indistinguishable from "the water is missing". A failed x >= 0
+        // comparison is the portable NaN test.
+        if (!(dot(rVis, rVis) >= 0.0) || dot(nVis, nVis) < 0.5) {
+            rVis = vec3(0.0);
+        }
+        outColor = vec4(rVis * 0.5 + 0.5, 1.0);
         return;
     }
     if (dbgMode == DEBUG_MODE_FRESNEL) {
