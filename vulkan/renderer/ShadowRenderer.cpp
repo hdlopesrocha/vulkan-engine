@@ -141,7 +141,7 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
         app->getOrCreateShaderModule("shaders/main.tesc.spv"),
         VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
     ShaderStage teseShader(
-        app->getOrCreateShaderModule("shaders/main.tese.spv"),
+        app->getOrCreateShaderModule("shaders/main_shadow.tese.spv"),
         VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
     ShaderStage evsmFragment(
         app->getOrCreateShaderModule("shaders/shadow_evsm.frag.spv"),
@@ -257,6 +257,18 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
         blurPipelineLayout,
         { vertShader.info, fragShader.info },
         opts, "ShadowRenderer: blurPipeline");
+
+    // H4 narrow-blur twin (5-tap, outer cascades): same layout, descriptor
+    // sets and push-constant protocol — only the fragment module differs.
+    ShaderStage narrowFragShader(
+        app->getOrCreateShaderModule("shaders/evsm_blur5.frag.spv"),
+        VK_SHADER_STAGE_FRAGMENT_BIT);
+    blurPipelineNarrow = RendererUtils::buildFullscreenPipeline(
+        device, app, EVSM_FORMAT, VK_FORMAT_UNDEFINED,
+        blurPipelineLayout,
+        { vertShader.info, narrowFragShader.info },
+        opts, "ShadowRenderer: blurPipeline (5-tap)");
+    narrowFragShader.info.module = VK_NULL_HANDLE;
 
     vertShader.info.module = VK_NULL_HANDLE;
     fragShader.info.module = VK_NULL_HANDLE;
@@ -492,6 +504,14 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
     uint32_t size = shadowMapSizes[cascadeIndex];
     auto& cas = cascades[cascadeIndex];
 
+    // H4: narrower 5-tap kernel for the outer cascades (same layout,
+    // descriptor sets and push-constant protocol; only the fragment module
+    // differs). Cascade 0 keeps the full 9-tap kernel; the outer cascades'
+    // coarse texels make the filtering difference sub-visible.
+    VkPipeline activeBlurPipeline = blurPipeline.handle;
+    if (cascadeIndex > 0 && blurPipelineNarrow != VK_NULL_HANDLE)
+        activeBlurPipeline = blurPipelineNarrow.handle;
+
     // ── Horizontal blur: read cascade color → write to blurTemp ──
     // Transition blurTemp from SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
     // so the horizontal blur pass can write intermediate EVSM results.
@@ -526,8 +546,8 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
         sc.extent = {size, size};
         vkCmdSetScissor(commandBuffer, 0, 1, &sc);
 
-        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, blurPipeline);
-        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
+        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, activeBlurPipeline);
+        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, activeBlurPipeline);
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
             blurPipelineLayout, 0, 1, &blurHorizontalDS[cascadeIndex], 0, nullptr);
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -589,8 +609,8 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
         VkRect2D blurSc{{0,0},{size,size}};
         vkCmdSetScissor(commandBuffer, 0, 1, &blurSc);
 
-        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, blurPipeline);
-        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
+        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, activeBlurPipeline);
+        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, activeBlurPipeline);
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
             blurPipelineLayout, 0, 1, &blurVerticalDS, 0, nullptr);
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,

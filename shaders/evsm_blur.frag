@@ -15,11 +15,21 @@ layout(push_constant) uniform PC {
 // kernel left EVSM moment edges essentially unblurred, so shadows rendered
 // blocky/pixelated. A wider kernel smooths the Chebyshev transition and the
 // cascade silhouettes without washing the shadow out.
+// BLUR5 (perf report 21 H4): narrower 5-tap kernel (sigma = 1.0,
+// renormalized) for the outer cascades, whose coarse texels make the
+// filtering difference sub-visible while the tap count nearly halves.
+#ifdef BLUR5
+const float KERNEL[5] = float[](
+    0.0545, 0.2442, 0.4026, 0.2442, 0.0545
+);
+const int RADIUS = 2;
+#else
 const float KERNEL[9] = float[](
     0.0218, 0.0671, 0.1254, 0.1824, 0.2066,
     0.1824, 0.1254, 0.0671, 0.0218
 );
 const int RADIUS = 4;
+#endif
 
 void main() {
     ivec2 texSize = textureSize(evsmTexture, 0);

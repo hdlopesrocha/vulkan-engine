@@ -4,6 +4,19 @@
 layout(triangles, equal_spacing, cw) in;
 
 
+// Inputs from TCS (per-vertex arrays). SHADOW_PASS (perf report 21 H4) keeps
+// only the displacement inputs: the EVSM shadow fragment shader consumes
+// VARY_POSWORLD alone, so color/uv/normal varyings, the sharp-face normal,
+// the light-space position and the tess-level feed are compiled out (~40
+// flops/vertex of dead interpolation + VGPR/LDS pressure). Displacement
+// itself is preserved exactly, so shadow depths match the main pass.
+#ifdef SHADOW_PASS
+layout(location = VARY_LOCALPOS) in vec3 tc_fragLocalPos[]; // local-space position
+layout(location = VARY_LOCALNORMAL) in vec3 tc_fragLocalNormal[];
+layout(location = VARY_UV) in vec2 tc_fragUV[];
+layout(location = VARY_BRUSHPATCH) flat in ivec3 tc_fragBrushIndex[];
+layout(location = VARY_TEXWEIGHTS) in vec3 tc_fragTexWeights[];
+#else
 // Inputs from TCS (per-vertex arrays)
 
 layout(location = VARY_COLOR) in vec3 tc_fragColor[];
@@ -16,7 +29,12 @@ layout(location = VARY_LOCALNORMAL) in vec3 tc_fragLocalNormal[];
 layout(location = VARY_TEXWEIGHTS) in vec3 tc_fragTexWeights[];
 layout(location = VARY_HSV) in vec3 tc_fragHSV[];
 layout(location = VARY_DEBUG) in vec3 tc_fragTessLevel[];
+#endif
 
+#ifdef SHADOW_PASS
+// Outputs to the EVSM shadow fragment shader (position only).
+layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
+#else
 // Outputs to fragment shader (match main.frag inputs)
 
 layout(location = VARY_COLOR) out vec3 fragColor;
@@ -30,6 +48,7 @@ layout(location = VARY_SHARPNORMAL) out vec3 fragSharpNormal; // face normal com
 layout(location = VARY_TEXWEIGHTS) out vec3 fragTexWeights;
 layout(location = VARY_HSV) out vec3 fragHSV;
 layout(location = VARY_DEBUG) out vec3 fragTessLevel;
+#endif
 
 
 
@@ -48,8 +67,10 @@ void main() {
     vec2 uv = tc_fragUV[0] * bc.x + tc_fragUV[1] * bc.y + tc_fragUV[2] * bc.z;
     ivec3 texIndices = max(tc_fragBrushIndex[0], ivec3(0));
     vec3 weights = tc_fragTexWeights[0] * bc.x + tc_fragTexWeights[1] * bc.y + tc_fragTexWeights[2] * bc.z;
+#ifndef SHADOW_PASS
     vec3 hsv = tc_fragHSV[0] * bc.x + tc_fragHSV[1] * bc.y + tc_fragHSV[2] * bc.z;
     vec3 tessLevel = tc_fragTessLevel[0] * bc.x + tc_fragTessLevel[1] * bc.y + tc_fragTessLevel[2] * bc.z;
+#endif
 
 
     // Calculate position with displacement (needed for both passes)
@@ -62,6 +83,12 @@ void main() {
     
     gl_Position = ubo.viewProjection * vec4(displacedLocalPos, 1.0);
 
+#ifdef SHADOW_PASS
+    // Shadow-only outputs (see the interface note above): world position
+    // alone. The displacement prelude above is byte-identical to the full
+    // path, so shadow depths match the main pass exactly.
+    fragPosWorld = displacedLocalPos;
+#else
     if (isDepthPass) {
         // Depth pass: set dummy outputs (fragment shader early-returns anyway)
         fragColor = vec3(0.0);
@@ -100,4 +127,5 @@ void main() {
     }
 
     // Per-vertex tangents are no longer propagated; fragment will compute T/B/N as needed.
+#endif
 }

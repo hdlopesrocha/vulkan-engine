@@ -130,6 +130,10 @@ private:
     // Blur resources
     TrackedHandle<VkPipeline> blurPipeline;
     TrackedHandle<VkPipelineLayout> blurPipelineLayout;
+    // Narrower 5-tap blur twin (perf report 21 H4) for the outer cascades.
+    // Same layout/descriptor sets/push constants; bound per cascade in
+    // blurCascade. Falls back to blurPipeline when unavailable.
+    TrackedHandle<VkPipeline> blurPipelineNarrow;
     TrackedHandle<VkDescriptorSetLayout> blurDescSetLayout;
     TrackedHandle<VkDescriptorPool> blurDescPool;
     // One descriptor set per cascade for horizontal blur (reads cascade color image)

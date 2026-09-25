@@ -132,6 +132,8 @@ OUT_SPVS = \
 	$(OUT_DIR)/shaders/main_water.vert.spv \
 	$(OUT_DIR)/shaders/main_water_no_tess.vert.spv \
 	$(OUT_DIR)/shaders/main_solid_no_tess.vert.spv \
+	$(OUT_DIR)/shaders/main_shadow.tese.spv \
+	$(OUT_DIR)/shaders/evsm_blur5.frag.spv \
 	$(OUT_DIR)/shaders/main_water.tesc.spv \
 	$(OUT_DIR)/shaders/main_water.tese.spv \
 	$(OUT_DIR)/shaders/main_water_rt.tese.spv \
@@ -230,6 +232,25 @@ $(OUT_DIR)/shaders/main_solid_no_tess.vert.spv: shaders/main.vert $(SHADER_INCLU
 		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DSOLID_NO_TESS=1 $< -o $@; \
 	else \
 		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D SOLID_NO_TESS=1 $< -o $@; \
+	fi
+# H4 (perf report 21): shadow-only solid TES (position-varying outputs only,
+# displacement preserved). Bound by the tessellated shadow pipeline.
+$(OUT_DIR)/shaders/main_shadow.tese.spv: shaders/main.tese $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (SHADOW_PASS=1)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DSHADOW_PASS=1 $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D SHADOW_PASS=1 $< -o $@; \
+	fi
+# H4 (perf report 21): narrower 5-tap EVSM blur for the outer cascades.
+$(OUT_DIR)/shaders/evsm_blur5.frag.spv: shaders/evsm_blur.frag $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (BLUR5=1)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DBLUR5=1 $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D BLUR5=1 $< -o $@; \
 	fi
 $(OUT_DIR)/shaders/main_water.tesc.spv: shaders/main.tesc $(SHADER_INCLUDES)
 	@echo "Compiling shader: $< -> $@ (WATER_MODE=1)"

@@ -432,6 +432,17 @@ by cascade screen coverage, defaulting the outer cascade to a 5-tap kernel;
 Validation: shadow-acne and light-bleed A/B screenshots, timestamp queries on
 the cascade and blur passes showing the shadow path shrinking;
 validation-clean.
+\\ \textbf{Implemented as:} (1) \texttt{SHADOW\_PASS} TES variant
+(\texttt{main\_shadow.tese.spv}, 3\,441 vs 7\,881 words): displacement
+preserved byte-identically, dead varyings and their interpolation pruned
+(interface now 5 inputs + \texttt{POSWORLD}, verified in disassembly); the
+C2-style displacement skip was declined for the same hole argument as C2 ---
+shadow depths must match main-pass depths within bias. (2) 5-tap EVSM blur
+twin for cascades 1--2 (cascade 0 keeps 9 taps), same layout/descriptor
+sets/push constants. No quality toggle: outer-cascade filtering differences
+are sub-visible by texel density; confirm by shadow A/B (acne/bleed) before
+touching the kernel again --- a narrower kernel was already reverted once
+for blockiness (\texttt{evsm\_blur.frag} header).
 \end{tcolorbox}
 
 \subsection{H5: Every Solid Pixel Pays an RGB-to-HSV-to-RGB Round-Trip With Divergent Branches}
@@ -759,7 +770,7 @@ frames. Allocate lazily on first use of the blur-capable variant.
 C1 & No-tess depth $+$ shadow (color stays tess.) & $-2$ TCS/TES traversals (depth, 3 shadow) \\
 C2 & Prepass gate: opt-in single pass (default on) & $-1$ full traversal when flipped (tess-on regime) \\
 C3 & Triplanar fetch tiering (shipped) & $-33$\% worst-case, $-67$\% single-mat \\
-H4 & Shadow geometry $+$ blur gating & $-30$--$50$\% of shadow path \\
+H4 & Shadow TES prune $+$ 5-tap outer blur (shipped) & $-40$ ALU/vtx, $-44$\% outer-blur taps \\
 H5 & HSV gate & $-$1 round-trip + divergence per solid px \\
 H6 & Cascade reuse in secondary hits & $-$1--3 projections per reflective px \\
 H7 & Drop dead color attribute & $-12$\,B/vtx traffic, stride 64$\rightarrow$48 \\
