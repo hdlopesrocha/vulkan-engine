@@ -144,6 +144,23 @@ void main() {
                                                   waterDepth, shoreDir, bumpAmp, wp,
                                                   WATER_VERTEX_OCT);
     fragNormal = wv.normal;
+    // Fragment interface. Every varying the water fragment stage reads has to
+    // be written here: the no-tess path has no TCS/TES to fill them in, and
+    // the water shader's whole per-pixel input set is these five values.
+    // They were dropped when the wave core was replaced (f270b8b), which left
+    // them undefined in exactly the path Minimal mode binds:
+    //   fragHSV        = 0  -> the HSV modulation zeroed the value (black water)
+    //   fragBasePos    = 0  -> the whole wave field evaluated at one point
+    //                          (no ripples, constant normal, zero footprint)
+    //   fragBaseNormal = 0  -> degenerate base normal for every normalize()
+    //   fragWaterDepth = 0  -> faked "unmeasurable depth"
+    //   fragBrushIndex = 0  -> always water layer 0
+    // The TES path writes the same set (water_tese.glsl); keep the two in step.
+    fragBrushIndex = chosenIdx;
+    fragHSV = inHSV;
+    fragBaseNormal = normal;                  // undisplaced (flat) base normal
+    fragBasePos = vec4(wv.basePos, bumpAmp);  // base pos + raw amplitude
+    fragWaterDepth = waterDepth;
     // Displacement debug value (same normalization as the TES) plus the
     // shore-direction source in .z.
     {
