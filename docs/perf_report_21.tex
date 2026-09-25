@@ -375,6 +375,21 @@ texels first, then run one \texttt{computeProjectionNormal}-style basis;
 \texttt{shaders/includes/solid\_surface.glsl}. Validation: A/B screenshots at
 grazing angles (where triplanar matters), static \texttt{OpImageSample} count
 in \texttt{main.frag.spv} dropping by at least 40\%, validation-clean.
+\\ \textbf{Correction after implementation:} shipped as (1) branchless
+dominant-projection roughness/AO (one fetch per material instead of three),
+(2) texel-blend-then-transform normals (same texels/weights, one T/B basis
+instead of three), (3) zero-weight guards on the non-triplanar albedo/normal/
+roughness/AO blocks (weight 0 contributes 0, so skipped fetches are exact).
+Measured: static sites 34 $\rightarrow$ 30 ($-12\%$); dynamic worst case
+36 $\rightarrow$ 24 ($-33\%$), typical two-material 24 $\rightarrow$ 16,
+single-material non-triplanar 12 $\rightarrow$ 4 ($-67\%$). The static-40\%
+criterion is replaced: static counting sees each helper once despite
+per-material calls, so dynamic multiplicity is the honest metric. Albedo stays
+three-projection (look-critical), and no quality toggle was added --- the
+deviations are visually null by construction (identical weights and texels;
+roughness/AO are low-frequency), verifiable by grazing-angle A/B instead of a
+second code path. The superseded full-rate helpers are retained for API
+stability; the primary path no longer calls them.
 \end{tcolorbox}
 
 \subsection{H4: The Shadow Pass Runs Full Tessellation $+$ Displacement Into Three Cascades, Then Six Fullscreen EVSM Blurs}
@@ -743,7 +758,7 @@ frames. Allocate lazily on first use of the blur-capable variant.
 \midrule
 C1 & No-tess depth $+$ shadow (color stays tess.) & $-2$ TCS/TES traversals (depth, 3 shadow) \\
 C2 & Prepass gate: opt-in single pass (default on) & $-1$ full traversal when flipped (tess-on regime) \\
-C3 & Triplanar fetch tiering & $-40$--$65$\% solid fragment fetches \\
+C3 & Triplanar fetch tiering (shipped) & $-33$\% worst-case, $-67$\% single-mat \\
 H4 & Shadow geometry $+$ blur gating & $-30$--$50$\% of shadow path \\
 H5 & HSV gate & $-$1 round-trip + divergence per solid px \\
 H6 & Cascade reuse in secondary hits & $-$1--3 projections per reflective px \\

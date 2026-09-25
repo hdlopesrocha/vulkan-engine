@@ -145,9 +145,10 @@ void shadeSolidSurface() {
         float mapFlag1 = float(materialNamed(materials[texIndices.y]).mappingEnabled);
         float mapFlag2 = float(materialNamed(materials[texIndices.z]).mappingEnabled);
         if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || ubo.normalMappingEnabled) {
-            tripNormal0 = w.x > 0.0 ? computeTriplanarNormalUVs(triW, texIndices.x, N, uv0X, uv0Y, uv0Z) : vec3(0.0);
-            tripNormal1 = w.y > 0.0 ? computeTriplanarNormalUVs(triW, texIndices.y, N, uv1X, uv1Y, uv1Z) : vec3(0.0);
-            tripNormal2 = w.z > 0.0 ? computeTriplanarNormalUVs(triW, texIndices.z, N, uv2X, uv2Y, uv2Z) : vec3(0.0);
+            // C3: blend texels first, transform once (same weights/texels).
+            tripNormal0 = w.x > 0.0 ? computeTriplanarNormalBlended(triW, texIndices.x, N, uv0X, uv0Y, uv0Z) : vec3(0.0);
+            tripNormal1 = w.y > 0.0 ? computeTriplanarNormalBlended(triW, texIndices.y, N, uv1X, uv1Y, uv1Z) : vec3(0.0);
+            tripNormal2 = w.z > 0.0 ? computeTriplanarNormalBlended(triW, texIndices.z, N, uv2X, uv2Y, uv2Z) : vec3(0.0);
             vec3 blended = tripNormal0 * w.x + tripNormal1 * w.y + tripNormal2 * w.z;
             worldNormal = normalize(blended);
             
@@ -159,19 +160,22 @@ void shadeSolidSurface() {
             }
         }
     } else {
-        // Sample albedo from each layer and blend by barycentric weights
-        vec3 a0 = texture(albedoArray, vec3(uv, float(texIndices.x))).rgb;
-        vec3 a1 = texture(albedoArray, vec3(uv, float(texIndices.y))).rgb;
-        vec3 a2 = texture(albedoArray, vec3(uv, float(texIndices.z))).rgb;
+        // Sample albedo from each layer and blend by barycentric weights.
+        // Zero-weight slots are skipped (C3): weight 0 contributes 0, so the
+        // fetch is provably dead — single-material interiors pay 1, not 3.
+        vec3 a0 = w.x > 0.0 ? texture(albedoArray, vec3(uv, float(texIndices.x))).rgb : vec3(0.0);
+        vec3 a1 = w.y > 0.0 ? texture(albedoArray, vec3(uv, float(texIndices.y))).rgb : vec3(0.0);
+        vec3 a2 = w.z > 0.0 ? texture(albedoArray, vec3(uv, float(texIndices.z))).rgb : vec3(0.0);
         albedoColor = a0 * w.x + a1 * w.y + a2 * w.z;
     }
 
     // Compute normal mapping if enabled (per-material or global toggle)
     if (!usedTriplanar && ((float(materialNamed(materials[texIndices.x]).mappingEnabled) * w.x + float(materialNamed(materials[texIndices.y]).mappingEnabled) * w.y + float(materialNamed(materials[texIndices.z]).mappingEnabled) * w.z) > 0.5 || ubo.normalMappingEnabled)) {
-        // Sample normal map per-layer and blend in tangent space
-        vec3 n0 = texture(normalArray, vec3(uv, float(texIndices.x))).rgb * 2.0 - 1.0;
-        vec3 n1 = texture(normalArray, vec3(uv, float(texIndices.y))).rgb * 2.0 - 1.0;
-        vec3 n2 = texture(normalArray, vec3(uv, float(texIndices.z))).rgb * 2.0 - 1.0;
+        // Sample normal map per-layer and blend in tangent space (C3: dead
+        // slots skipped, same argument as albedo above).
+        vec3 n0 = w.x > 0.0 ? texture(normalArray, vec3(uv, float(texIndices.x))).rgb * 2.0 - 1.0 : vec3(0.0);
+        vec3 n1 = w.y > 0.0 ? texture(normalArray, vec3(uv, float(texIndices.y))).rgb * 2.0 - 1.0 : vec3(0.0);
+        vec3 n2 = w.z > 0.0 ? texture(normalArray, vec3(uv, float(texIndices.z))).rgb * 2.0 - 1.0 : vec3(0.0);
         vec3 nmap = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
         // Build TBN matrix from geometry for UV-space normal mapping
         vec3 T = normalize(dFdx(fragPosWorld));
@@ -185,32 +189,34 @@ void shadeSolidSurface() {
         }
     }
 
-    // Sample roughness map (R channel)
+    // Sample roughness map (R channel). Triplanar path (C3): one fetch on
+    // the dominant projection per material instead of three.
     float roughnessValue;
     if (usedTriplanar) {
-        float r0 = w.x > 0.0 ? computeTriplanarRoughnessUVs(triW, texIndices.x, uv0X, uv0Y, uv0Z) : 0.0;
-        float r1 = w.y > 0.0 ? computeTriplanarRoughnessUVs(triW, texIndices.y, uv1X, uv1Y, uv1Z) : 0.0;
-        float r2 = w.z > 0.0 ? computeTriplanarRoughnessUVs(triW, texIndices.z, uv2X, uv2Y, uv2Z) : 0.0;
+        float r0 = w.x > 0.0 ? computeTriplanarRoughnessDominant(triW, texIndices.x, uv0X, uv0Y, uv0Z) : 0.0;
+        float r1 = w.y > 0.0 ? computeTriplanarRoughnessDominant(triW, texIndices.y, uv1X, uv1Y, uv1Z) : 0.0;
+        float r2 = w.z > 0.0 ? computeTriplanarRoughnessDominant(triW, texIndices.z, uv2X, uv2Y, uv2Z) : 0.0;
         roughnessValue = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
     } else {
-        float r0 = texture(roughnessArray, vec3(uv, float(texIndices.x))).r;
-        float r1 = texture(roughnessArray, vec3(uv, float(texIndices.y))).r;
-        float r2 = texture(roughnessArray, vec3(uv, float(texIndices.z))).r;
+        float r0 = w.x > 0.0 ? texture(roughnessArray, vec3(uv, float(texIndices.x))).r : 0.0;
+        float r1 = w.y > 0.0 ? texture(roughnessArray, vec3(uv, float(texIndices.y))).r : 0.0;
+        float r2 = w.z > 0.0 ? texture(roughnessArray, vec3(uv, float(texIndices.z))).r : 0.0;
         roughnessValue = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
     }
     if (!roughnessEnabled) roughnessValue = 0.0;
 
-    // Sample ambient occlusion map (R channel)
+    // Sample ambient occlusion map (R channel). Triplanar path (C3): one
+    // fetch on the dominant projection per material instead of three.
     float ambientOcclusion;
     if (usedTriplanar) {
-        float ao0 = w.x > 0.0 ? computeTriplanarAOUVs(triW, texIndices.x, uv0X, uv0Y, uv0Z) : 0.0;
-        float ao1 = w.y > 0.0 ? computeTriplanarAOUVs(triW, texIndices.y, uv1X, uv1Y, uv1Z) : 0.0;
-        float ao2 = w.z > 0.0 ? computeTriplanarAOUVs(triW, texIndices.z, uv2X, uv2Y, uv2Z) : 0.0;
+        float ao0 = w.x > 0.0 ? computeTriplanarAODominant(triW, texIndices.x, uv0X, uv0Y, uv0Z) : 0.0;
+        float ao1 = w.y > 0.0 ? computeTriplanarAODominant(triW, texIndices.y, uv1X, uv1Y, uv1Z) : 0.0;
+        float ao2 = w.z > 0.0 ? computeTriplanarAODominant(triW, texIndices.z, uv2X, uv2Y, uv2Z) : 0.0;
         ambientOcclusion = clamp(ao0 * w.x + ao1 * w.y + ao2 * w.z, 0.0, 1.0);
     } else {
-        float ao0 = texture(aoArray, vec3(uv, float(texIndices.x))).r;
-        float ao1 = texture(aoArray, vec3(uv, float(texIndices.y))).r;
-        float ao2 = texture(aoArray, vec3(uv, float(texIndices.z))).r;
+        float ao0 = w.x > 0.0 ? texture(aoArray, vec3(uv, float(texIndices.x))).r : 0.0;
+        float ao1 = w.y > 0.0 ? texture(aoArray, vec3(uv, float(texIndices.y))).r : 0.0;
+        float ao2 = w.z > 0.0 ? texture(aoArray, vec3(uv, float(texIndices.z))).r : 0.0;
         ambientOcclusion = clamp(ao0 * w.x + ao1 * w.y + ao2 * w.z, 0.0, 1.0);
     }
 
