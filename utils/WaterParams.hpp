@@ -3,13 +3,7 @@
 
 // Water rendering parameters (CPU-side)
 struct WaterParams {
-    // Deep-water phase speed of the primary swell (m/s). The angular
-    // frequency is derived as frequency * speed, and the speed is reduced
-    // with depth by waveShoalSpeed (shoaling).
-    float waveSpeed = 6.0f;   // phase speed of the sine (m/s)
-    // LEGACY (no effect, kept for layout/API stability): never uploaded to
-    // the GPU — shaders use a neutral 1.0. Use Wave Height / Noise Scale.
-    float waveScale = 0.03f;
+
     float refractionStrength = 1.0f;   // amount of Snell bending (0 = straight through)
     float fresnelPower = 5.0f;
     float transparency = 0.7f;
@@ -29,7 +23,7 @@ struct WaterParams {
     float noiseLacunarity = 4.0f;
     // Noise feature PERIOD in world units (the shader converts to spatial
     // scale = 1 / period when packing to the GPU). Larger = broader features.
-    float noisePeriod = 8.0f;
+    float noisePeriod = 128.0f;
     float waterTint = 0.3f;
     float noiseTimeSpeed = 8.0f;
 
@@ -106,6 +100,10 @@ struct WaterParams {
     bool enableVolumetric = true;   // volumetric light scattering in the volume
 
     // Swell
+    float waveSpeed = 32.0f;   // phase speed of the sine (m/s)
+    // LEGACY (no effect, kept for layout/API stability): never uploaded to
+    // the GPU — shaders use a neutral 1.0. Use Wave Height / Noise Scale.
+    float waveScale = 0.03f;
     float wavePeriod = 512.0f;      // swell wavelength (world units)
     float waveAmplitude = 8.0f;
 
@@ -116,7 +114,7 @@ struct WaterParams {
     // No spectrum, no shoaling, no breaking, no regions.
     // Gerstner steepness: how far the crests pinch forward (0 = pure sine, the
     // crests stay symmetric; 1 = very sharp, forward-leaning crests).
-    float waveSteepness = 0.7f;
+    float waveSteepness = 0.9f;
     // Crest sharpness: exponent on the wave profile (|sin|^e). 1 = the plain
     // Gerstner profile, higher = narrower, spikier crests and troughs with
     // steeper faces between them.
@@ -125,7 +123,7 @@ struct WaterParams {
     // ripples are a height field, not just a normal perturbation: the shading
     // normal is derived from this height, i.e. the normal the surface would
     // have if it were displaced by the ripples at infinite tessellation.
-    float rippleHeight = 0.4f;
+    float rippleHeight = 2.0f;
     float shoreWaveFade = 40.0f;    // depth (m) over which the swell fades out at the shore
     // Beach slope: metres of water depth per metre of horizontal distance from
     // the waterline. The wave phase runs on depth / slope (= the shore
