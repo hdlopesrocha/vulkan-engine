@@ -24,10 +24,7 @@
 // Global-only and renderer-agnostic: the preset edits Settings fields that
 // gate the per-material water features (blurEnabled, rtWaterReflections,
 // rtRefractions) without holding renderer types, so the headless server can
-// still include it. The opt-in execute() overload below additionally applies
-// the water look tier to every layer via applyWaterQuality() and reports each
-// touched layer through the optional callback so the owner can re-upload the
-// packed GPU params.
+// still include it.
 class GraphicsSettingsCommand {
 public:
     // Called once per water layer the preset changed (index + updated
@@ -88,15 +85,6 @@ private:
         settings.shadowTessellationEnabled = true;
         settings.enableShadows = true;
 
-        // Per-layer water look tier. Full resets the four look fields to
-        // their WaterParams{} defaults; the rest of the layer is preserved.
-        if (waterLayers) {
-            for (std::size_t i = 0; i < waterLayers->size(); ++i) {
-                WaterParams& params = (*waterLayers)[i];
-                applyWaterQuality(params, WaterQuality::Full);
-                if (onLayerChanged) onLayerChanged(i, params);
-            }
-        }
     }
 
     static void applyMinimal(Settings& settings, std::vector<WaterParams>* waterLayers,
@@ -121,15 +109,6 @@ private:
         // unshadowed direct-lighting path).
         settings.enableShadows = false;
 
-        // Per-layer water look tier. Minimal turns volumetric scattering,
-        // foam, caustics and glitter off; the rest of the layer is preserved.
-        if (waterLayers) {
-            for (std::size_t i = 0; i < waterLayers->size(); ++i) {
-                WaterParams& params = (*waterLayers)[i];
-                applyWaterQuality(params, WaterQuality::Minimal);
-                if (onLayerChanged) onLayerChanged(i, params);
-            }
-        }
     }
 
     GraphicsQuality quality_;

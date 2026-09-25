@@ -191,27 +191,7 @@ struct WaterParams {
 // this helper sets.
 enum class WaterQuality { Full, Minimal };
 
-// Applies one tier to one layer:
-//   Minimal — volumetric scattering, foam, caustics and glitter off.
-//   Full    — those four fields back to their WaterParams{} struct defaults
-//             (reset-to-defaults semantics: a per-layer authored override of
-//             any of the four is not restored, it is reset). Colors,
-//             amplitudes, waves and every other per-layer field are never
-//             touched.
-inline void applyWaterQuality(WaterParams& params, WaterQuality quality) {
-    if (quality == WaterQuality::Minimal) {
-        params.enableVolumetric = false;
-        params.enableFoam = false;
-        params.causticIntensity = 0.0f;
-        params.glitterIntensity = 0.0f;
-    } else {
-        const WaterParams defaults{};
-        params.enableVolumetric = defaults.enableVolumetric;
-        params.enableFoam = defaults.enableFoam;
-        params.causticIntensity = defaults.causticIntensity;
-        params.glitterIntensity = defaults.glitterIntensity;
-    }
-}
+
 
 // CPU mirror of shaders/includes/water_tint.glsl: ONE water region, so this is
 // a single colour. `depth` is kept in the signature because the callers pass
