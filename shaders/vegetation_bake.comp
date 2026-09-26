@@ -1,0 +1,47 @@
+#version 450
+// Per-instance vegetation bake (perf report 22 C2/H4): evaluates the
+// time-independent per-instance scalars ONCE per chunk version instead of
+// once per vertex per pass (24 vertices per billboard instance x 5-9 passes).
+//
+// Baked: vegetationHeightScale (one 2D Perlin, ~100 flops/vertex saved).
+// Deliberately NOT baked: wind (time-varying), density hash (kept in-shader;
+// 12 flops), trigonometry (fidelity debt without A/B).
+//
+// Exactness: same device, same perlin2d.glsl source, same operation order as
+// the vertex shaders consumes here, so results match the in-shader
+// evaluation up to FMA-contraction ulps (invisible: smooth height signal, no
+// cliffs). Runs synchronously inside consolidateChunks before any draw can
+// reference the data; aux and concatenated instances stay in lockstep always.
+
+#include "includes/perlin2d.glsl"
+
+layout(local_size_x = 64) in;
+
+// Concatenated live instances (vec4: xyz = world position, w = billboardIndex + rotFrac).
+layout(set = 0, binding = 0) readonly buffer Instances {
+    vec4 instances[];
+};
+
+// Baked heights, same indexing (firstInstance-compatible).
+layout(set = 0, binding = 1) writeonly buffer Aux {
+    float heights[];
+};
+
+layout(push_constant) uniform PC {
+    uint instanceCount;
+} pc;
+
+// Mirrors vegetationHeightScale() in includes/vegetation_common.glsl (same
+// formula, same constants). Keep the two in step; this copy exists so the
+// bake needs no wind-UBO declarations.
+float bakedHeightScale(vec2 worldXZ) {
+    float n = perlin2(worldXZ * 0.008);
+    return 0.6 + 0.8 * (n * 0.5 + 0.5);
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.instanceCount) return;
+    vec4 inst = instances[i];
+    heights[i] = bakedHeightScale(inst.xyz.xz);
+}

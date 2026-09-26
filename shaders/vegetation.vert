@@ -13,6 +13,13 @@ layout(location = ATTR_UV) in vec2 inCornerUV;        // UV for this corner
 layout(location = ATTR_BRUSH_INDEX) in int inCornerNormalData; // encoded: hi=plane index, lo=corner type
 // Per-instance data (binding 1)
 layout(location = ATTR_INSTANCE) in vec4 instanceData; // xyz = world position, w = billboardIndex + rotFrac
+#ifndef VEG_CAPTURE
+// Baked height scale (binding 2, perf report 22 C2/H4): vegetationHeightScale
+// evaluated once per chunk version by the bake dispatch instead of per vertex
+// per pass. Same values the VS would compute (same device, same source).
+// Undefined for VEG_CAPTURE (ImpostorCapture binds no aux buffer).
+layout(location = ATTR_VEG_AUX) in float inBakedHeight;
+#endif
 
 layout(location = VARY_UV) out vec3 fragTexCoord;     // xy=uv, z=array layer
 layout(location = VARY_BRUSHPATCH) flat out int outBrushIndex;
@@ -205,9 +212,16 @@ void main() {
         return;
     }
 
-    // Per-instance height variation depends only on worldPos.xz — compute once
-    // per instance instead of per vertex (24 vertices share the same result).
+    // Per-instance height variation: baked (see inBakedHeight decl).
+    // Identical to vegetationHeightScale(worldPos.xz); the bake covers all
+    // 24 corner invocations with one evaluation per chunk version.
+    // VEG_CAPTURE (ImpostorCapture's canonical single instance, no aux
+    // buffer bound) evaluates locally, exactly as before the bake.
+#ifdef VEG_CAPTURE
     float heightScale = vegetationHeightScale(worldPos.xz);
+#else
+    float heightScale = inBakedHeight;
+#endif
 
     // Rotate tangent and local position by Y-rotation
     vec3 tangent = rotateY(inLocalTangent, cosT, sinT);

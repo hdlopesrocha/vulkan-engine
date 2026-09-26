@@ -74,6 +74,12 @@ void VegetationRenderer::destroyCulling() {
         appPtr->destroyBuffer(concatenatedInstanceBuffer);
         concatenatedInstanceBuffer = {};
     }
+    // Baked heights aux (perf report 22 C2/H4): same lifetime as the
+    // concatenated instances it parallels.
+    if (vegBakedHeightsBuffer.buffer != VK_NULL_HANDLE) {
+        appPtr->destroyBuffer(vegBakedHeightsBuffer);
+        vegBakedHeightsBuffer = {};
+    }
     for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
         if (compactedCmdBuffers[f].buffer != VK_NULL_HANDLE) {
             appPtr->destroyBuffer(compactedCmdBuffers[f]);
@@ -133,6 +139,95 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
     concatenatedInstanceBuffer = app->createBuffer(concatSize,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    // Baked heights aux buffer (perf report 22 C2/H4): one float per
+    // concatenated slot (worst case, like the instance buffer it parallels:
+    // +32 MB at defaults). Written by the bake dispatch during
+    // consolidateChunks before any draw can reference it.
+    const VkDeviceSize bakedSize =
+        static_cast<VkDeviceSize>(maxChunks) * maxInstancesPerChunk * sizeof(float);
+    vegBakedHeightsBuffer = app->createBuffer(bakedSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    // Fail fast like the pipeline creations below: every vegetation draw
+    // binds this buffer for the baked-height attribute, so a missing aux
+    // buffer would trip vertex-input validation on first draw.
+    if (vegBakedHeightsBuffer.buffer == VK_NULL_HANDLE)
+        throw std::runtime_error("VegetationRenderer: failed to create baked heights buffer");
+
+    // Bake compute pipeline + descriptor set, written once here (both buffer
+    // handles are fixed for the session, so the set never needs refresh).
+    {
+        VkShaderModule bakeModule = app->getOrCreateShaderModule("shaders/vegetation_bake.comp.spv");
+        VkDescriptorSetLayoutBinding bindings[2] = {};
+        bindings[0].binding = 0;
+        bindings[0].descriptorCount = 1;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[1].binding = 1;
+        bindings[1].descriptorCount = 1;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 2;
+        layoutInfo.pBindings = bindings;
+        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &vegBakeDescSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: failed to create bake descriptor set layout");
+        app->resources.addDescriptorSetLayout(vegBakeDescSetLayout, "VegetationRenderer: bakeDescSetLayout");
+
+        VkPushConstantRange pcRange{};
+        pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pcRange.offset = 0;
+        pcRange.size = sizeof(uint32_t);
+        VkPipelineLayoutCreateInfo plInfo{};
+        plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plInfo.setLayoutCount = 1;
+        plInfo.pSetLayouts = &vegBakeDescSetLayout;
+        plInfo.pushConstantRangeCount = 1;
+        plInfo.pPushConstantRanges = &pcRange;
+        if (vkCreatePipelineLayout(device, &plInfo, nullptr, &vegBakePipelineLayout) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: failed to create bake pipeline layout");
+        app->resources.addPipelineLayout(vegBakePipelineLayout, "VegetationRenderer: bakePipelineLayout");
+
+        VkComputePipelineCreateInfo pipeInfo{};
+        pipeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipeInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipeInfo.stage.module = bakeModule;
+        pipeInfo.stage.pName = "main";
+        pipeInfo.layout = vegBakePipelineLayout;
+        if (vkCreateComputePipelines(device, app->getPipelineCache(), 1, &pipeInfo, nullptr, &vegBakePipeline) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: failed to create bake pipeline");
+        app->resources.addPipeline(vegBakePipeline, "VegetationRenderer: bakePipeline");
+
+        VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 };
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = 1;
+        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &vegBakeDescPool) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: failed to create bake descriptor pool");
+        app->resources.addDescriptorPool(vegBakeDescPool, "VegetationRenderer: bakeDescPool");
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = vegBakeDescPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &vegBakeDescSetLayout;
+        VkDescriptorSet bakeSet = VK_NULL_HANDLE;
+        if (vkAllocateDescriptorSets(device, &allocInfo, &bakeSet) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: failed to allocate bake descriptor set");
+        app->resources.addDescriptorSet(bakeSet, "VegetationRenderer: bakeDescSet");
+        vegBakeDescSet = bakeSet;
+        DescriptorWriter(device)
+            .writeBuffer(bakeSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         concatenatedInstanceBuffer.buffer, 0, VK_WHOLE_SIZE)
+            .writeBuffer(bakeSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         vegBakedHeightsBuffer.buffer, 0, VK_WHOLE_SIZE)
+            .flush();
+        bakeModule = VK_NULL_HANDLE;
+    }
 
     // Per-frame compact/count buffers (billboard + impostor) at maxChunks.
     // DEVICE_LOCAL cull outputs (GPU-only): zero-initialized by createBuffer,
@@ -294,6 +389,47 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
                 region.size = buf.count * sizeof(glm::vec4);
                 vkCmdCopyBuffer(cmd, buf.buffer, concatenatedInstanceBuffer.buffer, 1, &region);
                 off += buf.count;
+            }
+
+            // Bake per-instance heights (perf report 22 C2/H4): the copies
+            // above wrote the live prefix [0, off) (TRANSFER_WRITE); publish
+            // to the bake dispatch, run it, then publish the aux buffer to
+            // vertex-attribute reads. Same synchronous submit: aux is valid
+            // before any draw can reference it, and stays in lockstep with
+            // the concatenated instances (baked together, never modified
+            // independently).
+            if (vegBakePipeline != VK_NULL_HANDLE && vegBakeDescSet != VK_NULL_HANDLE
+                && vegBakedHeightsBuffer.buffer != VK_NULL_HANDLE && off > 0) {
+                VkMemoryBarrier2 bakeBar{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+                bakeBar.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+                bakeBar.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                bakeBar.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                bakeBar.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+                VkDependencyInfo bakeDep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+                bakeDep.memoryBarrierCount = 1;
+                bakeDep.pMemoryBarriers = &bakeBar;
+                vkCmdPipelineBarrier2(cmd, &bakeDep);
+
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegBakePipeline);
+                {
+                    VkDescriptorSet bakeSet = vegBakeDescSet;
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                            vegBakePipelineLayout, 0, 1, &bakeSet, 0, nullptr);
+                }
+                const uint32_t bakeCount = off;
+                vkCmdPushConstants(cmd, vegBakePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                                   0, sizeof(uint32_t), &bakeCount);
+                vkCmdDispatch(cmd, (bakeCount + 63u) / 64u, 1, 1);
+
+                VkMemoryBarrier2 bakeOutBar{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+                bakeOutBar.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                bakeOutBar.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+                bakeOutBar.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+                bakeOutBar.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+                VkDependencyInfo bakeOutDep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+                bakeOutDep.memoryBarrierCount = 1;
+                bakeOutDep.pMemoryBarriers = &bakeOutBar;
+                vkCmdPipelineBarrier2(cmd, &bakeOutDep);
             }
         });
     }
@@ -514,9 +650,9 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
 
     vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
     if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
-        VkDeviceSize offsets[2] = { 0, 0 };
-        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
+        VkBuffer vbs[3] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer, vegBakedHeightsBuffer.buffer };
+        VkDeviceSize offsets[3] = { 0, 0, 0 };
+        vkCmdBindVertexBuffers(commandBuffer, 0, 3, vbs, offsets);
         {
             uint32_t vegMaxDraws = std::min(vegNumChunks, vegCascadeCompactCapacity);
             vkCmdDrawIndexedIndirectCount(commandBuffer,
@@ -549,11 +685,12 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
                            0, sizeof(WindPushConstants), &pc);
 
         vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        VkBuffer impVbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
-        VkDeviceSize impOffsets[2] = { 0, 0 };
+        VkBuffer impVbs[3] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE, VK_NULL_HANDLE };
+        VkDeviceSize impOffsets[3] = { 0, 0, 0 };
         if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
             impVbs[1] = concatenatedInstanceBuffer.buffer;
-            vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
+            impVbs[2] = vegBakedHeightsBuffer.buffer;
+            vkCmdBindVertexBuffers(commandBuffer, 0, 3, impVbs, impOffsets);
 
             // Impostor draw commands (indexCount=6) are written by the GPU
             // veg_cascade_cull.comp into the per-cascade impostor compact +
@@ -757,21 +894,26 @@ void VegetationRenderer::init(VulkanApp* app) {
 
     VkPipelineShaderStageCreateInfo stages[] = { vertStage, fragStage };
 
-    VkVertexInputBindingDescription bindingDescs[2] = {};
+    VkVertexInputBindingDescription bindingDescs[3] = {};
     bindingDescs[0].binding = 0;
     bindingDescs[0].stride = sizeof(Vertex);
     bindingDescs[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
     bindingDescs[1].binding = 1;
     bindingDescs[1].stride = sizeof(float) * 4;
     bindingDescs[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+    // Baked heights aux (perf report 22 C2/H4): one float per instance.
+    bindingDescs[2].binding = 2;
+    bindingDescs[2].stride = sizeof(float);
+    bindingDescs[2].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
     // Shared attribute descriptions: localPos at POS, tangent at COLOR, UV, plane-data at BRUSH_INDEX
-    std::vector<VkVertexInputAttributeDescription> attribDescs(5);
+    std::vector<VkVertexInputAttributeDescription> attribDescs(6);
     attribDescs[0] = { ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) };
     attribDescs[1] = { ATTR_COLOR, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) };
     attribDescs[2] = { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) };
     attribDescs[3] = { ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) };
     attribDescs[4] = { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 };
+    attribDescs[5] = { ATTR_VEG_AUX, 2, VK_FORMAT_R32_SFLOAT, 0 };
 
     // ── Shading pass pipeline (TRIANGLE_LIST, no geometry shader) ──
     GraphicsPipelineConfig vegCfg{};
@@ -780,7 +922,7 @@ void VegetationRenderer::init(VulkanApp* app) {
     vegCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     auto [pipeline, layout] = app->createGraphicsPipeline(
         { stages[0], stages[1] },
-        std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
+        std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1], bindingDescs[2]},
         attribDescs,
         setLayouts, &pushConstantRange,
         vegCfg
@@ -817,7 +959,7 @@ void VegetationRenderer::init(VulkanApp* app) {
         depthCfg.noColorAttachment = true;
         auto [depthPipe, depthLayout] = app->createGraphicsPipeline(
             { depthStages[0], depthStages[1] },
-            std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
+            std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1], bindingDescs[2]},
             attribDescs,
             setLayouts,
             &pushConstantRange,
@@ -850,11 +992,13 @@ void VegetationRenderer::init(VulkanApp* app) {
 
         // Shadow vertex shader (vegetation_shadow.vert) omits ATTR_UV (location 2)
         // — do not include it in the attribute descriptions to avoid a PERFORMANCE warning.
+        // H4/C2: aux baked height IS consumed — include it.
         std::vector<VkVertexInputAttributeDescription> shadowAttribDescs = {
             attribDescs[0], // ATTR_POS
             attribDescs[1], // ATTR_COLOR
             attribDescs[3], // ATTR_BRUSH_INDEX (location 4)
             attribDescs[4], // ATTR_INSTANCE   (location 5)
+            attribDescs[5], // ATTR_VEG_AUX    (location 7)
         };
         GraphicsPipelineConfig shadowCfg{};
         shadowCfg.cullMode = VK_CULL_MODE_NONE;
@@ -863,7 +1007,7 @@ void VegetationRenderer::init(VulkanApp* app) {
         shadowCfg.depthBiasEnable = true;
         auto [shadowPipeline, shadowLayout] = app->createGraphicsPipeline(
             { shadowStages[0], shadowStages[1] },
-            std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
+            std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1], bindingDescs[2]},
             shadowAttribDescs,
             setLayouts,
             &pushConstantRange,
@@ -1142,9 +1286,9 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
     if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
         compactedCmdBuffers[sf].buffer != VK_NULL_HANDLE && visibleCountBuffers[sf].buffer != VK_NULL_HANDLE) {
-        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
-        VkDeviceSize offsets[2] = { 0, 0 };
-        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
+        VkBuffer vbs[3] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer, vegBakedHeightsBuffer.buffer };
+        VkDeviceSize offsets[3] = { 0, 0, 0 };
+        vkCmdBindVertexBuffers(commandBuffer, 0, 3, vbs, offsets);
         vkCmdDrawIndexedIndirectCount(commandBuffer, compactedCmdBuffers[sf].buffer, 0,
         visibleCountBuffers[sf].buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
     }
@@ -1173,11 +1317,12 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
                            0, sizeof(WindPushConstants), &pc);
 
         vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        VkBuffer impVbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
-        VkDeviceSize impOffsets[2] = { 0, 0 };
+        VkBuffer impVbs[3] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE, VK_NULL_HANDLE };
+        VkDeviceSize impOffsets[3] = { 0, 0, 0 };
         if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
             impVbs[1] = concatenatedInstanceBuffer.buffer;
-            vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
+            impVbs[2] = vegBakedHeightsBuffer.buffer;
+            vkCmdBindVertexBuffers(commandBuffer, 0, 3, impVbs, impOffsets);
             uint32_t instOff = 0;
             for (auto& [chunkId, buf] : chunkBuffers) {
                 (void)chunkId;
@@ -1332,9 +1477,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         depthStages[1].module = depthFragMod;
         depthStages[1].pName  = "main";
 
-        VkVertexInputBindingDescription depthBindingDescs[2]{};
+        VkVertexInputBindingDescription depthBindingDescs[3]{};
         depthBindingDescs[0] = { 0, sizeof(Vertex),       VK_VERTEX_INPUT_RATE_VERTEX   };
         depthBindingDescs[1] = { 1, sizeof(float) * 4,    VK_VERTEX_INPUT_RATE_INSTANCE };
+        // Baked heights aux (perf report 22 C2/H4): one float per instance.
+        depthBindingDescs[2] = { 2, sizeof(float),        VK_VERTEX_INPUT_RATE_INSTANCE };
 
         std::vector<VkDescriptorSetLayout> depthSetLayouts = {
             app->getDescriptorSetLayout(),
@@ -1353,10 +1500,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         impDepthCfg.noColorAttachment = true;
         auto [depthPipe, depthLayout] = app->createGraphicsPipeline(
             { depthStages[0], depthStages[1] },
-            std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1] },
+            std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1], depthBindingDescs[2] },
             {
                 { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
                 { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
+                { ATTR_VEG_AUX, 2, VK_FORMAT_R32_SFLOAT, 0                                          },
             },
             depthSetLayouts,
             &depthPCRange,
@@ -1382,10 +1530,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         impShadowCfg.depthBiasEnable = true;
         auto [shadowPipe, shadowLayout] = app->createGraphicsPipeline(
             { depthStages[0], depthStages[1] },
-            std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1] },
+            std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1], depthBindingDescs[2] },
             {
                 { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
                 { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
+                { ATTR_VEG_AUX, 2, VK_FORMAT_R32_SFLOAT, 0                                          },
             },
             depthSetLayouts,
             &depthPCRange,
@@ -1418,9 +1567,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
     fragStage.module = fragShader;
     fragStage.pName  = "main";
 
-    VkVertexInputBindingDescription bindingDescs[2]{};
+    VkVertexInputBindingDescription bindingDescs[3]{};
     bindingDescs[0] = { 0, sizeof(Vertex),       VK_VERTEX_INPUT_RATE_VERTEX   };
     bindingDescs[1] = { 1, sizeof(float) * 4,    VK_VERTEX_INPUT_RATE_INSTANCE };
+    // Baked heights aux (perf report 22 C2/H4): one float per instance.
+    bindingDescs[2] = { 2, sizeof(float),        VK_VERTEX_INPUT_RATE_INSTANCE };
 
     std::vector<VkDescriptorSetLayout> impSetLayouts = {
         app->getDescriptorSetLayout(),
@@ -1437,10 +1588,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
     impCfg.depthCompareOp = VK_COMPARE_OP_LESS;
     auto [impPipeline, impLayout] = app->createGraphicsPipeline(
         { vertStage, fragStage },
-        std::vector<VkVertexInputBindingDescription>{ bindingDescs[0], bindingDescs[1] },
+        std::vector<VkVertexInputBindingDescription>{ bindingDescs[0], bindingDescs[1], bindingDescs[2] },
         {
             { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
             { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
+            { ATTR_VEG_AUX, 2, VK_FORMAT_R32_SFLOAT, 0                                          },
         },
         impSetLayouts,
         &pcRange,
@@ -1522,13 +1674,14 @@ void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLay
     uint32_t f = vegFrame();
     vkCmdPushConstants(cmd, activeLayout, pushConstantStages, 0, sizeof(WindPushConstants), &pc);
     if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE || billboardVBO.indexBuffer.buffer == VK_NULL_HANDLE) return;
-    VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
-    VkDeviceSize offsets[2] = { 0, 0 };
+    VkBuffer vbs[3] = { billboardVBO.vertexBuffer.buffer, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDeviceSize offsets[3] = { 0, 0, 0 };
     vkCmdBindIndexBuffer(cmd, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
     if (!vegConsolidationDirty && solidIR && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
         solidIR->getVegBbCompact(f) != VK_NULL_HANDLE && solidIR->getVegBbCount(f) != VK_NULL_HANDLE) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
-        vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
+        vbs[2] = vegBakedHeightsBuffer.buffer;
+        vkCmdBindVertexBuffers(cmd, 0, 3, vbs, offsets);
         {
             vkCmdDrawIndexedIndirectCount(cmd, solidIR->getVegBbCompact(f), 0,
                 solidIR->getVegBbCount(f), 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
@@ -1539,14 +1692,15 @@ void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLay
 void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc) {
     vkCmdPushConstants(cmd, activeLayout, pushConstantStages, 0, sizeof(WindPushConstants), &pc);
     if (impostorVBO.vertexBuffer.buffer == VK_NULL_HANDLE || impostorVBO.indexBuffer.buffer == VK_NULL_HANDLE) return;
-    VkBuffer vbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
-    VkDeviceSize offsets[2] = { 0, 0 };
+    VkBuffer vbs[3] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDeviceSize offsets[3] = { 0, 0, 0 };
     vkCmdBindIndexBuffer(cmd, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
     uint32_t f = vegFrame();
     if (!vegConsolidationDirty && solidIR && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
         solidIR->getVegImpCompact(f) != VK_NULL_HANDLE && solidIR->getVegImpCount(f) != VK_NULL_HANDLE) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
-        vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
+        vbs[2] = vegBakedHeightsBuffer.buffer;
+        vkCmdBindVertexBuffers(cmd, 0, 3, vbs, offsets);
         // Indirect draw consuming the impostor stream compacted by the merged
         // GPU vegetation cull (solid IndirectRenderer's indirect.comp dispatch).
         uint32_t vegMaxImpostorDraws = std::min(vegNumChunks, vegMainCompactCapacity);

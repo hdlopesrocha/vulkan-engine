@@ -10,6 +10,8 @@ layout(location = ATTR_POS) in vec3 inLocalPos;
 layout(location = ATTR_COLOR) in vec3 inLocalTangent;
 layout(location = ATTR_BRUSH_INDEX) in int inCornerNormalData;
 layout(location = ATTR_INSTANCE) in vec4 instanceData;
+// Baked height scale (binding 2, perf report 22 C2/H4); see vegetation.vert.
+layout(location = ATTR_VEG_AUX) in float inBakedHeight;
 
 layout(location = VARY_POSWORLD) out vec3 outWorldPos;
 
@@ -124,7 +126,7 @@ void main() {
     float cosT = cos(theta);
     float sinT = sin(theta);
 
-    float heightScale = vegetationHeightScale(worldPos.xz);
+    float heightScale = inBakedHeight;
     float scale = billboardScale * heightScale;
     vec3 localPos = rotateY(inLocalPos, cosT, sinT) * scale;
     vec3 tangent = rotateY(inLocalTangent, cosT, sinT);

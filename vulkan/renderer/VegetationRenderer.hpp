@@ -376,6 +376,18 @@ private:
     uint32_t vegPreallocatedChunks = 0;    // worst-case chunk reservation from preallocate()
     VkDeviceSize vegPreallocatedInstances = 0; // worst-case instance reservation
     bool vegPreallocated = false;          // true once preallocate() has run
+    // Baked per-instance height scales (perf report 22 C2/H4): one float per
+    // concatenated instance slot, written by the bake dispatch during
+    // consolidateChunks, read as an instance-rate vertex attribute
+    // (binding 2, ATTR_VEG_AUX) by every vegetation VS. Same firstInstance
+    // indexing as concatenatedInstanceBuffer; the two stay in lockstep
+    // always (baked together, never independently modified).
+    Buffer vegBakedHeightsBuffer;
+    TrackedHandle<VkPipeline> vegBakePipeline;
+    TrackedHandle<VkPipelineLayout> vegBakePipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> vegBakeDescSetLayout;
+    TrackedHandle<VkDescriptorPool> vegBakeDescPool;
+    TrackedHandle<VkDescriptorSet> vegBakeDescSet;
     uint32_t vegCullFrameIndex = 0;        // auto-cycling frame index for triple buffering
     uint32_t vegCullCurrentSlot = 0;       // slot selected for current frame's cull + draws
     bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata

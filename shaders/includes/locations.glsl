@@ -9,6 +9,9 @@
 #define ATTR_BRUSH_INDEX 4
 #define ATTR_HSV 6
 #define ATTR_INSTANCE 5
+// Baked per-instance vegetation height scale (perf report 22 C2/H4): float
+// per instance in the concatenated aux buffer (vertex binding 2).
+#define ATTR_VEG_AUX 7
 
 // Fragment outputs (color attachments)
 // Keep these matching render pass attachment locations (0 = primary color)

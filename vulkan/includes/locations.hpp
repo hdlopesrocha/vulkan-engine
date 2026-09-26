@@ -11,6 +11,9 @@ static constexpr uint32_t ATTR_NORMAL = 3u;
 static constexpr uint32_t ATTR_BRUSH_INDEX = 4u;
 static constexpr uint32_t ATTR_HSV = 6u;
 static constexpr uint32_t ATTR_INSTANCE = 5u;
+// Baked per-instance vegetation height scale (perf report 22 C2/H4):
+// float per instance in the concatenated aux buffer (binding 2).
+static constexpr uint32_t ATTR_VEG_AUX = 7u;
 
 // Fragment output locations (match render pass attachments)
 static constexpr uint32_t FRAG_OUT_COLOR = 0u;

@@ -4,6 +4,8 @@
 
 layout(location = ATTR_UV) in vec2 inCornerUV;
 layout(location = ATTR_INSTANCE) in vec4 instanceData; // xyz=world pos, w=billboard index + rotFrac
+// Baked height scale (binding 2, perf report 22 C2/H4); see vegetation.vert.
+layout(location = ATTR_VEG_AUX) in float inBakedHeight;
 
 layout(location = VARY_UV) out vec3 outTexCoord;
 layout(location = VARY_POSWORLD) out vec3 outWorldPos;
@@ -162,7 +164,7 @@ void main() {
 
     int layerIdx = clamp(billboardIdx, 0, 2) * NUM_VIEWS + bestIdx;
 
-    float hs = vegetationHeightScale(worldPos.xz);
+    float hs = inBakedHeight;
 
     vec3 center = worldPos + vec3(0.0, billboardScale * 0.5, 0.0);
     vec3 worldUp = vec3(0.0, 1.0, 0.0);

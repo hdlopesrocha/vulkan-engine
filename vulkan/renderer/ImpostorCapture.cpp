@@ -581,7 +581,11 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
     // Use vegetation.vert for billboard expansion (same 24-corner + indexed approach).
-    VkShaderModule vertShader = app->getOrCreateShaderModule("shaders/vegetation.vert.spv");
+    // VEG_CAPTURE variant (perf report 22 C2): evaluates the height scale
+    // locally exactly as before the bake — the capture draws a canonical
+    // single instance with no aux buffer bound, so it must not declare the
+    // baked-height input (VUID-07904).
+    VkShaderModule vertShader = app->getOrCreateShaderModule("shaders/vegetation_capture.vert.spv");
     VkShaderModule fragShader = app->getOrCreateShaderModule("shaders/capture.frag.spv");
 
     VkPipelineShaderStageCreateInfo stages[2]{};

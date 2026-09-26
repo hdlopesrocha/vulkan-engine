@@ -132,6 +132,7 @@ OUT_SPVS = \
 	$(OUT_DIR)/shaders/main_water.vert.spv \
 	$(OUT_DIR)/shaders/main_water_no_tess.vert.spv \
 	$(OUT_DIR)/shaders/main_solid_no_tess.vert.spv \
+	$(OUT_DIR)/shaders/vegetation_capture.vert.spv \
 	$(OUT_DIR)/shaders/main_shadow.tese.spv \
 	$(OUT_DIR)/shaders/evsm_blur5.frag.spv \
 	$(OUT_DIR)/shaders/main_water.tesc.spv \
@@ -251,6 +252,18 @@ $(OUT_DIR)/shaders/evsm_blur5.frag.spv: shaders/evsm_blur.frag $(SHADER_INCLUDES
 		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DBLUR5=1 $< -o $@; \
 	else \
 		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D BLUR5=1 $< -o $@; \
+	fi
+# H4/C2: ImpostorCapture variant of vegetation.vert (VEG_CAPTURE=1): evaluates
+# the height scale locally exactly as before the bake (canonical single
+# instance, no aux buffer bound). Built WITHOUT -O like its generic sibling
+# so capture output is maximally unchanged.
+$(OUT_DIR)/shaders/vegetation_capture.vert.spv: shaders/vegetation.vert $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (VEG_CAPTURE=1)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes -DVEG_CAPTURE=1 $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D VEG_CAPTURE=1 $< -o $@; \
 	fi
 $(OUT_DIR)/shaders/main_water.tesc.spv: shaders/main.tesc $(SHADER_INCLUDES)
 	@echo "Compiling shader: $< -> $@ (WATER_MODE=1)"

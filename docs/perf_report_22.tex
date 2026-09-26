@@ -254,6 +254,27 @@ cascades. Files: \texttt{vulkan/renderer/VegetationRenderer.cpp},
 \texttt{shaders/vegetation.vert},
 \texttt{shaders/vegetation\_shadow.vert}. Validation: shadow-vs-color A/B,
 timestamp deltas on veg passes, validation-clean.
+\\ \textbf{Implemented as:} (1) shipped --- GPU compute bake
+(\texttt{vegetation\_bake.comp}, 1.4k words) of the height scale into a
+float-per-instance concatenated aux buffer (+32\,MB worst case), evaluated
+synchronously inside \texttt{consolidateChunks} so aux and instances stay in
+lockstep; all four VS variants and all six pipelines read it (new binding 2,
+\texttt{ATTR\_VEG\_AUX}). Same device, same \texttt{perlin2d.glsl} source,
+same operation order: identical up to FMA-contraction ulps on a smooth
+signal with no cliffs (invisible by construction). (2) declined pending A/B:
+outer-cascade texels (10--80\,cm) make 6-plane detail plausibly sub-texel
+(Nyquist), but silhouette lightening needs eyes; the cull/VBO/VS-variant
+machinery is mapped in the section above for whoever runs that A/B. True
+once-per-frame expansion (cross-pass vertex reuse) needs transform feedback
+or mesh shaders --- out of scope.
+\\ \textbf{Postscript (missed consumer, fixed):} \texttt{ImpostorCapture}
+loads \texttt{vegetation.vert} with its own 5-attribute pipeline, so the new
+input broke its creation (VUID-07904 at launch). It draws a canonical single
+instance with no aux buffer bound, so it now builds \texttt{vegetation.vert}
+with \texttt{VEG\_CAPTURE=1} (height evaluated locally, exactly as before
+the bake; disassembly confirms no location-7 input). Lesson: new shader
+inputs require auditing every loader of the module, not just the owning
+renderer.
 \end{tcolorbox}
 
 \subsection{C3: $\sim$18 Queue Submits per Frame Across $\sim$8 Queues}
@@ -318,6 +339,11 @@ height scale + density hash written by \texttt{processPendingChunks};
 \texttt{shaders/vegetation.vert}, \texttt{shaders/impostors.vert}.
 Validation: A/B identical (aux path is exact), VS word count down,
 validation-clean.
+\\ \textbf{Implemented, narrowed:} height scale only (the $\sim$100-flop
+head of the per-vertex bill; density hash at $\sim$12 flops stays
+in-shader, trigonometry stays for lack of an A/B-able fidelity story).
+All four VS variants disassemble clean of \texttt{vegetationHeightScale}
+with the location-7 input live.
 \end{tcolorbox}
 
 \subsection{H5: Impostor Fragment Stage Reconstructs Depth and Shades Full}
@@ -569,7 +595,7 @@ sentinel VS branch is dead defense. Update the comment, keep the branch.
 \textbf{Item} & \textbf{Change} & \textbf{Est.\ frame delta} \\
 \midrule
 C1 & Utilization feedback + tiers, lazy debug streams & $-0.3$--1\,GB committed \\
-C2 & Veg bake + cascade detail tiers & $-50$--$80$\% veg vertex cost \\
+C2 & Veg height bake + aux buffer (shipped) & $-100$ flops/vtx $\times$ 24 $\times$ passes \\
 C3 & Submit consolidation/elision & CPU-bound scenes improve \\
 H4 & Per-instance bake (exact parts) & $-30$\% veg VS ALU \\
 H5 & Impostor dither reorder + vertex CSM & $-1$ fetch, $-2$ matvecs on fade pixels \\
