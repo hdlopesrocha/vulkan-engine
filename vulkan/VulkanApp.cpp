@@ -1933,6 +1933,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             // VulkanApp itself, keyed by VkQueue handle (aliased queues share one
             // counter because they share a handle).
             m_queueSubmitted[targetQueue]++;
+            m_totalSubmitted++;
             m_queuePending[targetQueue]++;
             // Record a queue-timeline segment for the queue-usage slotted view.
             recordQueueSegment(targetQueue, fence, submitId);
@@ -2096,6 +2097,7 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
                 // aliased queues naturally share one counter (the real hardware queue).
                 m_cmdQueueMap[commandBuffer] = graphicsQueue;
                 m_queueSubmitted[graphicsQueue]++;
+                m_totalSubmitted++;
                 m_queuePending[graphicsQueue]++;
         }
                 return;
@@ -6344,6 +6346,10 @@ uint64_t VulkanApp::getQueueSubmitted(VkQueue q) const {
     if (q == VK_NULL_HANDLE) return 0;
     auto it = m_queueSubmitted.find(q);
     return it != m_queueSubmitted.end() ? it->second : 0;
+}
+
+uint64_t VulkanApp::getTotalSubmitted() const {
+    return m_totalSubmitted;
 }
 
 uint64_t VulkanApp::getQueueCompleted(VkQueue q) const {

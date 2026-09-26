@@ -304,6 +304,17 @@ overlay to prove the delta. Files: \texttt{MyApp.cpp},
 \texttt{vulkan/renderer/ShadowRenderer.cpp}. Validation: submit counter
 down, frame time down on CPU-bound scenes, validation-clean (semaphore DAG
 unchanged in meaning).
+\\ \textbf{Implemented as:} (1) shipped for SDF/bbox (the actual gaps;
+brush-liquid was already gated): steady-state-disabled tasks skip
+submit/signal entirely (warmup + toggle-transition runs preserve the
+clear+read-only target invariant; composite waits only on registered
+timelines, so no DAG change); (3) shipped --- cumulative counter next to
+\texttt{m\_queueSubmitted} plus a StatsOverlay per-frame readout. (2)
+declined: merging the 3 cascade CBs saves 2 submits but serializes
+parallel recording on worker cores, and batching them in one submit needs
+surgery in the shared submit helper (fences, throttling, abort paths) ---
+the record-vs-submit tradeoff is unmeasurable without executing. Corrected
+count: 12 MyApp + 5 shadow $=$ 17 submits/frame, not $\sim$18.
 \end{tcolorbox}
 
 % =====================================================================

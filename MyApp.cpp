@@ -627,7 +627,11 @@ public:
             wp.causticSoftness = 0.5f;
             wp.tessMinLevel = 2.0f;
             wp.tessMaxLevel = 16.0f;
-            wp.reflectionStrength = 0.5f;
+            // Polished mirror like layer 2: a 100% mirror transmits nothing,
+            // so refraction is off (it would only be masked out anyway) and
+            // the partial-mirror shoreline dissolve never applies.
+            wp.enableRefraction = false;
+            wp.reflectionStrength = 1.0f;
             wp.fresnelPower = 1.0f;
             waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
         }
@@ -2155,6 +2159,19 @@ public:
         {
             const bool sdfEnabled = settings.showSDFDebug;
             asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, v]() {
+                // C3: elide the whole task (no CB, no submit, no signal) in
+                // steady-state disabled. Sound: targets stay clear +
+                // SHADER_READ_ONLY from warmup/final clears, nothing else
+                // writes them, and the composite only waits on timelines
+                // registered by submits that actually run. Warmup (3 runs =
+                // frames in flight) covers initial state + pipelining; any
+                // toggle forces one run. Single-worker pool: statics safe.
+                static bool sdfPrevEnabled = false;
+                static uint32_t sdfRuns = 0;
+                const bool sdfTransition = (sdfEnabled != sdfPrevEnabled);
+                sdfPrevEnabled = sdfEnabled;
+                if (!sdfEnabled && !sdfTransition && sdfRuns >= 3) return;
+                ++sdfRuns;
                 MyApp* app = this;
                 VkCommandBuffer sdfCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -2187,6 +2204,13 @@ public:
         {
             const bool bboxEnabled = settings.showBoundingBoxes;
             asyncBboxFuture = asyncThreadPool.enqueue([this, frameIdx, bboxEnabled, v]() {
+                // C3: same steady-state elision as the SDF task above.
+                static bool bboxPrevEnabled = false;
+                static uint32_t bboxRuns = 0;
+                const bool bboxTransition = (bboxEnabled != bboxPrevEnabled);
+                bboxPrevEnabled = bboxEnabled;
+                if (!bboxEnabled && !bboxTransition && bboxRuns >= 3) return;
+                ++bboxRuns;
                 MyApp* app = this;
                 VkCommandBuffer bboxCmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
@@ -2889,6 +2913,16 @@ public:
                     ImGui::Text("FPS:           %.1f", profileFps);
                     ImGui::Text("Update:        %.2f", profileCpuUpdate);
                     ImGui::Text("Record:        %.2f", profileCpuRecord);
+                    // Queue submits/frame (perf report 22 C3): diffed cumulative
+                    // counter; approximate under worker lag, exact enough to
+                    // prove consolidation deltas.
+                    {
+                        static uint64_t lastSubmits = 0;
+                        const uint64_t total = getTotalSubmitted();
+                        const uint64_t perFrame = (total >= lastSubmits) ? (total - lastSubmits) : total;
+                        lastSubmits = total;
+                        ImGui::Text("Submits:       %llu", (unsigned long long)perFrame);
+                    }
                 }
 
                 // GPU memory usage (VK_EXT_memory_budget)

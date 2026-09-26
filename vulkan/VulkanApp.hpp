@@ -625,6 +625,8 @@ public:
         int      getQueuePending(VkQueue q) const;
         uint64_t getQueueSubmitted(VkQueue q) const;
         uint64_t getQueueCompleted(VkQueue q) const;
+        // All-queues cumulative submits (perf report 22 C3 overlay counter).
+        uint64_t getTotalSubmitted() const;
 
         // ---- Queue timeline -------------------------------------------------
         // Per-submit busy intervals used by the queue-usage slotted view. Every
@@ -813,6 +815,10 @@ public:
         // counter — which is exactly the real hardware queue.
         std::unordered_map<VkQueue, int>      m_queuePending;   // in-flight command buffers
         std::unordered_map<VkQueue, uint64_t> m_queueSubmitted; // cumulative submissions
+        // All-queues cumulative submit count (perf report 22 C3): bumped next
+        // to m_queueSubmitted on every submit path; the stats overlay diffs it
+        // per frame. Same lock domain as the maps below.
+        uint64_t m_totalSubmitted = 0;
         std::unordered_map<VkQueue, uint64_t> m_queueCompleted; // cumulative completions
         std::unordered_map<VkCommandBuffer, VkQueue> m_cmdQueueMap; // cmd -> owning queue
         // Persistent frame-graph timeline semaphores (producer signaled with the
