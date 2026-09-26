@@ -642,6 +642,19 @@ Goal: patch-level work runs once per patch, not three times. Steps:
 only placement). Files: \texttt{shaders/includes/solid\_tesc.glsl}.
 Validation: tessellation heatmap view identical, TCS instruction count down in
 disassembly, validation-clean.
+\\ \textbf{Implemented differently:} the naive guard breaks the debug
+varying --- \texttt{tc\_fragTessLevel} is written per-invocation from the
+edge values, so invocations 1--2 would emit garbage. The textbook fix
+(compute once, broadcast via \texttt{shared} + \texttt{barrier()}) does not
+compile: Vulkan GLSL has no cross-invocation communication in TCS
+(\texttt{'shared' : not supported in this stage}). The shipped design moves
+the heat computation to the TES, which reads the TCS levels as patch inputs
+(\texttt{gl\_TessLevelOuter/Inner} carry the exact TCS-written values): same
+max chain, same value, evaluated per TES vertex instead of redundantly per
+TCS invocation, and the TCS debug output is deleted. Writing the levels from
+invocation 0 only is additionally \emph{more} correct than the status quo
+(no benign 3-way store race). Heatmap identical by construction; confirm in
+\texttt{DEBUG\_MODE\_TESS\_HEAT}.
 \end{tcolorbox}
 
 % =====================================================================

@@ -28,7 +28,6 @@ layout(location = VARY_LOCALPOS) in vec3 tc_fragLocalPos[]; // local-space posit
 layout(location = VARY_LOCALNORMAL) in vec3 tc_fragLocalNormal[];
 layout(location = VARY_TEXWEIGHTS) in vec3 tc_fragTexWeights[];
 layout(location = VARY_HSV) in vec3 tc_fragHSV[];
-layout(location = VARY_DEBUG) in vec3 tc_fragTessLevel[];
 #endif
 
 #ifdef SHADOW_PASS
@@ -69,7 +68,6 @@ void main() {
     vec3 weights = tc_fragTexWeights[0] * bc.x + tc_fragTexWeights[1] * bc.y + tc_fragTexWeights[2] * bc.z;
 #ifndef SHADOW_PASS
     vec3 hsv = tc_fragHSV[0] * bc.x + tc_fragHSV[1] * bc.y + tc_fragHSV[2] * bc.z;
-    vec3 tessLevel = tc_fragTessLevel[0] * bc.x + tc_fragTessLevel[1] * bc.y + tc_fragTessLevel[2] * bc.z;
 #endif
 
 
@@ -104,7 +102,12 @@ void main() {
     } else {
         // Full pass: calculate all outputs for shading
         fragHSV = hsv;
-        fragTessLevel = tessLevel;
+        // H8: tessellation heat from the TCS levels directly (patch inputs
+        // gl_TessLevelOuter/Inner carry the exact TCS-written values): same
+        // max chain the TCS interpolation produced, now evaluated once per
+        // TES vertex instead of redundantly per TCS invocation.
+        fragTessLevel = vec3(clamp(max(max(gl_TessLevelOuter[0], gl_TessLevelOuter[1]),
+                                        max(gl_TessLevelOuter[2], gl_TessLevelInner[0])) / 16.0, 0.0, 4.0));
         
         fragPosWorldNotDisplaced = worldPos.xyz;
         worldPos = vec4(displacedLocalPos, 1.0);

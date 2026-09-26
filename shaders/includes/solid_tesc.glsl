@@ -23,7 +23,6 @@ layout(location = VARY_LOCALPOS) out vec3 tc_fragLocalPos[];
 layout(location = VARY_LOCALNORMAL) out vec3 tc_fragLocalNormal[];
 layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
 layout(location = VARY_HSV) out vec3 tc_fragHSV[];
-layout(location = VARY_DEBUG) out vec3 tc_fragTessLevel[];
 
 
 // Compute tessellation factor for a single edge.  All inputs come from the
@@ -100,29 +99,34 @@ void main() {
     tc_fragLocalNormal[gl_InvocationID] = pc_inLocalNormal[gl_InvocationID];
     // tangents are computed in the fragment shader for triplanar mapping
 
-    // Per-edge tessellation: all material lookups and distance computations
-    // use only the edge's own two vertex positions and brush indices.  Both
-    // adjacent patches sharing an edge see the same vertex pair, so they
-    // always produce identical outer levels — no LOD crack seams.
+    // Per-edge tessellation (perf report 21 H8): patch-constant work, so
+    // invocation 0 computes it once; the other invocations skip it. (No
+    // shared-memory broadcast: TCS has no cross-invocation communication in
+    // Vulkan GLSL, and none is needed — see the heat note below.) All
+    // material lookups and distance computations still use only the edge's
+    // own two vertex positions and brush indices, so both adjacent patches
+    // sharing an edge always produce identical outer levels — no LOD crack
+    // seams.
     //   Outer0 = edge opposite v0 = edge (v1, v2)
     //   Outer1 = edge opposite v1 = edge (v2, v0)
     //   Outer2 = edge opposite v2 = edge (v0, v1)
-    vec3 p0 = pc_inPosWorld[0];
-    vec3 p1 = pc_inPosWorld[1];
-    vec3 p2 = pc_inPosWorld[2];
-    float outer0 = computeEdgeTess(p1, p2, pc_inBrushIndex[1], pc_inBrushIndex[2]);
-    float outer1 = computeEdgeTess(p2, p0, pc_inBrushIndex[2], pc_inBrushIndex[0]);
-    float outer2 = computeEdgeTess(p0, p1, pc_inBrushIndex[0], pc_inBrushIndex[1]);
-    float inner  = max(max(outer0, outer1), outer2);
+    if (gl_InvocationID == 0) {
+        vec3 p0 = pc_inPosWorld[0];
+        vec3 p1 = pc_inPosWorld[1];
+        vec3 p2 = pc_inPosWorld[2];
+        float outer0 = computeEdgeTess(p1, p2, pc_inBrushIndex[1], pc_inBrushIndex[2]);
+        float outer1 = computeEdgeTess(p2, p0, pc_inBrushIndex[2], pc_inBrushIndex[0]);
+        float outer2 = computeEdgeTess(p0, p1, pc_inBrushIndex[0], pc_inBrushIndex[1]);
+        float inner  = max(max(outer0, outer1), outer2);
+        gl_TessLevelOuter[0] = outer0;
+        gl_TessLevelOuter[1] = outer1;
+        gl_TessLevelOuter[2] = outer2;
+        gl_TessLevelInner[0] = inner;
+    }
 
-    // Tessellation-level debug feed (DEBUG_MODE_TESS_HEAT): per-corner max edge
-    // level normalized by 16 (typical maxLevel). The TES interpolates it like
-    // any other varying so the fragment shader sees a smooth heatmap.
-    float cornerLevel = max(max(outer0, outer1), max(outer2, inner)) / 16.0;
-    tc_fragTessLevel[gl_InvocationID] = vec3(clamp(cornerLevel, 0.0, 4.0));
-
-    gl_TessLevelOuter[0] = outer0;
-    gl_TessLevelOuter[1] = outer1;
-    gl_TessLevelOuter[2] = outer2;
-    gl_TessLevelInner[0] = inner;
+    // NOTE (H8): the tessellation-level debug varying lived here as a
+    // per-invocation write of patch-uniform data, which is exactly why the
+    // edge block could never be guarded naively. It moved to the TES, which
+    // reads the TCS levels as patch inputs (see solid_tese.glsl) — same
+    // value, no per-invocation recompute, no barrier needed.
 }
