@@ -687,6 +687,14 @@ with \texttt{textureLod(..., 0.0)}. Files:
 \texttt{shaders/postprocess.frag}. Validation: shoreline A/B screenshots at
 pixel zoom, validation-clean (derivative-uniformity warnings gone on strict
 drivers).
+\\ \textbf{Implemented, extended to the whole file:} the same
+implicit-LOD-in-divergent-flow pattern appeared in four more spots of the
+same shader (\texttt{vegColorTex}, \texttt{brushDepthTex},
+\texttt{sdfColorTex}, \texttt{bboxColorTex} --- all fetched under
+per-pixel-varying conditions, all single-level offscreen targets where LOD 0
+is the only correct level). All converted; the remaining implicit taps are
+top-level uniform flow and stay. No visual change is expected except at
+silhouette boundaries, where the old derivatives were undefined.
 \end{tcolorbox}
 
 \subsection{M10: \texttt{waterRenderScale} Defaults to 1.0 and Neither Preset Touches It}

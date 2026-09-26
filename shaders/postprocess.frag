@@ -118,7 +118,7 @@ void main() {
     float obstacleDepth = sceneDepth;
     if (vegPresent) {
         obstacleDepth = min(obstacleDepth, vegDepth);
-        vec4 vegColor = texture(vegColorTex, uv);
+        vec4 vegColor = textureLod(vegColorTex, uv, 0.0);
         if (vegColor.a > 0.0 && !(sceneDepth < vegDepth)) {
             baseColor = mix(baseColor, vegColor.rgb, vegColor.a);
         }
@@ -187,10 +187,12 @@ void main() {
     // aux attachments were written this frame" (H4).
     if (waterAlpha > 0.0 && ubo.waterBlurEnabled > 0.5) {
         vec2 wtexel = 1.0 / vec2(textureSize(waterGeomDepthTex, 0));
-        float wd00 = texture(waterGeomDepthTex, clamp(uv + vec2(-wtexel.x, -wtexel.y), vec2(0.0), vec2(1.0))).r;
-        float wd10 = texture(waterGeomDepthTex, clamp(uv + vec2( wtexel.x, -wtexel.y), vec2(0.0), vec2(1.0))).r;
-        float wd01 = texture(waterGeomDepthTex, clamp(uv + vec2(-wtexel.x,  wtexel.y), vec2(0.0), vec2(1.0))).r;
-        float wd11 = texture(waterGeomDepthTex, clamp(uv + vec2( wtexel.x,  wtexel.y), vec2(0.0), vec2(1.0))).r;
+        // M9: explicit LOD (divergent flow — implicit derivatives are
+        // undefined here and go wrong exactly at water silhouettes).
+        float wd00 = textureLod(waterGeomDepthTex, clamp(uv + vec2(-wtexel.x, -wtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
+        float wd10 = textureLod(waterGeomDepthTex, clamp(uv + vec2( wtexel.x, -wtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
+        float wd01 = textureLod(waterGeomDepthTex, clamp(uv + vec2(-wtexel.x,  wtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
+        float wd11 = textureLod(waterGeomDepthTex, clamp(uv + vec2( wtexel.x,  wtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
         float waterGeomDepth = min(min(wd00, wd10), min(wd01, wd11));
         if (waterGeomDepth < 1.0 && obstacleDepth < waterGeomDepth) {
             waterAlpha = 0.0;
@@ -203,7 +205,8 @@ void main() {
     // 4. Brush compositing
     vec4 brushColor = texture(brushColorTex, uv);
     if (brushColor.a > 0.0) {
-        float brushDepth = texture(brushDepthTex, uv).r;
+        // M9: explicit LOD (divergent flow, same argument as above).
+        float brushDepth = textureLod(brushDepthTex, uv, 0.0).r;
 
         // Brush geometry overlay: depth-test brush against scene + water + veg, same for all modes
         {
@@ -219,14 +222,16 @@ void main() {
     // behind the current obstacle (solid or vegetation) surface.
     float sdfDepth = texture(sdfDepthTex, uv).r;
     if (sdfDepth < 1.0 && !(obstacleDepth < sdfDepth)) {
-        vec4 sdfColor = texture(sdfColorTex, uv);
+        // M9: explicit LOD (divergent flow, same argument as above).
+        vec4 sdfColor = textureLod(sdfColorTex, uv, 0.0);
         if (sdfColor.a > 0.0) {
             finalColor = mix(finalColor, sdfColor.rgb, sdfColor.a);
         }
     }
     float bboxDepth = texture(bboxDepthTex, uv).r;
     if (bboxDepth < 1.0 && !(obstacleDepth < bboxDepth)) {
-        vec4 bboxColor = texture(bboxColorTex, uv);
+        // M9: explicit LOD (divergent flow, same argument as above).
+        vec4 bboxColor = textureLod(bboxColorTex, uv, 0.0);
         if (bboxColor.a > 0.0) {
             finalColor = mix(finalColor, bboxColor.rgb, bboxColor.a);
         }
