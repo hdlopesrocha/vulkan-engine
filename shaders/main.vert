@@ -187,7 +187,10 @@ void main() {
 // preserve slope/height-band blending. The slot/weight outputs below are flat
 // provoking-vertex material (exact for single-material triangles) and exist
 // only for stage linkage; no bound FS reads them for shading.
-layout(location = VARY_COLOR) out vec3 fragColor;
+// VARY_COLOR output removed (perf report 21 H7): no solid FS reads it, so
+// the channel is dropped at linkage like the TCS passthrough. inColor stays
+// declared (shared input block) but unused here, mirroring the WATER_NO_TESS
+// path — the no-tess pipelines below must therefore not declare ATTR_COLOR.
 layout(location = VARY_UV) out vec2 fragUV;
 layout(location = VARY_NORMAL) out vec3 fragNormal;
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
@@ -200,7 +203,6 @@ layout(location = VARY_HSV) out vec3 fragHSV;
 layout(location = VARY_DEBUG) out vec3 fragTessLevel; // 1/16: what the TCS emits when tess is off
 
 void main() {
-    fragColor = inColor;
     fragUV = inUV;
     // Identity model (models removed): inPos is already world space.
     vec3 normal = normalize(inNormal);

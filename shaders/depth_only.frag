@@ -2,7 +2,6 @@
 
 #include "includes/locations.glsl"
 
-layout(location = VARY_COLOR) in vec3 fragColor;
 layout(location = VARY_UV) in vec2 fragUV;
 layout(location = VARY_NORMAL) in vec3 fragNormal;
 layout(location = VARY_POSWORLD) in vec3 fragPosWorld;

@@ -18,8 +18,8 @@ layout(location = VARY_BRUSHPATCH) flat in ivec3 tc_fragBrushIndex[];
 layout(location = VARY_TEXWEIGHTS) in vec3 tc_fragTexWeights[];
 #else
 // Inputs from TCS (per-vertex arrays)
+// (VARY_COLOR removed, perf report 21 H7: unread by every solid FS)
 
-layout(location = VARY_COLOR) in vec3 tc_fragColor[];
 layout(location = VARY_UV) in vec2 tc_fragUV[];
 layout(location = VARY_NORMAL) in vec3 tc_fragNormal[]; // keep for compatibility (world-space if provided)
 layout(location = VARY_POSWORLD) in vec3 tc_fragPosWorld[]; // world pos passed through by TCS (not used for displacement)
@@ -36,8 +36,8 @@ layout(location = VARY_DEBUG) in vec3 tc_fragTessLevel[];
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
 #else
 // Outputs to fragment shader (match main.frag inputs)
+// (VARY_COLOR removed, perf report 21 H7)
 
-layout(location = VARY_COLOR) out vec3 fragColor;
 layout(location = VARY_UV) out vec2 fragUV;
 layout(location = VARY_NORMAL) out vec3 fragNormal; // world-space normal
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
@@ -91,7 +91,6 @@ void main() {
 #else
     if (isDepthPass) {
         // Depth pass: set dummy outputs (fragment shader early-returns anyway)
-        fragColor = vec3(0.0);
         fragUV = vec2(0.0);
         fragNormal = vec3(0.0);
         fragTexIndices = ivec3(0);
@@ -104,7 +103,6 @@ void main() {
         fragTessLevel = vec3(0.0);
     } else {
         // Full pass: calculate all outputs for shading
-        fragColor = tc_fragColor[0] * bc.x + tc_fragColor[1] * bc.y + tc_fragColor[2] * bc.z;
         fragHSV = hsv;
         fragTessLevel = tessLevel;
         

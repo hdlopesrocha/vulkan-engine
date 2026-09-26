@@ -362,6 +362,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         // No-tessellation twin of the deferred depth pipeline (C1): same
         // depth_only.frag, TRIANGLE_LIST + SOLID_NO_TESS VS, so the prepass
         // skips TCS/TES and the TES displacement sampling entirely.
+        // H7: filtered attributes (no ATTR_COLOR — the VS no longer reads it).
         {
             ShaderStage noTessVertexShader = ShaderStage(
                 app->getOrCreateShaderModule("shaders/main_solid_no_tess.vert.spv"),
@@ -370,7 +371,8 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             auto [noTessDp, noTessDl] = app->createGraphicsPipeline(
                 { noTessVertexShader.info, depthFrag.info },
                 std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
-                vk_layouts::defaultAttributes(),
+                vk_layouts::defaultAttributesFiltered(
+                    { ATTR_POS, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV }),
                 setLayouts, nullptr,
                 ddCfg
             );

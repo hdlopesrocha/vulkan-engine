@@ -598,6 +598,21 @@ reads it. Files: \texttt{vulkan/includes/vertex\_layouts.hpp},
 \texttt{shaders/includes/solid\_tese.glsl}. Validation: stride assert
 ($\mathtt{sizeof(Vertex)}$ or a slimmer solid vertex), pixel-identical
 screenshots, vertex-fetch-bytes counters down, validation-clean.
+\\ \textbf{Implemented with narrowed scope:} the interpolant is eliminated
+everywhere (FS declarations plus TCS/TES passthrough removed; disassembly
+confirms location 22 absent from all solid stage interfaces). Fetch-side and
+stride changes are partial \emph{by design}: the shared tess VS keeps reading
+\texttt{inColor} (filtering its $\sim$15 pipeline attribute lists plus the
+water tess family was rejected as risk without runtime validation), while the
+two owned no-tess twins (depth, shadow) got filtered attributes (disassembly
+confirms no location-1 input) for the 12\,B fetch saving where the VS is a
+plain streamer. The 64 $\rightarrow$ 48 stride repack is deferred: the RT
+shaders hardcode the 16-float vertex layout (\texttt{kVertStride}, normal at
+floats 8--10, brush index at 11 --- 44 \texttt{rtSceneVerts} references across
+\texttt{rt\_reflection.glsl}, \texttt{rt\_scene\_sample.glsl},
+\texttt{solid\_surface.glsl}, \texttt{water\_surface.glsl}), and a missed
+offset corrupts reflections silently, undetectable without executing the app.
+That repack requires a runnable validation pass.
 \end{tcolorbox}
 
 \subsection{H8: The Solid TCS Computes Every Edge Level Three Times --- the Water TCS Does It Once}
@@ -803,7 +818,7 @@ C3 & Triplanar fetch tiering (shipped) & $-33$\% worst-case, $-67$\% single-mat 
 H4 & Shadow TES prune $+$ 5-tap outer blur (shipped) & $-40$ ALU/vtx, $-44$\% outer-blur taps \\
 H5 & HSV gate: per-pixel identity skip (shipped, +water) & $-60$ ALU/px at uniform tint \\
 H6 & Cascade reuse in secondary hits (shipped, exact) & $\le$1 matvec + blend per c1/c2-strict hit \\
-H7 & Drop dead color attribute & $-12$\,B/vtx traffic, stride 64$\rightarrow$48 \\
+H7 & Dead color: interpolant out, twins filtered (stride stays 64) & $-1$ varying, $-12$\,B/vtx on twins \\
 H8 & TCS invocation guard & $-67$\% solid TCS ALU \\
 M9--M12 & Composite LOD, scale, cull, VS VTF & additive, each 2--10\% \\
 L13--L15 & Hygiene & noise-floor / VRAM \\

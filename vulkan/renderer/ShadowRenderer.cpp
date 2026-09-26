@@ -180,7 +180,9 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
             std::vector<VkVertexInputBindingDescription>{
                 VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX }
             },
-            vk_layouts::defaultAttributes(),
+            // H7: the SOLID_NO_TESS VS no longer consumes ATTR_COLOR.
+            vk_layouts::defaultAttributesFiltered(
+                { ATTR_POS, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV }),
             setLayouts,
             nullptr,
             cfg

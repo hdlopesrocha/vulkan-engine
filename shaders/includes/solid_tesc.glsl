@@ -5,7 +5,7 @@ layout(vertices = 3) out;
 
 
 // Pass through per-vertex varyings from vertex shader
-layout(location = VARY_COLOR) in vec3 pc_inFragColor[];
+// (VARY_COLOR removed, perf report 21 H7: unread by every solid FS)
 layout(location = VARY_UV) in vec2 pc_inUV[];
 layout(location = VARY_NORMAL) in vec3 pc_inNormal[];
 layout(location = VARY_POSWORLD) in vec3 pc_inPosWorld[];
@@ -15,7 +15,6 @@ layout(location = VARY_LOCALNORMAL) in vec3 pc_inLocalNormal[];
 layout(location = VARY_HSV) in vec3 pc_inHSV[];
 
 
-layout(location = VARY_COLOR) out vec3 tc_fragColor[];
 layout(location = VARY_UV) out vec2 tc_fragUV[];
 layout(location = VARY_NORMAL) out vec3 tc_fragNormal[];
 layout(location = VARY_POSWORLD) out vec3 tc_fragPosWorld[];
@@ -64,7 +63,6 @@ float computeEdgeTess(vec3 a, vec3 b, int brushA, int brushB) {
 
 void main() {
     // Pass through per-vertex data to evaluation stage
-    tc_fragColor[gl_InvocationID] = pc_inFragColor[gl_InvocationID];
     tc_fragUV[gl_InvocationID] = pc_inUV[gl_InvocationID];
     tc_fragNormal[gl_InvocationID] = pc_inNormal[gl_InvocationID];
     tc_fragPosWorld[gl_InvocationID] = pc_inPosWorld[gl_InvocationID];
