@@ -168,6 +168,11 @@ public:
         mainLiquidChunks.clear();
     }
 
+    // Pool utilization telemetry (perf report 22 C1): logs used vs committed
+    // for every mesh pool plus vegetation/debug streams. Called after scene
+    // load/generation; steady-state cost is zero (console output only).
+    void logMemoryUtilization();
+
     void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams);
     // Re-update main descriptor set when texture arrays are (re)allocated
     void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);

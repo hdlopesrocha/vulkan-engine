@@ -141,6 +141,10 @@ public:
     // Stats helpers
     size_t getChunkCount() const { return chunkInstanceCounts.size(); }
     size_t getInstanceTotal() const;
+    // Pool utilization telemetry (perf report 22 C1): chunk/instance counts
+    // vs the fixed worst-case reservation, with a <25% warning gated on
+    // non-empty. Called after scene load alongside the renderer pools.
+    void logUtilization() const;
 
     WindSettings& getWindSettings() { return windSettings; }
     const WindSettings& getWindSettings() const { return windSettings; }

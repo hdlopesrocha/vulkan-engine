@@ -974,6 +974,19 @@ size_t VegetationRenderer::getInstanceTotal() const {
     return total;
 }
 
+// Pool utilization telemetry (perf report 22 C1): chunk/instance counts vs
+// the fixed worst-case reservation, with a <25% warning gated on non-empty.
+void VegetationRenderer::logUtilization() const {
+    const size_t chunks = getChunkCount();
+    const size_t inst = getInstanceTotal();
+    const double cPct = kMaxVegChunks > 0 ? 100.0 * double(chunks) / double(kMaxVegChunks) : 0.0;
+    const double iPct = kMaxVegInstances > 0 ? 100.0 * double(inst) / double(uint64_t(kMaxVegInstances)) : 0.0;
+    std::printf("[memutil] vegetation chunks %zu/%u (%.1f%%), instances %zu/%llu (%.1f%%, %.1f of 128 MB), pending chunks %zu%s\n",
+        chunks, kMaxVegChunks, cPct, inst, (unsigned long long)kMaxVegInstances, iPct,
+        inst * 16.0 / 1048576.0, pendingChunkCount(),
+        (inst > 0 && iPct < 25.0) ? "  <-- LOW utilization, consider a smaller tier (report 22 C1)" : "");
+}
+
 float VegetationRenderer::computeDensityFactor(float distanceToCamera) const {
     if (!distanceDensitySettings.enabled) {
         return 1.0f;

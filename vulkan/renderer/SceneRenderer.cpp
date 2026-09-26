@@ -1748,6 +1748,20 @@ void SceneRenderer::ageOutPendingDeletes(uint32_t curFrame, IndirectRenderer& so
 
 // ── Slotted mode chunk processing ──────────────────────────────────────────
 
+// Pool utilization telemetry (perf report 22 C1): used vs committed per
+// pool, with <25% warnings gated on non-empty. Called after scene
+// load/generation; steady-state cost is zero (console output only).
+void SceneRenderer::logMemoryUtilization() {
+    std::printf("[memutil] ---- pool utilization (report 22 C1) ----\n");
+    if (mainSolidRenderer) mainSolidRenderer->getIndirectRenderer().logUtilization("solid");
+    if (mainLiquidRenderer) mainLiquidRenderer->getIndirectRenderer().logUtilization("water");
+    if (brushRenderer) {
+        brushRenderer->getSolidIR().logUtilization("brush-solid");
+        brushRenderer->getLiquidIR().logUtilization("brush-liquid");
+    }
+    if (vegetationRenderer) vegetationRenderer->logUtilization();
+}
+
 void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
                                     uint32_t maxWaterChunks,
                                     uint32_t vertexBytesPerChunk,

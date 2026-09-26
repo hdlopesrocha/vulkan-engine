@@ -370,6 +370,11 @@ public:
         std::lock_guard<std::recursive_mutex> lock(mutex);
         return activeMeshCountLocked();
     }
+    // Pool utilization telemetry (perf report 22 C1): used vs committed per
+    // pool, with a <25% low-utilization warning (gated on non-empty so an empty
+    // scene doesn't warn). Called after scene load; a streaming ramp may print
+    // low early values, which is itself informative.
+    void logUtilization(const char* tag) const;
     // Host-read of the GPU-visible count. Uses a per-frame fence to avoid
     // stalling unrelated queue work.
     uint32_t readVisibleCount(VulkanApp* app) const;
@@ -548,6 +553,10 @@ private:
     // Unlocked — caller must hold `mutex`. Number of draw commands (slots)
     // to cull: the fixed slot pool capacity (one draw entry per chunk).
     uint32_t getCullDispatchCountLocked() const;
+    // Lazily allocate the SDF/bounding-box debug streams on first use (perf
+    // report 22 C1). Locked internally (recursive mutex: safe from
+    // prepareCull, which is documented main-thread-only). Idempotent.
+    void ensureSdfBboxBuffers();
 
     // ── Slotted-mode internals ──
     // Copy vertex/index data from a Geometry into the level's packed span in

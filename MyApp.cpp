@@ -3956,10 +3956,14 @@ void MyApp::postSubmit() {
     if (generateMapPending) {
         generateMapPending = false;
         generateMap();
+        // Pool utilization telemetry (perf report 22 C1): one line per pool
+        // plus <25% warnings while non-empty.
+        if (sceneRenderer) sceneRenderer->logMemoryUtilization();
     }
 
     if (loadScenePending) {
         loadScenePending = false;
         loadSceneFromFile(pendingLoadPath);
+        if (sceneRenderer) sceneRenderer->logMemoryUtilization();
     }
 }

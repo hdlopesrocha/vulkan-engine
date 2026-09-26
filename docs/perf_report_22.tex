@@ -1,0 +1,638 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+\title{Performance Report 22: Vulkan Engine \\
+\large Vegetation, Frame Structure, and Memory Reservations --- the Subsystems Reports 17--21 Never Audited}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Reports~17--21 audited ray tracing, water frame machinery, water noise ALU,
+and solid/water rasterization (twelve of report~21's fifteen items are now
+implemented or soundly declined, see the status appendix there). Untouched
+until now: the \emph{vegetation} subsystem, the \emph{frame structure} (18
+async submits over $\sim$8 queues per frame), and the \emph{memory
+reservations} (multi-GB fixed pools). This report audits those three areas
+statically, with SPIR-V measurements and byte tallies from the creation code.
+
+It finds \textbf{15 issues}. A fixed 128\,MB vegetation instance reservation
+(4096 chunks $\times$ 2048 instances, always committed) sits beside $\sim$1\,GB
+of solid mesh pools and $\sim$310\,MB of debug-only SDF/bounding-box streams,
+all capacity-provisioned with no utilization feedback (C1). Vegetation
+geometry is re-expanded up to 9 times per frame (depth, color, and three
+shadow cascades $\times$ two paths), 24 vertices per instance with wind,
+height noise and trigonometry evaluated per vertex instead of per instance
+(C2, H4). The frame pays $\sim$18 queue submits and $\sim$9 capacity-sized
+cull dispatches (C3). Behind them: an impostor fragment stage that writes
+\texttt{gl\_FragDepth} and runs full CSM per pixel (H5), a provably exact
+fetch-saving reorder in the foliage shader (H6), per-pixel CSM on grass that
+belongs at vertex rate (H7), and a view-independent 2048$\times$1024 sky
+equirect re-rendered every frame (H8). Each issue carries the standard
+technique and a copy-pasteable prompt preserving validation-clean execution,
+Synchronization2, and the AGENTS.md raster$+$CSM fallback.
+
+Scope score: \textbf{6.0/10}; combined with report~21's 6.9/10 the application
+stands at \textbf{6.4/10} (\S\ref{sec:score22}). The pattern of this engine
+holds: submission architecture excellent, geometry processed too many times,
+memory reserved too eagerly.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+\subsection{Scope and Method}
+
+Three areas, none previously reported on: (1) the vegetation subsystem
+(\texttt{VegetationRenderer}, billboard/impostor shaders, impostor capture,
+vegetation shadow cascades); (2) frame structure (submit count, cull
+dispatch count, per-frame host churn, sky scheduling); (3) memory
+reservations (pools, targets, debug streams, capture arrays). Ray tracing
+(17--18), water machinery and noise (19--20), and solid/water rasterization
+(21) are referenced only at interfaces. Method matches report~21: full reads
+with file:line evidence, \texttt{spirv-dis} on shipped modules, byte tallies
+from creation code. The application was not executed; dynamic magnitudes are
+analytic estimates from verified structure.
+
+\subsection{Measured Budgets}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrl@{}}
+\toprule
+\textbf{Module} & \textbf{Words} & \textbf{Role} \\
+\midrule
+\texttt{vegetation.vert.spv} & 4\,731 & billboard VS expansion (24 verts/instance) \\
+\texttt{vegetation.geom.spv} & 6\,408 & \textbf{built, never bound} (dead, M9) \\
+\texttt{vegetation.frag.spv} & 7\,066 & foliage shading + per-pixel CSM \\
+\texttt{impostors.geom.spv} & 4\,663 & \textbf{built, never bound} (dead, M9) \\
+\texttt{impostors.frag.spv} & 6\,931 & impostor shading + depth reconstruct \\
+\texttt{vegetation\_shadow.vert.spv} & 3\,972 & shadow VS expansion \\
+\texttt{sky.frag.spv} & 4\,108 & fullscreen sky, every frame \\
+\bottomrule
+\end{tabular}
+\caption{Vegetation/sky module sizes. The two geometry-shader modules have
+zero in-tree references.}
+\end{table}
+
+Per-frame fixed structure (Maximum-equivalent, shadows on): \textbf{18 queue
+submits} (13 in \texttt{MyApp.cpp} + 5 in the shadow task) over $\sim$8
+queues, and \textbf{$\sim$9 cull dispatches} over fixed capacities (solid
+1536 + water 192 + brush pools + merged vegetation streams). Committed
+reservations at 1080p (device + host, \S\ref{sec:vram}): \textbf{$\sim$1.7\,GB
++ $\sim$1.5\,GB}, dominated by fixed pools, not live geometry.
+
+\subsection{Recommended Order}
+
+Utilization feedback + pool rightsizing (C1) $\rightarrow$ vegetation
+multiplicity and VS hoisting (C2, H4) $\rightarrow$ submit consolidation
+(C3) $\rightarrow$ the exact foliage reorder (H6) $\rightarrow$ impostor/sky
+scheduling (H5, H8) $\rightarrow$ dead-code deletion (M9). CPU items
+(M10--M11) and hygiene (L13--L15) are independent.
+
+% =====================================================================
+\section{Cost Model}
+% =====================================================================
+
+\begin{equation}
+C = \underbrace{\sum_{\mathrm{passes}} G_{\mathrm{passes}} \times V \times C_{\mathrm{vert}}}_{\text{\S3, reports 20--21}} + \underbrace{S \times C_{\mathrm{submit}} + D \times C_{\mathrm{dispatch}}}_{\text{\S4, this report}} + \underbrace{M_{\mathrm{res}} \times C_{\mathrm{pressure}}}_{\text{\S\ref{sec:vram}, this report}}
+\end{equation}
+
+with $S \approx 18$ submits, $D \approx 9$ capacity-sized cull dispatches,
+and $M_{\mathrm{res}} \approx 3.2$\,GB committed regardless of scene size.
+Reports~20--21 attacked the first term; this report attacks the second
+(fixed per-frame CPU/GPU overhead) and prices the third.
+
+% =====================================================================
+\section{Memory Reservations}
+\label{sec:vram}
+% =====================================================================
+
+Tallied from creation code at $1920\times1080$, 3 frames in flight (device
+memory unless noted). Pools are \texttt{createBuffer} commitments, not
+virtual reservations.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}llr@{}}
+\toprule
+\textbf{Resource} & \textbf{Sizing} & \textbf{Bytes} \\
+\midrule
+Solid vertex/index pools & $1536 \times (512+128)$\,KB & 983\,MB dev + 983\,MB host mirror \\
+Vegetation instances & $4096 \times 2048 \times 16$\,B & 128\,MB dev \\
+Water pools & $192 \times 640$\,KB & 123\,MB dev + host mirror \\
+SDF debug streams & $500\mathrm{k} \times (20+64+20)$\,B $\times 3$ & 126\,MB host + 30\,MB dev \\
+BBox debug streams & same as SDF & 126\,MB host + 30\,MB dev \\
+Water targets (color/depth/body/column/back) & full-res $\times 3$ & $\sim$275\,MB dev \\
+Solid + veg + brush + shadow targets & $\sim$8 full-res sets + CSM & $\sim$300\,MB dev \\
+Sky equirect $2048\times1024$ & $\times 3$ & $\sim$25\,MB dev \\
+Impostor capture arrays (post-capture) & $60 \times 256^2 \times (4+4+4)$\,B & 47\,MB dev \\
+\midrule
+Total & & $\sim$1.7\,GB dev + $\sim$1.5\,GB host \\
+\bottomrule
+\end{tabular}
+\caption{Committed memory at 1080p. Debug streams alone exceed the entire
+water target set; solid pools exceed everything else combined.}
+\end{table}
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: Multi-GB Fixed Reservations With No Utilization Feedback}
+\label{sec:c1}
+
+\textbf{Severity: Critical.}
+
+Three independent capacity systems each commit worst-case memory at init and
+never look back: solid pools at $1536 \times 640$\,KB $= 983$\,MB
+(\texttt{SceneRenderer.cpp:66--76,1785--1788}), vegetation instances at
+$4096 \times 2048 \times 16$\,B $= 128$\,MB
+(\texttt{VegetationRenderer.cpp:preallocate}, called with max constants at
+\texttt{SceneRenderer.cpp:1821}), and SDF/bounding-box debug streams at
+$\sim$310\,MB mostly host-visible (\texttt{IndirectRenderer.cpp}, unconditional
+straight-line allocation in \texttt{initSlots} from \texttt{MAX\_SDF\_CUBES} /
+\texttt{MAX\_BBOX\_CUBES} $= 500\mathrm{k}$). Per-frame memoized counts exist
+(\texttt{getMeshCount}, \texttt{getInstanceTotal}), but nothing compares
+utilization against capacity: no warning, no downsize path, no telemetry in
+any widget. A scene using 5\% of pool capacity costs the same as a full one,
+and on shared-memory iGPUs the host-visible half ($\sim$1.5\,GB) is RAM gone.
+
+\textit{Technique: measure, warn, tier.} Log utilization per pool at startup
+and per minute; warn below 25\%; add a settings-tiered capacity ladder
+(small/medium/large scenes) instead of one worst case; gate the debug
+streams on their debug views (allocate on first enable, free on disable).
+
+\begin{tcolorbox}[promptbox={Prompt --- C1: utilization feedback and tiered pools}]
+Goal: committed memory tracks scene size. Steps: (1) log
+used/capacity per pool after scene load + a $<25\%$ warning; (2) add
+capacity tiers selected by scene stats; (3) allocate SDF/bbox streams
+lazily on first debug-view enable. Files:
+\texttt{vulkan/renderer/SceneRenderer.cpp},
+\texttt{vulkan/renderer/VegetationRenderer.cpp},
+\texttt{vulkan/renderer/IndirectRenderer.cpp}. Validation: VRAM/RAM deltas
+at each tier, identical renders, validation-clean.
+\\ \textbf{Implemented as:} (1) shipped --- \texttt{SceneRenderer::
+logMemoryUtilization()} (mesh/vertex/index use vs capacity per pool,
+vegetation chunks/instances, debug-stream state) runs after every scene
+load/generation, warning below 25\% while non-empty; (3) shipped --- the
+$\sim$310\,MB SDF/bbox streams allocate on first non-empty set via
+\texttt{ensureSdfBboxBuffers()}, with dummy-bound descriptors,
+conditional barriers (omitted barriers for never-written memory are
+no-ops), and the pre-existing null-guarded consumers; (2) tiers declined
+--- init-time capacities back hard-failure overflow semantics, so a wrong
+tier costs holes or an assert, unverifiable without executing. The lazy
+streams are the safe 310\,MB; tiers need a runnable sizing study first.
+\end{tcolorbox}
+
+\subsection{C2: Vegetation Geometry Is Re-Expanded up to 9 Times per Frame}
+\label{sec:c2}
+
+\textbf{Severity: Critical.}
+
+Every vegetation draw re-runs the full VS expansion (24 vertices per
+instance: wind, height noise, trigonometry, MVP): billboard depth
+(\texttt{VegetationRenderer.cpp:drawDepth}), billboard color + impostor
+color (\texttt{drawColor}), and three shadow cascades $\times$ billboard and
+impostor shadow (\texttt{drawShadowCascade} per cascade). Default
+(impostors off): 5 expansions; impostors on: 9. The shadow VS
+(\texttt{vegetation\_shadow.vert.spv}, 3\,972 words) repeats the trig/height
+work with wind early-outed --- the per-instance constants are recomputed
+rather than reused across passes, and no pass caches anything.
+
+\textit{Technique: expand once, reuse.} Depth-prepass-equivalent variings
+already exist for the color pass; the structural fix is H4's per-instance
+bake (compute once at generation, read 9 times). Short term: skip the shadow
+re-expansion where the cascade depth precision exceeds billboard detail
+(coarse outer cascades).
+
+\begin{tcolorbox}[promptbox={Prompt --- C2: stop re-expanding vegetation per pass}]
+Goal: one expansion per instance per frame. Steps: (1) implement H4's aux
+per-instance buffer so every pass reads baked statics; (2) evaluate dropping
+per-plane detail (6 $\rightarrow$ 3 planes) in the two outer shadow
+cascades. Files: \texttt{vulkan/renderer/VegetationRenderer.cpp},
+\texttt{shaders/vegetation.vert},
+\texttt{shaders/vegetation\_shadow.vert}. Validation: shadow-vs-color A/B,
+timestamp deltas on veg passes, validation-clean.
+\end{tcolorbox}
+
+\subsection{C3: $\sim$18 Queue Submits per Frame Across $\sim$8 Queues}
+\label{sec:c3}
+
+\textbf{Severity: Critical (CPU).}
+
+\texttt{submitCommandBufferAsyncToQueue} appears 13 times in
+\texttt{MyApp.cpp} (cull, brush-solid, sky, solid, vegetation $\times 2$,
+SDF, bbox, water $\times 2$, brush-liquid, RT build) plus 5 inside the
+shadow task (serial cull, 3 cascade rasterizations, blur/restore). Each
+submit is a kernel call plus timeline-semaphore and validation overhead,
+paid unconditionally every frame whether the payload is large or trivial
+(SDF/bbox submits run with debug off; brush-liquid with no brush).
+
+\textit{Technique: submit consolidation + empty-submit elision.} Skip submits
+whose command buffer recorded nothing (SDF/bbox off, brush-liquid absent,
+water-empty already has its fast path); merge the 3 cascade rasterizations
+on single-queue hardware (the code already branches
+\texttt{singleQueue} but still submits thrice); fold tiny serial submits
+into neighbors where semaphore DAGs allow.
+
+\begin{tcolorbox}[promptbox={Prompt --- C3: consolidate frame submits}]
+Goal: fewer, fuller submits. Steps: (1) early-out empty debug/brush-liquid
+submits; (2) single-queue cascade merge; (3) count submits/frame in the
+overlay to prove the delta. Files: \texttt{MyApp.cpp},
+\texttt{vulkan/renderer/ShadowRenderer.cpp}. Validation: submit counter
+down, frame time down on CPU-bound scenes, validation-clean (semaphore DAG
+unchanged in meaning).
+\end{tcolorbox}
+
+% =====================================================================
+\section{High-Severity Issues}
+% =====================================================================
+
+\subsection{H4: VS Expansion Repeats Per-Instance Work $24\times$}
+\label{sec:h4}
+
+\textbf{Severity: High.}
+
+The migration from geometry-shader to vertex-shader billboard expansion
+(\texttt{vegetation.vert:3--5}) roughly doubled per-instance vertex ALU: the
+GS evaluated wind 36 perlin2 per instance once, while the VS evaluates
+\texttt{applyWindSkew} (3 perlin2 each, $\sim$60 ALU per \texttt{perlin2})
+plus \texttt{vegetationHeightScale} plus \texttt{sin+cos(theta)} per corner
+vertex --- $\sim$7k flops per instance, of which height, density hash and
+trigonometry depend only on per-instance constants. The header comment
+claiming height is ``computed once per instance'' is aspirational: VS
+invocations cannot share it.
+
+\textit{Technique: bake timeless statics at generation.} Height scale and
+the density hash never change: append them to a small per-instance aux
+buffer (per-chunk sized like the instance buffer, indexed identically).
+Trigonometry goes to a 256-entry \texttt{sin}/\texttt{cos} LUT (static
+reassignment of random orientations, invisible; needs A/B, not proof).
+
+\begin{tcolorbox}[promptbox={Prompt --- H4: bake per-instance statics}]
+Goal: per-instance work runs once per instance. Steps: (1) aux buffer with
+height scale + density hash written by \texttt{processPendingChunks};
+(2) VS reads instead of evaluating; (3) optional trig LUT. Files:
+\texttt{vulkan/renderer/VegetationRenderer.cpp},
+\texttt{shaders/vegetation.vert}, \texttt{shaders/impostors.vert}.
+Validation: A/B identical (aux path is exact), VS word count down,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{H5: Impostor Fragment Stage Reconstructs Depth and Shades Full}
+\label{sec:h5}
+
+\textbf{Severity: High.}
+
+\texttt{impostors.frag} pays, per pixel: color + normal + depth fetches, a
+two-matvec depth reconstruction with two perspective divides
+(\texttt{:62--73}), full Blinn-Phong with \texttt{pow}, and full CSM
+\texttt{ShadowCalculationHard} --- on quads that then write
+\texttt{gl\_FragDepth}, disabling early-$z$ for the whole pass. Two exact
+reorders exist: the dither-fade discard (:79--85) is independent of the
+depth work and can move before it (saves a fetch + 2 matvecs on every
+dithered-out pixel); the depth-bounds discard (:64) already runs first.
+
+\textit{Technique: discard early, shade once.} Hoist the dither test above
+the depth block; evaluate vertex-rate CSM (the quad face normal is flat ---
+shadow varies slowly across it) as follow-up.
+
+\begin{tcolorbox}[promptbox={Prompt --- H5: cheapen the impostor fragment stage}]
+Goal: no wasted reconstruction on discarded pixels. Steps: (1) move the
+dither block above the depth block; (2) prototype flat-varying CSM.
+Files: \texttt{shaders/impostors.frag}. Validation: transition-zone A/B
+identical (discard order is immaterial), validation-clean.
+\end{tcolorbox}
+
+\subsection{H6: Foliage Discard Runs After Bandwidth It Could Skip}
+\label{sec:h6}
+
+\textbf{Severity: High.}
+
+\texttt{vegetation.frag:62--93} fetches background albedo + normal
+(\texttt{textureLod} $\times 2$) \emph{before} the \texttt{weight < 0.3}
+discard, yet \texttt{weight = opacityWeight} $\times$ \texttt{mix(...)}
+with the mix in $[0,1]$, so \texttt{opacityWeight < 0.3} implies discard
+exactly. The existing \texttt{opacityWeight == 0.0} early-out (:66) proves
+the pattern; extending the threshold to $0.3$ skips both background fetches
+on every sparse pixel (grass silhouettes: the majority of foliage pixels)
+with bit-identical results. Line 93 stays as the backstop for
+\texttt{opacityWeight} $\geq 0.3$ pixels the background demotes.
+
+\textit{Technique: exact early-out hoisting.} One-constant change with a
+proof instead of a benchmark.
+
+\begin{tcolorbox}[promptbox={Prompt --- H6: hoist the foliage discard threshold}]
+Goal: two fewer fetches on sparse pixels, zero behavior change. Steps:
+change :66 to \texttt{opacityWeight < 0.3}. Files:
+\texttt{shaders/vegetation.frag}. Validation: pixel-identical screenshots
+(proof above), validation-clean.
+\end{tcolorbox}
+
+\subsection{H7: Full CSM per Foliage Pixel Belongs at Vertex Rate}
+\label{sec:h7}
+
+\textbf{Severity: High.}
+
+Both foliage shaders run the full cascaded shadow selection per pixel (up
+to 2 matvecs + blend + fetches in \texttt{vegetation.frag:129--138} and
+\texttt{impostors.frag:112--121}) for a signal that varies over meters
+while the leaf detail varies over centimeters. The billboard VS already
+computes per-vertex world position and plane normal; evaluating the shadow
+there and interpolating the scalar costs $\sim$1/1000th on dense foliage
+with no visible change (cascade blend zones are smooth by design).
+
+\textit{Technique: vertex-rate shadow varying.} Compute
+\texttt{ShadowCalculation(Hard)} per vertex (billboards) / per quad corner
+(impostors), pass one float, multiply in the fragment stage.
+
+\begin{tcolorbox}[promptbox={Prompt --- H7: vertex-rate foliage shadows}]
+Goal: CSM cost off the per-pixel path. Steps: (1) shadow varying through
+VS/GS stages; (2) keep the NdotL $> 0.01$ fast paths. Files:
+\texttt{shaders/vegetation.vert}, \texttt{shaders/vegetation.frag},
+\texttt{shaders/impostors.vert}, \texttt{shaders/impostors.frag}.
+Validation: shadow-boundary A/B (cascade seams smooth), validation-clean.
+\end{tcolorbox}
+
+\subsection{H8: View-Independent Sky Equirect Re-Rendered Every Frame}
+\label{sec:h8}
+
+\textbf{Severity: High.}
+
+\texttt{sky\_equirect.frag} documents its own output as ``view-independent''
+--- it depends on sky parameters, sun and time only --- yet
+\texttt{MyApp.cpp:1697} re-renders the fixed $2048\times1024$ target every
+frame ($\sim$2M pixels of 4k-word sky shading) on the sky queue, plus the
+fullscreen sky inside the solid pass. Camera motion never invalidates the
+equirect; only sky settings, sun position and time-of-day do.
+
+\textit{Technique: dirty-gated recompute.} Hash the sky parameter block per
+frame; re-record the equirect pass only on change (plus one forced refresh
+on resize). Static skies drop to zero per-frame equirect cost.
+
+\begin{tcolorbox}[promptbox={Prompt --- H8: cache the sky equirect}]
+Goal: equirect renders on change, not per frame. Steps: (1) parameter hash
+in the sky task; (2) skip submit when clean; (3) keep the in-pass
+fullscreen sky untouched. Files: \texttt{MyApp.cpp},
+\texttt{vulkan/renderer/SkyRenderer.cpp}. Validation: time-lapse A/B
+(sun sweeping still updates), validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M9: Dead Shaders, Pipelines, and Entry Points}
+\label{sec:m9}
+
+\textbf{Severity: Medium.}
+
+Built every build, bound never: \texttt{vegetation.geom.spv} (6\,408 words),
+\texttt{impostors.geom.spv} (4\,663) and
+\texttt{impostors\_depth.geom.spv} (4\,265) have zero in-tree references
+(the VS-expansion migration retired them); \texttt{perlin\_noise.comp.spv}
+has no dispatcher; the sky sphere pipelines
+(\texttt{skyPipeline}/\texttt{skyGridPipeline}, ``retained for
+Solid360Renderer cubemap capture'') outlived Solid360Renderer itself
+(removed; only comments mention it); \texttt{VegetationRenderer::render()}
+and \texttt{SolidRenderer::render()} have no callers (the deferred
+depth/color paths are the live ones). Cost is startup time, disk, and reader
+confusion --- plus a real hazard: the dead \texttt{.geom} sources ($\sim$500
+lines) describe an expansion strategy the shipped shaders contradict.
+
+\textit{Technique: delete.} Remove sources, Makefile entries are automatic
+(wildcards), and the unbound pipeline creations.
+
+\begin{tcolorbox}[promptbox={Prompt --- M9: delete the dead weight}]
+Goal: build only what binds. Steps: (1) delete the three \texttt{.geom}
+sources + \texttt{perlin\_noise.comp} if unused; (2) remove sphere-pipeline
+creation; (3) remove or document the dead \texttt{render()} entries.
+Files: \texttt{shaders/}, \texttt{vulkan/renderer/SkyRenderer.cpp},
+\texttt{vulkan/renderer/VegetationRenderer.cpp},
+\texttt{vulkan/renderer/SolidRenderer.cpp}. Validation: identical build
+minus the artifacts, validation-clean.
+\end{tcolorbox}
+
+\subsection{M10: Per-Chunk Staging Churn in Vegetation Streaming}
+\label{sec:m10}
+
+\textbf{Severity: Medium.}
+
+Every streamed chunk update allocates \emph{two} buffers (host staging +
+device instance buffer), submits one async copy, fences, and deferred-frees
+(\texttt{VegetationRenderer.cpp:processPendingChunks}, up to 10 chunks per
+frame = 20 VMA allocations + 20 frees + fence traffic). VMA takes a global
+lock per allocation; steady-state streaming churns it continuously.
+
+\textit{Technique: ring/batch staging.} One persistent staging ring sized to
+the worst-case chunk, suballocated per upload; batch all chunk copies of a
+frame into a single submit/fence.
+
+\begin{tcolorbox}[promptbox={Prompt --- M10: batch vegetation uploads}]
+Goal: zero allocations in the streaming path. Steps: (1) persistent
+staging ring; (2) single submit per frame for all pending chunks. Files:
+\texttt{vulkan/renderer/VegetationRenderer.cpp}. Validation: allocation
+counters flat during streaming, identical instances, validation-clean.
+\end{tcolorbox}
+
+\subsection{M11: Per-Frame Host Churn Inventory}
+\label{sec:m11}
+
+\textbf{Severity: Medium.}
+
+Small per-frame host writes, each trivial alone: shadow UBO staging
+(\texttt{SHADOW\_CASCADE\_COUNT}+1 \texttt{UniformObject}s $\times$ frames,
+plus one memcpy + copy per cascade per frame and descriptor copies reserved
+at \texttt{frameCount}$\times 3 \times 14$), \texttt{updateWindParamsUBO}
+($\sim$100\,B rewritten up to 5 times per frame: 3 cascade draws + depth +
+color), and \texttt{writeVegChunkInfo} (a full chunk-table memcpy per
+\texttt{prepareCull}). None stalls; together they are per-frame mapped-memory
+traffic and API calls on the hot thread.
+
+\textit{Technique: write-once / write-on-change.} UBO staging only when
+values change (cascades are static per frame already -- hoist out of the
+per-cascade loop); wind params once per frame; chunk table only after
+consolidation (like \texttt{vegChunkInfoMap} already is).
+
+\begin{tcolorbox}[promptbox={Prompt --- M11: still the per-frame host writes}]
+Goal: host writes proportional to change, not frames. Steps: hoist the
+three call families as described. Files:
+\texttt{vulkan/renderer/ShadowRenderer.cpp},
+\texttt{vulkan/renderer/VegetationRenderer.cpp}. Validation: identical
+buffers (change-detection is exact), validation-clean.
+\end{tcolorbox}
+
+\subsection{M12: Vegetation Owns Full-Res Targets and a Composite Leg}
+\label{sec:m12}
+
+\textbf{Severity: Medium.}
+
+Vegetation renders to its own full-resolution swapchain-format color + D32
+depth ($\sim$50\,MB at 1080p) precisely so it can run async -- then pays the
+deferred depth+color double geometry to fill them, plus the composite's
+2$\times$2 depth taps and color mix per screen pixel. The targets are sized
+for grass-blade detail the impostor path deliberately abandons at distance;
+nothing tiers them (compare \texttt{waterRenderScale}, report 21 M10).
+
+\textit{Technique: tier like water.} Add a vegetation render scale (default
+1.0, dense presets lower), reusing the idle-recreate path; evaluate single
+vs double geometry with the C2 prepass-gate analysis.
+
+\begin{tcolorbox}[promptbox={Prompt --- M12: tier vegetation resolution}]
+Goal: resolution proportional to need. Steps: settings scale +
+idle-guarded recreate + composite already size-agnostic. Files:
+\texttt{utils/Settings.hpp},
+\texttt{vulkan/renderer/VegetationRenderer.cpp}. Validation: VRAM down,
+grass-detail A/B, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L13: Per-Pixel Bayer Matrix Construction}
+\label{sec:l13}
+
+Both foliage fragment shaders build \texttt{const int M[16]} inside
+\texttt{main()} --- 16 register initializers per pixel (twice: vegetation +
+impostor). Hoist to file-scope \texttt{const}. Trivial, zero-risk.
+
+\subsection{L14: Impostor Overlap Band Renders Twice}
+\label{sec:l14}
+
+Billboards render below $1.15\times$ impostor distance while impostors
+render above $0.5\times$: the overlap band shades every pixel twice with
+complementary dithering, and both discards kill early-$z$ there. Narrow the
+band (0.85--1.15 is the historical shape; measure whether 0.95--1.05
+suffices) or accept as the cross-fade price. Design tradeoff, documented
+here so it stays a decision.
+
+\subsection{L15: Redundant Wind UBO Writes and Stale Comments}
+\label{sec:l15}
+
+\texttt{updateWindParamsUBO} is identical work issued up to 5 times per
+frame (fold into M11's hoist). Separately, the ``40\% of instances are empty
+sentinel'' comment (\texttt{VegetationRenderer.hpp:59}) is stale --
+generation skips empties, so no sentinel waste exists (verified); the
+sentinel VS branch is dead defense. Update the comment, keep the branch.
+
+% =====================================================================
+\section{Implementation Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}llc@{}}
+\toprule
+\textbf{Item} & \textbf{Change} & \textbf{Est.\ frame delta} \\
+\midrule
+C1 & Utilization feedback + tiers, lazy debug streams & $-0.3$--1\,GB committed \\
+C2 & Veg bake + cascade detail tiers & $-50$--$80$\% veg vertex cost \\
+C3 & Submit consolidation/elision & CPU-bound scenes improve \\
+H4 & Per-instance bake (exact parts) & $-30$\% veg VS ALU \\
+H5 & Impostor dither reorder + vertex CSM & $-1$ fetch, $-2$ matvecs on fade pixels \\
+H6 & Foliage discard reorder (exact) & $-2$ fetches on sparse pixels \\
+H7 & Vertex-rate foliage shadows & CSM off the foliage pixel path \\
+H8 & Dirty-gated equirect & $-2$M sky px/frame when static \\
+M9--M12 & Dead code, batching, host churn, veg scale & additive \\
+L13--L15 & Hygiene & noise floor \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C1 is the only item that changes what the application \emph{costs to run}
+anywhere (OOM headroom on small GPUs); C2/H4 change what grass costs per
+frame; the rest is scheduling hygiene. None alters the lighting model, and
+the exact items (H6, H8-cache-miss behavior, M11 change-detection) are safe
+by construction.
+
+% =====================================================================
+\section{Overall Score}
+\label{sec:score22}
+% =====================================================================
+
+\subsection{Rubric (Report-22 Scope)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcp{7.2cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Wt.} & \textbf{Score and justification} \\
+\midrule
+Vegetation efficiency & 30\% & \textbf{5.5} --- merged cull, indirect draws,
+capture-on-demand and early discards are good; 24$\times$ VS ALU, 5--9
+expansions/frame and per-pixel CSM drag it down. \\
+Frame structure & 25\% & \textbf{7.0} --- explicit multi-queue DAG with
+timeline semaphores and batched barriers; 18 submits and capacity-sized
+redundant dispatches (restores) cost. \\
+Memory provisioning & 30\% & \textbf{5.0} --- pools are leak-free and
+race-free, but multi-GB worst-case commitments (including unconditional
+debug streams) with no utilization feedback. \\
+Startup \& dead weight & 15\% & \textbf{7.5} --- everything builds at init,
+no runtime compilation; dead modules and pipelines linger. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Overall: 6.0/10 Scope, 6.4/10 Combined}
+
+\begin{equation}
+0.30(5.5) + 0.25(7.0) + 0.30(5.0) + 0.15(7.5) = \mathbf{6.0}
+\end{equation}
+
+Report~21 scored the raster core 6.9/10 ($\sim$45\% of frame cost by weight);
+this scope covers the remaining $\sim$55\% at 6.0:
+
+\begin{equation}
+0.45(6.9) + 0.55(6.0) = \mathbf{6.4}
+\end{equation}
+
+The engine's verdict is unchanged in kind since report~21, extended in
+scope: submission and lifetime architecture excellent, geometry processed
+too many times, memory reserved too eagerly. Landing C1--C3 moves the
+combined score toward $\sim$7.5/10 with no redesign.
+
+\end{document}

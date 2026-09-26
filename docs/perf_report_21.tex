@@ -967,4 +967,44 @@ alone would move those categories to roughly 7.0/7.5 and the overall score to
 are pipeline variants, shader gates, and attribute deletions behind toggles
 that already exist.
 
+% =====================================================================
+\section*{Appendix: Implementation Status}
+% =====================================================================
+\addcontentsline{toc}{section}{Appendix: Implementation Status}
+
+Written at audit time, the report above describes the pre-fix tree. Disposition
+of each item (commit hashes on \texttt{master}); correction notes live inline
+in the sections above:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Item} & \textbf{Status} & \textbf{Commit / note} \\
+\midrule
+C1 & Partial (depth+shadow twins) & \texttt{59c304e}; color stays tessellated \\
+C2 & Gate shipped, (a) declined & \texttt{417077b}; undisplaced prepass unsound \\
+C3 & Shipped & \texttt{1349387} \\
+H4 & Shipped & \texttt{38ae51e} \\
+H5 & Shipped (+water) & \texttt{caaec6e} \\
+H6 & Shipped (exact) & \texttt{2e566c8} \\
+H7 & Partial (interpolant+twins) & \texttt{27c021d}; stride stays 64 \\
+H8 & Shipped (redesigned) & \texttt{adfe00f}; heat moved to TES \\
+M9 & Shipped (extended) & \texttt{79d7ca1} \\
+M10 & Shipped & \texttt{7b0077a} \\
+M11 & Shipped (better) & \texttt{a87406e}; fills, not buffers \\
+M12 & Partial (exact micro) & \texttt{5456b9b}; chunk constants declined \\
+L13--L15 & Shipped & \texttt{f0c2896} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+``Partial'' marks items whose headline proposal failed exactness review
+(C1 color blend, C2 prepass depth, H7 stride, M12 chunk constants) and
+shipped in sound subset form instead. ``Declined'' marks the unsound halves,
+with proofs in the section notes. Nothing was implemented that the audit
+could not verify statically; runtime confirmations (screenshots, timestamps,
+VRAM) are recorded per item for a machine with a GPU.
+
 \end{document}

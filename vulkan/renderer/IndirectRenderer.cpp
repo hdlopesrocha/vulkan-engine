@@ -74,6 +74,29 @@ uint32_t IndirectRenderer::getCullDispatchCountLocked() const {
     return static_cast<uint32_t>(slotAlloc.capacity());
 }
 
+// Pool utilization telemetry (perf report 22 C1): used vs committed per
+// pool, with a <25% low-utilization warning (gated on non-empty so an empty
+// scene doesn't warn). Called after scene load; a streaming ramp may print
+// low early values, which is itself informative.
+void IndirectRenderer::logUtilization(const char* tag) const {
+    const size_t nMeshes = getMeshCount();
+    const size_t cap = getMeshCapacity();
+    const uint64_t vUsed = spaceAlloc.usedVertex() * sizeof(Vertex);
+    const uint64_t vCap = static_cast<uint64_t>(vertexCapacity) * sizeof(Vertex);
+    const uint64_t iUsed = spaceAlloc.usedIndex() * sizeof(uint32_t);
+    const uint64_t iCap = static_cast<uint64_t>(indexCapacity) * sizeof(uint32_t);
+    const double meshPct = cap > 0 ? 100.0 * double(nMeshes) / double(cap) : 0.0;
+    std::printf("[memutil] %s meshes %zu/%zu (%.1f%%), vertex %.1f/%.1f MB, index %.1f/%.1f MB%s\n",
+        tag, nMeshes, cap, meshPct,
+        vUsed / 1048576.0, vCap / 1048576.0, iUsed / 1048576.0, iCap / 1048576.0,
+        (nMeshes > 0 && meshPct < 25.0) ? "  <-- LOW utilization, consider a smaller tier (report 22 C1)" : "");
+    const bool sdfAlloc = sdfCompactBuf[0].buffer != VK_NULL_HANDLE;
+    const bool bboxAlloc = bboxCompactBuf[0].buffer != VK_NULL_HANDLE;
+    std::printf("[memutil] %s debug streams: sdf cubes %zu (buffers %s), bbox %zu (buffers %s)\n",
+        tag, sdfCubes_.size(), sdfAlloc ? "allocated" : "lazy",
+        bboxCubes_.size(), bboxAlloc ? "allocated" : "lazy");
+}
+
 void IndirectRenderer::syncHostBuffersToGPU() {
     std::lock_guard<std::recursive_mutex> lock(mutex);
     // Ensure every active slot's indirect/bounds is visible via host mapping.
@@ -535,6 +558,112 @@ void IndirectRenderer::setBoundingBoxes(const std::vector<BBox>& boxes) {
     bboxCubes_ = boxes;
 }
 
+// Lazily allocate the SDF/bounding-box debug streams on first use (perf
+// report 22 C1): ~310 MB stays uncommitted until a debug view requests
+// cubes. Called on the main thread from prepareCull before any use; buffers
+// persist for the session once allocated. On success the main compute sets'
+// bindings 10-16 are (re)pointed from dummies to real buffers
+// (update-after-bind layout, so in-flight sets stay legal); on failure the
+// partial buffers are destroyed and the streams stay null, which every
+// consumer treats exactly like empty cube lists.
+void IndirectRenderer::ensureSdfBboxBuffers() {
+    std::lock_guard<std::recursive_mutex> lock(mutex);
+    if (app_ == nullptr) return;
+    bool haveSets = true;
+    for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+        if (computeDescriptorSets[f] == VK_NULL_HANDLE) { haveSets = false; break; }
+    }
+    // SDF stream.
+    if (!sdfCubes_.empty() && sdfCompactBuf[0].buffer == VK_NULL_HANDLE) {
+        const VkDeviceSize sdfInCmdSize  = MAX_SDF_CUBES * sizeof(VkDrawIndexedIndirectCommand);
+        const VkDeviceSize sdfBoundsSize = MAX_SDF_CUBES * 4 * sizeof(glm::vec4);
+        const VkDeviceSize sdfOutCmdSize  = MAX_SDF_CUBES * sizeof(VkDrawIndexedIndirectCommand);
+        const VkDeviceSize sdfCountSize   = sizeof(uint32_t);
+        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+            sdfInCmdsBuf[f] = app_->createBuffer(sdfInCmdSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            sdfBoundsBuf[f] = app_->createBuffer(sdfBoundsSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            sdfCompactBuf[f] = app_->createBuffer(sdfOutCmdSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            sdfCountBuf[f] = app_->createBuffer(sdfCountSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
+        bool ok = true;
+        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+            if (sdfInCmdsBuf[f].buffer == VK_NULL_HANDLE || sdfBoundsBuf[f].buffer == VK_NULL_HANDLE
+                || sdfCompactBuf[f].buffer == VK_NULL_HANDLE || sdfCountBuf[f].buffer == VK_NULL_HANDLE)
+                ok = false;
+        }
+        if (!ok) {
+            for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+                app_->destroyBuffer(sdfInCmdsBuf[f]);
+                app_->destroyBuffer(sdfBoundsBuf[f]);
+                app_->destroyBuffer(sdfCompactBuf[f]);
+                app_->destroyBuffer(sdfCountBuf[f]);
+            }
+        } else if (vegDummyBuffer.buffer != VK_NULL_HANDLE && haveSets) {
+            for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+                DescriptorWriter(app_->getDevice())
+                    .writeBuffer(computeDescriptorSets[f], 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 sdfCompactBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(computeDescriptorSets[f], 11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 sdfCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(computeDescriptorSets[f], 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 sdfInCmdsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(computeDescriptorSets[f], 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 sdfBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                    .flush();
+            }
+        }
+    }
+    // Bounding-box stream (same pattern, bindings 14-16).
+    if (!bboxCubes_.empty() && bboxCompactBuf[0].buffer == VK_NULL_HANDLE) {
+        const VkDeviceSize bboxBoundsSize = MAX_BBOX_CUBES * 4 * sizeof(glm::vec4);
+        const VkDeviceSize bboxOutCmdSize  = MAX_BBOX_CUBES * sizeof(VkDrawIndexedIndirectCommand);
+        const VkDeviceSize bboxCountSize   = sizeof(uint32_t);
+        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+            bboxBoundsBuf[f] = app_->createBuffer(bboxBoundsSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            bboxCompactBuf[f] = app_->createBuffer(bboxOutCmdSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            bboxCountBuf[f] = app_->createBuffer(bboxCountSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
+        bool ok = true;
+        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+            if (bboxBoundsBuf[f].buffer == VK_NULL_HANDLE
+                || bboxCompactBuf[f].buffer == VK_NULL_HANDLE || bboxCountBuf[f].buffer == VK_NULL_HANDLE)
+                ok = false;
+        }
+        if (!ok) {
+            for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+                app_->destroyBuffer(bboxBoundsBuf[f]);
+                app_->destroyBuffer(bboxCompactBuf[f]);
+                app_->destroyBuffer(bboxCountBuf[f]);
+            }
+        } else if (vegDummyBuffer.buffer != VK_NULL_HANDLE && haveSets) {
+            for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+                DescriptorWriter(app_->getDevice())
+                    .writeBuffer(computeDescriptorSets[f], 14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bboxBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(computeDescriptorSets[f], 15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bboxCompactBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                    .writeBuffer(computeDescriptorSets[f], 16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 bboxCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                    .flush();
+            }
+        }
+    }
+}
+
 void IndirectRenderer::setVegCascadeData(VkBuffer chunkInfo,
         const std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES>& bbCompact,
         const std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES>& bbCount,
@@ -871,6 +1000,13 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // they are culled in the SAME indirect.comp dispatch as the solid terrain. ──
     uint32_t sdfCount = std::min(static_cast<uint32_t>(sdfCubes_.size()), MAX_SDF_CUBES);
     uint32_t bboxCount = std::min(static_cast<uint32_t>(bboxCubes_.size()), MAX_BBOX_CUBES);
+    // Lazily allocate the debug streams on first use (perf report 22 C1).
+    // Without buffers the counts below collapse to zero and every
+    // downstream use (fills, dispatch, barriers, draws) behaves exactly as
+    // for empty cube lists.
+    ensureSdfBboxBuffers();
+    if (sdfCompactBuf[currentCullFrame].buffer == VK_NULL_HANDLE) sdfCount = 0;
+    if (bboxCompactBuf[currentCullFrame].buffer == VK_NULL_HANDLE) bboxCount = 0;
     if (sdfCount > 0) {
         const uint32_t f = currentCullFrame;
         auto* inCmds = static_cast<VkDrawIndexedIndirectCommand*>(sdfInCmdsBuf[f].map(0));
@@ -1338,42 +1474,56 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     barriers[2].buffer = visibleLods.buffer;
     barriers[2].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 
-    // SDF cube outputs (binding 10/11) are consumed by the SDF indirect draw.
-    barriers[3] = barriers[0];
-    barriers[3].buffer = sdfCompactBuf[currentCullFrame].buffer;
-    barriers[3].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-    barriers[4] = barriers[0];
-    barriers[4].buffer = sdfCountBuf[currentCullFrame].buffer;
-    barriers[4].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-
-    uint32_t barrierCount = 5;
+    uint32_t barrierCount = 3;
     if (vegActive) {
-        barriers[5] = barriers[0];
-        barriers[5].buffer = vegBbCompactBuf[currentCullFrame];
-        barriers[5].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-        barriers[6] = barriers[0];
-        barriers[6].buffer = vegImpCompactBuf[currentCullFrame];
-        barriers[6].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-        barriers[7] = barriers[0];
-        barriers[7].buffer = vegBbCountBuf[currentCullFrame];
-        barriers[7].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-        barriers[8] = barriers[0];
-        barriers[8].buffer = vegImpCountBuf[currentCullFrame];
-        barriers[8].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-        barrierCount = 9;
+        barriers[barrierCount] = barriers[0];
+        barriers[barrierCount].buffer = vegBbCompactBuf[currentCullFrame];
+        barriers[barrierCount].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        barrierCount++;
+        barriers[barrierCount] = barriers[0];
+        barriers[barrierCount].buffer = vegImpCompactBuf[currentCullFrame];
+        barriers[barrierCount].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        barrierCount++;
+        barriers[barrierCount] = barriers[0];
+        barriers[barrierCount].buffer = vegBbCountBuf[currentCullFrame];
+        barriers[barrierCount].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        barrierCount++;
+        barriers[barrierCount] = barriers[0];
+        barriers[barrierCount].buffer = vegImpCountBuf[currentCullFrame];
+        barriers[barrierCount].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        barrierCount++;
+    }
+
+    // SDF cube outputs (binding 10/11) are consumed by the SDF indirect draw.
+    // Lazy (perf report 22 C1): appended only for allocated streams. Buffers
+    // that were never created were never written, so omitting their barriers
+    // changes nothing observable.
+    if (sdfCompactBuf[currentCullFrame].buffer != VK_NULL_HANDLE
+        && sdfCountBuf[currentCullFrame].buffer != VK_NULL_HANDLE) {
+        barriers[barrierCount] = barriers[0];
+        barriers[barrierCount].buffer = sdfCompactBuf[currentCullFrame].buffer;
+        barriers[barrierCount].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        barrierCount++;
+        barriers[barrierCount] = barriers[0];
+        barriers[barrierCount].buffer = sdfCountBuf[currentCullFrame].buffer;
+        barriers[barrierCount].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        barrierCount++;
     }
 
     // Bounding-box outputs (bindings 15/16) are consumed by the bbox indirect draw.
     // They follow the SDF outputs in the same dispatch, so they share the post-dispatch
     // visibility barrier (compute write → indirect-draw + vertex read).
-    uint32_t bboxBase = vegActive ? 9u : 5u;
-    barriers[bboxBase] = barriers[0];
-    barriers[bboxBase].buffer = bboxCompactBuf[currentCullFrame].buffer;
-    barriers[bboxBase].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-    barriers[bboxBase + 1] = barriers[0];
-    barriers[bboxBase + 1].buffer = bboxCountBuf[currentCullFrame].buffer;
-    barriers[bboxBase + 1].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-    barrierCount = bboxBase + 2;
+    if (bboxCompactBuf[currentCullFrame].buffer != VK_NULL_HANDLE
+        && bboxCountBuf[currentCullFrame].buffer != VK_NULL_HANDLE) {
+        barriers[barrierCount] = barriers[0];
+        barriers[barrierCount].buffer = bboxCompactBuf[currentCullFrame].buffer;
+        barriers[barrierCount].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        barrierCount++;
+        barriers[barrierCount] = barriers[0];
+        barriers[barrierCount].buffer = bboxCountBuf[currentCullFrame].buffer;
+        barriers[barrierCount].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        barrierCount++;
+    }
 
     // Cascade (shadow) streams (bindings 18/19, 20/21, 22/23) written by this
     // dispatch must be published to the indirect-draw + compute consumers.
@@ -2057,52 +2207,8 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         vegTableCapacity = static_cast<uint32_t>(meshCapacity);
     }
 
-    // ── SDF debug-cube culling buffers (folded into the solid indirect.comp dispatch) ──
-    // Inputs (sdfInCmds/sdfBounds) are host-written each frame from the SDF cube
-    // AABBs and read by the cull; outputs (sdfCompact/sdfCount) are GPU-written and
-    // consumed by the SDF indirect draw. Fixed capacity bounds the worst case.
-    {
-        const VkDeviceSize sdfInCmdSize  = MAX_SDF_CUBES * sizeof(VkDrawIndexedIndirectCommand);
-        const VkDeviceSize sdfBoundsSize = MAX_SDF_CUBES * 4 * sizeof(glm::vec4);
-        const VkDeviceSize sdfOutCmdSize  = MAX_SDF_CUBES * sizeof(VkDrawIndexedIndirectCommand);
-        const VkDeviceSize sdfCountSize   = sizeof(uint32_t);
-        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
-            sdfInCmdsBuf[f] = app->createBuffer(sdfInCmdSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            sdfBoundsBuf[f] = app->createBuffer(sdfBoundsSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            sdfCompactBuf[f] = app->createBuffer(sdfOutCmdSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            sdfCountBuf[f] = app->createBuffer(sdfCountSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        }
-    }
-
-    // ── Mesh bounding-box culling buffers (folded into the solid indirect.comp dispatch) ──
-    // Input (bboxBoundsBuf) host-written each frame from mesh AABBs; outputs
-    // (bboxCompact/bboxCount) GPU-written and consumed by the bbox indirect draw.
-    // Fixed capacity bounds the worst case (one box per uploaded mesh).
-    {
-        // Stride is 4 vec4 per box (min, max, lodMeta, base) to carry the LoD meta.
-        const VkDeviceSize bboxBoundsSize = MAX_BBOX_CUBES * 4 * sizeof(glm::vec4);
-        const VkDeviceSize bboxOutCmdSize  = MAX_BBOX_CUBES * sizeof(VkDrawIndexedIndirectCommand);
-        const VkDeviceSize bboxCountSize   = sizeof(uint32_t);
-        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
-            bboxBoundsBuf[f] = app->createBuffer(bboxBoundsSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            bboxCompactBuf[f] = app->createBuffer(bboxOutCmdSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            bboxCountBuf[f] = app->createBuffer(bboxCountSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        }
-    }
+    // ── SDF/bounding-box debug streams: allocated lazily by
+    // ensureSdfBboxBuffers() on first use (perf report 22 C1), never here. ──
 
     // ── Create compute pipeline + descriptor sets for GPU culling ────────────
     {
@@ -2375,20 +2481,25 @@ void IndirectRenderer::initSlots(VulkanApp* app,
                            vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
                .writeBuffer(computeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
+               // SDF/bounding-box streams (bindings 10-16) are allocated
+               // lazily on first use (perf report 22 C1), so bind the shared
+               // dummy here exactly like bindings 5-9 above; ensureSdfBboxBuffers
+               // re-points them to the real buffers on first allocation
+               // (update-after-bind layout: in-flight sets stay legal).
                .writeBuffer(computeDs, 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            sdfCompactBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                            vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
                .writeBuffer(computeDs, 11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            sdfCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                            vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
                .writeBuffer(computeDs, 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            sdfInCmdsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                            vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
                 .writeBuffer(computeDs, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             sdfBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                             vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
                 .writeBuffer(computeDs, 14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             bboxBoundsBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                             vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
                 .writeBuffer(computeDs, 15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             bboxCompactBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                             vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
                  .writeBuffer(computeDs, 16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              bboxCountBuf[f].buffer, 0, VK_WHOLE_SIZE)
+                              vegDummyBuffer.buffer, 0, VK_WHOLE_SIZE)
                  .flush();
             // Non-cascade renderers never run initCascadeCull, so bind the shared
             // dummy buffer to the cascade inputs 17-23 (otherwise the descriptor
