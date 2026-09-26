@@ -110,9 +110,11 @@ void shadeSolidSurface() {
     float t = ubo.triplanarThreshold; // threshold (0..1)
     vec3 wt = max(vec3(0.0), triW - vec3(t));
 
-    // Apply exponent to make transitions steeper
+    // Apply exponent to make transitions steeper. L13: skip the per-pixel
+    // pow() at the default exponent 1.0 — uniform branch (no divergence),
+    // exact for wt >= 0 (pow(x, 1) == x).
     float e = max(1.0, ubo.triplanarExponent);
-    wt = pow(wt, vec3(e));
+    if (e > 1.0) wt = pow(wt, vec3(e));
     float triWSum = wt.x + wt.y + wt.z + 1e-6;
     triW = wt / triWSum;
     
@@ -153,8 +155,12 @@ void shadeSolidSurface() {
             worldNormal = normalize(blended);
             
             
-            // Diagnostic: detect invalid/degenerate normals and show red so we can find broken pixels
-            if (isnan(worldNormal.x) || isnan(worldNormal.y) || isnan(worldNormal.z) || length(worldNormal) < 1e-6) {
+            // Diagnostic: detect invalid/degenerate normals and show red so we can find broken pixels.
+            // L14: gated on any debug view (uniform branch). Skipped in the
+            // normal view, where it never fires on valid assets — a degenerate
+            // normal there would render black instead of red, equally visible
+            // if assets ever regress.
+            if (ubo.debugMode != 0 && (isnan(worldNormal.x) || isnan(worldNormal.y) || isnan(worldNormal.z) || length(worldNormal) < 1e-6)) {
                 outColor = vec4(1.0, 0.0, 0.0, 1.0);
                 return;
             }
@@ -183,7 +189,8 @@ void shadeSolidSurface() {
         T = normalize(cross(B, N)); // re-orthogonalize
         mat3 TBN = mat3(T, B, N);
         worldNormal = normalize(TBN * nmap);
-        if (isnan(worldNormal.x) || isnan(worldNormal.y) || isnan(worldNormal.z) || length(worldNormal) < 1e-6) {
+        // L14: same debug-view gate as the triplanar diagnostic above.
+        if (ubo.debugMode != 0 && (isnan(worldNormal.x) || isnan(worldNormal.y) || isnan(worldNormal.z) || length(worldNormal) < 1e-6)) {
             outColor = vec4(1.0, 0.0, 0.0, 1.0);
             return;
         }

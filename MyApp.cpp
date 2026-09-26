@@ -1170,7 +1170,13 @@ public:
         // every consumer — this is the "major resource rebuild" case where
         // AGENTS.md allows a device idle. It runs once, on the frame the user
         // changes the slider.
-        if (sceneRenderer && sceneRenderer->waterRenderScale() != settings.waterRenderScale) {
+        // L15: same idle path regrows/shrinks the body+column aux targets when
+        // the blur/pipeline selection flipped since creation (layer edits,
+        // preset switches). waterBodyTargetsStale() compares live need
+        // against allocation; creation itself is a no-op when nothing changed.
+        auto* liquidRenderer = sceneRenderer ? sceneRenderer->mainLiquidRenderer.get() : nullptr;
+        if (sceneRenderer && (sceneRenderer->waterRenderScale() != settings.waterRenderScale ||
+                              (liquidRenderer && liquidRenderer->waterBodyTargetsStale()))) {
             vkDeviceWaitIdle(getDevice());
             sceneRenderer->setWaterRenderScale(settings.waterRenderScale);
             sceneRenderer->recreateWaterTargets(this, getWidth(), getHeight());
@@ -3040,13 +3046,19 @@ public:
                     : sceneRenderer->mainLiquidRenderer->getWaterDepthView(frameIdx),
                 // Water refraction+tint body (RGB+weight) and measured depth
                 // for the final-pass depth-guided water blur (water-in-main
-                // has no aux targets).
+                // has no aux targets). L15: lazily unallocated body/column
+                // targets bind the 1x1 dummy (descriptors must stay valid
+                // even though the blur-gated composite never samples them).
                 settings.waterInMainPass
                     ? sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()
-                    : sceneRenderer->mainLiquidRenderer->getWaterBodyView(frameIdx),
+                    : (sceneRenderer->mainLiquidRenderer->getWaterBodyView(frameIdx) != VK_NULL_HANDLE
+                       ? sceneRenderer->mainLiquidRenderer->getWaterBodyView(frameIdx)
+                       : sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()),
                 settings.waterInMainPass
                     ? sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()
-                    : sceneRenderer->mainLiquidRenderer->getWaterColumnView(frameIdx),
+                    : (sceneRenderer->mainLiquidRenderer->getWaterColumnView(frameIdx) != VK_NULL_HANDLE
+                       ? sceneRenderer->mainLiquidRenderer->getWaterColumnView(frameIdx)
+                       : sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()),
                 brushColorView,
                 brushDepthView,
                 brushBackFaceDepthView,

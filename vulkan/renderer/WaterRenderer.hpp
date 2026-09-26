@@ -190,6 +190,18 @@ public:
     // updateGPUParamsForLayer), so no new MyApp setter is required.
     bool waterBlurNeeded() const { return waterBlurNeeded_; }
 
+    // L15: true when the allocated body/column targets disagree with current
+    // need (blur/pipeline selection flipped since creation). Consumed by the
+    // per-frame recreate check to regrow/shrink them on the existing idle
+    // path. Allocation is all-or-nothing per creation, so slot 0 represents
+    // the set; a missing set with need (or vice versa) triggers one idle
+    // recreate, after which begin/end/clear/composite NULL-guards hold.
+    bool waterBodyTargetsStale() const {
+        const bool need = geometryBodyAttachmentsActive();
+        const bool have = waterBodyImages[0] != VK_NULL_HANDLE;
+        return need != have;
+    }
+
     // Runtime tessellation selector (Settings::tessellationEnabled). Both
     // pipeline families are built at init — the historical PATCH_LIST + TCS/TES
     // family and a TRIANGLE_LIST family with the WATER_NO_TESS vertex module

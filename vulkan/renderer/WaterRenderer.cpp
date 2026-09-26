@@ -326,8 +326,9 @@ void WaterRenderer::createSamplers(VulkanApp* app) {
 }
 
 void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
-    if (renderWidth == width && renderHeight == height && waterDepthImages[0] != VK_NULL_HANDLE) {
-        return; // Already created at this size
+    if (renderWidth == width && renderHeight == height && waterDepthImages[0] != VK_NULL_HANDLE
+        && !waterBodyTargetsStale()) {
+        return; // Already created at this size with matching aux targets
     }
     
     destroyRenderTargets(app);
@@ -393,6 +394,12 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     // re-inserts it with its stored weight, so the reflection lobe and the
     // surface effects stay sharp. Both live in SHADER_READ_ONLY between frames
     // like the water color target.
+    // L15: allocate the aux targets only while the selectable pipeline
+    // writes them. Otherwise the handles stay NULL (layouts UNDEFINED from
+    // the reset above); begin/end/clear NULL-guard, and the composite binds
+    // dummies (see the postprocess call site).
+    const bool wantBodyTargets = geometryBodyAttachmentsActive();
+    if (wantBodyTargets) {
     for (uint32_t frameIdx = 0; frameIdx < FRAMES; ++frameIdx) {
         createImage(VK_FORMAT_R16G16B16A16_SFLOAT,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -416,6 +423,8 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
             waterColumnImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
     }
+    } // wantBodyTargets: else the aux handles stay NULL (destroy nulled them)
+    // and every consumer NULL-guards or binds dummies.
 
     // Back-face depth targets are owned/created by SceneRenderer
 

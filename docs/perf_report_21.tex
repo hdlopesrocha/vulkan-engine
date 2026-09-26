@@ -844,7 +844,9 @@ the win is dynamic ($\sim$2 matvecs per wavy vertex).
 \texttt{ubo.triplanarExponent} with \texttt{pow} per pixel, then divides by
 the sum. Restrict the exponent to $\{1, 2, 4, 8\}$ (repeated squaring, no
 \texttt{pow}) or fold common exponents into a 1D LUT. Minor ALU per pixel,
-trivial fix.
+trivial fix. \\ \textbf{Shipped:} uniform \texttt{e > 1.0} fast path around
+the \texttt{pow} (exact for \texttt{wt >= 0}); the default exponent is $1.0$,
+so default configs skip it entirely with no divergence.
 
 \subsection{L14: NaN Diagnostics Execute in Shipping Shaders}
 \label{sec:l14}
@@ -853,6 +855,10 @@ trivial fix.
 \texttt{isnan}+\texttt{length} checks on every pixel to paint degenerate
 normals red. Gate them on \texttt{ubo.debugMode != 0} (or a dedicated
 \texttt{NORMAL\_CHECK} build) so the production path pays nothing.
+\\ \textbf{Shipped as prescribed} (uniform branch): the check never fires
+on valid assets, and a regression would still read as black in the normal
+view --- equally visible. Retained in every debug view, where diagnosis
+happens.
 
 \subsection{L15: Body/Column Targets Are Always Allocated, Even in No-Body Mode}
 \label{sec:l15}
@@ -863,6 +869,12 @@ full-resolution RGBA16F body and RG16F column targets
 single-attachment pass that never writes them. VRAM-only (no bandwidth when
 unused), but at 4K it is $\sim$130\,MB of dead allocation across three
 frames. Allocate lazily on first use of the blur-capable variant.
+\\ \textbf{Shipped:} body/column allocate only while
+\texttt{geometryBodyAttachmentsActive()} (exact pass requirement, including
+the missing-module fallback), with a \texttt{waterBodyTargetsStale()}
+predicate driving regrow/shrink on the existing per-frame idle recreate
+path. Begin/end/clear NULL-guard; the composite binds the 1x1 dummy when
+unallocated. No mid-frame allocation, no new synchronization.
 
 % =====================================================================
 \section{Implementation Roadmap and Expected Deltas}
@@ -884,7 +896,7 @@ H6 & Cascade reuse in secondary hits (shipped, exact) & $\le$1 matvec + blend pe
 H7 & Dead color: interpolant out, twins filtered (stride stays 64) & $-1$ varying, $-12$\,B/vtx on twins \\
 H8 & TCS invocation guard & $-67$\% solid TCS ALU \\
 M9--M12 & Composite LOD, scale, cull, VS VTF & additive, each 2--10\% \\
-L13--L15 & Hygiene & noise-floor / VRAM \\
+L13--L15 & Hygiene, all shipped & pow skip, NaN gate, lazy body/column \\
 \bottomrule
 \end{tabular}
 \end{table}
