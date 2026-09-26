@@ -726,6 +726,14 @@ propagation (\texttt{MyApp.cpp:806,1182--1184}) recreates targets correctly.
 Files: \texttt{utils/GraphicsSettingsCommand.hpp}. Validation: VRAM and water-pass
 timestamps down $\sim$4$\times$ on Minimal, shoreline screenshots acceptable,
 validation-clean.
+\\ \textbf{Implemented as specified:} \texttt{applyMinimal} sets $0.5$,
+\texttt{applyMaximum} sets $1.0$. No new plumbing was needed --- the
+per-frame \texttt{waterRenderScale} check (\texttt{MyApp.cpp:1182--1184})
+already recreates all water targets (color, body, column, geom depth,
+back-face) under a device idle, and the composite was designed for
+mismatched sizes (closest-of-four depth taps). The blur disc is authored in
+screen-space units (\texttt{water\_surface.glsl:1773--1774}), so the look
+survives the downscale; only the body texel density halves.
 \end{tcolorbox}
 
 \subsection{M11: The Back-Face Pass Re-Dispatches a Full Water Cull Whenever Shadows Are On}

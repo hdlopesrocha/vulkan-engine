@@ -55,6 +55,9 @@ private:
         settings.tessellationEnabled = true;
         settings.shadowTessellationEnabled = true;
         settings.enableShadows = true;
+        // Full-resolution water targets (perf report 21 M10): the composite
+        // blur is depth-guided, so Maximum keeps 1.0 for the sharpest body.
+        settings.waterRenderScale = 1.0f;
     }
 
     static void applyMinimal(Settings& settings) {
@@ -77,6 +80,12 @@ private:
         // Shadow maps + cascade passes off (the solid pass then uses the
         // unshadowed direct-lighting path).
         settings.enableShadows = false;
+        // Half-resolution water targets (perf report 21 M10): Minimal's water
+        // is blur-tolerant, and the blur disc is authored in screen-space
+        // units, so the look survives while fragment/bandwidth/target costs
+        // quarter. Propagates via the existing per-frame waterRenderScale
+        // check (device-idle target recreation); the slider still overrides.
+        settings.waterRenderScale = 0.5f;
     }
 
     GraphicsQuality quality_;
