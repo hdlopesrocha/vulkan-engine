@@ -816,6 +816,21 @@ lookup. Files: \texttt{shaders/main.vert},
 \texttt{shaders/includes/water\_tese.glsl}, the chunk publication path.
 Validation: shoreline foam/wave-fade screenshots identical, VS disassembly
 shrinking toward the 682-word tess-path vertex shader, validation-clean.
+\\ \textbf{Declined the headline, shipped the sound remainder:} per-chunk
+constants would staircase the depth signal across chunks, and the audit
+showed the signal feeds the always-live tint path
+(\texttt{regionDepth} at \texttt{water\_surface.glsl:1558}) --- flat tint per
+chunk is a visible regression by mechanism, unvalidatable without executing.
+A backface-validity flag was also declined (one fetch saved, only in flat
+mode, for cross-file UBO plumbing with transition-frame staleness). What
+shipped is exact: \texttt{waterShoreDirFromSamples} takes the
+caller-reconstructed center (\texttt{solidWorldH}/\texttt{backWorldH},
+hoisted to call scope) instead of rebuilding it, saving one inverse-VP
+matvec per call on \emph{both} geometry paths (4 call sites, bit-identical
+by construction --- same expression, same inputs). The remaining 6 fetches
+and reconstructs are load-bearing (tint needs spatial variation;
+\texttt{max()} needs both surfaces). Module 4038 $\rightarrow$ 4009 words;
+the win is dynamic ($\sim$2 matvecs per wavy vertex).
 \end{tcolorbox}
 
 % =====================================================================

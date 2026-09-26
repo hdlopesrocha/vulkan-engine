@@ -71,13 +71,14 @@ RayTracingParamsNamed rt = rayTracingParamsNamed(rtPacked);
 // center raw-depth sample plus two offset samples. Returns vec2(0) when the
 // signal is unusable (clear depth, solid above the surface/in front, degenerate
 // span, flat bottom).
+// pC is the caller-reconstructed center world position (perf report 21 M12:
+// bit-identical to reconstructing it here from the center sample, saving one
+// inverse-VP matvec per call on both geometry paths).
 vec2 waterShoreDirFromSamples(float rawC, float rawX, float rawY,
-                              vec2 uvC, vec2 uvX, vec2 uvY, vec3 surfacePos) {
+                              vec3 pC, vec2 uvX, vec2 uvY, vec3 surfacePos) {
     if (rawC >= 1.0 || rawX >= 1.0 || rawY >= 1.0) return vec2(0.0);
-    vec4 wC = ubo.invViewProjection * vec4(uvC * 2.0 - 1.0, rawC, 1.0);
     vec4 wX = ubo.invViewProjection * vec4(uvX * 2.0 - 1.0, rawX, 1.0);
     vec4 wY = ubo.invViewProjection * vec4(uvY * 2.0 - 1.0, rawY, 1.0);
-    vec3 pC = wC.xyz / wC.w;
     vec3 pX = wX.xyz / wX.w;
     vec3 pY = wY.xyz / wY.w;
     float dC = surfacePos.y - pC.y;
@@ -273,16 +274,20 @@ void main() {
     float solidDrop = -1.0;
     float backDrop = -1.0;
     float solidDepthRaw = 1.0;
+    // Hoisted for the M12 shore-gradient calls below (same rationale as the
+    // no-tess VS: reuse instead of rebuild).
+    vec4 solidWorldH = vec4(0.0);
+    vec4 backWorldH = vec4(0.0);
     if (haveScreen) {
         solidDepthRaw = texture(solidSceneDepthTex, screenUV).r;
         if (solidDepthRaw < 1.0) {
-            vec4 solidWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, solidDepthRaw, 1.0);
+            solidWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, solidDepthRaw, 1.0);
             float drop = pos.y - solidWorldH.y / solidWorldH.w;
             solidDrop = (drop >= 0.0) ? drop : -1.0;
         }
         float backDepthRaw = texture(waterBackDepthTex, screenUV).r;
         if (backDepthRaw < 1.0) {
-            vec4 backWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, backDepthRaw, 1.0);
+            backWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, backDepthRaw, 1.0);
             backDrop = max(pos.y - backWorldH.y / backWorldH.w, 0.0);
         }
     }
@@ -343,13 +348,13 @@ void main() {
                 solidDepthRaw,
                 texture(solidSceneDepthTex, uvX).r,
                 texture(solidSceneDepthTex, uvY).r,
-                screenUV, uvX, uvY, pos);
+                solidWorldH.xyz / solidWorldH.w, uvX, uvY, pos);
             if (dot(dir, dir) < 1e-6) {
                 dir = waterShoreDirFromSamples(
                     texture(waterBackDepthTex, screenUV).r,
                     texture(waterBackDepthTex, uvX).r,
                     texture(waterBackDepthTex, uvY).r,
-                    screenUV, uvX, uvY, pos);
+                    backWorldH.xyz / backWorldH.w, uvX, uvY, pos);
             }
             if (dot(dir, dir) > 1e-6) {
                 shoreDir = dir;

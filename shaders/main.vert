@@ -84,16 +84,21 @@ void main() {
     float solidDrop = -1.0;
     float backDrop = -1.0;
     float solidDepthRaw = 1.0;
+    // Hoisted for the M12 shore-gradient calls below (reconstructed center
+    // reused instead of rebuilt per helper call). Zero-initialized: any use
+    // with an unmeasurable sample short-circuits on the raw depth first.
+    vec4 solidWorldH = vec4(0.0);
+    vec4 backWorldH = vec4(0.0);
     if (haveScreen) {
         solidDepthRaw = texture(solidSceneDepthTex, screenUV).r;
         if (solidDepthRaw < 1.0) {
-            vec4 solidWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, solidDepthRaw, 1.0);
+            solidWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, solidDepthRaw, 1.0);
             float drop = pos.y - solidWorldH.y / solidWorldH.w;
             solidDrop = (drop >= 0.0) ? drop : -1.0;
         }
         float backDepthRaw = texture(waterBackDepthTex, screenUV).r;
         if (backDepthRaw < 1.0) {
-            vec4 backWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, backDepthRaw, 1.0);
+            backWorldH = ubo.invViewProjection * vec4(screenUV * 2.0 - 1.0, backDepthRaw, 1.0);
             backDrop = max(pos.y - backWorldH.y / backWorldH.w, 0.0);
         }
     }
@@ -123,13 +128,13 @@ void main() {
                 solidDepthRaw,
                 texture(solidSceneDepthTex, uvX).r,
                 texture(solidSceneDepthTex, uvY).r,
-                screenUV, uvX, uvY, pos);
+                solidWorldH.xyz / solidWorldH.w, uvX, uvY, pos);
             if (dot(dir, dir) < 1e-6) {
                 dir = waterShoreDirFromSamples(
                     texture(waterBackDepthTex, screenUV).r,
                     texture(waterBackDepthTex, uvX).r,
                     texture(waterBackDepthTex, uvY).r,
-                    screenUV, uvX, uvY, pos);
+                    backWorldH.xyz / backWorldH.w, uvX, uvY, pos);
             }
             if (dot(dir, dir) > 1e-6) {
                 shoreDir = dir;
