@@ -767,6 +767,25 @@ instead of re-culling; (3) keep the reuse fast path
 \texttt{vulkan/renderer/IndirectRenderer.hpp}. Validation: back-face thickness
 screenshots identical, one fewer full-capacity dispatch on Maximum,
 validation-clean.
+\\ \textbf{Implemented better than specified:} the buffer sizing in step (1)
+was a red herring --- \texttt{numCmds} was already
+\texttt{max(meshCount, capacity) = capacity}, and buffer \emph{size} costs no
+frame time anyway; the cost is the dispatch, which always covers the fixed
+slot capacity. The real defect was the unconditional zero-fills of the main
+compact/count buffers inside the cascade-only cull path
+(\texttt{IndirectRenderer.cpp}), which destroyed the cull-task results the
+async task needed. But the cascade dispatch never writes the main streams
+(\texttt{pc.doMain==0} gates them in \texttt{indirect.comp}, verified;
+cascade atomics target the cascade count buffers), so the fills were
+vestigial destruction. They are now skipped when \texttt{doMain==false}
+(mirroring the adjacent \texttt{visibleLods} guard), the entire task-local
+path is deleted ($\sim$130 lines: dispatch, buffers, descriptor ring,
+pre-allocation), and the back-face pass reuses the main output unconditionally
+under the existing tlSolid-transitive ordering (which already covers the
+shadow restore). Follow-up, not done: the shadow-blur \emph{restore}
+re-dispatches are now redundant identically-valued rewrites (kept for their
+late-upload meta flush); removing them needs that flush moved to pass
+prologues.
 \end{tcolorbox}
 
 \subsection{M12: The No-Tess Water Vertex Shader Does up to Six Depth Fetches and Two Inverse-VP Reconstructs per Vertex}

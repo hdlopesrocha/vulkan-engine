@@ -347,9 +347,6 @@ public:
 
     // Pre-allocated descriptor pool+set rings to avoid per-frame create/destroy
     static constexpr uint32_t ASYNC_RING_SIZE = 3;
-    struct PoolSetPair { VkDescriptorPool pool; VkDescriptorSet set; };
-    PoolSetPair cachedBackfaceCompute[ASYNC_RING_SIZE]{};
-    uint32_t ringBackfaceCompute = 0;
 
 
     Octree::OctreeNodeDataHandler brushSolidAddHandler;
@@ -377,9 +374,6 @@ public:
     // thread blocks on future.get() before enqueueing the next task and the
     // pool has a single worker.
     struct BackfaceSlot {
-        Buffer compact{};                          // cull output: VkDrawIndexedIndirectCommand[]
-        Buffer visible{};                          // cull output: draw count (uint32_t)
-        uint32_t compactCapacity = 0;              // elements `compact` can hold
         VkDescriptorPool pool = VK_NULL_HANDLE;    // per-slot pool (maxSets=1) for back-face set 2
         VkDescriptorSet waterDs = VK_NULL_HANDLE;  // back-face water-depth set (binding 0 = back-face dummy depth)
         VkDescriptorPool poolW = VK_NULL_HANDLE;   // per-slot pool for the parallel water geometry set 2
@@ -976,7 +970,6 @@ public:
                 }
             };
         }
-        preAllocateAsyncDescriptorPools();
         // Try loading the default scene; fall back to procedural generation if it fails
         const std::string defaultScenePath = "scenes/default.scene";
         if (std::filesystem::exists(defaultScenePath)) {
@@ -993,8 +986,6 @@ public:
     void setupVegetationTextures();
     // Move scene-loading into its own method for clarity
     void setupScene();
-    // Pre-allocate descriptor pool+set rings for async tasks
-    void preAllocateAsyncDescriptorPools();
     // Rebuild the brush preview scene from Brush3dWidget entries
     void rebuildBrushScene();
     // Apply the selected brush SDF to the main scene's octree on the selected layer
@@ -2275,57 +2266,16 @@ public:
                 // Dedicated command-buffer state for this async command buffer (see cull task).
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
-                // Reuse a ring of pre-allocated per-task resources (cull output buffers)
-                // instead of creating host-visible buffers every frame. Slot safety:
-                // see the cachedBackfaceRing comment above -- the previous submission
-                // using this slot (task N) has completed before task N+ASYNC_RING_SIZE
-                // runs, so reusing (and on growth, replacing) the buffers cannot race
-                // with the GPU.
+                // Reuse a ring of pre-allocated per-task resources (descriptor
+                // sets) instead of creating host-visible buffers every frame.
+                // Slot safety: see the cachedBackfaceRing comment above -- the
+                // previous submission using this slot (task N) has completed
+                // before task N+ASYNC_RING_SIZE runs, so reusing the slot
+                // cannot race with the GPU.
                 IndirectRenderer &ind = this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
-                uint32_t numCmds = std::max({
-                    static_cast<uint32_t>(ind.getMeshCount()),
-                    static_cast<uint32_t>(ind.getMeshCapacity()),
-                    1u
-                });
                 BackfaceSlot& slot = cachedBackfaceRing[ringBackface++ % ASYNC_RING_SIZE];
 
-                // Lazily create the slot's buffers once. The compact buffer is only
-                // recreated when the cull capacity grows; the old buffer's last
-                // submission (this slot's previous task) has completed (see above),
-                // so destroying it in place is safe and needs no deferred destroy.
-                if (slot.compact.buffer == VK_NULL_HANDLE || slot.compactCapacity < numCmds) {
-                    if (slot.compact.buffer != VK_NULL_HANDLE)
-                        app->destroyBuffer(slot.compact); // slot's previous task completed
-                    slot.compact = app->createBuffer(sizeof(VkDrawIndexedIndirectCommand) * numCmds,
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                    slot.compactCapacity = numCmds;
-                }
-                if (slot.visible.buffer == VK_NULL_HANDLE) {
-                    slot.visible = app->createBuffer(sizeof(uint32_t),
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                }
-
                 VkDevice dev = app->getDevice();
-                auto lazyComputeSlot = [&](PoolSetPair* ring, uint32_t& idx, VkDescriptorSetLayout layout, const char* label) -> PoolSetPair& {
-                    auto& s = ring[idx++ % ASYNC_RING_SIZE];
-                    if (s.pool != VK_NULL_HANDLE) return s;
-                    if (layout == VK_NULL_HANDLE) return s;
-                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64 };
-                    VkDescriptorPoolCreateInfo pci{};
-                    pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                    pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
-                    pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-                    vkCreateDescriptorPool(dev, &pci, nullptr, &s.pool);
-                    app->resources.addDescriptorPool(s.pool, label);
-                    VkDescriptorSetAllocateInfo ai{};
-                    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                    ai.descriptorPool = s.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &layout;
-                    vkAllocateDescriptorSets(dev, &ai, &s.set);
-                    app->resources.addDescriptorSet(s.set, label);
-                    return s;
-                };
                 // ── Back-face demand gate (perf_report_19 C3) ─────────────────
                 // The back-face depth pass exists only to measure the water
                 // VOLUME (column thickness) for these per-layer consumers:
@@ -2346,52 +2296,15 @@ public:
                     waterVolumeNeeded = waterVolumeNeeded || wp.enableWaves || wp.enableFoam
                         || wp.enableVolumetric || wp.causticIntensity > 0.001f || wp.enableRefraction;
                 }
-                // Shadows ON: the shadow cascade cull contends for the liquid
-                // cull buffers, so the task-local cull is still required.
-                // Shadows OFF: the main water cull output is already complete
-                // (ordering proof at the render call) and is reused instead.
-                const bool taskLocalBackFaceCull = waterVolumeNeeded && settings.enableShadows;
-
-                VkDescriptorSet computeDs = VK_NULL_HANDLE;
-                if (taskLocalBackFaceCull) {
-                    VkDescriptorSetLayout bfLayout = ind.getComputeDescriptorSetLayout();
-                    auto& dsSlot = lazyComputeSlot(cachedBackfaceCompute, ringBackfaceCompute, bfLayout, "Lazy cachedBackfaceCompute");
-                    computeDs = dsSlot.set;
-                }
-
-                // Update descriptor set with buffers: inCmds, outCmds, bounds,
-                // visibleCount, visibleLods (binding 4 = persistent scratch).
-                if (computeDs != VK_NULL_HANDLE) {
-                    DescriptorWriter(dev)
-                        .writeBuffer(computeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     ind.getIndirectBuffer().buffer, 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     slot.compact.buffer, 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     ind.getBoundsBuffer().buffer, 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     slot.visible.buffer, 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     ind.getVisibleLodsScratchBuffer(), 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
-                        .writeBuffer(computeDs, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                     ind.getVegDummyBuffer(), 0, VK_WHOLE_SIZE)
-                        .flush();
-                }
-
-                // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
-                if (computeDs != VK_NULL_HANDLE) {
-                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, slot.compact.buffer, slot.visible.buffer,
-                                                  camera.getPosition(), settings.lodBias, settings.maxTargetLod,
-                                                  /*doMainCull=*/true, /*doCascadeCull=*/false);
-                }
+                // M11 (perf report 21): the back-face pass always reuses the
+                // main water cull output now. The shadow cascade cull used to
+                // zero the main compact/count buffers (forcing a task-local
+                // re-cull with shadows on), but prepareCull skips those fills
+                // when doMain==false — the cascade dispatch never writes the
+                // main streams (pc.doMain==0) — so the cull-task results
+                // survive for this task under the same tlSolid-transitive
+                // ordering proof as the old shadows-off path. One full
+                // capacity dispatch saved per frame.
 
                 // Water-depth descriptor set for THIS task: pre-allocated per ring slot
                 // and rewritten each frame before submission. Reuse is safe because the
@@ -2467,7 +2380,7 @@ public:
                 }
 
                 // Render back-face pass using the cull results. Ordering proof
-                // for the shared-cull path below: this command buffer waits
+                // for the shared cull reuse: this command buffer waits
                 // tlSolid@v (submit at the end of the task), tlSolid is signaled
                 // by the solid pass which waits tlShadow, and tlShadow is
                 // signaled by the shadow task after waiting tlCull (with shadows
@@ -2476,22 +2389,17 @@ public:
                 // water cull ran in the cull task BEFORE tlCull was signaled,
                 // and a timeline semaphore wait makes those SSBO writes visible
                 // to this queue, so the main cull output is complete before this
-                // draw executes. The later water geometry pass reads the same
+                // draw executes. The shadow cascade cull preserves these
+                // buffers (prepareCull skips the main-output fills when
+                // doMain==false), so the proof holds with shadows on. The
+                // later water geometry pass reads the same
                 // compact/visible buffers in this same command buffer -- a
                 // read-read with no hazard.
                 auto tBackface = std::chrono::high_resolution_clock::now();
                 if (waterVolumeNeeded && this->sceneRenderer->backFaceRenderer) {
-                    VkBuffer bfCompact = VK_NULL_HANDLE;
-                    VkBuffer bfVisible = VK_NULL_HANDLE;
-                    if (taskLocalBackFaceCull) {
-                        bfCompact = slot.compact.buffer;
-                        bfVisible = slot.visible.buffer;
-                    } else {
-                        // Shadows off: reuse the main water cull output instead
-                        // of re-dispatching the same cull into task-local buffers.
-                        bfCompact = ind.getCurrentCompactBuffer();
-                        bfVisible = ind.getCurrentVisibleCountBuffer();
-                    }
+                    // M11: always the main water cull output (see above).
+                    VkBuffer bfCompact = ind.getCurrentCompactBuffer();
+                    VkBuffer bfVisible = ind.getCurrentVisibleCountBuffer();
                     this->sceneRenderer->backFaceRenderer->render(app, cmd, frameIdx,
                                                 ind,
                                                 this->sceneRenderer->mainLiquidRenderer->getWaterGeometryPipelineLayout(),
@@ -3234,7 +3142,6 @@ public:
         }
         // Pre-allocated ring pools are tracked by VulkanResourceManager, so
         // resources.cleanup() will destroy them. Just zero our arrays.
-        for (auto& slot : cachedBackfaceCompute) slot = {};
         for (auto& slot : cachedBackfaceRing) slot = {};
 
         // NOTE: Vulkan-owned objects for global managers are now cleaned up by
@@ -3572,52 +3479,6 @@ void MyApp::setupVegetationTextures() {
             billboardCreator->getOpacityArrayView(),
             billboardCreator->getArraySampler(),
             static_cast<int>(billboardManager.getBillboardCount()));
-    }
-}
-
-// Implementation: pre-allocate descriptor pool+set rings for async tasks
-void MyApp::preAllocateAsyncDescriptorPools() {
-    VkDevice dev = getDevice();
-
-    auto allocateComputeRing = [&](PoolSetPair* ring, VkDescriptorSetLayout dsLayout, const char* label) {
-        if (dsLayout == VK_NULL_HANDLE) return;
-        VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64 };
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
-        poolInfo.maxSets = 1;
-        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-        for (uint32_t i = 0; i < ASYNC_RING_SIZE; ++i) {
-            VkDescriptorPool pool;
-            if (vkCreateDescriptorPool(dev, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
-                std::cerr << "[Async] Failed to pre-allocate " << label << " pool " << i << "\n";
-                ring[i] = {};
-                continue;
-            }
-            { std::string s = std::string(label) + " ring #" + std::to_string(i); resources.addDescriptorPool(pool, s.c_str()); }
-            VkDescriptorSet set;
-            VkDescriptorSetAllocateInfo ainfo{};
-            ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            ainfo.descriptorPool = pool;
-            ainfo.descriptorSetCount = 1;
-            ainfo.pSetLayouts = &dsLayout;
-            if (vkAllocateDescriptorSets(dev, &ainfo, &set) != VK_SUCCESS) {
-                resources.removeDescriptorPool(pool);
-                vkDestroyDescriptorPool(dev, pool, nullptr);
-                std::cerr << "[Async] Failed to pre-allocate " << label << " set " << i << "\n";
-                ring[i] = {};
-                continue;
-            }
-            { std::string s = std::string(label) + " DS #" + std::to_string(i); resources.addDescriptorSet(set, s.c_str()); }
-            ring[i] = {pool, set};
-        }
-    };
-
-    // Backface compute (same layout as water compute)
-    if (sceneRenderer && sceneRenderer->mainLiquidRenderer) {
-        auto& waterInd = sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
-        allocateComputeRing(cachedBackfaceCompute, waterInd.getComputeDescriptorSetLayout(), "cachedBackfaceCompute");
     }
 }
 

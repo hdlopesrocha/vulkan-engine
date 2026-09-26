@@ -691,6 +691,16 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
 
+    // Reset visible count + compact buffer, but ONLY for the main-view cull
+    // (perf report 21 M11). The cascade-only path (doMain==false) must
+    // preserve the main-view outputs: its dispatch never writes them
+    // (pc.doMain==0 gates the main streams in indirect.comp), while
+    // concurrent readers need them intact — the async back-face task on the
+    // water queue reads the main compact/count under the tlSolid-transitive
+    // ordering, and the later passes read them after the blur-step restore.
+    // Zeroing here used to force a second full task-local cull for the
+    // back-face pass whenever shadows were on; the visibleLods guard right
+    // below follows the same pattern for the same reason.
     // Reset visible count to zero via vkCmdFillBuffer (GPU-side write) so each
     // prepareCull starts from a clean slate on the GPU timeline.  A CPU host
     // write (HOST_COHERENT) would be overwritten by the previous cascade's
@@ -698,8 +708,6 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // start from the accumulated count rather than 0.  vkCmdFillBuffer is used
     // instead of vkCmdUpdateBuffer to avoid the latter's implicit FULL_QUEUE
     // barrier (top-of-pipe → bottom-of-pipe) that drains the entire graphics queue.
-    vkCmdFillBuffer(cmd, visibleCount.buffer, 0, sizeof(uint32_t), 0);
-
     // Also zero the ENTIRE compact indirect buffer so any slot the compute
     // shader does NOT write (e.g. because it early-returns or the dst index
     // lands beyond the valid command count) is a clean zeroed DrawCmd
@@ -707,7 +715,10 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // garbage indexCount read by vkCmdDrawIndexedIndirectCount would make
     // the GE process a draw with a giant index count and never finish
     // (GPU hang observed on RADV / Radeon 680M).
-    vkCmdFillBuffer(cmd, compactBuf.buffer, 0, VK_WHOLE_SIZE, 0);
+    if (doMain) {
+        vkCmdFillBuffer(cmd, visibleCount.buffer, 0, sizeof(uint32_t), 0);
+        vkCmdFillBuffer(cmd, compactBuf.buffer, 0, VK_WHOLE_SIZE, 0);
+    }
 
     // Zero the per-frame chosen-LoD output so entries beyond the current
     // dispatch range can never be misread as a stale (chunk, level) pair.
