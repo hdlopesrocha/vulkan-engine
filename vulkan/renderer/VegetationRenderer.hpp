@@ -96,15 +96,8 @@ public:
     size_t pendingChunkCount() const;
     void clearAllInstances();
 
-    // Draw all visible vegetation chunks with GPU frustum culling.
-    // If queryPool != VK_NULL_HANDLE, writes GPU timestamps:
-    //   queryRealIndex .. queryRealIndex+1  = real billboard passes (depth prepass + shading)
-    //   queryImpostorIndex .. queryImpostorIndex+1 = impostor passes (impostor depth + color)
-    void render(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet,
-              const glm::mat4& viewProj, const glm::vec3& cameraPos,
-              VkQueryPool queryPool = VK_NULL_HANDLE,
-              uint32_t queryRealIndex = 0,
-              uint32_t queryImpostorIndex = 0);
+    // (The combined render() entry point was removed with the dead code sweep,
+    // perf report 22 M9: all callers use drawDepth/drawColor directly.)
     // Deferred depth test: draw vegetation + impostor depth only (no color)
     void drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos);
     // Deferred depth test: draw vegetation + impostor color only (LESS_OR_EQUAL, no depth write)

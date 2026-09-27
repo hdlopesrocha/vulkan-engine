@@ -3,10 +3,7 @@
 #include "Renderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
-#include "../VertexBufferObject.hpp"
 #include "../SkySphere.hpp"
-#include "../VertexBufferObjectBuilder.hpp"
-#include "../../math/SphereModel.hpp"
 #include "../ShaderStage.hpp"
 #include "../ubo/UniformObject.hpp"
 #include "../../widgets/SkySettings.hpp"
@@ -52,20 +49,10 @@ public:
         return VK_NULL_HANDLE;
     }
 
-    // Accessors for external renderers (cubemap 360 uses fullscreen sky pipeline)
-    VkPipeline getSkyFullscreenPipeline() const { return skyFullscreenPipeline; }
-    VkPipelineLayout getSkyFullscreenPipelineLayout() const { return skyFullscreenPipelineLayout; }
-    VkPipeline getSkyFullscreenGridPipeline() const { return skyFullscreenGridPipeline; }
-    VkPipelineLayout getSkyFullscreenGridPipelineLayout() const { return skyFullscreenGridPipelineLayout; }
+    // Sky UBO (binding 6) accessor — consumed by SceneRenderer for RT scene views.
     Buffer getSkyUniformBuffer() const;
 
 private:
-    // Sphere pipelines (fullscreen sky uses the offscreen path; retained)
-    TrackedHandle<VkPipeline> skyPipeline;
-    TrackedHandle<VkPipelineLayout> skyPipelineLayout;
-    TrackedHandle<VkPipeline> skyGridPipeline;
-    TrackedHandle<VkPipelineLayout> skyGridPipelineLayout;
-    TrackedHandle<VkShaderModule> skyVertModule;
     TrackedHandle<VkShaderModule> skyFragModule;
     TrackedHandle<VkShaderModule> skyGridFragModule;
 
@@ -76,9 +63,11 @@ private:
     TrackedHandle<VkPipelineLayout> skyFullscreenGridPipelineLayout;
     TrackedHandle<VkShaderModule> skyFullscreenVertModule;
 
-    // Owned sky sphere and VBO
+    // SkySphere owns the dedicated SkyUBO (binding 6); consumed by
+    // SceneRenderer for RT scene views. The on-screen/offscreen sky passes are
+    // fullscreen triangles with no sphere geometry (the sphere pipelines and
+    // VBO were removed with Solid360Renderer — perf report 22 M9).
     std::unique_ptr<SkySphere> skySphere;
-    VertexBufferObject skyVBO;
 
     // --- Offscreen equirectangular sky resources matching MAX_FRAMES_IN_FLIGHT ---
     static constexpr uint32_t SKY_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;

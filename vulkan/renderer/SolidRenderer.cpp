@@ -503,39 +503,6 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     vertexShader.info.module = VK_NULL_HANDLE;
 }
 
-void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet) {
-    if (!appArg) {
-        std::cerr << "[SolidRenderer::draw] appArg is nullptr, skipping." << std::endl;
-        return;
-    }
-    
-    VkPipelineLayout usedLayout = graphicsPipelineLayout;
-    if (activeGraphicsPipeline() == VK_NULL_HANDLE) {
-        std::cerr << "[SolidRenderer::draw] graphicsPipeline is VK_NULL_HANDLE, skipping." << std::endl;
-        return;
-    }
-    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, activeGraphicsPipeline());
-    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, activeGraphicsPipeline());
-
-    // Bind descriptor set 0: main UBO/samplers (perTextureDescriptorSet)
-    // and set 1: brush depth textures (brushDepthSet) for PAINT mode.
-    if (perTextureDescriptorSet != VK_NULL_HANDLE) {
-        VkDescriptorSet bindSets[2] = { perTextureDescriptorSet, VK_NULL_HANDLE };
-        uint32_t bindCount = 1;
-        if (brushDepthSet != VK_NULL_HANDLE) {
-            bindSets[1] = brushDepthSet;
-            bindCount = 2;
-        }
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, usedLayout, 0, bindCount, bindSets, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, usedLayout, 0, bindCount, bindSets, 0, nullptr);
-    } else {
-        std::cerr << "[SolidRenderer::draw] ERROR: perTextureDescriptorSet is NULL!" << std::endl;
-    }
-    
-    // Draw all meshes using GPU-culled indirect commands
-    indirectRenderer.drawPrepared(commandBuffer);
-}
-
 void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet) {
     if (!appArg) {
         std::cerr << "[SolidRenderer::renderDepthPrepass] appArg is nullptr, skipping." << std::endl;

@@ -7,10 +7,6 @@
 #include "../includes/locations.hpp"
 #include "../includes/vertex_layouts.hpp"
 
-// For VBO creation
-#include "../VertexBufferObjectBuilder.hpp"
-#include "../../math/SphereModel.hpp"
-
 SkyRenderer::SkyRenderer() {}
 
 SkyRenderer::~SkyRenderer() { cleanup(nullptr); }
@@ -81,61 +77,6 @@ void SkyRenderer::init(VulkanApp* app) {
             { fsVertStage.info, fsGridFragStage.info }, opts, "SkyRenderer: fullscreen grid");
         std::cerr << "[SKY FULLSCREEN GRID PIPELINE] Created pipeline=" << (void*)(VkPipeline)skyFullscreenGridPipeline << std::endl;
     }
-
-    // --- Sphere pipelines (retained for Solid360Renderer cubemap capture) ---
-    skyVertModule = app->getOrCreateShaderModule("shaders/sky.vert.spv");
-
-    ShaderStage skyVert = ShaderStage(skyVertModule, VK_SHADER_STAGE_VERTEX_BIT);
-    ShaderStage skyFrag = ShaderStage(skyFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
-
-    GraphicsPipelineConfig cfg{};
-    cfg.cullMode = VK_CULL_MODE_FRONT_BIT;
-    cfg.depthWriteEnable = false;
-    cfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    auto [pipeline, layout] = app->createGraphicsPipeline(
-        { skyVert.info, skyFrag.info },
-        std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
-        std::vector<VkVertexInputAttributeDescription>{
-            VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-            VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-        },
-        setLayouts,
-        nullptr,
-        cfg
-    );
-    skyPipeline = pipeline;
-    skyPipelineLayout = layout;
-    if (skyPipeline == VK_NULL_HANDLE || skyPipelineLayout == VK_NULL_HANDLE) {
-        std::cerr << "[SKY PIPELINE ERROR] Failed to create sky pipeline or layout!" << std::endl;
-    } else {
-        std::cerr << "[SKY PIPELINE] Created pipeline=" << (void*)skyPipeline << " layout=" << (void*)skyPipelineLayout << std::endl;
-    }
-
-    // Sphere grid pipeline
-    ShaderStage skyGridFrag = ShaderStage(skyGridFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
-
-    GraphicsPipelineConfig gridCfg{};
-    gridCfg.cullMode = VK_CULL_MODE_FRONT_BIT;
-    gridCfg.depthWriteEnable = false;
-    gridCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    auto [gridPipeline, gridLayout] = app->createGraphicsPipeline(
-        { skyVert.info, skyGridFrag.info },
-        std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
-        std::vector<VkVertexInputAttributeDescription>{
-            VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-            VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-        },
-        setLayouts,
-        nullptr,
-        gridCfg
-    );
-    skyGridPipeline = gridPipeline;
-    skyGridPipelineLayout = gridLayout;
-    if (skyGridPipeline == VK_NULL_HANDLE || skyGridPipelineLayout == VK_NULL_HANDLE) {
-        std::cerr << "[SKY GRID PIPELINE ERROR] Failed to create sky grid pipeline or layout!" << std::endl;
-    } else {
-        std::cerr << "[SKY GRID PIPELINE] Created pipeline=" << (void*)skyGridPipeline << " layout=" << (void*)skyGridPipelineLayout << std::endl;
-    }
 }
 void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkySettings::Mode skyMode) {
     // Select fullscreen pipeline based on sky mode (no vertex input, 3-vertex triangle)
@@ -183,27 +124,14 @@ void SkyRenderer::cleanup(VulkanApp* app) {
         skySphere->cleanup();
         skySphere.reset();
     }
-    skyVBO.vertexBuffer.buffer = VK_NULL_HANDLE;
-    skyVBO.vertexBuffer.memory = VK_NULL_HANDLE;
-    skyVBO.indexBuffer.buffer = VK_NULL_HANDLE;
-    skyVBO.indexBuffer.memory = VK_NULL_HANDLE;
-    skyVBO.indexCount = 0;
 }
 
 void SkyRenderer::init(VulkanApp* app, SkySettings &settings, VkDescriptorSet descriptorSet) {
     if (!app) return;
-    // Create sphere VBO if not present
-    if (skyVBO.vertexBuffer.buffer == VK_NULL_HANDLE && skyVBO.indexCount == 0) {
-        printf("[SkyRenderer::initSky] Creating sphere VBO...\n");
-        SphereModel sphere(0.5f, 32, 16, 0);
-        skyVBO = VertexBufferObjectBuilder::create(app, sphere);
-        printf("[SkyRenderer::initSky] Created skyVBO: vertexBuffer=%p indexCount=%u\n", 
-            (void*)skyVBO.vertexBuffer.buffer, skyVBO.indexCount);
-    } else {
-        printf("[SkyRenderer::initSky] Sky VBO already exists: vertexBuffer=%p indexCount=%u\n",
-            (void*)skyVBO.vertexBuffer.buffer, skyVBO.indexCount);
-    }
-
+    // SkySphere owns the dedicated SkyUBO (binding 6); the on-screen and
+    // offscreen passes are fullscreen triangles with no sphere geometry (the
+    // sphere VBO and pipelines were removed with Solid360Renderer, perf
+    // report 22 M9).
     if (descriptorSet != VK_NULL_HANDLE && !skySphere) {
         skySphere = std::make_unique<SkySphere>();
         skySphere->init(app, settings, descriptorSet);

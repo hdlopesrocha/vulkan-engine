@@ -33,7 +33,8 @@ public:
     void drawWireframeOverlay(VkCommandBuffer& commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet);
 
     // Draw main solid geometry: bind pipeline and draw
-    void render(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
+    // (The combined render() entry point was removed with the dead code sweep,
+    // perf report 22 M9: callers use drawDepth/drawColor directly.)
     // Draw depth-only pre-pass to populate depth buffer without writing color
     void renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
 

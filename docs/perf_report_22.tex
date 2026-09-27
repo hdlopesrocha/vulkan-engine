@@ -552,6 +552,15 @@ Files: \texttt{shaders/}, \texttt{vulkan/renderer/SkyRenderer.cpp},
 \texttt{vulkan/renderer/VegetationRenderer.cpp},
 \texttt{vulkan/renderer/SolidRenderer.cpp}. Validation: identical build
 minus the artifacts, validation-clean.
+\\ \textbf{Implemented (one audit correction):}
+\texttt{perlin\_noise.comp} is \emph{alive} (TextureMixer dispatches it) ---
+kept. Deleted: the three unreferenced \texttt{.geom} sources, the sphere-only
+\texttt{sky.vert}, both sphere pipeline creations with their
+shader-module/layout handles and the \texttt{SkyRenderer}/{Vegetation}/
+{Solid} dead \texttt{render()} entry points, plus the sky sphere VBO (built
+via \texttt{SphereModel} every launch, never drawn) and the now-callerless
+fullscreen accessors. Net: 4 sources and $\sim$150 lines of dead creation
+code fewer to build, link, and read.
 \end{tcolorbox}
 
 \subsection{M10: Per-Chunk Staging Churn in Vegetation Streaming}

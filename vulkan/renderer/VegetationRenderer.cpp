@@ -1608,16 +1608,6 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         std::cerr << "[VegetationRenderer] Impostor pipeline created: " << (void*)impostorPipeline << "\n";
 }
 
-void VegetationRenderer::render(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet,
-                              const glm::mat4& viewProj, const glm::vec3& cameraPos,
-                              VkQueryPool queryPool,
-                              uint32_t queryRealIndex,
-                              uint32_t queryImpostorIndex) {
-    (void)vegetationDescriptorSet;
-    drawDepth(app, commandBuffer, viewProj, cameraPos);
-    drawColor(app, commandBuffer, viewProj, cameraPos);
-}
-
 VegetationRenderer::WindPushConstants VegetationRenderer::buildWindPushConstants(const glm::vec3& cameraPos) const {
     (void)cameraPos;
     WindPushConstants pc{};
