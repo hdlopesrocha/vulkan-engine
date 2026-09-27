@@ -427,10 +427,28 @@ opacityWeight), and the module size is unchanged --- the win is purely
 fetches not issued.
 \end{tcolorbox}
 
-\subsection{H7: Full CSM per Foliage Pixel Belongs at Vertex Rate}
+\subsection{H7: Full CSM per Foliage Pixel --- Blocked by Pipeline Architecture}
 \label{sec:h7}
 
-\textbf{Severity: High.}
+\textbf{Status: BLOCKED, documented with evidence (not shipped).}
+
+The audit-time proposal assumed the foliage vertex stages could evaluate CSM
+themselves. They cannot, for a hard reason: \emph{the vertex stage cannot
+sample shadow maps at all}. Every foliage pipeline obtains its shadow maps
+from the global set-0 descriptor set, whose layout binds the shadow samplers
+with \texttt{VK\_SHADER\_STAGE\_FRAGMENT\_BIT} only
+(\texttt{VegetationRenderer.cpp} descriptor-set creation and the cascade
+bindings it inherits); moving evaluation to vertices requires a
+layout/stage-flag change at pipeline-creation time that every existing
+pipeline of that set depends on. The vertex UBO copies in
+\texttt{vegetation.vert}/\texttt{impostors.vert} additionally declare only a
+20-byte prefix of \texttt{SolidParamsUBO} (light-space matrices start at
+offset 128), so the cascade-selection inputs are not even available in the
+vertex stages today. A vertex-rate CSM is therefore a pipeline-layout
+project --- new stage flags, possibly an extra descriptor set --- not a
+shader edit, and it needs eyes on cascade-blend seams, since interpolation
+across a blend boundary is a visual decision, not a provable one. Declined
+for this pass rather than shipped blind.
 
 Both foliage shaders run the full cascaded shadow selection per pixel (up
 to 2 matvecs + blend + fetches in \texttt{vegetation.frag:129--138} and
@@ -444,12 +462,19 @@ with no visible change (cascade blend zones are smooth by design).
 \texttt{ShadowCalculation(Hard)} per vertex (billboards) / per quad corner
 (impostors), pass one float, multiply in the fragment stage.
 
-\begin{tcolorbox}[promptbox={Prompt --- H7: vertex-rate foliage shadows}]
-Goal: CSM cost off the per-pixel path. Steps: (1) shadow varying through
-VS/GS stages; (2) keep the NdotL $> 0.01$ fast paths. Files:
-\texttt{shaders/vegetation.vert}, \texttt{shaders/vegetation.frag},
-\texttt{shaders/impostors.vert}, \texttt{shaders/impostors.frag}.
-Validation: shadow-boundary A/B (cascade seams smooth), validation-clean.
+\begin{tcolorbox}[promptbox={Prompt --- H7: vertex-rate foliage shadows --- NOT APPLICABLE as written}]
+The prompt's first step (``shadow varying through VS/GS stages'') cannot be
+implemented on the current pipeline layout: the vertex stage of every
+foliage pipeline has no shadow samplers bound and no light-space matrices in
+its UBO prefix. A correct future version has prerequisites:
+(1) add \texttt{VK\_SHADER\_STAGE\_VERTEX\_BIT} to the shadow-sampler
+bindings of the vegetation set-0 layout (or a dedicated vertex-visible
+set); (2) extend the vertex UBO copies to the full \texttt{SolidParamsUBO}
+(offsets 128/272/336 for the cascade matrices); (3) evaluate the cascade
+selection per billboard corner and pass index+coords (or a scalar) as a
+varying; (4) A/B the cascade blend seams before/after, since interpolation
+across a blend boundary changes pixels by design. Until (1)--(2) exist,
+keep the per-pixel path (already fetch-disciplined by H6).
 \end{tcolorbox}
 
 \subsection{H8: View-Independent Sky Equirect Re-Rendered Every Frame}
