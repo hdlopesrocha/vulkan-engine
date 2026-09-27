@@ -355,6 +355,15 @@ head of the per-vertex bill; density hash at $\sim$12 flops stays
 in-shader, trigonometry stays for lack of an A/B-able fidelity story).
 All four VS variants disassemble clean of \texttt{vegetationHeightScale}
 with the location-7 input live.
+\\ \textbf{Follow-up shipped:} the distance cull in \texttt{vegetation.vert}
+now runs before the per-instance decode (trig, height fetch, index unpack)
+instead of after --- same condition on the same inputs, so culled instances
+produce the identical degenerate triangle $\sim$150 flops cheaper; no-op
+when impostors are off. The shadow and impostor vertex shaders already
+ordered culls first. Declined: UBO-decode restructuring (6-file churn for
+$\sim$5\%, ulp-perturbation class), trig LUT (reassigns every bush's static
+orientation --- a \emph{visible} diff, not an invisible one; needs A/B),
+density-hash baking (+32\,MB for $\sim$5\% with threshold-flip semantics).
 \end{tcolorbox}
 
 \subsection{H5: Impostor Fragment Stage Reconstructs Depth and Shades Full}

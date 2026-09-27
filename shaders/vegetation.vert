@@ -193,10 +193,22 @@ void main() {
         return;
     }
 
+    vec3 worldPos = instanceData.xyz;
+    vec3 camPos = ubo.viewPosition;
+
+    // Distance-based culling, hoisted above per-instance decode (perf report
+    // 22 H4): the condition uses only worldPos/camPos, so culled instances
+    // skip the trig, height fetch and index decodes with identical output
+    // (degenerate triangle either way). No-op when impostors are off
+    // (impostorDistance == 0).
+    if (impostorDistance > 0.0 && distance(worldPos, camPos) >= impostorDistance) {
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
     int planeIdx  = (inCornerNormalData >> 8) & 0xFF;
     int cornerType = inCornerNormalData & 0xFF; // 0=BL, 1=BR, 2=TL, 3=TR
 
-    vec3 worldPos = instanceData.xyz;
     int billboardIdx = int(floor(instanceData.w));
     float rotFrac = fract(instanceData.w);
     float theta = rotFrac * 6.28318530718;
@@ -204,13 +216,6 @@ void main() {
     float sinT = sin(theta);
 
     bool shadowPass = windEnabled < 0.0;
-    vec3 camPos = ubo.viewPosition;
-
-    // Distance-based culling (same as old geometry shader)
-    if (impostorDistance > 0.0 && distance(worldPos, camPos) >= impostorDistance) {
-        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
-        return;
-    }
 
     // Per-instance height variation: baked (see inBakedHeight decl).
     // Identical to vegetationHeightScale(worldPos.xz); the bake covers all
