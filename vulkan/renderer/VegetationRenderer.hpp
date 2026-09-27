@@ -124,10 +124,8 @@ public:
     VkImageLayout getVegDepthLayout(uint32_t frameIndex) const { return (frameIndex < VEG_FRAMES) ? vegDepthImageLayouts[frameIndex] : VK_IMAGE_LAYOUT_UNDEFINED; }
     void setVegDepthLayout(uint32_t frameIndex, VkImageLayout lay) { if (frameIndex < VEG_FRAMES) vegDepthImageLayouts[frameIndex] = lay; }
     
-    // Draw vegetation to shadow map using light-space matrix in the bound UBO.
-    // Camera position is used for distance-based LOD; viewProj is the camera's
-    // view-projection for GPU frustum culling (matching solid shadow culling).
-    void drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos);
+    // (The single-cascade drawShadow entry point was removed with the dead
+    // code sweep — the parallel cascade path below uses drawShadowCascade.)
     // NOTE: vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 and is
     // called directly (device creation requires drawIndirectCount).
 
@@ -310,6 +308,12 @@ private:
 
     // Wind params UBO (set=2, binding=0) — updated once per frame.
     Buffer                windParamsBuffer;
+    // M11 (perf report 22): last payload written, so the repeated per-pass
+    // calls in one frame (depth + color + per-cascade shadow draws) skip the
+    // memcpy when nothing changed. All callers run on the single async task
+    // thread, so the cache needs no extra synchronization.
+    WindParamsUBO         windParamsCache{};
+    bool                  windParamsCacheValid = false;
     TrackedHandle<VkDescriptorSetLayout> windParamsDescSetLayout;
     TrackedHandle<VkDescriptorSet> windParamsDescSet;
     void*                 windParamsMapped       = nullptr;
@@ -384,6 +388,10 @@ private:
     uint32_t vegCullFrameIndex = 0;        // auto-cycling frame index for triple buffering
     uint32_t vegCullCurrentSlot = 0;       // slot selected for current frame's cull + draws
     bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata
+    // M11 (perf report 22): the GPU chunk table mirrors the consolidated set,
+    // so it is rewritten only when consolidation runs (set there, cleared by
+    // writeVegChunkInfo). Keeps steady-state frames free of the table memcpy.
+    bool vegChunkInfoDirty = true;         // rewrite vegChunkInfoBuffer
 
     // ── Merged-cull integration ──
     // The SOLID IndirectRenderer whose indirect.comp dispatch also emits veg

@@ -620,6 +620,26 @@ three call families as described. Files:
 \texttt{vulkan/renderer/ShadowRenderer.cpp},
 \texttt{vulkan/renderer/VegetationRenderer.cpp}. Validation: identical
 buffers (change-detection is exact), validation-clean.
+\\ \textbf{Implemented for two of three families, with one correction:}
+(1) \texttt{updateWindParamsUBO} now writes on change (bitwise compare of
+the 96-byte payload): a frame's depth + color + up-to-three cascade draws
+carry identical camera/wind state, so 4--5 mapped memcpys collapse to one
+--- exact and local. (2) \texttt{writeVegChunkInfo} is gated on a
+consolidation-set dirty flag: the table is a pure function of the
+consolidated chunk set, and every other mutation already funnels through
+consolidation before the table is consumed, so the steady-state table
+memcpy disappears. (3) \emph{Correction:} the audit's ``hoist out of the
+per-cascade loop'' does not apply --- the three cascade writes carry
+\emph{distinct} light-space matrices (three separate UBO slots, each bound
+by its cascade's descriptor set), so none is redundant. The visible-to-GPU
+staging + copy + barrier per cascade is the mechanism that delivers those
+payloads into the DEVICE\_LOCAL shadow UBO, and the end-of-frame restore
+copy is what hands the main UBO back to the solid/water passes (the CPU
+deliberately does not write it while shadows are on). Simplifying that
+handoff to direct host writes is a synchronization-model change that needs
+a runnable validation pass; declined blind. Also removed the dead
+single-cascade \texttt{drawShadow} entry point (zero callers), closing out
+the M9 sweep.
 \end{tcolorbox}
 
 \subsection{M12: Vegetation Owns Full-Res Targets and a Composite Leg}

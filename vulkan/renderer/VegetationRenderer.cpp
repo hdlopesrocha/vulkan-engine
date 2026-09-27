@@ -445,6 +445,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     }
 
     vegConsolidationDirty = false;
+    vegChunkInfoDirty = true;
 }
 
 void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj) {
@@ -523,6 +524,13 @@ void VegetationRenderer::initCascadeCull(VulkanApp* app) {
 
 void VegetationRenderer::writeVegChunkInfo() {
     if (!vegChunkInfoMapped) return;
+    // M11 (perf report 22): the table content is a pure function of the
+    // consolidated chunk set (counts, AABBs, cumulative firstInstance), so it
+    // only changes when consolidation runs. The flag is set there (and only
+    // there: every other mutation funnels through consolidation before the
+    // table is consumed, keeping it consistent with the concatenated buffer
+    // order it mirrors).
+    if (!vegChunkInfoDirty) return;
     glm::vec4* dst = static_cast<glm::vec4*>(vegChunkInfoMapped);
     uint32_t idx = 0;
     // Record (solid mesh id, instance count) per consolidated chunk so we can also
@@ -556,6 +564,7 @@ void VegetationRenderer::writeVegChunkInfo() {
                                                     static_cast<float>(instOff), 0.0f, 0.0f);
         instOff += order[i].second;
     }
+    vegChunkInfoDirty = false;
 }
 
 void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
@@ -866,6 +875,10 @@ void VegetationRenderer::init(VulkanApp* app) {
         // Initialize with defaults
         WindParamsUBO params{};
         std::memcpy(windParamsMapped, &params, sizeof(params));
+        // M11: the change-detection cache refers to this buffer's contents;
+        // a fresh buffer invalidates it (the memset above is not the cached
+        // payload).
+        windParamsCacheValid = false;
     }
 
     // Allocate wind params descriptor set and bind the UBO.
@@ -1238,112 +1251,6 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
 }
 
 
-void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
-    (void)viewProj; // GPU culling is dispatched by prepareCull() outside the render pass
-    if (!app || vegetationShadowPipeline == VK_NULL_HANDLE) {
-        if (!app) std::cerr << "[VEGETATION SHADOW DRAW ERROR] app is null!" << std::endl;
-        if (vegetationShadowPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION SHADOW DRAW ERROR] Shadow pipeline is VK_NULL_HANDLE!" << std::endl;
-        return;
-    }
-
-    // Early-out when there are no chunks to draw: skip pipeline/descriptor
-    // binding entirely. On RADV iGPUs, binding pipelines that reference
-    // large texture arrays (via vegDescriptorSet) can trigger GPUVM faults
-    // even when zero draw calls are issued.
-    if (chunkBuffers.empty()) return;
-
-    // Ensure vegetation descriptor set is present and up-to-date
-    if (!ensureVegDescriptorSet(app)) {
-        std::cerr << "[VEGETATION SHADOW DRAW ERROR] vegDescriptorSet not ready, skipping draw." << std::endl;
-        return;
-    }
-
-    // Defensive checks: ensure both descriptor sets are valid before binding
-    if (shadowDescriptorSet == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION SHADOW DRAW ERROR] shadowDescriptorSet is VK_NULL_HANDLE, skipping draw." << std::endl;
-        return;
-    }
-    if (vegDescriptorSet == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION SHADOW DRAW ERROR] vegDescriptorSet is VK_NULL_HANDLE, skipping draw." << std::endl;
-        return;
-    }
-
-    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationShadowPipeline);
-    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
-
-    // Bind the shadow descriptor set (set 0), vegetation descriptor set (set 1),
-    // and wind params UBO (set 2)
-    updateWindParamsUBO(cameraPos);
-    VkDescriptorSet sets[3] = { shadowDescriptorSet, vegDescriptorSet, windParamsDescSet };
-    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
-    else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
-
-    // Push constants for shadow pass: same as regular draw but with wind disabled
-    // The UBO already contains the wind parameters; we only push the 16-byte header
-    WindPushConstants pc{};
-    pc.billboardScale = billboardScale;
-    pc.windEnabled = -1.0f;  // Negative means shadow pass: disable wind and tighten impostor cutoff.
-    pc.windTime = windTimeSeconds;
-    pc.impostorDistance = impostorDistance; // skip far instances in shadow pass
-
-    vkCmdPushConstants(commandBuffer, shadowPipelineLayout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(WindPushConstants), &pc);
-
-    // Draw consolidated via GPU culling only (no per-chunk fallback).
-    // New chunks appear gradually as they are uploaded and consolidated.
-    uint32_t sf = vegCullCurrentSlot;
-    vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
-        compactedCmdBuffers[sf].buffer != VK_NULL_HANDLE && visibleCountBuffers[sf].buffer != VK_NULL_HANDLE) {
-        VkBuffer vbs[3] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer, vegBakedHeightsBuffer.buffer };
-        VkDeviceSize offsets[3] = { 0, 0, 0 };
-        vkCmdBindVertexBuffers(commandBuffer, 0, 3, vbs, offsets);
-        vkCmdDrawIndexedIndirectCount(commandBuffer, compactedCmdBuffers[sf].buffer, 0,
-        visibleCountBuffers[sf].buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
-    }
-
-    // ── Impostor shadow pass (EVSM color + depth) ─────────────────────────────
-    VkPipeline impostorShadowPipe = (impostorShadowPipeline != VK_NULL_HANDLE)
-                                  ? impostorShadowPipeline : impostorDepthPipeline;
-    VkPipelineLayout impostorShadowLayout = (impostorShadowPipelineLayout != VK_NULL_HANDLE)
-                                          ? impostorShadowPipelineLayout : impostorDepthPipelineLayout;
-    if (impostorShadowPipe != VK_NULL_HANDLE &&
-        impostorDepthDescSet  != VK_NULL_HANDLE &&
-        impostorDistance > 0.0f && impostorVBO.vertexBuffer.buffer != VK_NULL_HANDLE &&
-        !chunkBuffers.empty()) {
-
-        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorShadowPipe);
-        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowPipe);
-
-        VkDescriptorSet depthSets[3] = { shadowDescriptorSet, impostorDepthDescSet, windParamsDescSet };
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
-                    impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
-
-        vkCmdPushConstants(commandBuffer, impostorShadowLayout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(WindPushConstants), &pc);
-
-        vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        VkBuffer impVbs[3] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE, VK_NULL_HANDLE };
-        VkDeviceSize impOffsets[3] = { 0, 0, 0 };
-        if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-            impVbs[1] = concatenatedInstanceBuffer.buffer;
-            impVbs[2] = vegBakedHeightsBuffer.buffer;
-            vkCmdBindVertexBuffers(commandBuffer, 0, 3, impVbs, impOffsets);
-            uint32_t instOff = 0;
-            for (auto& [chunkId, buf] : chunkBuffers) {
-                (void)chunkId;
-                if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-                vkCmdDrawIndexed(commandBuffer, 6, static_cast<uint32_t>(buf.count), 0, 0, instOff);
-                instOff += buf.count;
-            }
-        }
-    }
-}
-
 void VegetationRenderer::setImpostorData(VulkanApp* app,
                                           VkImageView albedoArray60,
                                           VkImageView normalArray60,
@@ -1660,7 +1567,16 @@ void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
     params.densityParams = glm::vec4(distanceDensitySettings.enabled ? 1.0f : 0.0f, nearDistance, farDistance, minFactor);
     params.cameraPosAndFalloff = glm::vec4(cameraPos, falloff);
 
+    // M11 (perf report 22): skip the write when the payload is unchanged
+    // (write-on-change). A frame's depth pass, color pass and up to three
+    // cascade draws all provide the same camera/wind state, so 4--5 mapped
+    // memcpys collapse to one. Bitwise comparison is exact here: all fields
+    // are float vec4s with no padding, and the inputs are float settings.
+    if (windParamsCacheValid && std::memcmp(&windParamsCache, &params, sizeof(params)) == 0)
+        return;
     std::memcpy(windParamsMapped, &params, sizeof(params));
+    windParamsCache = params;
+    windParamsCacheValid = true;
 }
 
 uint32_t VegetationRenderer::vegFrame() const {
