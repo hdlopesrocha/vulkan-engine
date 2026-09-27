@@ -59,11 +59,15 @@ void main() {
     // Leaf-only weight component.
     float opacityWeight = smoothstep(0.35, 0.65, opacity);
 
-    // Early-out for fully transparent texels: with opacityWeight == 0 the final
-    // weight is 0 independently of the background, so deferring the background
-    // fetches below saves bandwidth on these discarded fragments. This is exactly
-    // equivalent to the later `weight < 0.3` test for these texels.
-    if (opacityWeight == 0.0) discard;
+    // Early-out for sparse texels (perf report 22 H6): with opacityWeight
+    // below 0.3 the final weight is < 0.3 * normalWeight <= 0.3 independently
+    // of the background (normalWeight is a mix of two [0,1] confidences), so
+    // deferring the background fetches below is exactly equivalent to the
+    // later `weight < 0.3` test. Saves both background fetches on the
+    // majority of foliage pixels (grass silhouettes). The < 0.3 test after
+    // the fetches remains the backstop for opacityWeight >= 0.3 pixels that
+    // the background demotes (bit-identical output either way).
+    if (opacityWeight < 0.3) discard;
 
     // Cross-fade with impostors: dithered fade-out in the transition zone.
     // Vegetation fades from fully opaque (at 0.85×impostorDistance) to fully gone

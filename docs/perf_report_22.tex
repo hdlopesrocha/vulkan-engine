@@ -419,6 +419,12 @@ Goal: two fewer fetches on sparse pixels, zero behavior change. Steps:
 change :66 to \texttt{opacityWeight < 0.3}. Files:
 \texttt{shaders/vegetation.frag}. Validation: pixel-identical screenshots
 (proof above), validation-clean.
+\\ \textbf{Shipped as specified:} the early-out now discards whenever
+\texttt{opacityWeight < 0.3}, skipping both background fetches on the
+majority of foliage pixels; the post-fetch \texttt{weight < 0.3} test stays
+as the backstop. Exact by the report's proof (final weight is bounded by
+opacityWeight), and the module size is unchanged --- the win is purely
+fetches not issued.
 \end{tcolorbox}
 
 \subsection{H7: Full CSM per Foliage Pixel Belongs at Vertex Rate}
