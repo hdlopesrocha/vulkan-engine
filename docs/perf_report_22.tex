@@ -664,6 +664,19 @@ idle-guarded recreate + composite already size-agnostic. Files:
 \texttt{utils/Settings.hpp},
 \texttt{vulkan/renderer/VegetationRenderer.cpp}. Validation: VRAM down,
 grass-detail A/B, validation-clean.
+\\ \textbf{Implemented:} \texttt{Settings::vegetationRenderScale}
+(default 1.0; the slider lives in the Rendering section) flows through a
+\texttt{SceneRenderer::recreateVegetationTargets} idle-guarded on change, the
+same pattern as the water scale; Minimal sets 0.5, Maximum 1.0. The veg
+task's viewport/scissor/render area already derive from
+\texttt{getVegWidth/Height}, so no pass changes were needed. One composite
+correction was required: a downscaled depth target makes the single
+bilinear depth tap average in the clear value (1.0) at silhouettes, eroding
+thin grass against the solid, so the composite now takes the
+\emph{closest of the 2x2 taps} when scaled (flag carried in the water-UBO's
+former std140 pad slot; zero cost at full resolution). The
+single-vs-double-geometry evaluation stays scoped under C2's prepass-gate
+analysis.
 \end{tcolorbox}
 
 % =====================================================================

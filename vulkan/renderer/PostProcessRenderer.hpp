@@ -33,6 +33,9 @@ public:
     /// layer has enableBlur && blurRadius > 0, or water-in-main is active) the
     /// composite performs no waterBody/waterColumn fetches at all; the water
     /// pass wrote only the color target (H4, perf report 19).
+    /// vegetationScaled: pass (Settings::vegetationRenderScale < 1). When true
+    /// the composite resolves the vegetation depth with the closest of the
+    /// 2x2 taps instead of one bilinear sample (perf report 22 M12).
     void render(VulkanApp* app, VkCommandBuffer cmd,
                 VkImageView sceneColorView, VkImageView sceneDepthView,
                 VkImageView waterColorView,
@@ -48,7 +51,8 @@ public:
                 const glm::vec3& viewPos,
                 uint32_t frameIdx,
                 VkImageView skyView = VK_NULL_HANDLE,
-                bool waterBlurEnabled = true);
+                bool waterBlurEnabled = true,
+                bool vegetationScaled = false);
 
     bool isReady() const { return pipeline != VK_NULL_HANDLE; }
 

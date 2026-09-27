@@ -354,7 +354,8 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                    const glm::vec3& viewPos,
                                    uint32_t frameIdx,
                                    VkImageView skyView,
-                                   bool waterBlurEnabled) {
+                                   bool waterBlurEnabled,
+                                   bool vegetationScaled) {
     assert(skyView != VK_NULL_HANDLE);
     if (pipeline == VK_NULL_HANDLE) {
         std::cerr << "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping." << std::endl;
@@ -377,6 +378,10 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // H4: 0 when no water layer needs the final-pass blur; the composite then
     // skips the body/column fetches entirely.
     ubo.waterBlurEnabled = waterBlurEnabled ? 1.0f : 0.0f;
+    // M12 (perf report 22): 1 when the vegetation offscreen targets are
+    // downscaled; the composite then takes the closest of the 2x2 veg-depth
+    // taps instead of one bilinear sample.
+    ubo.vegetationScaled = vegetationScaled ? 1.0f : 0.0f;
 
     void* data;
     data = uniformBuffer.map(0);

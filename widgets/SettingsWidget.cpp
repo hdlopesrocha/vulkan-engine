@@ -87,6 +87,14 @@ void SettingsWidget::render() {
             // toggled
         }
         TooltipOnHover("Toggle billboarding vegetation draws");
+        FieldLabel("Vegetation render scale", "Offscreen vegetation resolution");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Vegetation render scale", &settings.vegetationRenderScale, 0.25f, 1.0f, "%.2f");
+        TooltipOnHover("Vegetation offscreen targets render at this fraction of the swapchain size\n"
+                       "(1.0 = full resolution). Leaf detail is leaf-scale, so 0.5 on dense scenes\n"
+                       "cuts the shaded vegetation pixels 4x; the composite upsamples the color and\n"
+                       "takes the closest of the 2x2 depth taps for the occlusion test.\n"
+                       "Applied immediately (one device idle on the frame it changes).");
         if (ImGui::Checkbox("Enable Normal Mapping", &settings.normalMappingEnabled)) {
             // toggled
         }

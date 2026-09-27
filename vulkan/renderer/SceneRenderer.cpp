@@ -184,13 +184,27 @@ void SceneRenderer::recreateWaterTargets(VulkanApp* app, uint32_t width, uint32_
     if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, w, h);
 }
 
+void SceneRenderer::recreateVegetationTargets(VulkanApp* app, uint32_t width, uint32_t height) {
+    if (!app || !vegetationRenderer) return;
+    // Settings::vegetationRenderScale (perf report 22 M12): the vegetation
+    // color + depth targets render at a fraction of the swapchain size. The
+    // vegetation task's viewport/scissor and render area derive from the
+    // renderer's own vegRenderWidth/Height, so they follow automatically; the
+    // composite samples at screen UV (color bilinear, depth closest-of-2x2
+    // when scaled — see the ubo flag in postprocess.frag).
+    const float scale = std::min(std::max(vegetationRenderScale_, 0.25f), 1.0f);
+    const uint32_t w = std::max(1u, static_cast<uint32_t>(width * scale + 0.5f));
+    const uint32_t h = std::max(1u, static_cast<uint32_t>(height * scale + 0.5f));
+    vegetationRenderer->createRenderTargets(app, w, h);
+}
+
 void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height) {
     // Recreate offscreen targets that depend on swapchain size
     if (mainSolidRenderer) {
         mainSolidRenderer->createRenderTargets(app, width, height);
     }
     if (vegetationRenderer) {
-        vegetationRenderer->createRenderTargets(app, width, height);
+        recreateVegetationTargets(app, width, height);
     }
     if (brushRenderer) {
         brushRenderer->onSwapchainResized(app, width, height);
@@ -348,7 +362,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // it can be rendered on a parallel async command buffer).
     if (vegetationRenderer) {
         vegetationRenderer->destroyRenderTargets(app);
-        vegetationRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+        recreateVegetationTargets(app, app->getWidth(), app->getHeight());
     }
 
     // Initialize debug cube renderer

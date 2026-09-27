@@ -83,6 +83,8 @@ public:
 
     // See setWaterRenderScale().
     float waterRenderScale_ = 1.0f;
+    // See setVegetationRenderScale().
+    float vegetationRenderScale_ = 1.0f;
     // Sky settings owned by this renderer
     std::unique_ptr<SkySettings> skySettings;
     SkySettings& getSkySettings() { return *skySettings; }
@@ -359,6 +361,14 @@ public:
     void setWaterRenderScale(float scale) { waterRenderScale_ = scale; }
     float waterRenderScale() const { return waterRenderScale_; }
     void recreateWaterTargets(VulkanApp* app, uint32_t width, uint32_t height);
+
+    // Vegetation offscreen render scale (Settings::vegetationRenderScale): the
+    // vegetation color + depth targets are created at width*scale x
+    // height*scale. Same idle-recreate contract as the water targets (the veg
+    // pass runs on its own queue, so a graphics-queue wait would not cover it).
+    void setVegetationRenderScale(float scale) { vegetationRenderScale_ = scale; }
+    float vegetationRenderScale() const { return vegetationRenderScale_; }
+    void recreateVegetationTargets(VulkanApp* app, uint32_t width, uint32_t height);
 
     // ── Parallel scene loading ─────────────────────────────────────────────────
     // Drains the shared pending mesh queue (main thread) into a caller-provided

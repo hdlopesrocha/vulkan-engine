@@ -813,6 +813,9 @@ public:
 
         // H9: the water offscreen targets render at Settings::waterRenderScale.
         sceneRenderer->setWaterRenderScale(settings.waterRenderScale);
+        // M12 (perf report 22): the vegetation offscreen targets render at
+        // Settings::vegetationRenderScale.
+        sceneRenderer->setVegetationRenderScale(settings.vegetationRenderScale);
         sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
 
         // Re-wire impostors now that VegetationRenderer::init() has stored the render pass.
@@ -1195,6 +1198,14 @@ public:
             vkDeviceWaitIdle(getDevice());
             sceneRenderer->setWaterRenderScale(settings.waterRenderScale);
             sceneRenderer->recreateWaterTargets(this, getWidth(), getHeight());
+        }
+        // M12 (perf report 22): same idle path for a vegetation render-scale
+        // change (the veg pass is written on the vegetation queue, so a
+        // graphics-scoped wait would not cover it; this is a major rebuild).
+        if (sceneRenderer && sceneRenderer->vegetationRenderScale() != settings.vegetationRenderScale) {
+            vkDeviceWaitIdle(getDevice());
+            sceneRenderer->setVegetationRenderScale(settings.vegetationRenderScale);
+            sceneRenderer->recreateVegetationTargets(this, getWidth(), getHeight());
         }
 
         uint32_t frameIdx = getCurrentFrame();
@@ -3178,7 +3189,11 @@ public:
                 // targets and the composite must not fetch them. water-in-main
                 // has no aux targets at all.
                 !settings.waterInMainPass
-                    && sceneRenderer->mainLiquidRenderer->waterBlurNeeded());
+                    && sceneRenderer->mainLiquidRenderer->waterBlurNeeded(),
+                // M12 (perf report 22): the vegetation offscreen targets are
+                // downscaled -> composite takes the closest of the 2x2
+                // veg-depth taps instead of one bilinear sample.
+                settings.vegetationRenderScale < 0.999f);
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 17);
         }

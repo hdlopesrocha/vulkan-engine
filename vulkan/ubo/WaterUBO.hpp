@@ -13,5 +13,9 @@ struct WaterUBO {
     // water pass wrote the body/column aux attachments; 0 lets the composite
     // skip both fetches entirely (was part of the std140 padding).
     float waterBlurEnabled;
-    float _pad;              // std140 alignment padding to vec4
+    // M12 (perf report 22): 1 when the vegetation offscreen targets are
+    // downscaled; the composite then takes the closest of the 2x2 veg-depth
+    // taps instead of one bilinear sample. Occupies the former padding slot,
+    // so the block layout is unchanged.
+    float vegetationScaled;
 };

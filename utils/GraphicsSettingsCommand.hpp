@@ -58,6 +58,8 @@ private:
         // Full-resolution water targets (perf report 21 M10): the composite
         // blur is depth-guided, so Maximum keeps 1.0 for the sharpest body.
         settings.waterRenderScale = 1.0f;
+        // Full-resolution vegetation offscreen (perf report 22 M12).
+        settings.vegetationRenderScale = 1.0f;
     }
 
     static void applyMinimal(Settings& settings) {
@@ -86,6 +88,10 @@ private:
         // quarter. Propagates via the existing per-frame waterRenderScale
         // check (device-idle target recreation); the slider still overrides.
         settings.waterRenderScale = 0.5f;
+        // Half-resolution vegetation targets (perf report 22 M12): leaf-scale
+        // detail survives the downscale at typical viewing distances, and the
+        // composite's closest-of-2x2 depth taps keep silhouettes uneroded.
+        settings.vegetationRenderScale = 0.5f;
     }
 
     GraphicsQuality quality_;

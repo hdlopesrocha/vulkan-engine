@@ -149,4 +149,14 @@ public:
     // in shaded water pixels; 1.0 keeps full resolution. Applied when the water
     // targets are (re)created: immediately on change, or on a swapchain resize.
     float waterRenderScale = 1.0f;
+
+    // ── Vegetation offscreen render scale (perf report 22 M12) ─────────────
+    // The vegetation color + depth targets render at this fraction of the
+    // swapchain size; the composite upsamples (color bilinear; the depth takes
+    // the CLOSEST of the 2x2 taps when scaled, so vegetation silhouettes are
+    // never eroded by the averaged sky value). Vegetation detail is leaf-scale,
+    // which the impostor path already abandons at range, so 0.5 on the dense
+    // presets is a 4x cut in shaded vegetation pixels. Applied when the
+    // targets are (re)created: immediately on change, or on swapchain resize.
+    float vegetationRenderScale = 1.0f;
 };

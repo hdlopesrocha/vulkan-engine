@@ -22,6 +22,11 @@ layout(set = 0, binding = 5) uniform WaterUBO {
     float brushAlpha;
     float brushMode;         // 0=overlay, 2=PAINT (replace solid texture)
     float waterBlurEnabled;  // 1 = body/column written this frame, fetch/blur allowed
+    // M12 (perf report 22): 1 when the vegetation offscreen targets are
+    // downscaled; the composite then takes the closest of the 2x2 depth taps
+    // instead of one bilinear sample (which averages in the sky at
+    // silhouettes and erodes thin grass edges). Was std140 padding.
+    float vegetationScaled;
 } uboPacked;
 
 // Named view over the packed WaterUBO - same data, descriptive names. The builder below is the
@@ -36,6 +41,10 @@ struct WaterFrameNamed {
     float brushAlpha;
     float brushMode;
     float waterBlurEnabled;
+    // M12 (perf report 22): vegetation offscreen targets are downscaled, so
+    // the composite must take the closest of the 2x2 depth taps (see the
+    // packed member's comment in postprocess.frag). Was the std140 pad.
+    float vegetationScaled;
 };
 
 WaterFrameNamed waterFrameNamed() {
@@ -48,6 +57,7 @@ WaterFrameNamed waterFrameNamed() {
     n.brushAlpha = uboPacked.brushAlpha;
     n.brushMode = uboPacked.brushMode;
     n.waterBlurEnabled = uboPacked.waterBlurEnabled;
+    n.vegetationScaled = uboPacked.vegetationScaled;
     return n;
 }
 
@@ -113,7 +123,24 @@ void main() {
     // the solid, but hide fragments the solid geometry occludes (a solid surface
     // in front of the vegetation). The vegetation depth is also tracked as an
     // obstacle for the water/brush occlusion tests below.
-    float vegDepth = texture(vegDepthTex, uv).r;
+    // M12 (perf report 22): when the veg targets are downscaled, take the
+    // CLOSEST of the 2x2 depth taps. A single bilinear tap averages the
+    // vegetation depth with the clear value (1.0) at silhouettes, reporting
+    // the vegetation farther than it is and eroding thin grass edges against
+    // the solid; the minimum keeps the near value (same safe direction as the
+    // water-geometry-depth test below). At full resolution the flag is off and
+    // the single tap is used unchanged.
+    float vegDepth;
+    if (ubo.vegetationScaled > 0.5) {
+        vec2 vtexel = 1.0 / vec2(textureSize(vegDepthTex, 0));
+        float vd00 = textureLod(vegDepthTex, clamp(uv + vec2(-vtexel.x, -vtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
+        float vd10 = textureLod(vegDepthTex, clamp(uv + vec2( vtexel.x, -vtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
+        float vd01 = textureLod(vegDepthTex, clamp(uv + vec2(-vtexel.x,  vtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
+        float vd11 = textureLod(vegDepthTex, clamp(uv + vec2( vtexel.x,  vtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
+        vegDepth = min(min(vd00, vd10), min(vd01, vd11));
+    } else {
+        vegDepth = texture(vegDepthTex, uv).r;
+    }
     bool vegPresent = (vegDepth < 1.0);
     float obstacleDepth = sceneDepth;
     if (vegPresent) {
