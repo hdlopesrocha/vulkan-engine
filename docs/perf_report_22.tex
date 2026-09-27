@@ -389,6 +389,11 @@ Goal: no wasted reconstruction on discarded pixels. Steps: (1) move the
 dither block above the depth block; (2) prototype flat-varying CSM.
 Files: \texttt{shaders/impostors.frag}. Validation: transition-zone A/B
 identical (discard order is immaterial), validation-clean.
+\\ \textbf{Implemented:} the dither block now precedes depth reconstruction
+in \emph{both} impostor shaders (color and depth prepass) --- same
+independent conditions, same final image; dithered-out pixels skip a fetch
+plus two matvecs each. Static size unchanged, as expected for a pure
+reorder. Flat-varying CSM stays scoped under H7.
 \end{tcolorbox}
 
 \subsection{H6: Foliage Discard Runs After Bandwidth It Could Skip}
