@@ -413,11 +413,31 @@ private:
     struct PendingBatchCopy {
         Buffer stagingInst, instBuf;
         VkDeviceSize bufSize;
+        size_t stagingPoolIndex; // slot `stagingInst` came from (release on fence)
         NodeID chunkId;
         uint32_t instanceCount;
         glm::vec3 aabbMin, aabbMax, center;
     };
     std::vector<PendingBatchCopy> pendingBatch;
+    // ── Persistent staging pool (perf report 22 M10) ──────────────────────
+    // Streaming used to create + destroy one host-visible staging buffer per
+    // chunk (up to 10/frame): two VMA allocations (which take a global lock)
+    // plus two frees per chunk. The pool hands out buffers by best-fit
+    // capacity and takes them back when the batch's copy fence signals, so
+    // steady-state streaming performs ZERO allocations. Entries are never
+    // erased (indices stay valid for fence callbacks); the pool settles at
+    // the peak concurrent need (≈ frames-in-flight × chunks-per-frame) and
+    // is destroyed in destroyCulling.
+    struct StagingPoolEntry {
+        Buffer buffer;
+        VkDeviceSize capacity = 0;
+        bool inUse = false;
+    };
+    std::vector<StagingPoolEntry> stagingPool;
+    // Acquire a host-visible TRANSFER_SRC buffer with capacity >= size
+    // (best-fit; creates a new pool entry when nothing fits). Marks inUse.
+    // Returns the pool index via outIndex for the deferred release.
+    Buffer acquireStagingBuffer(VulkanApp* app, VkDeviceSize size, size_t& outIndex);
     // Frame-thread scratch reused by processPendingChunks for per-chunk
     // instance data (clear + reserve avoids reallocating per chunk).
     std::vector<float> instanceGenScratch;

@@ -583,6 +583,16 @@ Goal: zero allocations in the streaming path. Steps: (1) persistent
 staging ring; (2) single submit per frame for all pending chunks. Files:
 \texttt{vulkan/renderer/VegetationRenderer.cpp}. Validation: allocation
 counters flat during streaming, identical instances, validation-clean.
+\\ \textbf{Implemented:} (2) was already in place (one batched copy submit
+per frame). (1) shipped as a persistent staging \emph{pool} rather than a
+ring: buffers are acquired by best-fit capacity and returned when the
+batch's copy fence signals. That is the legal reuse point (the same fence
+the old code destroyed them on), so reuse can never race an in-flight
+copy, while steady-state streaming performs zero VMA allocations/frees.
+The pool settles at the peak concurrent need (frames-in-flight x chunks
+per frame, a few MB) and is torn down in \texttt{destroyCulling}; late
+fence callbacks are index-guarded. The per-chunk device-local instance
+buffer allocation remains --- it is the payload, not churn.
 \end{tcolorbox}
 
 \subsection{M11: Per-Frame Host Churn Inventory}

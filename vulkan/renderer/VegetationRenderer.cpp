@@ -80,6 +80,16 @@ void VegetationRenderer::destroyCulling() {
         appPtr->destroyBuffer(vegBakedHeightsBuffer);
         vegBakedHeightsBuffer = {};
     }
+    // Staging pool (perf report 22 M10): destroy every pooled buffer. Any
+    // late fence callback is guarded by an index/size check, so clearing the
+    // vector here cannot cause an out-of-bounds release.
+    for (auto& e : stagingPool) {
+        if (e.buffer.buffer != VK_NULL_HANDLE) {
+            appPtr->destroyBuffer(e.buffer);
+            e.buffer = {};
+        }
+    }
+    stagingPool.clear();
     for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
         if (compactedCmdBuffers[f].buffer != VK_NULL_HANDLE) {
             appPtr->destroyBuffer(compactedCmdBuffers[f]);
@@ -1937,10 +1947,11 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
 
         const VkDeviceSize bufSize = validData.size() * sizeof(float);
 
-        // Staging buffer: host-visible, filled by CPU.
-        Buffer stagingInst = app->createBuffer(bufSize,
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        // Staging buffer from the persistent pool (perf report 22 M10): no
+        // VMA allocation in steady-state streaming. Returned to the pool when
+        // this batch's copy fence signals (see the deferred callback below).
+        size_t stagingIndex = 0;
+        Buffer stagingInst = acquireStagingBuffer(app, bufSize, stagingIndex);
         void* mapped = nullptr;
         mapped = stagingInst.map(0);
         std::memcpy(mapped, validData.data(), size_t(bufSize));
@@ -1955,7 +1966,7 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
 
         pendingBatch.push_back({ stagingInst, instBuf,
-                                 bufSize, pc.chunkId, validCount,
+                                 bufSize, stagingIndex, pc.chunkId, validCount,
                                  aabbMin, aabbMax, pc.chunkCenter });
     }
 
@@ -1973,7 +1984,11 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         app->deferDestroyUntilFence(fence, [this, app,
                                              batch = std::move(batch)]() mutable {
             for (auto& c : batch) {
-                app->destroyBuffer(c.stagingInst);
+                // Return the staging buffer to the pool instead of destroying
+                // it (perf report 22 M10): the copy fence has signaled, so the
+                // buffer is idle and safe to hand to a later batch.
+                if (c.stagingPoolIndex < stagingPool.size())
+                    stagingPool[c.stagingPoolIndex].inUse = false;
 
                 destroyInstanceBuffer(c.chunkId, app);
 
@@ -1991,6 +2006,30 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
             }
         });
     }
+}
+
+Buffer VegetationRenderer::acquireStagingBuffer(VulkanApp* app, VkDeviceSize size, size_t& outIndex) {
+    // Best-fit among idle entries whose capacity suffices (the staging copy
+    // uses offset 0, so a larger idle buffer serves a smaller request).
+    size_t best = SIZE_MAX;
+    for (size_t i = 0; i < stagingPool.size(); ++i) {
+        const StagingPoolEntry& e = stagingPool[i];
+        if (e.inUse || e.capacity < size) continue;
+        if (best == SIZE_MAX || e.capacity < stagingPool[best].capacity) best = i;
+    }
+    if (best != SIZE_MAX) {
+        stagingPool[best].inUse = true;
+        outIndex = best;
+        return stagingPool[best].buffer;
+    }
+    // Create a new entry sized exactly for this request. Indices are stable
+    // across push_back (no erasure ever), so captured indices stay valid.
+    Buffer b = app->createBuffer(size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    stagingPool.push_back({ b, size, true });
+    outIndex = stagingPool.size() - 1;
+    return b;
 }
 
 void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, VkFence completionFence) {
