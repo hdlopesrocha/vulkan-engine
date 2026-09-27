@@ -266,6 +266,17 @@ public:
     uint32_t vramWatchdogCounter_ = 0;
 #endif
     UniformObject uboStatic = {};
+    // H8 (perf report 22): equirect sky cache. The offscreen sky is
+    // view-independent (sky_equirect.frag reads only SkyUniform + light
+    // direction/elevation), so it is re-rendered only when those inputs
+    // change; otherwise the previous frame's image stays valid and the task
+    // submits nothing, advancing tlSky with a host signal instead. Force the
+    // first N frames (the offscreen target is empty until then) and any
+    // swapchain-resize recreation.
+    static constexpr uint32_t SKY_CACHE_WARMUP = 3; // frames in flight
+    uint32_t skyRenderRuns = 0;          // frames actually rendered so far
+    float skySig[12] = {};               // last rendered input signature
+    bool skySigValid = false;            // skySig holds a rendered frame's values
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<SkyWidget> skyWidget;
@@ -1682,32 +1693,84 @@ public:
         //     and the main composite for reflections). Signals semSky; the main
         //     composite auto-waits it (registered signal) and water/solid360 wait it
         //     explicitly. The fullscreen sky draw stays in the solid color pass.
+        //
+        // H8 (perf report 22): the equirect is view-independent — sky_equirect.frag
+        // reads only the SkyUniform block and the light direction/elevation, never
+        // the camera or time — so it is cached and re-rendered only when those
+        // inputs change. On a cached frame no command buffer is recorded or
+        // submitted; tlSky advances with a host signal (VK_SEMAPHORE_TYPE_TIMELINE
+        // permits vkSignalSemaphore), which consumers cannot observe differently
+        // from a GPU signal of the same value. Warmup frames always render (the
+        // offscreen target is empty until the first pass completes).
         {
             SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
-            asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, v]() {
-                MyApp* app = this;
-                VkCommandBuffer skyCmd = app->allocatePrimaryCommandBuffer();
+            const SkySettings& sky = this->sceneRenderer->getSkySettings();
+            const glm::vec3 skyLightDir = glm::normalize(light.getDirection());
+            const float skySigNow[12] = {
+                sky.horizonColor.x, sky.horizonColor.y, sky.horizonColor.z,
+                sky.zenithColor.x, sky.zenithColor.y, sky.zenithColor.z,
+                sky.warmth, sky.exponent, sky.sunFlare,
+                skyLightDir.x, skyLightDir.y, skyLightDir.z
+            };
+            bool skySigChanged = !skySigValid;
+            for (int i = 0; i < 12; ++i) {
+                if (skySigNow[i] != skySig[i]) { skySigChanged = true; break; }
+            }
+            const bool skyNeedsRender = !this->sceneRenderer->skyRenderer
+                || skyRenderRuns < SKY_CACHE_WARMUP || skySigChanged;
+            if (skyNeedsRender) {
+                for (int i = 0; i < 12; ++i) skySig[i] = skySigNow[i];
+                skySigValid = true;
+                ++skyRenderRuns;
+                asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, v]() {
+                    MyApp* app = this;
+                    VkCommandBuffer skyCmd = app->allocatePrimaryCommandBuffer();
+                    VkCommandBufferBeginInfo cbegin{};
+                    cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                    cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    if (vkBeginCommandBuffer(skyCmd, &cbegin) != VK_SUCCESS) {
+                        std::cerr << "[Async] vkBeginCommandBuffer failed for sky" << std::endl;
+                        app->freeCommandBuffer(skyCmd);
+                        return;
+                    }
+                    CommandBufferState taskState;
+                    this->sceneRenderer->setCmdState(&taskState);
+                    if (this->sceneRenderer->skyRenderer)
+                        this->sceneRenderer->skyRenderer->renderOffscreen(this, skyCmd, frameIdx,
+                            getMainDescriptorSet(), this->sceneRenderer->mainUniformBuffers[frameIdx], this->uboStatic, viewProj, skyMode);
+                    this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
+                    // submitCommandBufferAsyncToQueue ends the command buffer and submits
+                    // it (do NOT call vkEndCommandBuffer here). registerSignal=true ->
+                    // tlSky is auto-waited by the main composite; tlSky@v is also waited by
+                    // the water/back-face pass (a timeline semaphore allows multiple waiters).
+                    app->submitCommandBufferAsyncToQueue(skyCmd, app->getSkyQueue(), &tlSky, {},
+                        true, {}, {}, v, {}, true);
+                });
+            } else {
+                // Cached frame: no equirect render, but the timeline still needs
+                // GPU signal v for the composite/water/back-face waits. A HOST
+                // signal is invalid here: VUID-VkSemaphoreSignalInfo-value-03259
+                // requires the host value to be less than any pending GPU signal
+                // value, and the previous frame's sky submission (v-1) can still
+                // be in flight. Submit an empty command buffer whose only job is
+                // the signal, carrying the normal registration so the frame
+                // graph's wait set is identical to a rendered frame. The cost is
+                // the submission itself -- the ~2M pixels of equirect shading and
+                // the descriptor/layout churn are what the cache removes.
+                VkCommandBuffer skyCmd = allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo cbegin{};
                 cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
                 cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                if (vkBeginCommandBuffer(skyCmd, &cbegin) != VK_SUCCESS) {
-                    std::cerr << "[Async] vkBeginCommandBuffer failed for sky" << std::endl;
-                    app->freeCommandBuffer(skyCmd);
-                    return;
+                if (vkBeginCommandBuffer(skyCmd, &cbegin) == VK_SUCCESS) {
+                    asyncSkyFuture = asyncThreadPool.enqueue([this, skyCmd, v]() {
+                        this->submitCommandBufferAsyncToQueue(skyCmd, this->getSkyQueue(), &tlSky, {},
+                            true, {}, {}, v, {}, true);
+                    });
+                } else {
+                    std::cerr << "[Sky] cached frame: vkBeginCommandBuffer failed" << std::endl;
+                    freeCommandBuffer(skyCmd);
                 }
-                CommandBufferState taskState;
-                this->sceneRenderer->setCmdState(&taskState);
-                if (this->sceneRenderer->skyRenderer)
-                    this->sceneRenderer->skyRenderer->renderOffscreen(this, skyCmd, frameIdx,
-                        getMainDescriptorSet(), this->sceneRenderer->mainUniformBuffers[frameIdx], this->uboStatic, viewProj, skyMode);
-                this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
-                // submitCommandBufferAsyncToQueue ends the command buffer and submits
-                // it (do NOT call vkEndCommandBuffer here). registerSignal=true ->
-                // tlSky is auto-waited by the main composite; tlSky@v is also waited by
-                // the water/back-face pass (a timeline semaphore allows multiple waiters).
-                app->submitCommandBufferAsyncToQueue(skyCmd, app->getSkyQueue(), &tlSky, {},
-                    true, {}, {}, v, {}, true);
-            });
+            }
         }
 
         if (sceneRenderer && sceneRenderer->mainSolidRenderer) {
@@ -3217,6 +3280,11 @@ public:
         if (sceneRenderer) {
             sceneRenderer->onSwapchainResized(this, width, height);
         }
+        // H8: the sky offscreen targets were recreated with undefined contents
+        // (and possibly new handles); force re-rendering until the cache is
+        // repopulated. A few warmup frames cover all in-flight consumers.
+        skyRenderRuns = 0;
+        skySigValid = false;
     }
 
     void preImGuiShutdown() override {

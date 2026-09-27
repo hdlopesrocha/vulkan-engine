@@ -499,6 +499,24 @@ in the sky task; (2) skip submit when clean; (3) keep the in-pass
 fullscreen sky untouched. Files: \texttt{MyApp.cpp},
 \texttt{vulkan/renderer/SkyRenderer.cpp}. Validation: time-lapse A/B
 (sun sweeping still updates), validation-clean.
+\\ \textbf{Implemented with two corrections:} the signature covers the
+full SkyUniform block the shader actually reads
+(horizon/zenith/warmth/exponent/flare, plus the light direction --- the
+equirect shader was verified to have no camera or time dependency). On a
+cached frame the task records \emph{nothing} and submits \emph{nothing}
+except a signal-only submit: the first implementation advanced
+\texttt{tlSky} with a \emph{host} \texttt{vkSignalSemaphore}, which
+validation correctly rejected --- VUID-VkSemaphoreSignalInfo-value-03259
+forbids a host value exceeding a still-pending GPU signal value (the
+previous frame's sky submit can be in flight). A timeline producer that
+skips its submission must therefore still produce a GPU signal; the empty
+submit is that signal, and it carries the normal composite-wait
+registration so the frame graph's wait set is identical across cached and
+rendered frames. The cache removes the $\sim$2M pixels of equirect shading
+and the target/layout churn; the submission itself remains.
+Warmup (3 frames) and swapchain-resize recreation force re-renders. Note
+the report's step (1) said ``hash'': the implementation compares the 12
+inputs directly (exact, no collision risk).
 \end{tcolorbox}
 
 % =====================================================================
