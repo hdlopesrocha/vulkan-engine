@@ -419,6 +419,23 @@ append \texttt{recordGenerateMipmaps} for each map; (3) submit once per layer;
 (4) pass \texttt{zeroInit=false} for fully-overwritten uploads. Files:
 \texttt{vulkan/TextureArrayManager.cpp}, \texttt{vulkan/VulkanApp.cpp}.
 Validation: identical array contents, submit count per load, validation-clean.
+\\ \textbf{Implemented as:} all four steps. (1) One persistent host-visible
+staging buffer per manager holds all five maps of a layer
+($5 \times w \times h \times 4$: 20\,MiB at 1024$^2$, 5\,MiB for the
+vegetation arrays); it is acquired once and reused for every layer, so the
+bring-up performs zero staging allocations/frees. \texttt{allocate()} and
+\texttt{destroy()} release it, so a resolution-tier change re-sizes it on the
+next load. (2) \texttt{load()} now decodes every present map straight into
+its slice of that buffer (default-filled maps write their constant pattern in
+place --- no temporary \texttt{new[]} allocation) and records one command
+buffer: five layer transitions, five \texttt{vkCmdCopyBufferToImage} regions,
+then \texttt{recordGenerateMipmaps} for each map. (3) One
+\texttt{runSingleTimeCommands} per layer: the main bring-up drops from 210
+blocking submits (105 copies + 105 mip chains) to \textbf{21}; the vegetation
+arrays drop to 3 + defaults. (4) \texttt{createBuffer(..., zeroInit=false)},
+so the 420\,MiB of pre-overwrite memset is gone with the churn. This also
+lands H8's first step (the mip chains move into the upload CB) --- see the
+H8 postscript.
 \end{tcolorbox}
 
 % =====================================================================
@@ -606,6 +623,11 @@ free); (2) cache the linear-blit format check per format; (3) update tracked
 layouts once per layer. Files: \texttt{vulkan/TextureArrayManager.cpp},
 \texttt{vulkan/VulkanApp.cpp}. Validation: identical mip content, submit count
 per layer from 10 to 1, validation-clean.
+\\ \textbf{Postscript (C3):} shipped with the C3 batch --- the per-map mip
+chains are recorded inside the per-layer upload command buffer, so the 105
+separate blocking mip submits are gone, and with them the per-call
+format-capability queries of the blocking \texttt{generateMipmaps} wrapper
+(the load path no longer calls it).
 \end{tcolorbox}
 
 % =====================================================================

@@ -184,6 +184,7 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 	cleanupSampler(app, bumpSampler);
 	cleanupSampler(app, roughnessSampler);
 	cleanupSampler(app, aoSampler);
+	releaseStagingBuffer(app);
 	releaseLayerViews(app);
 	// clear stored app pointer (no longer valid after destroy)
 	this->appPtr = nullptr;
@@ -264,6 +265,7 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	// re-load triples at the stale cursor and stop at the old capacity,
 	// leaving the array partially filled (perf report 23 C1 follow-up).
 	currentLayer = 0;
+	releaseStagingBuffer(app);
 
 	// destroy previous resources if present
 	cleanupTextureImage(app, albedoArray);
@@ -432,6 +434,31 @@ static unsigned char* resizeAreaAverage(const unsigned char* src, int srcW, int 
 	return dst;
 }
 
+// Perf report 23 C3: persistent staging for layer uploads. One host-visible
+// buffer holds all five maps of one layer; every load() overwrites it in
+// place, so the bring-up path performs zero staging allocations/frees and no
+// zero-init memset (the caller writes every byte it uploads).
+Buffer& TextureArrayManager::ensureStagingBuffer(VulkanApp* app, size_t needBytes) {
+	if (stagingBuffer_.buffer == VK_NULL_HANDLE || stagingBufferSize_ < needBytes) {
+		releaseStagingBuffer(app);
+		// zeroInit=false: load() overwrites the full range before every copy;
+		// the default zero-fill would memset needBytes for nothing (420 MiB
+		// across the 21-triple bring-up, report 23 C3).
+		stagingBuffer_ = app->createBuffer(needBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
+		stagingBufferSize_ = needBytes;
+	}
+	return stagingBuffer_;
+}
+
+void TextureArrayManager::releaseStagingBuffer(VulkanApp* app) {
+	if (app && stagingBuffer_.buffer != VK_NULL_HANDLE) {
+		app->destroyBuffer(stagingBuffer_);
+	}
+	stagingBuffer_ = {};
+	stagingBufferSize_ = 0;
+}
+
 uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char* normalFile, const char* bumpFile, const char* roughnessFile, const char* aoFile) {
 	if (!a) throw std::runtime_error("TextureArrayManager::load: app is null");
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::load: layerAmount == 0");
@@ -445,14 +472,55 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 		{ aoFile,     &aoArray,     VK_FORMAT_R8G8B8A8_UNORM, false, {255,255,255,255} }
 	};
 
-	auto uploadLayer = [&](int idx, unsigned char* pixelData, VkDeviceSize imageSize) {
-		Buffer staging = a->createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		memcpy(staging.mappedData, pixelData, static_cast<size_t>(imageSize));
+	// Decode every present map straight into its slice of the persistent
+	// staging buffer (one buffer for all five maps, reused for every layer).
+	const size_t layerBytes = static_cast<size_t>(width) * height * 4;
+	Buffer& staging = ensureStagingBuffer(a, layerBytes * 5);
 
-		a->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd) {
-			a->recordTransitionImageLayoutLayer(cmd, imgs[idx].dstImage->image, imgs[idx].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, imgs[idx].dstImage->mipLevels, currentLayer, 1);
+	for (int i = 0; i < 5; ++i) {
+		unsigned char* dst = static_cast<unsigned char*>(staging.mappedData) + layerBytes * static_cast<size_t>(i);
+		if (!imgs[i].path) {
+			for (size_t p = 0; p < static_cast<size_t>(width) * height; ++p) {
+				memcpy(dst + p * 4, imgs[i].defaultVal, 4);
+			}
+			continue;
+		}
+		int texW = 0, texH = 0, texC = 0;
+		unsigned char* pixels = stbi_load(imgs[i].path, &texW, &texH, &texC, 4);
+		if (!pixels) {
+			throw std::runtime_error(std::string("failed to load texture: ") + imgs[i].path);
+		}
+		if (texW != static_cast<int>(width) || texH != static_cast<int>(height)) {
+			unsigned char* resized = resizeAreaAverage(pixels, texW, texH, static_cast<int>(width), static_cast<int>(height));
+			memcpy(dst, resized, layerBytes);
+			delete[] resized;
+		} else {
+			memcpy(dst, pixels, layerBytes);
+		}
+		stbi_image_free(pixels);
+		if (imgs[i].srgb) {
+			convertSRGB8ToLinearInPlace(dst, static_cast<size_t>(width) * static_cast<size_t>(height));
+		}
+	}
+
+	// Record the albedo map's average (linear after the conversion above).
+	if (currentLayer < albedoAvg.size()) {
+		albedoAvg[currentLayer] = meanLinearRGB(
+			static_cast<const unsigned char*>(staging.mappedData),
+			static_cast<size_t>(width) * static_cast<size_t>(height));
+	}
+
+	// C3: one command buffer and one blocking submit per layer -- five copies
+	// (all maps) plus their mip chains, instead of one submit per map plus a
+	// separate blocking mip submit each.
+	a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+		for (int i = 0; i < 5; ++i) {
+			a->recordTransitionImageLayoutLayer(cmd, imgs[i].dstImage->image, imgs[i].format,
+				VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				imgs[i].dstImage->mipLevels, currentLayer, 1);
+
 			VkBufferImageCopy region{};
-			region.bufferOffset = 0;
+			region.bufferOffset = static_cast<VkDeviceSize>(layerBytes) * static_cast<VkDeviceSize>(i);
 			region.bufferRowLength = 0;
 			region.bufferImageHeight = 0;
 			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -461,61 +529,23 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 			region.imageSubresource.layerCount = 1;
 			region.imageOffset = {0,0,0};
 			region.imageExtent = { width, height, 1 };
-			vkCmdCopyBufferToImage(cmd, staging.buffer, imgs[idx].dstImage->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-		});
-
-		if (imgs[idx].dstImage->mipLevels > 1) {
-			a->generateMipmaps(imgs[idx].dstImage->image, imgs[idx].format, static_cast<int32_t>(width), static_cast<int32_t>(height), imgs[idx].dstImage->mipLevels, 1, currentLayer);
-			setLayerLayout(idx, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		} else {
-			a->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd2) {
-				a->recordTransitionImageLayoutLayer(cmd2, imgs[idx].dstImage->image, imgs[idx].format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, imgs[idx].dstImage->mipLevels, currentLayer, 1);
-			});
-			setLayerLayout(idx, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			vkCmdCopyBufferToImage(cmd, staging.buffer, imgs[i].dstImage->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 		}
-		a->destroyBuffer(staging);
-	};
+		for (int i = 0; i < 5; ++i) {
+			if (imgs[i].dstImage->mipLevels > 1) {
+				a->recordGenerateMipmaps(cmd, imgs[i].dstImage->image, imgs[i].format,
+					static_cast<int32_t>(width), static_cast<int32_t>(height),
+					imgs[i].dstImage->mipLevels, 1, currentLayer);
+			} else {
+				a->recordTransitionImageLayoutLayer(cmd, imgs[i].dstImage->image, imgs[i].format,
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					1, currentLayer, 1);
+			}
+		}
+	});
 
 	for (int i = 0; i < 5; ++i) {
-		if (!imgs[i].path) {
-			VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) * height * 4;
-			unsigned char* defaultData = new unsigned char[static_cast<size_t>(imageSize)];
-			for (size_t p = 0; p < static_cast<size_t>(width) * height; ++p) {
-				memcpy(defaultData + p * 4, imgs[i].defaultVal, 4);
-			}
-			uploadLayer(i, defaultData, imageSize);
-			if (i == 0 && currentLayer < albedoAvg.size())
-				albedoAvg[currentLayer] = meanLinearRGB(defaultData, static_cast<size_t>(width) * height);
-			delete[] defaultData;
-			continue;
-		}
-		int texW=0, texH=0, texC=0;
-		unsigned char* pixels = stbi_load(imgs[i].path, &texW, &texH, &texC, 4);
-		if (!pixels) {
-			throw std::runtime_error(std::string("failed to load texture: ") + imgs[i].path);
-		}
-
-		unsigned char* uploadData = pixels;
-		bool resized = false;
-		if (texW != static_cast<int>(width) || texH != static_cast<int>(height)) {
-			unsigned char* r = resizeAreaAverage(pixels, texW, texH, static_cast<int>(width), static_cast<int>(height));
-			uploadData = r;
-			resized = true;
-		}
-
-		if (imgs[i].srgb) {
-			convertSRGB8ToLinearInPlace(uploadData, static_cast<size_t>(width) * static_cast<size_t>(height));
-		}
-
-		uploadLayer(i, uploadData, static_cast<VkDeviceSize>(width) * height * 4);
-
-		// Record the layer's average albedo (uploadData is linear for the
-		// albedo map: convertSRGB8ToLinearInPlace ran above when srgb).
-		if (i == 0 && currentLayer < albedoAvg.size())
-			albedoAvg[currentLayer] = meanLinearRGB(uploadData, static_cast<size_t>(width) * static_cast<size_t>(height));
-
-		if (resized) delete[] uploadData;
-		stbi_image_free(pixels);
+		setLayerLayout(i, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	}
 
 	setLayerInitialized(currentLayer, true);

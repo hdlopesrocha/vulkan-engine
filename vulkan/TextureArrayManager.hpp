@@ -17,6 +17,7 @@ void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount);
 
 #include <cstdint>
 #include <array>
+#include "Buffer.hpp"
 #include "TextureImage.hpp"
 #include <vector>
 #include <backends/imgui_impl_vulkan.h>
@@ -153,5 +154,15 @@ private:
 
     // Notify registered listeners safely (copies callbacks and catches exceptions)
     void notifyAllocationListeners();
+
+    // Persistent staging for layer uploads (perf report 23 C3). One buffer
+    // sized to hold all five maps of one layer; overwritten in place by every
+    // load(), so the bring-up path performs zero staging allocations/frees
+    // and no zero-init memset. Released on allocate()/destroy() so a
+    // resolution change re-sizes it on the next load.
+    Buffer stagingBuffer_{};
+    size_t stagingBufferSize_ = 0;
+    Buffer& ensureStagingBuffer(class VulkanApp* app, size_t needBytes);
+    void releaseStagingBuffer(class VulkanApp* app);
 
 };
