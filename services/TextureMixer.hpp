@@ -73,28 +73,26 @@ private:
 
 private:
     // No stored VulkanApp*; callers pass `VulkanApp*` to methods that need it
-    VkSampler computeSampler = VK_NULL_HANDLE;
     // EditableTexture instances removed; use TextureArrayManager arrays instead
     uint32_t width = 0, height = 0;
     // Optional reference to global texture arrays so compute can sample from them
     class TextureArrayManager* textureArrayManager = nullptr;
 
-    // Compute pipeline for Perlin noise generation
+    // Compute pipeline for Perlin noise generation.
+    // Perf report 23 C2: one descriptor set is rewritten per generation with
+    // single-layer views for the target / primary / secondary layers, so a
+    // generation only touches those three layers (the old triple / per-map /
+    // per-layer persistent-set machinery was removed with the array-view
+    // bindings).
     VkPipeline computePipeline = VK_NULL_HANDLE;
     VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout computeDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool computeDescriptorPool = VK_NULL_HANDLE;
-    // Single descriptor set that binds the three storage images (albedo, normal, bump)
-    VkDescriptorSet tripleComputeDescSet = VK_NULL_HANDLE;
-    // Per-map descriptor sets (allow generating a single map)
-    VkDescriptorSet albedoComputeDescSet = VK_NULL_HANDLE;
-    VkDescriptorSet normalComputeDescSet = VK_NULL_HANDLE;
-    VkDescriptorSet bumpComputeDescSet = VK_NULL_HANDLE;
-    VkDescriptorSet roughnessComputeDescSet = VK_NULL_HANDLE;
-    VkDescriptorSet aoComputeDescSet = VK_NULL_HANDLE;
-    // Per-layer persistent descriptor sets (one descriptor set per array layer)
-    std::vector<VkDescriptorSet> perLayerDescSets;
-    bool hasPerLayerDescSets = false;
+    VkDescriptorSet generationDescSet = VK_NULL_HANDLE;
+
+    // Ensure the per-layer 2D view for (layer, map) exists and return it
+    // (map: 0=albedo, 1=normal, 2=bump, 3=roughness, 4=ao).
+    VkImageView layerViewFor(uint32_t layer, int map);
 
 
     // Callback function to notify when textures are generated
@@ -139,10 +137,9 @@ public:
     // Return number of layers in the attached TextureArrayManager (0 if none)
     uint32_t getArrayLayerCount() const;
 
-    // Re-write compute descriptor sets after a TextureArrayManager is available
-    void updateComputeDescriptorSets(VulkanApp* app);
-
-    // Attach/replace the TextureArrayManager used and refresh descriptors
+    // Attach/replace the TextureArrayManager used by generations. With the
+    // C2 per-generation bindings there are no persistent sets to refresh:
+    // the next generatePerlinNoise call reads the current views.
     void attachTextureArrayManager(TextureArrayManager* tam);
 
 
@@ -150,9 +147,6 @@ private:
 
 
     void createComputePipeline(VulkanApp* app);
-    void createTripleComputeDescriptorSet(VulkanApp* app);
-    // Helper to create a descriptor set targeting a single map (map index: 0=albedo,1=normal,2=bump)
-    void createComputeDescriptorSet(int map, VkDescriptorSet& descSet, VulkanApp* app);
 
 };
 

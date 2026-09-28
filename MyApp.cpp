@@ -3556,10 +3556,10 @@ void MyApp::recreateTextureArrays(uint32_t size) {
     textureArrayManager.recreate(this, layers, size, size);
     loadedTextureLayers = textureArrayManager.loadTriples(this, textureTriples_);
 
-    // Re-point the mixer's persistent descriptor sets at the new views and
-    // samplers before any generation can run, then refresh its five layers.
+    // Refresh the five generated layers. The mixer rebuilds its compute-view
+    // bindings per generation (perf report 23 C2), so the re-created arrays
+    // need no explicit rebind here.
     if (textureMixer) {
-        textureMixer->updateComputeDescriptorSets(this);
         textureMixer->generateInitialTextures(mixerParams);
     }
 

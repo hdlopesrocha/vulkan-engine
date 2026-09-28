@@ -264,6 +264,11 @@ area-average box filter instead of point sampling (also closes M11's
 downscale bullet). The tier path is idle-guarded and follows the shipped
 water/vegetation rebuild pattern, but it still needs a validation run ---
 it touches descriptor sets across the mixer, scene and ImGui in one frame.
+\\ \textbf{Postscript (C2):} the mixer rebind step this note mentions was
+removed when C2 made the mixer's bindings per-generation ---
+\texttt{recreateTextureArrays} now only re-uploads and asks for a fresh
+generation; the mixer reads the current views and dimensions at each
+generation, so there is nothing persistent to re-point.
 \end{tcolorbox}
 
 \subsection{C2: Every Mixer Generation Sweeps All Five Arrays Through GENERAL and Blocks the CPU}
@@ -319,6 +324,33 @@ per edit. Files: \texttt{services/TextureMixer.cpp},
 Validation: identical generated pixels, barrier count per generation down,
 validation-clean (watch dynamic-layer-index layout rules; keep the conservative
 path behind a feature flag if VVL objects).
+\\ \textbf{Implemented as:} all three steps, plus two latent bugs found on the
+way. (1) Generation now binds \emph{single-layer} views for everything it
+touches --- the target layer as five \texttt{image2D} storage views at
+\texttt{GENERAL}, the primary and secondary source layers as ten
+\texttt{sampler2D} views at \texttt{SHADER\_READ\_ONLY} (bindings 10--14 are
+new; the shader samples every view at layer 0 and stores 2D). One
+pre-allocated set is re-pointed per generation (15 writes) and the array-wide
+pre/post sweeps are gone: only the target layer's five maps are transitioned
+(\texttt{GENERAL} before the dispatch, mip chains after); the sampled layers
+never move. Views are re-created on demand, so C1's array rebuild leaves no
+stale bindings. (2) The persistent triple/per-map/per-layer set machinery and
+\texttt{updateComputeDescriptorSets} were deleted outright --- they were
+unreachable and their array-view layout contract was the reason for the sweep
+(see the H4/M12 postscripts). (3) The widget commits a parameter edit when
+the edit ends: a sticky dirty flag (ImGui reports the slider change during
+the drag but not on the release frame, so a bare \texttt{IsAnyItemActive}
+gate would miss the final value) plus an inactive-item test; picker clicks
+and prev/next switches still generate immediately. Latent bugs fixed: per-map
+generation (the preview tabs' \texttt{activeMap}) transitioned one map while
+the shader wrote all five --- a layout violation on every UI generation; and
+the mixer's cached width/height went stale after C1's resolution tier, so
+dispatch size and \texttt{textureSize} are now read live from the manager.
+Cost per generation: one blocking submit, 5 layer transitions $+$ 5 mip
+chains, no whole-array churn (was $\sim$135 barrier objects and
+$\sim$3.5k subresource transitions). The design scopes every descriptor
+layout to a single layer view --- the property the old sweep was
+compensating for --- but a validation run is still the check that counts.
 \end{tcolorbox}
 
 \subsection{C3: The Load Path Runs $\sim$300 Blocking Submits and 420\,MiB of Staging Churn}
@@ -415,6 +447,12 @@ empty-vector warning once the failure mode is impossible. Files:
 \texttt{services/TextureMixer.cpp}, \texttt{MyApp.cpp}. Validation: generated
 pixels identical, warning gone, per-generation barrier count collapses,
 validation-clean.
+\\ \textbf{Postscript (C2):} resolved by deletion. The persistent per-layer
+sets, the unreachable triple/per-map sets and
+\texttt{updateComputeDescriptorSets} were removed with the C2 rework;
+generation is layer-local by construction (single-layer views, bindings
+rewritten per run, views re-created on demand), and the empty-vector warning
+went with the code that produced it.
 \end{tcolorbox}
 
 \subsection{H5: Billboard Bake Rebuilds Whole Arrays; Editable Updates Re-Upload Whole Images}
@@ -679,6 +717,11 @@ triple fallback); (2) delete \texttt{updateLayerFromEditable(Map)} and
 kind once and share. Files: \texttt{services/TextureMixer.cpp,.hpp},
 \texttt{vulkan/TextureArrayManager.cpp,.hpp}. Validation: build minus the
 symbols, identical behavior, validation-clean.
+\\ \textbf{Postscript (C2):} the mixer-side surfaces (triple / per-map /
+per-layer descriptor sets, the per-map creation helper and
+\texttt{updateComputeDescriptorSets}) were deleted with the C2 rework;
+\texttt{TextureArrayManager::create()} and the
+\texttt{updateLayerFromEditable(Map)} pair remain as listed.
 \end{tcolorbox}
 
 % =====================================================================

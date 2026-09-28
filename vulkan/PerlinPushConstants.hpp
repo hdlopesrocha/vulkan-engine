@@ -3,6 +3,11 @@
 
 // Push constants for compute shader
 // Must match shader layout in perlin_noise.comp
+//
+// Perf report 23 C2: the layer indices (primary/secondary/target) were removed
+// with the array-view bindings; the descriptor set now carries the layer
+// selection as single-layer views. debugOutput is retained for interface
+// compatibility with TextureMixer::setDebugOutput (currently unused).
 struct PerlinPushConstants {
     float scale;              // offset 0
     float octaves;            // offset 4
@@ -13,9 +18,6 @@ struct PerlinPushConstants {
     float contrast;           // offset 24
     uint32_t textureSize;     // offset 28
     float time;               // offset 32
-    uint32_t primaryLayer;    // offset 36
-    uint32_t secondaryLayer;  // offset 40
-    uint32_t targetLayer;     // offset 44
-    uint32_t debugOutput;     // offset 48 - 1 = write noise to rgb when set
-    // Total: 52 bytes (padded to 4-byte boundary)
+    uint32_t debugOutput;     // offset 36
+    // Total: 40 bytes (padded to 4-byte boundary)
 };

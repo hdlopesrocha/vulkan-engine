@@ -187,12 +187,23 @@ void TextureMixerWidget::render() {
     };
     ImGuiComponents::LayoutSections(sections, cachedH, estimates);
 
-    if (paramsChanged || sourceChanged) {
+    // C2 (perf report 23): parameter edits regenerate on edit END, not on
+    // every frame of a drag. Each generation is a blocking submit plus the
+    // target layer's five mip chains, so a drag used to stall once per frame.
+    // paramsDirty is sticky because ImGui reports the slider change during
+    // the drag but not on the release frame; the commit happens on the first
+    // frame after the edit stops. Source changes (picker clicks) are discrete
+    // and still generate immediately.
+    if (paramsChanged) paramsDirty = true;
+    const bool paramEditInProgress = ImGui::IsAnyItemActive();
+    if ((paramsDirty && !paramEditInProgress) || sourceChanged) {
         if (maxLayers > 0) {
+            paramsDirty = false;
             previewSource = 0;
             textures->setDebugOutput(showNoise);
             textures->enqueueGenerate(mixerParams[currentMixerIndex], activeMap);
         } else {
+            paramsDirty = false;
             std::cerr << "[TextureMixerWidget] Params changed but no texture arrays allocated — generation skipped." << std::endl;
         }
     }
