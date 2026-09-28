@@ -260,6 +260,10 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	layerAmount = layers;
 	width = w;
 	height = h;
+	// A fresh allocation starts empty. Without this reset a recreate() would
+	// re-load triples at the stale cursor and stop at the old capacity,
+	// leaving the array partially filled (perf report 23 C1 follow-up).
+	currentLayer = 0;
 
 	// destroy previous resources if present
 	cleanupTextureImage(app, albedoArray);

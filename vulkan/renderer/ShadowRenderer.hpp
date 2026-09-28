@@ -83,6 +83,16 @@ public:
     // parallel resources always exist before the first frame. Safe to call
     // every frame (no-op once built).
     void ensureShadowParallelResources(VulkanApp* app);
+
+    // Re-copy the shared shadow sets' static bindings into the per-cascade
+    // sets. The cascade sets are built once by copying shadowDescriptorSets_
+    // (bindings 1-18) and must be refreshed whenever those change — i.e. on
+    // every texture-array (re)allocation — otherwise the cascade passes bind
+    // the previous, destroyed array views (perf report 23 C1 follow-up:
+    // vkCmdDrawIndexedIndirectCount VUID-08114 on Set 0, Binding 3). Binding 0
+    // (per-cascade UBO) is deliberately left alone. No-op before the cascade
+    // sets exist.
+    void refreshCascadeTextureBindings(VulkanApp* app);
     void freeImGuiDescriptors();
     void recreateImGuiDescriptors();
     void setCmdState(CommandBufferState* state) override { Renderer::setCmdState(state); }

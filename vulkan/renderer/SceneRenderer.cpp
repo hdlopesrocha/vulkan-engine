@@ -1137,6 +1137,7 @@ bool SceneRenderer::descriptorBufferBindActive(VulkanApp* app) const {
 SceneRenderer::StaticTextureSignature SceneRenderer::currentStaticSignature(TextureArrayManager* textureArrayManager) const {
     StaticTextureSignature sig{};
     if (textureArrayManager) {
+        sig.textureVersion = textureArrayManager->getVersion();
         sig.samplers[0] = textureArrayManager->albedoSampler;
         sig.views[0] = textureArrayManager->albedoArray.view;
         sig.samplers[1] = textureArrayManager->normalSampler;
@@ -1227,11 +1228,16 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     // record the intent and use the classic fallback for the actual bindable
     // set. The branch keeps the GPU-side path compiled and exercised
     // (address queries) without breaking validation on current layouts.
+    //
+    // skippedImageWrites counts texture/shadow bindings the guards below drop
+    // because their view or sampler is null; a non-zero count means a set kept
+    // a stale binding. Reported once at the end (perf report 23 C1 follow-up).
+    uint32_t skippedImageWrites = 0;
     {
         DescriptorWriter writer(app->getDevice());
 
         auto addImg = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
-            if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
+            if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) { ++skippedImageWrites; return; }
             writer.writeImage(staticDs, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                               sampler, view, layout);
         };
@@ -1315,7 +1321,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             VkDescriptorSet ds = shadowDescriptorSets[si];
             DescriptorWriter sw(app->getDevice());
             auto addImg = [&](uint32_t b, VkSampler sm, VkImageView vw, VkImageLayout ly) {
-                if (vw == VK_NULL_HANDLE || sm == VK_NULL_HANDLE) return;
+                if (vw == VK_NULL_HANDLE || sm == VK_NULL_HANDLE) { ++skippedImageWrites; return; }
                 sw.writeImage(ds, b, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sm, vw, ly);
             };
             addImg(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1333,10 +1339,28 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
                                waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
             sw.flush();
         }
+        // The per-cascade shadow sets are built once by copying the shared
+        // shadow sets; refresh them with the same bindings or the cascade
+        // passes keep the previous (destroyed) array views (perf report 23 C1
+        // follow-up: VUID-08114 on the cascade draw's Set 0, Binding 3).
+        if (shadowMapper) shadowMapper->refreshCascadeTextureBindings(app);
     }
 
     // Also rewrite brush depth descriptors for all per-frame main sets
     if (brushRenderer) brushRenderer->writeDepthDescriptors(app);
+
+    // Surface dropped texture-array writes instead of letting a stale binding
+    // fail at draw time (perf report 23 C1 follow-up).
+    if (skippedImageWrites > 0) {
+        std::cerr << "[SceneRenderer::updateTextureDescriptorSet] WARNING: skipped "
+                  << skippedImageWrites << " image binding(s) with a null view/sampler";
+        if (textureArrayManager) {
+            std::cerr << " (bump view=" << (void*)textureArrayManager->bumpArray.view
+                      << " sampler=" << (void*)textureArrayManager->bumpSampler
+                      << ", albedo view=" << (void*)textureArrayManager->albedoArray.view << ")";
+        }
+        std::cerr << std::endl;
+    }
 }
 
 

@@ -454,6 +454,11 @@ private:
         VkImageView shadowViews[3] = {};
         VkBuffer materials = VK_NULL_HANDLE;
         VkBuffer waterParams = VK_NULL_HANDLE;
+        // Bumped by TextureArrayManager::allocate()/destroy(). Included so a
+        // (re)allocation always forces the descriptor refresh even if the
+        // driver recycles image/sampler handles to the previous values
+        // (perf report 23 C1 follow-up).
+        uint32_t textureVersion = 0;
         bool valid = false;
         bool matches(const StaticTextureSignature& o) const {
             for (int i = 0; i < 5; ++i)
@@ -461,7 +466,8 @@ private:
             if (shadowSampler != o.shadowSampler) return false;
             for (int i = 0; i < 3; ++i)
                 if (shadowViews[i] != o.shadowViews[i]) return false;
-            return materials == o.materials && waterParams == o.waterParams;
+            return materials == o.materials && waterParams == o.waterParams &&
+                   textureVersion == o.textureVersion;
         }
     };
     StaticTextureSignature lastStaticSignature_{};

@@ -3555,6 +3555,11 @@ void MyApp::recreateTextureArrays(uint32_t size) {
     // with the new views), then re-upload the same triples.
     textureArrayManager.recreate(this, layers, size, size);
     loadedTextureLayers = textureArrayManager.loadTriples(this, textureTriples_);
+    if (loadedTextureLayers != textureTriples_.size()) {
+        std::cerr << "[MyApp] texture-array rebuild loaded " << loadedTextureLayers
+                  << " of " << textureTriples_.size() << " triples (capacity "
+                  << textureArrayManager.layerAmount << " layers)\n";
+    }
 
     // Refresh the five generated layers. The mixer rebuilds its compute-view
     // bindings per generation (perf report 23 C2), so the re-created arrays

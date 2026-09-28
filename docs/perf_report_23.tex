@@ -269,6 +269,27 @@ removed when C2 made the mixer's bindings per-generation ---
 \texttt{recreateTextureArrays} now only re-uploads and asks for a fresh
 generation; the mixer reads the current views and dimensions at each
 generation, so there is nothing persistent to re-point.
+\\ \textbf{Postscript (first live run, fixed):} three defects the static
+audit could not see. (1) \texttt{TextureArrayManager::allocate} never reset
+\texttt{currentLayer}, so a tier rebuild re-uploaded the triples at the old
+cursor: the first switch loaded 7 triples into layers 21--27 (over the mixer
+targets) and the next found the capacity exhausted and loaded \emph{zero}
+(\texttt{1/28} in the utilization log). The cursor is now reset in
+\texttt{allocate()}, and \texttt{recreateTextureArrays} logs a mismatch if
+the reload cannot place every triple. (2) \texttt{ShadowRenderer}'s
+per-cascade sets are built once by copying the shared shadow sets; they were
+never refreshed when the arrays were reallocated, so the cascade passes
+(\texttt{vkCmdDrawIndexedIndirectCount}) bound the previous, destroyed views
+--- VUID-08114 on Set 0, Binding 3 (\texttt{heightArray}). The new
+\texttt{ShadowRenderer::refreshCascadeTextureBindings} re-copies bindings
+1--18 (minus the per-cascade UBO) from the shared sets, called by
+\texttt{updateTextureDescriptorSet} right after it rewrites them. (3) The
+static signature now includes the manager's \texttt{version}, so a
+reallocation forces the descriptor refresh even if the driver recycles
+image/sampler handles, and the update logs any texture/shadow image write it
+skips (null view/sampler) instead of letting a stale binding fail at draw
+time. The startup telemetry behaved as designed: 27/28 layers (96\%)
+initialized on the first run.
 \end{tcolorbox}
 
 \subsection{C2: Every Mixer Generation Sweeps All Five Arrays Through GENERAL and Blocks the CPU}

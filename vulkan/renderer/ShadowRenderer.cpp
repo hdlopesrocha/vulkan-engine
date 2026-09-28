@@ -807,6 +807,41 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
     cascadeSetsBuilt_ = true;
 }
 
+void ShadowRenderer::refreshCascadeTextureBindings(VulkanApp* app) {
+    if (shadowCascadeSets_.empty() || shadowDescriptorSets_.empty()) return;
+    // Same binding list ensureShadowParallelResources copies the cascade sets
+    // with: everything except binding 0 (the per-cascade UBO, which never
+    // changes on a texture realloc) and the removed binding 11. Binding 14
+    // (TLAS) only exists when ray tracing is enabled.
+    static const uint32_t kCopyBindings[] = {
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18};
+    constexpr size_t kBindingCount = sizeof(kCopyBindings) / sizeof(kCopyBindings[0]);
+    const size_t frames = std::min<size_t>(shadowDescriptorSets_.size(), shadowCascadeSets_.size());
+    std::vector<VkCopyDescriptorSet> copies;
+    copies.reserve(frames * SHADOW_CASCADE_COUNT * kBindingCount);
+    for (size_t f = 0; f < frames; ++f) {
+        for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+            VkDescriptorSet dst = shadowCascadeSets_[f][c];
+            if (dst == VK_NULL_HANDLE) continue;
+            for (uint32_t b : kCopyBindings) {
+                if (b == 14 && !app->rayTracingEnabled()) continue;
+                VkCopyDescriptorSet cp{};
+                cp.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+                cp.srcSet = shadowDescriptorSets_[f];
+                cp.dstSet = dst;
+                cp.srcBinding = b;
+                cp.dstBinding = b;
+                cp.descriptorCount = 1;
+                copies.push_back(cp);
+            }
+        }
+    }
+    if (copies.empty()) return;
+    DescriptorUpdateStats::noteUpdate(copies.size());
+    vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
+                           static_cast<uint32_t>(copies.size()), copies.data());
+}
+
 void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIdx,
                                    const UniformObject& uboStatic, const glm::mat4& lsMatrix,
                                    uint32_t cascadeIndex, uint32_t frameSlot,
