@@ -414,8 +414,22 @@ void processChunk(uint s) {
     // rejected level-0 entry keeps the per-frame fill value 0, which the
     // cascade shader cannot tell apart from a *kept* level-0 entry (also 0),
     // causing far chunks to cast finest-mesh shadows the main pass never draws.
+    //
+    // Water pin (pc.targetLayer == 1, the transparent/liquid stream): keep the
+    // finest rung (entryLevel 0) at every distance instead of the band pick.
+    // Small floating volumes (the mirror spheres) are sub-cell features past
+    // rung 2-3, so their coarse rungs mesh to nothing: the band gate then
+    // draws an empty rung over a gated-out fine one and the volume reads as a
+    // clean background-colored hole — close up the mirror works, a bit farther
+    // the sky reflection is gone and the surface "lets through" with no
+    // distortion (there is no surface left to distort). Water draws are few
+    // (lake surface + volumes, ~10^5 tris at rung 0) versus terrain millions,
+    // so finest-always is affordable; tessellation still collapses with
+    // distance, and shadow/backface/RT follow this same stamp via visibleLods.
+    uint gateLevel = selectedLevel;
+    if (pc.targetLayer == 1u && cellSize > 0.0) gateLevel = 0u;
     if (s < visibleLods.data.length()) {
-        visibleLods.data[s] = uvec2(inCmds.cmds[s].firstInstance, selectedLevel);
+        visibleLods.data[s] = uvec2(inCmds.cmds[s].firstInstance, gateLevel);
     }
 
     // ── LoD band gate ────────────────────────────────────────────────────────
@@ -424,7 +438,8 @@ void processChunk(uint s) {
     // exactly one rung is drawn per region; without this gate every rung of the
     // ladder is drawn at once and coarse rungs smear over the fine detail. Entries
     // with no LoD data (cellSize <= 0) fall through and are kept (legacy behavior).
-    if (cellSize > 0.0 && uint(entryLevel) != selectedLevel) {
+    // The water stream instead keeps rung 0 (gateLevel above).
+    if (cellSize > 0.0 && uint(entryLevel) != gateLevel) {
         return;
     }
 

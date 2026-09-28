@@ -1747,6 +1747,23 @@ void shadeWaterSurface() {
     // transparent exactly where its reflection should show the sky. Partial
     // mirrors (the lake at 0.3) keep the shoreline dissolve unchanged.
     if (mirrorPresence >= 1.0 - 1e-3) alpha = max(alpha, mirrorPresence);
+    // Floating-volume restore: the two fades above are a waterline signal -
+    // they must dissolve volume water where a bottom exists to be revealed.
+    // Against the sky a floating volume has no solid behind the fragment, so
+    // there is nothing for them to reveal: the mirror transmits nothing and
+    // the fades only punch a background-colored hole (a partial mirror, e.g.
+    // strength 0.5, collapsing toward 0 reads as "rays go through"). Where
+    // the total-mirror rule above did not already fire but the fades crushed
+    // a real mirror floor (alpha < mirrorPresence), re-apply the floor when
+    // the solid depth behind this pixel is clear. Pixels with a solid behind
+    // keep the shoreline dissolve unchanged (lake shores, sphere-over-terrain
+    // skims), so authored waterlines are untouched. Gated on
+    // solidDepthIsCurrent like the C5 rejection above: the water-in-main
+    // variant binds the previous frame's depth, which must not drive alpha.
+    if (alpha < mirrorPresence && waterRenderUBO.solidDepthIsCurrent) {
+        float solidRaw = textureLod(solidSceneDepthTex, screenUV, 0.0).r;
+        if (solidRaw >= 1.0) alpha = mirrorPresence;
+    }
     // Shoreline contact foam is a surface line, not volume translucency: it
     // must stay visible where the water meets the solid even when the alpha
     // shoreline fade would otherwise erase the last water pixels.
