@@ -491,6 +491,19 @@ sets, the unreachable triple/per-map sets and
 generation is layer-local by construction (single-layer views, bindings
 rewritten per run, views re-created on demand), and the empty-vector warning
 went with the code that produced it.
+\\ \textbf{Postscript (closure):} verified in-tree --- no per-layer / triple /
+per-map machinery or warning remains, and the C2 build's run log no longer
+contains it. One last validation-cleanliness gap on this path was fixed with
+the closure: \texttt{VulkanApp::recordGenerateMipmaps} records its mip
+barriers raw, so only the helper's base-level entry reached the pending
+layout map and the tracked state after a generation read
+\texttt{TRANSFER\_DST} even though the layer ends in
+\texttt{SHADER\_READ\_ONLY}. A second generation of the same target layer
+(e.g. two slider commits without a recreate in between) therefore emitted a
+pre-barrier whose \texttt{oldLayout} claimed the stale value. The helper now
+registers the final per-layer READ state, so repeated generations --- and
+C3's batched load, which uses the same helper --- keep the tracker truthful.
+H4 is closed.
 \end{tcolorbox}
 
 \subsection{H5: Billboard Bake Rebuilds Whole Arrays; Editable Updates Re-Upload Whole Images}

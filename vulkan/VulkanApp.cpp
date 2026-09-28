@@ -1484,6 +1484,24 @@ void VulkanApp::recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage ima
         depInfo.imageMemoryBarrierCount = 1;
         depInfo.pImageMemoryBarriers = &barrier;
         vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+
+        // This function records its mip barriers raw (not through
+        // recordTransitionImageLayoutLayer), so register the layer's final
+        // READ state as a pending update. Without it the tracker kept the
+        // helper's base-level TRANSFER_DST entry, and the next transition of
+        // this layer (e.g. the following mixer generation) would claim a
+        // stale oldLayout (perf report 23 H4 closure; also covers C3's
+        // batched load path, which uses this helper).
+        {
+            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
+            VulkanApp::PendingLayoutUpdate up;
+            up.image = image;
+            up.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            up.baseArrayLayer = targetLayer;
+            up.layerCount = 1;
+            up.isBarrier = true;
+            commandBufferPendingLayouts[commandBuffer].push_back(up);
+        }
     }
 }
 // Process any pending command buffers (free command buffers and fences when fence signaled)
