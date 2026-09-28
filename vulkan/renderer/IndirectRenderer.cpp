@@ -144,10 +144,16 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
         barriers[count].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
             | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
             | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
-            | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
-            | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-        barriers[count].dstAccessMask = dstAccess | VK_ACCESS_2_SHADER_READ_BIT
-            | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+            | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        barriers[count].dstAccessMask = dstAccess | VK_ACCESS_2_SHADER_READ_BIT;
+        if (app_ && app_->rayTracingEnabled()) {
+            // Acceleration-structure builds read the merged vertex/index buffers
+            // as build inputs in the same command buffer, so the destination must
+            // cover the build stage too. Both bits require
+            // VK_KHR_acceleration_structure, so they stay off the raster path.
+            barriers[count].dstStageMask |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+            barriers[count].dstAccessMask |= VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        }
         barriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[count].buffer = buf;
@@ -2085,22 +2091,29 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     // in-place without touching other slots or the buffer layout.
 
     // Vertex buffer (device-local). SHADER_DEVICE_ADDRESS + AS build-input
-    // usage feed the real-geometry reflection BLAS (see recordSceneBlas).
+    // usage feed the real-geometry reflection BLAS (see recordSceneBlas) and
+    // are only valid on the hybrid RT path: the AS usage bit requires
+    // VK_KHR_acceleration_structure and the address bit requires the
+    // bufferDeviceAddress feature, both enabled only when RT is active.
     VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
-    vertexBuffer = app->createBuffer(vertexBufferSize,
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-            | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
-            | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-            | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+    VkBufferUsageFlags vertexUsage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+        | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+        | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    VkBufferUsageFlags indexUsage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+        | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+        | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (app->rayTracingEnabled()) {
+        vertexUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+            | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+        indexUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+            | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    }
+    vertexBuffer = app->createBuffer(vertexBufferSize, vertexUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // Index buffer (device-local)
     VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
-    indexBuffer = app->createBuffer(indexBufferSize,
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-            | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
-            | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-            | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+    indexBuffer = app->createBuffer(indexBufferSize, indexUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // Indirect buffer (host-visible, persistently mapped for per-slot writes).

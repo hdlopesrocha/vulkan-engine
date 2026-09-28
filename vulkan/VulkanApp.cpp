@@ -3723,27 +3723,38 @@ void VulkanApp::createDepthResources() {
 
 void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
     // Reserve descriptors: uniform buffers, combined image samplers, storage
-    // buffers for materials, acceleration structures (hybrid RT TLAS) and
-    // storage images (RT pipeline outputs). RT counts are small (a handful of
-    // sets) but must exist or TLAS/output writes fail allocation.
+    // buffers for materials, storage images (RT pipeline outputs) and
+    // acceleration structures (hybrid RT TLAS). RT counts are small (a handful
+    // of sets) but must exist or TLAS/output writes fail allocation.
+    // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR is only valid when the
+    // VK_KHR_acceleration_structure extension is enabled, so its pool size is
+    // only added when RT was actually enabled (feature detection above).
     std::array<VkDescriptorPoolSize, 5> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uint32_t poolSizeCount = 0;
+    poolSizes[poolSizeCount].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     // Each descriptor set will reference the per-set scene UBO (binding 0)
     // and the shared Sky UBO (binding 6). Reserve two uniform descriptors per set.
-    poolSizes[0].descriptorCount = uboCount * 2;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = samplerCount;
-    poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[poolSizeCount].descriptorCount = uboCount * 2;
+    ++poolSizeCount;
+    poolSizes[poolSizeCount].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[poolSizeCount].descriptorCount = samplerCount;
+    ++poolSizeCount;
+    poolSizes[poolSizeCount].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     // Increase storage buffer descriptors for compute workloads (was: uboCount)
-    poolSizes[2].descriptorCount = uboCount * 8;
-    poolSizes[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-    poolSizes[3].descriptorCount = 32;
-    poolSizes[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[4].descriptorCount = 32;
+    poolSizes[poolSizeCount].descriptorCount = uboCount * 8;
+    ++poolSizeCount;
+    poolSizes[poolSizeCount].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[poolSizeCount].descriptorCount = 32;
+    ++poolSizeCount;
+    if (accelStructSupported) {
+        poolSizes[poolSizeCount].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        poolSizes[poolSizeCount].descriptorCount = 32;
+        ++poolSizeCount;
+    }
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.poolSizeCount = poolSizeCount;
     poolInfo.pPoolSizes = poolSizes.data();
     // Allow freeing individual descriptor sets (vegetation, etc.) and support UPDATE_AFTER_BIND layouts
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;

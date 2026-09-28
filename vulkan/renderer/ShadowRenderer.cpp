@@ -14,6 +14,7 @@
 #include <backends/imgui_impl_vulkan.h>
 #include <cassert>
 #include <stdexcept>
+#include <string>
 #include <fstream>
 #include <limits>
 #include <vector>
@@ -694,7 +695,10 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
         // with binding 0 redirected at the per-cascade UBO slot). Per set the main
         // layout has: UBO bindings 0, 6, 10, 17 (4); combined-image-sampler
         // bindings 1,2,3,4,8,9,12,13,15,16,19,20 (12); storage-buffer bindings
-        // 5, 7, 18, 21, 22, 23, 24, 25 (8); acceleration-structure binding 14 (1). Binding
+        // 5, 7, 18, 21, 22, 23, 24, 25, 26 (9); acceleration-structure binding 14
+        // (1, RT builds only — the pool size is omitted when RT is disabled
+        // because the type requires VK_KHR_acceleration_structure and the layout
+        // drops the binding). Binding
         // 11 (legacy cubemap) is gone (hybrid RT); 19/20 are the solid SSR
         // sources, 21/22 the real-scene reflection lookups.
         if (cascadeDescPool_ == VK_NULL_HANDLE) {
@@ -702,11 +706,15 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
             VkDescriptorPoolSize ps[4]{};
             ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;          ps[0].descriptorCount = 4 * setCount;
             ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[1].descriptorCount = 12 * setCount;
-            ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;         ps[2].descriptorCount = 8 * setCount;
-            ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; ps[3].descriptorCount = 1 * setCount;
+            ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;         ps[2].descriptorCount = 9 * setCount;
+            uint32_t poolSizeCount = 3;
+            if (app->rayTracingEnabled()) {
+                ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; ps[3].descriptorCount = 1 * setCount;
+                poolSizeCount = 4;
+            }
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pci.poolSizeCount = 4;
+        pci.poolSizeCount = poolSizeCount;
         pci.pPoolSizes = ps;
         pci.maxSets = setCount;
         pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
@@ -737,8 +745,10 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
                 ai.descriptorSetCount = 1;
                 VkDescriptorSetLayout gfxLayout = app->getDescriptorSetLayout();
                 ai.pSetLayouts = &gfxLayout;
-                if (vkAllocateDescriptorSets(device, &ai, &shadowCascadeSets_[f][c]) != VK_SUCCESS)
-                    throw std::runtime_error("ShadowRenderer: failed to allocate cascade shadow DS");
+                VkResult cascadeAlloc = vkAllocateDescriptorSets(device, &ai, &shadowCascadeSets_[f][c]);
+                if (cascadeAlloc != VK_SUCCESS)
+                    throw std::runtime_error("ShadowRenderer: failed to allocate cascade shadow DS (VkResult=" +
+                                             std::to_string(static_cast<int>(cascadeAlloc)) + ")");
                 app->resources.addDescriptorSet(shadowCascadeSets_[f][c], "ShadowRenderer: cascade shadow DS");
 
                 // Copy the shared shadow set (textures, dummy depth, storage buffers,
@@ -750,6 +760,8 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
                 static const uint32_t kCopyBindings[] = {
                     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18};
                 for (uint32_t b : kCopyBindings) {
+                    // Binding 14 (TLAS) only exists in the layout when RT is enabled.
+                    if (b == 14 && !app->rayTracingEnabled()) continue;
                     VkCopyDescriptorSet cp{};
                     cp.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
                     cp.srcSet = shadowDescriptorSets_[f];

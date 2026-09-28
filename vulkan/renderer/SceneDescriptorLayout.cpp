@@ -256,6 +256,18 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     bindings[5].pImmutableSamplers = nullptr;
     bindings[5].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
+    // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR (binding 14, array index
+    // 13) is only valid in a set layout when VK_KHR_acceleration_structure is
+    // enabled. On the raster fallback (RT unsupported or VULKAN_RT_DISABLE)
+    // the extensions are absent and the shader variants are compiled without
+    // RT_ENABLED, so the binding is compacted out of the layout.
+    uint32_t layoutBindingCount = static_cast<uint32_t>(bindings.size());
+    if (!app.rayTracingEnabled()) {
+        for (uint32_t i = 13; i + 1 < layoutBindingCount; ++i)
+            bindings[i] = bindings[i + 1];
+        --layoutBindingCount;
+    }
+
     // No update-after-bind bindings remain: the legacy cubemap binding 11
     // (the only UPDATE_AFTER_BIND binding, for swapchain-resize view churn)
     // is gone. RT views/TLAS are stable between resizes (rewritten only on
@@ -265,14 +277,14 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
 
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};
     bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    bindingFlagsInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
+    bindingFlagsInfo.bindingCount = layoutBindingCount;
     bindingFlagsInfo.pBindingFlags = bindingFlags.data();
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.pNext = &bindingFlagsInfo;
     layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    layoutInfo.bindingCount = layoutBindingCount;
     layoutInfo.pBindings = bindings.data();
 
     if (vkCreateDescriptorSetLayout(app.device, &layoutInfo, nullptr, &descriptorSetLayout_) != VK_SUCCESS) {
@@ -366,7 +378,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
         // with no binding-flags pNext. This also matches the future cutover
         // main layout (direct host writes need no update-after-bind).
         queryInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-        queryInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        queryInfo.bindingCount = layoutBindingCount;
         queryInfo.pBindings = bindings.data();
         if (vkCreateDescriptorSetLayout(app.device, &queryInfo, nullptr, &descriptorBufferQueryLayout_) != VK_SUCCESS) {
             throw std::runtime_error("failed to create descriptor-buffer query layout!");
