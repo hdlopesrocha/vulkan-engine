@@ -60,6 +60,8 @@ private:
         settings.waterRenderScale = 1.0f;
         // Full-resolution vegetation offscreen (perf report 22 M12).
         settings.vegetationRenderScale = 1.0f;
+        // Full-resolution material texture arrays (perf report 23 C1).
+        settings.textureArraySize = 1024;
     }
 
     static void applyMinimal(Settings& settings) {
@@ -92,6 +94,10 @@ private:
         // detail survives the downscale at typical viewing distances, and the
         // composite's closest-of-2x2 depth taps keep silhouettes uneroded.
         settings.vegetationRenderScale = 0.5f;
+        // Half-resolution material texture arrays (perf report 23 C1): the
+        // five arrays quarter to ~190 MB. The user action rebuilds them (one
+        // device idle + re-upload); the slider still overrides.
+        settings.textureArraySize = 512;
     }
 
     GraphicsQuality quality_;

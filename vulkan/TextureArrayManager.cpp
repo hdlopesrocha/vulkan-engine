@@ -2,6 +2,8 @@
 #include "TextureArrayManager.hpp"
 
 #include "VulkanApp.hpp"
+#include <algorithm>
+#include <cstdio>
 #include <stdexcept>
 #include <backends/imgui_impl_vulkan.h>
 #include "../vulkan/EditableTexture.hpp"
@@ -83,57 +85,52 @@ static void cleanupSampler(VulkanApp* app, VkSampler &s) {
 	}
 }
 
-void TextureArrayManager::destroy(VulkanApp* app) {
+// Release the per-layer 2D views and their ImGui descriptors. Always defers
+// destruction to avoid freeing resources the current frame (or any in-flight
+// frame) may still reference. Split out of destroy() so recreate() can drop
+// the views that belong to the old array images before allocate() replaces
+// them (perf report 23 C1). Does NOT notify allocation listeners.
+void TextureArrayManager::releaseLayerViews(VulkanApp* app) {
 	if (!app) return;
-	cleanupTextureImage(app, albedoArray);
-	cleanupTextureImage(app, normalArray);
-	cleanupTextureImage(app, bumpArray);
-	cleanupTextureImage(app, roughnessArray);
-	cleanupTextureImage(app, aoArray);
-	cleanupSampler(app, albedoSampler);
-	cleanupSampler(app, normalSampler);
-	cleanupSampler(app, bumpSampler);
-	cleanupSampler(app, roughnessSampler);
-	cleanupSampler(app, aoSampler);
+	VkDevice device = app->getDevice();
 	// Remove any ImGui textures and destroy per-layer views.
 	// Always defer removal to avoid destroying descriptor sets that may still
 	// be referenced by the current frame's (or any in-flight) command buffer.
 	for (auto &tex : albedoImTextures) {
 		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
-			if (app) app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
 			tex = 0;
 		}
 	}
 	for (auto &tex : normalImTextures) {
 		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
-			if (app) app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
 			tex = 0;
 		}
 	}
 	for (auto &tex : bumpImTextures) {
 		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
-			if (app) app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
 			tex = 0;
 		}
 	}
 	for (auto &tex : roughnessImTextures) {
 		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
-			if (app) app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
 			tex = 0;
 		}
 	}
 	for (auto &tex : aoImTextures) {
 		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
-			if (app) app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
 			tex = 0;
 		}
 	}
-	VkDevice device = app->getDevice();
 	// Destroy per-layer views; always defer to avoid destroying resources that
 	// the current frame may still reference.
 	for (auto &v : albedoLayerViews) {
@@ -173,12 +170,85 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 	}
 	albedoLayerViews.clear(); normalLayerViews.clear(); bumpLayerViews.clear(); roughnessLayerViews.clear(); aoLayerViews.clear();
 	albedoImTextures.clear(); normalImTextures.clear(); bumpImTextures.clear(); roughnessImTextures.clear(); aoImTextures.clear();
+}
+
+void TextureArrayManager::destroy(VulkanApp* app) {
+	if (!app) return;
+	cleanupTextureImage(app, albedoArray);
+	cleanupTextureImage(app, normalArray);
+	cleanupTextureImage(app, bumpArray);
+	cleanupTextureImage(app, roughnessArray);
+	cleanupTextureImage(app, aoArray);
+	cleanupSampler(app, albedoSampler);
+	cleanupSampler(app, normalSampler);
+	cleanupSampler(app, bumpSampler);
+	cleanupSampler(app, roughnessSampler);
+	cleanupSampler(app, aoSampler);
+	releaseLayerViews(app);
 	// clear stored app pointer (no longer valid after destroy)
 	this->appPtr = nullptr;
 	// bump version to indicate array resources were destroyed
 	++this->version;
 	// notify listeners that arrays were destroyed
 	notifyAllocationListeners();
+}
+
+void TextureArrayManager::recreate(VulkanApp* app, uint32_t layers, uint32_t w, uint32_t h) {
+	if (!app) throw std::runtime_error("TextureArrayManager::recreate: app is null");
+	// Drop the views that reference the old images first (deferred), then let
+	// allocate() replace the images and notify listeners exactly once with the
+	// new views. The caller must hold a device idle and drain deferred
+	// destroys afterwards; no listener observes the transient null-view state
+	// because only allocate() notifies.
+	releaseLayerViews(app);
+	allocate(layers, w, h, app);
+}
+
+void TextureArrayManager::logMemoryUtilization(const char* name) const {
+	if (layerAmount == 0) return;
+	const char* label = name ? name : "arrays";
+	// Bytes of one layer of an RGBA8 mip chain. The five material arrays are
+	// all R8G8B8A8_UNORM; compute per image so a future format change cannot
+	// silently lie in the log.
+	auto layerBytes = [&](const TextureImage& img) -> size_t {
+		uint32_t w = std::max(1u, width);
+		uint32_t h = std::max(1u, height);
+		const uint32_t mips = std::max(1u, img.mipLevels);
+		size_t total = 0;
+		for (uint32_t m = 0; m < mips; ++m) {
+			total += static_cast<size_t>(w) * h * 4u;
+			w = std::max(1u, w / 2);
+			h = std::max(1u, h / 2);
+		}
+		return total;
+	};
+	const TextureImage* imgs[5] = { &albedoArray, &normalArray, &bumpArray, &roughnessArray, &aoArray };
+	const char* mapNames[5] = { "albedo", "normal", "bump", "roughness", "ao" };
+	size_t perArray[5] = { 0, 0, 0, 0, 0 };
+	size_t allocated = 0;
+	for (int i = 0; i < 5; ++i) {
+		perArray[i] = layerBytes(*imgs[i]) * layerAmount;
+		allocated += perArray[i];
+	}
+	size_t usedLayers = 0;
+	for (char c : layerInitialized) if (c) ++usedLayers;
+	if (usedLayers > layerAmount) usedLayers = layerAmount;
+	const size_t used = layerAmount ? (allocated * usedLayers) / layerAmount : 0;
+	const double toMB = 1.0 / (1024.0 * 1024.0);
+	std::printf("[memutil] texture arrays '%s': %ux%u x %u layers x 5 maps: %.0f / %.0f MB used (%.0f%% layers)\n",
+	            label, width, height, layerAmount,
+	            static_cast<double>(used) * toMB, static_cast<double>(allocated) * toMB,
+	            layerAmount ? 100.0 * static_cast<double>(usedLayers) / static_cast<double>(layerAmount) : 0.0);
+	std::printf("[memutil]   %s %.0f, %s %.0f, %s %.0f, %s %.0f, %s %.0f MB allocated\n",
+	            mapNames[0], static_cast<double>(perArray[0]) * toMB,
+	            mapNames[1], static_cast<double>(perArray[1]) * toMB,
+	            mapNames[2], static_cast<double>(perArray[2]) * toMB,
+	            mapNames[3], static_cast<double>(perArray[3]) * toMB,
+	            mapNames[4], static_cast<double>(perArray[4]) * toMB);
+	if (usedLayers > 0 && usedLayers * 4 < layerAmount) {
+		std::printf("[memutil] texture arrays '%s': WARNING <25%% of allocated layers are initialized (%zu/%u)\n",
+		            label, usedLayers, layerAmount);
+	}
 }
 
 void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, VulkanApp* app) {
@@ -319,16 +389,40 @@ static std::array<float, 3> meanLinearRGB(const unsigned char* data, size_t pixe
 	return avg;
 }
 
-// Nearest-neighbor resize (RGBA8)
-static unsigned char* resizeNearest(const unsigned char* src, int srcW, int srcH, int dstW, int dstH) {
+// Area-average resample (RGBA8). Each destination texel averages the source
+// rectangle that maps onto it; an exact 2:1 downscale (1024 -> 512, the tier
+// and vegetation sizes) is a clean 2x2 box. Upscales collapse to the nearest
+// source texel. Replaces the previous nearest-neighbour path, which
+// point-sampled 2:1 — aliasing alpha-cut vegetation and breaking normal/bump
+// detail (perf report 23 C1; also closes M11's downscale bullet).
+static unsigned char* resizeAreaAverage(const unsigned char* src, int srcW, int srcH, int dstW, int dstH) {
 	unsigned char* dst = new unsigned char[static_cast<size_t>(dstW) * dstH * 4];
+	const double sx = static_cast<double>(srcW) / dstW;
+	const double sy = static_cast<double>(srcH) / dstH;
 	for (int y = 0; y < dstH; ++y) {
-		int sy = (y * srcH) / dstH;
+		int y0 = static_cast<int>(y * sy);
+		int y1 = static_cast<int>((y + 1) * sy);
+		y0 = std::min(std::max(y0, 0), srcH - 1);
+		y1 = std::min(std::max(y1, y0 + 1), srcH);
 		for (int x = 0; x < dstW; ++x) {
-			int sx = (x * srcW) / dstW;
-			const unsigned char* s = &src[(sy * srcW + sx) * 4];
-			unsigned char* d = &dst[(y * dstW + x) * 4];
-			d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+			int x0 = static_cast<int>(x * sx);
+			int x1 = static_cast<int>((x + 1) * sx);
+			x0 = std::min(std::max(x0, 0), srcW - 1);
+			x1 = std::min(std::max(x1, x0 + 1), srcW);
+			uint32_t r = 0, g = 0, b = 0, a = 0, n = 0;
+			for (int yy = y0; yy < y1; ++yy) {
+				const unsigned char* row = src + (static_cast<size_t>(yy) * srcW + x0) * 4;
+				for (int xx = x0; xx < x1; ++xx) {
+					r += row[0]; g += row[1]; b += row[2]; a += row[3];
+					row += 4;
+					++n;
+				}
+			}
+			unsigned char* d = dst + (static_cast<size_t>(y) * dstW + x) * 4;
+			d[0] = static_cast<unsigned char>(r / n);
+			d[1] = static_cast<unsigned char>(g / n);
+			d[2] = static_cast<unsigned char>(b / n);
+			d[3] = static_cast<unsigned char>(a / n);
 		}
 	}
 	return dst;
@@ -400,7 +494,7 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 		unsigned char* uploadData = pixels;
 		bool resized = false;
 		if (texW != static_cast<int>(width) || texH != static_cast<int>(height)) {
-			unsigned char* r = resizeNearest(pixels, texW, texH, static_cast<int>(width), static_cast<int>(height));
+			unsigned char* r = resizeAreaAverage(pixels, texW, texH, static_cast<int>(width), static_cast<int>(height));
 			uploadData = r;
 			resized = true;
 		}

@@ -1774,6 +1774,8 @@ void SceneRenderer::logMemoryUtilization() {
         brushRenderer->getLiquidIR().logUtilization("brush-liquid");
     }
     if (vegetationRenderer) vegetationRenderer->logUtilization();
+    // Report 23 C1: the texture side of the budget, previously uncounted.
+    if (textureArrays_) textureArrays_->logMemoryUtilization("main");
 }
 
 void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,

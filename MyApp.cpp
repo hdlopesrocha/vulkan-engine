@@ -306,6 +306,9 @@ public:
     WidgetManager widgetManager;
     FilePicker scenePicker_{"Scene File Picker", ".scene"};
     uint32_t loadedTextureLayers = 0;
+    // The startup texture triple list, retained so a resolution-tier change
+    // can re-upload the same content (perf report 23 C1).
+    std::vector<TextureTriple> textureTriples_;
 
     // Billboard editing / vegetation resources
     BillboardManager billboardManager;
@@ -399,11 +402,25 @@ public:
 
     ~MyApp() {}
 
+    // Rebuild the five material arrays at a new resolution: device idle, drop
+    // the old views/images, re-upload the triples, re-point the mixer and
+    // refresh its generated layers (perf report 23 C1). Layer indices are
+    // resolution-independent, so materials, mixer targets and pickers stay
+    // valid; only the texel density changes.
+    void recreateTextureArrays(uint32_t size);
+
     // setupTextures (defined out-of-line to avoid inline/member-definition issues)
     void setupTextures() {
-        uint32_t layerCount = 32;
+        // Perf report 23 C1: size the material arrays from content, not a
+        // magic 32. The startup path loads this many triples, configures this
+        // many mixers, and keeps one editable/paint placeholder plus one
+        // spare. The capacity is fixed at bring-up; triples that fail to load
+        // only reduce usage below capacity (loadTriples skips them).
+        constexpr uint32_t kConfiguredMixerCount = 5;
+        constexpr uint32_t kPaintMargin = 2;   // editable placeholder + spare
+        constexpr uint32_t kMinLayers = 8;
+        const uint32_t arraySize = static_cast<uint32_t>(std::clamp(settings.textureArraySize, 256, 4096));
 
-        textureArrayManager.allocate(layerCount, 1024, 1024, this);
         // Use shared TextureTriple defined in TextureArrayManager.hpp
         const std::vector<TextureTriple> textureTriples = {
             { "textures/Wall_Stone_010_COLOR.jpg", "textures/Wall_Stone_010_NORMAL.jpg", "textures/Wall_Stone_010_HEIGHT.jpg", "textures/Wall_Stone_010_ROUGH.jpg", "textures/Wall_Stone_010_OCC.jpg" },
@@ -429,6 +446,16 @@ public:
             { "textures/Greeble_Techno_002_COLOR.jpg", "textures/Greeble_Techno_002_NORMAL.jpg", "textures/Greeble_Techno_002_HEIGHT.jpg", "textures/Greeble_Techno_002_ROUGH.jpg", "textures/Greeble_Techno_002_OCC.jpg" },
 
         };
+        // C1: retained so a resolution-tier change can re-upload the same list.
+        textureTriples_ = textureTriples;
+
+        uint32_t layerCount = static_cast<uint32_t>(textureTriples.size()) + kConfiguredMixerCount + kPaintMargin;
+        layerCount = std::max(layerCount, kMinLayers);
+        std::cout << "[MyApp::setupTextures] texture arrays: " << layerCount
+                  << " layers at " << arraySize << "^2 ("
+                  << textureTriples.size() << " triples + " << kConfiguredMixerCount
+                  << " mixers + " << kPaintMargin << " paint margin)\n";
+        textureArrayManager.allocate(layerCount, arraySize, arraySize, this);
 
         // Bulk load the triples directly using TextureTriple vector already defined above
         loadedTextureLayers = textureArrayManager.loadTriples(this, textureTriples);
@@ -454,7 +481,6 @@ public:
         }
 
         uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
-        (void)std::max(layerCount, std::max(loadedTextureLayers, 1u));
 
 
 
@@ -596,6 +622,10 @@ public:
         if (sceneRenderer) {
             sceneRenderer->updateTextureDescriptorSet(this, &textureArrayManager);
         }
+
+        // Perf report 23 C1: committed vs. initialized texture memory. The
+        // scene renderer logs it again after every scene load/generation.
+        textureArrayManager.logMemoryUtilization("main");
 
     }
 
@@ -1206,6 +1236,17 @@ public:
             vkDeviceWaitIdle(getDevice());
             sceneRenderer->setVegetationRenderScale(settings.vegetationRenderScale);
             sceneRenderer->recreateVegetationTargets(this, getWidth(), getHeight());
+        }
+        // C1 (perf report 23): a texture-array resolution change rebuilds the
+        // five material arrays (device idle, full re-upload, mixer refresh).
+        // Layer indices are resolution-independent, so every consumer binding
+        // (materials, mixer targets, pickers) stays valid; this runs once, on
+        // the frame the setting changes.
+        {
+            const uint32_t wantSize = static_cast<uint32_t>(std::clamp(settings.textureArraySize, 256, 4096));
+            if (textureArrayManager.layerAmount != 0 && textureArrayManager.width != wantSize) {
+                recreateTextureArrays(wantSize);
+            }
         }
 
         uint32_t frameIdx = getCurrentFrame();
@@ -3488,6 +3529,51 @@ void MyApp::setupScene() {
     // Scene objects, background thread, and brush3dWidget are now set up
     // directly in setup() so the CPU-heavy scene load can run in parallel
     // with texture loading. This stub is kept for call-site compatibility.
+}
+
+// Perf report 23 C1: rebuild the five material arrays at a new resolution.
+// Called from preRenderPass when Settings::textureArraySize changes, so the
+// frame is not yet recorded and the device can be idled for the rebuild.
+void MyApp::recreateTextureArrays(uint32_t size) {
+    if (textureArrayManager.layerAmount == 0) return;
+    if (textureArrayManager.width == size) return;
+    const uint32_t layers = textureArrayManager.layerAmount;
+    const uint32_t oldSize = textureArrayManager.width;
+    std::cout << "[MyApp] texture arrays: " << oldSize << "^2 -> " << size
+              << "^2 x " << layers << " layers (perf report 23 C1)\n";
+
+    // Major resource rebuild: the five arrays are sampled by the solid pass
+    // (graphics queue), the brush/vegetation passes and the composite, and
+    // written by the mixer. This is the AGENTS.md "major resource rebuild"
+    // case where a device idle is allowed; it also makes the deferred
+    // destroys below provably runnable through processPendingCommandBuffers().
+    vkDeviceWaitIdle(getDevice());
+    processPendingCommandBuffers();
+
+    // Swap the images underneath the manager (deferred-frees the old ones,
+    // creates the new, bumps version, notifies the allocation listeners once
+    // with the new views), then re-upload the same triples.
+    textureArrayManager.recreate(this, layers, size, size);
+    loadedTextureLayers = textureArrayManager.loadTriples(this, textureTriples_);
+
+    // Re-point the mixer's persistent descriptor sets at the new views and
+    // samplers before any generation can run, then refresh its five layers.
+    if (textureMixer) {
+        textureMixer->updateComputeDescriptorSets(this);
+        textureMixer->generateInitialTextures(mixerParams);
+    }
+
+    // Re-flag the editable placeholder layer (allocate() reset the flags).
+    uint32_t editableLayer = (loadedTextureLayers < layers) ? loadedTextureLayers : 0u;
+    textureArrayManager.setLayerInitialized(editableLayer, true);
+
+    // The old images/samplers/views are deferred; every queue is idle, so this
+    // runs the callbacks now and the transient double commitment is one call
+    // long. Must come after the mixer rebind so no bound set references a
+    // freed sampler.
+    processPendingCommandBuffers();
+
+    textureArrayManager.logMemoryUtilization("main");
 }
 
 // Implementation: setup vegetation textures

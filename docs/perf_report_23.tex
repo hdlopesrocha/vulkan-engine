@@ -1,0 +1,806 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+% Long unbreakable \texttt{} paths are the main source of overfull boxes in
+% this report; a generous emergencystretch plus sloppy paragraph breaking lets
+% TeX loosen those lines instead of running into the margin.
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\title{Performance Report 23: Vulkan Engine \\
+\large Texture Arrays, the GPU Mixer, and the Load Path --- the $\sim$930\,MB and $\sim$300 Blocking Submits No Frame Audit Counted}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Reports~17--22 audited every pass the frame \emph{draws}: ray tracing, the water
+machinery and its noise, the solid/water raster core, vegetation, submit counts,
+and buffer pools. This report audits what the frame \emph{holds and builds}: the
+five material texture arrays, the load path that fills them, the GPU mixer that
+regenerates them, and the billboard/editable authoring path around them.
+
+The arrays are $5 \times 32$ layers $\times 1024^2$ RGBA8 with 11 mips each:
+\textbf{853\,MiB} of device-local memory and the largest single image commitment
+in the engine, which report~22's buffer-oriented tally did not count. 26 of the
+32 layers carry data; the other six (160\,MiB) are never written --- five are
+referenced by nothing, one is a descriptor-only placeholder. The bring-up path
+issues \textbf{$\sim$300 blocking \texttt{runSingleTimeCommands} submits} (each a
+fence round-trip polled in 100\,µs sleeps), allocates 105 fresh 4\,MiB staging
+buffers that are zero-memset immediately before being overwritten (420\,MiB of
+waste), and runs 105 separate blocking mip-generation submits (2{,}310 barriers,
+1{,}050 blits). The mixer's every parameter tick --- the UI enqueues on each
+slider change --- transitions \emph{all five arrays, all 32 layers, all 11 mips}
+into \texttt{GENERAL} and back ($\sim$3{,}500 subresource transitions) and blocks
+the CPU on a fence, because the sampler descriptors bind the full array views;
+the per-layer descriptor sets written to make generations layer-local are
+allocated \emph{before} the per-layer views exist, warn once, and are never
+rebuilt (the warning is in every shipped run log). The billboard bake tears
+down and recreates all three array images per invocation, and the noise-preview
+feature is wired to two mechanisms that are both inert.
+
+It finds \textbf{15 issues} (3 critical, 5 high, 4 medium, 3 low). Each carries
+the standard technique and a copy-pasteable prompt preserving validation-clean
+execution, Synchronization2, and runtime feature detection. Scope score
+\textbf{4.7/10}; the frame-side standing (6.4/10) is unchanged, and folding the
+asset slice into the combined estimate at 10\% weight gives \textbf{6.2/10}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+\subsection{Scope and Method}
+
+Four areas, none previously reported on: (1) texture residency --- the five
+material arrays sampled by the solid shader, the vegetation arrays, the billboard
+arrays, and the impostor capture arrays; (2) the load path
+(\texttt{TextureArrayManager::allocate/load/loadTriples}, the staging and
+mip-generation helpers it drives); (3) the GPU mixer
+(\texttt{services/TextureMixer} + \texttt{shaders/perlin\_noise.comp}) and its
+per-generation synchronization; (4) the authoring assets around them
+(\texttt{EditableTexture}, \texttt{BillboardService}, \texttt{BillboardCreator},
+\texttt{AtlasManager}, \texttt{ImpostorCapture} interfaces). Ray tracing,
+water, the raster core, vegetation rendering, frame structure, and the buffer
+pools are referenced only at interfaces. Method matches report~22: full reads
+with file:line evidence, \texttt{spirv-dis} on shipped modules, byte tallies
+from creation code. The application was not executed; dynamic magnitudes are
+analytic estimates from verified structure, against the shipped
+\texttt{logs/run.log} VRAM counter (3{,}132\,MB device-local at 1080p).
+
+\subsection{Measured Budgets}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Module} & \textbf{Words} & \textbf{Instrs} & \textbf{Role} \\
+\midrule
+\texttt{perlin\_noise.comp.spv} & 4\,937 & 1\,006 & fBm noise + 5-map blend, one dispatch per generation \\
+\texttt{capture.vert.spv} & 697 & 153 & impostor capture VS (60 views, 3 types) \\
+\texttt{capture.frag.spv} & 1\,509 & 316 & impostor capture FS (albedo + normal + depth) \\
+\bottomrule
+\end{tabular}
+\caption{Disassembly word counts (\texttt{spirv-dis | wc -w}, the reports~20--22
+convention) and instruction counts (op lines). The mixer re-expands fBm and
+samples up to ten array taps per texel of a $1024^2$ target.}
+\end{table}
+
+Per-bring-up fixed structure: \textbf{$\sim$300 blocking single-time submits},
+105 fresh 4\,MiB staging buffers, 105 separate mip submits (2{,}310 barriers,
+1{,}050 blits), 66M \texttt{powf} calls for sRGB$\rightarrow$linear, and 135
+eager per-layer views/descriptors. Per mixer tick: one blocking submit,
+$\sim$135 barrier objects, $\sim$3{,}500 subresource transitions, 50 mip blits.
+Committed texture-side memory (\S\ref{sec:vram}): \textbf{$\sim$931\,MiB device +
+9\,MiB host}, of which \textbf{160\,MiB is idle layers} and 213\,MiB is the mip
+chain itself.
+
+\subsection{Recommended Order}
+
+Texture utilization + content-sized layer count (C1) $\rightarrow$ layer-local
+generation and commit-on-release mixer trigger (C2, H4) $\rightarrow$ batched
+load path with persistent staging and in-CB mips (C3, H8) $\rightarrow$
+in-place billboard/editable updates (H5) $\rightarrow$ LUT / zero-init /
+eager-descriptor cleanups (H6, H7) $\rightarrow$ delete the vestigial async
+machinery and dead surfaces (M9--M12) $\rightarrow$ hygiene (L13--L15).
+
+% =====================================================================
+\section{Cost Model}
+% =====================================================================
+
+\begin{equation}
+C = \underbrace{\sum_{\mathrm{passes}} G_{\mathrm{pass}} V C_{\mathrm{vert}}}_{\text{\S3, reports 20--21}} + \underbrace{S C_{\mathrm{submit}}}_{\text{report 22}} + \underbrace{L C_{\mathrm{bringup}} + G C_{\mathrm{sweep}} + M_{\mathrm{tex}} C_{\mathrm{pressure}}}_{\text{this report}}
+\end{equation}
+
+with $S \approx 17$ submits/frame, $L \approx 300$ blocking submits at bring-up,
+$G \approx 1$ generation per UI tick, and $M_{\mathrm{tex}} \approx 0.93$\,GB
+resident regardless of scene size. Reports~20--21 attacked the first term and
+report~22 the second; this report prices the third, which has two components:
+the one-shot bring-up bill (staging churn, blocking submits, CPU decode) and
+the recurring residency/sweep bill (what the arrays cost to hold, and what a
+single parameter change costs to apply).
+
+% =====================================================================
+\section{Texture Residency}
+\label{sec:vram}
+% =====================================================================
+
+Tallied from creation code at $1920\times1080$ (device memory unless noted).
+Mip counts are exact: $1024^2$ arrays carry 11 levels, $512^2$ arrays 10.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{5.9cm}p{4.3cm}r@{}}
+\toprule
+\textbf{Resource} & \textbf{Sizing} & \textbf{Bytes} \\
+\midrule
+Main material arrays (albedo/normal/bump/roughness/ao) & $5 \times 32 \times 1024^2$ RGBA8, 11 mips & 853\,MiB dev \\
+Vegetation arrays (foliage/grass/wild, 3 maps) & $3 \times 3 \times 512^2$ RGBA8, 10 mips & 12\,MiB dev \\
+Billboard arrays (rebuilt per bake) & $3 \times 3 \times 512^2$ RGBA8, 10 mips & 12\,MiB dev \\
+Impostor capture arrays & $60 \times 256^2 \times 12$\,B & 45\,MiB dev \\
+Composed billboard textures (9 EditableTextures) & $9 \times 512^2$ RGBA8 & 9\,MiB dev + 9\,MiB host \\
+\midrule
+Total & & $\sim$931\,MiB dev + 9\,MiB host \\
+\bottomrule
+\end{tabular}
+\caption{Committed texture memory. Report~22's buffer-oriented table did not
+include the material arrays; they are the largest single image commitment in
+the engine. The measured device-local total (3{,}132\,MB in
+\texttt{logs/run.log}) is consistent with these tallies plus that report's.}
+\end{table}
+
+Of the main arrays' 32 layers, layers 0--20 are loaded from the texture triples,
+21--25 are mixer targets (generated at startup), 26 receives views and ImGui
+descriptors but no writer, and 27--31 are referenced by nothing: \textbf{six
+idle layers, 160\,MiB}. The base levels alone are 640\,MiB; the mip chain adds
+another 213\,MiB (33\%).
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: 853\,MiB of Material Arrays, 6 of 32 Layers Idle, No Texture-Side Telemetry}
+\label{sec:c1}
+
+\textbf{Severity: Critical.}
+
+The main arrays are sized by a magic constant, not by content:
+\texttt{MyApp.cpp:404--406} sets \texttt{layerCount = 32} and calls
+\texttt{allocate(layerCount, 1024, 1024)}; \texttt{TextureArrayManager.cpp:202}
+derives 11 mips, \texttt{:212} allocates 32 array layers of
+\texttt{RGBA8}, \texttt{:216} adds \texttt{STORAGE} usage (for the mixer), and
+\texttt{:222} commits it all \texttt{DEVICE\_LOCAL}. Five such arrays are
+created (\texttt{:255--260}): $5 \times 32 \times 5.33$\,MiB per layer-map
+$= 853$\,MiB. The content is 26 layers ($\sim$693\,MiB); the triples list
+(\texttt{MyApp.cpp:408--429}) plus five mixer targets
+(\texttt{:442--446}) account for those, and \texttt{MyApp.cpp:466--471} creates
+descriptors for a 27th placeholder layer that nothing ever writes. Report~22
+C1's \texttt{logMemoryUtilization} (shipped) reports mesh/vertex/index pools,
+vegetation chunks, and debug streams --- \emph{not} texture layers or bytes.
+The result is the same failure mode report~22 found in buffers, at three times
+the size: worst-case capacity, no utilization feedback, no resize path.
+
+\textit{Technique: size from content, log utilization, tier resolution.} The
+layer count can be computed from the loaded triples plus the configured mixers
+(rounded up with a small paint margin) instead of hard-coded 32; startup should
+log used/total layers and bytes with a $<25\%$ idle warning (extending the
+shipped report-22 telemetry); a settings tier can halve array resolution
+($853 \rightarrow 213$\,MiB) for low-memory presets. Mip levels could be capped
+for layers whose max LOD is bounded, but resolution tiering dominates.
+
+\begin{tcolorbox}[promptbox={Prompt --- C1: content-sized texture arrays and utilization telemetry}]
+Goal: committed texture memory tracks content. Steps: (1) derive the layer
+count from the loaded triples plus configured mixers (+2 paint layers) and pass
+it to \texttt{allocate}; (2) extend the startup memory log with per-array
+layers used/total and bytes, warning below 25\% utilization; (3) add an array
+resolution tier to \texttt{Settings} (default 1024, lower presets 512) flowing
+through an idle-guarded reallocate that re-uploads the layers. Files:
+\texttt{MyApp.cpp}, \texttt{vulkan/TextureArrayManager.cpp},
+\texttt{utils/Settings.hpp}. Validation: identical renders at the default tier,
+VRAM delta per tier, validation-clean.
+\\ \textbf{Implemented as:} all three steps. (1) The layer count is derived at
+bring-up in \texttt{MyApp.cpp}: 21 triples $+$ 5 configured mixers $+$ 2
+(editable placeholder $+$ spare) $=$ \textbf{28 layers} instead of the magic
+32, with the derivation logged; that is $-107$\,MiB at the default tier
+(747 vs 853\,MiB) and the six idle layers shrink to the placeholder plus one
+spare. (2) \texttt{TextureArrayManager::logMemoryUtilization} prints
+used/allocated layers and bytes (aggregate $+$ per-map breakdown) and warns
+below 25\%; it runs at the end of \texttt{setupTextures} and from the scene
+renderer's report-22 pool log, so every scene load/generation re-reports the
+texture side. (3) \texttt{Settings::textureArraySize} (default 1024; Minimal
+512, Maximum 1024) flows through \texttt{MyApp::recreateTextureArrays}: one
+device idle (the AGENTS.md major-rebuild case), a
+\texttt{TextureArrayManager::recreate} that releases the old per-layer
+views/ImGui descriptors, swaps the images and notifies the set-0 listener
+exactly once with the new views, a re-upload of the same triples, a mixer
+rebind (\texttt{updateComputeDescriptorSets} now writes the same
+\texttt{GENERAL} sampler layouts the init path and the pre-dispatch sweep
+assume --- its old \texttt{SHADER\_READ\_ONLY} write contradicted them), a
+refresh of the five generated layers, and a drain of the deferred destroys
+while still idle. Layer indices are resolution-independent, so materials,
+mixer targets and the brush/viewer pickers needed no changes; 512$^2$ brings
+the five arrays to 187\,MiB. One dependency fix was unavoidable: the tier
+routes every source through the resampler, so the 2:1 path is now an
+area-average box filter instead of point sampling (also closes M11's
+downscale bullet). The tier path is idle-guarded and follows the shipped
+water/vegetation rebuild pattern, but it still needs a validation run ---
+it touches descriptor sets across the mixer, scene and ImGui in one frame.
+\end{tcolorbox}
+
+\subsection{C2: Every Mixer Generation Sweeps All Five Arrays Through GENERAL and Blocks the CPU}
+\label{sec:c2}
+
+\textbf{Severity: Critical.}
+
+A texture-mixer parameter change runs the whole pipeline synchronously. The
+widget enqueues a generation on \emph{every slider edit}
+(\texttt{TextureMixerWidget.cpp:162--178,\allowbreak190--198}); \texttt{MyApp.cpp:4057--4060}
+flushes the queue from \texttt{postSubmit()} every frame; and
+\texttt{TextureMixer::generatePerlinNoise} submits through
+\texttt{runSingleTimeCommands} (\texttt{TextureMixer.cpp:976}), which waits on a
+fence polled in 100\,µs sleeps
+(\texttt{VulkanApp.cpp:1059--1152,\allowbreak1218--1241}) ---
+so a drag stalls the CPU once per frame. The dispatch itself is small
+($64\times64$ groups, \texttt{:1098--1101}); the cost is around it:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item \texttt{:1045--1074}: because the sampler descriptors bind the
+\emph{full array views} with \texttt{imageLayout = GENERAL} (the reason is
+stated in the comment at \texttt{:1041--1044}), the code transitions every
+non-target layer of every generated map to \texttt{GENERAL} before the
+dispatch --- a whole-array sweep per array.
+\item \texttt{:1197--1228}: the same sweep runs in reverse after, and
+\texttt{:1107--1156} regenerates the target layer's five mip chains in the
+same command buffer (5 arrays $\times$ 10 blits, 22 barriers each).
+\end{itemize}
+
+Per tick: $\sim$135 barrier objects, $\sim$3{,}500 subresource transitions
+(32 layers $\times$ 11 mips $\times$ 5 arrays in and out), 50 blits, one
+blocking fence round-trip. All 853\,MiB of arrays leave
+\texttt{SHADER\_READ\_ONLY} and come back, while the solid pass samples them
+every frame.
+
+\textit{Technique: layer-local generation, commit on release.} A generation can
+only touch three layers: the write target and the two sampled sources
+(\texttt{perlin\_noise.comp:182--200}). Transition exactly those, restore the
+two sources, and bind storage through per-layer 2D views so no array-wide
+layout change is needed (the machinery for this is already written --- see H4).
+Separately, the widget should coalesce edits (e.g.\ generate on
+\texttt{IsItemDeactivatedAfterEdit} or at most one generation in flight per
+frame) so a slider drag is one sweep, not sixty.
+
+\begin{tcolorbox}[promptbox={Prompt --- C2: layer-local, commit-on-release generation}]
+Goal: a parameter change touches three layers, not five arrays. Steps:
+(1) rework \texttt{generatePerlinNoise} to transition only target + primary +
+secondary subresources and restore the two sources; (2) bind the storage
+target's single-layer view (per-layer sets of H4) instead of the array view;
+(3) trigger from slider release / one max in-flight generation per frame, not
+per edit. Files: \texttt{services/TextureMixer.cpp},
+\texttt{widgets/TextureMixerWidget.cpp}, \texttt{shaders/perlin\_noise.comp}.
+Validation: identical generated pixels, barrier count per generation down,
+validation-clean (watch dynamic-layer-index layout rules; keep the conservative
+path behind a feature flag if VVL objects).
+\end{tcolorbox}
+
+\subsection{C3: The Load Path Runs $\sim$300 Blocking Submits and 420\,MiB of Staging Churn}
+\label{sec:c3}
+
+\textbf{Severity: Critical.}
+
+\texttt{TextureArrayManager::load} handles one map at a time
+(\texttt{:350--379}): create a fresh 4\,MiB staging buffer
+(\texttt{:351}), \texttt{memcpy} the decoded pixels (\texttt{:352}), one
+blocking upload submit (\texttt{:354--367}), then a \emph{separate} blocking
+mip-generation submit (\texttt{:369--371}). For the 21 triples that is
+$21 \times 5 = 105$ uploads and 105 mip submits. Add array creation
+(\texttt{allocate}, 5 arrays $\times$ 2 whole-image transitions,
+\texttt{:250--251}), the vegetation arrays ($3 \times 5 \times 2 = 30$,
+including two constant-color default maps per layer because
+\texttt{load()} fills absent paths, \texttt{:382--392}), the five initial mixer
+generations, the billboard path (H5: 27 + 12 submits) and the impostor init
+(4): \textbf{$\sim$300 blocking submits before the first UI frame}. Every one
+of them waits on a fence polled in 100\,µs sleeps
+(\texttt{VulkanApp.cpp:1226--1239}), sharing a four-entry command-buffer ring
+(\texttt{VulkanApp.hpp:782}) whose slots cannot overlap.
+
+The memory side is no better. \texttt{createBuffer} zero-initializes every
+allocation (\texttt{VulkanApp.cpp:4146--4159}); the staging buffer is then
+immediately overwritten (\texttt{TextureArrayManager.cpp:352}), so the 105
+$\times$ 4\,MiB uploads perform 420\,MiB of zero-memset that no one reads, plus
+420\,MiB of allocations/frees that a persistent staging ring would eliminate ---
+the exact pattern report~22 M10 shipped for vegetation streaming and the
+in-tree \texttt{vulkan/streaming/}\allowbreak\texttt{StagingBufferPool} already
+implements.
+
+\textit{Technique: batch per layer, keep staging.} One command buffer per layer
+(or per array) recording the five copies and \texttt{recordGenerateMipmaps};
+one submit and one fence per layer instead of ten; a persistent staging pool
+sized to the peak concurrent upload; \texttt{zeroInit=false} where the caller
+overwrites the full range.
+
+\begin{tcolorbox}[promptbox={Prompt --- C3: batch the array bring-up}]
+Goal: one or two submits per layer, zero staging churn. Steps: (1) acquire
+staging from the existing pool (or a small per-manager pool) instead of
+\texttt{createBuffer}/\texttt{destroyBuffer} per map; (2) record all present
+maps of a layer into one CB (five \texttt{vkCmdCopyBufferToImage} regions) and
+append \texttt{recordGenerateMipmaps} for each map; (3) submit once per layer;
+(4) pass \texttt{zeroInit=false} for fully-overwritten uploads. Files:
+\texttt{vulkan/TextureArrayManager.cpp}, \texttt{vulkan/VulkanApp.cpp}.
+Validation: identical array contents, submit count per load, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{High-Severity Issues}
+% =====================================================================
+
+\subsection{H4: The Per-Layer Descriptor Path That Would Make C2 Cheap Is Dead by Construction}
+\label{sec:h4}
+
+\textbf{Severity: High.}
+
+\texttt{TextureMixer::createComputePipeline} ends by allocating one persistent
+descriptor set per array layer, each binding that layer's single-layer 2D
+storage views, and sets \texttt{hasPerLayerDescSets}
+(\texttt{TextureMixer.cpp:444--518}) --- the design that makes a generation
+layer-local. It can never succeed on the shipped path: \texttt{MyApp.cpp:437--438}
+calls \texttt{init(app, \&textureArrayManager)} (and therefore
+\texttt{createComputePipeline}) immediately after \texttt{loadTriples}, while
+the per-layer views are created later, at \texttt{MyApp.cpp:448--454,467--471}.
+The guard at \texttt{TextureMixer.cpp:456--465} sees empty view vectors, logs
+\texttt{Warning: textureArrayManager layer view arrays are smaller than
+layerAmount}, and returns. Nothing retries: \texttt{updateComputeDescriptorSets}
+(the only other writer of these sets, \texttt{:654--762}) has zero callers in
+the tree. The warning is therefore printed on every run --- it is in the shipped
+\texttt{logs/run.log:128} and \texttt{logs/gpuav\_run.log:130}.
+
+Every generation consequently falls back to \texttt{tripleComputeDescSet}
+(\texttt{:1086--1090}), whose sampler bindings are the full array views at
+\texttt{GENERAL} --- which is exactly why C2 must sweep all 32 layers. The fix
+for C2 is not just written; it is sitting disabled behind a call-ordering
+accident.
+
+\textit{Technique: finish it or delete it.} Re-run the per-layer allocation on
+first generation (when the views exist), or create the views before mixer
+init; verify that storage writes through single-layer views remove the array
+sweep. If the layout rules for dynamically-indexed array sampling force the
+conservative sweep under validation, say so in a comment and keep one path.
+
+\begin{tcolorbox}[promptbox={Prompt --- H4: revive the per-layer descriptor sets}]
+Goal: the mixer's layer-local path actually runs. Steps: (1) split
+\texttt{createComputePipeline} so the per-layer set allocation is a retryable
+step; (2) call it on first generation (after \texttt{getImTexture} has created
+the views) or create views before mixer init; (3) switch
+\texttt{generatePerlinNoise} to \texttt{perLayerDescSets[targetLayer]} and
+transition only target/primary/secondary; (4) delete the misleading
+empty-vector warning once the failure mode is impossible. Files:
+\texttt{services/TextureMixer.cpp}, \texttt{MyApp.cpp}. Validation: generated
+pixels identical, warning gone, per-generation barrier count collapses,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{H5: Billboard Bake Rebuilds Whole Arrays; Editable Updates Re-Upload Whole Images}
+\label{sec:h5}
+
+\textbf{Severity: High.}
+
+\texttt{BillboardService::bakeFromTextures} destroys all three array images and
+recreates them on every invocation (\texttt{BillboardService.cpp:80--98,100--137}),
+then copies each channel's three layers with one blocking submit \emph{per
+layer} (9 submits, \texttt{:145--164}) and generates mips with three more
+blocking submits (\texttt{:168--174}). A ``Recompose Billboard'' press costs
+nine of those submits immediately (\texttt{BillboardCreator::composeBillboard}
+runs three full-image \texttt{updateGPU} calls, \texttt{BillboardCreator.cpp:539--541},
+each of which is three blocking single-time passes in
+\texttt{EditableTexture.cpp:123--139}: transition, copy, transition); the
+startup \texttt{bakeAllBillboards} (\texttt{BillboardCreator.cpp:74--91}) runs
+that three times and then the bake --- $\sim$39 blocking submits, three array
+teardowns, and a full re-decode of the atlas JPEGs
+(\texttt{BillboardCreator.cpp:433--453}). The composed output is $512^2$; the
+inputs are entirely unchanged for every layer but the edited one.
+
+\textit{Technique: persistent targets, dirty regions.} Keep the three array
+images for the session and copy only changed layers into them in one command
+buffer; give \texttt{EditableTexture} a sub-rect upload (the editors know the
+dirty bounds); cache decoded atlas pixels across composes.
+
+\begin{tcolorbox}[promptbox={Prompt --- H5: in-place billboard updates}]
+Goal: a recompose touches only what changed. Steps: (1) create array images
+once (recreate only on size/layer change); (2) record all channel-layer copies
+plus mips into one CB and submit once; (3) add dirty-rect tracking to
+\texttt{EditableTexture::updateGPU}; (4) cache atlas decodes between composes.
+Files: \texttt{services/BillboardService.cpp},
+\texttt{widgets/BillboardCreator.cpp}, \texttt{vulkan/EditableTexture.cpp}.
+Validation: identical baked arrays, submit count per bake down,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{H6: The CPU Load Path Pays 66M \texttt{powf}, 420\,MiB of Dead Memset, and Per-Layer Scans}
+\label{sec:h6}
+
+\textbf{Severity: High.}
+
+Three exact, local wastes sit in the load path:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item \texttt{convertSRGB8ToLinearInPlace} (\texttt{TextureArrayManager.cpp:13--26})
+runs three \texttt{std::pow} per texel of every albedo layer: $21 \times
+1024^2 \times 3 \approx 66$M transcendental calls. Input and output are both
+8-bit, so the mapping has 256 possible results --- a 256-entry LUT gives
+bit-identical output (same formula, same float rounding, precomputed once) at
+$\sim$1/60th the cost. (The call is invoked only for the albedo map,
+\texttt{:408--410}.)
+\item \texttt{createBuffer} zero-memsets host-visible buffers before returning
+(\texttt{VulkanApp.cpp:4146--4159}); \texttt{load()} overwrites the full staging
+range immediately after (\texttt{:351--352}). 105 uploads $\times$ 4\,MiB
+$=$ 420\,MiB of memset whose only readers are the allocator.
+\item \texttt{meanLinearRGB} (\texttt{:305--320}) double-accumulates over
+$1024^2$ texels for every albedo layer (21 scans) to maintain a 3-float
+average used by the RT proxy.
+\end{itemize}
+
+\textit{Technique: LUT, \texttt{zeroInit=false}, fold the scan.} One 256-byte
+table replaces the pow loop exactly; the zero-init flag already exists; the
+average can be accumulated in the same pass that converts (or from a 256-bin
+histogram, since the data is quantized).
+
+\begin{tcolorbox}[promptbox={Prompt --- H6: exact, local load-path waste}]
+Goal: remove work with a proof, not a benchmark. Steps: (1) replace
+\texttt{convertSRGB8ToLinearInPlace}'s pow loop with a static 256-entry LUT
+computed by the same expression; (2) call \texttt{createBuffer(...,
+zeroInit=false)} in the upload helper (the memcpy covers the whole range);
+(3) accumulate the albedo average while converting. Files:
+\texttt{vulkan/TextureArrayManager.cpp}. Validation: pixel-identical arrays
+(LUT is exact), CPU time in load, validation-clean.
+\end{tcolorbox}
+
+\subsection{H7: 135 Per-Layer Views and ImGui Descriptors Are Created Eagerly}
+\label{sec:h7}
+
+\textbf{Severity: High.}
+
+\texttt{TextureArrayManager::getImTexture} is explicitly lazy --- it creates the
+2D view and \texttt{ImGui\_ImplVulkan\_AddTexture} descriptor on first request
+(\texttt{TextureArrayManager.cpp:749--802}). \texttt{MyApp.cpp:448--454} defeats
+that by calling it for \emph{all} 26 populated layers $\times$ 5 maps at
+startup, and \texttt{:466--471} adds the placeholder layer: \textbf{135 views
+and 135 ImGui descriptor sets} before the first frame, most of which the UI
+never displays. Each is tracked in \texttt{VulkanResourceManager}, invalidated
+and recreated across swapchain recreation (\texttt{MyApp.cpp:3318--3337}), and
+deferred-destroyed at shutdown. The TextureViewer/Mixer/Brush3d widgets already
+call \texttt{getImTexture} on demand, so the eager loop buys nothing.
+
+\textit{Technique: delete the warm-up loop.} Keep lazy creation; create at most
+the visible previews.
+
+\begin{tcolorbox}[promptbox={Prompt --- H7: stop warming every preview}]
+Goal: views and descriptors exist only if shown. Steps: remove the eager loops
+in \texttt{MyApp.cpp:448--454} and \texttt{:466--471} (keep the layer
+initialized flags where the UI needs them); confirm the widgets' on-demand path
+covers the first display frame. Files: \texttt{MyApp.cpp}. Validation:
+descriptor count at startup, previews still appear, validation-clean.
+\end{tcolorbox}
+
+\subsection{H8: Mipmaps Are One Blocking Submit per Map --- 105 of Them}
+\label{sec:h8}
+
+\textbf{Severity: High.}
+
+\texttt{load()} calls the blocking \texttt{generateMipmaps} per map
+(\texttt{TextureArrayManager.cpp:369--371}); each call re-queries format
+properties and opens a fresh single-time submit
+(\texttt{VulkanApp.cpp:1339--1352}). Inside,
+\texttt{recordGenerateMipmaps} (\texttt{:1367--1488}) records, per layer, 22
+barriers and 10 blits for 11 levels. At bring-up that is 105 submits,
+\textbf{2\,310 barriers and 1\,050 blits} for the main arrays (plus 285/135 for
+vegetation). The mixer already shows the better shape: it records
+\texttt{recordGenerateMipmaps} \emph{inside} its generation command buffer
+(\texttt{TextureMixer.cpp:1142--1155}), one submit for dispatch + five mip
+chains. The same is available to the load path the moment it batches (C3);
+additionally the format-capability query can be cached once instead of 105
+times.
+
+\textit{Technique: mips in the upload command buffer.}
+
+\begin{tcolorbox}[promptbox={Prompt --- H8: fold mip generation into the upload submit}]
+Goal: no separate mip submits at load. Steps: (1) after the five copies, call
+\texttt{recordGenerateMipmaps} in the same CB per map (C3's batching makes this
+free); (2) cache the linear-blit format check per format; (3) update tracked
+layouts once per layer. Files: \texttt{vulkan/TextureArrayManager.cpp},
+\texttt{vulkan/VulkanApp.cpp}. Validation: identical mip content, submit count
+per layer from 10 to 1, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M9: Vestigial Async Generation Machinery Runs Every Frame}
+\label{sec:m9}
+
+\textbf{Severity: Medium.}
+
+\texttt{TextureMixer} tracks ``pending fences'' for asynchronous generations,
+but no code ever inserts into \texttt{pendingFences} --- every reference in the
+tree reads or clears it (\texttt{TextureMixer.cpp:128--161,217--253}). The
+consequences: \texttt{isLayerGenerationPending} always returns false,
+\texttt{waitForLayerGeneration} is unreachable in practice,
+\texttt{getPendingGenerationCount} counts only queued requests, and
+\texttt{pollPendingGenerations} iterates an always-empty vector. The last one
+still runs \emph{every frame} (\texttt{MyApp.cpp:4059--4060}) and calls
+\texttt{app->processPendingCommandBuffers()} (\texttt{TextureMixer.cpp:165}),
+which \texttt{drawFrame} already called immediately before
+\texttt{postSubmit()} (\texttt{VulkanApp.cpp:5044}) --- a duplicate walk of the
+deferred-destroy lists per frame. Generation has been synchronous since the
+\texttt{runSingleTimeCommands} rewrite; the async scaffolding predates it.
+
+\textit{Technique: delete or complete.} Either remove the fence machinery and
+its per-frame calls, or make generation genuinely async (the fences would then
+be populated by the submit), which would also unblock C2's commit-on-release
+design.
+
+\begin{tcolorbox}[promptbox={Prompt --- M9: one story for mixer synchronization}]
+Goal: no dead synchronization paths. Steps: (1) decide synchronous or async;
+if synchronous, delete \texttt{pendingFences}, the wait/poll/is-pending
+accessors, and the \texttt{processPendingCommandBuffers} call in
+\texttt{pollPendingGenerations}; (2) keep the per-frame flush;
+(3) update the widget's pending counter to the queue depth. Files:
+\texttt{services/TextureMixer.cpp,.hpp}, \texttt{MyApp.cpp}. Validation:
+identical behavior, no duplicate pending-CB walk, validation-clean.
+\end{tcolorbox}
+
+\subsection{M10: Five Initial Generations Are Five Full Sweeps}
+\label{sec:m10}
+
+\textbf{Severity: Medium.}
+
+\texttt{generateInitialTextures} enqueues five mixers
+(\texttt{MyApp.cpp:442--446,474}); the first \texttt{postSubmit} flushes them
+sequentially, and each one performs C2's whole-array sweep, its own blocking
+submit, and its own five mip chains --- five identical layout round-trips over
+the same five arrays in one frame. The dispatches are independent (different
+target layers, disjoint storage), so they can share one command buffer, one
+sweep, and one fence.
+
+\textit{Technique: coalesce same-frame generations.} Flush all pending
+requests into one command buffer; transition each affected array once
+(union of targets and sources); dispatch per request.
+
+\begin{tcolorbox}[promptbox={Prompt --- M10: batch the initial generations}]
+Goal: N queued generations cost one sweep and one submit. Steps: build a union
+of target/source layers per array, emit the transitions once, record one
+dispatch per request (push constants differ), append each target layer's mip
+chain, submit once. Files: \texttt{services/TextureMixer.cpp}. Validation:
+identical generated layers, startup generation cost down, validation-clean.
+\end{tcolorbox}
+
+\subsection{M11: Vegetation Sources Are Nearest-Downscaled; Mixer Layers Keep Gray RT Albedo}
+\label{sec:m11}
+
+\textbf{Severity: Medium.}
+
+Two content-path gaps with small but real cost/quality effects:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item The vegetation arrays are $512^2$ (\texttt{MyApp.cpp:3496}) while all
+three atlas sources are $1024^2$; \texttt{load()} therefore routes them
+through \texttt{resizeNearest} (\texttt{TextureArrayManager.cpp:400--406}), a
+point-sampled 2:1 decimation of alpha-cut foliage --- the classic aliasing
+recipe for wind-animated billboards. A box filter or mip-filtered downscale
+costs the same at load and is strictly better at render time.
+\item \texttt{albedoAvg} (the RT proxy's per-layer albedo) is only written by
+\texttt{load()} (\texttt{:416--417}) and the dead
+\texttt{updateLayerFromEditableMap} (\texttt{:707--720}); mixer-generated
+layers 21--25 keep the gray $(0.5,0.5,0.5)$ default
+(\texttt{:281}), so reflection/refraction rays that hit mixed terrain return
+gray proxies.
+\end{itemize}
+
+\textit{Technique: filtered downscale; update the average on generation.} Use a
+2$\times$2 box (or \texttt{stbir\_resize}) for resampling; compute the average
+in the generation path from the same data the compute shader blended (or read
+back one mip).
+
+\begin{tcolorbox}[promptbox={Prompt --- M11: filtered vegetation downscale, live RT albedo}]
+Goal: no point-decimation, no stale proxy albedo. Steps: (1) replace
+\texttt{resizeNearest} with a box/bilinear resample (or load at target size via
+stb's resize); (2) update \texttt{albedoAvg} for mixer target layers after
+generation. Files: \texttt{vulkan/TextureArrayManager.cpp},
+\texttt{services/TextureMixer.cpp}. Validation: vegetation A/B (aliasing),
+reflection color spot-check, validation-clean.
+\end{tcolorbox}
+
+\subsection{M12: Dead Mixer Surfaces and Duplicated Samplers}
+\label{sec:m12}
+
+\textbf{Severity: Medium.}
+
+The mixer carries several write-only surfaces: the five per-map descriptor sets
+allocated in \texttt{createComputeDescriptorSet} (\texttt{TextureMixer.cpp:438--442,804--879})
+are never bound (\texttt{generatePerlinNoise} always uses the triple set);
+\texttt{updateComputeDescriptorSets} has no callers and binds samplers at
+\texttt{SHADER\_READ\_ONLY} while the init-time set uses \texttt{GENERAL} ---
+two contradictory descriptions of the same bindings; and
+\texttt{TextureArrayManager::updateLayerFromEditableMap} (56 lines of
+transition/copy/mip choreography plus the only caller of
+\texttt{waitForLayerGeneration}) has zero callers. Ten samplers are created
+with identical state (five per manager, \texttt{VulkanApp::createTextureSampler}
+at \texttt{TextureArrayManager.cpp:269--273} and \texttt{MyApp.cpp:3496}), and
+\texttt{TextureArrayManager::create()} (\texttt{:488--542}) is a whole
+zero-layer initializer with no callers. Each item is small; together they are
+the reason C2/H4's intended path is hard to see.
+
+\textit{Technique: delete the unbound paths, share the samplers.} One sampler
+per configuration, one descriptor-set recipe.
+
+\begin{tcolorbox}[promptbox={Prompt --- M12: one recipe per purpose}]
+Goal: every surface has a caller. Steps: (1) delete the per-map sets and
+\texttt{updateComputeDescriptorSets} (or make them the one path and delete the
+triple fallback); (2) delete \texttt{updateLayerFromEditable(Map)} and
+\texttt{create()} if the tree still shows no callers; (3) create each sampler
+kind once and share. Files: \texttt{services/TextureMixer.cpp,.hpp},
+\texttt{vulkan/TextureArrayManager.cpp,.hpp}. Validation: build minus the
+symbols, identical behavior, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L13: The Noise Preview Is Broken Twice Over}
+\label{sec:l13}
+
+\texttt{TextureMixer::getNoiseDescriptor} renders the mask by binding an
+alpha-swizzled view (\texttt{TextureMixer.cpp:789--802}), but
+\texttt{TextureArrayManager::getImTextureAlpha} returns the cached
+\texttt{albedoImTextures[layer]} if it exists
+(\texttt{TextureArrayManager.cpp:831}) --- and H7 guarantees it exists, because
+startup warmed every layer. The swizzle is never created. Independently, the
+shader's \texttt{debugOutput} push constant is never assigned by the C++
+(\texttt{PerlinPushConstants.hpp:19} is left to an uninitialized local in
+\texttt{TextureMixer.cpp:916}) and is never read by the shader body
+(\texttt{shaders/perlin\_noise.comp:202--215} always writes the blend), so the
+``Show noise'' checkbox does nothing on either path. Harmless to performance;
+worth fixing while touching the mixer.
+
+\subsection{L14: Per-Generation Log String Churn}
+\label{sec:l14}
+
+Every enqueue, replacement, and immediate generation formats and appends a
+string under \texttt{logsMutex} (\texttt{TextureMixer.cpp:95--100,180--185,883--888}),
+and the widget polls the queue depth with two mutex acquisitions per frame
+(\texttt{:203--207}). During a slider drag this is one formatted string per
+frame for a message no one reads. Gate on a log flag or drop the per-request
+lines.
+
+\subsection{L15: Magic 32, Stale Comments, and Misleading Startup Text}
+\label{sec:l15}
+
+\texttt{MyApp.cpp:404}'s \texttt{layerCount = 32} is unrelated to the 26 layers
+actually used (C1); the mixer's startup banner says ``Albedo, Normal, Bump''
+while five maps are generated (\texttt{TextureMixer.cpp:65}); the comment above
+\texttt{getImTextureAlpha} promises swizzled alpha that never happens (L13);
+and \texttt{TextureArrayManager.hpp:83}'s ``version counter'' is bumped but
+nothing in the tree reads it. Update the comments, delete the counter if
+unused, and let C1's content-derived count replace the constant.
+
+% =====================================================================
+\section{Implementation Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lp{5.8cm}p{5.6cm}@{}}
+\toprule
+\textbf{Item} & \textbf{Change} & \textbf{Est.\ effect} \\
+\midrule
+C1 & Content-sized layers + utilization log + resolution tier & $-160$\,MiB idle; $-640$\,MiB at the 512 tier \\
+C2 & Layer-local, commit-on-release generation & $-3.5$k subresource transitions/tick, no per-tick fence stall \\
+C3 & Batched load path, persistent staging, \texttt{zeroInit=false} & $-210$ submits, $-420$\,MiB memset, $-420$\,MiB alloc churn \\
+H4 & Revive per-layer descriptor sets & prerequisite for C2 \\
+H5 & In-place billboard/editable updates & $\sim$39 $\rightarrow$ $\sim$3 submits per bake, no array rebuild \\
+H6 & sRGB LUT + no dead memset + fused average & $-66$M \texttt{powf}, $-420$\,MiB memset \\
+H7 & Drop the eager preview loop & $-135$ views/descriptors at startup \\
+H8 & Mips in the upload CB & $-105$ submits, $-2.3$k barriers \\
+M9--M12 & One sync story, coalesced generations, filtered downscale, dead-surface sweep & additive \\
+L13--L15 & Noise preview, log churn, constants/comments & noise floor \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C1--C3 are the items that change what the engine \emph{costs to run} on the
+texture side: residency, interactive stall, and bring-up. H4 is not optional
+for C2 --- it was the intended mechanism. None of the changes touches rendered
+content except M11's downscale filter (a quality fix) and none changes the
+lighting model.
+
+% =====================================================================
+\section{Overall Score}
+\label{sec:score23}
+% =====================================================================
+
+\subsection{Rubric (Report-23 Scope)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcp{7.2cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Wt.} & \textbf{Score and justification} \\
+\midrule
+Texture residency & 30\% & \textbf{4.5} --- arrays are the right structure
+(mips, aniso, deferred frees, few descriptors), but 853\,MiB is provisioned by
+a magic constant, 160\,MiB is idle, and no texture-side telemetry exists. \\
+Generation path & 25\% & \textbf{4.0} --- one blocking fence round-trip and a
+five-array \texttt{GENERAL} sweep per slider tick; the layer-local fix is
+written and disabled by call ordering. \\
+Load / bring-up path & 25\% & \textbf{5.0} --- correct and one-shot, but
+$\sim$300 blocking submits, per-map staging churn, per-map mip submits, and
+420\,MiB of dead memset. \\
+Authoring assets & 20\% & \textbf{5.5} --- atlas autodetect, nearest-leaf fill
+and lazy previews are good; bakes rebuild whole arrays, edits re-upload whole
+images, previews are eager. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Overall: 4.7/10 Scope, 6.2/10 Combined}
+
+\begin{equation}
+0.30(4.5) + 0.25(4.0) + 0.25(5.0) + 0.20(5.5) = \mathbf{4.7}
+\end{equation}
+
+Report~22 scored the frame-side scope 6.0 and the combined engine 6.4; that
+estimate implicitly valued the asset/load dimension at roughly 10\% without
+measuring it. Measuring it:
+
+\begin{equation}
+0.90(6.4) + 0.10(4.7) = \mathbf{6.2}
+\end{equation}
+
+The engine's verdict is unchanged in kind: the architecture (arrays, bindless
+sizing, explicit layout tracking, deferred destruction, one-shot compute
+generation) is sound; the constant factors --- capacity, synchronization
+granularity, and batching --- are again where the money is. Landing C1--C3 and
+H4 moves this scope toward $\sim$8/10 with no redesign.
+
+\end{document}

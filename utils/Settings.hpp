@@ -159,4 +159,15 @@ public:
     // presets is a 4x cut in shaded vegetation pixels. Applied when the
     // targets are (re)created: immediately on change, or on swapchain resize.
     float vegetationRenderScale = 1.0f;
+
+    // ── Main material texture-array resolution (perf report 23 C1) ─────────
+    // The five material arrays (albedo/normal/bump/roughness/ao) are RGBA8
+    // with a full mip chain at Size x Size per layer and are the largest
+    // single image commitment in the engine (~750 MB at 1024 with the
+    // content-derived layer count). 1024 is the default; the low presets set
+    // 512, which quarters the commitment. Applied on the frame the value
+    // changes: one device idle, then the layers are re-uploaded and the
+    // mixer's generated layers refreshed (the array semantics — layer
+    // indices, materials, mixer targets — are resolution-independent).
+    int textureArraySize = 1024;
 };

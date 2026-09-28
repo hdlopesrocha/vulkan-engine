@@ -91,6 +91,25 @@ public:
     // Destroy GPU resources (images, views, memory, samplers)
     void destroy(class VulkanApp* app);
 
+    // Release the per-layer 2D views + ImGui descriptors (deferred via
+    // VulkanApp::deferDestroyUntilAllPending). Split out of destroy() so a
+    // resolution change can drop the views that reference the old images
+    // before allocate() replaces them (perf report 23 C1). Does NOT notify
+    // allocation listeners — callers reallocate afterwards.
+    void releaseLayerViews(class VulkanApp* app);
+
+    // Swap the five arrays to a new (layers, w, h) shape under a caller-held
+    // device idle: drops the per-layer views/descriptors, then allocate()
+    // replaces the images, bumping `version` and notifying listeners once
+    // with the new views (perf report 23 C1). Content re-upload is the
+    // caller's job (loadTriples).
+    void recreate(class VulkanApp* app, uint32_t layers, uint32_t w, uint32_t h);
+
+    // Log committed vs. initialized layers/bytes for the five arrays; warn
+    // when fewer than 25% of the allocated layers hold data (perf report 23
+    // C1, extending the report-22 pool telemetry to texture memory).
+    void logMemoryUtilization(const char* name) const;
+
     // Variant of load/create/update that accepts an explicit VulkanApp instead of relying on an internal pointer
     uint load(class VulkanApp* app, const char* albedoFile, const char* normalFile, const char* bumpFile, const char* roughnessFile = nullptr, const char* aoFile = nullptr);
     size_t loadTriples(class VulkanApp* app, const std::vector<TextureTriple> &triples);

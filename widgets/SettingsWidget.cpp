@@ -95,6 +95,21 @@ void SettingsWidget::render() {
                        "cuts the shaded vegetation pixels 4x; the composite upsamples the color and\n"
                        "takes the closest of the 2x2 depth taps for the occlusion test.\n"
                        "Applied immediately (one device idle on the frame it changes).");
+        FieldLabel("Texture array size", "Material texture-array resolution (px per layer)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        {
+            const char* kTextureSizeItems[] = { "512", "1024", "2048" };
+            int sizeIdx = (settings.textureArraySize >= 2048) ? 2
+                        : (settings.textureArraySize >= 1024 ? 1 : 0);
+            if (ImGui::Combo("##Texture array size", &sizeIdx, kTextureSizeItems, 3)) {
+                settings.textureArraySize = (sizeIdx == 2) ? 2048 : (sizeIdx == 1 ? 1024 : 512);
+            }
+        }
+        TooltipOnHover("Resolution of the five material texture arrays (albedo, normal, bump,\n"
+                       "roughness, ao). 1024 is ~750 MB of device memory with the content-sized\n"
+                       "layer count; 512 quarters it (sources are box-filtered down).\n"
+                       "Changing it rebuilds the arrays: one device idle, then a full re-upload\n"
+                       "and mixer refresh, so expect a brief hitch on that frame.");
         if (ImGui::Checkbox("Enable Normal Mapping", &settings.normalMappingEnabled)) {
             // toggled
         }
@@ -425,7 +440,7 @@ void SettingsWidget::render() {
     if (static_cast<int>(cachedH.size()) != n) {
         // First frame estimates; refined by measurement from frame 2 on.
         cachedH.assign(n, 170.0f);
-        cachedH[0] = 190.0f;   // Rendering
+        cachedH[0] = 230.0f;   // Rendering (incl. texture-array size, report 23 C1)
         cachedH[1] = 230.0f;   // Hybrid RT toggles
         cachedH[2] = 300.0f;   // RT Distances
         cachedH[3] = 240.0f;   // RT Ray Budget

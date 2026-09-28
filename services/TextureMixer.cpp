@@ -652,6 +652,11 @@ void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 }
 
 void TextureMixer::updateComputeDescriptorSets(VulkanApp* app) {
+	// Re-point the persistent compute descriptor sets at the currently
+	// attached TextureArrayManager's images. Used after the arrays are
+	// reallocated at a new resolution (perf report 23 C1); the layouts match
+	// createTripleComputeDescriptorSet (storage + samplers at GENERAL, so the
+	// pre-dispatch sweep in generatePerlinNoise stays valid).
 	if (!app) return;
 	if (!textureArrayManager) {
 		std::lock_guard<std::mutex> lk(logsMutex);
@@ -681,11 +686,16 @@ void TextureMixer::updateComputeDescriptorSets(VulkanApp* app) {
 	aoImageInfo.imageView = textureArrayManager->aoArray.view;
 	aoImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-	VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalArray.view; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	VkDescriptorImageInfo roughnessSamplerInfo{}; roughnessSamplerInfo.imageView = textureArrayManager->roughnessArray.view; roughnessSamplerInfo.sampler = textureArrayManager->roughnessSampler; roughnessSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	VkDescriptorImageInfo aoSamplerInfo{}; aoSamplerInfo.imageView = textureArrayManager->aoArray.view; aoSamplerInfo.sampler = textureArrayManager->aoSampler; aoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	// Sampler bindings declare GENERAL because the generation dispatch
+	// transitions every layer of the generated arrays to GENERAL before the
+	// dispatch (see the sweep in generatePerlinNoise). Writing
+	// SHADER_READ_ONLY here would contradict the init-time set created by
+	// createTripleComputeDescriptorSet and fail validation at dispatch time.
+	VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalArray.view; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	VkDescriptorImageInfo roughnessSamplerInfo{}; roughnessSamplerInfo.imageView = textureArrayManager->roughnessArray.view; roughnessSamplerInfo.sampler = textureArrayManager->roughnessSampler; roughnessSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	VkDescriptorImageInfo aoSamplerInfo{}; aoSamplerInfo.imageView = textureArrayManager->aoArray.view; aoSamplerInfo.sampler = textureArrayManager->aoSampler; aoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 	std::vector<VkWriteDescriptorSet> writes;
 
