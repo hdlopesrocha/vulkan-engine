@@ -110,7 +110,10 @@ void main() {
     vec3 camPos = ubo.viewPosition;
     float dist = distance(worldPos, camPos);
 
-    if (impostorDistance <= 0.0 || dist < impostorDistance * 0.50) {
+    // Direct hand-off: billboards own [0, impostorDistance), impostors own
+    // [impostorDistance, ...). No dithered cross-fade (see vegetation.frag):
+    // the fade dissolved the grass before the impostors read as vegetation.
+    if (impostorDistance <= 0.0 || dist < impostorDistance) {
         outTexCoord = vec3(0.0); outWorldPos = worldPos; outFaceNormal = vec3(0.0, 1.0, 0.0);
         outInstanceOffset = worldPos;
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
@@ -161,9 +164,13 @@ void main() {
 
     // Match the capture setup: the plant was captured at heightScale=1.0 with a
     // fixed-size square framebuffer. The plant occupies only 34.6% of the image
-    // height (top/bottom 32.7% are clear).  Adjust the quad size and UV mapping
-    // to crop the empty margins and align the captured plant to the instance.
-    vec3 center = worldPos + vec3(0.0, billboardScale * 0.5, 0.0);
+    // height (top/bottom 32.7% are clear). The quad and its centre scale
+    // uniformly with the runtime height scale (hs), exactly like the billboard
+    // (vegetation.vert scales its corners by billboardScale * hs), so the
+    // impostor is the same size as the plant it replaces. The UV crop maps the
+    // captured bbox (a fixed fraction of the image) to the whole quad, so the
+    // texture scales with the quad; it must NOT scale with hs itself.
+    vec3 center = worldPos + vec3(0.0, billboardScale * hs * 0.5, 0.0);
     vec3 worldUp = vec3(0.0, 1.0, 0.0);
 
     vec3 right;
@@ -175,10 +182,13 @@ void main() {
     }
     vec3 upDir = normalize(cross(toCamera, right));
 
-    // Quad size: width matches the plant's horizontal extent (1.5 × billboardScale × hs),
-    // height matches the captured plant height (billboardScale, not hs).
+    // Quad size: the captured plant bbox in world units, scaled by hs.
+    // (The old code scaled the width by hs but left the height at
+    // billboardScale and scaled uFrac by hs, which cancelled out and rendered
+    // every impostor at the capture size - tall plants shrank and short ones
+    // were cropped at the hand-off.)
     float quadHalfW = 0.75 * billboardScale * hs;
-    float quadHalfH = 0.5  * billboardScale;
+    float quadHalfH = 0.5  * billboardScale * hs;
     right = right * quadHalfW;
     vec3 up = upDir * quadHalfH;
 
@@ -191,9 +201,9 @@ void main() {
     vec3 finalPos = center + offset;
 
     // Crop UV to the plant's bounding box within the captured image.
-    // The plant occupies UV.V in [0.327, 0.673] (vertical) and UV.U projects
-    // via the instance's world-space position × hs (horizontal).
-    float uFrac = hs * 1.5 / 2.886751346; // hs * 1.5 / (2 * 2.5 * tan(30°))
+    // The plant occupies UV.V in [0.327, 0.673] (vertical) and
+    // UV.U in [0.5 ± 1.5/2.8867] (horizontal), independent of hs.
+    float uFrac = 1.5 / 2.886751346;      // 1.5 / (2 * 2.5 * tan(30°))
     float vFrac = 1.0 / 2.886751346;      // billboardScale / (2 * 2.5 * billboardScale * tan(30°))
     float vOff  = 0.5 - 0.5 / 2.886751346;
     outTexCoord = vec3(0.5 + (inCornerUV.x - 0.5) * uFrac,

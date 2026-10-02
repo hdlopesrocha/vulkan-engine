@@ -56,20 +56,10 @@ void main() {
     if (color.a < 0.3) discard;
     fragPosWorld = inWorldPos; // must be set before any ShadowCalculation call
 
-    // Cross-fade with vegetation: dithered fade-in in the transition zone.
-    // This is the complement of vegetation.frag's fade-out: together they cover
-    // 100% of pixels so the transition is seamless without gaps or doubles.
-    // Hoisted above the depth reconstruction (perf report 22 H5): the dither
-    // condition is independent of it (distance/fade/Bayer only), so
-    // dithered-out pixels skip the depth fetch, both matvecs and both divides
-    // with an identical final image (discard order is immaterial).
-    if (impostorDistance > 0.0) {
-        float dist      = distance(ubo.viewPosition, inInstanceOffset);
-        float fadeAlpha = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);
-        const int M[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
-        float threshold = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;
-        if (threshold < fadeAlpha) discard;   // complementary: keep where vegetation discards
-    }
+    // Direct hand-off (see impostors.vert): this instance only exists past
+    // impostorDistance, where the billboard vertex shader has already culled
+    // its counterpart. No dithered fade - the old cross-fade thinned the
+    // grass to sparse dots instead of swapping to the impostor.
 
     // Reconstruct per-pixel depth from captured depth map so the deferred
     // depth test (EQUAL compare) shades only the nearest fragments.

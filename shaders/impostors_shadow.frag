@@ -51,14 +51,8 @@ layout(push_constant) uniform PushConstants {
 };
 
 void main() {
-    // Dithered cross-fade (same as impostors_depth.frag).
-    if (impostorDistance > 0.0) {
-        float dist       = distance(ubo.viewPosition, inInstanceOffset);
-        float fadeAlpha  = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);
-        const int M[16]  = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
-        float threshold  = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;
-        if (threshold < fadeAlpha) discard;
-    }
+    // Direct hand-off at impostorDistance (see impostors_depth.vert): no
+    // dithered shadow cross-fade.
 
     vec4 lsPos = ubo.viewProjection * vec4(inWorldPos, 1.0);
     float depth = clamp(lsPos.z / lsPos.w, 0.0, 1.0);

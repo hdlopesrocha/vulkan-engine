@@ -69,18 +69,14 @@ void main() {
     // the background demotes (bit-identical output either way).
     if (opacityWeight < 0.3) discard;
 
-    // Cross-fade with impostors: dithered fade-out in the transition zone.
-    // Vegetation fades from fully opaque (at 0.85×impostorDistance) to fully gone
-    // (at 1.15×impostorDistance) using complementary Bayer 4×4 ordered dithering.
-    // The impostor shader uses the inverse condition, so together they cover 100% of pixels.
-    // Depends only on geometry/distance, so it runs before the background fetches.
-    if (!shadowPass && impostorDistance > 0.0) {
-        float dist       = distance(ubo.viewPosition, inWorldPos);
-        float fadeAlpha  = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);
-        const int M[16]  = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
-        float threshold  = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;
-        if (threshold >= fadeAlpha) discard;
-    }
+    // Impostor hand-off: DIRECT, no dithered fade. The vertex shader culls
+    // this instance at impostorDistance (see vegetation.vert) and the
+    // impostor vertex shader starts at the same distance, so the billboard
+    // and impostor swap per instance exactly at the threshold. The old
+    // 0.50x-1.15x complementary dither dissolved the grass into sparse dots
+    // before the impostors read as vegetation - at the half-res Minimal
+    // vegetation target each 4x4 Bayer block spans 8x8 screen pixels, so the
+    // "transition" looked like a bare ring with no grass at all.
 
     // Background: nearest-leaf-filled by CPU compositor; high-mip gives spatial blend.
     const float kAvgMip = 5.0;

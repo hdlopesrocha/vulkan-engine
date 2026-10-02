@@ -48,14 +48,9 @@ void main() {
 
     if (weight < 0.3) discard;
 
-    // Cross-fade with impostors: same dithering as vegetation.frag.
-    if (impostorDistance > 0.0) {
-        float dist       = distance(ubo.viewPosition, inWorldPos);
-        float fadeAlpha  = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);
-        const int M[16]  = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
-        float threshold  = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;
-        if (threshold >= fadeAlpha) discard;
-    }
+    // Impostor hand-off is a direct per-instance swap at impostorDistance
+    // (see vegetation.vert / vegetation.frag): no dithered fade here, so the
+    // depth prepass writes exactly the fragments the shading pass keeps.
 
     // Depth written (default gl_FragDepth) only for fragments that survive
     // the same discard criteria as the shading pass.

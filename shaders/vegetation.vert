@@ -201,15 +201,25 @@ void main() {
     // skip the trig, height fetch and index decodes with identical output
     // (degenerate triangle either way). No-op when impostors are off
     // (impostorDistance == 0).
+    //
+    // This is the impostor hand-off point: billboards own [0,
+    // impostorDistance) and impostors own [impostorDistance, ...) (see
+    // impostors.vert's matching < impostorDistance cull). It is a DIRECT
+    // per-instance swap - no dithered cross-fade. The previous 0.50x-1.15x
+    // complementary dither dissolved the billboards into sparse dots that
+    // the impostors did not visually replace, reading as a bare ring; the
+    // half-res Minimal vegetation target made each 4x4 Bayer block cover
+    // 8x8 screen pixels, so the ring was unmissable.
     if (impostorDistance > 0.0 && distance(worldPos, camPos) >= impostorDistance) {
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
 
+    int billboardIdx = int(floor(instanceData.w));
+
     int planeIdx  = (inCornerNormalData >> 8) & 0xFF;
     int cornerType = inCornerNormalData & 0xFF; // 0=BL, 1=BR, 2=TL, 3=TR
 
-    int billboardIdx = int(floor(instanceData.w));
     float rotFrac = fract(instanceData.w);
     float theta = rotFrac * 6.28318530718;
     float cosT = cos(theta);

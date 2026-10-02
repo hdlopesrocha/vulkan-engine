@@ -56,17 +56,8 @@ void main() {
     float texDepth = texture(depthArray, inTexCoord).r;
     if (texDepth >= 1.0 || texDepth <= 0.0) discard;
 
-    // Dithered cross-fade with vegetation, hoisted above the reconstruction
-    // (perf report 22 H5): independent discard, saves the matvecs below on
-    // dithered-out pixels with an identical final image. Uses inInstanceOffset
-    // (flat) so the distance matches the color pass exactly.
-    if (impostorDistance > 0.0) {
-        float dist       = distance(ubo.viewPosition, inInstanceOffset);
-        float fadeAlpha  = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);
-        const int M[16]  = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
-        float threshold  = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;
-        if (threshold < fadeAlpha) discard;  // complementary: keep where vegetation depth discards
-    }
+    // Direct hand-off (see impostors_depth.vert): no dithered fade; the
+    // billboard depth prepass stops at the same distance.
 
     // Reconstruct world position from captured depth.
     vec2 ndc_xy = inTexCoord.xy * 2.0 - 1.0;

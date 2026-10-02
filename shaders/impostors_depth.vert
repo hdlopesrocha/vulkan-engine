@@ -119,7 +119,9 @@ void main() {
     }
 
     float mainCamDist = distance(windParams.cameraPosition, worldPos);
-    if (mainCamDist < impostorDistance * 0.50) {
+    // Direct hand-off: the billboard culls at impostorDistance (vegetation.vert),
+    // so the impostor takes over at exactly the same per-instance distance.
+    if (mainCamDist < impostorDistance) {
         outTexCoord = vec3(0.0); outInstanceOffset = worldPos;
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         return;
@@ -166,7 +168,9 @@ void main() {
 
     float hs = inBakedHeight;
 
-    vec3 center = worldPos + vec3(0.0, billboardScale * 0.5, 0.0);
+    // Uniform hs scaling, matching impostors.vert: quad, centre and UV crop
+    // must render the plant at the same size the billboard had.
+    vec3 center = worldPos + vec3(0.0, billboardScale * hs * 0.5, 0.0);
     vec3 worldUp = vec3(0.0, 1.0, 0.0);
 
     vec3 right;
@@ -179,7 +183,7 @@ void main() {
     vec3 upDir = normalize(cross(toCamera, right));
 
     float quadHalfW = 0.75 * billboardScale * hs;
-    float quadHalfH = 0.5  * billboardScale;
+    float quadHalfH = 0.5  * billboardScale * hs;
     right = right * quadHalfW;
     vec3 up = upDir * quadHalfH;
 
@@ -188,7 +192,7 @@ void main() {
     vec3 offset = (u - 0.5) * 2.0 * right + (0.5 - v) * 2.0 * up;
     vec3 finalPos = center + offset;
 
-    float uFrac = hs * 1.5 / 2.886751346;
+    float uFrac = 1.5 / 2.886751346;
     float vFrac = 1.0 / 2.886751346;
     float vOff  = 0.5 - 0.5 / 2.886751346;
     outTexCoord = vec3(0.5 + (inCornerUV.x - 0.5) * uFrac,
