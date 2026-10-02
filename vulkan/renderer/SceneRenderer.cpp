@@ -1454,10 +1454,19 @@ size_t SceneRenderer::publishPendingMeshes(
 
         const bool trackChunkManager = !isBrush && frontier;
         ir->uploadSlot(app, slotIdx, 0.0f,
-            [ir, oldSlot, this, base, trackChunkManager]() {
+            [ir, oldSlot, this, base, trackChunkManager, isBrush]() {
                 if (oldSlot != UINT32_MAX) ir->removeMeshSlotted(oldSlot);
                 if (trackChunkManager && this->world_)
                     this->world_->chunkManager().finishUpload(base);
+                // Hybrid RT: the scene BLAS reads the merged vertex/index pools
+                // this upload just filled, from another queue. Re-dirty the AS
+                // so a build that overlapped the transfer cannot leave these
+                // chunks' triangles broken (a stale BLAS is never rebuilt by
+                // camera moves/LoD, so the corruption would persist - the
+                // "reflections vanish past a range" artifact). Brush uploads
+                // are not part of the main TLAS, so they are skipped.
+                if (!isBrush && this->rayTracing)
+                    this->rayTracing->requestSceneBlasRefresh();
             });
 
         onChunkPublished(layer, nid, slotIdx, lod.version, isBrush);

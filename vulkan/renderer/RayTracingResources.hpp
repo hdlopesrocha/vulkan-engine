@@ -28,6 +28,7 @@
 
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
+#include <atomic>
 #include <cstdint>
 #include <vector>
 
@@ -262,6 +263,24 @@ public:
     bool runtimeEnabled() const { return runtimeEnabled_; }
     bool consumeForceProxyRefresh();
 
+    // Force one fresh scene-BLAS + TLAS rebuild on the next throttled build.
+    // Must be called on the main thread (the upload-completion path does).
+    // Rationale: the scene BLAS reads the merged vertex/index pools, and the
+    // geometry uploads land asynchronously on a different queue, so a build
+    // that overlaps a transfer bakes incomplete vertices/indices into the
+    // BLAS for the racing chunks. Nothing else re-dirties the AS afterwards
+    // (camera moves, LoD and draws never do), so a build that raced the last
+    // uploads would keep those chunks broken for the whole session - visible
+    // as reflections vanishing past a range while nearer chunks (uploaded
+    // earlier) still mirror. Re-dirtying on every upload completion
+    // guarantees a rebuild with the data resident; the >=30-frame throttle
+    // coalesces the burst into at most one extra rebuild.
+    void requestSceneBlasRefresh() {
+        if (!supported_) return;
+        sceneBlasDirty_ = true;
+        dirty_ = true;
+    }
+
     // (Re)point the per-slot water-depth (D32) + sky equirect views. Called
     // once at init and on swapchain resize (handles stable otherwise).
     void setSceneViews(VulkanApp* app, const VkImageView waterDepthViews[3],
@@ -315,7 +334,10 @@ private:
 
     std::vector<RTProxyBox> stagedSolids_;
     std::vector<RTProxyBox> stagedWaters_;
-    bool dirty_ = true;
+    // Cross-thread: set from the main thread (proxy/geometry staging and
+    // upload completions) and consumed in the async cull task by
+    // wantsBuild()/buildIfNeeded()/recordSceneBlas().
+    std::atomic<bool> dirty_{true};
     bool runtimeEnabled_ = true;      // set from the Settings ray-path toggles
     bool forceProxyRefresh_ = false;  // consumed once after re-enabling RT
     uint32_t activeSolidCount_ = 0;
@@ -429,7 +451,9 @@ private:
     Buffer sceneMetaBuffer_{};
     uint32_t scenePrimBaseCapacity_ = 0; // in uints
     uint32_t sceneMetaCapacity_ = 0;     // in vec4s
-    bool sceneBlasDirty_ = false;
+    // Cross-thread like dirty_: set on the main thread (setSceneGeometry,
+    // upload completions), consumed in the cull task's recordSceneBlas().
+    std::atomic<bool> sceneBlasDirty_{false};
 
     // RT pipeline + SBT.
     VkPipeline rtPipeline_ = VK_NULL_HANDLE;

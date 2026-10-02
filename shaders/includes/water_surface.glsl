@@ -112,10 +112,20 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
     // tMin stays tiny (1 cm): the solid query can never see the water mesh
     // (separate instance/mask), so coplanar touch is the only self-guard
     // needed, and shoreline shallows (<5 cm deep) still hit the lake bottom
-    // underneath instead of missing to deep-water tint. Reflection keeps the
-    // 5 cm tMin (self-hit guard, origin biased above the surface at the
-    // call site).
-    float tMin = refraction ? 0.01 : 0.05;
+    // underneath instead of missing to deep-water tint.
+    // Reflection instead starts past the reflector's OWN-surface dead zone
+    // (waterMinHit = displaced-vs-base offset + 2 m): on a curved or
+    // coarsely-meshed mirror (the spheres, 30 m facets) a grazing mirror ray
+    // re-hits the reflector's own triangles a few metres out. Committing that
+    // hit and only rejecting it AFTER the query (the old tMin = 5 cm) made
+    // every staged fallback find the same self-hit and give up, so those
+    // pixels fell through to SSR/sky - and with the grazing band covering
+    // most of a distant sphere the mirror read as transparent. A reflection
+    // traversal that starts at the dead zone skips the self-region inside the
+    // query and resolves the scenery just past it. For the lake this maps the
+    // same skip the post-commit filter already performed, without the wasted
+    // near traversal.
+    float tMin = refraction ? 0.01 : max(waterMinHit, 0.05);
     // RT per-op profiling op id (no-op without RT_PROFILE): this helper serves
     // both water lobes, so every query it issues is attributed to its lobe.
     const uint rtProfOp = refraction ? RT_PROFILE_OP_WATER_REFRACTION
@@ -333,7 +343,19 @@ vec4 rtTraceWater(vec3 origin, vec3 dir, float tMax, bool refraction, float thic
             vec3 skyB = textureLod(skyEquirectTex, rtDirToEquirectUV(skyDir), 0.0).rgb;
             return vec4(skyB, 0.6);
         }
-        if (gi.w == 0u || refraction) {
+        // Reflection shades solid hits fresh via the off-screen path below
+        // (triplanar albedo + sun/ambient) instead of pasting exact screen
+        // pixels: a pixel-identical mirrored hillside is indistinguishable
+        // from transparency against the real hillside ("mirror lets through"
+        // with no distortion), while fresh shading reads as reflection. This
+        // is worst at range, where nearly the whole reflected surroundings are
+        // on-screen and the paste takes over every mirror pixel - the sphere
+        // then shows the background unchanged and reads as transparent, while
+        // up close the off-screen hemisphere still shades fresh. Refraction
+        // keeps the screen-space bottom lookup so the underwater bed stays
+        // continuous with the rasterized terrain. Matches the solid primary
+        // and bounce paths, which already shade fresh.
+        if (refraction) {
             // Screen-space color lookup. Sample this frame's solid render at
             // the reflected/refracted hit point so the mirror shows the
             // terrain exactly as it appears on screen (mixed ground cover,
@@ -1462,7 +1484,19 @@ void shadeWaterSurface() {
         // the old base-plane trick for keeping the reflector's own surface
         // out of the result.
         reflOrigin = fragPosWorld + reflBaseN * 0.05;
-        float reflWaterMinHit = length(fragPosWorld - fragBasePos.xyz) + 2.0;
+        // Own-surface dead zone (also the reflection traversal's tMin):
+        // the displaced-vs-base offset plus a margin. A flat slab (the lake,
+        // base normal up) only needs the 2 m self-plane guard. The curved
+        // mirror volumes are meshed coarsely - 30 m facets whose bulges sit
+        // metres off the smooth shading normal the reflection uses - so a
+        // grazing ray can re-hit the reflector's own triangles well past
+        // 2 m; a self-hit at or beyond the threshold commits and then trips
+        // the up-going self-water guard (sky), and one below it used to make
+        // every staged fallback give up (SSR/sky pasted behind = transparent
+        // grazing band). Widening the zone for curved reflectors starts the
+        // traversal past the facet bulge, where the real scenery lies.
+        float reflSelfZone = (abs(reflBaseN.y) > 0.9) ? 2.0 : 6.0;
+        float reflWaterMinHit = length(fragPosWorld - fragBasePos.xyz) + reflSelfZone;
         reflHit = rtTraceWater(reflOrigin, normalize(reflectDir), RT_NO_LIMIT, false, 0.0, reflWaterMinHit);
         reflDidTrace = true;
         if (reflHit.a > 0.5) {
@@ -1479,13 +1513,29 @@ void shadeWaterSurface() {
         // water-side rule as the trace (reflectionHitInAir) rejects the
         // submerged bed here too, so the far-water "terrain painted as
         // reflection" artifact cannot come back. The march is distance-capped.
-        const float kSsrMaxDist = 2000.0;
-        vec3 ssrWorld;
-        vec4 ssr = traceSSR(reflOrigin, normalize(reflectDir), kSsrMaxDist, ssrWorld);
-        if (ssr.a > 0.02 && reflectionHitInAir(reflectDir, ssrWorld)) {
-            skyColor = ssr.rgb;
-            reflSource = 4.0;
-        } else {
+        // Curved volumes (the mirror spheres) do NOT use it: they trace their
+        // own exact mesh, so a miss there is a real miss (sky). The march's
+        // screen-space heuristic accepts background surfaces that are not on
+        // the ray at all, and pasting the scene behind the sphere into the
+        // mirror is exactly the "lets through" artifact - worst at range,
+        // where the mirror sits against that backdrop and the pasted band
+        // covers it. Slab reflectors (the lake) keep the fallback: their BLAS
+        // is the undisplaced base plane while the raster shows the displaced
+        // surface, so genuine near-field slips exist there and the march
+        // resolves them.
+        const bool slabReflector = abs(normalize(fragBaseNormal).y) > 0.9;
+        bool ssrResolved = false;
+        if (slabReflector) {
+            const float kSsrMaxDist = 2000.0;
+            vec3 ssrWorld;
+            vec4 ssr = traceSSR(reflOrigin, normalize(reflectDir), kSsrMaxDist, ssrWorld);
+            if (ssr.a > 0.02 && reflectionHitInAir(reflectDir, ssrWorld)) {
+                skyColor = ssr.rgb;
+                reflSource = 4.0;
+                ssrResolved = true;
+            }
+        }
+        if (!ssrResolved) {
             skyColor = reflHit.rgb; // trace's own sky (miss baseline)
             reflSource = 5.0;
         }
