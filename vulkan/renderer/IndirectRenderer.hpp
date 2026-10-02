@@ -64,9 +64,9 @@ public:
         uint32_t drawIndex = UINT32_MAX; // position in indirectCommands list
         uint32_t slotIndex = UINT32_MAX; // stable slot (if using slotted mode)
         bool active = false;
-        // Shared column anchor for the LoD band gate: the FINEST chunk's min
-        // corner. All rungs of a column share this so the clipmap anchor nests
-        // and exactly one rung is selected per region (no overlap).
+        // Emitting cell's min corner (published as the bounds entry's fourth
+        // vec4). The hierarchical LoD gate derives parent cells from the tree
+        // root lattice, not from this field, so it is informational only now.
         glm::vec4 boundsBase = glm::vec4(0.0f);
         // Single chunk mesh (slotted mode): one packed span in the shared
         // vertex/index element pools, one draw entry per chunk. Chunks arrive
@@ -142,6 +142,13 @@ public:
     // (LocalScene::maxChunkLod) — hardcoding it (e.g. 4) permanently culls every
     // chunk whose level exceeds it, leaving holes across the terrain.
     void setMaxLodLevel(int l) { maxLodLevel_ = l; }
+
+    // World-space min corner of the octree root. The hierarchical LoD gate
+    // (indirect.comp lodRungIsSelected) derives each entry's parent cell from
+    // the entry cube + this dyadic lattice origin. MUST match the tree the
+    // entries were generated from (set from the same LocalScene as
+    // setMaxLodLevel) or the parent-cell parity selects the wrong cube.
+    void setLodRootMin(const glm::vec3& m) { lodRootMin_ = m; }
 
     // Upload a single chunk's vertex/index data to the GPU, and write its
     // indirect command + bounds into the host-visible metadata buffers.
@@ -413,12 +420,11 @@ public:
                    spanMin == o.spanMin && spanMax == o.spanMax;
         }
     };
-    // Snapshot the active spans (thread-safe). Call only when chunks changed
-    // or the camera drove a fresh rebuild. The spans are filtered by the SAME
-    // LoD band the raster cull uses (distance / (baseCell * lodBias), baseCell
-    // = cellSize / 2^rung, clamped to the ladder depth), so exactly one rung
-    // survives per column — the reflections mirror the raster's detail
-    // schedule (fine near the camera, coarse far) with no overlapping LODs.
+    // Snapshot the active spans (thread-safe). NOTE: this helper still uses the
+    // retired camera-to-centre band (distance / (baseCell * lodBias)) and is NOT
+    // kept in sync with the raster's hierarchical rung gate in indirect.comp;
+    // it has no callers. The RT scene BLAS uses copyAllRTGeometrySpans +
+    // filterNonOverlappingSpans instead.
     void copyRTGeometrySpans(std::vector<RTGeometrySpan>& out,
                              glm::vec3 camPos, float lodBias, int maxTargetLod) const {
         std::lock_guard<std::recursive_mutex> guard(mutex);
@@ -545,6 +551,9 @@ private:
     // Real ladder depth of the tree (set via setMaxLodLevel from
     // LocalScene::maxChunkLod). Used as lodMeta.z in the GPU band test.
     int maxLodLevel_ = 16;
+    // Min corner of the octree root (set via setLodRootMin); dyadic lattice
+    // origin for the hierarchical LoD gate's parent-cell derivation.
+    glm::vec3 lodRootMin_ = glm::vec3(0.0f);
 
     mutable std::recursive_mutex mutex;
     // Unlocked — caller must hold `mutex`. Memoized active-mesh count;

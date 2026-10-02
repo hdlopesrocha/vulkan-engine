@@ -44,11 +44,14 @@ public:
     float triplanarExponent = 1.0f;
 
     // LoD rendering: per-chunk LoD ladder selection. Each chunk publishes
-    // decimated levels (0 = full detail, N = coarsest). The GPU band test keeps
-    // entry level k for dist in [k, k+1) * chunkBase * lodBias, so larger
-    // values push coarser levels farther away (more detail, more triangles)
-    // and smaller values switch to coarse meshes sooner (fewer triangles).
-    // 0 = always coarsest, 64+ = effectively full detail everywhere.
+    // decimated levels (0 = full detail, N = coarsest). The GPU gate walks the
+    // ladder hierarchically: a cell is subdivided while the camera is closer to
+    // its AABB than `baseCell * level * lodBias`, and the first cell that is
+    // not recursed into is the one drawn — exactly one rung per region (no
+    // holes, no overlap). Larger values push coarser levels farther away (more
+    // detail, more triangles) and smaller values switch to coarse meshes sooner
+    // (fewer triangles). 0 = always coarsest, 64+ = effectively full detail
+    // everywhere.
     float lodBias = 8.0f;
 
     // LoD rendering: maximum target LoD level the GPU band test may select for a

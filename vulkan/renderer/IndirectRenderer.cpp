@@ -41,8 +41,11 @@ struct CullPushConstants {
     uint32_t doMain;           // offset 128 (emit main-view streams when 1)
     uint32_t doVegCascade;      // offset 132 (emit vegetation cascade/shadow streams when 1)
     uint32_t vegChunkCount;     // offset 136 (number of veg chunks to cascade-cull)
-}; // 140 bytes
-static_assert(sizeof(CullPushConstants) == 140, "CullPushConstants must be 140 bytes to match indirect.comp PC block");
+    float    lodRootMinPad;     // offset 140 (padding to align lodRootMin to 144)
+    glm::vec3 lodRootMin;      // offset 144 (tree root min corner: parent-cell lattice origin)
+    float    lodRootMinTailPad; // offset 156 (brings the block to the shader's 160-byte size)
+}; // 160 bytes
+static_assert(sizeof(CullPushConstants) == 160, "CullPushConstants must be 160 bytes to match indirect.comp PC block");
 
 struct CascadeCullPushConstants {
     uint32_t numChunks;   // offset 0
@@ -1435,6 +1438,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     pc.doMain            = doMain ? 1u : 0u;
     pc.doVegCascade      = (doVegCascade && vegCascadeInited) ? 1u : 0u;
     pc.vegChunkCount     = vegChunkCount;
+    pc.lodRootMin        = lodRootMin_;
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc);
 
     // Dispatch must cover the main-view entries (when doMain), the solid cascade
@@ -1877,6 +1881,7 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     // otherwise and the dispatch would process nothing).
     pc2.doMain      = doMainCull ? 1u : 0u;
     pc2.doCascade   = doCascadeCull ? 1u : 0u;
+    pc2.lodRootMin  = lodRootMin_;
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc2);
 
     uint32_t groupSize = 64;
@@ -2396,7 +2401,22 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.offset = 0;
-        pc.size = sizeof(CullPushConstants); // 104 bytes: mat4 + 2*uint + pad + vec3 + float + uint
+        pc.size = sizeof(CullPushConstants); // 160 bytes: mat4 + scalars + vec3s (incl. lodRootMin)
+
+        // The cull push block is well above the Vulkan minimum (128 B). Every
+        // device the engine targets supports it, but fail with a descriptive
+        // message instead of a bare VUID if a device ever does not.
+        {
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(app->getPhysicalDevice(), &props);
+            if (props.limits.maxPushConstantsSize < sizeof(CullPushConstants)) {
+                throw std::runtime_error(
+                    "[IndirectRenderer] maxPushConstantsSize=" +
+                    std::to_string(props.limits.maxPushConstantsSize) +
+                    " < required " + std::to_string(sizeof(CullPushConstants)) +
+                    " (indirect.comp LoD cull push block)");
+            }
+        }
 
         VkPipelineLayoutCreateInfo plinfo{};
         plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -2947,12 +2967,12 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
             if (bndData) {
                 // Four vec4 (per entry): min, max, lodMeta, boundsBase.
                 // lodMeta = {cellSize, level, maxLevel, unused}; cellSize is the
-                // band's own cube length; level is the 0-based rung; maxLevel is
-                // the tree's real ladder depth. boundsBase is the emitting chunk's
-                // own min corner; the in-shader gate selects by distance from the
-                // camera to the chunk centre (base + 0.5*cellSize), so nested rungs
-                // of a column derive different bands and exactly one rung survives
-                // per region (no overlap, no holes).
+                // rung's own cube length; level is the 0-based rung; maxLevel is
+                // the tree's real ladder depth. The shader-level hierarchical gate
+                // resolves the drawn rung from the entry AABB and its parent cell
+                // (derived from the tree root lattice), so exactly one rung
+                // survives per region (no holes, no overlap). boundsBase is
+                // informational only.
                 const float cellSize = capBoundsMax.x - capBoundsMin.x;
                 const glm::vec4 lodMeta = glm::vec4(cellSize,
                                                     static_cast<float>(capLevel),

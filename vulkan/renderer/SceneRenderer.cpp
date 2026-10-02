@@ -1623,19 +1623,25 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     mainLiquidRenderer->getIndirectRenderer().pollPendingTransfers(app);
     if (brushRenderer) brushRenderer->pollPendingTransfers(app);
 
-    // Keep the GPU LoD band meta in sync with the tree (self-correcting once the
-    // scene is loaded). chunkCellSize must be the GLOBAL Octree::chunkSize so the
-    // band anchors align across all chunks; maxLodLevel the tree's real ladder
-    // depth. Per-chunk values here would mis-align the distance bands and cull
-    // most rungs (holes across the terrain).
+    // Keep the GPU LoD gate meta in sync with the tree (self-correcting once
+    // the scene is loaded). maxLodLevel is the tree's real ladder depth and
+    // lodRootMin the tree root's min corner — the dyadic lattice origin the
+    // hierarchical rung gate derives parent cells from. Per-chunk values here
+    // would mis-align the parent cells and cull most rungs (holes across the
+    // terrain).
     if (world_) {
         const float ms = 30.0f;
-        mainSolidRenderer->getIndirectRenderer().setMaxLodLevel(world_->scene().maxChunkLod(LAYER_OPAQUE, ms));
-        mainLiquidRenderer->getIndirectRenderer().setMaxLodLevel(world_->scene().maxChunkLod(LAYER_TRANSPARENT, ms));
+        LocalScene& mainScene = world_->scene();
+        mainSolidRenderer->getIndirectRenderer().setMaxLodLevel(mainScene.maxChunkLod(LAYER_OPAQUE, ms));
+        mainSolidRenderer->getIndirectRenderer().setLodRootMin(mainScene.opaqueOctree.getMin());
+        mainLiquidRenderer->getIndirectRenderer().setMaxLodLevel(mainScene.maxChunkLod(LAYER_TRANSPARENT, ms));
+        mainLiquidRenderer->getIndirectRenderer().setLodRootMin(mainScene.transparentOctree.getMin());
         if (brushRenderer) {
-            if (world_->brushScene()) {
-                brushRenderer->getSolidIR().setMaxLodLevel(world_->brushScene()->maxChunkLod(LAYER_OPAQUE, ms));
-                brushRenderer->getLiquidIR().setMaxLodLevel(world_->brushScene()->maxChunkLod(LAYER_TRANSPARENT, ms));
+            if (LocalScene* brushScene = world_->brushScene()) {
+                brushRenderer->getSolidIR().setMaxLodLevel(brushScene->maxChunkLod(LAYER_OPAQUE, ms));
+                brushRenderer->getSolidIR().setLodRootMin(brushScene->opaqueOctree.getMin());
+                brushRenderer->getLiquidIR().setMaxLodLevel(brushScene->maxChunkLod(LAYER_TRANSPARENT, ms));
+                brushRenderer->getLiquidIR().setLodRootMin(brushScene->transparentOctree.getMin());
             }
         }
     }
