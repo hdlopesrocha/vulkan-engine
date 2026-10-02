@@ -16,6 +16,11 @@
 // rtRefractions) without holding renderer types, so the headless server can
 // still include it. The per-layer WaterParams are authored values and are
 // never touched.
+//
+// The presets never touch Settings::textureArraySize: changing it is a full
+// synchronous array rebuild (device idle + re-decode/re-upload of every
+// triple + mixer refresh, measured at 15-31 s), which must not ride a preset
+// button. That tier stays an explicit settings-UI choice.
 class GraphicsSettingsCommand {
 public:
     explicit GraphicsSettingsCommand(GraphicsQuality quality) : quality_(quality) {}
@@ -60,8 +65,13 @@ private:
         settings.waterRenderScale = 1.0f;
         // Full-resolution vegetation offscreen (perf report 22 M12).
         settings.vegetationRenderScale = 1.0f;
-        // Full-resolution material texture arrays (perf report 23 C1).
-        settings.textureArraySize = 1024;
+        // NOTE: Settings::textureArraySize is deliberately NOT touched by the
+        // presets. Changing it forces a full array rebuild (device idle, every
+        // triple re-decoded/re-uploaded, mixer regenerated), which the run log
+        // measures at 15-31 s per switch - the preset buttons must stay
+        // instant. The resolution tier remains an explicit choice in the
+        // settings UI (documented there as a one-frame hitch); the preset
+        // edits only the render-feature gates.
     }
 
     static void applyMinimal(Settings& settings) {
@@ -94,10 +104,9 @@ private:
         // detail survives the downscale at typical viewing distances, and the
         // composite's closest-of-2x2 depth taps keep silhouettes uneroded.
         settings.vegetationRenderScale = 0.5f;
-        // Half-resolution material texture arrays (perf report 23 C1): the
-        // five arrays quarter to ~190 MB. The user action rebuilds them (one
-        // device idle + re-upload); the slider still overrides.
-        settings.textureArraySize = 512;
+        // Settings::textureArraySize intentionally untouched: see applyMaximum.
+        // The 512 tier is still selectable in the settings UI, but switching
+        // presets must not trigger the synchronous full-array rebuild.
     }
 
     GraphicsQuality quality_;

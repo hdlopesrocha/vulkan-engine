@@ -1326,6 +1326,21 @@ void shadeWaterSurface() {
         depthSource = 6.0;
     }
 #endif
+    // Minimal / no-refraction depth fallback: flat heightfield water measures
+    // no back-face volume (the front/back faces are coplanar) and has no RT
+    // thickness, so waterThickness stayed 0 and the authored Water Tint was
+    // invisible - the transparent surface showed the raw bottom with no water
+    // colour, and it never deepened with distance. Fill the missing signal
+    // with the vertex/TES-measured water depth (fragWaterDepth), the same
+    // signal the shoreline tint fade already keys on. This feeds the
+    // transmittance, the tint blend and the composite alpha uniformly, so
+    // Minimal water now tints and deepens with real depth. Gated on
+    // !enableRefraction and on the volume signals being absent, so the RT
+    // path and genuine back-face volumes keep their thickness source.
+    if (!enableRefraction && waterThickness <= 1e-4 && fragWaterDepth > 1e-4) {
+        waterThickness = fragWaterDepth;
+        depthSource = 7.0; // DIAG-70: measured-depth fallback (Minimal)
+    }
     // Clamp the optical thickness so transmittance never falls below ~e^-2.5:
     // deep hits stay readable dark teal instead of blacking out, while the
     // depth gradient is preserved. (Shallow and mid ranges never reach the
@@ -1350,11 +1365,13 @@ void shadeWaterSurface() {
     
     // Depth-based color fade (deeper = more tinted). Uses the best available
     // depth signal: the smooth raster backface diff where a real volume was
-    // measured, else the RT thickness fallback — otherwise Water Tint / Depth
-    // Falloff could never affect flat heightfield water (no backface, so
-    // depthDiff is 0 there). Both signals collapse to 0 at the shoreline, so
-    // the fade (like alpha) vanishes at the waterline. RT steps arrive
-    // pre-dithered as grain, the same tradeoff Beer-Lambert already accepts.
+    // measured, else the thickness signal - the RT fallback with rays on, or
+    // the measured-depth fallback filled in above for Minimal. Otherwise
+    // Water Tint / Depth Falloff could never affect flat heightfield water
+    // (no backface, so depthDiff is 0 there). Both signals collapse to 0 at
+    // the shoreline, so the fade (like alpha) vanishes at the waterline. RT
+    // steps arrive pre-dithered as grain, the same tradeoff Beer-Lambert
+    // already accepts.
     float depthFalloff = wp.depthFalloff;
     if (depthFalloff <= 0.0) depthFalloff = 0.02;
     float tintDepth = max(depthDiff, waterThickness);
@@ -1621,16 +1638,36 @@ void shadeWaterSurface() {
 // (1 = crystal clear keeps the refracted bottom, 0 = fully tintable).
     float tintMax = clamp(1.0 - transparency, 0.0, 1.0);
     float tintBlend = clamp(depthFade * waterTint * tintShoreFade, 0.0, tintMax);
-    // No refraction (Minimal): nothing filled the refracted color, and leaving
-    // it at its zero value rendered the water black-transparent. Fall back to
-    // the sky along the view direction, so the water is tinted transparency -
-    // the sky shows through it - instead of black.
+    // No refraction (Minimal / RT off): nothing filled the refracted color, and
+    // leaving it at its zero value rendered the water black. Recover the
+    // TRANSMITTED content here instead, so the surface stays transparent:
+    //  * Prefer the rasterized solid bottom directly behind this pixel - the
+    //    straight-through sample the legacy raster water used. The composite
+    //    alpha blend then reveals the real bottom, and this term carries its
+    //    tinted, absorption-attenuated colour (the same role the traced bottom
+    //    plays with RT on). Without this the transmission would be the sky,
+    //    i.e. the same sample as the mirror below, and the reflection would
+    //    have nothing distinct to mix against.
+    //  * Sky where no bottom exists (water against the sky), sampled along the
+    //    reflected direction: an equirect's lower half is ground/black, so the
+    //    view direction would read black. This keeps the surface never-black.
+    // The sky MIRROR term (skyColor, Fresnel-weighted below) is independent
+    // and always present, so transparent water still reflects the sky.
     if (!enableRefraction) {
-        // Sky source for the transmission term. The view direction points down
-        // and an equirect's lower half is ground/black, so this samples the
-        // sky along the reflected direction - the same sky the mirror uses, so
-        // both terms stay lit and vary per pixel with the Gerstner + FBM normal.
-        sceneColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
+        bool bottomServed = false;
+        // Only when the bound solid depth/colour are THIS frame's (the
+        // offscreen path): the water-in-main variant binds the previous
+        // frame's and must not smear them under camera motion.
+        if (waterRenderUBO.solidDepthIsCurrent) {
+            vec2 refrUV = clamp(screenUV, 0.001, 0.999);
+            if (textureLod(solidSceneDepthTex, refrUV, 0.0).r < 1.0) {
+                sceneColor = textureLod(solidSceneColorTex, refrUV, 0.0).rgb * transmittance;
+                bottomServed = true;
+            }
+        }
+        if (!bottomServed) {
+            sceneColor = textureLod(skyEquirectTex, waterDirToEquirectUV(normalize(reflectDir)), 0.0).rgb;
+        }
     }
     vec3 refractedColor = mix(sceneColor, waterTintColor, tintBlend);
 
@@ -1767,12 +1804,13 @@ void shadeWaterSurface() {
     // NOTE: this floor is multiplied straight back down by the two shoreline
     // fades below, so a TOTAL mirror is re-applied after them (see there).
     alpha = max(alpha, mirrorPresence);
-#ifndef RT_ENABLED
-    // The sky mirror is a surface, not volume translucency: keep the Minimal
-    // water opaque (the shoreline fade below still dissolves it at the
-    // waterline).
-    alpha = 1.0;
-#endif
+    // Minimal / RT off uses the SAME transparency model as the ray path: the
+    // thickness/transparency mix above is the composite coverage, and the
+    // mirror floor keeps the sky reflection composited even in thin water.
+    // (This used to force alpha = 1 for the non-RT build, which made Minimal
+    // water an opaque sky-mirror sheet that hid the bottom; the raster
+    // transmission now fills the bottom colour and the fades below dissolve
+    // it at the waterline exactly as they do with RT on.)
     float shoreWidth = max(wp.shoreFadeDepth, 0.0);
     if (thicknessForAlpha > 1e-4 && shoreWidth > 1e-6) {
         alpha *= smoothstep(0.0, shoreWidth, thicknessForAlpha);
@@ -2086,11 +2124,13 @@ void shadeWaterSurface() {
         // Water-column source: which branch set this pixel's thickness.
         // grey=raster back-face/no-RT, green=RT inline hit length,
         // cyan=miss continuity (raster bottom), magenta=miss with no raster
-        // bottom->thin, blue=pipeline refraction output.
+        // bottom->thin, blue=pipeline refraction output / raster back-face
+        // stand, orange=measured-depth fallback (Minimal, no volume signal).
         vec3 dc = vec3(0.25);
         if (depthSource > 0.5 && depthSource < 1.5) dc = vec3(0.0, 1.0, 0.0);
         else if (depthSource < 2.5 && depthSource > 1.5) dc = vec3(0.0, 1.0, 1.0);
         else if (depthSource < 3.5 && depthSource > 2.5) dc = vec3(1.0, 0.0, 1.0);
+        else if (depthSource > 6.5) dc = vec3(1.0, 0.5, 0.0);
         else if (depthSource > 4.5) dc = vec3(0.0, 0.0, 1.0);
         outColor = vec4(dc, 1.0);
         return;
