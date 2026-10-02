@@ -540,6 +540,13 @@ Files: \texttt{services/BillboardService.cpp},
 \texttt{widgets/BillboardCreator.cpp}, \texttt{vulkan/EditableTexture.cpp}.
 Validation: identical baked arrays, submit count per bake down,
 validation-clean.
+\\ \textbf{Status (re-iteration, Oct 2026):} still \textbf{OPEN} ---
+\texttt{bakeFromTextures} still destroys/recreates all three array images per
+call (\texttt{BillboardService.cpp:58--60,91--93}), still issues 9 per-layer
+blocking copies plus 3 blocking mip submits; \texttt{EditableTexture::updateGPU}
+is still whole-image; \texttt{composeBillboard} still runs $3\times$
+\texttt{updateGPU} (\texttt{BillboardCreator.cpp:539--541}) with per-compose
+atlas re-decodes and no cache.
 \end{tcolorbox}
 
 \subsection{H6: The CPU Load Path Pays 66M \texttt{powf}, 420\,MiB of Dead Memset, and Per-Layer Scans}
@@ -579,6 +586,12 @@ zeroInit=false)} in the upload helper (the memcpy covers the whole range);
 (3) accumulate the albedo average while converting. Files:
 \texttt{vulkan/TextureArrayManager.cpp}. Validation: pixel-identical arrays
 (LUT is exact), CPU time in load, validation-clean.
+\\ \textbf{Status (re-iteration, Oct 2026):} \textbf{PARTIAL} --- the pow loop
+is still per-texel (\texttt{TextureArrayManager.cpp:15--28}, no LUT) and the
+mean is still a separate full scan; only the memset third is fixed, and only
+on the batched main/vegetation load via C3's persistent staging
+(\texttt{zeroInit=false}). Other uploaders (e.g.\ \texttt{EditableTexture})
+still take the default zero-init.
 \end{tcolorbox}
 
 \subsection{H7: 135 Per-Layer Views and ImGui Descriptors Are Created Eagerly}
@@ -606,6 +619,9 @@ in \texttt{MyApp.cpp:448--454} and \texttt{:466--471} (keep the layer
 initialized flags where the UI needs them); confirm the widgets' on-demand path
 covers the first display frame. Files: \texttt{MyApp.cpp}. Validation:
 descriptor count at startup, previews still appear, validation-clean.
+\\ \textbf{Status (re-iteration, Oct 2026):} still \textbf{OPEN} --- the eager
+loops are still present (\texttt{MyApp.cpp:475--481} all loaded layers
+$\times$ 5 maps, plus the placeholder at \texttt{:492--497}).
 \end{tcolorbox}
 
 \subsection{H8: Mipmaps Are One Blocking Submit per Map --- 105 of Them}
@@ -679,6 +695,10 @@ accessors, and the \texttt{processPendingCommandBuffers} call in
 (3) update the widget's pending counter to the queue depth. Files:
 \texttt{services/TextureMixer.cpp,.hpp}, \texttt{MyApp.cpp}. Validation:
 identical behavior, no duplicate pending-CB walk, validation-clean.
+\\ \textbf{Status (re-iteration, Oct 2026):} still \textbf{OPEN} --- the fence
+machinery is retained (\texttt{TextureMixer.cpp:128--143,191,205--206,218--230}),
+still polled every frame from \texttt{postSubmit} (\texttt{MyApp.cpp:4148--4152}),
+still never populated.
 \end{tcolorbox}
 
 \subsection{M10: Five Initial Generations Are Five Full Sweeps}
@@ -704,6 +724,11 @@ of target/source layers per array, emit the transitions once, record one
 dispatch per request (push constants differ), append each target layer's mip
 chain, submit once. Files: \texttt{services/TextureMixer.cpp}. Validation:
 identical generated layers, startup generation cost down, validation-clean.
+\\ \textbf{Status (re-iteration, Oct 2026):} still \textbf{OPEN} ---
+\texttt{generateInitialTextures} still enqueues sequentially
+(\texttt{TextureMixer.cpp:58--78}) and the flush still runs one blocking
+submit plus five mip chains per generation. C2's layer-local transitions make
+the union-sweep variant cheaper than described, but it is not implemented.
 \end{tcolorbox}
 
 \subsection{M11: Vegetation Sources Are Nearest-Downscaled; Mixer Layers Keep Gray RT Albedo}
@@ -740,6 +765,12 @@ stb's resize); (2) update \texttt{albedoAvg} for mixer target layers after
 generation. Files: \texttt{vulkan/TextureArrayManager.cpp},
 \texttt{services/TextureMixer.cpp}. Validation: vegetation A/B (aliasing),
 reflection color spot-check, validation-clean.
+\\ \textbf{Status (re-iteration, Oct 2026):} \textbf{PARTIAL} --- the downscale
+half is fixed (box-filter \texttt{resizeAreaAverage},
+\texttt{TextureArrayManager.cpp:404,494}; \texttt{resizeNearest} is gone from
+the tree). The albedo half is open: the generation path still never writes
+\texttt{albedoAvg}, so mixer layers keep the gray default
+(\texttt{TextureArrayManager.cpp:356--357}).
 \end{tcolorbox}
 
 \subsection{M12: Dead Mixer Surfaces and Duplicated Samplers}
@@ -778,6 +809,12 @@ per-layer descriptor sets, the per-map creation helper and
 \texttt{updateComputeDescriptorSets}) were deleted with the C2 rework;
 \texttt{TextureArrayManager::create()} and the
 \texttt{updateLayerFromEditable(Map)} pair remain as listed.
+\\ \textbf{Status (re-iteration, Oct 2026):} unchanged --- \texttt{create()}
+(\texttt{TextureArrayManager.cpp:616--669}) and
+\texttt{updateLayerFromEditable(Map)} (\texttt{:672--752}) still have zero
+callers, and the per-manager samplers are still duplicated
+(\texttt{TextureArrayManager.cpp:345--349} plus
+\texttt{BillboardService.cpp:176--193}).
 \end{tcolorbox}
 
 % =====================================================================
@@ -800,6 +837,12 @@ shader's \texttt{debugOutput} push constant is never assigned by the C++
 ``Show noise'' checkbox does nothing on either path. Harmless to performance;
 worth fixing while touching the mixer.
 
+\textbf{Status (re-iteration, Oct 2026):} still \textbf{OPEN} --- the
+early-return still precedes the swizzle
+(\texttt{TextureArrayManager.cpp:936--959}) and \texttt{debugOutput} is still
+unassigned and unread (\texttt{PerlinPushConstants.hpp:9--10,21},
+\texttt{shaders/perlin\_noise.comp:43}).
+
 \subsection{L14: Per-Generation Log String Churn}
 \label{sec:l14}
 
@@ -809,6 +852,12 @@ and the widget polls the queue depth with two mutex acquisitions per frame
 (\texttt{:203--207}). During a slider drag this is one formatted string per
 frame for a message no one reads. Gate on a log flag or drop the per-request
 lines.
+
+\textbf{Status (re-iteration, Oct 2026):} still \textbf{OPEN} --- the
+\texttt{snprintf}+\texttt{emplace} under \texttt{logsMutex} per
+enqueue/replace/immediate generation is unchanged
+(\texttt{TextureMixer.cpp:96--99} and neighbors); C2's commit-on-release only
+lowered how often it fires.
 
 \subsection{L15: Magic 32, Stale Comments, and Misleading Startup Text}
 \label{sec:l15}
@@ -820,6 +869,13 @@ while five maps are generated (\texttt{TextureMixer.cpp:65}); the comment above
 and \texttt{TextureArrayManager.hpp:83}'s ``version counter'' is bumped but
 nothing in the tree reads it. Update the comments, delete the counter if
 unused, and let C1's content-derived count replace the constant.
+
+\textbf{Status (re-iteration, Oct 2026):} \textbf{PARTIAL} --- the magic 32 is
+gone (derived count, \texttt{MyApp.cpp:452}) and the version counter is now
+read (\texttt{SceneRenderer.cpp:1140}, shadow cascade refresh). Still open:
+the ``Albedo, Normal, Bump'' banner for five maps
+(\texttt{TextureMixer.cpp:65}) and the alpha-swizzle comment L13 never
+delivers (\texttt{TextureArrayManager.hpp:127--129}).
 
 % =====================================================================
 \section{Implementation Roadmap and Expected Deltas}

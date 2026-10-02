@@ -1,0 +1,766 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+% Long unbreakable \texttt{} paths are the main source of overfull boxes in
+% this report; a generous emergencystretch plus sloppy paragraph breaking lets
+% TeX loosen those lines instead of running into the margin.
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\title{Performance Report 24: Vulkan Engine \\
+\large The Fullscreen Tail --- Composite, Sky, and Brush Passes Every Pixel Pays After the Scene Renders}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Reports~17--23 audited everything up to the scene targets: ray tracing, the
+water machinery and its noise, the solid/water raster core, vegetation,
+submit counts, buffer pools, texture arrays, the GPU mixer, and the load
+path. This report audits what happens \emph{after}: the fullscreen
+post-process composite that assembles every frame, the sky that is shaded
+twice (once fullscreen inside the solid pass, once as a cached equirect
+fetched by the composite), and the brush early/backface/overlay tail that
+runs three full-resolution passes per frame whether or not any brush is
+visible.
+
+The composite executes an unconditional prologue per pixel --- scene color
+and depth fetches, an inverse-view-projection reconstruct with a normalize,
+\texttt{atan}+\texttt{acos} equirect mapping, a sky fetch, plus vegetation,
+brush, and two debug depth fetches --- before testing a single alpha
+(\texttt{shaders/postprocess.frag:104--114,142,233,250,258}). The sky
+fullscreen draw sits \emph{before} the \texttt{renderSolid} gate
+(\texttt{MyApp.cpp:1989--1994} vs \texttt{:2000}), so it runs even with solid
+rendering disabled, evaluating three \texttt{pow}s, a PCG star hash that is
+multiplied by zero all day, and a \texttt{pow}-1200 sun flare per pixel
+(\texttt{shaders/sky.frag:30,41--42,62--66,74}). The brush tail records three
+clear-plus-draw full-resolution passes and a dedicated queue submit every
+frame with no visibility or mesh-count gate (\texttt{MyApp.cpp:1668},
+\texttt{BrushRenderer.cpp:214--345}), reusing tessellated solid shaders for
+depth-only work. The equirect cache (report~22 H8) is sound in mechanism but
+blind in signature: night colors, star intensity, and sky mode are not
+compared (\texttt{MyApp.cpp:1761--1774} vs
+\texttt{widgets/SkySettings.hpp}), so those edits bake a stale sky. Tail
+targets commit \textbf{$\sim$95\,MiB} device-local at 1080p ($\sim$380\,MiB
+at 4K) with no scaling.
+
+It finds \textbf{15 issues} (3 critical, 5 high, 4 medium, 3 low). Each
+carries the standard technique and a copy-pasteable prompt preserving
+validation-clean execution, Synchronization2, and runtime feature detection.
+Scope score \textbf{5.1/10}; folding the tail slice into the combined
+estimate at 10\% weight gives \textbf{6.1/10}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+\subsection{Scope and Method}
+
+Three areas, none previously reported on as subsystems: (1) the post-process
+composite (\texttt{vulkan/renderer/PostProcessRenderer.cpp} + 268-line
+\texttt{shaders/postprocess.frag}, 17 bindings, one fullscreen triangle per
+frame on every preset); (2) the sky --- fullscreen gradient/grid pass inside
+the solid color pass (\texttt{vulkan/renderer/SkyRenderer.cpp:81--119},
+\texttt{shaders/sky.frag}), the 2048$\times$1024 cached equirect
+(\texttt{:155--330}), and the per-frame \texttt{SkySphere} upload; (3) the
+brush tail --- early front-depth/color passes plus the GREATER backface pass
+(\texttt{vulkan/renderer/BrushRenderer.cpp:214--345},
+\texttt{BrushBackFaceRenderer.cpp:120--197}) composited inside the
+post-process. Ray tracing, water, raster core, vegetation, submits, pools,
+arrays, mixer, and load path are referenced only at interfaces. Method
+matches reports~22--23: full reads with file:line evidence,
+\texttt{spirv-dis} on shipped modules, byte tallies from creation code. The
+application was not executed; dynamic magnitudes are analytic estimates
+from verified structure at $1920\times1080$ (2.07\,M pixels), 3 frames in
+flight.
+
+\subsection{Measured Budgets}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Module} & \textbf{Words} & \textbf{Instrs} & \textbf{Role} \\
+\midrule
+\texttt{main\_brush.frag.spv} & 22\,511 & 4\,809 & brush color (full \texttt{main.frag} $-$DBRUSH\_PASS) \\
+\texttt{postprocess.frag.spv} & 4\,600 & 949 & fullscreen composite, 17 bindings \\
+\texttt{sky.frag.spv} & 4\,159 & 846 & fullscreen sky gradient + stars + flare \\
+\texttt{sky\_equirect.frag.spv} & 4\,082 & 822 & 2\,M-px cached bake, same sky math \\
+\texttt{sky\_grid.frag.spv} & 3\,535 & 710 & grid-mode twin of the sky FS \\
+\texttt{sky\_fullscreen.vert.spv} & 2\,515 & 515 & 3-vertex triangle + invVP reconstruct \\
+\texttt{fullscreen.vert.spv} & 306 & 64 & plain 3-vertex triangle (composite) \\
+\texttt{debug\_sdf.frag.spv} & 850 & 170 & SDF debug leg (fetched via composite) \\
+\texttt{depth\_linearize.frag.spv} & 589 & 130 & debug-widget preview only \\
+\texttt{depth\_only.frag.spv} & 218 & 50 & brush backface FS \\
+\bottomrule
+\end{tabular}
+\caption{Disassembly word counts (\texttt{spirv-dis | wc -w}, the
+reports~20--23 convention) and instruction counts (op lines). The brush
+variant of the solid fragment shader is $5\times$ the composite and
+$5.4\times$ the sky shader: the editing overlay shades with the full solid
+recipe.}
+\end{table}
+
+Per-frame fixed structure: one composite fullscreen (2.07\,M px, every
+preset), one sky fullscreen inside the solid pass, three brush
+clear-plus-draw full-resolution passes plus a dedicated queue submit, one
+UBO upload plus 17-entry signature check for the composite, one
+\texttt{SkySphere} memcpy; the equirect costs 0 on a cache hit or 2.1\,M px
+on a miss. Committed tail-side memory (\S\ref{sec:vram}):
+\textbf{$\sim$95\,MiB device} at 1080p, $\sim$4$\times$ at 4K.
+
+\subsection{Recommended Order}
+
+Gate the brush tail on visibility/mesh count (C1) $\rightarrow$ gate the sky
+fullscreen on \texttt{renderSolid} and day-factor the star hash (C2)
+$\rightarrow$ defer the composite prologue past the opaque-solid test (C3)
+$\rightarrow$ fix the equirect signature (H4) and de-tessellate brush depth
+(H5) $\rightarrow$ shrink brush shading and clamp/skip the blur (H6, H7)
+$\rightarrow$ tier the equirect (H8) $\rightarrow$ dirty-gate the uploads and
+fetches (M9--M11) $\rightarrow$ scale the tail targets (M12) $\rightarrow$
+hygiene (L13--L15).
+
+% =====================================================================
+\section{Cost Model}
+% =====================================================================
+
+\begin{equation}
+\begin{aligned}
+C = &\underbrace{\sum_{\mathrm{passes}} G_{\mathrm{pass}} V C_{\mathrm{vert}} + S C_{\mathrm{submit}} + L C_{\mathrm{bringup}} + G C_{\mathrm{sweep}}}_{\text{reports 20--23}} \\
+&+ \underbrace{M_{\mathrm{tex}} C_{\mathrm{pressure}} + P\,C_{\mathrm{tail}} + B\,C_{\mathrm{brush}} + K\,C_{\mathrm{equirect}}}_{\text{this report}}
+\end{aligned}
+\end{equation}
+
+with $P \approx 2.07$\,M pixels/frame at 1080p ($8.3$\,M at 4K),
+$B = 1$ unconditional brush tail (three full-res passes + one queue submit),
+and $K \in \{0, 1\}$ equirect bakes per frame (2.1\,M px on a miss).
+Reports~20--23 priced geometry, submits, bring-up, generation sweeps, and
+residency; this report prices the per-pixel tail, which scales with output
+resolution rather than scene size --- the only term that quadruples at 4K
+while everything else stays flat.
+
+% =====================================================================
+\section{Tail Residency}
+\label{sec:vram}
+% =====================================================================
+
+Tallied from creation code at $1920\times1080$, 3 frames in flight
+(\texttt{VulkanApp::MAX\_FRAMES\_IN\_FLIGHT = 3},
+\texttt{BrushRenderer.hpp:42}, \texttt{SkyRenderer.hpp:73}).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{5.9cm}p{4.3cm}r@{}}
+\toprule
+\textbf{Resource} & \textbf{Sizing} & \textbf{Bytes} \\
+\midrule
+Brush color targets & $3 \times 1920\times1080$ RGBA8 & 23.7\,MiB dev \\
+Brush front-depth targets & $3 \times 1920\times1080$ D32 & 23.7\,MiB dev \\
+Brush backface-depth targets & $3 \times 1920\times1080$ D32 & 23.7\,MiB dev \\
+Sky equirect targets & $3 \times 2048\times1024$ RGBA8 & 24.0\,MiB dev \\
+Post-process UBO + descriptor buffers & WaterUBO + 3 slots & $<$0.1\,MiB host \\
+\midrule
+Total & & $\sim$95\,MiB dev \\
+\bottomrule
+\end{tabular}
+\caption{Committed tail memory. None of it scales with scene content; all
+of it scales with output resolution ($\sim$380\,MiB at 4K). Report~22's
+pool tally did not include these targets.}
+\end{table}
+
+The brush targets are full-screen-resolution even though brush meshes are a
+handful of chunks; the equirect is fixed $2048\times1024$ even on the
+Minimal preset. Both are allocated per frame slot, unconditionally.
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: The Brush Tail Runs Three Full-Res Passes Plus a Queue Submit Every Frame, Ungated}
+\label{sec:c1}
+
+\textbf{Severity: Critical.}
+
+\texttt{MyApp.cpp:1668} records \texttt{BrushRenderer::recordEarlyPass} on
+the dedicated brush-solid queue every frame with no visibility, mesh-count,
+or settings gate around the block. That function
+(\texttt{BrushRenderer.cpp:214--345}) performs three full-resolution
+\texttt{BeginRendering} passes per frame: front depth (clear 1.0 + tessellated
+depth draw, \texttt{:266--289}), backface depth via
+\texttt{renderBackFacePass} (clear 0.0 GREATER + draw,
+\texttt{BrushBackFaceRenderer.cpp:120--197}), and color (clear + draw,
+\texttt{BrushRenderer.cpp:296--327}) --- each with viewport/scissor setup,
+transitions in, and transitions to \texttt{SHADER\_READ\_ONLY} after
+(\texttt{:329--344}). The brush cull inputs are likewise unconditional
+(\texttt{MyApp.cpp} cull task always runs \texttt{acquireBuffers} +
+\texttt{prepareCull} on the brush solid IR). With no brush mesh present the
+draws are empty but the three clears, six transitions, the command buffer,
+and the queue submit (with its timeline signal the composite waits on) all
+still execute: $3 \times 2.07$\,M cleared pixels plus submit latency per
+frame for an empty overlay.
+
+\textit{Technique: gate on content, keep the graph.} Skip recording (and the
+submit/signal) when the brush IRs hold zero meshes and no brush is armed;
+the composite already treats missing brush input as transparent, so the
+wait set can take the cull timeline directly on skipped frames, mirroring
+the report-22 SDF-task elision (\texttt{MyApp.cpp:2275--2300}, which elides
+the whole SDF task when disabled).
+
+\begin{tcolorbox}[promptbox={Prompt --- C1: content-gated brush tail}]
+Goal: an empty brush costs nothing per frame. Steps: (1) expose brush mesh
+count / armed state from \texttt{BrushRenderer}; (2) skip the early-pass
+record and the brush-solid submit when both IRs are empty and no brush
+stroke is active, routing the composite wait to the already-signalled cull
+timeline; (3) keep the targets' layouts stable across skipped frames so the
+first stroke back needs no extra transition. Files:
+\texttt{MyApp.cpp}, \texttt{vulkan/renderer/BrushRenderer.cpp,.hpp}.
+Validation: identical pixels with and without brush, submit count per frame
+down by one when idle, validation-clean.
+\end{tcolorbox}
+
+\subsection{C2: Sky Fullscreen Draws Before the renderSolid Gate and Shades Stars at Noon}
+\label{sec:c2}
+
+\textbf{Severity: Critical.}
+
+The sky fullscreen draw (\texttt{MyApp.cpp:1989--1994}) sits before the
+\texttt{if (settings.renderSolid)} gate (\texttt{:2000}), so disabling solid
+rendering still pays the fullscreen sky: 2.07\,M pixels $\times$
+\texttt{sky.frag} (4\,159 words / 846 instrs). That shader's per-pixel bill
+is heavy and partly unconditional: three \texttt{pow} calls (sunset bias,
+exponent bias, gradient falloff, \texttt{sky.frag:30,41--42}); a two-hash
+PCG star seed (\texttt{:62--64}) whose result is multiplied by
+\texttt{starMask} --- zero for the entire day (\texttt{:59,66}), so every
+daytime pixel pays two hashes for speckles scaled to nothing; and a sun
+flare \texttt{pow(max(sunDot,0), 800$\cdot$(1$-$sunElev$\cdot$0.5)}
+(\texttt{:74}) with exponents up to $\sim$1200 evaluated per pixel even
+looking away from the sun. Meanwhile the same sky is shaded a second time:
+the composite reconstructs the view direction and fetches the equirect for
+every background pixel (\texttt{postprocess.frag:107--114}) --- the
+fullscreen pass and the equirect fetch overlap on exactly the pixels the
+fullscreen pass just shaded.
+
+\textit{Technique: gate the pass, factor the day.} Move the sky draw under
+the \texttt{renderSolid} condition (or its own sky-visibility flag for
+free-camera modes); branch the star block on \texttt{starMask > 0} so day
+pixels skip both hashes; clamp the flare exponent and skip it for
+\texttt{sunDot $\le$ 0} before the \texttt{pow}.
+
+\begin{tcolorbox}[promptbox={Prompt --- C2: conditional sky fullscreen, day-factored stars}]
+Goal: no sky ALU on pixels that cannot show it. Steps: (1) draw the sky
+fullscreen only when solid rendering (or an explicit sky flag) is on;
+(2) guard the \texttt{floatBitsToUint}+PCG pair with \texttt{starMask > 0};
+(3) early-out the flare for \texttt{sunDot <= 0} and clamp the exponent.
+Files: \texttt{MyApp.cpp}, \texttt{shaders/sky.frag}. Validation:
+pixel-identical sky output, fullscreen sky cost zero with solid off,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{C3: The Composite Pays Its Full Prologue on Opaque-Solid Pixels}
+\label{sec:c3}
+
+\textbf{Severity: Critical.}
+
+\texttt{postprocess.frag:main} runs the same prologue for every pixel
+before any alpha is tested: scene color + depth fetches (\texttt{:104--105}),
+clip$\rightarrow$world reconstruct through the full inverse view-projection
+matvec plus divide plus \texttt{normalize} (\texttt{:107--111}),
+\texttt{atan}+\texttt{acos}+divides equirect mapping plus a sky fetch
+(\texttt{:113--114}) --- then line~119 reads \texttt{sceneColor.a}, which is
+1.0 on the majority of pixels in any outdoors scene, meaning the sky color,
+world position, and view direction just computed are discarded by the
+\texttt{mix} on the very next line. After that, four more fetches are
+unconditional: vegetation depth (\texttt{:142} else-branch, plus the 4-tap
+\texttt{min} variant at \texttt{:134--143} when scaled), brush color
+(\texttt{:233}), and both debug depths (\texttt{:250,258}) --- the
+\texttt{$< 1.0$} tests happen \emph{after} the fetch, so cleared-to-1.0
+targets (SDF/bbox passes elide when disabled, \texttt{MyApp.cpp:2275--2300},
+leaving cleared targets) still cost fullscreen fetches every frame.
+
+\textit{Technique: test first, reconstruct lazily.} Fetch scene color/depth,
+branch on \texttt{isSolid == 1} to skip the world reconstruct + equirect +
+sky fetch (compute them only for background and water/vegetation edge
+pixels that need them); gate the veg/brush/debug fetches on CPU-provided
+valid flags already known on the host (veg enabled, brush present this
+frame, SDF/bbox enabled). Divergence cost is bounded: opaque-solid pixels
+are the coherent majority.
+
+\begin{tcolorbox}[promptbox={Prompt --- C3: lazy composite prologue}]
+Goal: opaque pixels cost two fetches and a mix. Steps: (1) reorder
+\texttt{main} to test \texttt{sceneColor.a} first and skip the
+invVP/normalize/equirect/sky work when 1.0; (2) add UBO valid flags for
+veg/brush/sdf/bbox (host-known) and skip those fetches when clear;
+(3) keep the water/blur path untouched. Files:
+\texttt{shaders/postprocess.frag},
+\texttt{vulkan/renderer/PostProcessRenderer.cpp},
+\texttt{vulkan/ubo/WaterUBO.hpp}. Validation: pixel-identical composite,
+per-pixel fetch count on solid pixels down, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{High-Severity Issues}
+% =====================================================================
+
+\subsection{H4: The Equirect Cache Signature Ignores Night, Stars, and Mode}
+\label{sec:h4}
+
+\textbf{Severity: High.}
+
+Report~22 H8's cache compares a 12-float signature --- day horizon/zenith
+(6), warmth, exponent, sunFlare (3), light direction (3)
+(\texttt{MyApp.cpp:1761--1774}, exact \texttt{!=} compare at \texttt{:1769},
+warmup 3 frames at \texttt{:276,1771--1772}). \texttt{SkySettings}
+(\texttt{widgets/SkySettings.hpp}) carries five more inputs the equirect
+shader reads: \texttt{nightHorizon}, \texttt{nightZenith},
+\texttt{nightIntensity}, \texttt{starIntensity}, and \texttt{mode} (Gradient
+vs Grid selects a different fullscreen pipeline on screen, while the cached
+equirect keeps baking the old sky). Editing any of them at dusk leaves the
+composite, water reflections, and solid360 sampling a stale 2\,M-px bake
+until some unrelated day parameter changes. The compare is also exact float
+equality, so a UI drag that lands back on the same value still invalidates.
+
+\textit{Technique: sign everything the shader reads.} Extend the signature
+to all \texttt{SkySettings} fields plus light elevation, or hash the
+\texttt{SkyUniform} bytes the bake consumes; compare with a small epsilon.
+
+\begin{tcolorbox}[promptbox={Prompt --- H4: complete equirect cache signature}]
+Goal: every sky edit invalidates exactly once. Steps: (1) add night colors,
+night/star intensities, and mode to the compared signature (or compare the
+uploaded \texttt{SkyUniform} bytes); (2) use epsilon comparison for
+drag-produced floats; (3) keep the 3-frame warmup. Files: \texttt{MyApp.cpp},
+\texttt{widgets/SkySettings.hpp}. Validation: night/star/mode edits rebake
+once, no-change frames still hit, validation-clean.
+\end{tcolorbox}
+
+\subsection{H5: Brush Depth Reuses the Tessellated Solid Pipeline for Depth-Only Work}
+\label{sec:h5}
+
+\textbf{Severity: High.}
+
+Both brush depth passes run hull+domain shaders for depth-only output. The
+front-depth pass draws through the solid deferred depth pipeline
+(\texttt{SolidRenderer::drawDepthExternal},
+\texttt{SolidRenderer.cpp:555--565}, binding
+\texttt{activeDeferredDepthPipeline()}), and the backface pass builds its
+own pipeline from \texttt{main.vert} + \texttt{main.tesc} +
+\texttt{main.tese} + \texttt{depth\_only.frag} explicitly
+(\texttt{BrushBackFaceRenderer.cpp:26--44}) --- tessellation factors
+evaluated, patches subdivided, displaced vertices computed, all to write a
+depth buffer at GREATER compare. The engine already owns no-tess vertex
+twins for the main pass (report~21); neither brush depth path uses one.
+Brush geometry is a few chunks, so this is vertex-rate waste rather than a
+frame-rate cliff --- but it is the same HS/DS-per-depth-pixel pattern
+report~21 removed from the main depth path, duplicated twice in the tail.
+
+\textit{Technique: wire the no-tess twin.} Build the brush front/back depth
+pipelines from the non-tessellated vertex shader (same bindings, no TCS/TES
+stages); keep the tessellated path only where brush meshes opt into
+displacement, if anywhere.
+
+\begin{tcolorbox}[promptbox={Prompt --- H5: de-tessellated brush depth}]
+Goal: brush depth costs vertices, not patches. Steps: (1) add no-TCS/TES
+variants of the brush front-depth and backface pipelines; (2) select them
+for brush IR draws; (3) confirm depth output identical. Files:
+\texttt{vulkan/renderer/SolidRenderer.cpp},
+\texttt{vulkan/renderer/BrushBackFaceRenderer.cpp}. Validation:
+pixel-identical brush depth targets, HS/DS invocations zero on brush depth,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{H6: Brush Color Shades With the Full 22k-Word Solid Recipe}
+\label{sec:h6}
+
+\textbf{Severity: High.}
+
+\texttt{shaders/main\_brush.frag.spv} is \texttt{shaders/main.frag} (182
+lines plus heavy includes) compiled with \texttt{-DBRUSH\_PASS}
+(\texttt{Makefile:146--150}) and still measures 22\,511 words / 4\,809
+instructions --- $5\times$ the composite, $5.4\times$ the sky shader. Two
+pipelines share it (blended deferred brush color and opaque brush overlay,
+\texttt{SolidRenderer.cpp:444--497}), differing only in blend enable. The
+\texttt{BRUSH\_PASS} guard trims PAINT mode, shadows, and set-1 declarations
+(\texttt{shaders/main.frag:50,77}), but what remains is still the full solid
+lighting/material machinery evaluated per brush pixel for an editing
+gizmo that the composite then alpha-mixes over the scene
+(\texttt{postprocess.frag:234--244}). An unlit or flat-shaded brush
+fragment would be visually equivalent at these opacities
+(\texttt{brushAlpha} default 0.5, \texttt{MyApp.cpp:3179--3185}).
+
+\textit{Technique: a dedicated cheap brush FS.} Write a small brush fragment
+shader (base color + simple lambert or unlit + constant alpha) behind the
+same interface; keep the full-recipe path behind a quality flag if
+pixel-parity is ever required.
+
+\begin{tcolorbox}[promptbox={Prompt --- H6: cheap brush fragment shader}]
+Goal: brush pixels cost a lambert term, not the solid recipe. Steps:
+(1) add \texttt{shaders/brush\_flat.frag} (unlit/lambert, same outputs);
+(2) point both brush pipelines at it; (3) A/B the overlay look at default
+opacity. Files: \texttt{shaders/brush\_flat.frag} (new),
+\texttt{vulkan/renderer/SolidRenderer.cpp}, \texttt{Makefile}.
+Validation: overlay visually equivalent, brush-pass ALU down by an order of
+magnitude, validation-clean.
+\end{tcolorbox}
+
+\subsection{H7: The 9-Tap Bilateral Water Blur Runs Unclamped exp() per Tap in the Composite}
+\label{sec:h7}
+
+\textbf{Severity: High.}
+
+Report~19 H4 gated the body/column block on \texttt{waterBlurEnabled}
+(\texttt{postprocess.frag:168,215}, \texttt{PostProcessRenderer.cpp:378--380},
+\texttt{MyApp.cpp:3221--3225}) --- the residual inside the gate is still
+expensive: per water pixel with \texttt{blurPx > 0.5}, one center fetch pair
+plus 8 taps each costing a body fetch, a column fetch, and
+\texttt{exp(-abs(dS - dC) * 0.5)} (\texttt{postprocess.frag:180--189}) ---
+16 \texttt{textureLod} + 8 \texttt{exp} per pixel, with tap offsets scaled by
+the unbounded material radius (\texttt{columnCenter.g}, \texttt{:171--173}),
+so large radii sample sparsely across the body target and thrash the texture
+cache exactly on the wide-water pixels the blur exists for. No mip is used
+(all \texttt{Lod} 0.0); a 2-level mip pyramid on the body target would
+approximate large radii with one fetch.
+
+\textit{Technique: clamp the radius, mip the body.} Clamp
+\texttt{blurPx} to a cache-sane maximum (spillover handled by the weight
+normalization already present); generate 1--2 mips on the water body target
+and select the level from the radius so wide blurs cost one filtered fetch
+instead of 8 sparse ones.
+
+\begin{tcolorbox}[promptbox={Prompt --- H7: bounded water-blur kernel}]
+Goal: wide water costs fetches, not cache misses. Steps: (1) clamp
+\texttt{blurPx} (e.g.\ $\le 8$\,px, retune per material); (2) add body-target
+mips and level-select by radius; (3) keep the bilateral weight and the
+reflection-sharpness invariant. Files: \texttt{shaders/postprocess.frag},
+water body target creation. Validation: blurred-water A/B, water-pixel cost
+down at large radii, validation-clean.
+\end{tcolorbox}
+
+\subsection{H8: The Equirect Is Fixed 2048$\times$1024 on Every Preset}
+\label{sec:h8}
+
+\textbf{Severity: High.}
+
+\texttt{SkyRenderer::createOffscreenTargets} hard-codes
+\texttt{offscreenWidth = 2048}, \texttt{offscreenHeight = 1024}
+(\texttt{SkyRenderer.cpp:156--158}) regardless of output resolution or
+graphics preset, then allocates three frame slots (24\,MiB) and shades
+2.1\,M sky pixels per bake (\texttt{renderOffscreen}, \texttt{:240--330}).
+On Minimal at 720p the bake shades more sky pixels than the screen has,
+for a target sampled exactly once per background pixel through a bilinear
+fetch (\texttt{postprocess.frag:114}) --- a fetch that cannot resolve detail
+finer than the screen anyway. The C1 content-tiering precedent (report~23
+C1, \texttt{Settings::textureArraySize}) applies directly: bake resolution
+is a quality tier, not a constant.
+
+\textit{Technique: tier the bake.} Scale the equirect ($1024\times512$ on
+Minimal/low, $2048\times1024$ above) via the existing settings tier path;
+recreate on tier change through the same resize flow that already rebuilds
+these targets (\texttt{SceneRenderer.cpp:248--250}).
+
+\begin{tcolorbox}[promptbox={Prompt --- H8: tiered equirect resolution}]
+Goal: the bake costs what the screen can show. Steps: (1) add an equirect
+resolution tier to \texttt{Settings} (default $2048\times1024$, low
+$1024\times512$); (2) thread it through \texttt{createOffscreenTargets};
+(3) recreate on tier change. Files: \texttt{utils/Settings.hpp},
+\texttt{vulkan/renderer/SkyRenderer.cpp}. Validation: sky A/B per tier,
+bake cost halved at low tier, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M9: Sky Uploads Are Unconditional Per-Frame Host Writes}
+\label{sec:m9}
+
+\textbf{Severity: Medium.}
+
+Two host writes fire every frame whether or not the sky changed:
+\texttt{SkySphere::update} memcpys the whole \texttt{SkyUniform} from the
+widget settings (\texttt{SkySphere.cpp:57--71}), called unconditionally from
+the frame update (\texttt{MyApp.cpp:1167--1168}); and
+\texttt{renderOffscreen} rewrites the shared UBO via
+\texttt{updateUniformBuffer} on every bake (\texttt{SkyRenderer.cpp:250--252}).
+Each is tens of bytes into coherent mapped memory --- noise-floor cost, but
+also noise-floor fix: the equirect signature (\S\ref{sec:h4}) already
+computes exactly the dirty bit these writes need. Reuse it (extended per
+H4) so static-sky frames perform zero sky host writes.
+
+\begin{tcolorbox}[promptbox={Prompt --- M9: dirty-gated sky uploads}]
+Goal: a static sky costs zero host writes. Steps: (1) reuse the (fixed) sky
+signature as the dirty bit for \texttt{SkySphere::update}; (2) skip the
+\texttt{renderOffscreen} UBO rewrite when the signature matches; (3) force
+dirty on settings-struct replacement. Files: \texttt{MyApp.cpp},
+\texttt{vulkan/SkySphere.cpp}, \texttt{vulkan/renderer/SkyRenderer.cpp}.
+Validation: byte-identical UBO contents, upload count zero on static frames,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{M10: The Composite Rebuilds Its UBO and Signature Every Frame}
+\label{sec:m10}
+
+\textbf{Severity: Medium.}
+
+\texttt{PostProcessRenderer::render} maps, memcpys, and unmaps the
+\texttt{WaterUBO} (\texttt{PostProcessRenderer.cpp:386--389}), rebuilds the
+17-element \texttt{imageInfos} array (\texttt{:415--437}), and recomputes the
+per-slot descriptor signature (\texttt{:455--467}) on every frame ---
+including frames where \texttt{brushAlpha}/\texttt{brushMode} (set from the
+selected brush entry, \texttt{MyApp.cpp:3179--3185}), matrices, and all
+views are unchanged. The signature cache already makes the steady state
+\textquotedblleft zero descriptor updates\textquotedblright\ (\texttt{:451--454});
+gating the UBO memcpy and the signature rebuild on the same change dormancy
+removes the remaining per-frame host work (map/unmap pair, 17-view array
+fill, signature compare setup). Small alone; it sits on the hottest CPU
+path in the frame.
+
+\begin{tcolorbox}[promptbox={Prompt --- M10: change-gated composite upload}]
+Goal: a static composite setup costs no host work. Steps: (1) cache the last
+uploaded UBO bytes + view handles and skip map/memcpy/signature rebuild when
+all match; (2) force refresh on resize/recreate. Files:
+\texttt{vulkan/renderer/PostProcessRenderer.cpp}. Validation: byte-identical
+UBO stream, zero uploads on static frames, validation-clean.
+\end{tcolorbox}
+
+\subsection{M11: Disabled Debug Legs Still Cost Fullscreen Fetches}
+\label{sec:m11}
+
+\textbf{Severity: Medium.}
+
+The producers are gated --- the SDF task elides entirely when disabled
+(\texttt{MyApp.cpp:2275--2300}), leaving cleared targets --- but the
+consumer is not: the composite fetches \texttt{sdfDepthTex} and
+\texttt{bboxDepthTex} unconditionally (\texttt{postprocess.frag:250,258}) and
+tests \texttt{$< 1.0$} after the fetch, so every pixel of every frame pays
+two depth fetches for overlays that are off. Same for vegetation depth when
+vegetation is disabled (\texttt{:142}; the CPU already branches on
+\texttt{settings.vegetationEnabled} for the cull at \texttt{MyApp.cpp}
+cull task). The host knows all three flags; the shader does not. Pass them
+through the UBO (three valid bits next to \texttt{waterBlurEnabled}, same
+pattern as report~19 H4) and skip the fetches.
+
+\begin{tcolorbox}[promptbox={Prompt --- M11: valid-bit the debug/veg fetches}]
+Goal: a disabled overlay costs zero fetches. Steps: (1) add
+\texttt{vegValid}/\texttt{sdfValid}/\texttt{bboxValid} to the composite UBO;
+(2) skip each depth+color fetch when its bit is clear; (3) set the bits from
+the existing settings at the \texttt{MyApp.cpp:3152--3225} call site. Files:
+\texttt{shaders/postprocess.frag},
+\texttt{vulkan/renderer/PostProcessRenderer.cpp},
+\texttt{vulkan/ubo/WaterUBO.hpp}, \texttt{MyApp.cpp}. Validation:
+pixel-identical output in all flag combinations, fetch count down when off,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{M12: Tail Targets Are Full-Res, Full-Slot, and Resize-Churned}
+\label{sec:m12}
+
+\textbf{Severity: Medium.}
+
+\S\ref{sec:vram}: $\sim$95\,MiB at 1080p, $\sim$380\,MiB at 4K, all
+resolution-scaled and none content-scaled. Three compounding details: brush
+color+depth+backface allocate at full render resolution though brush editing
+happens at stroke scale (a half-res brush tail would composite indistinguishably
+under 0.5 alpha); all targets allocate all 3 slots even when the producing
+pass is elided for the session (C1, SDF-style); and every swapchain resize
+destroys and recreates the brush targets from scratch
+(\texttt{BrushRenderer.cpp:104--115}) plus the backface set, with layout
+tracking reset to \texttt{UNDEFINED} --- no preservation, no lazy
+re-allocation. At 4K this section alone commits more than report~23's entire
+vegetation+billboard+impostor tally.
+
+\textit{Technique: scale, share, preserve.} Render the brush tail at a
+brush-quality scale factor (settings-tiered, default 1.0, low 0.5) with the
+composite upsampling the brush color (depth tests stay conservative via the
+closest-tap rule already used for water/veg); allocate backface depth only
+while PAINT mode is armed; preserve images across resizes when the size is
+unchanged.
+
+\begin{tcolorbox}[promptbox={Prompt --- M12: scaled, lazy tail targets}]
+Goal: the tail commits what editing needs. Steps: (1) add a brush-tail scale
+to \texttt{Settings} and size brush targets by it; (2) allocate backface
+depth lazily on PAINT-mode arming; (3) skip recreate when extents match.
+Files: \texttt{utils/Settings.hpp},
+\texttt{vulkan/renderer/BrushRenderer.cpp,.hpp},
+\texttt{vulkan/renderer/BrushBackFaceRenderer.cpp}. Validation: overlay A/B
+per tier, VRAM delta per tier, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L13: Two Fullscreen Vertex Shaders for Three Vertices}
+
+\texttt{sky\_fullscreen.vert.spv} (2\,515 words / 515 instrs) vs
+\texttt{fullscreen.vert.spv} (306 words / 64 instrs): the sky variant
+reconstructs world position through the invVP matvec and exports two
+varyings (\texttt{shaders/sky\_fullscreen.vert}) to shade 3 vertices, while
+the composite variant emits bare clip positions
+(\texttt{shaders/fullscreen.vert}). The reconstruct exists to feed
+\texttt{sky.frag}'s direction-only use (\texttt{fragPosWorld} minus camera
+position, normalized) --- a frag-side reconstruct from \texttt{gl\_FragCoord}
+and a push-constant invVP would let one shared triangle vertex shader serve
+sky, composite, and equirect. Trivial ALU either way (3 vertices); the real
+cost is pipeline/shader-module sprawl: three fullscreen pipelines with
+near-identical vertex stages.
+
+\subsection{L14: Composite Viewport Follows Cached State, Not the Swapchain}
+
+\texttt{PostProcessRenderer::render} sets viewport/scissor from
+\texttt{renderWidth/Height} (\texttt{PostProcessRenderer.cpp:577--590}),
+cached via \texttt{setRenderSize} (\texttt{:45--48}) and fed from app
+dimensions at init and resize (\texttt{SceneRenderer.cpp:246,885}). Any
+drift between those dimensions and the actual swapchain extent silently
+scales or clips the one pass that defines the final image --- and nothing
+asserts their equality. Derive the viewport from the swapchain extent at
+record time (it is already on hand where the composite is recorded,
+\texttt{MyApp.cpp:3152--3225}) or debug-assert equality after resize.
+
+\subsection{L15: One-Shot DIAG Block and Comment Drift in the Tail}
+
+\texttt{PostProcessRenderer.cpp:393--414} prints a \texttt{static
+bool}-gated DIAG line of raw view handles to stderr on the first composite
+frame of every run --- the report-22-era debug leftover pattern L-sections
+keep finding. Nearby drift: the \texttt{brushMode} float documents only
+\texttt{0=overlay, 2=PAINT} (\texttt{postprocess.frag:23}) while the brush
+manager defines the full mode set; the 17-binding layout header comment
+(\texttt{PostProcessRenderer.cpp:61}) survives each binding repurposing
+(M11's valid bits will be next). Delete the DIAG, document the mode enum in
+one place, and keep the binding table truthful.
+
+% =====================================================================
+\section{Implementation Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lp{5.8cm}p{5.6cm}@{}}
+\toprule
+\textbf{Item} & \textbf{Change} & \textbf{Est.\ effect} \\
+\midrule
+C1 & Content-gated brush tail & $-3$ full-res passes + 1 submit/frame when idle \\
+C2 & Conditional sky FS + day-factored stars & $-2$M sky px/frame when solid off; $-$2 hashes/px by day \\
+C3 & Lazy composite prologue + valid flags & $-$6 fetches + invVP + atan/acos per solid px \\
+H4 & Complete equirect signature & stale-sky class of bug closed \\
+H5 & De-tessellated brush depth & HS/DS off the brush depth path \\
+H6 & Cheap brush FS & brush ALU down $\sim$10$\times$ \\
+H7 & Bounded water-blur kernel & $-$sparse taps at large radii \\
+H8 & Tiered equirect & $-1$M bake px + $-18$\,MiB at low tier \\
+M9--M12 & Dirty-gated uploads, fetch valid bits, scaled targets & additive host + VRAM \\
+L13--L15 & Shared triangle VS, viewport assert, DIAG/comments & noise floor \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C1--C3 are the items that change what the engine \emph{costs per frame} on
+the tail: idle submit/pass overhead, unconditional sky shading, and the
+per-pixel prologue tax. H4 is a correctness fix with a performance
+signature. None of the changes touches scene content except H6's brush
+shading (an editing overlay) and H7--H8's blur/bake tiers (quality knobs).
+
+Explicitly out of scope (audited shallowly or not at all; candidates for
+report~25): the impostor bake's synchronous 20-view capture
+(\texttt{ImpostorCapture.cpp:240--336}, one blocking submit with 20
+\texttt{BeginRendering}+indexed draws, 40 \texttt{ImGui\_RemoveTexture} per
+capture); the GDAL heightmap load path (\texttt{math/HeightMapTif.cpp},
+blocking \texttt{GDALOpen} + whole-image double-buffer +
+non-contiguous \texttt{vector<vector<float>>}); CPU threading
+(\texttt{space/ThreadPool.cpp}, single-mutex FIFO, no work-stealing);
+input/events (\texttt{events/EventManager.cpp}, per-publish snapshot +
+double-loop drain); and the ImGui widget layer (release-only, never
+profiled).
+
+% =====================================================================
+\section{Overall Score}
+\label{sec:score24}
+% =====================================================================
+
+\subsection{Rubric (Report-24 Scope)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcp{7.2cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Wt.} & \textbf{Score and justification} \\
+\midrule
+Composite efficiency & 35\% & \textbf{5.0} --- blur gating, LOD discipline,
+descriptor signature cache and timeline waits are good; the unconditional
+prologue (invVP + atan/acos + sky + 4 extra fetches per solid pixel) drags
+it down. \\
+Sky & 30\% & \textbf{5.5} --- the equirect cache removes 2\,M px/frame when
+static and the fullscreen triangle replaced sphere geometry; the draw is
+unconditional, day pixels hash stars for nothing, and the signature misses
+five inputs. \\
+Brush tail & 25\% & \textbf{4.5} --- dedicated IRs, own queue, and
+layout-tracked targets are good; three full-res passes + submit ungated,
+tessellated depth-only draws, and full-recipe shading are not. \\
+Upload / target hygiene & 10\% & \textbf{6.0} --- coherent mapped uploads,
+no per-frame allocations in the tail; uploads and 95\,MiB of targets ignore
+change and content. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Overall: 5.1/10 Scope, 6.1/10 Combined}
+
+\begin{equation}
+0.35(5.0) + 0.30(5.5) + 0.25(4.5) + 0.10(6.0) = \mathbf{5.1}
+\end{equation}
+
+Report~23 scored the combined engine 6.2/10; that estimate priced geometry,
+submits, pools, arrays, mixer, and load, but not the per-pixel tail.
+Measuring it:
+
+\begin{equation}
+0.90(6.2) + 0.10(5.1) = \mathbf{6.1}
+\end{equation}
+
+The engine's verdict is unchanged in kind, extended in scope once more: the
+frame graph architecture (async queues, timeline DAG, cached descriptors,
+cached equirect, elided debug tasks) is sound; the constants --- which
+passes run unconditionally, and what each pixel computes before its first
+branch --- are again where the money is. Landing C1--C3 moves this scope
+toward $\sim$8/10 with no redesign.
+
+\end{document}
