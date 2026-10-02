@@ -1558,7 +1558,13 @@ void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
         std::max(0.001f, windSettings.noiseScale),
         std::max(0.0f, windSettings.verticalFlutter));
     params.windTurbulence = glm::vec4(std::max(0.0f, windSettings.turbulence), 0.0f, 0.0f, 0.0f);
-    const float nearDistance = std::max(0.0f, distanceDensitySettings.fullDensityDistance);
+    // Distance-density thinning starts AT the billboard->impostor hand-off,
+    // never before it. Starting at fullDensityDistance (default 512 m) while
+    // impostorDistance is larger thinned the billboards below the hand-off
+    // (the vegetation visibly faded out before the impostors appeared) and
+    // made the impostors start at reduced density. The far LOD still applies
+    // beyond the hand-off.
+    const float nearDistance = std::max({0.0f, distanceDensitySettings.fullDensityDistance, impostorDistance});
     const float farDistance = std::max(nearDistance + 1.0f, distanceDensitySettings.minDensityDistance);
     const float minFactor = std::clamp(distanceDensitySettings.minDensityFactor, 0.0f, 1.0f);
     const float safeMinFactor = std::max(minFactor, 0.0001f);
