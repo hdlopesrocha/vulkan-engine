@@ -131,23 +131,42 @@ void main() {
     // water-geometry-depth test below). At full resolution the flag is off and
     // the single tap is used unchanged.
     float vegDepth;
+    float vegCoverage;
     if (ubo.vegetationScaled > 0.5) {
         vec2 vtexel = 1.0 / vec2(textureSize(vegDepthTex, 0));
-        float vd00 = textureLod(vegDepthTex, clamp(uv + vec2(-vtexel.x, -vtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
-        float vd10 = textureLod(vegDepthTex, clamp(uv + vec2( vtexel.x, -vtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
-        float vd01 = textureLod(vegDepthTex, clamp(uv + vec2(-vtexel.x,  vtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
-        float vd11 = textureLod(vegDepthTex, clamp(uv + vec2( vtexel.x,  vtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
-        vegDepth = min(min(vd00, vd10), min(vd01, vd11));
+        vec2 suv00 = clamp(uv + vec2(-vtexel.x, -vtexel.y), vec2(0.0), vec2(1.0));
+        vec2 suv10 = clamp(uv + vec2( vtexel.x, -vtexel.y), vec2(0.0), vec2(1.0));
+        vec2 suv01 = clamp(uv + vec2(-vtexel.x,  vtexel.y), vec2(0.0), vec2(1.0));
+        vec2 suv11 = clamp(uv + vec2( vtexel.x,  vtexel.y), vec2(0.0), vec2(1.0));
+        float vd00 = textureLod(vegDepthTex, suv00, 0.0).r;
+        float vd10 = textureLod(vegDepthTex, suv10, 0.0).r;
+        float vd01 = textureLod(vegDepthTex, suv01, 0.0).r;
+        float vd11 = textureLod(vegDepthTex, suv11, 0.0).r;
+        // Closest tap supplies both depth and COVERAGE. The target is cleared
+        // to alpha 0, so a bilinear alpha averages a thin billboard's 1.0 with
+        // the surrounding empty texels and fades it out (the billboard side
+        // visibly lost density with distance while the larger impostor quads
+        // survived). Taking the coverage from the same tap the depth came from
+        // preserves the silhouette; the colour stays bilinear below for smooth
+        // gradients.
+        float bestDepth = vd00;
+        vec2 bestUV = suv00;
+        if (vd10 < bestDepth) { bestDepth = vd10; bestUV = suv10; }
+        if (vd01 < bestDepth) { bestDepth = vd01; bestUV = suv01; }
+        if (vd11 < bestDepth) { bestDepth = vd11; bestUV = suv11; }
+        vegDepth = bestDepth;
+        vegCoverage = textureLod(vegColorTex, bestUV, 0.0).a;
     } else {
         vegDepth = texture(vegDepthTex, uv).r;
+        vegCoverage = textureLod(vegColorTex, uv, 0.0).a;
     }
     bool vegPresent = (vegDepth < 1.0);
     float obstacleDepth = sceneDepth;
     if (vegPresent) {
         obstacleDepth = min(obstacleDepth, vegDepth);
         vec4 vegColor = textureLod(vegColorTex, uv, 0.0);
-        if (vegColor.a > 0.0 && !(sceneDepth < vegDepth)) {
-            baseColor = mix(baseColor, vegColor.rgb, vegColor.a);
+        if (vegCoverage > 0.0 && !(sceneDepth < vegDepth)) {
+            baseColor = mix(baseColor, vegColor.rgb, vegCoverage);
         }
     }
     // 3. Water on top
