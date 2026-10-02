@@ -10,6 +10,7 @@ layout(location = VARY_POSLIGHT) in flat vec3 inTangentWS;   // billboard tangen
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 #include "includes/ubo.glsl"
+#include "includes/debug_modes.glsl"
 
 layout(set = 0, binding = 4) uniform sampler2D shadowMap;
 layout(set = 0, binding = 8) uniform sampler2D shadowMap1;
@@ -41,6 +42,13 @@ vec3 fragPosWorld; // set in main() — required by shadows.glsl cascades 1 & 2
 #include "includes/shadows.glsl"
 
 void main() {
+    // Debug: raw LOD source, no shading. Red = billboard (this shader),
+    // blue = impostor (impostors.frag). The color edge is the hand-off.
+    if (ubo.debugMode == DEBUG_MODE_VEGETATION_LOD) {
+        outColor = vec4(1.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
     vec3 coord = vec3(inTexCoord.xy, inTexCoord.z);
     bool shadowPass = windEnabled < 0.0;
     fragPosWorld = inWorldPos; // must be set before any ShadowCalculation call

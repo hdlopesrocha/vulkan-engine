@@ -63,6 +63,9 @@ enum class DebugMode : int {
     WaterGerstner,        // water only: the per-pixel Gerstner evaluation the shading normal is built from:
                           //            R = wave height (grey 0.5 = mean level), G = analytic slope magnitude,
                           //            B = horizontal pinch (the Gerstner crest sharpening)
+    VegetationLod,        // vegetation only: RED = billboard fragment, BLUE = impostor fragment
+                          //            (renders the raw surfaces, no shading, so the LOD
+                          //            hand-off boundary is directly visible)
     Count
 };
 
@@ -107,6 +110,7 @@ inline constexpr const char* kDebugModeNames[] = {
     "Water Specular/Glitter Noise",
     "Water Shore Direction",
     "Water Gerstner",
+    "Vegetation LOD (red=billboard, blue=impostor)",
 };
 
 static_assert(sizeof(kDebugModeNames) / sizeof(kDebugModeNames[0])

@@ -13,6 +13,7 @@ layout(location = VARY_POSLIGHT) flat in vec3 inInstanceOffset;
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 #include "includes/ubo.glsl"
+#include "includes/debug_modes.glsl"
 
 layout(set = 0, binding = 4) uniform sampler2D shadowMap;
 layout(set = 0, binding = 8) uniform sampler2D shadowMap1;
@@ -52,6 +53,13 @@ vec3 fragPosWorld; // set in main() — required by shadows.glsl cascades 1 & 2
 #include "includes/shadows.glsl"
 
 void main() {
+    // Debug: raw LOD source, no shading. Blue = impostor (this shader),
+    // red = billboard (vegetation.frag). The color edge is the hand-off.
+    if (ubo.debugMode == DEBUG_MODE_VEGETATION_LOD) {
+        outColor = vec4(0.0, 0.0, 1.0, 1.0);
+        return;
+    }
+
     vec4 color = texture(impostorArray, inTexCoord);
     if (color.a < 0.3) discard;
     fragPosWorld = inWorldPos; // must be set before any ShadowCalculation call
