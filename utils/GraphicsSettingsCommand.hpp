@@ -100,10 +100,17 @@ private:
         // quarter. Propagates via the existing per-frame waterRenderScale
         // check (device-idle target recreation); the slider still overrides.
         settings.waterRenderScale = 0.5f;
-        // Half-resolution vegetation targets (perf report 22 M12): leaf-scale
-        // detail survives the downscale at typical viewing distances, and the
-        // composite's closest-of-2x2 depth taps keep silhouettes uneroded.
-        settings.vegetationRenderScale = 0.5f;
+        // Vegetation intentionally stays at FULL resolution on the preset.
+        // The half-res target (perf report 22 M12) made thin billboards lose
+        // coverage: at 0.5 scale a distant billboard covers few texels, the
+        // composite's upsampling averaged its alpha with the cleared
+        // surroundings, and the billboard side visibly faded out while the
+        // larger impostor quads stayed solid - a fake gap in the middle of
+        // the billboard->impostor transition that persisted through the
+        // cross-fade removal. The composite now also reconstructs coverage
+        // from the closest depth tap (postprocess.frag), so a manual scale
+        // reduction is safe, but the default Minimal look keeps full detail.
+        settings.vegetationRenderScale = 1.0f;
         // Settings::textureArraySize intentionally untouched: see applyMaximum.
         // The 512 tier is still selectable in the settings UI, but switching
         // presets must not trigger the synchronous full-array rebuild.
