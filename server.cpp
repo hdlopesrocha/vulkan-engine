@@ -1,10 +1,9 @@
 #include <iostream>
 #include "utils/LocalScene.hpp"
 #include "utils/MainSceneLoader.hpp"
-#include "space/UniqueChangeCollector.hpp"
 
 
-int main(int argc, char** argv) {
+int main() {
 
     Octree::OctreeNodeDataHandler liquidNodeEventCallback = [](const OctreeNodeData& nd) {
         std::cout << "Transparent node updated" << std::endl;
