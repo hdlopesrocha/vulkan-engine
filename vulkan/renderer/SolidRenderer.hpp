@@ -24,19 +24,11 @@ public:
     void createWireframe(VulkanApp* app);
     void createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
     void destroyRenderTargets(VulkanApp* app);
-    void beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear, VulkanApp* app);
-    void endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp* app);
     void cleanup(VulkanApp* app) override;
 
     // Draw the solid wireframe overlay on top of the existing solid render.
     // Must be called inside a compatible render pass.
     void drawWireframeOverlay(VkCommandBuffer& commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet);
-
-    // Draw main solid geometry: bind pipeline and draw
-    // (The combined render() entry point was removed with the dead code sweep,
-    // perf report 22 M9: callers use drawDepth/drawColor directly.)
-    // Draw depth-only pre-pass to populate depth buffer without writing color
-    void renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
 
     // Access for adding meshes
     IndirectRenderer& getIndirectRenderer() { return indirectRenderer; }
@@ -60,15 +52,11 @@ public:
     void setDepthLayout(uint32_t frameIndex, VkImageLayout layout) {
         if (frameIndex < solidDepthImageLayouts.size()) solidDepthImageLayouts[frameIndex] = layout;
     }
-    VkPipeline getGraphicsPipeline() const { return activeGraphicsPipeline(); }
-    VkPipelineLayout getGraphicsPipelineLayout() const { return graphicsPipelineLayout; }
-
     // Runtime RT-shading selector (solid reflections / local shadows). With
     // both off, the cheap non-RT fragment variant is bound instead of the
     // ray-query shader, so raster-only configurations never pay its register
     // pressure/occupancy cost. Both variants are built at init.
     void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
-    bool rtShadingEnabled() const { return rtShadingEnabled_; }
 
     // Runtime tessellation selector (Settings::tessellationEnabled, perf
     // report 21 C1). Only the deferred-depth pass has a no-tess twin (its
@@ -77,34 +65,25 @@ public:
     // RT/profiling/brush/wireframe paths never had a twin. All fallbacks bind
     // the tessellated pipelines, which is always correct.
     void setTessellationEnabled(bool enabled) { tessellationEnabled_ = enabled; }
-    bool tessellationEnabled() const { return tessellationEnabled_; }
 
     // Per-op RT profiling selector (RT_PROFILE variant, built only when the
     // device supports VK_KHR_shader_clock). Opt-in: instrumented shaders carry
     // atomics + device-clock reads, so they are only bound while the user has
     // RT profiling enabled in the overlay.
     void setRtProfilingEnabled(bool enabled) { rtProfilingEnabled_ = enabled; }
-    bool rtProfilingEnabled() const { return rtProfilingEnabled_; }
 
     // Single-pass selector (perf report 21 C2). While set, the color binds
     // use the depth-write twin; MyApp sets it only around the solid color
     // draw so external draws (brush) never inherit it. Defaults off.
     void setDeferredColorDepthWrite(bool enabled) { colorDepthWrite_ = enabled; }
-    bool deferredColorDepthWrite() const { return colorDepthWrite_; }
     // Deferred depth test: draw only depth (no color)
     void drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet);
     // Deferred depth test: draw only color with LESS_OR_EQUAL compare, no depth write
     void drawColor(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
     // Draw depth using an external IndirectRenderer (e.g. separate brush mesh buffer)
     void drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
-    // Draw color using an external IndirectRenderer
-    void drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
     // Draw brush color (main_brush.frag, no shadows) using an external IndirectRenderer
     void drawBrushColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
-    // Draw brush color with alpha blending at the given opacity
-    void drawBrushColor(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect, float opacity);
-    // Draw brush overlay (opaque, no blending) into scene_color
-    void drawBrushOverlay(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
 
 private:
     

@@ -90,130 +90,6 @@ void SolidRenderer::destroyRenderTargets(VulkanApp* app) {
     }
 }
 
-void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear, VulkanApp* app) {
-    if (cmd == VK_NULL_HANDLE) {
-        std::cerr << "[SolidRenderer::beginPass] Missing cmd, skipping." << std::endl;
-        return;
-    }
-    if (!app) throw std::runtime_error("SolidRenderer::beginPass requires valid VulkanApp");
-
-    // Batched begin barriers (single vkCmdPipelineBarrier2 for color+depth;
-    // was: one call per image): solid color SHADER_READ_ONLY →
-    // COLOR_ATTACHMENT_OPTIMAL (left read-only by the previous frame's ImGui /
-    // debug sampling) and solid depth tracked → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    // (usually SHADER_READ_ONLY from water / debug sampling). Same stage/access
-    // mapping as the single transitions; already-correct layouts resolve to
-    // no-ops inside the same call.
-    {
-        std::vector<VulkanApp::BatchTransition> batch;
-        batch.reserve(2);
-        if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
-            VulkanApp::BatchTransition colorBegin{};
-            colorBegin.image     = solidColorImages[frameIndex];
-            colorBegin.format    = app->getSwapchainImageFormat();
-            colorBegin.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            colorBegin.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorBegin.mipLevels = 1;
-            batch.push_back(colorBegin);
-        }
-        if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
-            VulkanApp::BatchTransition depthBegin{};
-            depthBegin.image     = solidDepthImages[frameIndex];
-            depthBegin.format    = VK_FORMAT_D32_SFLOAT;
-            depthBegin.oldLayout = solidDepthImageLayouts[frameIndex];
-            depthBegin.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depthBegin.mipLevels = 1;
-            batch.push_back(depthBegin);
-        }
-        app->recordTransitionBatch(cmd, batch);
-        if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE)
-            app->setImageLayoutTracked(solidColorImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
-        if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
-            app->recordTrackedLayoutForCommandBuffer(cmd, solidDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-            solidDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        }
-    }
-
-    VkRenderingAttachmentInfo colorAttachment{};
-    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = solidColorImageViews[frameIndex];
-    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.clearValue = colorClear;
-
-    VkRenderingAttachmentInfo depthAttachment{};
-    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depthAttachment.imageView = solidDepthImageViews[frameIndex];
-    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depthAttachment.clearValue = depthClear;
-
-    VkRenderingInfo renderingInfo{};
-    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = {renderWidth, renderHeight};
-    renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachments = &colorAttachment;
-    renderingInfo.pDepthAttachment = &depthAttachment;
-
-    vkCmdBeginRendering(cmd, &renderingInfo);
-}
-
-void SolidRenderer::endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp* app) {
-    if (cmd == VK_NULL_HANDLE) return;
-    vkCmdEndRendering(cmd);
-
-    // Batched end barriers (single vkCmdPipelineBarrier2 for color+depth;
-    // was: one call per image): solid color COLOR_ATTACHMENT_OPTIMAL →
-    // SHADER_READ_ONLY_OPTIMAL (sampled by water / sky / debug) and solid
-    // depth tracked → SHADER_READ_ONLY_OPTIMAL (sampled by water / debug /
-    // post-process). Same mapping as the single transitions.
-    {
-        std::vector<VulkanApp::BatchTransition> batch;
-        batch.reserve(2);
-        if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
-            VulkanApp::BatchTransition colorEnd{};
-            colorEnd.image     = solidColorImages[frameIndex];
-            colorEnd.format    = app ? app->getSwapchainImageFormat() : VK_FORMAT_B8G8R8A8_SRGB;
-            colorEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            colorEnd.mipLevels = 1;
-            batch.push_back(colorEnd);
-        }
-        if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
-            VulkanApp::BatchTransition depthEnd{};
-            depthEnd.image     = solidDepthImages[frameIndex];
-            depthEnd.format    = VK_FORMAT_D32_SFLOAT;
-            depthEnd.oldLayout = solidDepthImageLayouts[frameIndex];
-            depthEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            depthEnd.mipLevels = 1;
-            batch.push_back(depthEnd);
-        }
-        if (app) {
-            app->recordTransitionBatch(cmd, batch);
-        } else if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
-            // No app for tracked batching: single direct transition (legacy path).
-            RendererUtils::transitionImageLayout(
-                cmd, solidColorImages[frameIndex],
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
-        }
-        if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
-            if (app) app->setImageLayoutTracked(solidColorImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-        }
-        if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
-            if (app) {
-                app->recordTrackedLayoutForCommandBuffer(cmd, solidDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-            }
-            solidDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        }
-    }
-}
-
 void SolidRenderer::createPipelines(VulkanApp* app) {
     if (!app) return;
 
@@ -503,31 +379,6 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     vertexShader.info.module = VK_NULL_HANDLE;
 }
 
-void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet) {
-    if (!appArg) {
-        std::cerr << "[SolidRenderer::renderDepthPrepass] appArg is nullptr, skipping." << std::endl;
-        return;
-    }
-    if (depthPrePassPipeline == VK_NULL_HANDLE) {
-        std::cerr << "[SolidRenderer::renderDepthPrepass] depth pre-pass pipeline is VK_NULL_HANDLE, skipping." << std::endl;
-        return;
-    }
-
-    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, depthPrePassPipeline);
-    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
-
-    // Bind descriptor sets (set 0: main, set 1: brush depth)
-    if (perTextureDescriptorSet != VK_NULL_HANDLE) {
-        VkDescriptorSet bindSets[2] = { perTextureDescriptorSet, brushDepthSet };
-        uint32_t bindCount = (brushDepthSet != VK_NULL_HANDLE) ? 2 : 1;
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, depthPrePassPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
-    }
-
-    // Draw all meshes using GPU-culled indirect commands (depth-only)
-    indirectRenderer.drawPrepared(commandBuffer);
-}
-
 void SolidRenderer::drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet descSet) {
     if (!appArg || activeDeferredDepthPipeline() == VK_NULL_HANDLE) return;
     if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, activeDeferredDepthPipeline());
@@ -563,19 +414,6 @@ void SolidRenderer::drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet desc
     indirect.drawPrepared(cmd);
 }
 
-void SolidRenderer::drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect, VkDescriptorSet brushDepthSet) {
-    if (activeDeferredColorPipeline() == VK_NULL_HANDLE) return;
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, activeDeferredColorPipeline());
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeDeferredColorPipeline());
-    if (descSet != VK_NULL_HANDLE) {
-        VkDescriptorSet bindSets[2] = { descSet, brushDepthSet };
-        uint32_t bindCount = (brushDepthSet != VK_NULL_HANDLE) ? 2 : 1;
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, deferredColorPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
-        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
-    }
-    indirect.drawPrepared(cmd);
-}
-
 void SolidRenderer::drawBrushColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect) {
     if (brushOverlayPipeline == VK_NULL_HANDLE) return;
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, brushOverlayPipeline);
@@ -584,30 +422,6 @@ void SolidRenderer::drawBrushColorExternal(VkCommandBuffer &cmd, VkDescriptorSet
         if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, brushOverlayPipelineLayout, 0, 1, &descSet, 0, nullptr);
         else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushOverlayPipelineLayout, 0, 1, &descSet, 0, nullptr);
     }
-    indirect.drawPrepared(cmd);
-}
-
-void SolidRenderer::drawBrushOverlay(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect) {
-    if (brushOverlayPipeline == VK_NULL_HANDLE) return;
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, brushOverlayPipeline);
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushOverlayPipeline);
-    if (descSet != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, brushOverlayPipelineLayout, 0, 1, &descSet, 0, nullptr);
-        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushOverlayPipelineLayout, 0, 1, &descSet, 0, nullptr);
-    }
-    indirect.drawPrepared(cmd);
-}
-
-void SolidRenderer::drawBrushColor(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect, float opacity) {
-    if (brushDeferredColorPipeline == VK_NULL_HANDLE) return;
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, brushDeferredColorPipeline);
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushDeferredColorPipeline);
-    if (descSet != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, brushDeferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
-        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushDeferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
-    }
-    float blendConstants[4] = {0.0f, 0.0f, 0.0f, opacity};
-    vkCmdSetBlendConstants(cmd, blendConstants);
     indirect.drawPrepared(cmd);
 }
 
