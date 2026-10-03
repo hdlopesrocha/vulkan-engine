@@ -399,6 +399,13 @@ public:
     // valid; only the texel density changes.
     void recreateTextureArrays(uint32_t size);
 
+    // Prime the ImGui descriptor cache for every map channel of one
+    // texture-array layer so the texture viewer can display it immediately.
+    void primeImTextureLayer(uint32_t layer) {
+        for (int map = 0; map < 5; ++map)
+            textureArrayManager.getImTexture(layer, map);
+    }
+
     // setupTextures (defined out-of-line to avoid inline/member-definition issues)
     void setupTextures() {
         // Perf report 23 C1: size the material arrays from content, not a
@@ -463,11 +470,7 @@ public:
         mixerParams.push_back(MixerParameters{loadedTextureLayers++, 7u, 8u}); // rockMixSand
 
         for (uint32_t i = 0; i < loadedTextureLayers; ++i) {
-            textureArrayManager.getImTexture(i, 0);
-            textureArrayManager.getImTexture(i, 1);
-            textureArrayManager.getImTexture(i, 2);
-            textureArrayManager.getImTexture(i, 3);
-            textureArrayManager.getImTexture(i, 4);
+            primeImTextureLayer(i);
         }
 
         uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
@@ -479,11 +482,7 @@ public:
         std::cerr << "[TextureMixer] Running initial generation for configured mixers...\n";
         // Prime ImGui descriptors so the texture viewer shows immediately
         textureArrayManager.setLayerInitialized(editableLayer, true);
-        textureArrayManager.getImTexture(editableLayer, 0);
-        textureArrayManager.getImTexture(editableLayer, 1);
-        textureArrayManager.getImTexture(editableLayer, 2);
-        textureArrayManager.getImTexture(editableLayer, 3);
-        textureArrayManager.getImTexture(editableLayer, 4);
+        primeImTextureLayer(editableLayer);
 
         // Generate textures for all configured mixer entries (async submissions tracked by TextureMixer)
         textureMixer->generateInitialTextures(mixerParams);
