@@ -28,16 +28,4 @@ struct UniformObject {
     // Total size: 496 bytes
 
     // Note: sky-related data moved to SkyUniform
-
-    void setMaterial(const MaterialProperties& mat) {
-        materialFlags = glm::vec4(0.0f, 0.0f, mat.ambientFactor, 0.0f);
-        // Per-material values are provided by the Materials SSBO; do not duplicate here.
-    }
-    
-    // Debug: print passParams
-    void printPassParams() const {
-        std::cout << "[UBO Debug] passParams at offset 256: "
-                  << "x=" << passParams.x << " y=" << passParams.y 
-                  << " z=" << passParams.z << " w=" << passParams.w << std::endl;
-    }
 };
