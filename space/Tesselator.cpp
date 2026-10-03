@@ -1,6 +1,5 @@
 #include "Tesselator.hpp"
 #include "Octree.hpp"
-#include "IteratorHandler.hpp"
 #include <cmath>
 
 

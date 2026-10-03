@@ -56,32 +56,4 @@ void IteratorHandler::iterateMultiThreaded(
         }
     }
 }
-      
-
-void IteratorHandler::iterate(
-    const Octree &tree, 
-    OctreeNodeData &params,
-    const Octree::IterateHandler &iterateHandler, 
-    const Octree::IterateOrderHandler &getOrderHandler
-) {
-    if(params.node != NULL && iterateHandler(tree, params)) {
-        uint8_t internalOrder[8];
-        getOrderHandler(tree, params, internalOrder);
-
-        OctreeNode* children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-        params.node->getChildren(*tree.allocator, children);
-        for(int i=0; i <8 ; ++i) {
-            uint8_t j = internalOrder[i];
-            OctreeNode * child = children[j];
-            if (child == params.node) {
-                throw std::runtime_error("Wrong pointer @ iter!");
-            }                
-            if(child != NULL && params.node != child) {
-                OctreeNodeData data = OctreeNodeData( params.level+1, child, params.cube.getChild(j), params.context);
-                this->iterate(tree, data, iterateHandler, getOrderHandler);
-            }
-        }
-    }
-    
-}
 

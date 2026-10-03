@@ -18,7 +18,6 @@
 // Node identifier used by change handlers/collectors to key per-node state
 // (previously defined in the removed OctreeChangeHandler.hpp).
 typedef uintptr_t NodeID;
-class IteratorHandler;
 
 
 
@@ -82,8 +81,6 @@ class Octree: public BoundingCube {
         OctreeNodeDataHandler &updateHandler,
         OctreeNodeDataHandler &deleteHandler
     );
-    // Kept: utils/BillboardOctreeSampler.cpp still calls this overload.
-    void iterate(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
     bool intersect(const Ray& ray, glm::vec3& outPos) const;
     OctreeNodeLevel getNodeAt(const glm::vec3 &pos, int level, bool simplification) const;
     OctreeNode* getNodeAt(const glm::vec3 &pos, bool simplification) const;

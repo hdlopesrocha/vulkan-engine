@@ -14,7 +14,7 @@
 #include <array>
 #include "OctreeAllocator.hpp"
 #include "OctreeNode.hpp"
-#include "IteratorHandler.hpp"
+#include "OctreeNodeData.hpp"
 #include "../sdf/SDF.hpp"
 #include "../math/BrushMode.hpp"
 
@@ -1288,13 +1288,6 @@ void Octree::shape(
             updateHandler(data);
         }
     }
-}
-
-void Octree::iterate(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
-    OctreeSharedLock lock(treeMutex);
-    OctreeNodeData data(0, root, *this, nullptr);
-	IteratorHandler handler;
-	handler.iterate(*this, data, iterateHandler, getOrderHandler);
 }
 
 Octree::~Octree() {
