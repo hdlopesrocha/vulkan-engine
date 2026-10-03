@@ -66,8 +66,6 @@ class ControllerContext {
 public:
     explicit ControllerContext(ControllerId id) : id_(id) { buildDefaultTree(); }
 
-    ControllerId id() const { return id_; }
-
     // Build the default page tree (Camera + Brush categories with subpages).
     void buildDefaultTree() {
         root_ = std::make_shared<ControllerPage>();
@@ -188,8 +186,6 @@ public:
         const ControllerPage *s = activeSubpage();
         return s ? s->name : "";
     }
-    int activePageIndex() const { return pageIndex_; }
-    int activeSubpageIndex() const { return subpageIndex_; }
 
 private:
     void clampSubpage() {

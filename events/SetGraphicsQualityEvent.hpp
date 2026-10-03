@@ -9,7 +9,5 @@ class SetGraphicsQualityEvent : public Event {
 public:
     explicit SetGraphicsQualityEvent(GraphicsQuality quality_) : quality(quality_) {}
 
-    std::string name() const override { return "SetGraphicsQualityEvent"; }
-
     GraphicsQuality quality;
 };

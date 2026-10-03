@@ -6,7 +6,6 @@
 class SetBrushPaintModeEvent : public Event {
 public:
     explicit SetBrushPaintModeEvent(BrushPaintMode mode_) : mode(mode_) {}
-    std::string name() const override { return "SetBrushPaintModeEvent"; }
 
     BrushPaintMode mode;
 };

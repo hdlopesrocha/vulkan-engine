@@ -6,7 +6,6 @@
 class SetBrushDragModeEvent : public Event {
 public:
     explicit SetBrushDragModeEvent(BrushDragMode mode_) : mode(mode_) {}
-    std::string name() const override { return "SetBrushDragModeEvent"; }
 
     BrushDragMode mode;
 };

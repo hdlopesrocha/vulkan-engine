@@ -31,25 +31,6 @@ public:
     ControllerParameters* getParameters() { return &parameters; }
     const ControllerParameters* getParameters() const { return &parameters; }
 
-    ControllerContext& context(ControllerId id) {
-        switch (id) {
-            case ControllerId::KEYBOARD: return keyboardContext;
-            case ControllerId::MOUSE:    return mouseContext;
-            case ControllerId::GAMEPAD:  return gamepadContext;
-            case ControllerId::WIIMOTE:  return wiimoteContext;
-        }
-        return keyboardContext;
-    }
-    const ControllerContext& context(ControllerId id) const {
-        switch (id) {
-            case ControllerId::KEYBOARD: return keyboardContext;
-            case ControllerId::MOUSE:    return mouseContext;
-            case ControllerId::GAMEPAD:  return gamepadContext;
-            case ControllerId::WIIMOTE:  return wiimoteContext;
-        }
-        return keyboardContext;
-    }
-
     // Switch all four controller contexts to the given page category and control.
     void switchAllContexts(PageCategory cat, PageControl ctrl) {
         keyboardContext.selectPage(cat, ctrl);

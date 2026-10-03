@@ -169,23 +169,6 @@ void RadialMenuHandler::feedInputVector() {
     menu_->SetInputVector(vec);
 }
 
-void RadialMenuHandler::detectSelectBack() {
-    bool selectNow = false;
-    bool backNow = false;
-    if (nunchuk_->isConnected()) {
-        selectNow = nunchuk_->cButtonPressed();
-        backNow = nunchuk_->zButtonPressed();
-    } else if (gamepad_->isConnected()) {
-        selectNow = gamepad_->aButtonPressed();
-        backNow = gamepad_->bButtonPressed();
-    } else {
-        selectNow = (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
-        backNow = (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
-    }
-    textureSelectPrev = selectNow && !textureSelectPrev;
-    backPrev = backNow && !backPrev;
-}
-
 bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
     if (!menu_) return false;
 

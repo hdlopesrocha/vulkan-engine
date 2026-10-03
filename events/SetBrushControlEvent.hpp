@@ -7,7 +7,6 @@
 class SetBrushControlEvent : public Event {
 public:
     explicit SetBrushControlEvent(BrushControlMode mode_) : mode(mode_) {}
-    std::string name() const override { return "SetBrushControlEvent"; }
 
     BrushControlMode mode;
 };

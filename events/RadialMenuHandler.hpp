@@ -21,7 +21,7 @@ class Light;
 // for all input sources (keyboard, gamepad, nunchuk, mouse).
 class RadialMenuHandler {
 public:
-    enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV, LIGHT, SHAPE };
+    enum class LabelRingKind { CONTROL, PAINT, DRAG, HSV, SHAPE };
 
     RadialMenuHandler(
         GLFWwindow* window,
@@ -43,20 +43,11 @@ public:
     // Build and set the page tree on the radial menu.
     void setupPages();
 
-    bool isHomePrev() const { return homePrev; }
-    bool isMiddleMousePrev() const { return middleMousePrev; }
-
 private:
     // Detect toggle inputs (Home key, middle mouse, nunchuk Home, gamepad Start).
     void detectToggle();
     // Feed the correct input vector based on which controller is connected.
     void feedInputVector();
-    // Detect select/back edge inputs from the primary controller.
-    void detectSelectBack();
-    // Route interactions on the active ring.
-    void routeActiveRing();
-    // Route subpage selection to the appropriate ring push.
-    void routeSubpageSelection(int stackPage, int hoveredSub);
     // Queue a SetPageEvent for all controllers.
     void queueSetPageEvent(PageCategory cat, PageControl ctrl, BrushControlMode bm);
 

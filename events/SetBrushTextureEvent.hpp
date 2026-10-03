@@ -6,7 +6,6 @@
 class SetBrushTextureEvent : public Event {
 public:
     explicit SetBrushTextureEvent(int index_) : index(index_) {}
-    std::string name() const override { return "SetBrushTextureEvent"; }
 
     int index;
 };

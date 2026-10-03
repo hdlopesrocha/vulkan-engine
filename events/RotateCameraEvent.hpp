@@ -2,7 +2,6 @@
 
 #include "Event.hpp"
 #include <glm/glm.hpp>
-#include <string>
 
 
 
@@ -18,8 +17,6 @@ public:
     // axis-angle constructor (angle in degrees)
     RotateCameraEvent(const glm::vec3 &axis_, float angleDeg)
         : axis(axis_), angleDegrees(angleDeg), useAxisAngle(true) {}
-
-    std::string name() const override { return "RotateCameraEvent"; }
 
     // Euler representation (degrees)
     float yaw = 0.0f;

@@ -8,5 +8,4 @@
 class ApplyBrushToSceneEvent : public Event {
 public:
     ApplyBrushToSceneEvent() = default;
-    std::string name() const override { return "ApplyBrushToSceneEvent"; }
 };

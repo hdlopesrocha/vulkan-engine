@@ -6,5 +6,4 @@
 class RebuildBrushEvent : public Event {
 public:
     RebuildBrushEvent() = default;
-    std::string name() const override { return "RebuildBrushEvent"; }
 };
