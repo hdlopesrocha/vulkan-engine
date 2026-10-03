@@ -4,9 +4,9 @@
 #include <vector>
 #include <memory>
 #include <cstdint>
-#include "Event.hpp"
-#include "IEventHandler.hpp"
-#include "PageNavigationEvent.hpp"
+
+// Identifies which physical controller a context belongs to.
+enum class ControllerId { KEYBOARD, MOUSE, GAMEPAD, WIIMOTE };
 
 // Top-level category of control. The active category decides whether an input
 // acts on the camera or on the selected SDF brush.
@@ -62,7 +62,7 @@ struct ControllerPage {
 // (active top-level page + active subpage). The page tree and the navigation
 // logic live entirely here so every controller publisher can reuse them; only
 // the physical input mapping differs between controllers.
-class ControllerContext : public IEventHandler {
+class ControllerContext {
 public:
     explicit ControllerContext(ControllerId id) : id_(id) { buildDefaultTree(); }
 
@@ -109,7 +109,7 @@ public:
         subpageIndex_ = 0;
     }
 
-    // Navigation (also invoked from PageNavigationEvent).
+    // Navigation.
     void nextPage() {
         int n = static_cast<int>(root_->children.size());
         if (n == 0) return;
@@ -152,14 +152,6 @@ public:
             }
         }
     }
-    void applyAction(PageNavigationEvent::Action a) {
-        switch (a) {
-            case PageNavigationEvent::Action::NEXT_PAGE: nextPage(); break;
-            case PageNavigationEvent::Action::PREV_PAGE: prevPage(); break;
-            case PageNavigationEvent::Action::NEXT_SUBPAGE: nextSubpage(); break;
-            case PageNavigationEvent::Action::PREV_SUBPAGE: prevSubpage(); break;
-        }
-    }
 
     // Active path queries.
     const ControllerPage *activePage() const {
@@ -198,15 +190,6 @@ public:
     }
     int activePageIndex() const { return pageIndex_; }
     int activeSubpageIndex() const { return subpageIndex_; }
-
-    // IEventHandler: respond to PageNavigationEvent targeting this context.
-    void onEvent(const EventPtr &event) override {
-        if (!event) return;
-        auto *nav = dynamic_cast<PageNavigationEvent *>(event.get());
-        if (!nav) return;
-        if (nav->target != id_) return;
-        applyAction(nav->action);
-    }
 
 private:
     void clampSubpage() {

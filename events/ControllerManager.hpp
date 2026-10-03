@@ -2,7 +2,6 @@
 
 #include "ControllerParameters.hpp"
 #include "ControllerContext.hpp"
-#include "EventManager.hpp"
 
 class ControllerManager {
 public:
@@ -49,14 +48,6 @@ public:
             case ControllerId::WIIMOTE:  return wiimoteContext;
         }
         return keyboardContext;
-    }
-
-    // Subscribe every per-controller context so PageNavigationEvents can reach them.
-    void subscribeContexts(EventManager& em) {
-        em.subscribe(&keyboardContext);
-        em.subscribe(&mouseContext);
-        em.subscribe(&gamepadContext);
-        em.subscribe(&wiimoteContext);
     }
 
     // Switch all four controller contexts to the given page category and control.

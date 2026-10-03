@@ -908,11 +908,6 @@ public:
         eventManager.subscribe(&camera);  // Camera handles translate/rotate events
         eventManager.subscribe(this);     // MyApp handles close/fullscreen events
 
-        // Each controller owns an independent page tree; subscribe them so
-        // PageNavigationEvents (e.g. keyboard switching the mouse pages) reach
-        // the right context.
-        controllerManager.subscribeContexts(eventManager);
-
         // Mouse input needs the GLFW window to poll cursor / chain scroll.
         mousePublisher.attachWindow(getWindow());
         
