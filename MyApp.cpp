@@ -3549,115 +3549,66 @@ void MyApp::setupVegetationTextures() {
     }
 }
 
-// Shared SDF creation: populates fn2 (current) + optionally fn1 (sweep start),
-// wraps in SweepSignedDistanceFunction when sweepMode is on, then calls callback.
+// Construct a brush primitive for both the current transform (fn2) and the
+// sweep start (fn1), wrap the pair in SweepSignedDistanceFunction when
+// sweepMode is on, then run callback on the resulting function. `args` are
+// the primitive's leading constructor arguments (radii/endpoints); model and
+// minSize are appended for fn2, prevModel and minSize for fn1, matching the
+// per-case construction order the switch used to spell out.
+template<typename T, typename Fn, typename... Args>
+static void applyPrimitive(const BrushEntry& entry, const Transformation& model,
+                           const glm::vec3& sweepStart, float minSize,
+                           Fn&& callback, const Args&... args) {
+    T fn2(args..., model, minSize);
+    if (entry.sweepMode) {
+        Transformation prevModel(entry.scale, sweepStart, entry.rot);
+        T fn1(args..., prevModel, minSize);
+        SweepSignedDistanceFunction<T> sweepFn(fn1, fn2, model, minSize);
+        callback(sweepFn);
+    } else { callback(fn2); }
+}
+
+// Shared SDF creation: dispatches on entry.sdfType and calls callback on the
+// constructed primitive (or its sweep wrapper).
 template<typename Fn>
 static void forEachBrushSDF(const BrushEntry& entry, const Transformation& model,
                             const glm::vec3& sweepStart, float minSize,
                             const char* logPrefix, Fn&& callback) {
     switch (entry.sdfType) {
-        case 0: { // Sphere
-            SphereDistanceFunction fn2(model, minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, sweepStart, entry.rot);
-                SphereDistanceFunction fn1(prevModel, minSize);
-                SweepSignedDistanceFunction<SphereDistanceFunction> sweepFn(fn1, fn2, model, minSize);
-                callback(sweepFn);
-            } else { callback(fn2); }
+        case 0: // Sphere
+            applyPrimitive<SphereDistanceFunction>(entry, model, sweepStart, minSize, callback);
             break;
-        }
-        case 1: { // Box
-            BoxDistanceFunction fn2(model, minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, sweepStart, entry.rot);
-                BoxDistanceFunction fn1(prevModel, minSize);
-                SweepSignedDistanceFunction<BoxDistanceFunction> sweepFn(fn1, fn2, model, minSize);
-                callback(sweepFn);
-            } else { callback(fn2); }
+        case 1: // Box
+            applyPrimitive<BoxDistanceFunction>(entry, model, sweepStart, minSize, callback);
             break;
-        }
-        case 2: { // Capsule
-            CapsuleDistanceFunction fn2(entry.capsuleA, entry.capsuleB, entry.capsuleRadius, model, minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, sweepStart, entry.rot);
-                CapsuleDistanceFunction fn1(entry.capsuleA, entry.capsuleB, entry.capsuleRadius, prevModel, minSize);
-                SweepSignedDistanceFunction<CapsuleDistanceFunction> sweepFn(fn1, fn2, model, minSize);
-                callback(sweepFn);
-            } else { callback(fn2); }
+        case 2: // Capsule
+            applyPrimitive<CapsuleDistanceFunction>(entry, model, sweepStart, minSize, callback,
+                entry.capsuleA, entry.capsuleB, entry.capsuleRadius);
             break;
-        }
-        case 3: { // Octahedron
-            OctahedronDistanceFunction fn2(model, minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, sweepStart, entry.rot);
-                OctahedronDistanceFunction fn1(prevModel, minSize);
-                SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, model, minSize);
-                callback(sweepFn);
-            } else { callback(fn2); }
+        case 3: // Octahedron
+            applyPrimitive<OctahedronDistanceFunction>(entry, model, sweepStart, minSize, callback);
             break;
-        }
-        case 4: { // Pyramid
-            PyramidDistanceFunction fn2(model, minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, sweepStart, entry.rot);
-                PyramidDistanceFunction fn1(prevModel, minSize);
-                SweepSignedDistanceFunction<PyramidDistanceFunction> sweepFn(fn1, fn2, model, minSize);
-                callback(sweepFn);
-            } else { callback(fn2); }
+        case 4: // Pyramid
+            applyPrimitive<PyramidDistanceFunction>(entry, model, sweepStart, minSize, callback);
             break;
-        }
-        case 5: { // Torus
-            TorusDistanceFunction fn2(entry.torusRadii, model, minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, sweepStart, entry.rot);
-                TorusDistanceFunction fn1(entry.torusRadii, prevModel, minSize);
-                SweepSignedDistanceFunction<TorusDistanceFunction> sweepFn(fn1, fn2, model, minSize);
-                callback(sweepFn);
-            } else { callback(fn2); }
+        case 5: // Torus
+            applyPrimitive<TorusDistanceFunction>(entry, model, sweepStart, minSize, callback,
+                entry.torusRadii);
             break;
-        }
-        case 6: { // Cone
-            ConeDistanceFunction fn2(model, minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, sweepStart, entry.rot);
-                ConeDistanceFunction fn1(prevModel, minSize);
-                SweepSignedDistanceFunction<ConeDistanceFunction> sweepFn(fn1, fn2, model, minSize);
-                callback(sweepFn);
-            } else { callback(fn2); }
+        case 6: // Cone
+            applyPrimitive<ConeDistanceFunction>(entry, model, sweepStart, minSize, callback);
             break;
-        }
-        case 7: { // Cylinder
-            CylinderDistanceFunction fn2(model, minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, sweepStart, entry.rot);
-                CylinderDistanceFunction fn1(prevModel, minSize);
-                SweepSignedDistanceFunction<CylinderDistanceFunction> sweepFn(fn1, fn2, model, minSize);
-                callback(sweepFn);
-            } else { callback(fn2); }
+        case 7: // Cylinder
+            applyPrimitive<CylinderDistanceFunction>(entry, model, sweepStart, minSize, callback);
             break;
-        }
-        case 8: { // Tapered Cylinder
-            TaperedCylinderDistanceFunction fn2(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y, model, minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, sweepStart, entry.rot);
-                TaperedCylinderDistanceFunction fn1(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y, prevModel, minSize);
-                SweepSignedDistanceFunction<TaperedCylinderDistanceFunction> sweepFn(fn1, fn2, model, minSize);
-                callback(sweepFn);
-            } else { callback(fn2); }
+        case 8: // Tapered Cylinder
+            applyPrimitive<TaperedCylinderDistanceFunction>(entry, model, sweepStart, minSize, callback,
+                entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y);
             break;
-        }
-        case 9: { // Tapered Capsule
-            TaperedCapsuleDistanceFunction fn2(entry.capsuleA, entry.capsuleB,
-                entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y, model, minSize);
-            if (entry.sweepMode) {
-                Transformation prevModel(entry.scale, sweepStart, entry.rot);
-                TaperedCapsuleDistanceFunction fn1(entry.capsuleA, entry.capsuleB,
-                    entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y, prevModel, minSize);
-                SweepSignedDistanceFunction<TaperedCapsuleDistanceFunction> sweepFn(fn1, fn2, model, minSize);
-                callback(sweepFn);
-            } else { callback(fn2); }
+        case 9: // Tapered Capsule
+            applyPrimitive<TaperedCapsuleDistanceFunction>(entry, model, sweepStart, minSize, callback,
+                entry.capsuleA, entry.capsuleB, entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y);
             break;
-        }
         default:
             std::cerr << logPrefix << " Unknown sdfType " << entry.sdfType << ", skipping" << std::endl;
             break;
