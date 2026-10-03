@@ -38,7 +38,7 @@ bool ScrollableTexturePicker(const char* id, size_t count, size_t &currentIndex,
                 if (ImGui::ImageButton("##img", img, ImVec2(thumb, thumb))) { currentIndex = i; changed = true; if (centerOnSelection) ImGui::SetScrollHereX(0.5f); }
             }
             if (showTooltip && ImGui::IsItemHovered()) {
-                ImGuiHelpers::SetTooltipIfHovered("%zu");
+                ImGuiHelpers::SetTooltipIfHovered("%zu", i);
             }
         }
         ImGui::PopID();
