@@ -25,11 +25,3 @@ OctreeNode * OctreeAllocator::deallocate(OctreeNode * node){
 uint OctreeAllocator::getIndex(OctreeNode * node){
     return nodeAllocator.getIndex(node);
 }
-
-size_t OctreeAllocator::getBlockSize() const {
-    return nodeAllocator.getBlockSize();   
-}
-
-size_t OctreeAllocator::getAllocatedBlocksCount() {
-    return nodeAllocator.getAllocatedBlocksCount();    
-}

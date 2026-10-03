@@ -54,10 +54,6 @@ public:
     void reset();
 
     uint allocateIndex();
-
-    size_t getAllocatedBlocksCount();
-
-    size_t getBlockSize() const { return blockSize; }
 };
 
 #include "Allocator.tpp"

@@ -15,8 +15,6 @@ public:
     OctreeNode * get(uint index);
     OctreeNode * deallocate(OctreeNode * node);
     uint getIndex(OctreeNode * node);
-    size_t getBlockSize() const;
-    size_t getAllocatedBlocksCount();
 };
 
  

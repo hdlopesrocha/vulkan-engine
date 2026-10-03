@@ -164,9 +164,3 @@ uint Allocator<T>::allocateIndex() {
     return getIndex(ptr);
 }
 
-template <typename T>
-size_t Allocator<T>::getAllocatedBlocksCount() {
-    std::shared_lock lock(mutex);
-    return blocks.size();
-}
-

@@ -31,7 +31,6 @@ public:
     ChildBlock * getBlock(OctreeAllocator &allocator) const;
     ChildBlock * allocate(OctreeAllocator &allocator);
     void getChildren(OctreeAllocator &allocator, OctreeNode * childNodes[8]) const;
-    void setChildren(OctreeAllocator &allocator, uint children[8]);
     void setChildren(OctreeAllocator &allocator, OctreeNode * children[8]);
 
     void setType(SpaceType type);
@@ -53,7 +52,6 @@ public:
     SpaceType getType() const ;
 
     void setSDF(float value[8]);
-    OctreeNode * compress(OctreeAllocator &allocator, BoundingCube * cube, const BoundingCube &chunk);
 };
 
  

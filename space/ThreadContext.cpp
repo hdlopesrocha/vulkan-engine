@@ -1,6 +1,5 @@
 #include "ThreadContext.hpp"
 
-ThreadContext::ThreadContext(const BoundingCube &cube_)
-    : cube(cube_)
+ThreadContext::ThreadContext()
 {
 }

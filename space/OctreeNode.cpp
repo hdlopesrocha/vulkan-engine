@@ -62,18 +62,6 @@ void OctreeNode::setChildren(OctreeAllocator &allocator, OctreeNode * childrenPt
 	memcpy(block->children, childNodes, sizeof(uint)*8);
 }
 
-void OctreeNode::setChildren(OctreeAllocator &allocator, uint children[8]) {
-	uint localBlockId = this->blockId;
-	ChildBlock * block = NULL;
-	if(localBlockId == UINT_MAX) {
-		block = allocator.childAllocator.allocate()->init();
-		this->blockId = allocator.childAllocator.getIndex(block);
-	} else {
-		block = allocator.childAllocator.getFromIndex(localBlockId);
-	}
-	memcpy(block->children, children, sizeof(uint)*8);
-}
-
 void OctreeNode::getChildren(OctreeAllocator &allocator, OctreeNode * childNodes[8]) const {
 	ChildBlock * block = getBlock(allocator);
 	if(block != NULL) {
@@ -147,32 +135,6 @@ SpaceType OctreeNode::getType() const {
 		return SpaceType::Surface;
 	}
 }
-
-OctreeNode * OctreeNode::compress(OctreeAllocator &allocator, BoundingCube * cube, const BoundingCube &chunk) {
-	int intersectingChildCount = 0;
-	int intersectingIndex = -1;
-
-	for (int i = 0; i < 8; ++i) {
-		if (cube->getChild(i).intersects(chunk)) {
-			intersectingChildCount++;
-			intersectingIndex = i;
-		}
-	}
-
-	if(intersectingChildCount == 1) {
-		ChildBlock * block = this->getBlock(allocator);
-		if(block != NULL) {
-			OctreeNode * childNode = block->get(intersectingIndex, allocator);
-			if(childNode != NULL) {
-				BoundingCube c = cube->getChild(intersectingIndex);
-				*cube = c;
-				return childNode->compress(allocator, cube, chunk);
-			}
-		}
-	}
-	return this;
-}
-
 
 void OctreeNode::setBrush(int brushIndex) {
 	vertex.brushIndex = brushIndex;

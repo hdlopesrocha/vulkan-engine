@@ -51,14 +51,8 @@ class Octree: public BoundingCube {
     using IterateThreadedHandler = std::function<bool(const Octree&, OctreeNodeData&)>;
 
     OctreeAllocator * allocator;
-    int threadsCreated;
-    int prunedEmptyNodes;
-    int prunedSolidNodes;
-    std::shared_ptr<std::atomic<int>> shapeCounter;
     std::atomic<int> inFlightShapeOps{0};
-    tsl::robin_map<glm::vec3, ThreadContext> chunks;
     ThreadPool threadPool = ThreadPool(std::thread::hardware_concurrency());
-    std::mutex mutex;
     // Read/write guard for tree structure + node data. iterate* take a shared
     // (read) lock; apply takes a unique (write) lock so traversal threads never
     // walk nodes that a concurrent brush/mesh op is mutating.

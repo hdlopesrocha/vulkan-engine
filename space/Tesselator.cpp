@@ -37,7 +37,6 @@ void Tesselator::handle(Vertex &v0, Vertex &v1, Vertex &v2) {
         v1.brushIndex>DISCARD_BRUSH_INDEX && 
         v2.brushIndex>DISCARD_BRUSH_INDEX) {
 
-        bool triplanar = true;
         float triplanarScale = 0.1f;
         // Copy the triangle before writing UVs: the incoming Vertex refs point
         // at OCTREE NODE vertices shared by adjacent cells, and other chunk
@@ -45,15 +44,13 @@ void Tesselator::handle(Vertex &v0, Vertex &v1, Vertex &v2) {
         // Writing texCoord through the refs would mutate shared octree state
         // (a data race with nondeterministic UVs on shared boundary vertices).
         Vertex a = v0, b = v1, c = v2;
-        if (triplanar) {
-            // Use vertex normal for UV plane selection: it is the SDF gradient direction
-            // (authoritative outward direction) and is more reliable than the geometric
-            // cross product, especially for coarse LOD cells at curved surface boundaries.
-            int plane = triplanarPlane(a.normal);
-            a.texCoord = triplanarMapping(a.position, plane)*triplanarScale;
-            b.texCoord = triplanarMapping(b.position, plane)*triplanarScale;
-            c.texCoord = triplanarMapping(c.position, plane)*triplanarScale;
-        }
+        // Use vertex normal for UV plane selection: it is the SDF gradient direction
+        // (authoritative outward direction) and is more reliable than the geometric
+        // cross product, especially for coarse LOD cells at curved surface boundaries.
+        int plane = triplanarPlane(a.normal);
+        a.texCoord = triplanarMapping(a.position, plane)*triplanarScale;
+        b.texCoord = triplanarMapping(b.position, plane)*triplanarScale;
+        c.texCoord = triplanarMapping(c.position, plane)*triplanarScale;
         // Winding is pre-determined by emitSegment via the SDF sign change direction.
         geometry.addTriangle(a, b, c);
         ++(*count);

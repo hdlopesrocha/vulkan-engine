@@ -67,18 +67,12 @@ static void initialize() {
 Octree::Octree(const BoundingCube &minCube, float chunkSize_) : BoundingCube(minCube), allocator(new OctreeAllocator()) {
     this->chunkSize = chunkSize_;
 	this->root = allocator->allocate()->init(glm::vec3(minCube.getCenter()));
-    this->shapeCounter = std::make_shared<std::atomic<int>>(0);
-    this->prunedEmptyNodes = 0;
-    this->prunedSolidNodes = 0;
 	initialize();
 }
 
 Octree::Octree() : Octree(glm::vec3(0.0f), 1.0f) {
     this->chunkSize = 1.0f;
     this->root = NULL;
-    this->shapeCounter = std::make_shared<std::atomic<int>>(0);
-    this->prunedEmptyNodes = 0;
-    this->prunedSolidNodes = 0;
     initialize();
 }
 
@@ -903,15 +897,11 @@ void Octree::apply(
         OctreeNodeDataHandler &deleteHandler
     ) {
     std::unique_lock<std::shared_mutex> writeLock(treeMutex);
-    threadsCreated = 0;
-    prunedEmptyNodes = 0;
-    prunedSolidNodes = 0;
 
-    *shapeCounter = 0;
     ShapeArgs args = ShapeArgs(operation, function, painter, model, simplifier, minSize);	
     expand(args);
     OctreeNodeFrame frame = OctreeNodeFrame(root, NULL, *this, root ? root->getType() : SpaceType::Empty, 0, root ? root->sdf : nullptr, DISCARD_BRUSH_INDEX, *this);
-    ThreadContext localChunkContext = ThreadContext(*this);
+    ThreadContext localChunkContext;
     NodeOperationResult r = NodeOperationResult();
     shape(r, frame, args, &localChunkContext, updateHandler, deleteHandler);
 }
@@ -991,18 +981,16 @@ void Octree::shapeChildren(
 
     
         if(isChildThread) {
-            ++threadsCreated;
             NodeOperationResult * result = &childResult[i];
             inFlightShapeOps.fetch_add(1);
             futures.push_back(threadPool.enqueue([this, childFrame, args, result, &updateHandler, &deleteHandler]() {
-                ThreadContext localThreadContext(childFrame.cube);
+                ThreadContext localThreadContext;
                 shape(*result, childFrame, args, &localThreadContext, updateHandler, deleteHandler);
                 inFlightShapeOps.fetch_sub(1);
             }));
         } else {
             shape(childResult[i], childFrame, args, threadContext, updateHandler, deleteHandler);
         }
-        (*shapeCounter)++;
     
     }
     if(isChildThread) {
@@ -1060,21 +1048,18 @@ void Octree::shape(
                         r.shapeType = SpaceType::Solid;
                         r.resultType = SpaceType::Solid;
                         r.selectedLod = 0;
-                        ++prunedSolidNodes;
                         processed = true;
                     } else if(shapeSdfCenter > halfDiagonal) {
                         SDF::copySDF(r.shapeSDF, r.resultSDF);
                         r.shapeType = SpaceType::Empty;
                         r.resultType = SpaceType::Empty;
                         r.selectedLod = 0;
-                        ++prunedEmptyNodes;
                         processed = true;
                     }
                 } else {
                     r.shapeType = SDF::eval(r.shapeSDF);
                     r.resultType = SpaceType::Empty;
                     r.selectedLod = 0;
-                    ++prunedEmptyNodes;
                     processed = true;
                 }
             }
@@ -1102,7 +1087,6 @@ void Octree::shape(
                 r.resultSDF[i] = args.operation->combine(frame.sdf[i], r.shapeSDF[i]);
             }
             r.resultType = SpaceType::Solid;
-            ++prunedSolidNodes;
             processed = true;
             }
         }
@@ -1119,7 +1103,6 @@ void Octree::shape(
                 r.resultType = SpaceType::Empty;
                 r.brushIndex = frame.brushIndex;
                 r.brushHsv = frame.hsv;
-                ++prunedEmptyNodes;
                 processed = true;
             }
         }
@@ -1148,7 +1131,6 @@ void Octree::shape(
                         r.node->setBrush(r.brushIndex);
                     }
                 }
-                ++prunedSolidNodes;
                 processed = true;
             }
             }
@@ -1170,7 +1152,6 @@ void Octree::shape(
             } else {
                 r.shapeType = SDF::eval(r.shapeSDF);
                 r.resultType = frame.type;
-                if(frame.type == SpaceType::Empty) ++prunedEmptyNodes;
                 for(uint i = 0; i < 8; ++i) {
                     r.resultSDF[i] = args.operation->combine(frame.sdf[i], r.shapeSDF[i]);
                 }

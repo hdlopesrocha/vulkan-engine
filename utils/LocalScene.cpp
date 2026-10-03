@@ -47,7 +47,7 @@ const Octree& LocalScene::getOpaqueOctree() const { return opaqueOctree; }
 
 void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride) {
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
-    ThreadContext context = ThreadContext(data.cube);
+    ThreadContext context;
 
 
     // Walk starts AT the chunk node (not the whole tree): processNodeLayer already
@@ -104,7 +104,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
 
 void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride) {
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
-    ThreadContext context = ThreadContext(data.cube);
+    ThreadContext context;
 
     // Walk starts AT the chunk node (not the whole tree): only this chunk's
     // subtree is visited, so the whole-tree inSubtree filter is no longer needed.
@@ -144,7 +144,7 @@ void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCub
 
 void LocalScene::requestBoundingBoxes(Layer layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride) {
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
-    ThreadContext context = ThreadContext(data.cube);
+    ThreadContext context;
 
     // Walk starts AT the chunk node (not the whole tree): only this chunk's
     // subtree is visited, so the whole-tree inSubtree filter is no longer needed.
