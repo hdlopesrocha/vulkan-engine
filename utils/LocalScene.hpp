@@ -3,11 +3,9 @@
 #include "Scene.hpp"
 #include "../space/Octree.hpp"
 #include "../space/Tesselator.hpp"
-#include "../space/InstanceData.hpp"
 #include "../utils/Settings.hpp"
 #include <unordered_map>
 #include <mutex>
-#include "OctreeLayer.tpp"
 
 class LocalScene : public Scene {
 public:
@@ -19,10 +17,6 @@ public:
     Octree& getOpaqueOctree();
     const Octree& getOpaqueOctree() const;
 public:
-    // Instance/visibility layers and change handlers (owned by LocalScene)
-    OctreeLayer<InstanceData> opaqueLayerInfo;
-    OctreeLayer<InstanceData> transparentLayerInfo;
-    
     LocalScene();
     ~LocalScene();
 

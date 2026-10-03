@@ -31,9 +31,7 @@ constexpr uint32_t kSceneBundleVersion = 1;
 LocalScene::LocalScene()
     : opaqueOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)),
       transparentOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)),
-      threadPool(std::thread::hardware_concurrency()),
-      opaqueLayerInfo(),
-      transparentLayerInfo() {}
+      threadPool(std::thread::hardware_concurrency()) {}
 
 LocalScene::~LocalScene() = default;
 
