@@ -11,26 +11,6 @@
 #include <iostream>
 using namespace std;
 
-void VulkanResourceManager::addDeviceMemory(VkDeviceMemory mem, const char* desc) {
-    if (mem == VK_NULL_HANDLE) return;
-    if (desc) {
-        std::string d(desc);
-        if (d.find("ImGui:") != std::string::npos) return; // ImGui-managed resources should not be tracked here
-    }
-    std::lock_guard<std::mutex> lk(mtx);
-    deviceMemories[(uintptr_t)mem] = {mem, desc ? std::string(desc) : std::string()};
-}
-
-void VulkanResourceManager::addImage(VkImage img, const char* desc) {
-    if (img == VK_NULL_HANDLE) return;
-    if (desc) {
-        std::string d(desc);
-        if (d.find("ImGui:") != std::string::npos) return;
-    }
-    std::lock_guard<std::mutex> lk(mtx);
-    images[(uintptr_t)img] = {img, desc ? std::string(desc) : std::string()};
-}
-
 void VulkanResourceManager::setImageArrayLayers(VkImage img, uint32_t arrayLayers) {
     if (img == VK_NULL_HANDLE) return;
     std::lock_guard<std::mutex> lk(mtx);
@@ -63,26 +43,6 @@ void VulkanResourceManager::addSampler(VkSampler s, const char* desc) {
     }
     std::lock_guard<std::mutex> lk(mtx);
     samplers[(uintptr_t)s] = {s, desc ? std::string(desc) : std::string()};
-}
-
-void VulkanResourceManager::addFramebuffer(VkFramebuffer fb, const char* desc) {
-    if (fb == VK_NULL_HANDLE) return;
-    if (desc) {
-        std::string d(desc);
-        if (d.find("ImGui:") != std::string::npos) return;
-    }
-    std::lock_guard<std::mutex> lk(mtx);
-    framebuffers[(uintptr_t)fb] = {fb, desc ? std::string(desc) : std::string()};
-}
-
-void VulkanResourceManager::addBuffer(VkBuffer b, const char* desc) {
-    if (b == VK_NULL_HANDLE) return;
-    if (desc) {
-        std::string d(desc);
-        if (d.find("ImGui:") != std::string::npos) return;
-    }
-    std::lock_guard<std::mutex> lk(mtx);
-    buffers[(uintptr_t)b] = {b, desc ? std::string(desc) : std::string()};
 }
 
 void VulkanResourceManager::addPipeline(VkPipeline p, const char* desc) {
@@ -222,20 +182,8 @@ void VulkanResourceManager::addImageVma(VkImage img, VmaAllocation alloc, const 
     if (alloc) vmaImageAllocations[(uintptr_t)img] = alloc;
 }
 
-bool VulkanResourceManager::removeImageVma(VkImage img) {
-    std::lock_guard<std::mutex> lk(mtx);
-    images.erase((uintptr_t)img);
-    auto it = vmaImageAllocations.find((uintptr_t)img);
-    if (it != vmaImageAllocations.end()) {
-        if (vmaAlloc) vmaDestroyImage(vmaAlloc, img, it->second);
-        vmaImageAllocations.erase(it);
-        return true;
-    }
-    return images.erase((uintptr_t)img) > 0;
-}
 bool VulkanResourceManager::removePipeline(VkPipeline p) { std::lock_guard<std::mutex> lk(mtx); return pipelines.erase((uintptr_t)p) > 0; }
 bool VulkanResourceManager::removePipelineLayout(VkPipelineLayout pl) { std::lock_guard<std::mutex> lk(mtx); return pipelineLayouts.erase((uintptr_t)pl) > 0; }
-bool VulkanResourceManager::removeShaderModule(VkShaderModule m) { std::lock_guard<std::mutex> lk(mtx); return shaderModules.erase((uintptr_t)m) > 0; }
 bool VulkanResourceManager::removeDescriptorPool(VkDescriptorPool dp) { std::lock_guard<std::mutex> lk(mtx); return descriptorPools.erase((uintptr_t)dp) > 0; }
 bool VulkanResourceManager::removeDescriptorSet(VkDescriptorSet ds) { std::lock_guard<std::mutex> lk(mtx); return descriptorSets.erase((uintptr_t)ds) > 0; }
 bool VulkanResourceManager::removeDescriptorSetLayout(VkDescriptorSetLayout dsl) { std::lock_guard<std::mutex> lk(mtx); return descriptorSetLayouts.erase((uintptr_t)dsl) > 0; }
@@ -244,7 +192,6 @@ bool VulkanResourceManager::removeFence(VkFence f) { std::lock_guard<std::mutex>
 bool VulkanResourceManager::removeCommandPool(VkCommandPool cp) { std::lock_guard<std::mutex> lk(mtx); return commandPools.erase((uintptr_t)cp) > 0; }
 
 // Accessors
-const VulkanResourceManager::ResourceMap<VkDeviceMemory> &VulkanResourceManager::getDeviceMemoryMap() const { return deviceMemories; }
 const VulkanResourceManager::ResourceMap<VkImage> &VulkanResourceManager::getImageMap() const { return images; }
 const VulkanResourceManager::ResourceMap<VkImageView> &VulkanResourceManager::getImageViewMap() const { return imageViews; }
 const VulkanResourceManager::ResourceMap<VkSampler> &VulkanResourceManager::getSamplerMap() const { return samplers; }
@@ -257,8 +204,6 @@ const VulkanResourceManager::ResourceMap<VkDescriptorPool> &VulkanResourceManage
 const VulkanResourceManager::ResourceMap<VkDescriptorSet> &VulkanResourceManager::getDescriptorSetMap() const { return descriptorSets; }
 const VulkanResourceManager::ResourceMap<VkDescriptorSetLayout> &VulkanResourceManager::getDescriptorSetLayoutMap() const { return descriptorSetLayouts; }
 const VulkanResourceManager::ResourceMap<VkSemaphore> &VulkanResourceManager::getSemaphoreMap() const { return semaphores; }
-const VulkanResourceManager::ResourceMap<VkFence> &VulkanResourceManager::getFenceMap() const { return fences; }
-const VulkanResourceManager::ResourceMap<VkCommandPool> &VulkanResourceManager::getCommandPoolMap() const { return commandPools; }
 
 std::vector<std::pair<uintptr_t, std::pair<VkDeviceMemory, std::string>>> VulkanResourceManager::getDeviceMemorySnapshot() const {
     std::vector<std::pair<uintptr_t, std::pair<VkDeviceMemory, std::string>>> out;

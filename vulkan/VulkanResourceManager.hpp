@@ -34,19 +34,15 @@ public:
     ~VulkanResourceManager() = default;
 
     // All add/remove methods accept an optional description string identifying where the object was created.
-    void addDeviceMemory(VkDeviceMemory mem, const char* desc = nullptr);
-    void addImage(VkImage img, const char* desc = nullptr);
     // Record the array-layer count for an image (useful for runtime validation).
     void setImageArrayLayers(VkImage img, uint32_t arrayLayers);
     // Query recorded array-layer count for an image.
     std::optional<uint32_t> getImageArrayLayers(VkImage img) const;
     void addImageView(VkImageView iv, const char* desc = nullptr);
     void addSampler(VkSampler s, const char* desc = nullptr);
-    void addFramebuffer(VkFramebuffer fb, const char* desc = nullptr);
     void addSemaphore(VkSemaphore s, const char* desc = nullptr);
     void addFence(VkFence f, const char* desc = nullptr);
     void addCommandPool(VkCommandPool cp, const char* desc = nullptr);
-    void addBuffer(VkBuffer b, const char* desc = nullptr);
     void addPipeline(VkPipeline p, const char* desc = nullptr);
     void addPipelineLayout(VkPipelineLayout pl, const char* desc = nullptr);
     void addShaderModule(VkShaderModule m, const char* desc = nullptr);
@@ -62,7 +58,6 @@ public:
     template<typename HandleT>
     using ResourceMap = std::unordered_map<uintptr_t, std::pair<HandleT, std::string>>;
 
-    const ResourceMap<VkDeviceMemory> &getDeviceMemoryMap() const;
     const ResourceMap<VkImage> &getImageMap() const;
     const ResourceMap<VkImageView> &getImageViewMap() const;
     const ResourceMap<VkSampler> &getSamplerMap() const;
@@ -75,8 +70,6 @@ public:
     const ResourceMap<VkDescriptorSet> &getDescriptorSetMap() const;
     const ResourceMap<VkDescriptorSetLayout> &getDescriptorSetLayoutMap() const;
     const ResourceMap<VkSemaphore> &getSemaphoreMap() const;
-    const ResourceMap<VkFence> &getFenceMap() const;
-    const ResourceMap<VkCommandPool> &getCommandPoolMap() const;
     std::vector<std::pair<uintptr_t, std::pair<VkDeviceMemory, std::string>>> getDeviceMemorySnapshot() const;
 
     // Cleanup all resources in a safe deterministic order. The device must be valid.
@@ -96,13 +89,11 @@ public:
     bool removeBufferVma(VkBuffer buf, VmaAllocation alloc = VK_NULL_HANDLE);
     bool removePipeline(VkPipeline p);
     bool removePipelineLayout(VkPipelineLayout pl);
-    bool removeShaderModule(VkShaderModule m);
     bool removeDescriptorPool(VkDescriptorPool dp);
     bool removeDescriptorSet(VkDescriptorSet ds);
     bool removeDescriptorSetLayout(VkDescriptorSetLayout dsl);
     // VMA-aware image tracking
     void addImageVma(VkImage img, VmaAllocation alloc, const char* desc = nullptr);
-    bool removeImageVma(VkImage img);
     bool removeSemaphore(VkSemaphore s);
     bool removeFence(VkFence f);
     bool removeCommandPool(VkCommandPool cp);
