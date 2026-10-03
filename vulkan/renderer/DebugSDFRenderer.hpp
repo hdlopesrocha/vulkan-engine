@@ -34,7 +34,6 @@ public:
     ~DebugSDFRenderer();
 
     void init(VulkanApp* app);
-    void setCubes(const std::vector<CubeSDF>& cubes);
     // The solid IndirectRenderer performs the SDF cube frustum cull + compaction in
     // its OWN indirect.comp dispatch (folded into the terrain cull). Point this
     // renderer at it so render() can draw from the terrain IR's SDF output buffers.

@@ -586,11 +586,6 @@ void DebugCubeRenderer::cleanup(VulkanApp* app) {
     instanceBuffer = {};
 }
 
-void DebugCubeRenderer::addCubeForNode(NodeID id, const CubeWithColor& cube) {
-    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
-    nodeDebugCubes[id] = cube;
-}
-
 void DebugCubeRenderer::removeCubeForNode(NodeID id) {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
     nodeDebugCubes.erase(id);
@@ -614,11 +609,6 @@ void DebugCubeRenderer::renderOverlay(VulkanApp* app, VkCommandBuffer& cmd, VkDe
 void DebugCubeRenderer::setBoundingBoxesForChunk(NodeID id, const std::vector<CubeWithColor>& cubes) {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
     chunkBBoxCubes[id] = cubes;
-}
-
-void DebugCubeRenderer::clearBoundingBoxes() {
-    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
-    chunkBBoxCubes.clear();
 }
 
 void DebugCubeRenderer::registerBoundingBoxesToIndirect() {

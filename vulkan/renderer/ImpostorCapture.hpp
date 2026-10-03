@@ -61,7 +61,6 @@ public:
     VkImageView getCaptureDepthArrayView()     const { return captureDepthArrayView; }
 
     // Per-layer capture inverse VP matrices for depth reprojection in the shadow pass.
-    const glm::mat4* getCaptureInvVP()      const { return captureInvVP.data(); }
     VkBuffer         getCaptureInvVPBuffer() const { return captureInvVPBuffer; }
 
     // Sampler suitable for scene use (created at init).
@@ -118,7 +117,6 @@ private:
         glm::vec4 lightColor;
     };
     VkBuffer       uboBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory uboMemory = VK_NULL_HANDLE;
     void*          uboMapped = nullptr;
     VkDeviceSize   uboStride = 256;  // aligned to minUniformBufferOffsetAlignment
 
@@ -129,12 +127,9 @@ private:
 
     // Minimal vertex + instance buffers (single base vertex, one instance).
     VkBuffer       captureVertBuf = VK_NULL_HANDLE;
-    VkDeviceMemory captureVertMem = VK_NULL_HANDLE;
     VkBuffer       captureInstBuf = VK_NULL_HANDLE;
     void*          captureInstMapped = nullptr;
-    VkDeviceMemory captureInstMem = VK_NULL_HANDLE;
     VkBuffer       captureIdxBuf = VK_NULL_HANDLE;
-    VkDeviceMemory captureIdxMem = VK_NULL_HANDLE;
     uint32_t       captureIdxCount = 0;
 
     // Descriptor pool + two descriptor sets (UBO dynamic + texture samplers).
@@ -163,7 +158,6 @@ private:
 
     // Buffer containing captureInvVP data for GPU access in depth pass.
     VkBuffer       captureInvVPBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory captureInvVPMemory = VK_NULL_HANDLE;
     void*          captureInvVPMapped = nullptr;
 
     // Bitmask of which billboard types have been captured.

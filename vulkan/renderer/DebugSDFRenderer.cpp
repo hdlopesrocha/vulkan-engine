@@ -235,10 +235,6 @@ void DebugSDFRenderer::prepareCull(VkCommandBuffer cmd) {
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
-void DebugSDFRenderer::setCubes(const std::vector<CubeSDF>& cubes) {
-    activeCubes = cubes;
-}
-
 void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet mainDescriptorSet, uint32_t frameIdx, bool enabled) {
     if (pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE) return;
 

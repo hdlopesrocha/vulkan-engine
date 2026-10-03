@@ -142,9 +142,6 @@ public:
     DistanceDensitySettings& getDistanceDensitySettings() { return distanceDensitySettings; }
     const DistanceDensitySettings& getDistanceDensitySettings() const { return distanceDensitySettings; }
     void setWindTime(float timeSeconds) { windTimeSeconds = timeSeconds; }
-    float computeDensityFactor(float distanceToCamera) const;
-    std::vector<DebugCubeRenderer::CubeWithColor> getDensityDebugCubes(const glm::vec3& cameraPos) const;
-    float getAverageDensityFactor(const glm::vec3& cameraPos) const;
 
     // Impostor rendering.  Call after init() once impostor views have been captured.
     // albedoArray60 and normalArray60 must be VkImageView covering 60 layers
@@ -183,7 +180,6 @@ public:
     // Must be called once during SceneRenderer::init before scene loading.
     void preallocate(VulkanApp* app, uint32_t maxChunks = kMaxVegChunks,
                      uint32_t maxInstancesPerChunk = kMaxVegInstancesPerChunk);
-    bool isPreallocated() const { return vegPreallocated; }
 
     // GPU frustum culling: dispatch compute shader that culls chunks against
     // viewProj and compacts visible draw commands. Must be called OUTSIDE any
@@ -304,7 +300,6 @@ private:
     TrackedHandle<VkPipelineLayout> impostorShadowPipelineLayout;
 
     float                 impostorDistance       = 0.0f;
-    VkRenderPass storedSolidRenderPass = VK_NULL_HANDLE;
 
     // Wind params UBO (set=2, binding=0) — updated once per frame.
     Buffer                windParamsBuffer;

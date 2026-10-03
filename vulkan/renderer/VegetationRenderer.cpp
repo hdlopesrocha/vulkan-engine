@@ -1154,64 +1154,6 @@ void VegetationRenderer::logUtilization() const {
         (inst > 0 && iPct < 25.0) ? "  <-- LOW utilization, consider a smaller tier (report 22 C1)" : "");
 }
 
-float VegetationRenderer::computeDensityFactor(float distanceToCamera) const {
-    if (!distanceDensitySettings.enabled) {
-        return 1.0f;
-    }
-
-    const float nearDistance = std::max(0.0f, distanceDensitySettings.fullDensityDistance);
-    const float farDistance = std::max(nearDistance + 1.0f, distanceDensitySettings.minDensityDistance);
-    const float minFactor = std::clamp(distanceDensitySettings.minDensityFactor, 0.0f, 1.0f);
-    if (distanceToCamera <= nearDistance || minFactor >= 1.0f) {
-        return 1.0f;
-    }
-
-    const float decayRange = farDistance - nearDistance;
-    const float safeMinFactor = std::max(minFactor, 0.0001f);
-    const float falloff = -std::log(safeMinFactor) / decayRange;
-    const float densityFactor = std::exp(-falloff * (distanceToCamera - nearDistance));
-    return std::clamp(densityFactor, minFactor, 1.0f);
-}
-
-std::vector<DebugCubeRenderer::CubeWithColor> VegetationRenderer::getDensityDebugCubes(const glm::vec3& cameraPos) const {
-    std::vector<DebugCubeRenderer::CubeWithColor> cubes;
-    cubes.reserve(chunkBuffers.size());
-
-    for (const auto& [chunkId, buf] : chunkBuffers) {
-        (void)chunkId;
-        if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) {
-            continue;
-        }
-
-        const float densityFactor = computeDensityFactor(glm::distance(buf.center, cameraPos));
-        const glm::vec3 color = glm::mix(glm::vec3(1.0f, 0.15f, 0.15f), glm::vec3(0.15f, 1.0f, 0.2f), densityFactor);
-        const glm::vec3 minPoint = buf.aabbMin;
-        const glm::vec3 maxPoint = buf.aabbMax;
-        cubes.push_back({BoundingBox(minPoint, maxPoint), color});
-    }
-
-    return cubes;
-}
-
-float VegetationRenderer::getAverageDensityFactor(const glm::vec3& cameraPos) const {
-    if (chunkBuffers.empty()) {
-        return 1.0f;
-    }
-
-    float factorSum = 0.0f;
-    size_t factorCount = 0;
-    for (const auto& [chunkId, buf] : chunkBuffers) {
-        (void)chunkId;
-        if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) {
-            continue;
-        }
-        factorSum += computeDensityFactor(glm::distance(buf.center, cameraPos));
-        ++factorCount;
-    }
-
-    return factorCount > 0 ? factorSum / static_cast<float>(factorCount) : 1.0f;
-}
-
 void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
     if (commandBuffer == VK_NULL_HANDLE) return;
 

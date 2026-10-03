@@ -71,7 +71,6 @@ public:
     VkSampler getShadowMapSampler() const { return shadowMapSampler; }
     VkDescriptorSet getImGuiDescriptorSet(uint32_t cascade = 0) const { return cascades[cascade].imguiDescSet; }
     uint32_t getShadowMapSize(uint32_t cascade = 0) const { return shadowMapSizes[cascade]; }
-    VkPipeline getShadowPipeline() const { return shadowPipeline; }
     VkPipelineLayout getShadowPipelineLayout() const { return shadowPipelineLayout; }
     VkImageView getDummyDepthView() const { return dummyColorView; }
     VkImage getDepthImage(uint32_t cascade = 0) const;

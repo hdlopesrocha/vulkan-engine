@@ -70,9 +70,7 @@ public:
     void cleanup(VulkanApp* app) override;
 
     // ── Per-node debug cube tracking (moved from SceneRenderer) ──
-    // Populated by the space-change handlers (worker threads) after geometry
-    // generation; consumed as a copy on the render thread.
-    void addCubeForNode(NodeID id, const CubeWithColor& cube);
+    // Consumed as a copy on the render thread.
     void removeCubeForNode(NodeID id);
     void clearCubes();
     // Render the octree node debug cubes merged with the supplied widget cubes.
@@ -85,7 +83,6 @@ public:
     // Replaces the chunk's cached box list; consumed flattened on the render
     // thread. Mirrors the SDF-cube path's chunk-keyed caching.
     void setBoundingBoxesForChunk(NodeID id, const std::vector<CubeWithColor>& cubes);
-    void clearBoundingBoxes();
     // Register the cached per-chunk mesh bounding boxes with the solid
     // IndirectRenderer's merged cull dispatch (folds box AABBs into the terrain
     // frustum cull) and upload the instance payload. Reads the cache internally.

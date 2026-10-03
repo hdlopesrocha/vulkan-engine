@@ -150,8 +150,6 @@ public:
     bool isSupported() const { return supported_; }
     bool isPipelineReady() const { return supported_ && pipelineReady_; }
     uint32_t proxyCount() const { return activeSolidCount_ + activeWaterCount_; }
-    uint32_t solidProxyCount() const { return activeSolidCount_; }
-    uint32_t waterProxyCount() const { return activeWaterCount_; }
 
     // Stage new proxy sets (chunk bounds from the scene). Copies to the
     // host-visible staging copies immediately; the GPU BLAS/TLAS rebuild is
@@ -187,9 +185,6 @@ public:
     };
     void setSceneGeometry(std::vector<SceneTriGeometry> solids,
                           std::vector<SceneTriGeometry> waters);
-    uint32_t sceneGeometryCount() const {
-        return uint32_t(sceneSolidGeoms_.size() + sceneWaterGeoms_.size());
-    }
     VkBuffer getSceneGeomPrimBaseBuffer() const { return scenePrimBaseBuffer_.buffer; }
     VkBuffer getSceneGeomInfoBuffer() const { return sceneGeomInfoBuffer_.buffer; }
     VkBuffer getSceneGeomMetaBuffer() const { return sceneMetaBuffer_.buffer; }
@@ -387,8 +382,6 @@ private:
     VkDescriptorSetLayout rtSetLayout_ = VK_NULL_HANDLE;
     VkDescriptorPool rtSetPool_ = VK_NULL_HANDLE;
     VkDescriptorSet rtSets_[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
-    VkDescriptorSet getRTSet() const { return rtSets_[0]; }
-    VkDescriptorSet getRTSetForFrame(uint32_t f) const { return rtSets_[f % 3]; }
     Buffer paramsBuffers_[kParamFrames]{};
     // Per-frame RT profiling counter blocks (host-visible, atomically
     // incremented by the RT_PROFILE shader variants; contents read + reset by

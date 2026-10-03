@@ -717,7 +717,6 @@ void ImpostorCapture::createUBO(VulkanApp* app) {
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     uboBuffer = buf.buffer;
     uboMapped = buf.mappedData;
-    uboMemory = buf.memory;
 }
 
 void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
@@ -751,7 +750,6 @@ void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
     Buffer vb = app->createDeviceLocalBuffer(verts.data(), verts.size() * sizeof(Vertex),
                                               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     captureVertBuf = vb.buffer;
-    captureVertMem = vb.memory;
 
     // 36-index triangle list.
     std::vector<uint32_t> idx(36);
@@ -764,7 +762,6 @@ void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
     Buffer idxBuf = app->createDeviceLocalBuffer(idx.data(), idx.size() * sizeof(uint32_t),
                                                   VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     captureIdxBuf = idxBuf.buffer;
-    captureIdxMem = idxBuf.memory;
     captureIdxCount = 36;
 
     // Instance buffer: 1 vec4 (xyz=world pos, w=billboardIndex), host-visible.
@@ -774,7 +771,6 @@ void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     captureInstBuf = ib.buffer;
     captureInstMapped = ib.mappedData;
-    captureInstMem = ib.memory;
 }
 
 void ImpostorCapture::createCaptureInvVPBuffer(VulkanApp* app) {
@@ -784,7 +780,6 @@ void ImpostorCapture::createCaptureInvVPBuffer(VulkanApp* app) {
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     captureInvVPBuffer = buf.buffer;
     captureInvVPMapped = buf.mappedData;
-    captureInvVPMemory = buf.memory;
 }
 
 void ImpostorCapture::createSceneSampler(VulkanApp* app) {

@@ -54,8 +54,6 @@ public:
                 bool waterBlurEnabled = true,
                 bool vegetationScaled = false);
 
-    bool isReady() const { return pipeline != VK_NULL_HANDLE; }
-
     VkSampler getLinearSampler() const { return linearSampler; }
 
     void setRenderSize(uint32_t width, uint32_t height);
