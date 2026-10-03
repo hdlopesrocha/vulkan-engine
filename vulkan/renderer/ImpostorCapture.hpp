@@ -9,7 +9,6 @@
 #include "CommandBufferState.hpp"
 
 class VulkanApp;
-class VegetationRenderer;
 
 // Captures vegetation billboard impostor views from a Fibonacci sphere grid.
 // 20 evenly-distributed camera positions orbit the billboard at capture time
@@ -23,10 +22,8 @@ public:
     static constexpr uint32_t NUM_INSTANCES      = 1; // single centred instance
 
     // Allocate all GPU resources (call once after VulkanApp is ready).
-    // The vegetation renderer supplies the shared set=2 wind params descriptor
-    // set/layout used by the capture pipeline (see finding: duplicate wind
-    // params descriptor trio was created here before).
-    void init(VulkanApp* app, VegetationRenderer* vegRenderer = nullptr);
+    // The capture shaders read sets 0 (camera UBO) and 1 (textures) only.
+    void init(VulkanApp* app);
 
     // Destroy all GPU resources.
     void cleanup(VulkanApp* app) override;
@@ -119,11 +116,6 @@ private:
     VkBuffer       uboBuffer = VK_NULL_HANDLE;
     void*          uboMapped = nullptr;
     VkDeviceSize   uboStride = 256;  // aligned to minUniformBufferOffsetAlignment
-
-    // Shared set=2 wind params descriptor set + layout, owned by the
-    // VegetationRenderer (wind is disabled during capture, so the set is only
-    // bound for pipeline compatibility — its content is never read).
-    VegetationRenderer* sharedVegRenderer = nullptr;
 
     // Minimal vertex + instance buffers (single base vertex, one instance).
     VkBuffer       captureVertBuf = VK_NULL_HANDLE;

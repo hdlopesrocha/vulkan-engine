@@ -205,8 +205,6 @@ public:
     // Shared set=2 wind params resources. Other consumers of the vegetation
     // shader family (e.g. ImpostorCapture) bind the same layout + descriptor
     // set instead of duplicating them.
-    VkDescriptorSetLayout getWindParamsDescSetLayout() const { return windParamsDescSetLayout; }
-    VkDescriptorSet getWindParamsDescSet() const { return windParamsDescSet; }
 
 private:
     
