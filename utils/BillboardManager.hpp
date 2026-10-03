@@ -2,7 +2,6 @@
 #include <vector>
 #include <string>
 #include <glm/glm.hpp>
-#include "BillboardBaseModel.hpp"
 #include "../utils/BillboardLayer.hpp"
 #include "../utils/Billboard.hpp"
 
