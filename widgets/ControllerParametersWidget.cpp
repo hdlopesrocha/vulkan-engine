@@ -10,16 +10,6 @@
 ControllerParametersWidget::ControllerParametersWidget(ControllerManager* cm_, Brush3dManager* brushManager_)
     : Widget("Controller Parameters", u8"\uf085"), cm(cm_), brushManager(brushManager_) {}
 
-// Draw the active page indicator for a given controller context.
-static void drawContextPage(const ControllerContext& ctx, const ImVec4& col, const char* label) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(36, 0));
-    ImVec2 center = ImVec2(pos.x + 10.0f, pos.y + 10.0f);
-    dl->AddCircleFilled(center, 8.0f, ImGui::ColorConvertFloat4ToU32(col));
-    dl->AddText(ImVec2(pos.x + 22.0f, pos.y), ImGui::ColorConvertFloat4ToU32(ImVec4(1,1,1,1)), label);
-}
-
 // One collapsible/inline section per controller showing its active page,
 // navigation buttons, and brush apply mode toggle (Click vs Drag).
 // The contexts are independent, so each can be on a different page/subpage
@@ -32,14 +22,7 @@ static void drawControllerSection(ControllerContext& ctx, const char* name,
 
     ImGui::Text("%s", name);
 
-    ImVec4 col = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
-    const char* label = "?";
-    switch (ctx.activeCategory()) {
-        case PageCategory::CAMERA: label = "CAM"; col = ImVec4(0.2f,0.5f,0.9f,1.0f); break;
-        case PageCategory::BRUSH:  label = "BRU"; col = ImVec4(0.2f,0.9f,0.3f,1.0f); break;
-        case PageCategory::LIGHT:  label = "LIT"; col = ImVec4(0.9f,0.9f,0.2f,1.0f); break;
-    }
-    drawContextPage(ctx, col, label);
+    ImGuiHelpers::CategoryBadge(ctx.activeCategory());
     ImGui::Text("  %s > %s", ctx.activePageName().c_str(), ctx.activeSubpageName().c_str());
 
     if (ImGui::Button("Prev Page"))  ctx.prevPage();

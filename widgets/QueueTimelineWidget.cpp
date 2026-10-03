@@ -1,5 +1,6 @@
 #include "QueueTimelineWidget.hpp"
 #include "../vulkan/VulkanApp.hpp"
+#include "components/QueueNames.hpp"
 #include <unordered_map>
 #include <algorithm>
 #include <chrono>
@@ -49,17 +50,17 @@ void QueueTimelineWidget::updateWithApp(VulkanApp* app) {
             return q;
         };
         std::vector<Cand> cands = {
-            { app->getGraphicsQueue(),   "Graphics" },
-            { app->getPresentQueue(),    "Present" },
-            { qat(5), "Solid" },
-            { qat(6), "Water" },
-            { qat(1), "Vegetation" },
-            { qat(2), "SDF" },
-            { qat(3), "BoundingBox" },
-            { app->geometryTransferQueue(), "Geometry" },
-            { app->getTransferQueue(),   "Transfer" },
-            { qat(8), "BrushSolid" },
-            { qat(9), "BrushLiquid" },
+            { app->getGraphicsQueue(),   QueueNames::Graphics },
+            { app->getPresentQueue(),    QueueNames::Present },
+            { qat(5), QueueNames::Solid },
+            { qat(6), QueueNames::Water },
+            { qat(1), QueueNames::Vegetation },
+            { qat(2), QueueNames::SDF },
+            { qat(3), QueueNames::BoundingBox },
+            { app->geometryTransferQueue(), QueueNames::Geometry },
+            { app->getTransferQueue(),   QueueNames::Transfer },
+            { qat(8), QueueNames::BrushSolid },
+            { qat(9), QueueNames::BrushLiquid },
         };
         for (size_t i = 0; i < app->parallelGraphicsQueues.size(); ++i) {
             cands.push_back({ app->parallelGraphicsQueues[i],

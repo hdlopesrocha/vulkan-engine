@@ -10,27 +10,6 @@
 #include <imgui.h>
 #include "components/ImGuiHelpers.hpp"
 
-static void drawPageIcon(const ControllerContext& ctx) {
-    const char* label = "?";
-    ImVec4 col = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
-    switch (ctx.activeCategory()) {
-        case PageCategory::CAMERA:
-            label = "CAM"; col = ImVec4(0.2f, 0.5f, 0.9f, 1.0f); break;
-        case PageCategory::BRUSH:
-            label = "BRU"; col = ImVec4(0.2f, 0.9f, 0.3f, 1.0f); break;
-        case PageCategory::LIGHT:
-            label = "LIT"; col = ImVec4(0.9f, 0.9f, 0.2f, 1.0f); break;
-    }
-
-    // Reserve space and draw a small colored circle then the label
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(36, 0));
-    ImVec2 center = ImVec2(pos.x + 10.0f, pos.y + 10.0f);
-    dl->AddCircleFilled(center, 8.0f, ImGui::ColorConvertFloat4ToU32(col));
-    dl->AddText(ImVec2(pos.x + 22.0f, pos.y), ImGui::ColorConvertFloat4ToU32(ImVec4(1,1,1,1)), label);
-}
-
 static const char* buttonName(int b) {
     switch (b) {
         case GLFW_GAMEPAD_BUTTON_A: return "A";
@@ -133,7 +112,7 @@ void GamepadWidget::render() {
     // Show controller page indicator after the gamepad state (axes/buttons)
     if (ctrlManager) {
         ImGui::Separator();
-        drawPageIcon(ctrlManager->gamepadContext);
+        ImGuiHelpers::CategoryBadge(ctrlManager->gamepadContext.activeCategory());
         ImGui::Text("Page: %s > %s", ctrlManager->gamepadContext.activePageName().c_str(),
                     ctrlManager->gamepadContext.activeSubpageName().c_str());
     }

@@ -5,6 +5,7 @@
 #include <sstream>
 #include <iomanip>
 #include "components/ImGuiHelpers.hpp"
+#include "components/QueueNames.hpp"
 
 VulkanResourcesManagerWidget::VulkanResourcesManagerWidget(VulkanResourceManager* mgr_)
     : Widget("Vulkan Resources", u8"\uf0e8"), mgr(mgr_) {}
@@ -108,7 +109,9 @@ void VulkanResourcesManagerWidget::render() {
         // than the GPU completes per frame).
         if (ImGui::TreeNode("Queue Activity")) {
             static const char* qnames[Q_COUNT] = {
-                "Graphics", "Present", "Vegetation", "SDF", "BoundingBox", "Geometry", "Transfer", "BrushSolid", "BrushLiquid"
+                QueueNames::Graphics, QueueNames::Present, QueueNames::Vegetation, QueueNames::SDF,
+                QueueNames::BoundingBox, QueueNames::Geometry, QueueNames::Transfer,
+                QueueNames::BrushSolid, QueueNames::BrushLiquid
             };
             // Detect aliasing: group logical queues that share a VkQueue handle.
             for (int i = 0; i < Q_COUNT; ++i) {
