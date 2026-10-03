@@ -226,8 +226,6 @@ public:
 private:
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     public:
-        // Public accessor for command pool (needed for buffer transfers)
-        VkCommandPool getCommandPool() const { return commandPool; }
     // texture and descriptor
     // Scene descriptor set layouts/sets live in SceneDescriptorLayout (owned by
     // the app). The getters below forward to it; VulkanApp itself carries no
@@ -312,12 +310,8 @@ public:
     // Mutex used to serialize vkAllocateDescriptorSets calls across threads
     std::mutex descriptorAllocMutex;
 
-    private:
-        static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
     protected:
         void toggleFullscreen();
-        // V-Sync control (call to change present mode at runtime)
-        void setVSyncEnabled(bool enabled);
 
         VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
         VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
@@ -335,9 +329,6 @@ public:
         // Record mipmap generation commands into an existing command buffer (no begin/end or wait)
         void recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount = 1, uint32_t baseArrayLayer = 0);
 
-        // Submit a pre-recorded command buffer asynchronously and return a fence that will be signaled on completion.
-        // If outSemaphore is non-null, the submission will signal that semaphore when finished (useful to make frame submit wait on generation).
-        VkFence submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore = nullptr);
         // Submit a pre-recorded command buffer asynchronously to a specific queue (e.g., vegetation/geometry) and return a fence.
         VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore = nullptr, const std::vector<VkSemaphore>& waitSemaphores = {}, bool registerSignal = true, const std::vector<VkSemaphore>& extraSignalSemaphores = {}, const std::vector<uint64_t>& waitSemaphoreValues = {}, uint64_t signalValue = 0, const std::vector<uint64_t>& extraSignalValues = {}, bool persistentSignal = false);
         // Create a timeline semaphore (frame-graph cross-pass sync). initialValue is
@@ -408,7 +399,6 @@ public:
         // Deferred destruction helpers
         void deferDestroyUntilAllPending(std::function<void()> destroyFn);
         void deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn);
-        bool hasPendingCommandBuffers();
         // Add a semaphore that the next frame submission must wait on (for async uploads)
         void addExtraWaitSemaphore(VkSemaphore sem, VkPipelineStageFlags2 stage);
         ~VulkanApp();
@@ -445,7 +435,6 @@ public:
         bool isDeviceSuitable(VkPhysicalDevice device);
         void createLogicalDevice() ;
         void createSyncObjects();
-        void createTextureImageView(TextureImage &textureImage);
 
     public:
         void initVulkan();
@@ -464,8 +453,6 @@ public:
     public:
         Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, bool zeroInit = true);
         void destroyBuffer(Buffer& buf);
-        TextureImage createTextureImage(const char * filename);
-    TextureImage createTextureImageArray(const std::vector<std::string>& filenames, bool srgb = false);
         VkSampler createTextureSampler(uint32_t mipLevels);
         VkSampler createSampler(const VkSamplerCreateInfo& info, const char* name);
         VkSampler createSamplerLinearClamp(const char* name);
@@ -499,11 +486,6 @@ public:
         Buffer createDeviceLocalBufferAsync(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkFence* outFence);
         // Synchronous variant: Create a device-local storage buffer and upload data via staging transfer
         Buffer createDeviceLocalBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
-        // Same as createDeviceLocalBuffer but always uses VK_SHARING_MODE_EXCLUSIVE.
-        // Required for RADV where concurrent sharing between queue families
-        // strips GPU page-table TCP-read permission, causing GPUVM faults
-        // when compute shaders read the buffer via the Texture Cache/Pipe.
-        Buffer createDeviceLocalBufferExclusive(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
         VkShaderModule createShaderModule(const std::vector<char>& code);
         // Load SPIR-V from path once and cache the VkShaderModule for reuse.
         // Subsequent calls with the same path return the cached module.
@@ -645,22 +627,16 @@ public:
         // Snapshot of recent segments (oldest first). Copy-based: no VulkanApp*
         // is retained by the caller. Thread-safe.
         void getQueueTimeline(std::vector<QueueSegment>& out) const;
-        uint64_t getFrameCounter() const { return frameCounter_.load(std::memory_order_relaxed); }
         VkSwapchainKHR getSwapchain() const { return swapchain; }
         VkFormat getSwapchainImageFormat() const { return swapchainImageFormat; }
         VkExtent2D getSwapchainExtent() const { return swapchainExtent; }
         VkDescriptorPool getDescriptorPool() const { return descriptorPool; }
         VkDescriptorPool getImGuiDescriptorPool() const { return imguiDescriptorPool; }
 
-        VkImage getDepthImage() const { return depthImage; }
-
         int getWidth();
         int getHeight();
         
         enum class ResourceType { Buffer, DeviceMemory, Image, ImageView, Sampler, Framebuffer, ShaderModule, PipelineLayout, Pipeline, DescriptorPool, DescriptorSetLayout, DescriptorSet };
-
-        // Query whether a handle is currently registered in the app's resource registry
-        bool isResourceRegistered(uintptr_t handle) const;
 
         // GPU memory budget information (VK_EXT_memory_budget)
         struct MemoryHeapBudget {
@@ -672,7 +648,6 @@ public:
         std::vector<MemoryHeapBudget> getMemoryBudgets() const;
         
         // Public utility methods for texture manipulation
-        uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
         // Allocate, begin, call `fn` to record commands, end, submit and free the command buffer
         // This function serializes the entire lifecycle so callers do not need to manage command-pool/thread-safety.
         void runSingleTimeCommands(const std::function<void(VkCommandBuffer)>& fn);
@@ -703,7 +678,7 @@ public:
 
         // Allocate a primary command buffer from the app command pool for asynchronous submissions.
         // Caller is responsible for recording commands (vkBeginCommandBuffer) and passing
-        // the command buffer to `submitCommandBufferAsync` (which will call vkEndCommandBuffer).
+        // the command buffer to `submitCommandBufferAsyncToQueue` (which will call vkEndCommandBuffer).
         VkCommandBuffer allocatePrimaryCommandBuffer();
         // Free a command buffer previously allocated via `allocatePrimaryCommandBuffer`.
         // The underlying command pool is reused from the internal ring — not destroyed.

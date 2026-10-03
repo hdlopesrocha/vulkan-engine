@@ -198,36 +198,6 @@ VulkanApp* g_imguiVulkanApp = nullptr;
 void setImGuiVulkanApp(VulkanApp* app) { g_imguiVulkanApp = app; }
 VulkanApp* getImGuiVulkanApp() { return g_imguiVulkanApp; }
 
-extern "C" void* ImGui_GetApp_C() { return (void*)getImGuiVulkanApp(); }
-extern "C" void ImGui_SubmitCommandBufferAndWait_C(void* appPtr, VkCommandBuffer cb) {
-    if (appPtr) ((VulkanApp*)appPtr)->submitCommandBufferAndWait(cb);
-}
-extern "C" VkResult ImGui_QueueWaitIdle_C(void* appPtr) {
-    if (!appPtr) return VK_SUCCESS;
-    return ((VulkanApp*)appPtr)->queueWaitIdle();
-}
-extern "C" VkResult ImGui_DeviceWaitIdle_C(void* appPtr) {
-    if (!appPtr) return VK_SUCCESS;
-    return ((VulkanApp*)appPtr)->deviceWaitIdle();
-}
-
-// C-callable bridge so external integration (e.g. ImGui backend) can
-// record layout transitions using the application's tracked helper.
-extern "C" void ImGui_RecordTransitionImageLayoutLayer_C(void* appPtr,
-                                                         VkCommandBuffer commandBuffer,
-                                                         VkImage image,
-                                                         VkFormat format,
-                                                         VkImageLayout oldLayout,
-                                                         VkImageLayout newLayout,
-                                                         uint32_t mipLevels,
-                                                         uint32_t baseArrayLayer,
-                                                         uint32_t layerCount) {
-    if (!appPtr) return;
-    VulkanApp* app = (VulkanApp*)appPtr;
-    app->recordTransitionImageLayoutLayer(commandBuffer, image, format, oldLayout, newLayout, mipLevels, baseArrayLayer, layerCount);
-   
-}
-
 void VulkanApp::initVulkan() {
     loadBuildTimestamp();
     createInstance();
@@ -400,12 +370,6 @@ void VulkanApp::initWindow() {
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
     // keyboard input is handled by the event system (KeyboardPublisher)
     // do not register a direct key callback here to avoid duplicate handling
-}
-
-void VulkanApp::keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    // Intentionally left empty: keyboard input (including F11/ESC)
-    // is handled by the event system (KeyboardPublisher -> EventManager).
-    (void)window; (void)key; (void)scancode; (void)action; (void)mods;
 }
 
 void VulkanApp::toggleFullscreen() {
@@ -827,13 +791,6 @@ VkPresentModeKHR VulkanApp::chooseSwapPresentMode(const std::vector<VkPresentMod
         if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) return availablePresentMode;
     }
     throw std::runtime_error("chooseSwapPresentMode: preferred present mode not available (no fallback allowed)");
-}
-
-void VulkanApp::setVSyncEnabled(bool enabled) {
-    if (vsyncEnabled != enabled) {
-        vsyncEnabled = enabled;
-        vsyncChanged = true; // will trigger swapchain recreation on next frame
-    }
 }
 
 VkExtent2D VulkanApp::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities) {
@@ -1772,14 +1729,6 @@ bool VulkanApp::isFencePending(VkFence fence) {
     return false;
 }
 
-
-// Submit a pre-recorded command buffer asynchronously and return a fence that will be signaled on completion.
-VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore) {
-    // Delegate to the queue-aware helper (graphics queue). submitCommandBufferAsyncToQueue
-    // ends the command buffer, performs the global command-buffer/fence tracking, and
-    // records the segment on the graphics queue's timeline.
-    return submitCommandBufferAsyncToQueue(commandBuffer, graphicsQueue, outSemaphore);
-}
 
 // Submit a pre-recorded command buffer asynchronously to a specific queue and return a fence that will be signaled on completion.
 VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore, const std::vector<VkSemaphore>& waitSemaphores, bool registerSignal, const std::vector<VkSemaphore>& extraSignalSemaphores, const std::vector<uint64_t>& waitSemaphoreValues, uint64_t signalValue, const std::vector<uint64_t>& extraSignalValues, bool persistentSignal) {
@@ -3288,11 +3237,6 @@ void VulkanApp::deferDestroyUntilFence(VkFence fence, std::function<void()> dest
     m_deferredDestroys.emplace_back(fence, destroyFn);
 }
 
-bool VulkanApp::hasPendingCommandBuffers() {
-    std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
-    return !m_pendingCommandBuffers.empty();
-}
-
 void VulkanApp::addExtraWaitSemaphore(VkSemaphore sem, VkPipelineStageFlags2 stage) {
     std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
     m_extraWaitSemaphores.emplace_back(sem, stage);
@@ -3418,168 +3362,6 @@ void VulkanApp::createSyncObjects() {
     m_pendingCommandBuffers.clear();
     m_pendingCommandBuffersSet.clear();
     m_extraWaitSemaphores.clear();
-}
-
-TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& filenames, bool srgb) {
-    TextureImage textureImage;
-    if (filenames.empty()) throw std::runtime_error("createTextureImageArray: empty filename list");
-
-    int texWidth = 0, texHeight = 0, texChannels = 0;
-    std::vector<unsigned char*> layersData;
-    layersData.reserve(filenames.size());
-
-    for (size_t i = 0; i < filenames.size(); ++i) {
-        unsigned char* pixels = stbi_load(filenames[i].c_str(), &texWidth, &texHeight, &texChannels, 4);
-        if (!pixels) {
-            // free any previously loaded
-            for (auto p : layersData) if (p) stbi_image_free(p);
-            throw std::runtime_error(std::string("failed to load texture image: ") + filenames[i]);
-        }
-        layersData.push_back(pixels);
-    }
-
-    const uint32_t layerCount = static_cast<uint32_t>(layersData.size());
-    VkDeviceSize layerSize = texWidth * texHeight * 4;
-    VkDeviceSize imageSize = layerSize * layerCount;
-
-    // If the caller requested sRGB handling, convert loaded sRGB data to linear before storing as UNORM
-    if (srgb) {
-        for (uint32_t i = 0; i < layerCount; ++i) {
-            convertSRGB8ToLinearInPlace(layersData[i], static_cast<size_t>(texWidth) * static_cast<size_t>(texHeight));
-        }
-    }
-
-    // create staging buffer containing all layers consecutively
-    Buffer stagingBuffer = createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    for (uint32_t i = 0; i < layerCount; ++i) {
-        memcpy((unsigned char*)stagingBuffer.mappedData + layerSize * i, layersData[i], layerSize);
-    }
-
-    for (auto p : layersData) stbi_image_free(p);
-
-    textureImage.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
-
-    // choose format: use UNORM for array textures
-    VkFormat chosenFormat = VK_FORMAT_R8G8B8A8_UNORM;
-
-    // create image with arrayLayers = layerCount
-    VkImageCreateInfo imageInfo{};
-    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.flags = 0;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent.width = static_cast<uint32_t>(texWidth);
-    imageInfo.extent.height = static_cast<uint32_t>(texHeight);
-    imageInfo.extent.depth = 1;
-    imageInfo.mipLevels = textureImage.mipLevels;
-    imageInfo.arrayLayers = layerCount;
-    imageInfo.format = chosenFormat;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    // need transfer src/dst for mipmap generation and sampled for shader access
-    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-
-    VmaAllocationCreateInfo allocCI{};
-    allocCI.usage = VMA_MEMORY_USAGE_AUTO;
-    allocCI.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-
-    VmaAllocationInfo allocInfo;
-    VmaAllocation allocation;
-    if (vmaCreateImage(vma.allocator, &imageInfo, &allocCI, &textureImage.image, &allocation, &allocInfo) != VK_SUCCESS) {
-        stagingBuffer.buffer = VK_NULL_HANDLE;
-        stagingBuffer.memory = VK_NULL_HANDLE;
-        throw std::runtime_error("failed to create texture array image with VMA!");
-    }
-    textureImage.allocation = allocation;
-    textureImage.memory = allocInfo.deviceMemory;
-    resources.addImageVma(textureImage.image, allocation, "VulkanApp: textureArrayImage");
-    // copy buffer to image per-layer using the app helpers so tracked
-    // layouts and pending updates are recorded and applied correctly.
-    runSingleTimeCommands([&](VkCommandBuffer commandBuffer){
-        // Transition entire image to TRANSFER_DST_OPTIMAL (records pending update)
-        recordTransitionImageLayoutLayer(commandBuffer,
-                                         textureImage.image,
-                                         chosenFormat,
-                                         VK_IMAGE_LAYOUT_UNDEFINED,
-                                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                         textureImage.mipLevels,
-                                         0,
-                                         layerCount);
-
-        std::vector<VkBufferImageCopy> regions(layerCount);
-        for (uint32_t i = 0; i < layerCount; ++i) {
-            VkBufferImageCopy region{};
-            region.bufferOffset = layerSize * i;
-            region.bufferRowLength = 0;
-            region.bufferImageHeight = 0;
-            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            region.imageSubresource.mipLevel = 0;
-            region.imageSubresource.baseArrayLayer = i;
-            region.imageSubresource.layerCount = 1;
-            region.imageOffset = {0,0,0};
-            region.imageExtent = { static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1 };
-            regions[i] = region;
-        }
-
-        vkCmdCopyBufferToImage(commandBuffer, stagingBuffer.buffer, textureImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(regions.size()), regions.data());
-
-        // Transition to SHADER_READ_ONLY_OPTIMAL (records pending update)
-        recordTransitionImageLayoutLayer(commandBuffer,
-                                         textureImage.image,
-                                         chosenFormat,
-                                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                         textureImage.mipLevels,
-                                         0,
-                                         layerCount);
-    });
-
-    // generate mipmaps for the array texture (per-layer)
-    generateMipmaps(textureImage.image, chosenFormat, texWidth, texHeight, textureImage.mipLevels, layerCount);
-
-    // Transfer completed synchronously; destroy staging resources now.
-    destroyBuffer(stagingBuffer);
-
-    // create view for array texture
-    VkImageViewCreateInfo viewInfo{};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = textureImage.image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    viewInfo.format = chosenFormat;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = textureImage.mipLevels;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = layerCount;
-
-    if (vkCreateImageView(device, &viewInfo, nullptr, &textureImage.view) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create texture image view (array)!");
-    }
-    // Register image view for final-sweep safety
-    resources.addImageView(textureImage.view, "VulkanApp::createTextureImageArray view");
-
-    return textureImage;
-}
-
-void VulkanApp::createTextureImageView(TextureImage &textureImage) {
-    VkImageViewCreateInfo viewInfo{};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = textureImage.image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    // match the image format (use UNORM view)
-    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = textureImage.mipLevels;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
-
-    if (vkCreateImageView(device, &viewInfo, nullptr, &textureImage.view) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create texture image view!");
-    }
-    // Register image view
-    resources.addImageView(textureImage.view, "VulkanApp: textureImage.view");
 }
 
 VkSampler VulkanApp::createSampler(const VkSamplerCreateInfo& info, const char* name) {
@@ -4132,19 +3914,6 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
         config.blendEnable);
 }
 
-uint32_t VulkanApp::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
-    VkPhysicalDeviceMemoryProperties memProperties;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-
-    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-            return i;
-        }
-    }
-
-    throw std::runtime_error("failed to find suitable memory type!");
-}
-
 Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, bool zeroInit) {
     Buffer buffer;
     VkBufferCreateInfo bufferInfo{};
@@ -4248,12 +4017,6 @@ Buffer VulkanApp::createVertexBuffer(const std::vector<Vertex> &vertices) {
     return vertexBuffer;
 }
 
-bool VulkanApp::isResourceRegistered(uintptr_t handle) const {
-    if (handle == 0) return false;
-    auto e = resources.find(handle);
-    return e.has_value();
-}
-
 std::vector<VulkanApp::MemoryHeapBudget> VulkanApp::getMemoryBudgets() const {
     m_memoryBudgetScratch.clear();
     if (!physicalDevice) return m_memoryBudgetScratch;
@@ -4348,60 +4111,6 @@ Buffer VulkanApp::createDeviceLocalBuffer(const void* data, VkDeviceSize size, V
     // Transfer completed synchronously; destroy staging resources now.
     destroyBuffer(stagingBuffer);
     
-    return gpuBuffer;
-}
-
-Buffer VulkanApp::createDeviceLocalBufferExclusive(const void* data, VkDeviceSize size, VkBufferUsageFlags usage) {
-    Buffer stagingBuffer = createBuffer(size,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    memcpy(stagingBuffer.mappedData, data, (size_t)size);
-
-    Buffer gpuBuffer{};
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = size;
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    VmaAllocationCreateInfo allocCI{};
-    allocCI.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    allocCI.flags = VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT;
-
-    VmaAllocation allocation;
-    VmaAllocationInfo allocInfo;
-    if (vmaCreateBuffer(vma.allocator, &bufferInfo, &allocCI, &gpuBuffer.buffer, &allocation, &allocInfo) != VK_SUCCESS)
-        throw std::runtime_error("createDeviceLocalBufferExclusive: vmaCreateBuffer failed");
-
-    gpuBuffer.allocation = allocation;
-    gpuBuffer.memory = allocInfo.deviceMemory;
-    resources.addBufferVma(gpuBuffer.buffer, allocation, "createDeviceLocalBufferExclusive: buffer");
-
-    runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd){
-        VkBufferCopy copyRegion{};
-        copyRegion.size = size;
-        vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
-
-        VkBufferMemoryBarrier2 bufBarrier{};
-        bufBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        bufBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        bufBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        bufBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        bufBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-        bufBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bufBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bufBarrier.buffer = gpuBuffer.buffer;
-        bufBarrier.size = VK_WHOLE_SIZE;
-
-        VkDependencyInfo depInfo{};
-        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.bufferMemoryBarrierCount = 1;
-        depInfo.pBufferMemoryBarriers = &bufBarrier;
-        vkCmdPipelineBarrier2(cmd, &depInfo);
-    });
-
-    destroyBuffer(stagingBuffer);
     return gpuBuffer;
 }
 
