@@ -96,15 +96,6 @@ void EditableTexture::setPixel(uint32_t x, uint32_t y, uint8_t r, uint8_t g, uin
 	isDirty = true;
 }
 
-void EditableTexture::setPixelGray(uint32_t x, uint32_t y, uint8_t value) {
-	if (x >= width || y >= height) return;
-	size_t idx = (y * width + x) * bytesPerPixel;
-	if (bytesPerPixel == 1) {
-		cpuData[idx] = value;
-	}
-	isDirty = true;
-}
-
 void EditableTexture::fill(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 	if (bytesPerPixel == 1) {
 		std::fill(cpuData.begin(), cpuData.end(), r);
@@ -145,27 +136,14 @@ void EditableTexture::renderImGui() {
 	}
 }
 
-VkImageView EditableTexture::getView() const { return view; }
-VkSampler EditableTexture::getSampler() const { return sampler; }
 VkImage EditableTexture::getImage() const { return image; }
-bool EditableTexture::getDirty() const { return isDirty; }
 uint32_t EditableTexture::getWidth() const { return width; }
 uint32_t EditableTexture::getHeight() const { return height; }
-uint32_t EditableTexture::getBytesPerPixel() const { return bytesPerPixel; }
 VkDescriptorSet EditableTexture::getImGuiDescriptorSet() {
     if (imguiDescSet == VK_NULL_HANDLE) createImGuiDescriptor();
     return imguiDescSet;
 }
 const uint8_t* EditableTexture::getPixelData() const { return cpuData.empty() ? nullptr : cpuData.data(); }
-
-TextureImage EditableTexture::getTextureImage() const {
-	TextureImage ti;
-	ti.image = image;
-	ti.memory = memory;
-	ti.view = view;
-	ti.mipLevels = 1;
-	return ti;
-}
 
 void EditableTexture::createImGuiDescriptor() {
 	if (imguiDescSet != VK_NULL_HANDLE) return;
@@ -174,12 +152,4 @@ void EditableTexture::createImGuiDescriptor() {
 		printf("[EditableTexture] Failed to create ImGui descriptor for '%s'\n", name.c_str());
 	} else {
 	}
-}
-
-void EditableTexture::transitionImageLayout(VulkanApp* app, VkImageLayout oldLayout, VkImageLayout newLayout) {
-	app->transitionImageLayout(image, format, oldLayout, newLayout);
-}
-
-void EditableTexture::copyBufferToImage(VulkanApp* app, VkBuffer buffer) {
-	app->copyBufferToImage(buffer, image, width, height);
 }

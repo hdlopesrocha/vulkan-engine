@@ -111,12 +111,9 @@ public:
     // C1, extending the report-22 pool telemetry to texture memory).
     void logMemoryUtilization(const char* name) const;
 
-    // Variant of load/create/update that accepts an explicit VulkanApp instead of relying on an internal pointer
+    // Variant of load/loadTriples that accepts an explicit VulkanApp instead of relying on an internal pointer
     uint load(class VulkanApp* app, const char* albedoFile, const char* normalFile, const char* bumpFile, const char* roughnessFile = nullptr, const char* aoFile = nullptr);
     size_t loadTriples(class VulkanApp* app, const std::vector<TextureTriple> &triples);
-    uint create(class VulkanApp* app);
-    void updateLayerFromEditable(class VulkanApp* app, uint32_t layer, const class EditableTexture& tex);
-    void updateLayerFromEditableMap(class VulkanApp* app, uint32_t layer, const class EditableTexture& tex, int map);
 
     // Invalidate all cached ImGui texture descriptors (e.g. after swapchain recreation
     // when the descriptor pool is destroyed). Next getImTexture() call re-creates them.
@@ -127,17 +124,6 @@ public:
     // Variant that returns a descriptor sampling only the alpha channel of the
     // requested layer/map.  Used for visualizing noise or masks (swizzled view).
     ImTextureID getImTextureAlpha(size_t layer, int map);
-
-    // Load a triple of images into the current layer and increment the layer counter
-    uint load(const char* albedoFile, const char* normalFile, const char* bumpFile, const char* roughnessFile = nullptr, const char* aoFile = nullptr);
-
-    // Convenience: load multiple triples (albedo, normal, bump) into consecutive layers.
-    // Returns the number of successfully loaded layers.
-    size_t loadTriples(const std::vector<TextureTriple> &triples);
-
-    // Update a specific array layer from an EditableTexture (copies image -> array layer)
-    // (No-app convenience overload removed — prefer caller to pass `VulkanApp*`.)
-
 
     // Query/set layer initialized state
     bool isLayerInitialized(uint32_t layer) const;

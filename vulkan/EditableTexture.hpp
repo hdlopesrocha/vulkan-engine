@@ -17,9 +17,6 @@ public:
     // Edit a pixel (RGBA format)
     void setPixel(uint32_t x, uint32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255);
     
-    // Edit a pixel (single channel format)
-    void setPixelGray(uint32_t x, uint32_t y, uint8_t value);
-    
     // Fill entire texture with a color
     void fill(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255);
     
@@ -28,19 +25,12 @@ public:
     
     // Render ImGui widget
     void renderImGui();
-    VkImageView getView() const;
-    VkSampler getSampler() const;
     VkImage getImage() const;
-    bool getDirty() const;
     uint32_t getWidth() const;
     uint32_t getHeight() const;
-    uint32_t getBytesPerPixel() const;
     VkDescriptorSet getImGuiDescriptorSet();
     const uint8_t* getPixelData() const;
     
-    // Get as TextureImage for TextureManager compatibility
-    TextureImage getTextureImage() const;
-
     // Invalidate the ImGui descriptor (e.g., after ImGui pool is recreated).
     // Must be called before ImGui_ImplVulkan_Shutdown() while the old pool
     // is still alive so the descriptor can be properly freed.
@@ -64,8 +54,4 @@ private:
     bool isDirty = false;
     
     void createImGuiDescriptor();
-    
-    void transitionImageLayout(VulkanApp* app, VkImageLayout oldLayout, VkImageLayout newLayout);
-    
-    void copyBufferToImage(VulkanApp* app, VkBuffer buffer);
 };

@@ -22,8 +22,6 @@ public:
     // Release GPU resources.
     void destroy(VulkanApp* app);
 
-    size_t count() const { return materialCount; }
-
     // CPU-side mirror strength of a material [0..1]. Used when packing the RT
     // scene-geometry meta so reflection rays can decide whether a hit surface
     // is itself reflective (multi-bounce reflections).
@@ -32,7 +30,6 @@ public:
     }
 
     // Access underlying storage buffer (for descriptor binding)
-    const Buffer& getBuffer() const { return materialBuffer; }
     Buffer& getBuffer() { return materialBuffer; }
     // Byte size of the storage buffer (for vkGetDescriptorEXT, which forbids
     // VK_WHOLE_SIZE ranges). 0 when not allocated.
