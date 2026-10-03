@@ -241,9 +241,6 @@ public:
     bool queryPoolReady[MAX_FRAMES_IN_FLIGHT] = {};
     float timestampPeriod = 0.0f;
     bool profilingEnabled = true;
-    float profileShadow = 0.0f;
-    float profileMainCull = 0.0f;
-    float profileBrush = 0.0f;
     float profileDepthPrepass = 0.0f;
     float profileSky = 0.0f;
     float profileSolidDraw = 0.0f;
@@ -277,7 +274,6 @@ public:
     uint32_t skyRenderRuns = 0;          // frames actually rendered so far
     float skySig[12] = {};               // last rendered input signature
     bool skySigValid = false;            // skySig holds a rendered frame's values
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<SkyWidget> skyWidget;
     std::shared_ptr<WaterWidget> waterWidget;
@@ -287,8 +283,6 @@ public:
     std::shared_ptr<ImpostorService> impostorService;
     std::shared_ptr<ImpostorWidget> impostorWidget;
     std::shared_ptr<TextureMixerWidget> textureMixerWidget;
-    // flag set by background thread when mixer widget is ready; main thread will add it safely
-    bool mixerWidgetPendingAdd = false;
     std::shared_ptr<TextureViewer> textureViewer;
     std::shared_ptr<CameraWidget> cameraWidget;
     ControllerManager controllerManager;
@@ -326,8 +320,6 @@ public:
     // Application-owned per-layer water parameters (initialized in setup)
     std::vector<WaterParams> waterParams;
     float mainTime = 0.0f;
-    // Accumulated time driving the animated brush-space sphere trajectory
-    float brushAnimTime = 0.0f;
     // Last frame delta, forwarded to postSubmit for the per-frame brush rebuild
     float lastFrameDelta = 0.0f;
     ShadowParams shadowParams;
@@ -340,7 +332,6 @@ public:
     bool generateMapPending = false;
     bool loadScenePending = false;
     std::string pendingLoadPath;
-    size_t cubeCount = 0;
 
     // Camera and input
     Camera camera = Camera(glm::vec3(2172.0f, 125.0f, 2543.0f), Math::eulerToQuat(45.0f, 0.0f, 0.0f));
@@ -350,7 +341,6 @@ public:
     GamepadPublisher gamepadPublisher;
     NunchukPublisher nunchukPublisher;
     MousePublisher mousePublisher;
-    bool sceneLoading = false;
 
     // One unified space-change handler per space: each owns both the
     // {onAdded, onDeleted} renderer lambdas and the dedup collector feeding
@@ -501,10 +491,7 @@ public:
         textureMixerWidget = std::make_shared<TextureMixerWidget>(textureMixer, mixerParams, "Texture Mixer");
         widgetManager.addWidget(textureMixerWidget);
 
-        size_t materialCount = std::max<size_t>(static_cast<size_t>(loadedTextureLayers), static_cast<size_t>(loadedTextureLayers + 1));
-        if (materialCount == 0) {
-            materialCount = layerCount ? layerCount : 1u;
-        }
+        size_t materialCount = static_cast<size_t>(loadedTextureLayers) + 1;
         materials.assign(materialCount, MaterialProperties{});
           
         materials[0u].mappingMode = true;
@@ -827,7 +814,6 @@ public:
 
 
         // Scene starts empty — use File > Generate Map to populate it.
-        if (octreeExplorerWidget)
 
         // Init the VegetationRenderer before setupVegetationTextures so that
         // wind params UBO + descriptor set layout exist before captureAll calls
@@ -852,17 +838,6 @@ public:
         // Keep the vegetation array manager wired for editor/atlas updates.
         if (sceneRenderer->vegetationRenderer)
             sceneRenderer->vegetationRenderer->setTextureArrayManager(&vegetationTextureArrayManager, this);
-
-        // Bind billboard array textures (sampler2DArray per channel) to the vegetation renderer.
-        if (sceneRenderer->vegetationRenderer && billboardCreator) {
-            sceneRenderer->vegetationRenderer->setBillboardArrayTextures(
-                billboardCreator->getAlbedoArrayView(),
-                billboardCreator->getNormalArrayView(),
-                billboardCreator->getOpacityArrayView(),
-                billboardCreator->getArraySampler(),
-                this
-            );
-        }
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
 
@@ -988,9 +963,8 @@ public:
             // timestamps written but its end timestamp missing, which names the
             // exact pass the GPU is stuck in. Also dump the submission ring.
             onFrameStall = [this](uint32_t) {
-                static const char* intervalNames[10] = {
-                    "shadow", "cull", "brush", "depth", "sky",
-                    "solid", "veg", "water", "post", "imgui"
+                static const char* intervalNames[7] = {
+                    "depth", "sky", "solid", "veg", "water", "post", "imgui"
                 };
                 for (uint32_t f = 0; f < 3; ++f) {
                     if (queryPools[f] == VK_NULL_HANDLE) continue;
@@ -1004,12 +978,12 @@ public:
                             VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS)
                         continue;
                     std::cerr << "[stall] pool " << f << " timestamps:\n";
-                    for (uint32_t i = 0; i < 10; ++i) {
+                    for (uint32_t i = 3; i < 10; ++i) {
                         const uint64_t startVal = ts[4 * i], startAvail = ts[4 * i + 1];
                         const uint64_t endVal = ts[4 * i + 2], endAvail = ts[4 * i + 3];
                         const bool haveStart = startAvail != 0 && startVal != 0;
                         const bool haveEnd = endAvail != 0 && endVal != 0;
-                        std::cerr << "[stall]   " << intervalNames[i]
+                        std::cerr << "[stall]   " << intervalNames[i - 3]
                                   << (haveEnd ? " DONE " : (haveStart ? " STUCK " : "  idle "))
                                   << " start=" << startVal << " end=" << endVal << "\n";
                     }
@@ -1030,16 +1004,10 @@ public:
 
     // Move vegetation texture setup into its own method for clarity
     void setupVegetationTextures();
-    // Move scene-loading into its own method for clarity
-    void setupScene();
     // Rebuild the brush preview scene from Brush3dWidget entries
     void rebuildBrushScene();
     // Apply the selected brush SDF to the main scene's octree on the selected layer
     void applyBrushToScene();
-    // When brush animation is enabled, advance the trajectory time and move the
-    // selected brush entry along a circular orbit; the actual brush rebuild is
-    // performed by rebuildBrushScene() afterwards.
-    void updateBrushAnimation(float deltaTime);
     // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
     void generateMap();
     void action();
@@ -1278,17 +1246,15 @@ public:
                 auto msDiff = [&](uint64_t endTs, uint64_t startTs) -> float {
                     return static_cast<float>(endTs - startTs) * timestampPeriod * 1e-6f;
                 };
-                // Group A: indices 0-9 (shadow, cull, brush, depth prepass, sky)
-                struct { uint64_t value; uint64_t availability; } tsA[10] = {};
-                if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 0, 10,
+                // Group A: indices 6-9 (depth prepass, sky). Slots 0-5
+                // (shadow/cull/brush) are written by no pass.
+                struct { uint64_t value; uint64_t availability; } tsA[4] = {};
+                if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 6, 4,
                         sizeof(tsA), tsA, sizeof(tsA[0]),
                         VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS
                         && timestampPeriod > 0.0f) {
-                    if (tsA[0].availability) profileShadow       = msDiff(tsA[1].value, tsA[0].value);
-                    if (tsA[2].availability) profileMainCull     = msDiff(tsA[3].value, tsA[2].value);
-                    if (tsA[4].availability) profileBrush        = msDiff(tsA[5].value, tsA[4].value);
-                    if (tsA[6].availability) profileDepthPrepass = msDiff(tsA[7].value, tsA[6].value);
-                    if (tsA[8].availability) profileSky          = msDiff(tsA[9].value, tsA[8].value);
+                    if (tsA[0].availability) profileDepthPrepass = msDiff(tsA[1].value, tsA[0].value);
+                    if (tsA[2].availability) profileSky          = msDiff(tsA[3].value, tsA[2].value);
                 }
                 // Group B: indices 10-19 (solid draw, veg impostor, water, postprocess, imgui)
                 struct { uint64_t value; uint64_t availability; } tsB[10] = {};
@@ -1316,15 +1282,11 @@ public:
             {
                 static uint32_t profilePrintTick = 0;
                 if ((++profilePrintTick & 0x1F) == 0) {
-                    const float gpuTotal = profileShadow + profileMainCull + profileBrush +
-                        profileDepthPrepass + profileSky + profileSolidDraw +
-                        profileVegetationImpostor + profileWater + profileRTDispatch +
-                        profilePostProcess + profileImGui;
+                    const float gpuTotal = profileDepthPrepass + profileSky +
+                        profileSolidDraw + profileVegetationImpostor + profileWater +
+                        profileRTDispatch + profilePostProcess + profileImGui;
                     if (gpuTotal > 40.0f) {
                         std::cout << "[gpu] total=" << gpuTotal
-                                  << " shadow=" << profileShadow
-                                  << " cull=" << profileMainCull
-                                  << " brush=" << profileBrush
                                   << " depth=" << profileDepthPrepass
                                   << " sky=" << profileSky
                                   << " solid=" << profileSolidDraw
@@ -2954,13 +2916,9 @@ public:
                 if (profilingEnabled) {
                     ImGui::Separator();
                     ImGui::Text("--- GPU Timing (ms) ---");
-                    float gpuTotal = profileShadow + profileMainCull + profileBrush +
-                                     profileDepthPrepass + profileSky + profileSolidDraw +
+                    float gpuTotal = profileDepthPrepass + profileSky + profileSolidDraw +
                                      profileVegetationImpostor + profileWater + profileRTDispatch +
                                      profilePostProcess + profileImGui;
-                    ImGui::Text("Shadow:        %.2f", profileShadow);
-                    ImGui::Text("GPU Cull:      %.2f", profileMainCull);
-                    ImGui::Text("Brush:         %.2f", profileBrush);
                     ImGui::Text("Depth Prepass: %.2f", profileDepthPrepass);
                     ImGui::Text("Sky:           %.2f", profileSky);
                     ImGui::Text("Solid Draw:    %.2f", profileSolidDraw);
@@ -3106,8 +3064,6 @@ public:
         }
 
         if (imguiShowDemo) ImGui::ShowDemoWindow(&imguiShowDemo);
-
-        cubeCount = sceneRenderer ? sceneRenderer->getRegisteredModelCount() : 0;
 
         // Update per-frame widget state (avoid storing VulkanApp* inside widgets)
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
@@ -3520,13 +3476,6 @@ int main(int argc, char** argv) {
         std::cerr << "Fatal error: " << e.what() << std::endl;
         return 1;
     }
-}
-
-// Implementation: setup scene
-void MyApp::setupScene() {
-    // Scene objects, background thread, and brush3dWidget are now set up
-    // directly in setup() so the CPU-heavy scene load can run in parallel
-    // with texture loading. This stub is kept for call-site compatibility.
 }
 
 // Perf report 23 C1: rebuild the five material arrays at a new resolution.
@@ -4015,35 +3964,6 @@ void MyApp::applyBrushToScene() {
             mutableEntry->previousTranslate = mutableEntry->translate;
         }
     }
-}
-
-// Advance the brush-animation clock and move the *selected* brush entry along a
-// circular trajectory layered on top of the existing triangle-strip ring
-// (MainSceneLoader). Only the entry's translate is changed — its shape, size,
-// texture, mode and layer are left intact, so the animation composes with the
-// user's brush definition. The entry retains the last animated position when
-// animation is disabled, allowing manual editing from there.
-void MyApp::updateBrushAnimation(float deltaTime) {
-    BrushEntry* entry = brushManager.getSelectedEntry();
-    if (!entry) return;
-
-    // Freeze the clock while disabled so re-enabling continues from the same
-    // orbit phase (the entry keeps its last animated translate).
-    brushAnimTime += deltaTime;
-
-    // Don't override brush position while AIM subpage is active
-    const ControllerPage* subpage = controllerManager.wiimoteContext.activeSubpage();
-    if (subpage && subpage->control == PageControl::AIM) return;
-
-    // Ring parameters (defined in MainSceneLoader): centered at origin, height
-    // 800, outer radius = worldScale (1500). The brush orbits that ring.
-    constexpr float ringHeight = 800.0f;
-    constexpr float ringRadius = 1500.0f;   // worldScale * unitOuter(1.0)
-    constexpr float orbitSpeed = 0.5f;      // radians / second
-
-    float angle = brushAnimTime * orbitSpeed;
-    entry->translate = glm::vec3(ringRadius * std::cos(angle), ringHeight,
-                                 ringRadius * std::sin(angle));
 }
 
 // Ensure pending texture generation requests are flushed after a frame is submitted
