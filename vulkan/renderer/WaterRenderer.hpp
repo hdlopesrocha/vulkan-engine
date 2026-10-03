@@ -414,6 +414,10 @@ private:
     // endWaterGeometryPassWithDepth, which emit their own batched barriers).
     void endWaterRendering(VkCommandBuffer cmd);
 
+    // Shared color+body+column end-of-pass transitions. `reserveCount` lets
+    // the depth variant reserve room for its extra depth entry up front.
+    std::vector<VulkanApp::BatchTransition> buildWaterEndTransitions(uint32_t frameIndex, size_t reserveCount);
+
     void createWaterPipelines(VulkanApp* app, const std::vector<WaterParams>& waterParams);
     void initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams);
     void createSamplers(VulkanApp* app);
