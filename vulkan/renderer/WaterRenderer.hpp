@@ -131,9 +131,6 @@ public:
     VkImageView getWaterBodyView(uint32_t frameIndex) const {
         return (frameIndex < FRAMES) ? waterBodyImageViews[frameIndex] : VK_NULL_HANDLE;
     }
-    VkImage getWaterBodyImage(uint32_t frameIndex) const {
-        return (frameIndex < FRAMES) ? waterBodyImages[frameIndex] : VK_NULL_HANDLE;
-    }
     // Water column attachment (color attachment 2 of the water geometry pass):
     // RG16F, R = measured water depth (m), G = per-material blur radius in
     // pixels (0 = crisp, computed from the layer's blur params). Drives the
@@ -141,13 +138,6 @@ public:
     VkImageView getWaterColumnView(uint32_t frameIndex) const {
         return (frameIndex < FRAMES) ? waterColumnImageViews[frameIndex] : VK_NULL_HANDLE;
     }
-    VkImage getWaterColumnImage(uint32_t frameIndex) const {
-        return (frameIndex < FRAMES) ? waterColumnImages[frameIndex] : VK_NULL_HANDLE;
-    }
-    VkImageLayout getWaterBodyLayout(uint32_t frameIndex) const;
-    void setWaterBodyLayout(uint32_t frameIndex, VkImageLayout layout);
-    VkImageLayout getWaterColumnLayout(uint32_t frameIndex) const;
-    void setWaterColumnLayout(uint32_t frameIndex, VkImageLayout layout);
     // Expose the raw water geometry depth image (for layout transitions and sampling)
     VkImage getWaterGeomDepthImage(uint32_t frameIndex) const { return (frameIndex < 3) ? waterGeomDepthImages[frameIndex] : VK_NULL_HANDLE; }
     // Accessors for renderer-tracked layouts (used by widgets to record correct barriers)

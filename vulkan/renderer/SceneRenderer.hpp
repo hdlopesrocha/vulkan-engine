@@ -244,13 +244,6 @@ public:
                          uint32_t vertexBytesPerChunk = 1u << 20,
                          uint32_t indexBytesPerChunk  = 1u << 19);
 
-    // Process a single chunk's mesh in slotted mode.
-    // To be called from the change handler callback (on a worker thread).
-    // Generates the mesh and queues it for GPU upload.
-    // Returns true if the chunk was processed successfully.
-    bool processChunkSlotted(Layer layer, NodeID nid, const OctreeNodeData& nd,
-                             const Geometry& geom, uint32_t version);
-
     // Drain the swap queue and atomically swap in new RenderProxies.
     // Also retires old proxies via deferred destruction.
     // Call once per frame from processPendingMeshes.
@@ -341,9 +334,6 @@ public:
     // Must run after IndirectRenderer::initSlots created the buffers (called
     // from initSlottedMode while the device is idle — no in-flight frames).
     void writeSceneVertexBindings(VulkanApp* app);
-
-    // Query whether a model for the given node is already registered
-    bool hasModelForNode(Layer layer, NodeID nid) const;
 
     // The solid/water AND brush space-change lambdas are constructed by the
     // app (MyApp.cpp) — they need world state, chunk management and debug

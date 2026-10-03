@@ -150,30 +150,6 @@ void BrushRenderer::pollPendingTransfers(VulkanApp* app) {
     liquidIndirectRenderer.pollPendingTransfers(app);
 }
 
-void BrushRenderer::setCullFrame(uint32_t frameIndex) {
-    solidIndirectRenderer.setCullFrame(frameIndex);
-}
-
-void BrushRenderer::clearMeshes() {
-    std::lock_guard<std::recursive_mutex> lock(solidChunksMutex);
-
-    // Remove all brush opaque meshes from the dedicated brush solid IR.
-    for (auto &entry : solidChunks) {
-        if (entry.second.meshId != UINT32_MAX) {
-            solidIndirectRenderer.removeMeshSlotted(entry.second.meshId);
-        }
-    }
-    solidChunks.clear();
-
-    // Remove brush transparent meshes from the dedicated brush liquid IR.
-    for (auto &entry : transparentChunks) {
-        if (entry.second.meshId != UINT32_MAX) {
-            liquidIndirectRenderer.removeMeshSlotted(entry.second.meshId);
-        }
-    }
-    transparentChunks.clear();
-}
-
 void BrushRenderer::stageOldChunks() {
     {
         std::lock_guard<std::recursive_mutex> lock(solidChunksMutex);

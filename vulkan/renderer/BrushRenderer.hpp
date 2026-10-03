@@ -45,9 +45,7 @@ public:
     void onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height);
 
     VkImageView getColorView(uint32_t i) const { return colorImageViews[i % BRUSH_FRAMES]; }
-    VkImage getColorImage(uint32_t i) const { return colorImages[i % BRUSH_FRAMES]; }
     VkImageView getDepthView(uint32_t i) const { return depthImageViews[i % BRUSH_FRAMES]; }
-    VkImage getDepthImage(uint32_t i) const { return depthImages[i % BRUSH_FRAMES]; }
     VkImageView getBackFaceDepthView(uint32_t i) const {
         return backFaceRenderer ? backFaceRenderer->getBackFaceDepthView(i) : VK_NULL_HANDLE;
     }
@@ -75,7 +73,6 @@ public:
     IndirectRenderer& getSolidIR() { return solidIndirectRenderer; }
     IndirectRenderer& getLiquidIR() { return liquidIndirectRenderer; }
     void pollPendingTransfers(VulkanApp* app);
-    void setCullFrame(uint32_t frameIndex);
 
     // Brush scene chunk tracking (separate from main scene). Public because the
     // space-change lambdas built by MyApp.cpp read/write them directly.
@@ -87,11 +84,6 @@ public:
     std::recursive_mutex transparentChunksMutex;
     std::recursive_mutex pendingOldSolidChunksMutex;
     std::recursive_mutex pendingOldLiquidChunksMutex;
-
-    // Remove all brush meshes from GPU and clear the brush chunk maps.
-    // (Draining the SHARED pending mesh queue of isBrush entries stays with
-    // SceneRenderer, which owns that queue.)
-    void clearMeshes();
 
     // Move the current chunk registries into the pending-old maps so the slots
     // survive until the new brush uploads complete (no 1-frame hole).

@@ -24,13 +24,9 @@ public:
                             VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,
                             VkBuffer visibleCountBuffer = VK_NULL_HANDLE);
 
-    VkImage getBackFaceDepthImage(uint32_t frameIndex) const { return backFaceDepthImages[frameIndex % backFaceDepthImages.size()]; }
     VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return backFaceDepthImageViews[frameIndex % backFaceDepthImageViews.size()]; }
-    VkImageLayout getBackFaceDepthLayout(uint32_t frameIndex) const { return backFaceDepthImageLayouts[frameIndex % backFaceDepthImageLayouts.size()]; }
-    void setBackFaceDepthLayout(uint32_t frameIndex, VkImageLayout layout) { if (frameIndex < backFaceDepthImageLayouts.size()) backFaceDepthImageLayouts[frameIndex] = layout; }
 
     void setCmdState(CommandBufferState* state) override { Renderer::setCmdState(state); }
-    VkPipelineLayout getPipelineLayout() const { return pipelineLayout; }
 
 private:
     TrackedHandle<VkPipeline> backFacePipeline;
@@ -43,5 +39,4 @@ private:
     std::array<VkImageLayout, FRAMES> backFaceDepthImageLayouts = {};
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
-    VulkanApp* appPtr = nullptr;
 };

@@ -1899,30 +1899,6 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
 
 }
 
-bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
-                                         const OctreeNodeData& nd,
-                                         const Geometry& geom, uint32_t version)
-{
-
-    // Queue the geometry for main-thread GPU upload.
-    // NOTE: markDirty + beginBuild were already called in the change handler
-    // BEFORE tessellation was dispatched. The chunk state is already
-    // UploadingGPU (from finishBuild). processPendingMeshes will call
-    // addMeshSlotted + uploadSlot, then the upload completion callback calls
-    // finishUpload → ReadyToSwap → processChunkSwapQueue atomically swaps.
-    {
-        // All streams share ONE pending queue (main solid/water + brush
-        // solid/water); entries are tagged isBrush=false here since this path
-        // feeds the main scene.
-        std::lock_guard<std::mutex> lock(pendingMeshMutex);
-        Octree::LoDMesh lod = {geom, /*lod*/ 0, /*version*/ version, nd.cube.getLength().x,
-                               nd.cube.getMin(), nd.cube.getMax()};
-        pendingMeshQueue[nid] = {layer, nid, std::move(lod), nd, /*isBrush=*/false};
-    }
-
-    return true;
-}
-
 void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
 {
     // Drain the swap queue: mark each ready chunk's new mesh version as
@@ -2022,15 +1998,6 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
 size_t SceneRenderer::getTransparentModelCount() {
     return mainLiquidChunks.size();
 }
-
-bool SceneRenderer::hasModelForNode(Layer layer, NodeID nid) const {
-    if (layer == LAYER_OPAQUE) {
-        return mainSolidChunks.find(nid) != mainSolidChunks.end();
-    } else {
-        return mainLiquidChunks.find(nid) != mainLiquidChunks.end();
-    }
-}
-
 
 void SceneRenderer::writeTlasBinding(VulkanApp* app, VkDescriptorSet dstSet) {
     if (!app || dstSet == VK_NULL_HANDLE || tlasMirror_ == VK_NULL_HANDLE) return;

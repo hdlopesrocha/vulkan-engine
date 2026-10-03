@@ -579,24 +579,6 @@ void WaterRenderer::setWaterGeomDepthLayout(uint32_t frameIndex, VkImageLayout l
     if (frameIndex < 3) waterGeomDepthImageLayouts[frameIndex] = layout;
 }
 
-VkImageLayout WaterRenderer::getWaterBodyLayout(uint32_t frameIndex) const {
-    if (frameIndex < FRAMES) return waterBodyImageLayouts[frameIndex];
-    return VK_IMAGE_LAYOUT_UNDEFINED;
-}
-
-void WaterRenderer::setWaterBodyLayout(uint32_t frameIndex, VkImageLayout layout) {
-    if (frameIndex < FRAMES) waterBodyImageLayouts[frameIndex] = layout;
-}
-
-VkImageLayout WaterRenderer::getWaterColumnLayout(uint32_t frameIndex) const {
-    if (frameIndex < FRAMES) return waterColumnImageLayouts[frameIndex];
-    return VK_IMAGE_LAYOUT_UNDEFINED;
-}
-
-void WaterRenderer::setWaterColumnLayout(uint32_t frameIndex, VkImageLayout layout) {
-    if (frameIndex < FRAMES) waterColumnImageLayouts[frameIndex] = layout;
-}
-
 void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<WaterParams>& waterParams) {
     VkDevice device = app->getDevice();
 

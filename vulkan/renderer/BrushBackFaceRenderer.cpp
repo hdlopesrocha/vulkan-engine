@@ -12,12 +12,11 @@ BrushBackFaceRenderer::BrushBackFaceRenderer() {}
 BrushBackFaceRenderer::~BrushBackFaceRenderer() {}
 
 void BrushBackFaceRenderer::init(VulkanApp* app) {
-    appPtr = app;
+    (void)app;
 }
 
 void BrushBackFaceRenderer::cleanup(VulkanApp* app) {
     (void)app;
-    appPtr = nullptr;
 }
 
 void BrushBackFaceRenderer::createPipelines(VulkanApp* app) {
@@ -79,7 +78,6 @@ void BrushBackFaceRenderer::createPipelines(VulkanApp* app) {
 
 void BrushBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
     if (!app) return;
-    appPtr = app;
     if (renderWidth == width && renderHeight == height && backFaceDepthImages[0] != VK_NULL_HANDLE) return;
     destroyRenderTargets(app);
     renderWidth = width;
