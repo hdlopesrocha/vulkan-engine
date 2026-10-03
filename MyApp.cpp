@@ -493,109 +493,45 @@ public:
         size_t materialCount = static_cast<size_t>(loadedTextureLayers) + 1;
         materials.assign(materialCount, MaterialProperties{});
           
-        materials[0u].mappingMode = true;
-        materials[0u].tessLevel = 5.0f;
-        materials[0u].tessMinLevel = 2.0f;
-        materials[0u].tessMaxLevel = 16.0f;
-        materials[0u].tessHeightScale = 8.0f;
-        materials[0u].triplanar = true;
-        materials[0u].triplanarScaleU = 0.002f;
-        materials[0u].triplanarScaleV = 0.002f;
-        materials[0u].invertHeight = true;
-
-        materials[5u].mappingMode = true;
-        materials[5u].tessLevel = 5.0f;
-        materials[5u].tessMinLevel = 2.0f;
-        materials[5u].tessMaxLevel = 16.0f;
-        materials[5u].tessHeightScale = 2.0f;
-        materials[5u].triplanar = true;
-        materials[5u].triplanarScaleU = 0.002f;
-        materials[5u].triplanarScaleV = 0.002f;
-        materials[5u].invertHeight = true;
-        materials[5u].reflectionStrength = 0.8f;
-
-        materials[6u].mappingMode = true;
-        materials[6u].tessLevel = 1.0f;
-        materials[6u].tessMinLevel = 1.0f;
-        materials[6u].tessMaxLevel = 1.0f;
-        materials[6u].tessHeightScale = 0.0f;
-        materials[6u].triplanar = true;
-        materials[6u].triplanarScaleU = 0.002f;
-        materials[6u].triplanarScaleV = 0.002f;
-        materials[6u].invertHeight = true;
-        materials[6u].reflectionStrength = 1.0f;
-
-        materials[7u].mappingMode = true;
-        materials[7u].tessLevel = 2.0f;
-        materials[7u].tessMinLevel = 2.0f;
-        materials[7u].tessMaxLevel = 16.0f;
-        materials[7u].tessHeightScale = 8.0f;
-        materials[7u].triplanar = true;
-        materials[7u].triplanarScaleU = 0.01f;
-        materials[7u].triplanarScaleV = 0.01f;
-        materials[7u].invertHeight = true;
-        materials[7u].reflectionStrength = 0.2f;
-
-        materials[12u].mappingMode = true;
-        materials[12u].tessLevel = 6.0f;
-        materials[12u].tessMinLevel = 2.0f;
-        materials[12u].tessMaxLevel = 16.0f;
-        materials[12u].tessHeightScale = 32.0f;
-        materials[12u].triplanar = true;
-        materials[12u].triplanarScaleU = 0.002f;
-        materials[12u].triplanarScaleV = 0.002f;
-        materials[12u].invertHeight = true;
-        materials[12u].reflectionStrength = 0.3f;
-
-        materials[14u].mappingMode = true;
-        materials[14u].tessLevel = 5.0f;
-        materials[14u].tessMinLevel = 2.0f;
-        materials[14u].tessMaxLevel = 16.0f;
-        materials[14u].tessHeightScale = 8.0f;
-        materials[14u].triplanar = true;
-        materials[14u].triplanarScaleU = 0.002f;
-        materials[14u].triplanarScaleV = 0.002f;
-        materials[14u].invertHeight = true;
-
-        materials[15u].mappingMode = true;
-        materials[15u].tessLevel = 5.0f;
-        materials[15u].tessMinLevel = 2.0f;
-        materials[15u].tessMaxLevel = 16.0f;
-        materials[15u].tessHeightScale = 8.0f;
-        materials[15u].triplanar = true;
-        materials[15u].triplanarScaleU = 0.002f;
-        materials[15u].triplanarScaleV = 0.002f;
-        materials[15u].invertHeight = true;
-
-        materials[16u].mappingMode = true;
-        materials[16u].tessLevel = 5.0f;
-        materials[16u].tessMinLevel = 2.0f;
-        materials[16u].tessMaxLevel = 16.0f;
-        materials[16u].tessHeightScale = 32.0f;
-        materials[16u].triplanar = true;
-        materials[16u].triplanarScaleU = 0.002f;
-        materials[16u].triplanarScaleV = 0.002f;
-        materials[16u].invertHeight = true;
-
-        materials[18u].mappingMode = true;
-        materials[18u].tessLevel = 5.0f;
-        materials[18u].tessMinLevel = 2.0f;
-        materials[18u].tessMaxLevel = 16.0f;
-        materials[18u].tessHeightScale = 32.0f;
-        materials[18u].triplanar = true;
-        materials[18u].triplanarScaleU = 0.002f;
-        materials[18u].triplanarScaleV = 0.002f;
-        materials[18u].invertHeight = true;
-
-        materials[20u].mappingMode = true;
-        materials[20u].tessLevel = 5.0f;
-        materials[20u].tessMinLevel = 2.0f;
-        materials[20u].tessMaxLevel = 16.0f;
-        materials[20u].tessHeightScale = 32.0f;
-        materials[20u].triplanar = true;
-        materials[20u].triplanarScaleU = 0.002f;
-        materials[20u].triplanarScaleV = 0.002f;
-        materials[20u].invertHeight = true;
+        // Table-driven material overrides: every entry below shares the same
+        // mapping/triplanar/invert defaults and only the listed values differ.
+        // reflectionStrength defaults to 0 (matte), matching the
+        // MaterialProperties{} baseline installed by the assign() above.
+        struct MaterialInit {
+            uint32_t index;
+            float tessLevel;
+            float tessMinLevel;
+            float tessMaxLevel;
+            float tessHeightScale;
+            float triplanarScaleU;
+            float triplanarScaleV;
+            float reflectionStrength;
+        };
+        static constexpr MaterialInit kMaterialInits[] = {
+            {  0u, 5.0f, 2.0f, 16.0f,  8.0f, 0.002f, 0.002f, 0.0f },
+            {  5u, 5.0f, 2.0f, 16.0f,  2.0f, 0.002f, 0.002f, 0.8f },
+            {  6u, 1.0f, 1.0f,  1.0f,  0.0f, 0.002f, 0.002f, 1.0f },
+            {  7u, 2.0f, 2.0f, 16.0f,  8.0f, 0.01f,  0.01f,  0.2f },
+            { 12u, 6.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.3f },
+            { 14u, 5.0f, 2.0f, 16.0f,  8.0f, 0.002f, 0.002f, 0.0f },
+            { 15u, 5.0f, 2.0f, 16.0f,  8.0f, 0.002f, 0.002f, 0.0f },
+            { 16u, 5.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.0f },
+            { 18u, 5.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.0f },
+            { 20u, 5.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.0f },
+        };
+        for (const MaterialInit& mi : kMaterialInits) {
+            MaterialProperties& mat = materials[mi.index];
+            mat.mappingMode = true;
+            mat.tessLevel = mi.tessLevel;
+            mat.tessMinLevel = mi.tessMinLevel;
+            mat.tessMaxLevel = mi.tessMaxLevel;
+            mat.tessHeightScale = mi.tessHeightScale;
+            mat.triplanar = true;
+            mat.triplanarScaleU = mi.triplanarScaleU;
+            mat.triplanarScaleV = mi.triplanarScaleV;
+            mat.invertHeight = true;
+            mat.reflectionStrength = mi.reflectionStrength;
+        }
 
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);
