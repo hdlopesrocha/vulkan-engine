@@ -251,7 +251,7 @@ public:
     // sets are invalidated on allocation/free via
     // invalidateSceneTexturesBinding(), which every other writer/freer of a
     // cached set must call first.
-    void updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, uint32_t frameIndex,
+    void updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds,
                                      VkImageView backFaceDepthView = VK_NULL_HANDLE,
                                      VkImageView rtReflectView = VK_NULL_HANDLE,
                                      VkImageView rtRefractView = VK_NULL_HANDLE,
@@ -301,7 +301,7 @@ public:
     void renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                            VkImage colorImage, VkImageView colorView,
                            VkImage depthImage, VkImageView depthView,
-                           VkImageView skyView, VkDescriptorSet overrideWaterDs);
+                           VkDescriptorSet overrideWaterDs);
 
     // 1x1 zeroed color view (alpha 0) bound to the composite's water input
     // while water is drawn directly into the main color target, so the

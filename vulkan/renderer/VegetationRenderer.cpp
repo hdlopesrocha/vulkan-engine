@@ -1467,8 +1467,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         std::cerr << "[VegetationRenderer] Impostor pipeline created: " << (void*)impostorPipeline << "\n";
 }
 
-VegetationRenderer::WindPushConstants VegetationRenderer::buildWindPushConstants(const glm::vec3& cameraPos) const {
-    (void)cameraPos;
+VegetationRenderer::WindPushConstants VegetationRenderer::buildWindPushConstants() const {
     WindPushConstants pc{};
     pc.billboardScale     = billboardScale;
     pc.windEnabled        = windSettings.enabled ? 1.0f : 0.0f;
@@ -1577,8 +1576,7 @@ void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayou
     }
 }
 
-void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
-    (void)viewProj;
+void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos) {
     if (!app) return;
     if (chunkBuffers.empty()) return;
     if (billboardAlbedoView == VK_NULL_HANDLE || billboardNormalView == VK_NULL_HANDLE ||
@@ -1587,7 +1585,7 @@ void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffe
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
     if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
     updateWindParamsUBO(cameraPos);
-    WindPushConstants pc = buildWindPushConstants(cameraPos);
+    WindPushConstants pc = buildWindPushConstants();
     VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
 
     // Depth prepass
@@ -1603,8 +1601,7 @@ void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffe
 
 }
 
-void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
-    (void)viewProj;
+void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos) {
     if (!app) return;
     if (chunkBuffers.empty()) return;
     if (billboardAlbedoView == VK_NULL_HANDLE || billboardNormalView == VK_NULL_HANDLE ||
@@ -1613,7 +1610,7 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
     if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
     updateWindParamsUBO(cameraPos);
-    WindPushConstants pc = buildWindPushConstants(cameraPos);
+    WindPushConstants pc = buildWindPushConstants();
     VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
 
     // Shading pass

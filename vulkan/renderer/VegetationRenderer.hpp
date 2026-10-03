@@ -99,9 +99,9 @@ public:
     // (The combined render() entry point was removed with the dead code sweep,
     // perf report 22 M9: all callers use drawDepth/drawColor directly.)
     // Deferred depth test: draw vegetation + impostor depth only (no color)
-    void drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos);
+    void drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos);
     // Deferred depth test: draw vegetation + impostor color only (LESS_OR_EQUAL, no depth write)
-    void drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos);
+    void drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos);
     void recordReadBarriers(VkCommandBuffer& commandBuffer);
 
     // ── Own offscreen framebuffer (decoupled from the solid pass) ──
@@ -459,5 +459,5 @@ private:
     void destroyCulling();
     void issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
     void issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
-    WindPushConstants buildWindPushConstants(const glm::vec3& cameraPos) const;
+    WindPushConstants buildWindPushConstants() const;
 };

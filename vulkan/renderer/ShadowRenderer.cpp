@@ -327,8 +327,7 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
     }
 }
 
-void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex, const glm::mat4& lightSpaceMatrix) {
-    (void)lightSpaceMatrix; // The light-space matrix travels via the UBO, not the barrier.
+void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex) {
     auto& cas = cascades[cascadeIndex];
 
     // Barrier: transition cascade color from SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
@@ -885,7 +884,7 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
         RendererUtils::BarrierStats::noteBarrier(0);
     }
 
-    beginShadowPass(app, cmd, cascadeIndex, lsMatrix);
+    beginShadowPass(app, cmd, cascadeIndex);
 
     VkPipelineLayout layout = getShadowPipelineLayout();
     VkDescriptorSet ds = shadowCascadeSets_[frameSlot][cascadeIndex];

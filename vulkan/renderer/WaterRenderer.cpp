@@ -1424,7 +1424,7 @@ void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t 
 
 // Back-face pass is owned and executed by SceneRenderer via its WaterBackFaceRenderer.
 
-void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, uint32_t frameIndex,
+void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds,
                                                VkImageView backFaceDepthView,
                                                VkImageView rtReflectView, VkImageView rtRefractView,
                                                VkImageView skyView,
@@ -1433,7 +1433,6 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet d
     if (ds == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return;
     }
-    (void)frameIndex;
     ensureDummyViews(app);
     if (nearestSampler == VK_NULL_HANDLE) return;
 
@@ -1580,7 +1579,7 @@ VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint
         invalidateSceneTexturesBinding(waterDepthDescriptorSets[frameIndex]);
     }
 
-    updateSceneTexturesBinding(app, waterDepthDescriptorSets[frameIndex], frameIndex,
+    updateSceneTexturesBinding(app, waterDepthDescriptorSets[frameIndex],
                                backFaceDepthView, rtReflectView, rtRefractView, skyView,
                                solidColorView, solidDepthView, vegColorView, vegDepthView);
     return waterDepthDescriptorSets[frameIndex];
@@ -1697,7 +1696,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
 void WaterRenderer::renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                                       VkImage colorImage, VkImageView colorView,
                                       VkImage depthImage, VkImageView depthView,
-                                      VkImageView skyView, VkDescriptorSet overrideWaterDs) {
+                                      VkDescriptorSet overrideWaterDs) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (getWaterMainPipeline() == VK_NULL_HANDLE) return;
     if (frameIndex >= FRAMES) return;
@@ -1815,7 +1814,6 @@ void WaterRenderer::renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint3
         app->recordTransitionBatch(cmd, batch);
     }
 
-    (void)skyView;
 }
 
 void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView skyView, VkDescriptorSet overrideWaterDs) {    if (!app || cmd == VK_NULL_HANDLE || !brushRenderer_) return;

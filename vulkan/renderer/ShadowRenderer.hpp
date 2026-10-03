@@ -61,7 +61,7 @@ public:
                            VkSemaphore waitSemaphore, uint64_t waitValue,
                            VkSemaphore finalSignal, uint64_t signalValue);
     // Render shadow pass for a single cascade
-    void beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex, const glm::mat4& lightSpaceMatrix);
+    void beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
     void endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
     // EVSM blur for a single cascade (horizontal + vertical passes)
     void blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex);

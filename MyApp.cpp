@@ -2196,7 +2196,7 @@ public:
                         depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                         depthAtt.clearValue = vegDepthClear;
                         beginVegInstance(nullptr, &depthAtt, 0);
-                        sceneRenderer->vegetationRenderer->drawDepth(this, vegCmd, viewProj, vegCamPos);
+                        sceneRenderer->vegetationRenderer->drawDepth(this, vegCmd, vegCamPos);
                         vkCmdEndRendering(vegCmd);
                     }
                     // Instance 2: color + depth (depth loaded from prepass)
@@ -2216,7 +2216,7 @@ public:
                         depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
                         depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                         beginVegInstance(&colorAtt, &depthAtt, 1);
-                        sceneRenderer->vegetationRenderer->drawColor(this, vegCmd, viewProj, vegCamPos);
+                        sceneRenderer->vegetationRenderer->drawColor(this, vegCmd, vegCamPos);
                         vkCmdEndRendering(vegCmd);
                     }
                 } else {
@@ -2506,7 +2506,7 @@ public:
                             VkImageView bfDepth = this->sceneRenderer->mainSolidRenderer ? this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE;
                             VkImageView bfVegC = this->sceneRenderer->vegetationRenderer ? this->sceneRenderer->vegetationRenderer->getVegColorView(frameIdx) : VK_NULL_HANDLE;
                             VkImageView bfVegD = this->sceneRenderer->vegetationRenderer ? this->sceneRenderer->vegetationRenderer->getVegDepthView(frameIdx) : VK_NULL_HANDLE;
-                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs, frameIdx, bfBack, bfRefl, bfRefr, bfSky, bfSolid, bfDepth, bfVegC, bfVegD);
+                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs, bfBack, bfRefl, bfRefr, bfSky, bfSolid, bfDepth, bfVegC, bfVegD);
                             asyncWaterDs = slot.waterDs;
                         }
                     }
@@ -2666,7 +2666,7 @@ public:
                         VkImageView wSolidDepth = this->sceneRenderer->mainSolidRenderer ? this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE;
                         VkImageView wVegC = this->sceneRenderer->vegetationRenderer ? this->sceneRenderer->vegetationRenderer->getVegColorView(frameIdx) : VK_NULL_HANDLE;
                         VkImageView wVegD = this->sceneRenderer->vegetationRenderer ? this->sceneRenderer->vegetationRenderer->getVegDepthView(frameIdx) : VK_NULL_HANDLE;
-                        this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, frameIdx, wBack, wRefl, wRefr, wsky, wSolid, wSolidDepth, wVegC, wVegD);
+                        this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, wBack, wRefl, wRefr, wsky, wSolid, wSolidDepth, wVegC, wVegD);
                         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                             vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
                         if (settings.waterInMainPass && this->sceneRenderer->mainSolidRenderer
@@ -2690,7 +2690,7 @@ public:
                                 ? this->sceneRenderer->vegetationRenderer->getVegColorView(prevIdx) : VK_NULL_HANDLE;
                             VkImageView pVegD = this->sceneRenderer->vegetationRenderer
                                 ? this->sceneRenderer->vegetationRenderer->getVegDepthView(prevIdx) : VK_NULL_HANDLE;
-                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2, frameIdx,
+                            this->sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, slot.waterDs2,
                                 wBack, wRefl, wRefr, wsky, pSolid, pSolidDepth, pVegC, pVegD);
                             // The bound solid depth is the PREVIOUS frame's, so
                             // the shader-side occlusion rejection (C5) must stay
@@ -2702,7 +2702,7 @@ public:
                                 this->sceneRenderer->mainSolidRenderer->getColorView(frameIdx),
                                 this->sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx),
                                 this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx),
-                                wsky, slot.waterDs2);
+                                slot.waterDs2);
                         } else {
                             // Offscreen path: the water task waits tlSolid, so the
                             // bound solid depth is this frame's and the shader may
