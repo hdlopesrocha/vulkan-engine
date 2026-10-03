@@ -1054,12 +1054,8 @@ void VegetationRenderer::init(VulkanApp* app) {
     // Build billboard corner mesh: 24 vertices (6 planes × 4 corners) + 36 indices
     // (12 triangles = 2 per plane) for TRIANGLE_LIST.
     if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) {
-        const glm::vec3 baseTangents[6] = {
-            {0,0,1}, {-1,0,0}, {0,0,-1}, {1,0,0}, {1,0,0}, {0,0,1}
-        };
-        const glm::vec3 outwardDirs[4] = {
-            {1,0,0}, {0,0,1}, {-1,0,0}, {0,0,-1}
-        };
+        const auto& baseTangents = RendererUtils::kBillboardBaseTangents;
+        const auto& outwardDirs = RendererUtils::kBillboardOutwardDirs;
         const glm::vec3 worldUp(0,1,0);
         constexpr float hs = 0.5f, h = 1.0f, tilt = 1.0f; // scaled in VS by billboardScale
 

@@ -534,6 +534,11 @@ private:
     // mergedVertices/mergedIndices (absolute offsets). Requires slotted mode.
     void copyGeometryToLevel(const Geometry& mesh, MeshInfo::LevelData& ld);
 
+    // Write one draw command into the host-visible indirect buffer at `index`.
+    // The Buffer wrapper uses a persistent mapping, so map/unmap are cheap.
+    void writeIndirectCommand(const Buffer& buffer, uint32_t index,
+                              const VkDrawIndexedIndirectCommand& cmd);
+
     // Async transfer engine (required). All mesh uploads route through it.
     streaming::UploadManager* uploadMgr_ = nullptr;
     streaming::StreamCategory streamCategory_ = streaming::StreamCategory::Solid;

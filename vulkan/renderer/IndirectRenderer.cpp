@@ -46,13 +46,6 @@ struct CullPushConstants {
     float    lodRootMinTailPad; // offset 156 (brings the block to the shader's 160-byte size)
 }; // 160 bytes
 static_assert(sizeof(CullPushConstants) == 160, "CullPushConstants must be 160 bytes to match indirect.comp PC block");
-
-struct CascadeCullPushConstants {
-    uint32_t numChunks;   // offset 0
-    float pad0[3];        // offset 4
-    glm::vec3 camPos;     // offset 16
-    float lodBias;        // offset 28
-}; // 32 bytes
 } // namespace
 
 // Unlocked — caller must hold `mutex`. Memoized active-mesh count; recomputed
@@ -100,6 +93,17 @@ void IndirectRenderer::logUtilization(const char* tag) const {
         bboxCubes_.size(), bboxAlloc ? "allocated" : "lazy");
 }
 
+void IndirectRenderer::writeIndirectCommand(const Buffer& buffer, uint32_t index,
+                                            const VkDrawIndexedIndirectCommand& cmd) {
+    if (buffer.buffer == VK_NULL_HANDLE) return;
+    VkDeviceSize offset = static_cast<VkDeviceSize>(index) * sizeof(VkDrawIndexedIndirectCommand);
+    void* dst = buffer.map(offset);
+    if (dst) {
+        std::memcpy(dst, &cmd, sizeof(cmd));
+        buffer.unmap();
+    }
+}
+
 void IndirectRenderer::syncHostBuffersToGPU() {
     std::lock_guard<std::recursive_mutex> lock(mutex);
     // Ensure every active slot's indirect/bounds is visible via host mapping.
@@ -117,9 +121,7 @@ void IndirectRenderer::syncHostBuffersToGPU() {
         cmd.firstIndex = ld.firstIndex;
         cmd.vertexOffset = static_cast<int32_t>(ld.baseVertex);
         cmd.firstInstance = slotIdx;
-        VkDeviceSize off = static_cast<VkDeviceSize>(slotIdx) * sizeof(VkDrawIndexedIndirectCommand);
-        void* dst = indirectBuffer.map(off);
-        if (dst) { std::memcpy(dst, &cmd, sizeof(cmd)); indirectBuffer.unmap(); }
+        writeIndirectCommand(indirectBuffer, slotIdx, cmd);
         VkDeviceSize bOff = static_cast<VkDeviceSize>(slotIdx) * 4 * sizeof(glm::vec4);
         void* bdst = boundsBuffer.map(bOff);
         if (bdst) {
@@ -1984,45 +1986,11 @@ void IndirectRenderer::initSlots(VulkanApp* app,
             bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         }
 
-         VkDescriptorBindingFlags bindingFlags[37] = {
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
-         };
+         VkDescriptorBindingFlags bindingFlags[37] = {};
+         // Every binding carries UPDATE_AFTER_BIND_BIT: descriptor sets are
+         // rewritten while previously submitted frames may still read them.
+         std::fill(std::begin(bindingFlags), std::end(bindingFlags),
+                   VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT);
 
         DescriptorAllocator descAlloc{app->getDevice(), app};
         computeDescriptorSetLayout = descAlloc.createLayout(
@@ -2581,18 +2549,13 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
                 (void*)this, capEntryIndex, capIndexCount, capLevel, capBoundsMin.x, capBoundsMin.y, capBoundsMin.z, capBoundsMax.x, capBoundsMax.y, capBoundsMax.z, indirectCommands.size());
         }
 
-        VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(capEntryIndex) * sizeof(VkDrawIndexedIndirectCommand);
-        void* cmdData = indirectBuffer.map(cmdOffset);
-        if (cmdData) {
-            VkDrawIndexedIndirectCommand cmd{};
-            cmd.indexCount    = capIndexCount;
-            cmd.instanceCount = 1;
-            cmd.firstIndex    = capFirstIndex;
-            cmd.vertexOffset  = capVertexOffset;
-            cmd.firstInstance = capEntryIndex;
-            std::memcpy(cmdData, &cmd, sizeof(cmd));
-            indirectBuffer.unmap();
-        }
+        VkDrawIndexedIndirectCommand cmd{};
+        cmd.indexCount    = capIndexCount;
+        cmd.instanceCount = 1;
+        cmd.firstIndex    = capFirstIndex;
+        cmd.vertexOffset  = capVertexOffset;
+        cmd.firstInstance = capEntryIndex;
+        writeIndirectCommand(indirectBuffer, capEntryIndex, cmd);
 
         if (boundsBuffer.buffer != VK_NULL_HANDLE) {
             VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capEntryIndex) * 4 * sizeof(glm::vec4);
@@ -2630,18 +2593,13 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     {
         std::lock_guard<std::recursive_mutex> lock(mutex);
         if (capEntryIndex < indirectCommands.size() && indirectBuffer.buffer != VK_NULL_HANDLE) {
-            VkDeviceSize cmdOffset = static_cast<VkDeviceSize>(capEntryIndex) * sizeof(VkDrawIndexedIndirectCommand);
-            void* cmdData = indirectBuffer.map(cmdOffset);
-            if (cmdData) {
-                VkDrawIndexedIndirectCommand cmd{};
-                cmd.indexCount    = capIndexCount;
-                cmd.instanceCount = 1;
-                cmd.firstIndex    = capFirstIndex;
-                cmd.vertexOffset  = capVertexOffset;
-                cmd.firstInstance = capEntryIndex;
-                std::memcpy(cmdData, &cmd, sizeof(cmd));
-                indirectBuffer.unmap();
-            }
+            VkDrawIndexedIndirectCommand cmd{};
+            cmd.indexCount    = capIndexCount;
+            cmd.instanceCount = 1;
+            cmd.firstIndex    = capFirstIndex;
+            cmd.vertexOffset  = capVertexOffset;
+            cmd.firstInstance = capEntryIndex;
+            writeIndirectCommand(indirectBuffer, capEntryIndex, cmd);
             if (boundsBuffer.buffer != VK_NULL_HANDLE) {
                 VkDeviceSize boundsOffset = static_cast<VkDeviceSize>(capEntryIndex) * 4 * sizeof(glm::vec4);
                 void* bndData = boundsBuffer.map(boundsOffset);

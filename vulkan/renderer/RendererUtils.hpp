@@ -8,11 +8,22 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <glm/glm.hpp>
 
 // ─── Shared utility functions used by multiple renderers ──────────────────────
 // All functions are header-only inlines to avoid a separate translation unit.
 
 namespace RendererUtils {
+
+// Corner-mesh tables for the 6-plane billboard mesh shared by ImpostorCapture
+// and VegetationRenderer (24 vertices = 6 planes × 4 corners): the base tangent
+// per plane, and the outward tilt direction for the first four planes.
+inline const glm::vec3 kBillboardBaseTangents[6] = {
+    {0,0,1}, {-1,0,0}, {0,0,-1}, {1,0,0}, {1,0,0}, {0,0,1}
+};
+inline const glm::vec3 kBillboardOutwardDirs[4] = {
+    {1,0,0}, {0,0,1}, {-1,0,0}, {0,0,-1}
+};
 
 // Create a 2D image + VMA-backed device-local memory + image view.
 // Registers all three with VulkanResourceManager. Uses VMA for suballocation.

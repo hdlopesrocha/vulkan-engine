@@ -1,6 +1,7 @@
 #include "ImpostorCapture.hpp"
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
+#include "RendererUtils.hpp"
 #include "VegetationRenderer.hpp"
 #include "../VulkanApp.hpp"
 #include "../../math/Vertex.hpp"
@@ -715,12 +716,8 @@ void ImpostorCapture::createUBO(VulkanApp* app) {
 void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
 
     // 24 corner vertices for the 6-plane billboard mesh (same layout as vegetation).
-    const glm::vec3 baseTangents[6] = {
-        {0,0,1}, {-1,0,0}, {0,0,-1}, {1,0,0}, {1,0,0}, {0,0,1}
-    };
-    const glm::vec3 outwardDirs[4] = {
-        {1,0,0}, {0,0,1}, {-1,0,0}, {0,0,-1}
-    };
+    const auto& baseTangents = RendererUtils::kBillboardBaseTangents;
+    const auto& outwardDirs = RendererUtils::kBillboardOutwardDirs;
     const glm::vec3 worldUp(0,1,0);
     constexpr float hs = 0.5f, h = 1.0f, tilt = 1.0f;
 
