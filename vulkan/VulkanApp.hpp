@@ -268,7 +268,6 @@ protected:
     double lastFrameTime = 0.0;
     // V-Sync preference (affects present mode selection)
     bool vsyncEnabled = true;
-    bool vsyncChanged = false; // track if user toggled vsync to trigger swapchain recreation
 
     // True between initVulkan() and the end of setup() — used to show loading screen
     bool isLoading = false;

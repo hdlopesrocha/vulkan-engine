@@ -26,11 +26,10 @@ void MousePublisher::attachWindow(GLFWwindow* window_) {
     prevScrollFun = glfwSetScrollCallback(window, scrollCallback);
 }
 
-void MousePublisher::update(EventManager* em, const Camera& cam, float deltaTime,
+void MousePublisher::update(EventManager* em, const Camera& cam,
                             ControllerManager* cm, Brush3dManager* brushManager,
                             bool imguiWantsMouse) {
     if (!window || !em || !cm) return;
-    (void)deltaTime;
 
     ControllerContext& mctx = cm->mouseContext;
 

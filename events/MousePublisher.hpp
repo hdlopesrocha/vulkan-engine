@@ -33,10 +33,9 @@ public:
     // Call each frame to inspect mouse state and publish events.
     // - em: EventManager to publish to
     // - cam: reference to Camera for axis vectors
-    // - deltaTime: frame delta seconds
     // - imguiWantsMouse: when true (ImGui is capturing the mouse), mouse-camera
     //   events are suppressed so ImGui windows keep working perfectly.
-    void update(EventManager* em, const Camera& cam, float deltaTime,
+    void update(EventManager* em, const Camera& cam,
                 ControllerManager* cm, Brush3dManager* brushManager,
                 bool imguiWantsMouse);
 

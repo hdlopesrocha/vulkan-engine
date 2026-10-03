@@ -4,7 +4,6 @@
 #include "../utils/Settings.hpp"
 #include "../utils/ShadowParams.hpp"
 #include <imgui.h>
-#include <functional>
 
 class SettingsWidget : public Widget {
 public:
@@ -12,33 +11,9 @@ public:
     
     void render() override;
     
-    // Getters for the settings
-    bool getShadowsEnabled() const { return settings.enableShadows; }
-    bool getFlipKeyboardRotation() const { return settings.flipKeyboardRotation; }
-    bool getFlipGamepadRotation() const { return settings.flipGamepadRotation; }
-    float getMoveSpeed() const { return settings.moveSpeed; }
-    float getAngularSpeedDeg() const { return settings.angularSpeedDeg; }
-    bool getWireframeEnabled() const { return settings.wireframeMode; }
-        int getDebugMode() const { return settings.debugMode; }
-    bool getNormalMappingEnabled() const { return settings.normalMappingEnabled; }
-    bool getWaterEnabled() const { return settings.waterEnabled; }
-    bool getVegetationEnabled() const { return settings.vegetationEnabled; }
-    float getTriplanarThreshold() const { return settings.triplanarThreshold; }
-    float getTriplanarExponent() const { return settings.triplanarExponent; }
-
 private:
     Settings& settings;
     ShadowParams* shadowParams;
-    std::function<void()> onDumpShadowDepth;
 
     void resetToDefaults();
-public:
-    // Tessellation getters
-    bool getTessellationEnabled() const { return settings.tessellationEnabled; }
-    bool getShadowTessellationEnabled() const { return settings.shadowTessellationEnabled; }
-    bool getAdaptiveTessellation() const { return settings.adaptiveTessellation; }
-    float getTessellationFactor() const { return settings.tessellationFactor; }
-    
-    // V-Sync getter
-    bool getVSyncEnabled() const { return settings.vsyncEnabled; }
 };

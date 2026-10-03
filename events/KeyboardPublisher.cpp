@@ -18,9 +18,6 @@
 #include "../utils/Brush3dEntry.hpp"
 #include <algorithm>
 
-KeyboardPublisher::KeyboardPublisher(float moveSpeed_, float angularSpeedDeg_)
-    : moveSpeed(moveSpeed_), angularSpeedDeg(angularSpeedDeg_) {}
-
 // Returns true on the rising edge of a key press (press, not held).
 static bool edgePressed(GLFWwindow* w, int key, bool& prev) {
     bool now = glfwGetKey(w, key) == GLFW_PRESS;

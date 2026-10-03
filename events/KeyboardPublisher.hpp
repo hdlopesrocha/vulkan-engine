@@ -15,7 +15,7 @@ class Brush3dManager;
 
 class KeyboardPublisher {
 public:
-    KeyboardPublisher(float moveSpeed = 2.5f, float angularSpeedDeg = 45.0f);
+    KeyboardPublisher() = default;
 
     // Call each frame to inspect key state and publish zero-or-more events.
     // - window: GLFW window to poll
@@ -23,13 +23,8 @@ public:
     // - cam: reference to Camera (used only to read forward/right/up)
     // - deltaTime: frame delta in seconds
     void update(GLFWwindow* window, EventManager* em, const Camera& cam, float deltaTime, ControllerManager* controllerManager, Brush3dManager* brushManager, bool flipRotation);
-    void setMoveSpeed(float v) { moveSpeed = v; }
-    void setAngularSpeed(float deg) { angularSpeedDeg = deg; }
 
 private:
-    float moveSpeed;         // units per second
-    float angularSpeedDeg;   // degrees per second
-
     // Acceleration timer for translate keys (same exponential ramp as wiimote)
     float translateTimer = 0.0f;
 

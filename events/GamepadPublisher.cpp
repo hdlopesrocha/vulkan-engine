@@ -18,9 +18,6 @@
 #include <cmath>
 #include <glm/gtc/constants.hpp>
 
-GamepadPublisher::GamepadPublisher(float moveSpeed_, float angularSpeedDeg_)
-    : moveSpeed(moveSpeed_), angularSpeedDeg(angularSpeedDeg_) {}
-
 bool GamepadPublisher::isConnected() const
 {
     return glfwJoystickIsGamepad(joystickId);
@@ -70,13 +67,6 @@ bool GamepadPublisher::bButtonPressed()
 {
     bool pressed = cachedB && !bPrev;
     bPrev = cachedB;
-    return pressed;
-}
-
-bool GamepadPublisher::menuButtonPressed()
-{
-    bool pressed = cachedBack && !menuPrev;
-    menuPrev = cachedBack;
     return pressed;
 }
 

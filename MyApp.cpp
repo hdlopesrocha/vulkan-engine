@@ -1041,7 +1041,7 @@ public:
 
         // Mouse: suppress when radial menu is visible or ImGui captures mouse
         bool mouseSuppressed = ImGui::GetIO().WantCaptureMouse || radialMenuVisible;
-        mousePublisher.update(&eventManager, camera, deltaTime, &controllerManager,
+        mousePublisher.update(&eventManager, camera, &controllerManager,
                              &brushManager, mouseSuppressed);
         eventManager.processQueued();
 

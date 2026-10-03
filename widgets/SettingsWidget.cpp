@@ -63,7 +63,7 @@ void SettingsWidget::render() {
     // ---- and the oversized Hybrid RT block is split, so every block is
     // ---- similarly sized and columns pack without big empty gaps.
     std::vector<std::function<void()>> sections;
-    sections.reserve(13);
+    sections.reserve(12);
 
     // 0: Rendering (core toggles — most used)
     sections.emplace_back([this]() {
@@ -234,10 +234,6 @@ void SettingsWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Display & Performance");
         ColSeparator();
-        if (ImGui::Checkbox("V-Sync (MAILBOX/FIFO)", &settings.vsyncEnabled)) {
-            // Will be read by VulkanApp to recreate swapchain with different present mode
-        }
-        TooltipOnHover("When disabled, uses IMMEDIATE mode for uncapped FPS (may cause tearing)");
         if (ImGui::Checkbox("Wireframe Mode", &settings.wireframeMode)) {
             // toggle wireframe rendering
         }
@@ -259,10 +255,6 @@ void SettingsWidget::render() {
 
         }
         TooltipOnHover("Globally enable or disable all shadowing");
-        if (ImGui::Button("Dump Shadow Depth")) {
-            if (onDumpShadowDepth) onDumpShadowDepth();
-        }
-        TooltipOnHover("Write shadow depth PGM for debugging");
         if (shadowParams) {
             FieldLabel("Base Ortho Size", "Shadow camera orthographic size for the base cascade");
             ImGui::SetNextItemWidth(kSettingsColWidth);
@@ -350,9 +342,6 @@ void SettingsWidget::render() {
             // toggled globally; takes effect on the next frame
         }
         TooltipOnHover("Off = single forward pass with depth write (perf report 21 C2). Consider off when tessellation is on; forced on while solid RT paths run.");
-        if (ImGui::Checkbox("Adaptive Tessellation", &settings.adaptiveTessellation)) {
-        }
-        TooltipOnHover("Enable camera-distance driven tessellation level");
         FieldLabel("Tessellation Factor", "Multiplies per-material min/max tess levels globally");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Tessellation Factor", &settings.tessellationFactor, 0.0f, 8.0f, "%.2f");
@@ -379,29 +368,7 @@ void SettingsWidget::render() {
         TooltipOnHover("? (>1 = steeper)");
     });
 
-    // 11: Input (merged: axes + sensitivity)
-    sections.emplace_back([this]() {
-        ImGui::Text("Input");
-        ColSeparator();
-        if (ImGui::Checkbox("Flip keyboard rotation axes", &settings.flipKeyboardRotation)) {
-            // toggled
-        }
-        TooltipOnHover("Invert yaw/pitch directions for keyboard rotation controls");
-        if (ImGui::Checkbox("Flip gamepad rotation axes", &settings.flipGamepadRotation)) {
-            // toggled
-        }
-        TooltipOnHover("Invert yaw/pitch directions for gamepad right-stick");
-        FieldLabel("Move Speed", "Movement speed in units/second used by keyboard and gamepad");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Move Speed", &settings.moveSpeed, 0.1f, 20.0f, "%.2f");
-        TooltipOnHover("Movement speed in units/second used by keyboard and gamepad");
-        FieldLabel("Angular Speed (deg/s)", "Angular rotation speed in degrees/second used by keyboard and gamepad");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Angular Speed (deg/s)", &settings.angularSpeedDeg, 1.0f, 360.0f, "%.0f");
-        TooltipOnHover("Angular rotation speed in degrees/second used by keyboard and gamepad");
-    });
-
-    // 12: Debug Visualisation (advanced — last)
+    // 11: Debug Visualisation (advanced — last)
     sections.emplace_back([this]() {
         ImGui::Text("Debug Visualisation");
         ColSeparator();
@@ -448,8 +415,7 @@ void SettingsWidget::render() {
         cachedH[5] = 190.0f;   // Shadow Effects
         cachedH[8] = 180.0f;   // Level of Detail
         cachedH[9] = 260.0f;   // Tessellation
-        cachedH[11] = 280.0f;  // Input
-        cachedH[12] = 230.0f;  // Debug Visualisation
+        cachedH[11] = 230.0f;  // Debug Visualisation
     }
 
     float availW = ImGui::GetContentRegionAvail().x;

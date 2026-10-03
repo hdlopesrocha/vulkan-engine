@@ -4716,9 +4716,8 @@ void VulkanApp::drawFrame() {
     // Record a (zero-duration) timeline segment for the present queue so the
     // queue-usage slotted view can show present as a distinct row/event.
     recordQueueSegment(presentQueue, VK_NULL_HANDLE, frameCounter_.load(std::memory_order_relaxed));
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || framebufferResized || vsyncChanged) {
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || framebufferResized) {
         framebufferResized = false;
-        vsyncChanged = false;
         recreateSwapchain();
         return;
     } else if (r == VK_ERROR_DEVICE_LOST) {

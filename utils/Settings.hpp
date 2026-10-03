@@ -24,15 +24,8 @@ public:
     bool aoEnabled = true;
 
     // Debug visuals
-    bool showDebugCubes = false;
     bool showBoundingBoxes = false;
     bool showSDFDebug = false;
-
-    // Input settings
-    bool flipKeyboardRotation = false;
-    bool flipGamepadRotation = false;
-    float moveSpeed = 2.5f;
-    float angularSpeedDeg = 45.0f;
 
     // Debug: canonical view IDs in vulkan/includes/DebugModes.hpp (0 = normal
     // render). Drives the raster solid/water shaders and the RT reference-path
@@ -72,13 +65,9 @@ public:
     // variants have no depth-write twin, and uncaptured depth would break
     // the water/composite passes that sample it).
     bool solidDepthPrepass = true;
-    bool adaptiveTessellation = true;
     float tessellationFactor = 1.0f;
     float tessMaxDistance = 512.0f;
     float tessMinDistance = 1.0f;
-
-    // Present mode
-    bool vsyncEnabled = true;
 
     // Camera clip planes
     float nearPlane = 0.1f;
