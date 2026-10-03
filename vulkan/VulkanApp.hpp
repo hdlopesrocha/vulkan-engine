@@ -25,6 +25,10 @@
 #include "VulkanResourceManager.hpp"
 #include "VmaContext.hpp"
 
+// Forward declaration of ImGui's Vulkan backend init struct. Only VulkanApp.cpp
+// includes the backend header; the class exposes helpers that fill it.
+struct ImGui_ImplVulkan_InitInfo;
+
 struct GraphicsPipelineConfig {
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
     VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT;
@@ -736,6 +740,13 @@ public:
         std::mutex m_cmdToRingSlotMtx;
         void createAsyncCmdPoolRing();
         void signalRingSlotFence(VkCommandBuffer cmd, VkQueue queue);
+
+        // Shared ImGui backend setup used by initImGui() and the
+        // swapchain-recreation path: creates the descriptor pool (returns
+        // VK_NULL_HANDLE on failure so each caller throws its own message) and
+        // fills an ImGui_ImplVulkan_InitInfo with the app's device/queue state.
+        VkDescriptorPool createImGuiDescriptorPool();
+        void fillImGuiInitInfo(ImGui_ImplVulkan_InitInfo& init_info);
 
         static constexpr uint32_t SINGLE_TIME_CMD_RING_SIZE = 4;
         VkCommandPool singleTimeCmdPools[SINGLE_TIME_CMD_RING_SIZE]{};

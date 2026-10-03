@@ -626,9 +626,9 @@ void VulkanApp::cleanup() {
     printf("[VulkanApp] vkDestroyInstance returned\n");
 }
 
-void VulkanApp::initImGui() {
-    // Create descriptor pool for ImGui
-    VkDescriptorPoolSize pool_sizes[] = {
+VkDescriptorPool VulkanApp::createImGuiDescriptorPool() {
+    // Descriptor types the ImGui Vulkan backend may allocate from its pool.
+    static constexpr VkDescriptorPoolSize pool_sizes[] = {
         { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
         { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
@@ -649,7 +649,47 @@ void VulkanApp::initImGui() {
     pool_info.poolSizeCount = static_cast<uint32_t>(std::size(pool_sizes));
     pool_info.pPoolSizes = pool_sizes;
 
-    if (vkCreateDescriptorPool(device, &pool_info, nullptr, &imguiDescriptorPool) != VK_SUCCESS) {
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(device, &pool_info, nullptr, &pool) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+    return pool;
+}
+
+void VulkanApp::fillImGuiInitInfo(ImGui_ImplVulkan_InitInfo& init_info) {
+    init_info = {};
+    init_info.Instance = instance;
+    init_info.PhysicalDevice = physicalDevice;
+    init_info.Device = device;
+    init_info.QueueFamily = findQueueFamilies(physicalDevice).graphicsFamily.value();
+    init_info.Queue = graphicsQueue;
+    init_info.PipelineCache = pipelineCache;
+    init_info.DescriptorPool = imguiDescriptorPool;
+    init_info.MinImageCount = 2;
+    init_info.ImageCount = static_cast<uint32_t>(swapchainImages.size());
+    init_info.Allocator = nullptr;
+    init_info.MinAllocationSize = 1024 * 1024; // Pad to 1MB to suppress validation small-allocation warnings
+    init_info.CheckVkResultFn = [](VkResult err) {
+        if (err != VK_SUCCESS) {
+            std::cerr << "[ImGui] Vulkan error: " << err << std::endl;
+            abort();
+        }
+    };
+    VkPipelineRenderingCreateInfo imguiPipelineRenderingInfo{};
+    imguiPipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    imguiPipelineRenderingInfo.colorAttachmentCount = 1;
+    imguiPipelineRenderingInfo.pColorAttachmentFormats = &swapchainImageFormat;
+    imguiPipelineRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+    imguiPipelineRenderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo = imguiPipelineRenderingInfo;
+    init_info.UseDynamicRendering = true;
+}
+
+void VulkanApp::initImGui() {
+    // Create descriptor pool for ImGui
+    imguiDescriptorPool = createImGuiDescriptorPool();
+    if (imguiDescriptorPool == VK_NULL_HANDLE) {
         throw std::runtime_error("failed to create ImGui descriptor pool!");
     }
     // Register ImGui descriptor pool
@@ -686,32 +726,7 @@ void VulkanApp::initImGui() {
     ImGui_ImplGlfw_InitForVulkan(window, true);
 
     ImGui_ImplVulkan_InitInfo init_info{};
-    init_info.Instance = instance;
-    init_info.PhysicalDevice = physicalDevice;
-    init_info.Device = device;
-    init_info.QueueFamily = findQueueFamilies(physicalDevice).graphicsFamily.value();
-    init_info.Queue = graphicsQueue;
-    init_info.PipelineCache = pipelineCache;
-    init_info.DescriptorPool = imguiDescriptorPool;
-    init_info.MinImageCount = 2;
-    init_info.ImageCount = static_cast<uint32_t>(swapchainImages.size());
-    init_info.Allocator = nullptr;
-    init_info.MinAllocationSize = 1024 * 1024; // Pad to 1MB to suppress validation small-allocation warnings
-    init_info.CheckVkResultFn = [](VkResult err) {
-        if (err != VK_SUCCESS) {
-            std::cerr << "[ImGui] Vulkan error: " << err << std::endl;
-            abort();
-        }
-    };
-    VkPipelineRenderingCreateInfo imguiPipelineRenderingInfo{};
-    imguiPipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    imguiPipelineRenderingInfo.colorAttachmentCount = 1;
-    imguiPipelineRenderingInfo.pColorAttachmentFormats = &swapchainImageFormat;
-    imguiPipelineRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-    imguiPipelineRenderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
-    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    init_info.PipelineInfoMain.PipelineRenderingCreateInfo = imguiPipelineRenderingInfo;
-    init_info.UseDynamicRendering = true;
+    fillImGuiInitInfo(init_info);
 
     bool imguiInitOk = ImGui_ImplVulkan_Init(&init_info);
     // Expose this VulkanApp instance to the ImGui backend so it can route
@@ -4829,59 +4844,14 @@ void VulkanApp::recreateSwapchain() {
     }
 
     // Create a fresh imgui descriptor pool
-    {
-        VkDescriptorPoolSize pool_sizes[] = {
-            { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
-            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
-            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
-            { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
-            { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
-        };
-        VkDescriptorPoolCreateInfo pool_info{};
-        pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        pool_info.maxSets = 1000 * (uint32_t)std::size(pool_sizes);
-        pool_info.poolSizeCount = static_cast<uint32_t>(std::size(pool_sizes));
-        pool_info.pPoolSizes = pool_sizes;
-        if (vkCreateDescriptorPool(device, &pool_info, nullptr, &imguiDescriptorPool) != VK_SUCCESS) {
-            throw std::runtime_error("failed to recreate ImGui descriptor pool during swapchain recreation!");
-        }
-        resources.addDescriptorPool(imguiDescriptorPool, "VulkanApp: imguiDescriptorPool (recreated)");
+    imguiDescriptorPool = createImGuiDescriptorPool();
+    if (imguiDescriptorPool == VK_NULL_HANDLE) {
+        throw std::runtime_error("failed to recreate ImGui descriptor pool during swapchain recreation!");
     }
+    resources.addDescriptorPool(imguiDescriptorPool, "VulkanApp: imguiDescriptorPool (recreated)");
 
     ImGui_ImplVulkan_InitInfo init_info{};
-    init_info.Instance = instance;
-    init_info.PhysicalDevice = physicalDevice;
-    init_info.Device = device;
-    init_info.QueueFamily = findQueueFamilies(physicalDevice).graphicsFamily.value();
-    init_info.Queue = graphicsQueue;
-    init_info.PipelineCache = pipelineCache;
-    init_info.DescriptorPool = imguiDescriptorPool;
-    init_info.MinImageCount = 2;
-    init_info.ImageCount = static_cast<uint32_t>(swapchainImages.size());
-    init_info.Allocator = nullptr;
-    init_info.MinAllocationSize = 1024 * 1024; // Pad to 1MB to suppress validation small-allocation warnings
-    init_info.CheckVkResultFn = [](VkResult err) {
-        if (err != VK_SUCCESS) {
-            std::cerr << "[ImGui] Vulkan error: " << err << std::endl;
-            abort();
-        }
-    };
-    VkPipelineRenderingCreateInfo imguiPipelineRenderingInfo{};
-    imguiPipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    imguiPipelineRenderingInfo.colorAttachmentCount = 1;
-    imguiPipelineRenderingInfo.pColorAttachmentFormats = &swapchainImageFormat;
-    imguiPipelineRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-    imguiPipelineRenderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
-    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    init_info.PipelineInfoMain.PipelineRenderingCreateInfo = imguiPipelineRenderingInfo;
-    init_info.UseDynamicRendering = true;
+    fillImGuiInitInfo(init_info);
 
 
     bool imguiInitOk = ImGui_ImplVulkan_Init(&init_info);
