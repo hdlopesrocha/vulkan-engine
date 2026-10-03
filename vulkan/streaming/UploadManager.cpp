@@ -250,7 +250,6 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
     s.busy          = true;
     s.waitRegistered = false;   // fresh binary semaphore: needs one frame-wait registration
     s.onComplete    = std::move(job.onComplete);
-    s.chunkSlot     = job.chunkSlot;
 }
 
 void UploadManager::prepareFrameWaits(VulkanApp* app) {

@@ -34,7 +34,6 @@ struct StagingSlot {
                                      //  once; re-adding it on later frames is illegal)
 
     std::function<void()> onComplete; // main-thread callback fired when GPU done
-    void*    chunkSlot     = nullptr; // reserved (legacy chunk-pool slot pointer; unused)
 };
 
 class StagingBufferPool {

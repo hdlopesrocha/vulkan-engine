@@ -43,9 +43,6 @@ struct UploadJob {
     // One per destination buffer (typically: vertex buffer + index buffer).
     std::vector<BufferUpload> uploads;
 
-    // Reserved slot pointer (always null; retained for source compatibility).
-    void* chunkSlot = nullptr;
-
     // Invoked ONCE on the main thread when the GPU copy is complete. Use it to
     // publish the new buffers into the live scene and retire the old ones via
     // app->deferDestroyUntilFence / app->deferDestroyUntilAllPending.

@@ -199,17 +199,6 @@ public:
                      glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16,
                      const glm::mat4* cascadeMatrices = nullptr, bool doCascade = false, bool doMain = true,
                      bool doVegCascade = false, uint32_t vegChunkCount = 0, uint32_t targetLayer = 0);
-    // Run GPU culling into caller-provided output buffers using a provided compute descriptor set.
-    // `scratchBuffer`: binding-4 chosen-LoD output. Pass a per-face buffer when
-    // recording parallel face culls (one scratch per concurrent dispatch — the
-    // shader writes one uvec2 per draw entry keyed to this dispatch's viewProj).
-    // VK_NULL_HANDLE falls back to the legacy shared scratch (serial use only).
-    void prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
-                                    VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer,
-                                    glm::vec3 camPos = glm::vec3(0.0f), float lodBias = 8.0f, int maxTargetLod = 16,
-                                    bool doMainCull = true, bool doCascadeCull = false,
-                                    VkBuffer scratchBuffer = VK_NULL_HANDLE);
-
     // ── SDF debug-cube culling (merged into the solid indirect.comp dispatch) ──
     // Supplies the AABBs of the SDF debug cubes. prepareCull appends them after
     // the solid entries and frustum-culls them in the SAME indirect.comp dispatch,
@@ -316,8 +305,6 @@ public:
     void drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws = 0);
     void drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer compactBuffer, VkBuffer visibleCountBuffer, uint32_t maxDraws = 0);
     void bindBuffers(VkCommandBuffer cmd);
-    void drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws = 0);
-    void drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pipelineLayout, uint32_t maxDraws = 0);
 
     // ── Cascade-aware culling (single pass, 3 cascades) ──
     // Single compute dispatch that culls all chunks against 3 cascade frustums
@@ -345,28 +332,6 @@ public:
     // Used for sizing external compact buffers (e.g. cubemap).
     size_t getMeshCapacity() const { return meshCapacity; }
 
-    // Persistent scratch buffer bound to binding 4 of the cull compute layout
-    // by external descriptor-set owners (cubemap faces, async backface pass).
-    VkBuffer getVisibleLodsScratchBuffer() const { return visibleLodsScratch.buffer; }
-    // ── Parallel 6-face cull scratch buffers ───────────────────────────────
-    // One scratch buffer per cubemap face so the 6 face culls can dispatch
-    // concurrently on distinct queues without sharing a writable resource.
-    // Each face's compute descriptor set must bind its own face scratch at
-    // binding 4, and its prepareCullWithDescriptor call must pass the same
-    // buffer as `scratchBuffer`. Allocated lazily to lodBufSize (uvec2 per
-    // draw entry); see ensureFaceScratchBuffers().
-    static constexpr uint32_t NUM_FACE_SCRATCH = 6;
-    VkBuffer getVisibleLodsScratchBuffer(uint32_t face) const {
-        if (face < NUM_FACE_SCRATCH && visibleLodsScratchFaces[face].buffer != VK_NULL_HANDLE)
-            return visibleLodsScratchFaces[face].buffer;
-        return visibleLodsScratch.buffer;
-    }
-    // (Re)allocates the 6 per-face scratch buffers to `lodBufSize` bytes when
-    // capacity grew. Public so Solid360Renderer can ensure the buffers exist
-    // before binding them at descriptor-set init. Also called automatically
-    // from the buffer-creation path (initSlots).
-    void ensureFaceScratchBuffers(VulkanApp* app, VkDeviceSize lodBufSize);
-
     // Force host-visible indirect/bounds to GPU (for water fallback without transfer)
     void syncHostBuffersToGPU();
 
@@ -385,9 +350,6 @@ public:
     // Host-read of the GPU-visible count. Uses a per-frame fence to avoid
     // stalling unrelated queue work.
     uint32_t readVisibleCount(VulkanApp* app) const;
-
-    // Query mesh info (copy) for use in the app (bounds, offsets, flags).
-    MeshInfo getMeshInfo(uint32_t meshId) const;
 
     // Invoke `visitor(const MeshInfo&)` for each active mesh (thread-safe).
     // Avoids allocating a temporary vector.
@@ -621,19 +583,6 @@ private:
     // pipeline; zeroed together with the compact buffer each prepareCull.
     // DEVICE_LOCAL cull output: never mapped on the host.
     std::array<Buffer, MAX_CULL_FRAMES> visibleLodBuffers;
-    // Dedicated visibleLods buffer for the caller-provided-descriptor paths
-    // (cubemap faces, async backface): those sets bind this scratch buffer so
-    // their dispatches never race the per-frame zero fills.
-    // Legacy shared scratch (serial face culls + backface pass). Kept as the
-    // VK_NULL_HANDLE fallback for prepareCullWithDescriptor callers that do not
-    // pass a per-face scratch buffer.
-    Buffer visibleLodsScratch;
-    // Per-face scratch buffers for parallel 6-face culls (NUM_FACE_SCRATCH).
-    // Each concurrent dispatch writes its own slot — no inter-face hazard.
-    std::array<Buffer, NUM_FACE_SCRATCH> visibleLodsScratchFaces{};
-    // Allocated byte size of each per-face scratch buffer (all six are uniform).
-    // 0 = not yet allocated. Used to detect capacity growth.
-    VkDeviceSize faceScratchSize_ = 0;
     // GPU-side culling resources
     Buffer boundsBuffer; // vec4 per draw entry: min, max, meta{cellSize, level, maxLevel, unused}
     // ── Vegetation cull integration (merged single dispatch) ──
@@ -706,30 +655,13 @@ private:
     struct CascadeCullFrame {
         std::array<Buffer, 3> compactBuffers; // compact output per cascade (DEVICE_LOCAL)
         std::array<Buffer, 3> countBuffers;   // visible count per cascade (DEVICE_LOCAL)
-        TrackedHandle<VkDescriptorSet> descSet;
     };
     std::array<CascadeCullFrame, MAX_CULL_FRAMES> cascadeCullFrames;
     Buffer cascadeMatrixBuffer; // storage buffer with 3 mat4 cascade matrices
     Buffer cascadeDummyBuffer;  // bound to the cascade bindings of external (Solid360) descriptor sets
 
-    TrackedHandle<VkPipeline> cascadeCullPipeline;
-    TrackedHandle<VkPipelineLayout> cascadeCullPipelineLayout;
-    TrackedHandle<VkDescriptorSetLayout> cascadeCullDescSetLayout;
-    TrackedHandle<VkDescriptorPool> cascadeCullDescPool;
     bool cascadeCullInited = false;
-    // Bumped whenever the cascade buffers (17..23) backing prepareCullWithDescriptor's
-    // static descriptor writes are (re)allocated, so foreign Solid360/cube360 descriptor
-    // sets can refresh their cascade bindings exactly once (avoids touching an in-flight
-    // set every frame — VUID-vkUpdateDescriptorSets-None-03047).
-    uint64_t cascadeBindingVersion_ = 0;
-    std::unordered_map<VkDescriptorSet, uint64_t> cascadeDescWrittenVersion_;
-    VkBuffer cascadeDescIndirectBuffer = VK_NULL_HANDLE; // tracks which indirectBuffer the descriptors reference
-    VkBuffer cascadeDescBoundsBuffer = VK_NULL_HANDLE;   // tracks which boundsBuffer the descriptors reference
-    VulkanApp* cascadeDescApp = nullptr; // stored for descriptor refresh
     void initCascadeCull(VulkanApp* app);
-    void destroyCascadeCull();
-    void updateCascadeDescriptor(VulkanApp* app, uint32_t frame);
-    void refreshCascadeDescriptorsIfNeeded();
 
     // Vegetation cascade (shadow) streams, bound into the merged indirect.comp
     // descriptor set (bindings 24..36) so a single dispatch can also emit the

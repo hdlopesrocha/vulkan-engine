@@ -215,9 +215,6 @@ public:
         return inFlightFences[currentFrame % inFlightFences.size()];
     }
 
-private:
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    public:
     // texture and descriptor
     // Scene descriptor set layouts/sets live in SceneDescriptorLayout (owned by
     // the app). The getters below forward to it; VulkanApp itself carries no
@@ -554,7 +551,6 @@ public:
 
         VkDevice getDevice() const;
         VkPipelineCache getPipelineCache() const { return pipelineCache; }
-        VkPipelineLayout getPipelineLayout() const;
 
         // Public getters for runtime inspection (used by widgets)
         VkInstance getInstance() const { return instance; }

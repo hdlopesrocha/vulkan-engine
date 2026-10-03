@@ -3671,10 +3671,6 @@ VkDevice VulkanApp::getDevice() const {
     return device;
 }
 
-VkPipelineLayout VulkanApp::getPipelineLayout() const {
-    return pipelineLayout;
-}
-
 std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
     const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
@@ -5470,8 +5466,8 @@ void VulkanApp::createLogicalDevice() {
     // VkPhysicalDeviceVulkan13Features entirely), so the layout's UPDATE_AFTER_BIND
     // bit is dropped and vkUpdateDescriptorSets on an in-flight set still trips
     // VUID-03047. The renderer therefore avoids touching in-flight descriptor sets
-    // every frame (write-once for static bindings, see IndirectRenderer::
-    // prepareCullWithDescriptor) instead of relying on update-after-bind.
+    // every frame (write-once for static bindings) instead of relying on
+    // update-after-bind.
     VkPhysicalDeviceVulkan12Features vulkan12Features{};
     vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     vulkan12Features.pNext = &vulkan11Features;

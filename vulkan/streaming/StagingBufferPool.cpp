@@ -85,7 +85,6 @@ void StagingBufferPool::reset(StagingSlot& s) {
     s.busy         = false;
     s.waitRegistered = false;
     s.onComplete   = nullptr;
-    s.chunkSlot    = nullptr;
     // signalSem lifecycle is owned by the manager (fresh per submission in the
     // fallback path), so we only clear the handle here.
     s.signalSem    = VK_NULL_HANDLE;
