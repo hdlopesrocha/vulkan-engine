@@ -11,7 +11,6 @@
 #include <chrono>
 #include <vector>
 #include <tuple>
-#include <string>
 
 
 uint32_t TextureMixer::getArrayLayerCount() const {
@@ -50,8 +49,6 @@ void TextureMixer::init(VulkanApp* app, TextureArrayManager* texArrMgr) {
 
 void TextureMixer::generateInitialTextures(std::vector<MixerParameters> &mixerParams) {
 	if (!textureArrayManager || textureArrayManager->layerAmount == 0) {
-		std::lock_guard<std::mutex> lk(logsMutex);
-		logs.emplace_back("Skipping generateInitialTextures: no texture arrays available");
 		std::cerr << "[TextureMixer] Skipping generateInitialTextures: no texture arrays available" << std::endl;
 		return;
 	}
@@ -61,10 +58,6 @@ void TextureMixer::generateInitialTextures(std::vector<MixerParameters> &mixerPa
 		try {
 			enqueueGenerate(param);
 		} catch (const std::exception &e) {
-			std::lock_guard<std::mutex> lk(logsMutex);
-			char buf[256];
-			snprintf(buf, sizeof(buf), "generateInitialTextures: enqueue failed for layer=%zu reason=%s", param.targetLayer, e.what());
-			logs.emplace_back(buf);
 			std::cerr << "[TextureMixer] generateInitialTextures: enqueue failed for layer=" << param.targetLayer << " reason=" << e.what() << std::endl;
 		}
 	}
@@ -84,13 +77,6 @@ void TextureMixer::enqueueGenerate(const MixerParameters &params, int map) {
 		}
 	}
 	if (!replaced) pendingRequests.emplace_back(params, map);
-	// Log the enqueue or replacement
-	{
-		std::lock_guard<std::mutex> lk2(logsMutex);
-		char buf[128];
-		snprintf(buf, sizeof(buf), "%s generation: layer=%zu map=%d", replaced ? "Replaced" : "Enqueued", params.targetLayer, map);
-		logs.emplace_back(buf);
-	}
 }
 
 // Flush pending requests synchronously; intended to be called from main update() before frame command buffers are recorded
@@ -105,17 +91,13 @@ void TextureMixer::flushPendingRequests(VulkanApp* app) {
 		try {
 			generatePerlinNoise(app, const_cast<MixerParameters&>(t.first), t.second);
 		} catch (const std::exception &e) {
-			std::lock_guard<std::mutex> lkll(logsMutex);
-			char buf[256];
-			snprintf(buf, sizeof(buf), "generate Perlin failed: layer=%zu map=%d reason=%s", t.first.targetLayer, t.second, e.what());
-			logs.emplace_back(buf);
 			std::cerr << "[TextureMixer] generatePerlinNoise failed: layer=" << t.first.targetLayer << " map=" << t.second << " reason=" << e.what() << std::endl;
 		}
 	}
 }
 
 void TextureMixer::pollPendingGenerations(VulkanApp* app) {
-	// Pull any completed fences and promote their logs (check fences BEFORE letting VulkanApp destroy them)
+	// Pull any completed fences (check fences BEFORE letting VulkanApp destroy them)
 	completed.clear();
 	{
 		std::lock_guard<std::mutex> lk(pendingFencesMutex);
@@ -135,20 +117,14 @@ void TextureMixer::pollPendingGenerations(VulkanApp* app) {
 				completed.push_back(*it);
 				it = pendingFences.erase(it);
 			} else if (st == VK_ERROR_DEVICE_LOST) {
-				std::lock_guard<std::mutex> lkll(logsMutex);
 				char buf[256];
 				snprintf(buf, sizeof(buf), "CRITICAL: Device lost detected for fence=%p layer=%u. Aborting resource destruction/reuse for this layer!", (void*)f, layer);
-				logs.emplace_back(buf);
 				std::cerr << "[TextureMixer] " << buf << std::endl;
 				// Do not erase the fence here, keep it for diagnostics
 				++it;
 				continue;
 			} else {
 				// Defensive: if the fence is not signaled, do NOT destroy or reuse any resource for this layer
-				char buf[256];
-				snprintf(buf, sizeof(buf), "WARNING: Fence not signaled for fence=%p layer=%u. Resource destruction/reuse is blocked until signaled.", (void*)f, layer);
-				std::lock_guard<std::mutex> lkll(logsMutex);
-				logs.emplace_back(buf);
 				++it;
 			}
 		}
@@ -169,26 +145,6 @@ void TextureMixer::pollPendingGenerations(VulkanApp* app) {
 			textureArrayManager->setLayerLayout(3, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 			textureArrayManager->setLayerLayout(4, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		}
-		{
-			std::lock_guard<std::mutex> lkll(logsMutex);
-			char buf[128];
-			snprintf(buf, sizeof(buf), "Generation complete: layer=%u", layer);
-			logs.emplace_back(buf);
-		}
-	}
-
-	// also append a simple summary log line for diagnostics
-	{
-		size_t reqs = pendingRequests.size();
-		size_t fences = pendingFences.size();
-		if (reqs != lastLoggedRequests || fences != lastLoggedFences) {
-			std::lock_guard<std::mutex> lkll(logsMutex);
-			char buf[128];
-			snprintf(buf, sizeof(buf), "Pending: requests=%zu fences=%zu", reqs, fences);
-			logs.emplace_back(buf);
-			lastLoggedRequests = reqs;
-			lastLoggedFences = fences;
-		}
 	}
 }
 
@@ -197,7 +153,6 @@ size_t TextureMixer::getPendingGenerationCount() {
 	std::lock_guard<std::mutex> lk2(pendingFencesMutex);
 	return pendingRequests.size() + pendingFences.size();
 }
-
 
 bool TextureMixer::isLayerGenerationPending(uint32_t layer) {
 	std::lock_guard<std::mutex> lk(pendingFencesMutex);
@@ -400,14 +355,6 @@ VkDescriptorSet TextureMixer::getNoiseDescriptor(uint32_t layer) {
 }
 
 void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, int map) {
-	// log immediate sync generation requests too for diagnostics
-	{
-		std::lock_guard<std::mutex> lkll(logsMutex);
-		char buf[192];
-		snprintf(buf, sizeof(buf), "Immediate generate called: layer=%zu primary=%u secondary=%u map=%d",
-				 params.targetLayer, params.primaryTextureIdx, params.secondaryTextureIdx, map);
-		logs.emplace_back(buf);
-	}
 	if (!app) throw std::runtime_error("TextureMixer::generatePerlinNoise: app is null");
 	if (!textureArrayManager) throw std::runtime_error("TextureMixer requires a TextureArrayManager for array-based generation");
 	if (generationDescSet == VK_NULL_HANDLE || computePipeline == VK_NULL_HANDLE) {

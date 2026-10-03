@@ -45,7 +45,7 @@ public:
     // Poll for completed async generation fences and invoke callbacks (called from update()/preRender)
     void pollPendingGenerations(VulkanApp* app);
 
-    // Diagnostics: number of pending async generations and a small log buffer
+    // Diagnostics: number of pending async generations
     size_t getPendingGenerationCount();
 
     // Query array layer dimensions (0 if none)
@@ -87,12 +87,6 @@ private:
     std::mutex pendingFencesMutex;
     std::vector<std::tuple<VkFence, uint32_t>> pendingFences;
     std::vector<std::tuple<VkFence, uint32_t>> completed;
-
-    // Diagnostics: small textual log buffer for UI and a mutex to protect it
-    std::mutex logsMutex;
-    std::vector<std::string> logs;
-    size_t lastLoggedRequests = 0;
-    size_t lastLoggedFences = 0;
 
 public:
     // Query whether a layer currently has an in-flight generation
