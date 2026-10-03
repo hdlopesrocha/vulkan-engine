@@ -10,6 +10,28 @@
 namespace {
 constexpr float kPreviewSize = 256.0f;
 constexpr float kPreviewColumnWidth = 360.0f;
+
+// One preview tab: label/id, picker wiring and (for maps with array debug
+// members) the optional "Log info" diagnostics. The table preserves the
+// original per-tab ImGui labels and picker ids exactly.
+struct PreviewTab {
+    const char* label;
+    const char* pickerId;
+    const char* chooseLabel;
+    int mapIndex;
+    const char* logMapName;      // null: this tab has no "Log info" button
+    const char* logFieldName;
+    TextureImage TextureArrayManager::*array;
+    VkSampler TextureArrayManager::*sampler;
+};
+
+const PreviewTab kPreviewTabs[] = {
+    { "Albedo",    "PickerAlbedo",    "Choose Albedo",    0, "Albedo", "albedo", &TextureArrayManager::albedoArray, &TextureArrayManager::albedoSampler },
+    { "Normal",    "PickerNormal",    "Choose Normal",    1, "Normal", "normal", &TextureArrayManager::normalArray, &TextureArrayManager::normalSampler },
+    { "Height",    "PickerHeight",    "Choose Height",    2, "Height", "bump",   &TextureArrayManager::bumpArray,   &TextureArrayManager::bumpSampler },
+    { "Roughness", "PickerRoughness", "Choose Roughness", 3, nullptr,  nullptr,  nullptr, nullptr },
+    { "AO",        "PickerAO",        "Choose AO",        4, nullptr,  nullptr,  nullptr, nullptr },
+};
 }
 
 void TextureViewer::render() {
@@ -67,150 +89,43 @@ void TextureViewer::render() {
         }
         ImGui::PushStyleVar(ImGuiStyleVar_TabBarBorderSize, 0.0f);
         if (ImGui::BeginTabBar(tabBarId.c_str())) {
-            if (ImGui::BeginTabItem("Albedo")) {
-                ImTextureID tex = arrayManager->getImTexture(currentIndex, 0);
-                if (tex) {
-                    ImGui::Image(tex, ImVec2(kPreviewSize, kPreviewSize));
-                } else {
-                    ImGui::Text("Texture preview not available");
-                    if (ImGui::Button("Recreate descriptor")) {
-                        arrayManager->getImTexture(currentIndex, 0);
+            for (const PreviewTab &tab : kPreviewTabs) {
+                if (ImGui::BeginTabItem(tab.label)) {
+                    const int map = tab.mapIndex;
+                    ImTextureID tex = arrayManager->getImTexture(currentIndex, map);
+                    if (tex) {
+                        ImGui::Image(tex, ImVec2(kPreviewSize, kPreviewSize));
+                    } else {
+                        ImGui::Text("Texture preview not available");
+                        if (ImGui::Button("Recreate descriptor")) {
+                            arrayManager->getImTexture(currentIndex, map);
+                        }
+                        if (tab.logMapName) {
+                            ImGui::SameLine();
+                            if (ImGui::Button("Log info")) {
+                                std::cerr << "[TextureViewer] Preview NULL: layer=" << currentIndex
+                                          << " map=" << tab.logMapName
+                                          << " layerInitialized=" << (arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0)
+                                          << " layerAmount=" << arrayManager->layerAmount
+                                          << " " << tab.logFieldName << ".image=" << (void*)(arrayManager->*tab.array).image
+                                          << " " << tab.logFieldName << "Sampler=" << (void*)(arrayManager->*tab.sampler)
+                                          << std::endl;
+                            }
+                        }
                     }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Log info")) {
-                        std::cerr << "[TextureViewer] Preview NULL: layer=" << currentIndex
-                                  << " map=Albedo"
-                                  << " layerInitialized=" << (arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0)
-                                  << " layerAmount=" << arrayManager->layerAmount
-                                  << " albedo.image=" << (void*)arrayManager->albedoArray.image
-                                  << " albedoSampler=" << (void*)arrayManager->albedoSampler
-                                  << std::endl;
-                    }
-                }
 
-                ImGui::Spacing();
-                ColSeparator();
-                ImGui::Spacing();
-                FieldLabel("Choose Albedo", "Click a thumbnail to select this texture layer.");
-                size_t idx = currentIndex;
-                if (ScrollableTexturePicker("PickerAlbedo", arrayManager->layerAmount, idx,
-                        [this](size_t l) { return arrayManager->getImTexture(l, 0); },
-                        48.0f, 2, true, true, kColumnWidth)) {
-                    currentIndex = idx;
-                }
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Normal")) {
-                ImTextureID tex = arrayManager->getImTexture(currentIndex, 1);
-                if (tex) {
-                    ImGui::Image(tex, ImVec2(kPreviewSize, kPreviewSize));
-                } else {
-                    ImGui::Text("Texture preview not available");
-                    if (ImGui::Button("Recreate descriptor")) {
-                        arrayManager->getImTexture(currentIndex, 1);
+                    ImGui::Spacing();
+                    ColSeparator();
+                    ImGui::Spacing();
+                    FieldLabel(tab.chooseLabel, "Click a thumbnail to select this texture layer.");
+                    size_t idx = currentIndex;
+                    if (ScrollableTexturePicker(tab.pickerId, arrayManager->layerAmount, idx,
+                            [this, map](size_t l) { return arrayManager->getImTexture(l, map); },
+                            48.0f, 2, true, true, kColumnWidth)) {
+                        currentIndex = idx;
                     }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Log info")) {
-                        std::cerr << "[TextureViewer] Preview NULL: layer=" << currentIndex
-                                  << " map=Normal"
-                                  << " layerInitialized=" << (arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0)
-                                  << " layerAmount=" << arrayManager->layerAmount
-                                  << " normal.image=" << (void*)arrayManager->normalArray.image
-                                  << " normalSampler=" << (void*)arrayManager->normalSampler
-                                  << std::endl;
-                    }
+                    ImGui::EndTabItem();
                 }
-
-                ImGui::Spacing();
-                ColSeparator();
-                ImGui::Spacing();
-                FieldLabel("Choose Normal", "Click a thumbnail to select this texture layer.");
-                size_t idx = currentIndex;
-                if (ScrollableTexturePicker("PickerNormal", arrayManager->layerAmount, idx,
-                        [this](size_t l) { return arrayManager->getImTexture(l, 1); },
-                        48.0f, 2, true, true, kColumnWidth)) {
-                    currentIndex = idx;
-                }
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Height")) {
-                ImTextureID tex = arrayManager->getImTexture(currentIndex, 2);
-                if (tex) {
-                    ImGui::Image(tex, ImVec2(kPreviewSize, kPreviewSize));
-                } else {
-                    ImGui::Text("Texture preview not available");
-                    if (ImGui::Button("Recreate descriptor")) {
-                        arrayManager->getImTexture(currentIndex, 2);
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Log info")) {
-                        std::cerr << "[TextureViewer] Preview NULL: layer=" << currentIndex
-                                  << " map=Height"
-                                  << " layerInitialized=" << (arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0)
-                                  << " layerAmount=" << arrayManager->layerAmount
-                                  << " bump.image=" << (void*)arrayManager->bumpArray.image
-                                  << " bumpSampler=" << (void*)arrayManager->bumpSampler
-                                  << std::endl;
-                    }
-                }
-
-                ImGui::Spacing();
-                ColSeparator();
-                ImGui::Spacing();
-                FieldLabel("Choose Height", "Click a thumbnail to select this texture layer.");
-                size_t idx = currentIndex;
-                if (ScrollableTexturePicker("PickerHeight", arrayManager->layerAmount, idx,
-                        [this](size_t l) { return arrayManager->getImTexture(l, 2); },
-                        48.0f, 2, true, true, kColumnWidth)) {
-                    currentIndex = idx;
-                }
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Roughness")) {
-                ImTextureID tex = arrayManager->getImTexture(currentIndex, 3);
-                if (tex) {
-                    ImGui::Image(tex, ImVec2(kPreviewSize, kPreviewSize));
-                } else {
-                    ImGui::Text("Texture preview not available");
-                    if (ImGui::Button("Recreate descriptor")) {
-                        arrayManager->getImTexture(currentIndex, 3);
-                    }
-                }
-
-                ImGui::Spacing();
-                ColSeparator();
-                ImGui::Spacing();
-                FieldLabel("Choose Roughness", "Click a thumbnail to select this texture layer.");
-                size_t idx = currentIndex;
-                if (ScrollableTexturePicker("PickerRoughness", arrayManager->layerAmount, idx,
-                        [this](size_t l) { return arrayManager->getImTexture(l, 3); },
-                        48.0f, 2, true, true, kColumnWidth)) {
-                    currentIndex = idx;
-                }
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("AO")) {
-                ImTextureID tex = arrayManager->getImTexture(currentIndex, 4);
-                if (tex) {
-                    ImGui::Image(tex, ImVec2(kPreviewSize, kPreviewSize));
-                } else {
-                    ImGui::Text("Texture preview not available");
-                    if (ImGui::Button("Recreate descriptor")) {
-                        arrayManager->getImTexture(currentIndex, 4);
-                    }
-                }
-
-                ImGui::Spacing();
-                ColSeparator();
-                ImGui::Spacing();
-                FieldLabel("Choose AO", "Click a thumbnail to select this texture layer.");
-                size_t idx = currentIndex;
-                if (ScrollableTexturePicker("PickerAO", arrayManager->layerAmount, idx,
-                        [this](size_t l) { return arrayManager->getImTexture(l, 4); },
-                        48.0f, 2, true, true, kColumnWidth)) {
-                    currentIndex = idx;
-                }
-                ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
         }
