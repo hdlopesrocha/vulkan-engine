@@ -63,6 +63,12 @@ void VegetationRenderer::cleanup(VulkanApp* app) {
         windParamsBuffer = {};
         windParamsMapped = nullptr;
     }
+    if (appPtr && fireParamsBuffer.buffer != VK_NULL_HANDLE) {
+        appPtr->destroyBuffer(fireParamsBuffer);
+        fireParamsBuffer = {};
+        fireParamsMapped = nullptr;
+    }
+    fireParamsCacheValid = false;
     destroyCulling();
     appPtr = nullptr;
 }
@@ -144,8 +150,9 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
     // Concatenated instance buffer: worst-case instances, device-local.
     // Single large buffer + offset management (no sparse aliasing: VMA has
     // no sparse allocator and most iGPUs lack sparseResidencyBuffer).
+    // Stride is kInstanceStride (pos vec4 + normal vec4 per instance).
     const VkDeviceSize concatSize =
-        static_cast<VkDeviceSize>(maxChunks) * maxInstancesPerChunk * sizeof(glm::vec4);
+        static_cast<VkDeviceSize>(maxChunks) * maxInstancesPerChunk * kInstanceStride;
     concatenatedInstanceBuffer = app->createBuffer(concatSize,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -340,11 +347,11 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     {
         VkMemoryRequirements reqs{};
         vkGetBufferMemoryRequirements(device, concatenatedInstanceBuffer.buffer, &reqs);
-        const VkDeviceSize concatSize = totalInstances * sizeof(glm::vec4);
+        const VkDeviceSize concatSize = totalInstances * kInstanceStride;
         if (reqs.size < concatSize) {
             std::cerr << "[veg] consolidateChunks: instance capacity exceeded "
                       << "(need " << totalInstances << " have "
-                      << (reqs.size / sizeof(glm::vec4)) << ") — bump preallocate() estimates\n";
+                      << (reqs.size / kInstanceStride) << ") — bump preallocate() estimates\n";
             assert(false && "VegetationRenderer instance capacity exceeded");
             return;
         }
@@ -395,8 +402,8 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
                 if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
                 VkBufferCopy region{};
                 region.srcOffset = 0;
-                region.dstOffset = off * sizeof(glm::vec4);
-                region.size = buf.count * sizeof(glm::vec4);
+                region.dstOffset = off * kInstanceStride;
+                region.size = buf.count * kInstanceStride;
                 vkCmdCopyBuffer(cmd, buf.buffer, concatenatedInstanceBuffer.buffer, 1, &region);
                 off += buf.count;
             }
@@ -653,6 +660,7 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
 
     updateWindParamsUBO(cameraPos);
+    updateFireParamsUBO();
     VkDescriptorSet sets[3] = { shadowDescriptorSet, vegDescriptorSet, windParamsDescSet };
     if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
     else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
@@ -851,15 +859,22 @@ void VegetationRenderer::init(VulkanApp* app) {
     // vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 — called
     // directly (see VulkanApp::createLogicalDevice drawIndirectCount check).
 
-    // ── Wind params UBO + descriptor set layout (set=2) ────────────────────
+    // ── Wind + fire params UBOs + descriptor set layout (set=2) ──────────
+    // binding 0 = wind params, binding 1 = fire params. Shaders that only
+    // declare binding 0 (impostors, shadow, capture) keep working: extra
+    // layout bindings unused by a stage are legal.
     {
-        VkDescriptorSetLayoutBinding binding{};
-        binding.binding         = 0;
-        binding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        binding.descriptorCount = 1;
-        binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutBinding bindings[2]{};
+        bindings[0].binding         = 0;
+        bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[1].binding         = 1;
+        bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         windParamsDescSetLayout = descAlloc.createLayout(
-            &binding, 1,
+            bindings, 2,
             VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
             nullptr,
             "VegetationRenderer: windParamsDescSetLayout");
@@ -881,12 +896,25 @@ void VegetationRenderer::init(VulkanApp* app) {
         windParamsCacheValid = false;
     }
 
-    // Allocate wind params descriptor set and bind the UBO.
+    // Allocate fire params UBO (persistently mapped host-visible).
+    {
+        fireParamsBuffer = app->createBuffer(sizeof(FireParamsUBO),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        fireParamsMapped = fireParamsBuffer.map(0);
+        FireParamsUBO fparams{};
+        std::memcpy(fireParamsMapped, &fparams, sizeof(fparams));
+        fireParamsCacheValid = false;
+    }
+
+    // Allocate wind params descriptor set and bind both UBOs.
     {
         windParamsDescSet = app->createDescriptorSet(windParamsDescSetLayout);
         DescriptorWriter(device)
             .writeBuffer(windParamsDescSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                          windParamsBuffer.buffer, 0, VK_WHOLE_SIZE)
+            .writeBuffer(windParamsDescSet, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                         fireParamsBuffer.buffer, 0, VK_WHOLE_SIZE)
             .flush();
         app->registerDescriptorSet(windParamsDescSet);
     }
@@ -922,7 +950,7 @@ void VegetationRenderer::init(VulkanApp* app) {
     bindingDescs[0].stride = sizeof(Vertex);
     bindingDescs[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
     bindingDescs[1].binding = 1;
-    bindingDescs[1].stride = sizeof(float) * 4;
+    bindingDescs[1].stride = static_cast<uint32_t>(kInstanceStride);
     bindingDescs[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
     // Baked heights aux (perf report 22 C2/H4): one float per instance.
     bindingDescs[2].binding = 2;
@@ -930,19 +958,31 @@ void VegetationRenderer::init(VulkanApp* app) {
     bindingDescs[2].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
     // Shared attribute descriptions: localPos at POS, tangent at COLOR, UV, plane-data at BRUSH_INDEX
-    std::vector<VkVertexInputAttributeDescription> attribDescs(6);
+    std::vector<VkVertexInputAttributeDescription> attribDescs(7);
     attribDescs[0] = { ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) };
     attribDescs[1] = { ATTR_COLOR, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) };
     attribDescs[2] = { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) };
     attribDescs[3] = { ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) };
     attribDescs[4] = { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 };
     attribDescs[5] = { ATTR_VEG_AUX, 2, VK_FORMAT_R32_SFLOAT, 0 };
+    // Per-instance surface normal: second vec4 of the instance payload.
+    attribDescs[6] = { ATTR_VEG_NORMAL, 1, VK_FORMAT_R32G32B32_SFLOAT, sizeof(glm::vec4) };
 
     // ── Shading pass pipeline (TRIANGLE_LIST, no geometry shader) ──
+    // Blending is standard alpha (SRC_ALPHA, ONE_MINUS_SRC_ALPHA): overlapping
+    // surfaces saturate toward the flame/leaf color instead of adding without
+    // bound (premultiplied ONE would stack all six crossed planes into a
+    // clipped white mass). The composite un-premultiplies by veg alpha, so
+    // grass (alpha 1) renders bit-identical to opaque.
     GraphicsPipelineConfig vegCfg{};
     vegCfg.cullMode = VK_CULL_MODE_NONE;
     vegCfg.depthWriteEnable = false;
     vegCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    vegCfg.blendEnable = true;
+    vegCfg.blendSrcColorFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    vegCfg.blendDstColorFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    vegCfg.blendSrcAlphaFactor = VK_BLEND_FACTOR_ONE;
+    vegCfg.blendDstAlphaFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     auto [pipeline, layout] = app->createGraphicsPipeline(
         { stages[0], stages[1] },
         std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1], bindingDescs[2]},
@@ -1016,12 +1056,14 @@ void VegetationRenderer::init(VulkanApp* app) {
         // Shadow vertex shader (vegetation_shadow.vert) omits ATTR_UV (location 2)
         // — do not include it in the attribute descriptions to avoid a PERFORMANCE warning.
         // H4/C2: aux baked height IS consumed — include it.
+        // ATTR_VEG_NORMAL is consumed for the normal-aligned billboard frame.
         std::vector<VkVertexInputAttributeDescription> shadowAttribDescs = {
             attribDescs[0], // ATTR_POS
             attribDescs[1], // ATTR_COLOR
             attribDescs[3], // ATTR_BRUSH_INDEX (location 4)
             attribDescs[4], // ATTR_INSTANCE   (location 5)
             attribDescs[5], // ATTR_VEG_AUX    (location 7)
+            attribDescs[6], // ATTR_VEG_NORMAL (location 8)
         };
         GraphicsPipelineConfig shadowCfg{};
         shadowCfg.cullMode = VK_CULL_MODE_NONE;
@@ -1144,9 +1186,9 @@ void VegetationRenderer::logUtilization() const {
     const size_t inst = getInstanceTotal();
     const double cPct = kMaxVegChunks > 0 ? 100.0 * double(chunks) / double(kMaxVegChunks) : 0.0;
     const double iPct = kMaxVegInstances > 0 ? 100.0 * double(inst) / double(uint64_t(kMaxVegInstances)) : 0.0;
-    std::printf("[memutil] vegetation chunks %zu/%u (%.1f%%), instances %zu/%llu (%.1f%%, %.1f of 128 MB), pending chunks %zu%s\n",
+    std::printf("[memutil] vegetation chunks %zu/%u (%.1f%%), instances %zu/%llu (%.1f%%, %.1f of 256 MB), pending chunks %zu%s\n",
         chunks, kMaxVegChunks, cPct, inst, (unsigned long long)kMaxVegInstances, iPct,
-        inst * 16.0 / 1048576.0, pendingChunkCount(),
+        inst * double(kInstanceStride) / 1048576.0, pendingChunkCount(),
         (inst > 0 && iPct < 25.0) ? "  <-- LOW utilization, consider a smaller tier (report 22 C1)" : "");
 }
 
@@ -1334,7 +1376,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
 
         VkVertexInputBindingDescription depthBindingDescs[3]{};
         depthBindingDescs[0] = { 0, sizeof(Vertex),       VK_VERTEX_INPUT_RATE_VERTEX   };
-        depthBindingDescs[1] = { 1, sizeof(float) * 4,    VK_VERTEX_INPUT_RATE_INSTANCE };
+        depthBindingDescs[1] = { 1, static_cast<uint32_t>(kInstanceStride), VK_VERTEX_INPUT_RATE_INSTANCE };
         // Baked heights aux (perf report 22 C2/H4): one float per instance.
         depthBindingDescs[2] = { 2, sizeof(float),        VK_VERTEX_INPUT_RATE_INSTANCE };
 
@@ -1360,6 +1402,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
                 { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
                 { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
                 { ATTR_VEG_AUX, 2, VK_FORMAT_R32_SFLOAT, 0                                          },
+                { ATTR_VEG_NORMAL, 1, VK_FORMAT_R32G32B32_SFLOAT, sizeof(glm::vec4)                  },
             },
             depthSetLayouts,
             &depthPCRange,
@@ -1390,6 +1433,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
                 { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
                 { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
                 { ATTR_VEG_AUX, 2, VK_FORMAT_R32_SFLOAT, 0                                          },
+                { ATTR_VEG_NORMAL, 1, VK_FORMAT_R32G32B32_SFLOAT, sizeof(glm::vec4)                  },
             },
             depthSetLayouts,
             &depthPCRange,
@@ -1424,7 +1468,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
 
     VkVertexInputBindingDescription bindingDescs[3]{};
     bindingDescs[0] = { 0, sizeof(Vertex),       VK_VERTEX_INPUT_RATE_VERTEX   };
-    bindingDescs[1] = { 1, sizeof(float) * 4,    VK_VERTEX_INPUT_RATE_INSTANCE };
+    bindingDescs[1] = { 1, static_cast<uint32_t>(kInstanceStride), VK_VERTEX_INPUT_RATE_INSTANCE };
     // Baked heights aux (perf report 22 C2/H4): one float per instance.
     bindingDescs[2] = { 2, sizeof(float),        VK_VERTEX_INPUT_RATE_INSTANCE };
 
@@ -1448,6 +1492,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
             { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
             { ATTR_VEG_AUX, 2, VK_FORMAT_R32_SFLOAT, 0                                          },
+            { ATTR_VEG_NORMAL, 1, VK_FORMAT_R32G32B32_SFLOAT, sizeof(glm::vec4)                  },
         },
         impSetLayouts,
         &pcRange,
@@ -1463,10 +1508,12 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         std::cerr << "[VegetationRenderer] Impostor pipeline created: " << (void*)impostorPipeline << "\n";
 }
 
-VegetationRenderer::WindPushConstants VegetationRenderer::buildWindPushConstants() const {
+VegetationRenderer::WindPushConstants VegetationRenderer::buildWindPushConstants(bool fireOnly) const {
     WindPushConstants pc{};
     pc.billboardScale     = billboardScale;
-    pc.windEnabled        = windSettings.enabled ? 1.0f : 0.0f;
+    // 2.0 selects the fire-only pass in vegetation.vert (dedicated blended
+    // draws so flame planes accumulate instead of depth-fighting).
+    pc.windEnabled        = fireOnly ? 2.0f : (windSettings.enabled ? 1.0f : 0.0f);
     pc.windTime           = windTimeSeconds;
     pc.impostorDistance   = impostorDistance;
     return pc;
@@ -1520,6 +1567,39 @@ void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
     std::memcpy(windParamsMapped, &params, sizeof(params));
     windParamsCache = params;
     windParamsCacheValid = true;
+}
+
+void VegetationRenderer::updateFireParamsUBO() {
+    if (!fireParamsMapped) return;
+    const FireSettings& f = fireSettings;
+
+    FireParamsUBO params{};
+    params.enabledSizeSpeedIntensity = glm::vec4(
+        f.enabled ? 1.0f : 0.0f,
+        std::max(0.1f, f.size),
+        std::max(0.0f, f.speed),
+        std::max(0.0f, f.intensity));
+    params.shape = glm::vec4(
+        std::clamp(f.flicker, 0.0f, 1.0f),
+        std::max(0.1f, f.noiseScale),
+        std::max(0.1f, f.heightScale),
+        std::max(0.0f, f.turbulence));
+    params.motion = glm::vec4(
+        std::max(0.0f, f.riseSpeed),
+        std::clamp(f.windInfluence, 0.0f, 1.0f),
+        std::clamp(f.alpha, 0.0f, 1.0f),
+        std::max(0.0f, f.emissive));
+    params.innerColor = glm::vec4(f.innerColor, 0.0f);
+    params.midColor   = glm::vec4(f.midColor, 0.0f);
+    params.outerColor = glm::vec4(f.outerColor, 0.0f);
+    params.extra = glm::vec4(std::clamp(f.smoke, 0.0f, 1.0f), 0.0f, 0.0f, 0.0f);
+
+    // Write-on-change: depth + color + cascade draws share one payload.
+    if (fireParamsCacheValid && std::memcmp(&fireParamsCache, &params, sizeof(params)) == 0)
+        return;
+    std::memcpy(fireParamsMapped, &params, sizeof(params));
+    fireParamsCache = params;
+    fireParamsCacheValid = true;
 }
 
 uint32_t VegetationRenderer::vegFrame() const {
@@ -1581,10 +1661,13 @@ void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffe
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
     if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
     updateWindParamsUBO(cameraPos);
+    updateFireParamsUBO();
     WindPushConstants pc = buildWindPushConstants();
     VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
 
-    // Depth prepass
+    // Depth prepass (vegetation only — fire writes no depth here so its
+    // planes cannot depth-cull each other; fire depth comes from the
+    // fire-only draw below).
     if (vegetationDepthPipeline != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationDepthPipeline);
         else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationDepthPipeline);
@@ -1593,6 +1676,10 @@ void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffe
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             vegetationDepthPipelineLayout, 0, 3, sets, 0, nullptr);
         issueVegetationDraws(commandBuffer, vegetationDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
+        // Fire-only depth: alpha-tested flame cores seed the composite
+        // presence + occlusion depth after all fire color is blended.
+        WindPushConstants firePc = buildWindPushConstants(true);
+        issueVegetationDraws(commandBuffer, vegetationDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, firePc);
     }
 
 }
@@ -1606,10 +1693,11 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
     if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
     updateWindParamsUBO(cameraPos);
+    updateFireParamsUBO();
     WindPushConstants pc = buildWindPushConstants();
     VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
 
-    // Shading pass
+    // Shading pass (vegetation only — same reason as the depth prepass).
     if (vegetationPipeline != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationPipeline);
         else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
@@ -1618,6 +1706,10 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             pipelineLayout, 0, 3, sets, 0, nullptr);
         issueVegetationDraws(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
+        // Fire-only shading: premultiplied-blended over the grass above, so
+        // intersecting flame planes accumulate instead of z-fighting.
+        WindPushConstants firePc = buildWindPushConstants(true);
+        issueVegetationDraws(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, firePc);
     }
     // Impostor color pass
     if (impostorPipeline != VK_NULL_HANDLE &&
@@ -1691,12 +1783,14 @@ float biomeNoise(const glm::vec2& xz) {
 
 void VegetationRenderer::generateChunkInstancesCPU(NodeID chunkId,
                                                    const std::vector<glm::vec3>& positions,
+                                                   const std::vector<glm::vec3>& normals,
                                                    const std::vector<uint32_t>& grassIndices,
+                                                   const std::vector<uint32_t>& fireIndices,
                                                    const glm::vec3& chunkCenter,
                                                    uint32_t instancesPerTriangle, VulkanApp* app,
                                                    uint32_t seed) {
     (void)app; // used later in processPendingChunks
-    if (grassIndices.size() < 3 || instancesPerTriangle == 0 || positions.empty()) {
+    if ((grassIndices.size() < 3 && fireIndices.empty()) || instancesPerTriangle == 0 || positions.empty()) {
         destroyInstanceBuffer(chunkId, app);
         return;
     }
@@ -1704,7 +1798,9 @@ void VegetationRenderer::generateChunkInstancesCPU(NodeID chunkId,
     PendingChunk pc;
     pc.chunkId             = chunkId;
     pc.positions           = positions;
+    pc.normals             = normals;
     pc.grassIndices        = grassIndices;
+    pc.fireIndices         = fireIndices;
     pc.chunkCenter         = chunkCenter;
     pc.instancesPerTriangle = instancesPerTriangle;
     pc.seed                = seed;
@@ -1734,9 +1830,11 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         }
 
         const uint32_t triCount = static_cast<uint32_t>(pc.grassIndices.size()) / 3;
-        const uint32_t instanceCount = triCount * pc.instancesPerTriangle;
+        const uint32_t fireTriCount = static_cast<uint32_t>(pc.fireIndices.size()) / 3;
+        const uint32_t instanceCount = (triCount + fireTriCount) * pc.instancesPerTriangle;
 
-        const float maxBillboardRadius = billboardScale * 2.1f; // max heightScale (1.4) × max corner offset (1.5)
+        const float maxBillboardRadius = std::max(billboardScale * 2.1f, // max heightScale (1.4) × max corner offset (1.5)
+                                                      fireSettings.size * (fireSettings.heightScale + 1.0f));
 
         // Compute AABB from vertex positions (conservatively bounds all instance anchors)
         glm::vec3 aabbMin( std::numeric_limits<float>::max());
@@ -1751,8 +1849,11 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         // Reuse frame-thread scratch (clear + reserve) instead of allocating
         // a fresh vector per processed chunk.
         instanceGenScratch.clear();
-        instanceGenScratch.reserve(instanceCount * 4);
+        instanceGenScratch.reserve(instanceCount * 8);
         std::vector<float>& validData = instanceGenScratch;
+
+        // Per-vertex normals ride parallel to positions (same indices).
+        const bool hasNormals = (pc.normals.size() == pc.positions.size());
 
         for (uint32_t tri = 0; tri < triCount; ++tri) {
             const uint32_t tb = tri * 3;
@@ -1765,9 +1866,8 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
             const glm::vec3 v1 = pc.positions[i1];
             const glm::vec3 v2 = pc.positions[i2];
 
-            const glm::vec3 fn = glm::cross(v1 - v0, v2 - v0);
-            if (glm::abs(fn.y) <= 0.5f * glm::length(fn)) continue;
-
+            // No slope filter: grass is created for any surface normal (cliffs,
+            // overhangs included) — the billboard frame tilts onto the normal.
             const glm::vec3 tc = (v0 + v1 + v2) / 3.0f;
             const uint32_t tch = posHash(tc);
 
@@ -1789,14 +1889,82 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 uint32_t rs = pc.seed ^ posHash(pos);
                 float rf = randFloat(rs);
 
+                // Smooth surface normal (barycentric interpolation): the billboard
+                // frame tilts onto this in the vertex shader so grass grows
+                // along the terrain normal instead of +Y.
+                glm::vec3 nrm(0.0f, 1.0f, 0.0f);
+                if (hasNormals) {
+                    nrm = u * pc.normals[i0] + v * pc.normals[i1] + w * pc.normals[i2];
+                    const float n2 = glm::dot(nrm, nrm);
+                    nrm = (n2 > 1e-8f) ? nrm * (1.0f / std::sqrt(n2)) : glm::vec3(0.0f, 1.0f, 0.0f);
+                }
+
                 validData.push_back(pos.x);
                 validData.push_back(pos.y);
                 validData.push_back(pos.z);
                 validData.push_back(float(bi) + rf);
+                validData.push_back(nrm.x);
+                validData.push_back(nrm.y);
+                validData.push_back(nrm.z);
+                validData.push_back(0.0f);
             }
         }
 
-        const uint32_t validCount = static_cast<uint32_t>(validData.size() / 4);
+        // Fire instances are created from brush-4 (lava) virtual slots — never
+        // from grass. No biome gating (lava placement is already explicit);
+        // the widget density roll below thins them instead.
+        if (fireSettings.enabled && fireSettings.density > 0.0f && !pc.fireIndices.empty()) {
+            const float fireDensity = std::clamp(fireSettings.density, 0.0f, 1.0f);
+            const uint32_t fireTriCount = static_cast<uint32_t>(pc.fireIndices.size()) / 3;
+            for (uint32_t tri = 0; tri < fireTriCount; ++tri) {
+                const uint32_t tb = tri * 3;
+                const uint32_t i0 = pc.fireIndices[tb + 0];
+                const uint32_t i1 = pc.fireIndices[tb + 1];
+                const uint32_t i2 = pc.fireIndices[tb + 2];
+                if (i0 >= pc.positions.size() || i1 >= pc.positions.size() || i2 >= pc.positions.size()) continue;
+
+                const glm::vec3 v0 = pc.positions[i0];
+                const glm::vec3 v1 = pc.positions[i1];
+                const glm::vec3 v2 = pc.positions[i2];
+
+                // No slope filter: fire is created for any surface normal, same as grass.
+                const glm::vec3 tc = (v0 + v1 + v2) / 3.0f;
+                const uint32_t tch = posHash(tc);
+
+                for (uint32_t s = 0; s < pc.instancesPerTriangle; ++s) {
+                    uint32_t rng = (pc.seed ^ 0x51ed2707u) ^ tch ^ (tri * 2654435761u) ^ (s * 19349663u);
+                    float u = randFloat(rng);
+                    float v = randFloat(rng);
+                    if (u + v > 1.0f) { u = 1.0f - u; v = 1.0f - v; }
+                    float w = 1.0f - u - v;
+                    glm::vec3 pos = u * v0 + v * v1 + w * v2;
+
+                    uint32_t frs = rng ^ 0x9e3779b9u;
+                    if (randFloat(frs) >= fireDensity) continue;
+
+                    uint32_t rs = pc.seed ^ posHash(pos);
+                    float rf = randFloat(rs);
+
+                    glm::vec3 nrm(0.0f, 1.0f, 0.0f);
+                    if (hasNormals) {
+                        nrm = u * pc.normals[i0] + v * pc.normals[i1] + w * pc.normals[i2];
+                        const float n2 = glm::dot(nrm, nrm);
+                        nrm = (n2 > 1e-8f) ? nrm * (1.0f / std::sqrt(n2)) : glm::vec3(0.0f, 1.0f, 0.0f);
+                    }
+
+                    validData.push_back(pos.x);
+                    validData.push_back(pos.y);
+                    validData.push_back(pos.z);
+                    validData.push_back(float(kFireBillboardIndex) + rf);
+                    validData.push_back(nrm.x);
+                    validData.push_back(nrm.y);
+                    validData.push_back(nrm.z);
+                    validData.push_back(0.0f);
+                }
+            }
+        }
+
+        const uint32_t validCount = static_cast<uint32_t>(validData.size() / 8);
         if (validCount == 0) {
             destroyInstanceBuffer(pc.chunkId, app);
             continue;
@@ -1922,7 +2090,9 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
 void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geometry& geom) {
     if (geom.indices.size() < 3 || geom.vertices.empty()) return;
     try {
-        constexpr int kGrassBrushIndex = 3; // See LandBrush::grass
+        constexpr int kGrassBrushIndex = 3; // See LandBrush::grass.
+        // Fire billboard instances are created from brush kFireTerrainBrushIndex
+        // (lava) triangles — collected separately below, never from grass.
         // Instances per world-space unit² of triangle area.
         constexpr float kVegetationDensity = 0.01f;
 
@@ -1930,62 +2100,75 @@ void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geom
         std::vector<glm::vec3> positions;
         positions.reserve(geom.vertices.size());
         for (const auto &v : geom.vertices) positions.push_back(v.position);
+        // Parallel per-vertex normals: interpolated barycentrically per instance
+        // so billboards tilt onto the smooth surface normal.
+        std::vector<glm::vec3> normals;
+        normals.reserve(geom.vertices.size());
+        for (const auto &v : geom.vertices) normals.push_back(v.normal);
 
         // Build area-weighted virtual slots using unbiased stochastic rounding.
         // expected = area * density (instances per world-space unit area)
         // count = floor(expected) + Bernoulli(frac(expected))
         // This preserves area-proportional density without bias.
-        std::vector<uint32_t> grassIndices;
-        grassIndices.reserve(geom.indices.size());
         const uint32_t chunkSeed = static_cast<uint32_t>(nid ^ (nid >> 32)) ^ 0x9e3779b9u;
         std::mt19937 samplingRng(chunkSeed);
         std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
-        for (size_t i = 0; i + 2 < geom.indices.size(); i += 3) {
-            const uint32_t i0 = geom.indices[i + 0];
-            const uint32_t i1 = geom.indices[i + 1];
-            const uint32_t i2 = geom.indices[i + 2];
-            if (i0 >= geom.vertices.size() || i1 >= geom.vertices.size() || i2 >= geom.vertices.size()) continue;
-            const bool hasGrass =
-                geom.vertices[i0].brushIndex == kGrassBrushIndex ||
-                geom.vertices[i1].brushIndex == kGrassBrushIndex ||
-                geom.vertices[i2].brushIndex == kGrassBrushIndex;
-            if (!hasGrass) continue;
-            const glm::vec3& v0 = geom.vertices[i0].position;
-            const glm::vec3& v1 = geom.vertices[i1].position;
-            const glm::vec3& v2 = geom.vertices[i2].position;
-            // Skip steep / downward-facing triangles (same criterion as compute shader).
-            // This avoids allocating output slots that the compute shader would discard,
-            // preventing garbage uninitialized memory from reaching the draw call.
-            const glm::vec3 faceNormal = glm::cross(v1 - v0, v2 - v0);
-            if (glm::abs(faceNormal.y) <= 0.5f * glm::length(faceNormal)) continue;
-            const float area = 0.5f * glm::length(faceNormal);
-            const float expectedInstances = std::max(0.0f, area * kVegetationDensity);
-            uint32_t slotCount = static_cast<uint32_t>(std::floor(expectedInstances));
-            const float fractional = expectedInstances - static_cast<float>(slotCount);
-            if (unitDist(samplingRng) < fractional) {
-                ++slotCount;
+        auto collectSlots = [&](int brushIndex, std::vector<uint32_t>& out) {
+            for (size_t i = 0; i + 2 < geom.indices.size(); i += 3) {
+                const uint32_t i0 = geom.indices[i + 0];
+                const uint32_t i1 = geom.indices[i + 1];
+                const uint32_t i2 = geom.indices[i + 2];
+                if (i0 >= geom.vertices.size() || i1 >= geom.vertices.size() || i2 >= geom.vertices.size()) continue;
+                const bool hasBrush =
+                    geom.vertices[i0].brushIndex == brushIndex ||
+                    geom.vertices[i1].brushIndex == brushIndex ||
+                    geom.vertices[i2].brushIndex == brushIndex;
+                if (!hasBrush) continue;
+                const glm::vec3& v0 = geom.vertices[i0].position;
+                const glm::vec3& v1 = geom.vertices[i1].position;
+                const glm::vec3& v2 = geom.vertices[i2].position;
+                // Any orientation accepted: instances tilt onto the surface normal
+                // in the vertex shader, so steep and downward-facing triangles
+                // contribute slots like any other.
+                const glm::vec3 faceNormal = glm::cross(v1 - v0, v2 - v0);
+                const float area = 0.5f * glm::length(faceNormal);
+                const float expectedInstances = std::max(0.0f, area * kVegetationDensity);
+                uint32_t slotCount = static_cast<uint32_t>(std::floor(expectedInstances));
+                const float fractional = expectedInstances - static_cast<float>(slotCount);
+                if (unitDist(samplingRng) < fractional) {
+                    ++slotCount;
+                }
+                for (uint32_t s = 0; s < slotCount; ++s) {
+                    out.push_back(i0);
+                    out.push_back(i1);
+                    out.push_back(i2);
+                }
             }
-            for (uint32_t s = 0; s < slotCount; ++s) {
-                grassIndices.push_back(i0);
-                grassIndices.push_back(i1);
-                grassIndices.push_back(i2);
-            }
-        }
+        };
+        std::vector<uint32_t> grassIndices;
+        grassIndices.reserve(geom.indices.size());
+        collectSlots(kGrassBrushIndex, grassIndices);
+        std::vector<uint32_t> fireIndices;
+        fireIndices.reserve(geom.indices.size() / 4);
+        collectSlots(kFireTerrainBrushIndex, fireIndices);
 
         // Shuffle virtual triangle slots per chunk so reducing indirect instanceCount
         // keeps a random spatial subset instead of always dropping the tail.
-        if (grassIndices.size() >= 6) {
-            std::mt19937 shuffleRng(chunkSeed ^ 0x85ebca6bu);
-            const size_t triangleCount = grassIndices.size() / 3;
+        auto shuffleSlots = [&](std::vector<uint32_t>& slots, uint32_t salt) {
+            if (slots.size() < 6) return;
+            std::mt19937 shuffleRng(chunkSeed ^ salt);
+            const size_t triangleCount = slots.size() / 3;
             for (size_t slot = triangleCount - 1; slot > 0; --slot) {
                 std::uniform_int_distribution<size_t> dist(0, slot);
                 const size_t other = dist(shuffleRng);
                 if (other == slot) continue;
                 for (size_t component = 0; component < 3; ++component) {
-                    std::swap(grassIndices[slot * 3 + component], grassIndices[other * 3 + component]);
+                    std::swap(slots[slot * 3 + component], slots[other * 3 + component]);
                 }
             }
-        }
+        };
+        shuffleSlots(grassIndices, 0x85ebca6bu);
+        shuffleSlots(fireIndices, 0x27d4eb2du);
 
         // Each virtual triangle slot produces exactly 1 instance.
         uint32_t instancesPerTriangle = 1u;
@@ -1997,20 +2180,20 @@ void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geom
         if (!positions.empty()) {
             chunkCenter /= static_cast<float>(positions.size());
         }
-        if (grassIndices.size() < 3) {
-            // No grass triangles in this chunk; ensure old chunk vegetation is cleared.
+        if (grassIndices.size() < 3 && fireIndices.size() < 3) {
+            // No grass or fire triangles in this chunk; ensure old chunk vegetation is cleared.
             if (std::getenv("VULKAN_DISABLE_VEGETATION")) {
                 return;
             }
             // CPU path handles the empty case (clears any previous chunk data).
-            generateChunkInstancesCPU(nid, positions, grassIndices,
+            generateChunkInstancesCPU(nid, positions, normals, grassIndices, fireIndices,
                 chunkCenter, instancesPerTriangle, app, seed);
             return;
         }
 
         // CPU-side instance generation — avoids RADV GPUVM faults where
         // the Texture Cache/Pipe cannot read storage buffers on iGPUs.
-        generateChunkInstancesCPU(nid, positions, grassIndices,
+        generateChunkInstancesCPU(nid, positions, normals, grassIndices, fireIndices,
             chunkCenter, instancesPerTriangle, app, seed);
     } catch (const std::exception &e) {
         std::cerr << "[VegetationRenderer] Vegetation generation failed for node " << (unsigned long long)nid

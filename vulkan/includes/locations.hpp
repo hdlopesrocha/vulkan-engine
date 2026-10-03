@@ -14,6 +14,9 @@ static constexpr uint32_t ATTR_INSTANCE = 5u;
 // Baked per-instance vegetation height scale (perf report 22 C2/H4):
 // float per instance in the concatenated aux buffer (binding 2).
 static constexpr uint32_t ATTR_VEG_AUX = 7u;
+// Per-instance surface normal (second vec4 of the 32-byte instance payload,
+// binding 1, offset 16): grass grows along the terrain normal, not +Y.
+static constexpr uint32_t ATTR_VEG_NORMAL = 8u;
 
 // Fragment output locations (match render pass attachments)
 static constexpr uint32_t FRAG_OUT_COLOR = 0u;

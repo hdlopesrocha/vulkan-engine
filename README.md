@@ -175,7 +175,7 @@ Composition is done by the post-process pass: the water pass renders to its own 
 
 - **Instance generation** — CPU-side, per finest chunk: area-weighted virtual slots with unbiased stochastic rounding, biome noise, steep-face filtering and shuffled submission into device-local instance buffers, drained a few chunks per frame.
 - **Billboards** — vertex-shader expanded crossed planes (no geometry shader), three billboard types, alpha from an opacity/normal-confidence sigmoid.
-- **Impostors** — beyond `impostorDistance`, pre-captured impostors replace billboards: 20 Fibonacci camera views × 3 billboard types captured to 60-layer albedo, normal and depth arrays. Depth is reprojected per fragment for correct deferred depth and shadow casting, and a dither cross-fade blends billboards into impostors.
+- **Impostors** — beyond `impostorDistance`, pre-captured impostors replace billboards: 20 Fibonacci camera views × 4 billboard types (3 vegetation + fire) captured to 80-layer albedo, normal and depth arrays. Depth is reprojected per fragment for correct deferred depth and shadow casting, and a dither cross-fade blends billboards into impostors.
 - **Pipelines** — shading, depth prepass, EVSM shadow and impostor color/depth/shadow variants. Culling and compaction run on the GPU through the shared indirect dispatcher.
 - **Editing** — `AtlasManager` slices billboard atlases (auto-detected tiles) and `VegetationAtlasEditor` edits them live; `BillboardService` bakes composed layers into the three texture arrays that `ImpostorService` captures from.
 

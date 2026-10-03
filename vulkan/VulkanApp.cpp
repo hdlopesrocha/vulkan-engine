@@ -3555,7 +3555,11 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     VkFrontFace frontFace,
     bool depthTestEnable,
     bool blendEnable,
-    VkPipelineLayout existingLayout) {
+    VkPipelineLayout existingLayout,
+    VkBlendFactor blendSrcColorFactor,
+    VkBlendFactor blendDstColorFactor,
+    VkBlendFactor blendSrcAlphaFactor,
+    VkBlendFactor blendDstAlphaFactor) {
 
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
     const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions = descriptions;
@@ -3612,11 +3616,11 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     }
     colorBlendAttachment.blendEnable = blendEnable ? VK_TRUE : VK_FALSE;
     if (blendEnable) {
-        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;
-        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+        colorBlendAttachment.srcColorBlendFactor = blendSrcColorFactor;
+        colorBlendAttachment.dstColorBlendFactor = blendDstColorFactor;
         colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachment.srcAlphaBlendFactor = blendSrcAlphaFactor;
+        colorBlendAttachment.dstAlphaBlendFactor = blendDstAlphaFactor;
         colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
     }
 
@@ -3736,7 +3740,9 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
         config.colorFormats, config.depthFormat, config.noColorAttachment,
         config.depthBiasEnable, config.frontFace,
         config.depthTestEnable,
-        config.blendEnable);
+        config.blendEnable, VK_NULL_HANDLE,
+        config.blendSrcColorFactor, config.blendDstColorFactor,
+        config.blendSrcAlphaFactor, config.blendDstAlphaFactor);
 }
 
 VkPipeline VulkanApp::createGraphicsPipelineWithLayout(
@@ -3756,7 +3762,9 @@ VkPipeline VulkanApp::createGraphicsPipelineWithLayout(
         config.depthBiasEnable, config.frontFace,
         config.depthTestEnable,
         config.blendEnable,
-        layout).first;
+        layout,
+        config.blendSrcColorFactor, config.blendDstColorFactor,
+        config.blendSrcAlphaFactor, config.blendDstAlphaFactor).first;
 }
 
 Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, bool zeroInit) {

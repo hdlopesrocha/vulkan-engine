@@ -7,6 +7,7 @@ layout(location = VARY_BRUSHPATCH) in flat int inBrushIndex;
 layout(location = VARY_POSWORLD) in      vec3 inWorldPos;    // interpolated vertex world position
 layout(location = VARY_PLANE_NORMAL) in flat vec3 inPlaneNormal; // billboard face normal (world space)
 layout(location = VARY_POSLIGHT) in flat vec3 inTangentWS;   // billboard tangent (world space)
+layout(location = VARY_ROTFRAC) in float inFireSeed; // per-instance random for fire animation
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 #include "includes/ubo.glsl"
@@ -40,6 +41,8 @@ layout(push_constant) uniform PushConstants {
     float impostorDistance;
 };
 
+#include "includes/fire_common.glsl"
+
 vec3 fragPosWorld; // set in main() — required by shadows.glsl cascades 1 & 2
 
 #include "includes/shadows.glsl"
@@ -55,6 +58,20 @@ void main() {
     vec3 coord = vec3(inTexCoord.xy, inTexCoord.z);
     bool shadowPass = windEnabled < 0.0;
     fragPosWorld = inWorldPos; // must be set before any ShadowCalculation call
+
+    // Fire billboards skip the atlas entirely (layer FIRE_BILLBOARD_INDEX is
+    // out of bounds for the 3-layer atlas) and shade procedurally instead.
+    // Fire is unlit emissive: it glows rather than receiving light/shadow.
+    // Translucency comes from the alpha channel: the composite mixes the veg
+    // target over the solid scene by veg alpha, so soft flame edges fade into
+    // whatever is behind them. The pipeline stays opaque (no blending).
+    if (inBrushIndex == FIRE_BILLBOARD_INDEX) {
+        vec4 flame = evaluateFire(inTexCoord.xy, inFireSeed, windTime);
+        if (flame.a < 0.02) discard;
+        outColor.rgb = flame.rgb;
+        outColor.a   = clamp(flame.a, 0.0, 1.0);
+        return;
+    }
 
     // Per-pixel leaf samples.
     vec4  leafAlbedo  = texture(albedoArray,  coord);

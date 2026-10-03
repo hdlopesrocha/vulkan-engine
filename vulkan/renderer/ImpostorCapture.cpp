@@ -64,7 +64,7 @@ void ImpostorCapture::init(VulkanApp* app, VegetationRenderer* vegRenderer) {
     imguiDescSets.fill(VK_NULL_HANDLE);
     capturedTypes = 0;
 
-    // Pre-transition all 60 layers UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
+    // Pre-transition all 80 layers UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
     // so the render pass sees a writable layout before the first capture.
     app->runSingleTimeCommands([&](VkCommandBuffer cb) {
         app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
@@ -192,14 +192,38 @@ void ImpostorCapture::capture(VulkanApp* app,
     updateTexDescSet(app->getDevice(), albedoView, normalView, opacityView, sampler);
 
     // Single centred instance at the origin with the correct billboard type.
+    // Fire (billboardType 3) captures a procedural flame snapshot: the
+    // VEG_CAPTURE vertex shader sizes it from the live fire settings and the
+    // push-constant mode below selects the fire-only pass for it.
+    const bool isFireType = (billboardType == VegetationRenderer::kFireBillboardIndex);
     {
         const glm::vec4 inst(0.0f, 0.0f, 0.0f, float(billboardType));
         std::memcpy(captureInstMapped, &inst, sizeof(inst));
     }
 
+    // Fire framing matches the runtime impostor quad mapping (flame base at
+    // the frame bottom, tip at the top) so the snapshot needs no UV remap.
+    // The frame hugs the flame: half-extent ~= flame half-height, so the
+    // snapshot shows the flames at real-fire scale instead of swimming in
+    // empty frame (which the quad mapping would then shrink).
+    float fireH = billboardScale;
+    if (isFireType && sharedVegRenderer) {
+        const auto& fire = sharedVegRenderer->getFireSettings();
+        fireH = std::max(0.1f, fire.size) * std::max(0.1f, fire.heightScale);
+    }
+
     // Pre-compute all 20 UBOs.
-    const glm::vec3 center(0.0f, billboardScale * 0.5f, 0.0f);
-    const float captureDist = billboardScale * 2.5f;
+    const glm::vec3 center(0.0f, isFireType ? fireH * 0.5f : billboardScale * 0.5f, 0.0f);
+    const float captureDist = isFireType
+        ? std::max(fireH * 0.92f, billboardScale * 1.0f)
+        : billboardScale * 2.5f;
+    if (isFireType) {
+        // Diagnostic: proves which framing baked layers 60-79 (tight fit
+        // ~= live flame size; loose/grass framing here means a stale build).
+        fprintf(stderr, "[ImpostorCapture] fire framing: size=%.2f heightScale=%.2f fireH=%.2f dist=%.2f centerY=%.2f\n",
+                billboardScale, (fireH / std::max(billboardScale, 1e-6f)),
+                fireH, captureDist, center.y);
+    }
     const float nearP       = 0.5f;
     const float farP        = captureDist * 2.0f + billboardScale;
     const glm::vec4 lightDir   = glm::vec4(glm::normalize(glm::vec3(0.6f, -1.0f, 0.5f)), 0.0f);
@@ -232,9 +256,11 @@ void ImpostorCapture::capture(VulkanApp* app,
     std::memcpy(captureInvVPMapped, captureInvVP.data(), TOTAL_LAYERS * sizeof(glm::mat4));
 
     // Push constant: no wind, density culling disabled, impostorDistance=0.
+    // Fire captures select the fire-only pass (2.0) so the canonical fire
+    // instance survives the vegetation/fire draw-mode split.
     CapturePC pc{};
     pc.billboardScale     = billboardScale;
-    pc.windEnabled        = 0.0f;
+    pc.windEnabled        = isFireType ? 2.0f : 0.0f;
     pc.windTime           = 0.0f;
     pc.impostorDistance   = 0.0f;
 
@@ -347,8 +373,16 @@ void ImpostorCapture::captureAll(VulkanApp* app,
                                    VkImageView albedoView, VkImageView normalView,
                                    VkImageView opacityView, VkSampler sampler,
                                    float billboardScale) {
+    // Fire snapshots use the live fire size (the VEG_CAPTURE shader sizes
+    // flames from the fire UBO, not from this scale); the scale only frames
+    // the capture cameras, which capture() derives per type.
+    float fireScale = billboardScale;
+    if (sharedVegRenderer) {
+        fireScale = std::max(0.1f, sharedVegRenderer->getFireSettings().size);
+    }
     for (uint32_t t = 0; t < NUM_BILLBOARD_TYPES; ++t) {
-        capture(app, albedoView, normalView, opacityView, sampler, billboardScale, t);
+        const float s = (t == VegetationRenderer::kFireBillboardIndex) ? fireScale : billboardScale;
+        capture(app, albedoView, normalView, opacityView, sampler, s, t);
     }
     fprintf(stderr, "[ImpostorCapture] captureAll complete: %u types × %u views = %u layers\n",
             NUM_BILLBOARD_TYPES, NUM_VIEWS, TOTAL_LAYERS);
@@ -469,7 +503,7 @@ void ImpostorCapture::createCaptureImages(VulkanApp* app) {
         app->resources.addImageView(captureNormalLayerViews[i], "ImpostorCapture: captureNormalLayerView");
     }
 
-    // ── Depth capture image (device Z, R32_SFLOAT, 60 layers) ──
+    // ── Depth capture image (device Z, R32_SFLOAT, 80 layers) ──
     {
         const VkFormat depthFmt = VK_FORMAT_R32_SFLOAT;
         VkImageCreateInfo imgInfo{};

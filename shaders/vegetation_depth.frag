@@ -2,12 +2,14 @@
 
 #include "includes/locations.glsl"
 #include "includes/ubo.glsl"
+#include "includes/perlin.glsl"
 
 layout(location = VARY_UV) in vec3 inTexCoord;
 layout(location = VARY_BRUSHPATCH) flat in int inBrushIndex;
 layout(location = VARY_POSWORLD) in vec3 inWorldPos;
 layout(location = VARY_PLANE_NORMAL) flat in vec3 inPlaneNormal;
 layout(location = VARY_POSLIGHT) flat in vec3 inTangentWS;
+layout(location = VARY_ROTFRAC) in float inFireSeed; // per-instance random for fire animation
 
 layout(set = 1, binding = 1) uniform sampler2DArray normalArray;
 layout(set = 1, binding = 2) uniform sampler2DArray opacityArray;
@@ -29,8 +31,18 @@ layout(push_constant) uniform PushConstants {
     float impostorDistance;
 };
 
+#include "includes/fire_common.glsl"
+
 void main() {
     vec3 coord = vec3(inTexCoord.xy, inTexCoord.z);
+
+    // Fire uses the same flame coverage test as the color pass so the depth
+    // prepass writes exactly the fragments the shading pass keeps.
+    if (inBrushIndex == FIRE_BILLBOARD_INDEX) {
+        vec4 flame = evaluateFire(inTexCoord.xy, inFireSeed, windTime);
+        if (flame.a < 0.35) discard;
+        return;
+    }
 
     float opacity     = texture(opacityArray, coord).r;
     vec3  leafNormEnc = texture(normalArray,  coord).rgb;

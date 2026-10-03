@@ -10,6 +10,7 @@ layout(location = ATTR_POS) in vec3 inLocalPos;
 layout(location = ATTR_COLOR) in vec3 inLocalTangent;
 layout(location = ATTR_BRUSH_INDEX) in int inCornerNormalData;
 layout(location = ATTR_INSTANCE) in vec4 instanceData;
+layout(location = ATTR_VEG_NORMAL) in vec3 inInstanceNormal; // surface normal: tilt frame onto it (matches vegetation.vert)
 // Baked height scale (binding 2, perf report 22 C2/H4); see vegetation.vert.
 layout(location = ATTR_VEG_AUX) in float inBakedHeight;
 
@@ -111,6 +112,13 @@ void main() {
         return;
     }
 
+    // Fire casts no shadow (it is a light source): collapse fire instances.
+    if (int(floor(instanceData.w)) == FIRE_BILLBOARD_INDEX) {
+        outWorldPos = vec3(0.0);
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
     int cornerType = inCornerNormalData & 0xFF;
 
     vec3 worldPos = instanceData.xyz;
@@ -159,6 +167,13 @@ void main() {
     vec3 skewOffset = tangent * (skew * bendWeight);
     vec3 vertical = vec3(0.0, abs(nSkew * verticalFlutter * amplitude) * bendWeight, 0.0);
     vec3 windOffset = (horizontal + skewOffset + vertical) * bendWeight;
+
+    // Normal-aligned frame (same as vegetation.vert): tilt the corner offsets
+    // onto the surface normal; the wind offset stays a world-space delta.
+    vec3 surfN = inInstanceNormal;
+    float surfNLen2 = dot(surfN, surfN);
+    surfN = (surfNLen2 > 1e-8) ? surfN * inversesqrt(surfNLen2) : vec3(0.0, 1.0, 0.0);
+    localPos = tiltToNormal(localPos, surfN);
 
     vec3 finalPos = worldPos + localPos + windOffset;
     outWorldPos = finalPos;

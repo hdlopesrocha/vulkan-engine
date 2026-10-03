@@ -12,6 +12,9 @@
 // Baked per-instance vegetation height scale (perf report 22 C2/H4): float
 // per instance in the concatenated aux buffer (vertex binding 2).
 #define ATTR_VEG_AUX 7
+// Per-instance surface normal (second vec4 of the 32-byte instance payload,
+// vertex binding 1, offset 16).
+#define ATTR_VEG_NORMAL 8
 
 // Fragment outputs (color attachments)
 // Keep these matching render pass attachment locations (0 = primary color)
@@ -49,5 +52,10 @@
 #define VARY_BASEPOS 21   // water: undisplaced base world position + raw bump amplitude (xyz=pos, w=amp)
 #define VARY_COLOR 22
 #define VARY_HSV 23
+
+// Vegetation billboard index reserved for procedural animated fire
+// (see VegetationRenderer::kFireBillboardIndex). Fire instances share the
+// crossed-plane mesh but skip the atlas fetch and shade procedurally.
+#define FIRE_BILLBOARD_INDEX 3
 
 #endif // LOCATIONS_GLSL

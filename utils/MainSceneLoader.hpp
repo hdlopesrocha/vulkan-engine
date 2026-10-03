@@ -204,7 +204,7 @@ public:
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             TorusDistanceFunction function = TorusDistanceFunction(glm::vec2(0.5, 0.25), model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(3), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -222,7 +222,7 @@ public:
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             CylinderDistanceFunction function = CylinderDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(4), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {

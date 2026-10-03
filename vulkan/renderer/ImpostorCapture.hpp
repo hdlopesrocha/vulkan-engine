@@ -13,12 +13,12 @@ class VegetationRenderer;
 
 // Captures vegetation billboard impostor views from a Fibonacci sphere grid.
 // 20 evenly-distributed camera positions orbit the billboard at capture time
-// for each of 3 billboard types, giving 60 layers total.
+// for each of 4 billboard types (3 vegetation + fire), giving 80 layers total.
 class ImpostorCapture : public Renderer {
 public:
     static constexpr uint32_t NUM_VIEWS          = 20;
-    static constexpr uint32_t NUM_BILLBOARD_TYPES = 3;
-    static constexpr uint32_t TOTAL_LAYERS       = NUM_BILLBOARD_TYPES * NUM_VIEWS; // 60
+    static constexpr uint32_t NUM_BILLBOARD_TYPES = 4;
+    static constexpr uint32_t TOTAL_LAYERS       = NUM_BILLBOARD_TYPES * NUM_VIEWS; // 80
     static constexpr uint32_t TEX_SIZE           = 256;
     static constexpr uint32_t NUM_INSTANCES      = 1; // single centred instance
 
@@ -55,7 +55,7 @@ public:
     // Return the view index whose direction has the greatest dot-product with dir.
     uint32_t closestView(const glm::vec3& dir) const;
 
-    // Full 60-layer array views – usable as sampler2DArray in scene shaders.
+    // Full 80-layer array views – usable as sampler2DArray in scene shaders.
     VkImageView getCaptureArrayView()          const { return captureArrayView; }
     VkImageView getCaptureNormalArrayView()    const { return captureNormalArrayView; }
     VkImageView getCaptureDepthArrayView()     const { return captureDepthArrayView; }
@@ -76,7 +76,7 @@ private:
     // Fibonacci sphere directions (unit vectors pointing FROM camera TO center).
     std::array<glm::vec3, NUM_VIEWS> viewDirs{};
 
-    // Albedo capture texture array (TOTAL_LAYERS=60 layers, VK_FORMAT_R8G8B8A8_UNORM).
+    // Albedo capture texture array (TOTAL_LAYERS=80 layers, VK_FORMAT_R8G8B8A8_UNORM).
     VkImage        captureImage      = VK_NULL_HANDLE;
     VmaAllocation  captureAllocation = VK_NULL_HANDLE;
     VkDeviceMemory captureMemory     = VK_NULL_HANDLE;

@@ -44,6 +44,13 @@ struct GraphicsPipelineConfig {
     bool noColorAttachment = false;
     bool depthBiasEnable = false;
     bool blendEnable = false;
+    // Blend factors applied when blendEnable is true. Defaults preserve the
+    // legacy constant-alpha behavior (brush ghosting); pipelines needing
+    // per-pixel alpha (e.g. translucent fire) override these.
+    VkBlendFactor blendSrcColorFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;
+    VkBlendFactor blendDstColorFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+    VkBlendFactor blendSrcAlphaFactor = VK_BLEND_FACTOR_ONE;
+    VkBlendFactor blendDstAlphaFactor = VK_BLEND_FACTOR_ZERO;
 };
 
 class SceneDescriptorLayout;
@@ -503,7 +510,11 @@ public:
         bool blendEnable = false,
         // When non-null, reuse this layout instead of creating (and leaking
         // into the registry) an identical one. Ownership stays with the caller.
-        VkPipelineLayout existingLayout = VK_NULL_HANDLE);
+        VkPipelineLayout existingLayout = VK_NULL_HANDLE,
+        VkBlendFactor blendSrcColorFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA,
+        VkBlendFactor blendDstColorFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA,
+        VkBlendFactor blendSrcAlphaFactor = VK_BLEND_FACTOR_ONE,
+        VkBlendFactor blendDstAlphaFactor = VK_BLEND_FACTOR_ZERO);
 
     // Config-based overload — callers override only what differs from defaults
     std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(

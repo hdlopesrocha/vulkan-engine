@@ -11,6 +11,7 @@
 #include "../VertexBufferObject.hpp"
 #include "../../utils/Scene.hpp" // for NodeID
 #include "../ubo/VegetationUBO.hpp"
+#include "../ubo/FireUBO.hpp"
 #include <vector>
 #include <deque>
 #include <unordered_map>
@@ -55,6 +56,35 @@ public:
         float minDensityFactor = 0.10f;
     };
 
+    // Animated fire billboards. Fire instances share the 6-plane crossed
+    // billboard mesh with vegetation but are shaded procedurally (no atlas
+    // fetch). Instances whose billboard index equals kFireBillboardIndex are
+    // rendered as fire. Fire instances are created from brush-4 (lava)
+    // terrain triangles (see generateForChunk/processPendingChunks) with
+    // probability fireDensity.
+    static constexpr uint32_t kFireBillboardIndex = 3;
+    static constexpr int kFireTerrainBrushIndex = 4; // lava layer
+
+    struct FireSettings {
+        bool enabled = true;
+        float size = 32.0f;          // fire quad width in world units
+        float heightScale = 1.4f;   // vertical stretch of the flame quad
+        float speed = 2.0f;         // animation speed multiplier
+        float intensity = 1.2f;     // overall brightness multiplier
+        float flicker = 0.5f;       // temporal flicker amount (0..1)
+        float noiseScale = 2.5f;    // flame noise frequency
+        float turbulence = 0.6f;    // sideways flame distortion
+        float riseSpeed = 1.5f;     // upward scroll speed of the flames
+        float windInfluence = 0.35f;// how much wind bends the flames (0..1)
+        float alpha = 1.0f;         // global flame opacity multiplier
+        float emissive = 1.2f;      // emissive boost (fire glows)
+        float smoke = 0.25f;        // smoke veil above the flame (0..1)
+        float density = 0.06f;      // fraction of brush-4 slots that become fire
+        glm::vec3 innerColor = glm::vec3(1.0f, 0.95f, 0.60f); // hot core
+        glm::vec3 midColor   = glm::vec3(1.0f, 0.45f, 0.10f); // mid flame
+        glm::vec3 outerColor = glm::vec3(0.60f, 0.05f, 0.00f); // flame edge
+    };
+
     float billboardScale = 10.0f;
     uint32_t billboardCount = 3; // biomes: 0=foliage, 1=grass, 2=wild (40% of instances are empty sentinel)
     explicit VegetationRenderer();
@@ -73,21 +103,25 @@ public:
     // CPU-side instance generation — avoids GPUVM faults on RADV iGPUs where
     // the Texture Cache/Pipe cannot read from device-local or host-visible
     // storage buffers.  Enqueues the chunk and processes up to maxPerFrame
-    // chunks each frame via processPendingChunks().  With no grass triangles
-    // the chunk's previous instance data is cleared instead.
+    // chunks each frame via processPendingChunks().  With neither grass nor
+    // fire triangles the chunk's previous instance data is cleared instead.
     void generateChunkInstancesCPU(NodeID chunkId,
                                    const std::vector<glm::vec3>& positions,
+                                   const std::vector<glm::vec3>& normals,
                                    const std::vector<uint32_t>& grassIndices,
+                                   const std::vector<uint32_t>& fireIndices,
                                    const glm::vec3& chunkCenter,
                                    uint32_t instancesPerTriangle, VulkanApp* app,
                                    uint32_t seed = 1337);
     // CPU-side per-chunk vegetation generation (moved from SceneRenderer).
-    // Samples grass-flagged triangles from the chunk's tessellated geometry,
-    // builds area-weighted virtual triangle slots with unbiased stochastic
-    // rounding (area-proportional density without bias), shuffles the slots
-    // per chunk (so reducing the indirect instanceCount keeps a random spatial
-    // subset), then hands the result to generateChunkInstancesCPU. With no
-    // grass triangles the chunk's previous instance data is cleared instead.
+    // Samples grass-flagged (brush 3) triangles from the chunk's tessellated
+    // geometry, plus fire-flagged (brush 4, kFireTerrainBrushIndex) triangles
+    // for animated fire billboards. Builds area-weighted virtual triangle
+    // slots with unbiased stochastic rounding (area-proportional density
+    // without bias), shuffles the slots per chunk (so reducing the indirect
+    // instanceCount keeps a random spatial subset), then hands the result to
+    // generateChunkInstancesCPU. With neither grass nor fire triangles the
+    // chunk's previous instance data is cleared instead.
     void generateForChunk(VulkanApp* app, NodeID nid, const Geometry& geom);
     // Drain up to maxChunks from the pending queue.  Call every frame from
     // draw() so chunks trickle in at a controlled rate.
@@ -141,12 +175,14 @@ public:
     const WindSettings& getWindSettings() const { return windSettings; }
     DistanceDensitySettings& getDistanceDensitySettings() { return distanceDensitySettings; }
     const DistanceDensitySettings& getDistanceDensitySettings() const { return distanceDensitySettings; }
+    FireSettings& getFireSettings() { return fireSettings; }
+    const FireSettings& getFireSettings() const { return fireSettings; }
     void setWindTime(float timeSeconds) { windTimeSeconds = timeSeconds; }
 
     // Impostor rendering.  Call after init() once impostor views have been captured.
-    // albedoArray60 and normalArray60 must be VkImageView covering 60 layers
-    // (3 billboard types × 20 Fibonacci views).
-    // depthArray60 is the captured device Z array (R32_SFLOAT, 60 layers) for depth reprojection.
+    // albedoArray60 and normalArray60 must be VkImageView covering 80 layers
+    // (4 billboard types × 20 Fibonacci views).
+    // depthArray60 is the captured device Z array (R32_SFLOAT, 80 layers) for depth reprojection.
     // captureInvVPBuf is a storage buffer containing per-layer inverse VP matrices.
     void setImpostorData(VulkanApp* app,                         VkImageView albedoArray60,
                          VkImageView normalArray60,
@@ -163,6 +199,11 @@ public:
     // Uses a temporary command buffer (synchronous, one-time cost).
     void consolidateChunks(VulkanApp* app);
 
+    // Per-instance payload: pos vec4 (xyz = world pos, w = billboardIndex +
+    // rotFrac) followed by a normal vec4 (xyz = surface normal, w unused).
+    // One 32-byte stride shared by the per-chunk buffers, the concatenated
+    // instance buffer, and every vertex-input declaration (binding 1).
+    static constexpr VkDeviceSize kInstanceStride = sizeof(glm::vec4) * 2;
     // Worst-case vegetation capacities, sized ONCE at startup so no runtime
     // vmaCreateBuffer calls occur after the first frame. 4096 matches the
     // solid slotted-mode chunk ceiling (SceneRenderer: every veg chunk keys
@@ -201,6 +242,10 @@ public:
     // Must be called before any draw that uses wind.  Updates per-frame values
     // (camera position, falloff) so windParams on the GPU stays in sync.
     void updateWindParamsUBO(const glm::vec3& cameraPos);
+    // Update the fire params UBO (set=2, binding=1) with current fire settings.
+    // Must be called before any draw that can render fire. Skips the memcpy
+    // when the payload is unchanged (same write-on-change pattern as wind).
+    void updateFireParamsUBO();
 
     // Shared set=2 wind params resources. Other consumers of the vegetation
     // shader family (e.g. ImpostorCapture) bind the same layout + descriptor
@@ -257,7 +302,9 @@ private:
     struct PendingChunk {
         NodeID chunkId;
         std::vector<glm::vec3> positions;
+        std::vector<glm::vec3> normals; // per-vertex normals, parallel to positions
         std::vector<uint32_t> grassIndices;
+        std::vector<uint32_t> fireIndices; // brush-4 virtual slots → fire billboards
         glm::vec3 chunkCenter;
         uint32_t instancesPerTriangle;
         uint32_t seed;
@@ -280,6 +327,7 @@ private:
 
     WindSettings windSettings;
     DistanceDensitySettings distanceDensitySettings;
+    FireSettings fireSettings;
     float windTimeSeconds = 0.0f;
 
     // Impostor pipeline resources (populated via setImpostorData).
@@ -303,18 +351,23 @@ private:
 
     // Wind params UBO (set=2, binding=0) — updated once per frame.
     Buffer                windParamsBuffer;
+    // Fire params UBO (set=2, binding=1) — updated when fire settings change.
+    Buffer                fireParamsBuffer;
     // M11 (perf report 22): last payload written, so the repeated per-pass
     // calls in one frame (depth + color + per-cascade shadow draws) skip the
     // memcpy when nothing changed. All callers run on the single async task
     // thread, so the cache needs no extra synchronization.
     WindParamsUBO         windParamsCache{};
     bool                  windParamsCacheValid = false;
+    FireParamsUBO         fireParamsCache{};
+    bool                  fireParamsCacheValid = false;
     TrackedHandle<VkDescriptorSetLayout> windParamsDescSetLayout;
     TrackedHandle<VkDescriptorSet> windParamsDescSet;
     void*                 windParamsMapped       = nullptr;
+    void*                 fireParamsMapped       = nullptr;
 
     // ── CPU frustum culling (indirection via concatenated instance buffer) ────
-    Buffer concatenatedInstanceBuffer;  // all instances concatenated (vec4 per element)
+    Buffer concatenatedInstanceBuffer;  // all instances concatenated (kInstanceStride per element)
     // Triple-buffered culling resources to prevent CPU/GPU race conditions
     // (same pattern as IndirectRenderer::MAX_CULL_FRAMES). All DEVICE_LOCAL
     // cull outputs (GPU-only): written by the merged cull dispatch, consumed
@@ -461,5 +514,5 @@ private:
     void destroyCulling();
     void issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
     void issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
-    WindPushConstants buildWindPushConstants() const;
+    WindPushConstants buildWindPushConstants(bool fireOnly = false) const;
 };

@@ -4,6 +4,7 @@
 
 layout(location = ATTR_UV) in vec2 inCornerUV;
 layout(location = ATTR_INSTANCE) in vec4 instanceData; // xyz=world pos, w=billboard index + rotFrac
+layout(location = ATTR_VEG_NORMAL) in vec3 inInstanceNormal; // surface normal: re-anchor quad onto it
 // Baked height scale (binding 2, perf report 22 C2/H4); see vegetation.vert.
 layout(location = ATTR_VEG_AUX) in float inBakedHeight;
 
@@ -112,6 +113,14 @@ void main() {
     int billboardIdx = int(floor(instanceData.w));
     float rotFrac = fract(instanceData.w);
 
+    // Fire casts no shadow (this vertex shader feeds the shadow maps only).
+    if (billboardIdx == FIRE_BILLBOARD_INDEX) {
+        outTexCoord = vec3(0.0); outInstanceOffset = worldPos;
+        outWorldPos = vec3(0.0);
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+    }
+
     if (impostorDistance <= 0.0) {
         outTexCoord = vec3(0.0); outInstanceOffset = worldPos;
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
@@ -170,7 +179,11 @@ void main() {
 
     // Uniform hs scaling, matching impostors.vert: quad, centre and UV crop
     // must render the plant at the same size the billboard had.
-    vec3 center = worldPos + vec3(0.0, billboardScale * hs * 0.5, 0.0);
+    // The quad stays glued to sloped ground by rising along the surface normal.
+    vec3 surfN = inInstanceNormal;
+    float surfNLen2 = dot(surfN, surfN);
+    surfN = (surfNLen2 > 1e-8) ? surfN * inversesqrt(surfNLen2) : vec3(0.0, 1.0, 0.0);
+    vec3 center = worldPos + surfN * (billboardScale * hs * 0.5);
     vec3 worldUp = vec3(0.0, 1.0, 0.0);
 
     vec3 right;

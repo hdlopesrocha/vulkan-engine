@@ -54,6 +54,7 @@
 #include "widgets/QueueTimelineWidget.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/WindWidget.hpp"
+#include "widgets/FireWidget.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
 #include "widgets/Brush3dWidget.hpp"
 #include "widgets/MusicWidget.hpp"
@@ -296,6 +297,7 @@ public:
     std::shared_ptr<QueueTimelineWidget> queueTimelineWidget;
     std::shared_ptr<VegetationAtlasEditor> vegetationAtlasEditor;
     std::shared_ptr<WindWidget> windWidget;
+    std::shared_ptr<FireWidget> fireWidget;
     std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     std::shared_ptr<RadialMenu> radialMenu;
@@ -811,6 +813,10 @@ public:
         queueTimelineWidget = std::make_shared<QueueTimelineWidget>(this);
         queueTimelineWidget->updateWithApp(this);
         windWidget = std::make_shared<WindWidget>(sceneRenderer->vegetationRenderer.get());
+        fireWidget = std::make_shared<FireWidget>(sceneRenderer->vegetationRenderer.get());
+        fireWidget->setOnRecaptureFire([this]() {
+            if (impostorService) impostorService->captureFireOnly();
+        });
         mp3Widget = std::make_shared<MusicWidget>();
 
         // Radial menu (input-agnostic overlay, not a Widget subclass)
@@ -838,6 +844,7 @@ public:
         widgetManager.addWidget(queueTimelineWidget);
         widgetManager.addWidget(vegetationAtlasEditor);
         widgetManager.addWidget(windWidget);
+        widgetManager.addWidget(fireWidget);
         widgetManager.addWidget(mp3Widget);
         widgetManager.addWidget(billboardCreator);
         widgetManager.addWidget(impostorWidget);

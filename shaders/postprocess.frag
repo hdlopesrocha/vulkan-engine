@@ -166,7 +166,11 @@ void main() {
         obstacleDepth = min(obstacleDepth, vegDepth);
         vec4 vegColor = textureLod(vegColorTex, uv, 0.0);
         if (vegCoverage > 0.0 && !(sceneDepth < vegDepth)) {
-            baseColor = mix(baseColor, vegColor.rgb, vegCoverage);
+            // The veg target stores premultiplied color (SRC_ALPHA blending so
+            // overlapping flame planes saturate instead of blowing out to
+            // white). Un-premultiply here; grass writes alpha 1 and is
+            // unaffected. max() guards the divide (coverage > 0 above).
+            baseColor = mix(baseColor, vegColor.rgb / max(vegCoverage, 1e-3), vegCoverage);
         }
     }
     // 3. Water on top

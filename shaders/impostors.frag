@@ -22,7 +22,7 @@ layout(set = 0, binding = 4) uniform sampler2D shadowMap;
 layout(set = 0, binding = 8) uniform sampler2D shadowMap1;
 layout(set = 0, binding = 9) uniform sampler2D shadowMap2;
 
-// 60-layer impostor arrays: 3 billboard types × 20 Fibonacci views.
+// 80-layer impostor arrays: 4 billboard types (3 vegetation + fire) × 20 Fibonacci views.
 layout(set = 1, binding = 0) uniform sampler2DArray impostorArray;
 layout(set = 1, binding = 1) uniform sampler2DArray impostorNormalArray;
 
@@ -64,7 +64,11 @@ void main() {
     }
 
     vec4 color = texture(impostorArray, inTexCoord);
-    if (color.a < 0.3) discard;
+    // Fire keeps its faint halo (same 0.02 floor the billboards and the
+    // capture use) so apparent flame size matches; vegetation stays
+    // alpha-tested at 0.3.
+    int impBi = int(inTexCoord.z / 20.0);
+    if (color.a < ((impBi == FIRE_BILLBOARD_INDEX) ? 0.02 : 0.3)) discard;
     fragPosWorld = inWorldPos; // must be set before any ShadowCalculation call
 
     // Direct hand-off (see impostors.vert): this instance only exists past
@@ -87,6 +91,21 @@ void main() {
 
         vec4 camClipPos = ubo.viewProjection * worldPos;
         gl_FragDepth = clamp(camClipPos.z / camClipPos.w, 0.0, 1.0);
+    }
+
+    // Fire glows: captured snapshot colors with captured coverage, no
+    // lighting or shadow (flames are a light source, not a lit surface).
+    // impBi was derived above for the alpha test.
+    if (impBi == FIRE_BILLBOARD_INDEX) {
+        // The snapshot holds single-plane coverage, but the billboards blend
+        // several overlapping planes (alpha saturates toward 1 in the core).
+        // Re-accumulate alpha approximately so distant flames match in
+        // density. Snapshot rgb is already straight flame color: with the
+        // opaque impostor pipeline it lands in the target unmultiplied, which
+        // is exactly what the composite mixes by.
+        float accA = 1.0 - pow(1.0 - color.a, 3.0);
+        outColor = vec4(color.rgb, accA);
+        return;
     }
 
     // Decode baked world-space normal from the normal capture array.
