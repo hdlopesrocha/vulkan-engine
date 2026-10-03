@@ -6,7 +6,6 @@
 #include <cstdint>
 
 class OctreeAllocator;
-struct OctreeNodeCubeSerialized;
 
 class OctreeNode {
 
@@ -54,7 +53,6 @@ public:
     SpaceType getType() const ;
 
     void setSDF(float value[8]);
-    uint exportSerialization(OctreeAllocator &allocator, std::vector<OctreeNodeCubeSerialized> * nodes, int * leafNodes, const BoundingCube &cube, const BoundingCube &chunk, uint level);
     OctreeNode * compress(OctreeAllocator &allocator, BoundingCube * cube, const BoundingCube &chunk);
 };
 

@@ -1,5 +1,4 @@
 #include "OctreeNode.hpp"
-#include "OctreeNodeCubeSerialized.hpp"
 #include "OctreeAllocator.hpp"
 #include "OctreeNodeData.hpp"
 #include "../sdf/SDF.hpp"
@@ -174,31 +173,6 @@ OctreeNode * OctreeNode::compress(OctreeAllocator &allocator, BoundingCube * cub
 	return this;
 }
 
-
-uint OctreeNode::exportSerialization(OctreeAllocator &allocator, std::vector<OctreeNodeCubeSerialized> * nodes, int * leafNodes, const BoundingCube &cube, const BoundingCube &chunk, uint level) {
-	if( this->getType() != SpaceType::Surface || !chunk.intersects(cube)) {
-		return 0; // Skip this node
-	}
-	uint index = nodes->size(); 
-
-	OctreeNodeCubeSerialized n(this->sdf, cube, this->vertex, this->bits, level);
-	nodes->push_back(n);
-	if(isLeaf()) {
-		++(*leafNodes);
-	}
-
-	ChildBlock * block = this->getBlock(allocator);
-	if(block != NULL) {
-		for(int i=0; i < 8; ++i) {
-			OctreeNode * childNode = block->get(i, allocator);
-			if(childNode != NULL) {
-				BoundingCube c = cube.getChild(i);
-			    (*nodes)[index].children[i] = childNode->exportSerialization(allocator, nodes, leafNodes, c, chunk, level + 1);
-			}
-		}
-	}
-	return index;
-}
 
 void OctreeNode::setBrush(int brushIndex) {
 	vertex.brushIndex = brushIndex;

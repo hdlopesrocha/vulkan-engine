@@ -8,7 +8,6 @@
 #include "OctreeAllocator.hpp"
 #include "OctreeNodeTriangleHandler.hpp"
 #include "ShapeArgs.hpp"
-#include "OctreeSerialized.hpp"
 #include "../sdf/SignedDistanceFunction.hpp"
 #include <functional>
 #include <shared_mutex>
@@ -115,13 +114,6 @@ class Octree: public BoundingCube {
 
     bool isChunkNode(float nodeLength) const;
     bool isThreadNode(float nodeLength, float minSize, int threadSize) const;
-    // Ladder level (stored lod) derived from a cell's size: 1 = frontier
-    // (minSize), increasing with coarseness (chunk = 5). Shared by Octree::shape
-    // and OctreeFile so loaded and in-memory trees agree on the encoding.
-    void exportOctreeSerialization(OctreeSerialized * octree);
-    void exportNodesSerialization(std::vector<OctreeNodeCubeSerialized> * nodes);
-    void exportToJson(const std::string &filename) const;
-    void exportToBson(const std::string &filename) const;
 private:
     void buildShapeSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext, bool force) const;
     void buildResultSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext) const;

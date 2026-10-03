@@ -1,4 +1,5 @@
 #include "OctreeFile.hpp"
+#include "OctreeSerialized.hpp"
 #include "Octree.hpp"
 #include "OctreeNode.hpp"
 #include "OctreeAllocator.hpp"
@@ -210,6 +211,3 @@ void OctreeFile::save(std::string baseFolder, float chunkSize){
 
 }
 
-AbstractBoundingBox& OctreeFile::getBox(){
-	return *this->tree;
-}
