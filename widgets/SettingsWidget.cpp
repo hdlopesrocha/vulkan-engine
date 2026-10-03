@@ -1,5 +1,6 @@
 #include "SettingsWidget.hpp"
 #include "components/ImGuiHelpers.hpp"
+#include "components/ColumnLayout.hpp"
 #include "vulkan/includes/DebugModes.hpp"
 #include <vector>
 #include <functional>
@@ -15,34 +16,6 @@ void SettingsWidget::resetToDefaults() {
 namespace {
 // Every column is exactly this wide; separators match it 1:1.
 constexpr float kSettingsColWidth = 256.0f;
-
-// Fixed-width separator: ImGui::Separator() spans the whole window content,
-// which overflows/underflows a 256px column (especially with h-scroll).
-// This draws exactly one column width so all section dividers align.
-inline void ColSeparator() {
-    const ImVec2 sp = ImGui::GetCursorScreenPos();
-    ImGui::GetWindowDrawList()->AddLine(
-        ImVec2(sp.x, sp.y), ImVec2(sp.x + kSettingsColWidth, sp.y),
-        ImGui::GetColorU32(ImGuiCol_Separator));
-    ImGui::Dummy(ImVec2(kSettingsColWidth, 1.0f));
-}
-
-// Label rendered above its control; description appears as a tooltip when the
-// label (or the control below) is hovered.
-inline void TooltipOnHover(const char* desc) {
-    if (!desc || !*desc) return;
-    ImGuiHelpers::SetTooltipIfHovered("%s", desc);
-}
-
-inline void LabelOnTop(const char* label, const char* desc = nullptr) {
-    ImGui::TextUnformatted(label);
-    TooltipOnHover(desc);
-}
-
-// Full-width slider/drag/combo with its visible label rendered above.
-inline void FieldLabel(const char* label, const char* desc = nullptr) {
-    LabelOnTop(label, desc);
-}
 } // namespace
 
 void SettingsWidget::render() {
@@ -68,34 +41,34 @@ void SettingsWidget::render() {
     // 0: Rendering (core toggles — most used)
     sections.emplace_back([this]() {
         ImGui::Text("Rendering");
-        ColSeparator();
+        ImGuiComponents::ColSeparator();
         if (ImGui::Checkbox("Render Solid", &settings.renderSolid)) {
             // toggled
         }
-        TooltipOnHover("Toggle rendering of the main solid scene (terrain/meshes)");
+        ImGuiComponents::TooltipOnHover("Toggle rendering of the main solid scene (terrain/meshes)");
         if (ImGui::Checkbox("Render Water", &settings.waterEnabled)) {
             // toggled
         }
-        TooltipOnHover("When off, water passes are skipped and only the solid scene is composited");
+        ImGuiComponents::TooltipOnHover("When off, water passes are skipped and only the solid scene is composited");
         if (ImGui::Checkbox("Water Blur (global)", &settings.blurEnabled)) {
             // toggled
         }
-        TooltipOnHover("Global gate for the per-material refraction/tint blur.\n"
+        ImGuiComponents::TooltipOnHover("Global gate for the per-material refraction/tint blur.\n"
                        "The blur runs only where this AND the layer's 'Enable Blur' are on.\n"
                        "Reflections and surface highlights are never blurred.");
         if (ImGui::Checkbox("Render Vegetation", &settings.vegetationEnabled)) {
             // toggled
         }
-        TooltipOnHover("Toggle billboarding vegetation draws");
-        FieldLabel("Vegetation render scale", "Offscreen vegetation resolution");
+        ImGuiComponents::TooltipOnHover("Toggle billboarding vegetation draws");
+        ImGuiComponents::FieldLabel("Vegetation render scale", "Offscreen vegetation resolution");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Vegetation render scale", &settings.vegetationRenderScale, 0.25f, 1.0f, "%.2f");
-        TooltipOnHover("Vegetation offscreen targets render at this fraction of the swapchain size\n"
+        ImGuiComponents::TooltipOnHover("Vegetation offscreen targets render at this fraction of the swapchain size\n"
                        "(1.0 = full resolution). Leaf detail is leaf-scale, so 0.5 on dense scenes\n"
                        "cuts the shaded vegetation pixels 4x; the composite upsamples the color and\n"
                        "takes the closest of the 2x2 depth taps for the occlusion test.\n"
                        "Applied immediately (one device idle on the frame it changes).");
-        FieldLabel("Texture array size", "Material texture-array resolution (px per layer)");
+        ImGuiComponents::FieldLabel("Texture array size", "Material texture-array resolution (px per layer)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         {
             const char* kTextureSizeItems[] = { "512", "1024", "2048" };
@@ -105,7 +78,7 @@ void SettingsWidget::render() {
                 settings.textureArraySize = (sizeIdx == 2) ? 2048 : (sizeIdx == 1 ? 1024 : 512);
             }
         }
-        TooltipOnHover("Resolution of the five material texture arrays (albedo, normal, bump,\n"
+        ImGuiComponents::TooltipOnHover("Resolution of the five material texture arrays (albedo, normal, bump,\n"
                        "roughness, ao). 1024 is ~750 MB of device memory with the content-sized\n"
                        "layer count; 512 quarters it (sources are box-filtered down).\n"
                        "Changing it rebuilds the arrays: one device idle, then a full re-upload\n"
@@ -113,64 +86,64 @@ void SettingsWidget::render() {
         if (ImGui::Checkbox("Enable Normal Mapping", &settings.normalMappingEnabled)) {
             // toggled
         }
-        TooltipOnHover("Globally enable/disable normal mapping (normal maps still needed in textures)");
+        ImGuiComponents::TooltipOnHover("Globally enable/disable normal mapping (normal maps still needed in textures)");
         if (ImGui::Checkbox("Enable Roughness", &settings.roughnessEnabled)) {
             // toggled
         }
-        TooltipOnHover("Globally enable/disable roughness map influence on specular");
+        ImGuiComponents::TooltipOnHover("Globally enable/disable roughness map influence on specular");
         if (ImGui::Checkbox("Enable Ambient Occlusion", &settings.aoEnabled)) {
             // toggled
         }
-        TooltipOnHover("Globally enable/disable ambient occlusion mapping");
+        ImGuiComponents::TooltipOnHover("Globally enable/disable ambient occlusion mapping");
     });
 
     // 1: Hybrid RT toggles (raster owns primary, CSM macro shadows,
     // RT secondary visibility)
     sections.emplace_back([this]() {
         ImGui::Text("Hybrid RT");
-        ColSeparator();
+        ImGuiComponents::ColSeparator();
         ImGui::TextWrapped("Raster=primary, CSM=macro shadows, RT=secondary (reflections, refraction, thickness, contact).");
         if (ImGui::Checkbox("RT solid reflections", &settings.rtReflections)) {
         }
-        TooltipOnHover("Solid mirror/SSR reflection rays (sky on miss/off).");
+        ImGuiComponents::TooltipOnHover("Solid mirror/SSR reflection rays (sky on miss/off).");
         if (ImGui::Checkbox("RT water reflections", &settings.rtWaterReflections)) {
         }
-        TooltipOnHover("Water surface reflection rays (inline and RT-pipeline).\n"
+        ImGuiComponents::TooltipOnHover("Water surface reflection rays (inline and RT-pipeline).\n"
                        "Per-material 'Enable Reflection' still gates each water layer.");
         if (ImGui::Checkbox("RT refractions", &settings.rtRefractions)) {
         }
-        TooltipOnHover("Water refraction via Snell IOR (the same ray also carries RT thickness).\n"
+        ImGuiComponents::TooltipOnHover("Water refraction via Snell IOR (the same ray also carries RT thickness).\n"
                        "Off = NO water refraction at all: the sky-fallback bent ray is disabled too.");
         if (ImGui::Checkbox("RT water thickness", &settings.rtThickness)) {
         }
-        TooltipOnHover("Use the refraction ray's path length as water thickness + Beer-Lambert absorption.\n"
+        ImGuiComponents::TooltipOnHover("Use the refraction ray's path length as water thickness + Beer-Lambert absorption.\n"
                        "Off = thickness comes only from the raster back face.");
         if (ImGui::Checkbox("RT water depth (regions)", &settings.rtWaterDepth)) {
         }
-        TooltipOnHover("Shore-wave region depth from a ray-traced solid bottom (world-space drop)\n"
+        ImGuiComponents::TooltipOnHover("Shore-wave region depth from a ray-traced solid bottom (world-space drop)\n"
                        "instead of the raster solid + water back-face depth. Requires RT;\n"
                        "falls back to the raster path where the ray misses.");
         if (ImGui::Checkbox("RT local/contact shadows (augment CSM)", &settings.rtLocalShadows)) {
         }
-        TooltipOnHover("Selective RT contact shadows augmenting CSM (off = CSM-only, recommended)");
+        ImGuiComponents::TooltipOnHover("Selective RT contact shadows augmenting CSM (off = CSM-only, recommended)");
         if (ImGui::Checkbox("Water via RT pipeline (off = inline queries)", &settings.rtWaterPipeline)) {
         }
-        TooltipOnHover("Water via async RT pipeline outputs (off = inline ray queries)");
-        FieldLabel("Reflection bounces", "Extra mirror rays on reflective hits");
+        ImGuiComponents::TooltipOnHover("Water via async RT pipeline outputs (off = inline ray queries)");
+        ImGuiComponents::FieldLabel("Reflection bounces", "Extra mirror rays on reflective hits");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderInt("##Reflection bounces", &settings.rtReflectionBounces, 0, 3);
-        TooltipOnHover("Extra mirror rays when a water/solid reflection hits another\n"
+        ImGuiComponents::TooltipOnHover("Extra mirror rays when a water/solid reflection hits another\n"
                        "reflective surface (0 = single reflection, 1 = reflection inside\n"
                        "the reflection, up to 3). More bounces cost more ray work.");
         if (ImGui::Checkbox("Water in main pass (Phase-1, blend into solid)", &settings.waterInMainPass)) {
         }
-        TooltipOnHover("Draw water with the alpha-blended main pipeline into the solid color/depth targets "
+        ImGuiComponents::TooltipOnHover("Draw water with the alpha-blended main pipeline into the solid color/depth targets "
                        "(no separate water pass/composite water). Smoother work-in-progress: in-trace "
                        "screen lookups use the previous frame's solid/vegetation targets.");
-        FieldLabel("Water render scale", "Offscreen water resolution");
+        ImGuiComponents::FieldLabel("Water render scale", "Offscreen water resolution");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Water render scale", &settings.waterRenderScale, 0.25f, 1.0f, "%.2f");
-        TooltipOnHover("Water offscreen targets render at this fraction of the swapchain size\n"
+        ImGuiComponents::TooltipOnHover("Water offscreen targets render at this fraction of the swapchain size\n"
                        "(1.0 = full resolution). The water surface is a smooth translucent layer,\n"
                        "so 0.5 cuts the shaded water pixels 4x. The composite upsamples the water\n"
                        "color and takes the closest of the 2x2 depth taps for the occlusion test.\n"
@@ -180,49 +153,49 @@ void SettingsWidget::render() {
     // 2: RT Distances (split out so the RT block packs into columns)
     sections.emplace_back([this]() {
         ImGui::Text("RT Distances");
-        ColSeparator();
-        FieldLabel("Max reflect dist", "Reflection ray Tmax (world units)");
+        ImGuiComponents::ColSeparator();
+        ImGuiComponents::FieldLabel("Max reflect dist", "Reflection ray Tmax (world units)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Max reflect dist", &settings.rtMaxReflectDist, 10.0f, 2000.0f, "%.0f");
-        TooltipOnHover("Reflection ray Tmax (world units)");
-        FieldLabel("Max refract dist", "Refraction ray Tmax (also deep-water thickness)");
+        ImGuiComponents::TooltipOnHover("Reflection ray Tmax (world units)");
+        ImGuiComponents::FieldLabel("Max refract dist", "Refraction ray Tmax (also deep-water thickness)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Max refract dist", &settings.rtMaxRefractDist, 10.0f, 1000.0f, "%.0f");
-        TooltipOnHover("Refraction ray Tmax (also deep-water thickness)");
-        FieldLabel("Max contact dist", "Local shadow ray Tmax (contact range only)");
+        ImGuiComponents::TooltipOnHover("Refraction ray Tmax (also deep-water thickness)");
+        ImGuiComponents::FieldLabel("Max contact dist", "Local shadow ray Tmax (contact range only)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Max contact dist", &settings.rtMaxShadowDist, 1.0f, 60.0f, "%.1f");
-        TooltipOnHover("Local shadow ray Tmax (contact range only)");
-        FieldLabel("Roughness threshold", "Roughness above this skips RT reflections (env approx)");
+        ImGuiComponents::TooltipOnHover("Local shadow ray Tmax (contact range only)");
+        ImGuiComponents::FieldLabel("Roughness threshold", "Roughness above this skips RT reflections (env approx)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Roughness threshold", &settings.rtRoughnessThreshold, 0.0f, 1.0f, "%.2f");
-        TooltipOnHover("Roughness above this skips RT reflections (env approx)");
-        FieldLabel("Self-skip dist", "Ignore proxy hits closer than this (own-box guard)");
+        ImGuiComponents::TooltipOnHover("Roughness above this skips RT reflections (env approx)");
+        ImGuiComponents::FieldLabel("Self-skip dist", "Ignore proxy hits closer than this (own-box guard)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Self-skip dist", &settings.rtSelfSkipDist, 0.0f, 15.0f, "%.2f");
-        TooltipOnHover("Ignore proxy hits closer than this (own-box guard)");
+        ImGuiComponents::TooltipOnHover("Ignore proxy hits closer than this (own-box guard)");
     });
 
     // 3: RT Ray Budget
     sections.emplace_back([this]() {
         ImGui::Text("RT Ray Budget");
-        ColSeparator();
+        ImGuiComponents::ColSeparator();
         ImGui::TextWrapped("Ray budget (2-4x fewer inline rays, no visible change):");
-        FieldLabel("Ray scale", "0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
+        ImGuiComponents::FieldLabel("Ray scale", "0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
         const char* rayScales[] = {"Full-rate (reference)", "Checkerboard half-rate"};
         int rayIdx = (settings.rtRayScale == 1) ? 1 : 0;
         ImGui::SetNextItemWidth(kSettingsColWidth);
         if (ImGui::Combo("##Ray scale", &rayIdx, rayScales, 2)) {
             settings.rtRayScale = (rayIdx == 1) ? 1 : 0;
         }
-        TooltipOnHover("0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
-        FieldLabel("Ray contrib min", "Skip the inline ray when the lobe contribution is below this");
+        ImGuiComponents::TooltipOnHover("0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
+        ImGuiComponents::FieldLabel("Ray contrib min", "Skip the inline ray when the lobe contribution is below this");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Ray contrib min", &settings.rtRayContribMin, 0.0f, 0.2f, "%.3f");
-        TooltipOnHover("Skip the inline ray when the lobe contribution is below this");
+        ImGuiComponents::TooltipOnHover("Skip the inline ray when the lobe contribution is below this");
         if (ImGui::Checkbox("Water single-ray (Fresnel xor, off = dual reference)", &settings.rtSingleRay)) {
         }
-        TooltipOnHover("Water traces reflection XOR refraction stochastically (probability = Fresnel mix).\n"
+        ImGuiComponents::TooltipOnHover("Water traces reflection XOR refraction stochastically (probability = Fresnel mix).\n"
                        "Only the REFRACTION ray is cut (it recovers from the raster bottom/sky);\n"
                        "reflection always traces full-rate. Checkerboard applies to solid reflections.");
 
@@ -233,15 +206,15 @@ void SettingsWidget::render() {
     // 4: Display & Performance (merged: presentation controls in one place)
     sections.emplace_back([this]() {
         ImGui::Text("Display & Performance");
-        ColSeparator();
+        ImGuiComponents::ColSeparator();
         if (ImGui::Checkbox("Wireframe Mode", &settings.wireframeMode)) {
             // toggle wireframe rendering
         }
-        TooltipOnHover("Render meshes in wireframe (requires GPU support)");
+        ImGuiComponents::TooltipOnHover("Render meshes in wireframe (requires GPU support)");
         if (ImGui::Checkbox("Water Wireframe", &settings.waterWireframeMode)) {
             // toggle water wireframe only
         }
-        TooltipOnHover("Render water surface in white wireframe");
+        ImGuiComponents::TooltipOnHover("Render water surface in white wireframe");
         if (ImGui::Button("Reset to Defaults")) {
             resetToDefaults();
         }
@@ -250,16 +223,16 @@ void SettingsWidget::render() {
     // 5: Shadow Effects
     sections.emplace_back([this]() {
         ImGui::Text("Shadow Effects");
-        ColSeparator();
+        ImGuiComponents::ColSeparator();
         if (ImGui::Checkbox("Enable Shadows", &settings.enableShadows)) {
 
         }
-        TooltipOnHover("Globally enable or disable all shadowing");
+        ImGuiComponents::TooltipOnHover("Globally enable or disable all shadowing");
         if (shadowParams) {
-            FieldLabel("Base Ortho Size", "Shadow camera orthographic size for the base cascade");
+            ImGuiComponents::FieldLabel("Base Ortho Size", "Shadow camera orthographic size for the base cascade");
             ImGui::SetNextItemWidth(kSettingsColWidth);
             ImGui::SliderFloat("##Base Ortho Size", &shadowParams->orthoSize, 10.0f, 2048.0f, "%.0f");
-            TooltipOnHover("Shadow camera orthographic size for the base cascade");
+            ImGuiComponents::TooltipOnHover("Shadow camera orthographic size for the base cascade");
             for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
                 ImGui::Text("  Cascade %d", i);
             }
@@ -269,33 +242,33 @@ void SettingsWidget::render() {
     // 6: Camera
     sections.emplace_back([this]() {
         ImGui::Text("Camera");
-        ColSeparator();
-        FieldLabel("Near Plane", "Near clip plane distance (affects depth precision)");
+        ImGuiComponents::ColSeparator();
+        ImGuiComponents::FieldLabel("Near Plane", "Near clip plane distance (affects depth precision)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::DragFloat("##Near Plane", &settings.nearPlane, 0.01f, 0.001f, 100.0f, "%.3f");
-        TooltipOnHover("Near clip plane distance (affects depth precision)");
-        FieldLabel("Far Plane", "Far clip plane distance (view distance)");
+        ImGuiComponents::TooltipOnHover("Near clip plane distance (affects depth precision)");
+        ImGuiComponents::FieldLabel("Far Plane", "Far clip plane distance (view distance)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::DragFloat("##Far Plane", &settings.farPlane, 10.0f, 100.0f, 100000.0f, "%.1f");
-        TooltipOnHover("Far clip plane distance (view distance)");
+        ImGuiComponents::TooltipOnHover("Far clip plane distance (view distance)");
     });
 
     // 7: Vegetation Impostors
     sections.emplace_back([this]() {
         ImGui::Text("Vegetation Impostors");
-        ColSeparator();
-        FieldLabel("Impostor Distance", "Beyond this distance vegetation is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
+        ImGuiComponents::ColSeparator();
+        ImGuiComponents::FieldLabel("Impostor Distance", "Beyond this distance vegetation is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::DragFloat("##Impostor Distance", &settings.impostorDistance, 5.0f, 0.0f, 5000.0f, "%.0f m");
-        TooltipOnHover("Beyond this distance vegetation is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
+        ImGuiComponents::TooltipOnHover("Beyond this distance vegetation is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
         if (settings.impostorDistance < 0.0f) settings.impostorDistance = 0.0f;
     });
 
     // 8: Level of Detail
     sections.emplace_back([this]() {
         ImGui::Text("Level of Detail");
-        ColSeparator();
-        FieldLabel("LoD Distance Bias",
+        ImGuiComponents::ColSeparator();
+        ImGuiComponents::FieldLabel("LoD Distance Bias",
             "Scales the distance at which each coarser LoD level takes over "
             "(transition at distance = level * chunkSize * bias). Larger = full "
             "detail farther away (more triangles); smaller = coarser meshes "
@@ -305,14 +278,14 @@ void SettingsWidget::render() {
         if (ImGui::SliderFloat("##LoD Distance Bias", &settings.lodBias, 0.0f, 64.0f, "%.1f")) {
             // live: the per-frame GPU band test reads settings.lodBias directly
         }
-        TooltipOnHover(
+        ImGuiComponents::TooltipOnHover(
             "Scales the distance at which each coarser LoD level takes over "
             "(transition at distance = level * chunkSize * bias). Larger = full "
             "detail farther away (more triangles); smaller = coarser meshes "
             "closer (fewer triangles). 0 = always coarsest, 64+ = full detail "
             "everywhere.");
 
-        FieldLabel("Max Target LoD",
+        ImGuiComponents::FieldLabel("Max Target LoD",
             "Caps the coarsest LoD level the renderer may select for a chunk. "
             "Lower = only finer (more detailed) chunk levels are drawn; 16+ = "
             "unlimited (chunk ladders rarely exceed ~5 levels).");
@@ -320,7 +293,7 @@ void SettingsWidget::render() {
         if (ImGui::SliderInt("##Max Target LoD", &settings.maxTargetLod, 0, 24, "%d")) {
             // live: the per-frame GPU band test reads settings.maxTargetLod directly
         }
-        TooltipOnHover(
+        ImGuiComponents::TooltipOnHover(
             "Caps the coarsest LoD level the renderer may select for a chunk. "
             "Lower = only finer (more detailed) chunk levels are drawn; 16+ = "
             "unlimited (chunk ladders rarely exceed ~5 levels).");
@@ -329,27 +302,27 @@ void SettingsWidget::render() {
     // 9: Tessellation
     sections.emplace_back([this]() {
         ImGui::Text("Tessellation");
-        ColSeparator();
+        ImGuiComponents::ColSeparator();
         if (ImGui::Checkbox("Enable Tessellation", &settings.tessellationEnabled)) {
             // toggled globally
         }
-        TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
+        ImGuiComponents::TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
         if (ImGui::Checkbox("Enable Shadow Tessellation", &settings.shadowTessellationEnabled)) {
             // toggled globally
         }
-        TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
+        ImGuiComponents::TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
         if (ImGui::Checkbox("Solid Depth Prepass", &settings.solidDepthPrepass)) {
             // toggled globally; takes effect on the next frame
         }
-        TooltipOnHover("Off = single forward pass with depth write (perf report 21 C2). Consider off when tessellation is on; forced on while solid RT paths run.");
-        FieldLabel("Tessellation Factor", "Multiplies per-material min/max tess levels globally");
+        ImGuiComponents::TooltipOnHover("Off = single forward pass with depth write (perf report 21 C2). Consider off when tessellation is on; forced on while solid RT paths run.");
+        ImGuiComponents::FieldLabel("Tessellation Factor", "Multiplies per-material min/max tess levels globally");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Tessellation Factor", &settings.tessellationFactor, 0.0f, 8.0f, "%.2f");
-        TooltipOnHover("Multiplies per-material min/max tess levels globally");
-        FieldLabel("Tess Min Distance", nullptr);
+        ImGuiComponents::TooltipOnHover("Multiplies per-material min/max tess levels globally");
+        ImGuiComponents::FieldLabel("Tess Min Distance", nullptr);
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Tess Min Distance", &settings.tessMinDistance, 1.0f, 2048.0f, "%.1f");
-        FieldLabel("Tess Max Distance", nullptr);
+        ImGuiComponents::FieldLabel("Tess Max Distance", nullptr);
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Tess Max Distance", &settings.tessMaxDistance, 1.0f, 2048.0f, "%.1f");
     });
@@ -357,21 +330,21 @@ void SettingsWidget::render() {
     // 10: Triplanar Mapping
     sections.emplace_back([this]() {
         ImGui::Text("Triplanar Mapping");
-        ColSeparator();
-        FieldLabel("Triplanar Threshold", "? (dead-zone before blending)");
+        ImGuiComponents::ColSeparator();
+        ImGuiComponents::FieldLabel("Triplanar Threshold", "? (dead-zone before blending)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Triplanar Threshold", &settings.triplanarThreshold, 0.0f, 0.5f, "%.3f");
-        TooltipOnHover("? (dead-zone before blending)");
-        FieldLabel("Triplanar Exponent", "? (>1 = steeper)");
+        ImGuiComponents::TooltipOnHover("? (dead-zone before blending)");
+        ImGuiComponents::FieldLabel("Triplanar Exponent", "? (>1 = steeper)");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Triplanar Exponent", &settings.triplanarExponent, 1.0f, 12.0f, "%.2f");
-        TooltipOnHover("? (>1 = steeper)");
+        ImGuiComponents::TooltipOnHover("? (>1 = steeper)");
     });
 
     // 11: Debug Visualisation (advanced — last)
     sections.emplace_back([this]() {
         ImGui::Text("Debug Visualisation");
-        ColSeparator();
+        ImGuiComponents::ColSeparator();
         // Canonical IDs/names live in vulkan/includes/DebugModes.hpp; the
         // shaders mirror them in includes/debug_modes.glsl. Both surfaces
         // dispatch on the same IDs, so a view only ever affects the surface
@@ -389,12 +362,12 @@ void SettingsWidget::render() {
         if (ImGui::Checkbox("Show Mesh Bounding Boxes", &settings.showBoundingBoxes)) {
             // toggled overlay of per-mesh bounding boxes
         }
-        TooltipOnHover("Render bounding boxes for meshes currently uploaded to the GPU");
+        ImGuiComponents::TooltipOnHover("Render bounding boxes for meshes currently uploaded to the GPU");
 
         if (ImGui::Checkbox("Show SDF Cubes (indirect cull)", &settings.showSDFDebug)) {
             // toggled SDF leaf cube overlay
         }
-        TooltipOnHover("Render leaf-node cube faces colored by SDF sign; frustum-culled on the GPU via indirect.comp (only visible cubes are drawn)");
+        ImGuiComponents::TooltipOnHover("Render leaf-node cube faces colored by SDF sign; frustum-culled on the GPU via indirect.comp (only visible cubes are drawn)");
     });
 
     // ---- Packing: best-fit over the last frame's measured section heights.
@@ -457,7 +430,7 @@ void SettingsWidget::render() {
     auto renderSectionMeasured = [&](int idx, bool firstInColumn) {
         if (!firstInColumn) {
             ImGui::Spacing();
-            ColSeparator();
+            ImGuiComponents::ColSeparator();
             ImGui::Spacing();
         }
         const float y0 = ImGui::GetCursorScreenPos().y;
