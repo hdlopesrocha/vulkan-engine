@@ -6,13 +6,9 @@
 #include "SDF.hpp"
 
 class PyramidDistanceFunction : public SignedDistanceFunction {
-private:
-    BoundingSphere sphere;
 public:
     PyramidDistanceFunction(const Transformation &model, float bias);
     virtual ~PyramidDistanceFunction() = default;
     float distance(const glm::vec3 &p) const override;
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
-    ContainmentType check(const BoundingCube &cube) const override;
-    bool isContained(const BoundingCube &cube) const override;
 };

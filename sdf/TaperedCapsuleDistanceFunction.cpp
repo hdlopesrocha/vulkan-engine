@@ -3,8 +3,9 @@
 
 TaperedCapsuleDistanceFunction::TaperedCapsuleDistanceFunction(glm::vec3 a_, glm::vec3 b_, float r1_, float r2_,
                                                                const Transformation &model, float bias)
-    : SignedDistanceFunction(0.5f*(a_+b_)+model.translate, model), a(a_), b(b_), r1(r1_), r2(r2_)
-    , sphere(getSphere(model, bias)) {}
+    : SignedDistanceFunction(0.5f*(a_+b_)+model.translate, model), a(a_), b(b_), r1(r1_), r2(r2_) {
+    m_sphere = getSphere(model, bias);
+}
 
 float TaperedCapsuleDistanceFunction::distance(const glm::vec3 &p) const {
     glm::vec3 pos = p - m_model.translate;
@@ -19,13 +20,5 @@ BoundingSphere TaperedCapsuleDistanceFunction::getSphere(const Transformation &m
     float maxR = glm::max(r1, r2);
     glm::vec3 center = model.translate + model.quaternion * (model.scale * 0.5f * (a + b));
     return BoundingSphere(center, glm::length(model.scale) * (halfLen + maxR) + bias);
-}
-
-ContainmentType TaperedCapsuleDistanceFunction::check(const BoundingCube &cube) const {
-    return sphere.test(cube);
-}
-
-bool TaperedCapsuleDistanceFunction::isContained(const BoundingCube &cube) const {
-    return cube.contains(sphere);
 }
 

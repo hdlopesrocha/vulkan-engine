@@ -1,8 +1,9 @@
 #include "PyramidDistanceFunction.hpp"
 
 PyramidDistanceFunction::PyramidDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(model.translate, model)
-    , sphere(getSphere(model, bias)) {}
+    : SignedDistanceFunction(model.translate, model) {
+    m_sphere = getSphere(model, bias);
+}
 
 float PyramidDistanceFunction::distance(const glm::vec3 &p) const {
    glm::vec3 pos = p - getCenter();
@@ -17,14 +18,6 @@ float PyramidDistanceFunction::distance(const glm::vec3 &p) const {
 }
 
 BoundingSphere PyramidDistanceFunction::getSphere(const Transformation &model, float bias) const {
-    return BoundingSphere(getCenter(), sqrt(0.5f) * glm::length(model.scale) + bias);
-}
-
-ContainmentType PyramidDistanceFunction::check(const BoundingCube &cube) const {
-    return sphere.test(cube);
-}
-
-bool PyramidDistanceFunction::isContained(const BoundingCube &cube) const {
-    return cube.contains(sphere);
+    return isotropicSphere(getCenter(), model, bias);
 }
 

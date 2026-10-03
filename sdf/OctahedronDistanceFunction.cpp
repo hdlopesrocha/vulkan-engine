@@ -1,8 +1,9 @@
 #include "OctahedronDistanceFunction.hpp"
 
 OctahedronDistanceFunction::OctahedronDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(model.translate, model)
-    , sphere(getSphere(model, bias)) {}
+    : SignedDistanceFunction(model.translate, model) {
+    m_sphere = getSphere(model, bias);
+}
 
 float OctahedronDistanceFunction::distance(const glm::vec3 &p) const {
     glm::vec3 pos = p - getCenter();
@@ -17,14 +18,6 @@ float OctahedronDistanceFunction::distance(const glm::vec3 &p) const {
 }
 
 BoundingSphere OctahedronDistanceFunction::getSphere(const Transformation &model, float bias) const {
-    return BoundingSphere(getCenter(), glm::length(model.scale)*sqrt(0.5f) + bias);
-}
-
-ContainmentType OctahedronDistanceFunction::check(const BoundingCube &cube) const {
-    return sphere.test(cube);
-}
-
-bool OctahedronDistanceFunction::isContained(const BoundingCube &cube) const {
-    return cube.contains(sphere);
+    return isotropicSphere(getCenter(), model, bias);
 }
 
