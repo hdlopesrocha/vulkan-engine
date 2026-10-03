@@ -500,7 +500,10 @@ public:
         bool depthBiasEnable = false,
         VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE,
         bool depthTestEnable = true,
-        bool blendEnable = false);
+        bool blendEnable = false,
+        // When non-null, reuse this layout instead of creating (and leaking
+        // into the registry) an identical one. Ownership stays with the caller.
+        VkPipelineLayout existingLayout = VK_NULL_HANDLE);
 
     // Config-based overload — callers override only what differs from defaults
     std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
@@ -510,6 +513,19 @@ public:
         const std::vector<VkDescriptorSetLayout>& setLayouts,
         const VkPushConstantRange* pushConstantRange,
         const GraphicsPipelineConfig& config);
+
+    // Config-based overload that reuses an existing VkPipelineLayout (e.g. a
+    // sibling pipeline variant with identical set layouts) instead of creating
+    // a duplicate layout that would be discarded immediately. The layout is
+    // not registered again; its original creator keeps ownership.
+    VkPipeline createGraphicsPipelineWithLayout(
+        std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+        const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+        const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions,
+        const std::vector<VkDescriptorSetLayout>& setLayouts,
+        const VkPushConstantRange* pushConstantRange,
+        const GraphicsPipelineConfig& config,
+        VkPipelineLayout layout);
 
     // Backwards-compatible wrapper for callers that pass an initializer_list
     inline std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(

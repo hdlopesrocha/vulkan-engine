@@ -170,13 +170,13 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
     shadowPipeline = pipeline;
     shadowPipelineLayout = layout;
     // No-tessellation twin (perf report 21 C1): same EVSM config, SOLID_NO_TESS
-    // vertex shader, no TCS/TES. The duplicate layout is discarded; bind sites
-    // keep using shadowPipelineLayout (identical setLayouts).
+    // vertex shader, no TCS/TES. Reuses shadowPipelineLayout (identical
+    // setLayouts), so no duplicate layout is created.
     {
         ShaderStage noTessVertexShader(
             app->getOrCreateShaderModule("shaders/main_solid_no_tess.vert.spv"),
             VK_SHADER_STAGE_VERTEX_BIT);
-        auto [noTessPipeline, noTessLayout] = app->createGraphicsPipeline(
+        shadowPipelineNoTess = app->createGraphicsPipelineWithLayout(
             { noTessVertexShader.info, evsmFragment.info },
             std::vector<VkVertexInputBindingDescription>{
                 VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX }
@@ -186,10 +186,8 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
                 { ATTR_POS, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV }),
             setLayouts,
             nullptr,
-            cfg
-        );
-        shadowPipelineNoTess = noTessPipeline;
-        (void)noTessLayout;
+            cfg,
+            shadowPipelineLayout);
         noTessVertexShader.info.module = VK_NULL_HANDLE;
     }
     vertexShader.info.module   = VK_NULL_HANDLE;

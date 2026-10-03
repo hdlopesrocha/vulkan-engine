@@ -3554,7 +3554,8 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     bool depthBiasEnable,
     VkFrontFace frontFace,
     bool depthTestEnable,
-    bool blendEnable) {
+    bool blendEnable,
+    VkPipelineLayout existingLayout) {
 
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
     const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions = descriptions;
@@ -3651,12 +3652,14 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
         pipelineLayoutInfo.pPushConstantRanges = nullptr;
     }
 
-    VkPipelineLayout pl = VK_NULL_HANDLE;
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pl) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create pipeline layout!");
+    VkPipelineLayout pl = existingLayout;
+    if (pl == VK_NULL_HANDLE) {
+        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pl) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create pipeline layout!");
+        }
+        // Track pipeline layout for cleanup
+        resources.addPipelineLayout(pl, "VulkanApp: pipelineLayout");
     }
-    // Track pipeline layout for cleanup
-    resources.addPipelineLayout(pl, "VulkanApp: pipelineLayout");
 
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -3734,6 +3737,26 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
         config.depthBiasEnable, config.frontFace,
         config.depthTestEnable,
         config.blendEnable);
+}
+
+VkPipeline VulkanApp::createGraphicsPipelineWithLayout(
+    std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+    const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+    const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions,
+    const std::vector<VkDescriptorSetLayout>& setLayouts,
+    const VkPushConstantRange* pushConstantRange,
+    const GraphicsPipelineConfig& config,
+    VkPipelineLayout layout) {
+
+    return createGraphicsPipeline(stages, bindingDescriptions, attributeDescriptions,
+        setLayouts, pushConstantRange,
+        config.polygonMode, config.cullMode, config.depthWriteEnable, config.colorWrite,
+        config.depthCompareOp, config.topology, config.depthClampEnable,
+        config.colorFormats, config.depthFormat, config.noColorAttachment,
+        config.depthBiasEnable, config.frontFace,
+        config.depthTestEnable,
+        config.blendEnable,
+        layout).first;
 }
 
 Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, bool zeroInit) {

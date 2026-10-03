@@ -157,10 +157,10 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     graphicsPipeline = pipeline;
     graphicsPipelineLayout = layout;
 
-    // RT variant of the main solid pipeline (same config; the layout is a
-    // matching duplicate and the bind sites keep using graphicsPipelineLayout).
+    // RT variant of the main solid pipeline (same config; reuses
+    // graphicsPipelineLayout so no duplicate layout is created/discarded).
     if (fragmentShaderRt.info.module != VK_NULL_HANDLE) {
-        auto [rtPipeline, rtLayout] = app->createGraphicsPipeline(
+        graphicsPipelineRt = app->createGraphicsPipelineWithLayout(
             {
                 vertexShader.info,
                 tescShader.info,
@@ -171,15 +171,14 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             vk_layouts::defaultAttributes(),
             setLayouts,
             nullptr,
-            cfg
-        );
-        graphicsPipelineRt = rtPipeline;
-        (void)rtLayout;
+            cfg,
+            graphicsPipelineLayout);
     }
 
-    // Profiling variant of the main solid pipeline (same config/layout).
+    // Profiling variant of the main solid pipeline (same config; reuses
+    // graphicsPipelineLayout).
     if (fragmentShaderRtProf.info.module != VK_NULL_HANDLE) {
-        auto [profPipeline, profLayout] = app->createGraphicsPipeline(
+        graphicsPipelineRtProf = app->createGraphicsPipelineWithLayout(
             {
                 vertexShader.info,
                 tescShader.info,
@@ -190,10 +189,8 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             vk_layouts::defaultAttributes(),
             setLayouts,
             nullptr,
-            cfg
-        );
-        graphicsPipelineRtProf = profPipeline;
-        (void)profLayout;
+            cfg,
+            graphicsPipelineLayout);
     }
 
     GraphicsPipelineConfig depthCfg{};
@@ -244,16 +241,14 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
                 app->getOrCreateShaderModule("shaders/main_solid_no_tess.vert.spv"),
                 VK_SHADER_STAGE_VERTEX_BIT
             );
-            auto [noTessDp, noTessDl] = app->createGraphicsPipeline(
+            deferredDepthPipelineNoTess = app->createGraphicsPipelineWithLayout(
                 { noTessVertexShader.info, depthFrag.info },
                 std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
                 vk_layouts::defaultAttributesFiltered(
                     { ATTR_POS, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV }),
                 setLayouts, nullptr,
-                ddCfg
-            );
-            deferredDepthPipelineNoTess = noTessDp;
-            (void)noTessDl;
+                ddCfg,
+                deferredDepthPipelineLayout);
             noTessVertexShader.info.module = VK_NULL_HANDLE;
         }
         depthFrag.info.module = VK_NULL_HANDLE;
@@ -274,29 +269,27 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         deferredColorPipeline = cp;
         deferredColorPipelineLayout = cl;
 
-        // RT variant of the deferred/forward color pipeline (same config).
+        // RT variant of the deferred/forward color pipeline (same config;
+        // reuses deferredColorPipelineLayout).
         if (fragmentShaderRt.info.module != VK_NULL_HANDLE) {
-            auto [rtCp, rtCl] = app->createGraphicsPipeline(
+            deferredColorPipelineRt = app->createGraphicsPipelineWithLayout(
                 { vertexShader.info, tescShader.info, teseShader.info, fragmentShaderRt.info },
                 std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
                 vk_layouts::defaultAttributes(),
                 setLayouts, nullptr,
-                dcCfg
-            );
-            deferredColorPipelineRt = rtCp;
-            (void)rtCl;
+                dcCfg,
+                deferredColorPipelineLayout);
         }
-        // Profiling variant of the deferred/forward color pipeline.
+        // Profiling variant of the deferred/forward color pipeline (reuses
+        // deferredColorPipelineLayout).
         if (fragmentShaderRtProf.info.module != VK_NULL_HANDLE) {
-            auto [profCp, profCl] = app->createGraphicsPipeline(
+            deferredColorPipelineRtProf = app->createGraphicsPipelineWithLayout(
                 { vertexShader.info, tescShader.info, teseShader.info, fragmentShaderRtProf.info },
                 std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
                 vk_layouts::defaultAttributes(),
                 setLayouts, nullptr,
-                dcCfg
-            );
-            deferredColorPipelineRtProf = profCp;
-            (void)profCl;
+                dcCfg,
+                deferredColorPipelineLayout);
         }
         // Depth-write twin for the gated single-pass path (perf report 21
         // C2): same main.frag and TCS/TES stages, depth write on with LESS
@@ -305,15 +298,13 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             GraphicsPipelineConfig dwCfg = dcCfg;
             dwCfg.depthWriteEnable = true;
             dwCfg.depthCompareOp = VK_COMPARE_OP_LESS;
-            auto [dwCp, dwCl] = app->createGraphicsPipeline(
+            deferredColorPipelineDepthWrite = app->createGraphicsPipelineWithLayout(
                 { vertexShader.info, tescShader.info, teseShader.info, fragmentShader.info },
                 std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
                 vk_layouts::defaultAttributes(),
                 setLayouts, nullptr,
-                dwCfg
-            );
-            deferredColorPipelineDepthWrite = dwCp;
-            (void)dwCl;
+                dwCfg,
+                deferredColorPipelineLayout);
         }
     }
     {
