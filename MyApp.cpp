@@ -1014,6 +1014,20 @@ public:
     void dispatchSolidEvents();
     void dispatchLiquidEvents();
 
+    // Start the background tessellation thread for the current scene. Solid
+    // and water chunks are dispatched on separate threads so both layers
+    // tessellate truly in parallel (water no longer waits for solid to
+    // finish). `completionLog` is printed verbatim once both threads join.
+    void startTessellationThreads(const char* completionLog) {
+        sceneProcessThread = std::thread([this, completionLog]() {
+            std::thread solidThread([this]() { dispatchSolidEvents(); });
+            std::thread waterThread([this]() { dispatchLiquidEvents(); });
+            solidThread.join();
+            waterThread.join();
+            std::cout << completionLog;
+        });
+    }
+
 // (setup implementation defined out-of-line below)
 
     void update(float deltaTime) override {
@@ -3930,14 +3944,7 @@ void MyApp::action() {
     // Tessellate chunks in a background thread. Solid and water are handled on
     // separate threads so both layers tessellate truly in parallel (water no
     // longer waits for solid to finish).
-    sceneProcessThread = std::thread([this]() {
-        std::thread solidThread([this]() { dispatchSolidEvents(); });
-        std::thread waterThread([this]() { dispatchLiquidEvents(); });
-        solidThread.join();
-        waterThread.join();
-
-        std::cout << "[MyApp::action] Scene chunk tessellation complete\n";
-    });
+    startTessellationThreads("[MyApp::action] Scene chunk tessellation complete\n");
 }
 
 void MyApp::resetSceneState() {
@@ -3985,13 +3992,7 @@ void MyApp::generateMap() {
     // Tessellate chunks in a background thread. Solid and water are handled on
     // separate threads so both layers tessellate truly in parallel (water no
     // longer waits for solid to finish).
-    sceneProcessThread = std::thread([this]() {
-        std::thread solidThread([this]() { dispatchSolidEvents(); });
-        std::thread waterThread([this]() { dispatchLiquidEvents(); });
-        solidThread.join();
-        waterThread.join();
-        std::cout << "[MyApp::generateMap] Scene chunk tessellation complete\n";
-    });
+    startTessellationThreads("[MyApp::generateMap] Scene chunk tessellation complete\n");
 }
 
 void MyApp::loadSceneFromFile(const std::string& path) {
@@ -4005,13 +4006,7 @@ void MyApp::loadSceneFromFile(const std::string& path) {
 
     // Solid and water tessellate on separate threads so both layers progress
     // truly in parallel (water no longer waits for solid to finish).
-    sceneProcessThread = std::thread([this]() {
-        std::thread solidThread([this]() { dispatchSolidEvents(); });
-        std::thread waterThread([this]() { dispatchLiquidEvents(); });
-        solidThread.join();
-        waterThread.join();
-        std::cout << "[MyApp::loadSceneFromFile] Scene tessellation complete\n";
-    });
+    startTessellationThreads("[MyApp::loadSceneFromFile] Scene tessellation complete\n");
 }
 void MyApp::postSubmit() {
     if (textureMixer) {
