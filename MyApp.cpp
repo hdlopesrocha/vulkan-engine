@@ -477,7 +477,6 @@ public:
         // Trigger initial generation for configured mixers so UI previews show meaningful results
         // (Previously this was deferred to the user pressing "Generate" in the UI)
         std::cerr << "[TextureMixer] Running initial generation for configured mixers...\n";
-        textureMixer->setEditableLayer(editableLayer);
         // Prime ImGui descriptors so the texture viewer shows immediately
         textureArrayManager.setLayerInitialized(editableLayer, true);
         textureArrayManager.getImTexture(editableLayer, 0);
@@ -3529,7 +3528,7 @@ void MyApp::setupVegetationTextures() {
     vegetationTextureArrayManager.allocate(3, 512, 512, this);
     vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
     auto billboardSvc = std::make_shared<BillboardService>();
-    billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager, billboardSvc);
+    billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, billboardSvc);
     // Provide VulkanApp to the creator so it can initialize GPU-backed preview textures
     billboardCreator->setVulkanApp(this);
     impostorService = std::make_shared<ImpostorService>();
@@ -3639,8 +3638,7 @@ void MyApp::setupVegetationTextures() {
             billboardCreator->getAlbedoArrayView(),
             billboardCreator->getNormalArrayView(),
             billboardCreator->getOpacityArrayView(),
-            billboardCreator->getArraySampler(),
-            static_cast<int>(billboardManager.getBillboardCount()));
+            billboardCreator->getArraySampler());
     }
 }
 

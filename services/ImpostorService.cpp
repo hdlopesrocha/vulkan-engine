@@ -15,17 +15,14 @@ void ImpostorService::cleanup() {
     srcNormal  = VK_NULL_HANDLE;
     srcOpacity = VK_NULL_HANDLE;
     srcSampler = VK_NULL_HANDLE;
-    billboardCount = 0;
 }
 
 void ImpostorService::setSource(VkImageView albedo, VkImageView normal,
-                                 VkImageView opacity, VkSampler sampler,
-                                 int numBillboards) {
+                                 VkImageView opacity, VkSampler sampler) {
     srcAlbedo      = albedo;
     srcNormal      = normal;
     srcOpacity     = opacity;
     srcSampler     = sampler;
-    billboardCount = numBillboards;
 
     if (vulkanApp && srcAlbedo != VK_NULL_HANDLE && srcSampler != VK_NULL_HANDLE) {
         captureAll(10.0f);

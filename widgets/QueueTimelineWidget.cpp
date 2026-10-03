@@ -164,7 +164,6 @@ void QueueTimelineWidget::render() {
         // stays populated and honest instead of looking 100% busy or empty.
         uint64_t latest = 0;
         for (auto& s : segments_) latest = std::max(latest, s.frame);
-        latestFrame_ = latest;
 
         uint64_t now = nowNs();
         uint64_t fStart = UINT64_MAX, fEnd = 0;

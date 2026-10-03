@@ -17,14 +17,9 @@ public:
     bool isVisible() const;
     void show();
     void hide();
-    void toggle();
     
     // Get widget title
     const std::string& getTitle() const;
-    // Icon accessors (font-glyph string or short label)
-    const std::string& getIcon() const;
-    void setIcon(const std::string& icon);
-    void setIcon(const char8_t* icon);
 
     // Title as displayed in ImGui windows (may include icon/placeholder)
     std::string displayTitle() const;

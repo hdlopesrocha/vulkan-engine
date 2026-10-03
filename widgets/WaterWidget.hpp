@@ -9,7 +9,6 @@ class WaterWidget : public Widget {
 public:
     WaterWidget(WaterRenderer* renderer_, std::vector<WaterParams>* params_);
     void render() override;
-    int getCurrentLayer() const { return currentLayer; }
 
 private:
     WaterRenderer* renderer;

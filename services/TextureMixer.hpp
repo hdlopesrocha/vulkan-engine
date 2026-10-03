@@ -1,13 +1,11 @@
 #pragma once
 
-#include "Service.hpp"
 #include <cstdint>
 #include <vulkan/vulkan.h>
 class VulkanApp;
 #include "../utils/FileReader.hpp"
 #include <random>
 #include <cstring>
-#include <functional>
 #include <mutex>
 #include <vector>
 
@@ -29,18 +27,12 @@ struct MixerParameters {
 };
 
 
-class TextureMixer : public Service {
+class TextureMixer {
 public:
     TextureMixer();
 
-    void init(VulkanApp* app) override;
-    void cleanup() override;
-    
     // New init that accepts an optional TextureArrayManager so compute can sample from arrays
     void init(VulkanApp* app, class TextureArrayManager* textureArrayManager);
-
-    // Set callback to be called after texture generation
-    void setOnTextureGenerated(std::function<void()> callback);
 
     // Generate all textures initially
     void generateInitialTextures(std::vector<MixerParameters> &mixerParams);
@@ -55,7 +47,6 @@ public:
 
     // Diagnostics: number of pending async generations and a small log buffer
     size_t getPendingGenerationCount();
-    std::vector<std::string> consumeLogs();
 
     // Query array layer dimensions (0 if none)
     uint32_t getLayerWidth() const;
@@ -63,13 +54,6 @@ public:
     // Generate Perlin noise for a texture using explicit parameters (used by UI widget)
     // map: -1 = all maps, 0 = albedo, 1 = normal, 2 = bump
     void generatePerlinNoise(VulkanApp* app, MixerParameters &params, int map = -1);
-
-    // Debug output mode: when enabled the compute shader writes the noise value to
-    // the RGB channels (instead of blending).  Useful for verifying the mask.
-    void setDebugOutput(bool v) { debugOutput = v; }
-
-private:
-    bool debugOutput = false;
 
 private:
     // No stored VulkanApp*; callers pass `VulkanApp*` to methods that need it
@@ -95,9 +79,6 @@ private:
     VkImageView layerViewFor(uint32_t layer, int map);
 
 
-    // Callback function to notify when textures are generated
-    std::function<void()> onTextureGeneratedCallback;
-
     // Pending generation requests (thread-safe queue)
     std::mutex pendingRequestsMutex;
     std::vector<std::pair<MixerParameters,int>> pendingRequests;
@@ -107,10 +88,6 @@ private:
     std::vector<std::tuple<VkFence, uint32_t>> pendingFences;
     std::vector<std::tuple<VkFence, uint32_t>> completed;
 
-    // If editable textures are represented inside a TextureArrayManager, store the layer index
-    // NOTE: placed BEFORE logs to avoid aliasing with vector internal pointers
-    uint32_t editableLayer = UINT32_MAX;
-
     // Diagnostics: small textual log buffer for UI and a mutex to protect it
     std::mutex logsMutex;
     std::vector<std::string> logs;
@@ -118,8 +95,6 @@ private:
     size_t lastLoggedFences = 0;
 
 public:
-    void setEditableLayer(uint32_t layer) { editableLayer = layer; }
-
     // Query whether a layer currently has an in-flight generation
     bool isLayerGenerationPending(uint32_t layer);
     // Block until generation for a specific layer completes (returns true if waited)
@@ -128,8 +103,6 @@ public:
 
     // Global instance accessor (set on init) so external systems can wait for generations
     static TextureMixer* getGlobalInstance();
-    // Return an ImGui descriptor for previewing the requested map (0=albedo,1=normal,2=bump)
-    VkDescriptorSet getPreviewDescriptor(int map);
     // Return an ImGui descriptor for previewing the requested map at a specific array layer
     VkDescriptorSet getPreviewDescriptor(int map, uint32_t layer);
     // Return a descriptor which samples only the alpha channel of the specified layer

@@ -43,11 +43,6 @@ void VulkanResourcesManagerWidget::updateWithApp(VulkanApp* app) {
     cachedQueue[Q_BRUSH_SOLID]  = qat(8);
     cachedQueue[Q_BRUSH_LIQUID] = qat(9);
 
-    static const char* names[Q_COUNT] = {
-        "Graphics", "Present", "Vegetation", "SDF", "BoundingBox", "Geometry", "Transfer", "BrushSolid", "BrushLiquid"
-    };
-    (void)names;
-
     for (int i = 0; i < Q_COUNT; ++i) {
         VkQueue q = cachedQueue[i];
         queueActive[i] = (q != VK_NULL_HANDLE);

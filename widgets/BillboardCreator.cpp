@@ -9,10 +9,10 @@
 #include <stb/stb_image.h>
 #include "components/ImGuiHelpers.hpp"
 
-BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr,
+BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr,
                                    std::shared_ptr<BillboardService> billboardService_)
     : Widget("Billboard Creator", u8"\uf03a"), billboardService(std::move(billboardService_)),
-      billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
+      billboardManager(billboardMgr), atlasManager(atlasMgr) {
 }
 
 void BillboardCreator::setVulkanApp(VulkanApp* app) {
@@ -34,20 +34,6 @@ void BillboardCreator::initializeTextures() {
         composedOpacity[i].init(vulkanApp, texSize, texSize, VK_FORMAT_R8G8B8A8_UNORM, ("Billboard Opacity" + suffix).c_str());
     }
     texturesInitialized = true;
-}
-
-void BillboardCreator::cleanup() {
-    printf("[BillboardCreator] cleanup start: texturesInitialized=%d\n", texturesInitialized ? 1 : 0);
-    if (billboardService) billboardService->cleanup();
-    if (texturesInitialized && vulkanApp) {
-        for (size_t i = 0; i < composedAlbedo.size(); ++i) {
-            composedAlbedo[i].cleanup();
-            composedNormal[i].cleanup();
-            composedOpacity[i].cleanup();
-        }
-        texturesInitialized = false;
-    }
-    printf("[BillboardCreator] cleanup done\n");
 }
 
 void BillboardCreator::invalidateImGuiDescriptors() {
@@ -88,11 +74,6 @@ void BillboardCreator::bakeAllBillboards() {
     if (billboardService) {
         billboardService->bakeFromTextures(composedAlbedo, composedNormal, composedOpacity);
     }
-}
-
-const EditableTexture* BillboardCreator::getComposedAlbedoTexture(size_t index) const {
-    if (index >= composedAlbedo.size()) return nullptr;
-    return &composedAlbedo[index];
 }
 
 void BillboardCreator::renderBillboardEditor(Billboard* billboard) {

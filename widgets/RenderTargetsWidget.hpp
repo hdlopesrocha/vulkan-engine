@@ -15,8 +15,6 @@ struct ShadowParams;
 
 // Widget that displays render targets (Sky, Solid color/depth, Water depth,
 // Shadow cascades) as ImGui image thumbnails.
-class Settings;
-
 class RenderTargetsWidget : public Widget {
 private:
     VulkanApp*      app;
@@ -43,7 +41,6 @@ private:
     bool rtReflectDescriptorOwned = false;
     bool rtRefractDescriptorOwned = false;
     bool solidColorDescriptorOwned = false;
-    int selectedCubeFaceIndex = 0;
     bool solidDepthDescriptorOwned = false;
     bool waterColorDescriptorOwned = false;
     bool backFaceDepthDescriptorOwned = false;
@@ -93,13 +90,6 @@ private:
     VkDescriptorSet linearBrushBackFaceDepthDescriptor = VK_NULL_HANDLE;
     bool linearBrushBackFaceDepthDescriptorOwned = false;
 
-    // Per-face linearized targets for cubemap depth previews
-    VkImage linearCubeFaceDepthImage[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VmaAllocation linearCubeFaceDepthAllocation[6] = {};
-    VkDeviceMemory linearCubeFaceDepthMemory[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VkImageView linearCubeFaceDepthView[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VkFramebuffer linearCubeFaceFramebuffer[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE }; // unused - dynamic rendering
-
     // GPU linearization pass resources
     VkPipeline linearizePipeline = VK_NULL_HANDLE;
     VkPipelineLayout linearizePipelineLayout = VK_NULL_HANDLE;
@@ -120,37 +110,16 @@ private:
     bool linearShadowDepthDescriptorOwned[SHADOW_CASCADE_COUNT] = { false };
 
     ShadowParams* shadowParams = nullptr;
-    Settings* settings = nullptr; // pointer to app settings for near/far
 
     // Fixed preview width in pixels (all previews will be displayed at this width)
     // Preview scale removed — previews are fixed-size thumbnails now.
     int currentFrame = 0;
     int cachedWidth = 0;
     int cachedHeight = 0;
-    // GPU-only preview (always enabled; no CPU readback)
-    bool useGpuPreview = true;
-    // Persistent staging buffers (kept for compatibility but unused)
-    Buffer stagingReadBuffer{};
-    void* stagingReadPtr = nullptr;
-    VkDeviceSize stagingReadSize = 0;
-
-    Buffer stagingUploadBuffer{}; // used as TRANSFER_SRC for buffer->image uploads
-    void* stagingUploadPtr = nullptr;
-    VkDeviceSize stagingUploadSize = 0;
-
-    int frameCounter = 0;
-    int updateInterval = 8; // update debug readbacks every N frames (reduce CPU roundtrips)
-    // Track sizes of linear debug images to detect resizes
-    int linearSceneWidth = 0;
-    int linearSceneHeight = 0;
-    int linearShadowSize[SHADOW_CASCADE_COUNT] = { 0 };
 
     // UI: which preview to show (only one at a time)
     enum class PreviewTarget {
         Sky = 0,
-        Solid360Cube,       // legacy (capture removed; preview shows "unavailable")
-        Solid360DepthCube,  // legacy (capture removed)
-        Solid360Equirect,   // legacy (capture removed)
         RTReflect,          // hybrid RT water reflection output
         RTRefract,          // hybrid RT water refraction + thickness output
         SolidColor,
@@ -187,7 +156,7 @@ private:
 
 public:
     RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
-                        ShadowRenderer* shadow = nullptr, ShadowParams* shadowParams_ = nullptr, Settings* settings_ = nullptr);
+                        ShadowRenderer* shadow = nullptr, ShadowParams* shadowParams_ = nullptr);
     ~RenderTargetsWidget();
 
     // Initialize static GPU resources used by the widget (run once).

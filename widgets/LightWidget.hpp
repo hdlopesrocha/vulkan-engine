@@ -27,11 +27,4 @@ public:
     LightWidget(Light* light);
 
     void render() override;
-
-    // Allow external access to angles if needed
-    float getAzimuth() const;
-    float getElevation() const;
-
-    void setAzimuth(float a);
-    void setElevation(float e);
 };

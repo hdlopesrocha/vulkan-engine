@@ -28,11 +28,9 @@ private:
 
     // Snapshot of queue-timeline segments copied from VulkanApp each frame.
     std::vector<VulkanApp::QueueSegment> segments_;
-    uint64_t latestFrame_ = 0;
 
     // UI state
     bool perFrameMode_ = true;   // true: slot grid for the latest frame; false: rolling Gantt
-    int  slots_ = 72;            // time slots across a frame
     float windowMs_ = 50.0f;     // rolling window length (ms)
 
     static uint64_t nowNs();

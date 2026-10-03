@@ -15,54 +15,7 @@ void BillboardService::initializeTextures() {
     texturesInitialized = true;
 }
 
-void BillboardService::cleanup() {
-    printf("[BillboardService] cleanup start: texturesInitialized=%d\n", texturesInitialized ? 1 : 0);
-    if (texturesInitialized && vulkanApp) {
-        VkDevice device = vulkanApp->getDevice();
-        auto destroyAR = [&](VkImage& img, VmaAllocation& alloc, VkDeviceMemory& mem, VkImageView& view) {
-            if (view != VK_NULL_HANDLE) { vulkanApp->resources.removeImageView(view); vkDestroyImageView(device, view, nullptr); view = VK_NULL_HANDLE; }
-            if (img  != VK_NULL_HANDLE) { vulkanApp->destroyImageWithVma(img, alloc, mem); img = VK_NULL_HANDLE; alloc = VK_NULL_HANDLE; mem = VK_NULL_HANDLE; }
-        };
-        destroyAR(billboardAlbedoArrayImage,  billboardAlbedoArrayAllocation,  billboardAlbedoArrayMemory,  billboardAlbedoArrayView);
-        destroyAR(billboardNormalArrayImage,   billboardNormalArrayAllocation,  billboardNormalArrayMemory,  billboardNormalArrayView);
-        destroyAR(billboardOpacityArrayImage,  billboardOpacityArrayAllocation, billboardOpacityArrayMemory, billboardOpacityArrayView);
-        if (billboardArraySampler != VK_NULL_HANDLE) {
-            vulkanApp->resources.removeSampler(billboardArraySampler);
-            vkDestroySampler(device, billboardArraySampler, nullptr);
-            billboardArraySampler = VK_NULL_HANDLE;
-        }
-        texturesInitialized = false;
-    }
-    printf("[BillboardService] cleanup done\n");
-}
-
 void BillboardService::invalidateImGuiDescriptors() {
-}
-
-void BillboardService::createBillboardArrayTextures() {
-    if (!vulkanApp || !texturesInitialized) return;
-
-    VkDevice device = vulkanApp->getDevice();
-
-    auto destroyArrayResources = [&](VkImage& img, VmaAllocation& alloc, VkDeviceMemory& mem, VkImageView& view) {
-        if (view != VK_NULL_HANDLE) {
-            vulkanApp->resources.removeImageView(view);
-            vkDestroyImageView(device, view, nullptr);
-            view = VK_NULL_HANDLE;
-        }
-        if (img != VK_NULL_HANDLE) {
-            vulkanApp->destroyImageWithVma(img, alloc, mem);
-            img = VK_NULL_HANDLE;
-        }
-    };
-    destroyArrayResources(billboardAlbedoArrayImage, billboardAlbedoArrayAllocation, billboardAlbedoArrayMemory, billboardAlbedoArrayView);
-    destroyArrayResources(billboardNormalArrayImage, billboardNormalArrayAllocation, billboardNormalArrayMemory, billboardNormalArrayView);
-    destroyArrayResources(billboardOpacityArrayImage, billboardOpacityArrayAllocation, billboardOpacityArrayMemory, billboardOpacityArrayView);
-    if (billboardArraySampler != VK_NULL_HANDLE) {
-        vulkanApp->resources.removeSampler(billboardArraySampler);
-        vkDestroySampler(device, billboardArraySampler, nullptr);
-        billboardArraySampler = VK_NULL_HANDLE;
-    }
 }
 
 void BillboardService::bakeFromTextures(const std::array<EditableTexture, 3>& composedAlbedo,

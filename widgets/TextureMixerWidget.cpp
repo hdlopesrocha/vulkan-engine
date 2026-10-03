@@ -34,7 +34,6 @@ void TextureMixerWidget::render() {
         ImGui::Text("No mixers configured.");
         if (ImGui::Checkbox("Show noise (alpha)", &showNoise)) {
             previewSource = 0;
-            textures->setDebugOutput(showNoise);
         }
         ImGuiComponents::TooltipOnHover("Preview the computed Perlin noise mask instead of the mixed color.");
         return;
@@ -74,7 +73,6 @@ void TextureMixerWidget::render() {
         }
         ImGui::PopID();
         if (mixerChanged) {
-            textures->setDebugOutput(showNoise);
             if (maxLayers > 0) {
                 textures->enqueueGenerate(mixerParams[currentMixerIndex]);
             } else {
@@ -84,7 +82,6 @@ void TextureMixerWidget::render() {
         }
         if (ImGui::Checkbox("Show noise (alpha)", &showNoise)) {
             previewSource = 0;
-            textures->setDebugOutput(showNoise);
         }
         ImGuiComponents::TooltipOnHover("Preview the computed Perlin noise mask instead of the mixed color.");
         const size_t pending = textures->getPendingGenerationCount();
@@ -200,7 +197,6 @@ void TextureMixerWidget::render() {
         if (maxLayers > 0) {
             paramsDirty = false;
             previewSource = 0;
-            textures->setDebugOutput(showNoise);
             textures->enqueueGenerate(mixerParams[currentMixerIndex], activeMap);
         } else {
             paramsDirty = false;

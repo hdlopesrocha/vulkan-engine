@@ -18,15 +18,13 @@
 
 class BillboardCreator : public Widget {
 public:
-    BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr,
+    BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr,
                      std::shared_ptr<BillboardService> billboardService_);
 
     void setVulkanApp(class VulkanApp* app);
     void initializeTextures();
-    void cleanup();
     void invalidateImGuiDescriptors();
     void bakeAllBillboards();
-    const EditableTexture* getComposedAlbedoTexture(size_t index) const;
 
     VkImageView getAlbedoArrayView() const { return billboardService->getAlbedoArrayView(); }
     VkImageView getNormalArrayView()  const { return billboardService->getNormalArrayView(); }
@@ -42,7 +40,6 @@ private:
     std::shared_ptr<BillboardService> billboardService;
     BillboardManager* billboardManager;
     AtlasManager* atlasManager;
-    TextureArrayManager* textureManager;
     VulkanApp* vulkanApp = nullptr;
     
     int currentBillboardIndex = -1;

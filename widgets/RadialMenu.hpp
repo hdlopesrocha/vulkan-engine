@@ -46,8 +46,6 @@ public:
     void SetSelectedIndex(int index);
     // Pop the last ring (back navigation)
     void PopRing();
-    // Clear all rings
-    void ClearRings();
 
     int GetStackDepth() const;
 
@@ -69,32 +67,11 @@ public:
 
     // Label ring queries (active ring must be LABEL)
     int GetHoveredLabel() const;
-    std::string GetHoveredLabelItem() const;
-    std::string GetHoveredLabelTextItem() const;
     void SetCurrentItem(int index);
 
     // HSV slider queries (active ring must be HSV_SLIDER)
-    void SetHSVSliderValue(float value);
     float GetHSVSliderValue() const;
     std::string GetHSVSliderName() const;
-
-    // Center circle labels (line by line)
-    void SetCenterLabels(const std::vector<std::string>& labels);
-
-    // Layout setters
-    void SetDeadZoneRadius(float radius);
-    void SetInnerRadius(float radius);
-    void SetOuterRadius(float radius);
-    void SetRingSpacing(float spacing);
-    void SetTextSize(float size);
-
-    // Color setters
-    void SetHoverColor(ImU32 color);
-    void SetSelectedColor(ImU32 color);
-    void SetBackgroundColor(ImU32 color);
-    void SetOutlineColor(ImU32 color);
-    void SetSliderFillColor(ImU32 color);
-    void SetSliderTrackColor(ImU32 color);
 
 private:
     bool visible = false;

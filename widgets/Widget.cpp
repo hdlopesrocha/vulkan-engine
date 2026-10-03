@@ -10,13 +10,8 @@ Widget::~Widget() = default;
 bool Widget::isVisible() const { return isOpen; }
 void Widget::show() { isOpen = true; }
 void Widget::hide() { isOpen = false; }
-void Widget::toggle() { isOpen = !isOpen; }
 
 const std::string& Widget::getTitle() const { return title; }
-
-const std::string& Widget::getIcon() const { return icon; }
-void Widget::setIcon(const std::string& i) { icon = i; }
-void Widget::setIcon(const char8_t* i) { icon = reinterpret_cast<const char*>(i); }
 
 std::string Widget::displayTitle() const {
 	if (!icon.empty()) return icon + std::string(" ") + title;

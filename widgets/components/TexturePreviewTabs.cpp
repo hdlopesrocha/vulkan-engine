@@ -22,8 +22,6 @@ void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> text
                 } else {
                     texID = (ImTextureID)textures->getPreviewDescriptor(activeMap, layer);
                 }
-            } else if (textures) {
-                texID = (ImTextureID)textures->getPreviewDescriptor(activeMap);
             }
             uint32_t w = textures ? textures->getLayerWidth() : 0u;
             uint32_t h = textures ? textures->getLayerHeight() : 0u;
@@ -43,8 +41,6 @@ void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> text
                 } else {
                     texID = (ImTextureID)textures->getPreviewDescriptor(activeMap, layer);
                 }
-            } else if (textures) {
-                texID = (ImTextureID)textures->getPreviewDescriptor(activeMap);
             }
             uint32_t w = textures ? textures->getLayerWidth() : 0u;
             uint32_t h = textures ? textures->getLayerHeight() : 0u;
@@ -64,8 +60,6 @@ void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> text
                 } else {
                     texID = (ImTextureID)textures->getPreviewDescriptor(activeMap, layer);
                 }
-            } else if (textures) {
-                texID = (ImTextureID)textures->getPreviewDescriptor(activeMap);
             }
             uint32_t w = textures ? textures->getLayerWidth() : 0u;
             uint32_t h = textures ? textures->getLayerHeight() : 0u;

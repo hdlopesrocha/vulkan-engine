@@ -22,19 +22,6 @@ void RadialMenu::SetCenter(ImVec2 center_) { center = center_; }
 void RadialMenu::SetInputVector(const ImVec2& vector) { inputVector = vector; }
 void RadialMenu::SetPages(const std::vector<Page>& pages_) { pages = pages_; }
 
-void RadialMenu::SetDeadZoneRadius(float r) { deadZoneRadius = r; }
-void RadialMenu::SetInnerRadius(float r) { innerRadius = r; }
-void RadialMenu::SetOuterRadius(float r) { outerRadius = r; }
-void RadialMenu::SetRingSpacing(float s) { ringSpacing = s; }
-void RadialMenu::SetTextSize(float s) { textSize = s; }
-
-void RadialMenu::SetHoverColor(ImU32 c) { hoverColor = c; }
-void RadialMenu::SetSelectedColor(ImU32 c) { selectedColor = c; }
-void RadialMenu::SetBackgroundColor(ImU32 c) { backgroundColor = c; }
-void RadialMenu::SetOutlineColor(ImU32 c) { outlineColor = c; }
-void RadialMenu::SetSliderFillColor(ImU32 c) { sliderFillColor = c; }
-void RadialMenu::SetSliderTrackColor(ImU32 c) { sliderTrackColor = c; }
-
 // ---- Hover queries ----
 
 int RadialMenu::GetHoveredPage() const { return hoveredPage; }
@@ -94,8 +81,6 @@ void RadialMenu::SetSelectedIndex(int index)
     if (!stack.empty())
         stack.back().selectedIndex = index;
 }
-
-void RadialMenu::ClearRings() { stack.clear(); }
 
 int RadialMenu::GetStackDepth() const { return static_cast<int>(stack.size()); }
 
@@ -169,24 +154,6 @@ int RadialMenu::GetHoveredLabel() const
     return stack.back().hoveredLabel;
 }
 
-std::string RadialMenu::GetHoveredLabelItem() const
-{
-    if (stack.empty() || stack.back().type != RingType::LABEL) return {};
-    const RingEntry& e = stack.back();
-    if (e.hoveredLabel >= 0 && e.hoveredLabel < static_cast<int>(e.items.size()))
-        return e.items[e.hoveredLabel];
-    return {};
-}
-
-std::string RadialMenu::GetHoveredLabelTextItem() const
-{
-    if (stack.empty() || stack.back().type != RingType::LABEL) return {};
-    const RingEntry& e = stack.back();
-    if (e.hoveredLabel >= 0 && e.hoveredLabel < static_cast<int>(e.textItems.size()))
-        return e.textItems[e.hoveredLabel];
-    return {};
-}
-
 void RadialMenu::SetCurrentItem(int index)
 {
     if (!stack.empty() && stack.back().type == RingType::LABEL)
@@ -194,12 +161,6 @@ void RadialMenu::SetCurrentItem(int index)
 }
 
 // ---- HSV slider queries ----
-
-void RadialMenu::SetHSVSliderValue(float value)
-{
-    if (stack.empty() || stack.back().type != RingType::HSV_SLIDER) return;
-    stack.back().sliderValue = value;
-}
 
 float RadialMenu::GetHSVSliderValue() const
 {
@@ -211,13 +172,6 @@ std::string RadialMenu::GetHSVSliderName() const
 {
     if (stack.empty() || stack.back().type != RingType::HSV_SLIDER) return {};
     return stack.back().sliderName;
-}
-
-// ---- Center circle labels ----
-
-void RadialMenu::SetCenterLabels(const std::vector<std::string>& labels)
-{
-    centerLabels = labels;
 }
 
 // ---- Center labels from full stack ----

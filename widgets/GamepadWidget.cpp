@@ -72,7 +72,6 @@ void GamepadWidget::render() {
                       present ? (name ? name : "(unknown)") : "(absent)",
                       isGp ? "(gamepad)" : "");
         labels.emplace_back(buf);
-        if (jid == selectedJoystick) {}
     }
 
     // Prepare array of c_str for ImGui combo

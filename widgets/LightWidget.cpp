@@ -114,9 +114,3 @@ void LightWidget::render() {
 		ImGuiHelpers::SetTooltipIfHovered("Low angle light for long shadows");
 	}
 }
-
-float LightWidget::getAzimuth() const { return azimuth; }
-float LightWidget::getElevation() const { return elevation; }
-
-void LightWidget::setAzimuth(float a) { azimuth = a; updateLight(); }
-void LightWidget::setElevation(float e) { elevation = e; updateLight(); }

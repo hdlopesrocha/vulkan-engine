@@ -27,10 +27,6 @@ public:
 
     // Note: widget now publishes a `RebuildBrushEvent` via the provided EventManager
 
-    const std::vector<BrushEntry>& getEntries() const { return manager.getEntries(); }
-    bool isDirty() const { return dirty; }
-    void clearDirty() { dirty = false; }
-
 private:
     void renderEntry(int index);
     void renderMaterialPicker(BrushEntry& entry);

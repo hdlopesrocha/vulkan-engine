@@ -19,9 +19,6 @@ public:
     // Render menu items to toggle widgets
     void renderMenu();
 
-    // Get widget by title (for programmatic access)
-    std::shared_ptr<Widget> getWidget(const std::string& title);
-    
 private:
     std::vector<std::shared_ptr<Widget>> widgets;
 };

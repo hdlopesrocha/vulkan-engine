@@ -32,9 +32,6 @@ TextureMixer::TextureMixer() {}
 static TextureMixer* g_texture_mixer_instance = nullptr;
 TextureMixer* TextureMixer::getGlobalInstance() { return g_texture_mixer_instance; }
 
-void TextureMixer::init(VulkanApp* app) {
-}
-
 void TextureMixer::init(VulkanApp* app, TextureArrayManager* texArrMgr) {
 	this->textureArrayManager = texArrMgr;
 	this->width = texArrMgr->width;
@@ -50,10 +47,6 @@ void TextureMixer::init(VulkanApp* app, TextureArrayManager* texArrMgr) {
 
 // setTextureManager removed — EditableTextureSet creates its own compute sampler
 // and compute pipeline during init
-
-void TextureMixer::setOnTextureGenerated(std::function<void()> callback) {
-	onTextureGeneratedCallback = callback;
-}
 
 void TextureMixer::generateInitialTextures(std::vector<MixerParameters> &mixerParams) {
 	if (!textureArrayManager || textureArrayManager->layerAmount == 0) {
@@ -176,7 +169,6 @@ void TextureMixer::pollPendingGenerations(VulkanApp* app) {
 			textureArrayManager->setLayerLayout(3, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 			textureArrayManager->setLayerLayout(4, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		}
-		if (onTextureGeneratedCallback) onTextureGeneratedCallback();
 		{
 			std::lock_guard<std::mutex> lkll(logsMutex);
 			char buf[128];
@@ -204,13 +196,6 @@ size_t TextureMixer::getPendingGenerationCount() {
 	std::lock_guard<std::mutex> lk1(pendingRequestsMutex);
 	std::lock_guard<std::mutex> lk2(pendingFencesMutex);
 	return pendingRequests.size() + pendingFences.size();
-}
-
-std::vector<std::string> TextureMixer::consumeLogs() {
-	std::lock_guard<std::mutex> lk(logsMutex);
-	auto out = logs;
-	logs.clear();
-	return out;
 }
 
 
@@ -250,27 +235,6 @@ bool TextureMixer::waitForLayerGeneration(VulkanApp* app, uint32_t layer, uint64
 		return true;
 	}
 	return false;
-}
-
-void TextureMixer::cleanup() {
-	// Clear global instance pointer
-	if (g_texture_mixer_instance == this) g_texture_mixer_instance = nullptr;
-
-	// No editable textures to cleanup when using global texture arrays
-
-	// Clear local handles; VulkanResourceManager will destroy tracked objects
-	computePipeline = VK_NULL_HANDLE;
-	computePipelineLayout = VK_NULL_HANDLE;
-	computeDescriptorSetLayout = VK_NULL_HANDLE;
-	computeDescriptorPool = VK_NULL_HANDLE;
-
-	generationDescSet = VK_NULL_HANDLE;
-
-	// clear log buffer
-	{
-		std::lock_guard<std::mutex> lk(logsMutex);
-		logs.clear();
-	}
 }
 
 
@@ -407,14 +371,6 @@ void TextureMixer::attachTextureArrayManager(TextureArrayManager* tam) {
 	std::cerr << "[TextureMixer] attachTextureArrayManager called: tam=" << (void*)tam << std::endl;
 	// With the C2 per-generation bindings there are no persistent sets to
 	// refresh: the next generatePerlinNoise call reads the current views.
-}
-
-VkDescriptorSet TextureMixer::getPreviewDescriptor(int map) {
-	if (!textureArrayManager || editableLayer == UINT32_MAX) {
-		throw std::runtime_error("TextureMixer::getPreviewDescriptor requires TextureArrayManager and valid editableLayer");
-	}
-	ImTextureID id = textureArrayManager->getImTexture(editableLayer, map);
-	return (VkDescriptorSet)id;
 }
 
 VkDescriptorSet TextureMixer::getPreviewDescriptor(int map, uint32_t layer) {
@@ -607,8 +563,5 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 	textureArrayManager->setLayerInitialized(targetLayer, true);
 	for (int m = 0; m < 5; ++m) {
 		textureArrayManager->setLayerLayout(m, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	}
-	if (onTextureGeneratedCallback) {
-		onTextureGeneratedCallback();
 	}
 }

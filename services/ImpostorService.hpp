@@ -15,7 +15,7 @@ public:
     void cleanup() override;
 
     void setSource(VkImageView albedo, VkImageView normal, VkImageView opacity,
-                   VkSampler sampler, int billboardCount);
+                   VkSampler sampler);
     void setVegetationRenderer(VegetationRenderer* renderer) { vegRenderer = renderer; }
     void captureAll(float scale);
     void rewire();
@@ -38,5 +38,4 @@ private:
     VkImageView srcNormal = VK_NULL_HANDLE;
     VkImageView srcOpacity = VK_NULL_HANDLE;
     VkSampler srcSampler = VK_NULL_HANDLE;
-    int billboardCount = 0;
 };

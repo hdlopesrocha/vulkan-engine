@@ -6,8 +6,8 @@
 //
 // Perf report 23 C2: the layer indices (primary/secondary/target) were removed
 // with the array-view bindings; the descriptor set now carries the layer
-// selection as single-layer views. debugOutput is retained for interface
-// compatibility with TextureMixer::setDebugOutput (currently unused).
+// selection as single-layer views. debugOutput is unused padding kept so the
+// 40-byte layout matches perlin_noise.comp.
 struct PerlinPushConstants {
     float scale;              // offset 0
     float octaves;            // offset 4

@@ -5,7 +5,6 @@
 #include <imgui.h>
 #include <string>
 #include <vector>
-#include <atomic>
 #include <unordered_map>
 
 class Camera;
@@ -17,12 +16,7 @@ class OctreeExplorerWidget : public Widget {
 public:
     explicit OctreeExplorerWidget(LocalScene* scene, Camera* camera = nullptr);
     void render() override;
-    void setCamera(Camera* camera_) { camera = camera_; }
     bool getShowDebugCubes() const { return showDebugCubes; }
-
-    // Set to false while the octree is being written by a background thread.
-    // The widget will skip accessing the octree until this becomes true.
-    std::atomic<bool> octreeReady{false};
 
     struct CubeWithColor {
         BoundingCube cube;

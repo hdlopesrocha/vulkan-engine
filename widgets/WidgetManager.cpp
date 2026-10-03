@@ -31,13 +31,3 @@ void WidgetManager::renderMenu() {
 		ImGui::EndMenu();
 	}
 }
-
-std::shared_ptr<Widget> WidgetManager::getWidget(const std::string& title) {
-	for (auto& widget : widgets) {
-		if (!widget) continue;
-		if (widget->getTitle() == title) {
-			return widget;
-		}
-	}
-	return nullptr;
-}

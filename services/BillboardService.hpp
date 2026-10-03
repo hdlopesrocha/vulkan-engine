@@ -1,21 +1,18 @@
 #pragma once
 
-#include "Service.hpp"
 #include "../vulkan/EditableTexture.hpp"
 #include <vulkan/vulkan.h>
 #include <array>
 
 class VulkanApp;
 
-class BillboardService : public Service {
+class BillboardService {
 public:
     BillboardService();
-    void init(VulkanApp* app) override;
-    void cleanup() override;
+    void init(VulkanApp* app);
 
     void initializeTextures();
     void invalidateImGuiDescriptors();
-    void createBillboardArrayTextures();
 
     // Bake billboard composed textures into array textures
     void bakeFromTextures(const std::array<EditableTexture, 3>& composedAlbedo,
@@ -26,8 +23,6 @@ public:
     VkImageView getNormalArrayView()  const { return billboardNormalArrayView; }
     VkImageView getOpacityArrayView() const { return billboardOpacityArrayView; }
     VkSampler   getArraySampler()     const { return billboardArraySampler; }
-
-    bool isInitialized() const { return texturesInitialized; }
 
 private:
     VulkanApp* vulkanApp = nullptr;

@@ -5,7 +5,6 @@
 #include <cfloat>
 #include "components/ColumnLayout.hpp"
 #include "components/ScrollablePicker.hpp"
-#include "../services/TextureMixer.hpp"
 #include "components/ImGuiHelpers.hpp"
 
 namespace {
@@ -98,13 +97,6 @@ void TextureViewer::render() {
                         [this](size_t l) { return arrayManager->getImTexture(l, 0); },
                         48.0f, 2, true, true, kColumnWidth)) {
                     currentIndex = idx;
-                    if (textureMixer) {
-                        MixerParameters mp{};
-                        mp.targetLayer = currentIndex;
-                        mp.primaryTextureIdx = static_cast<uint32_t>(currentIndex);
-                        mp.secondaryTextureIdx = static_cast<uint32_t>(currentIndex);
-                        textureMixer->enqueueGenerate(mp, 0);
-                    }
                 }
                 ImGui::EndTabItem();
             }
