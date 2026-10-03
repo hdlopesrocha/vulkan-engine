@@ -659,7 +659,6 @@ public:
         {
             WaterParams wp = WaterParams();
             wp.noiseOctaves = 1;
-            wp.waveScale = 8.0f;
             wp.causticColor = glm::vec3(1.0f, 0.98f, 0.9f); // sunlight tint
             // One water region: a single green tint for this demo layer.
             wp.waterColor = glm::vec3(0.03f, 0.30f, 0.12f);
@@ -680,7 +679,6 @@ public:
             WaterParams wp = WaterParams();
             wp.enableRefraction = false;
             wp.noiseOctaves = 0;
-            wp.waveScale = 0.0f;
             wp.noisePeriod = 0.0f;
             wp.causticColor = glm::vec3(1.0f, 1.0f, 1.0f);
             // White -> black depth-region ramp for this stylized demo layer.

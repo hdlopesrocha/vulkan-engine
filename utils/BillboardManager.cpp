@@ -1,37 +1,7 @@
 #include "BillboardManager.hpp"
 #include <algorithm>
-#include <random>
-#include <sstream>
-#include <fstream>
 
-BillboardManager::BillboardManager() : billboardCount(100) {}
-
-void BillboardManager::setCandidatePositions(const std::vector<glm::vec3>& positions) {
-    candidatePositions = positions;
-    updateBillboardSelection();
-}
-
-void BillboardManager::setBillboardCount(size_t count) {
-    billboardCount = count;
-    updateBillboardSelection();
-}
-
-const std::vector<glm::vec3>& BillboardManager::getBillboardPositions() const {
-    return billboardPositions;
-}
-
-void BillboardManager::updateBillboardSelection() {
-    billboardPositions.clear();
-    if (candidatePositions.empty() || billboardCount == 0) return;
-    // Randomly sample billboardCount positions from candidatePositions
-    std::vector<size_t> indices(candidatePositions.size());
-    for (size_t i = 0; i < indices.size(); ++i) indices[i] = i;
-    std::shuffle(indices.begin(), indices.end(), std::mt19937{std::random_device{}()});
-    size_t n = std::min(billboardCount, candidatePositions.size());
-    for (size_t i = 0; i < n; ++i) {
-        billboardPositions.push_back(candidatePositions[indices[i]]);
-    }
-}
+BillboardManager::BillboardManager() {}
 
 // --- Authoring helpers (restored from legacy manager) ---
 
@@ -62,10 +32,6 @@ const Billboard* BillboardManager::getBillboard(size_t index) const {
         return &billboards[index];
     }
     return nullptr;
-}
-
-const std::vector<Billboard>& BillboardManager::getBillboards() const {
-    return billboards;
 }
 
 size_t BillboardManager::getBillboardCount() const {
@@ -132,113 +98,3 @@ void BillboardManager::clear() {
     billboards.clear();
 }
 
-std::string BillboardManager::exportBillboard(size_t index) const {
-    if (index >= billboards.size()) return "";
-
-    const Billboard& billboard = billboards[index];
-    std::stringstream ss;
-
-    ss << "# Billboard: " << billboard.name << "\n";
-    ss << "width=" << billboard.width << "\n";
-    ss << "height=" << billboard.height << "\n";
-    ss << "layers=" << billboard.layers.size() << "\n";
-
-    for (size_t i = 0; i < billboard.layers.size(); ++i) {
-        const auto& layer = billboard.layers[i];
-        ss << "layer," << i << ","
-           << layer.atlasIndex << ","
-           << layer.tileIndex << ","
-           << layer.offsetX << ","
-           << layer.offsetY << ","
-           << layer.scaleX << ","
-           << layer.scaleY << ","
-           << layer.rotation << ","
-           << layer.opacity << ","
-           << layer.renderOrder << "\n";
-    }
-
-    return ss.str();
-}
-
-std::string BillboardManager::exportAll() const {
-    std::stringstream ss;
-    ss << "# Billboard Collection\n";
-    ss << "count=" << billboards.size() << "\n\n";
-
-    for (size_t i = 0; i < billboards.size(); ++i) {
-        ss << exportBillboard(i) << "\n";
-    }
-
-    return ss.str();
-}
-
-bool BillboardManager::saveToFile(const std::string& filepath) const {
-    std::ofstream file(filepath);
-    if (!file.is_open()) return false;
-    file << exportAll();
-    file.close();
-    return true;
-}
-
-bool BillboardManager::loadFromFile(const std::string& filepath) {
-    std::ifstream file(filepath);
-    if (!file.is_open()) return false;
-
-    billboards.clear();
-    std::string line;
-    Billboard* currentBillboard = nullptr;
-
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue;
-
-        // Parse key=value lines
-        size_t equalPos = line.find('=');
-        if (equalPos != std::string::npos) {
-            std::string key = line.substr(0, equalPos);
-            std::string value = line.substr(equalPos + 1);
-
-            if (key == "width" && currentBillboard) {
-                currentBillboard->width = std::stof(value);
-            } else if (key == "height" && currentBillboard) {
-                currentBillboard->height = std::stof(value);
-            } else if (key == "layers") {
-                // Start a new billboard
-                billboards.push_back(Billboard());
-                currentBillboard = &billboards.back();
-                currentBillboard->name = "Billboard " + std::to_string(billboards.size());
-            }
-            continue;
-        }
-
-        // Parse layer lines
-        if (line.substr(0, 6) == "layer," && currentBillboard) {
-            std::stringstream ss(line.substr(6));
-            std::string token;
-            std::vector<std::string> tokens;
-
-            while (std::getline(ss, token, ',')) {
-                tokens.push_back(token);
-            }
-
-            if (tokens.size() >= 9) {
-                BillboardLayer layer;
-                // tokens[0] is index, skip it
-                layer.atlasIndex = std::stoi(tokens[1]);
-                layer.tileIndex = std::stoi(tokens[2]);
-                layer.offsetX = std::stof(tokens[3]);
-                layer.offsetY = std::stof(tokens[4]);
-                layer.scaleX = std::stof(tokens[5]);
-                layer.scaleY = std::stof(tokens[6]);
-                layer.rotation = std::stof(tokens[7]);
-                layer.opacity = std::stof(tokens[8]);
-                if (tokens.size() >= 10) {
-                    layer.renderOrder = std::stoi(tokens[9]);
-                }
-                currentBillboard->layers.push_back(layer);
-            }
-        }
-    }
-
-    file.close();
-    return true;
-}

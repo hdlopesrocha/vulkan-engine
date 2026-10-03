@@ -19,9 +19,6 @@ public:
     // Add a new tile to a specific atlas
     size_t addTile(int atlasIndex, const AtlasTile& tile);
     
-    // Add a new tile with parameters to a specific atlas
-    size_t addTile(int atlasIndex, const std::string& name, float offsetX, float offsetY, float scaleX, float scaleY);
-    
     // Remove a tile by index from a specific atlas
     void removeTile(int atlasIndex, size_t tileIndex);
     
@@ -30,32 +27,11 @@ public:
     
     const AtlasTile* getTile(int atlasIndex, size_t tileIndex) const;
     
-    // Get all tiles for a specific atlas
-    const std::vector<AtlasTile>& getTiles(int atlasIndex) const;
-    
     // Get tile count for a specific atlas
     size_t getTileCount(int atlasIndex) const;
     
     // Clear all tiles for a specific atlas
     void clear(int atlasIndex);
-    
-    // Clear all atlases
-    void clearAll();
-    
-    // Export tiles to CSV format for a specific atlas
-    std::string exportToString(int atlasIndex) const;
-    
-    // Export all atlases to CSV format
-    std::string exportAllToString() const;
-    
-    // Save a specific atlas to file
-    bool saveToFile(int atlasIndex, const std::string& filepath) const;
-    
-    // Save all atlases to file
-    bool saveAllToFile(const std::string& filepath) const;
-    
-    // Load from file (supports both single atlas and multi-atlas format)
-    bool loadFromFile(const std::string& filepath);
     
     // Auto-detect tiles from an opacity/alpha map image
     // Returns the number of tiles detected and added

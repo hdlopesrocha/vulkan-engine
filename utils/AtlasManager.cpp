@@ -6,17 +6,6 @@ size_t AtlasManager::addTile(int atlasIndex, const AtlasTile& tile) {
     return atlases[atlasIndex].size() - 1;
 }
 
-size_t AtlasManager::addTile(int atlasIndex, const std::string& name, float offsetX, float offsetY, float scaleX, float scaleY) {
-    AtlasTile tile;
-    tile.name = name;
-    tile.offsetX = offsetX;
-    tile.offsetY = offsetY;
-    tile.scaleX = scaleX;
-    tile.scaleY = scaleY;
-    atlases[atlasIndex].push_back(tile);
-    return atlases[atlasIndex].size() - 1;
-}
-
 void AtlasManager::removeTile(int atlasIndex, size_t tileIndex) {
     if (atlases.find(atlasIndex) != atlases.end() && tileIndex < atlases[atlasIndex].size()) {
         atlases[atlasIndex].erase(atlases[atlasIndex].begin() + tileIndex);
@@ -38,15 +27,6 @@ const AtlasTile* AtlasManager::getTile(int atlasIndex, size_t tileIndex) const {
     return nullptr;
 }
 
-const std::vector<AtlasTile>& AtlasManager::getTiles(int atlasIndex) const {
-    static const std::vector<AtlasTile> empty;
-    auto it = atlases.find(atlasIndex);
-    if (it != atlases.end()) {
-        return it->second;
-    }
-    return empty;
-}
-
 size_t AtlasManager::getTileCount(int atlasIndex) const {
     auto it = atlases.find(atlasIndex);
     if (it != atlases.end()) {
@@ -57,115 +37,6 @@ size_t AtlasManager::getTileCount(int atlasIndex) const {
 
 void AtlasManager::clear(int atlasIndex) {
     atlases[atlasIndex].clear();
-}
-
-void AtlasManager::clearAll() {
-    atlases.clear();
-}
-
-std::string AtlasManager::exportToString(int atlasIndex) const {
-    std::string result = "# Atlas Tiles for Atlas " + std::to_string(atlasIndex) + "\n";
-    result += "# Format: name,offsetX,offsetY,scaleX,scaleY\n";
-    auto it = atlases.find(atlasIndex);
-    if (it != atlases.end()) {
-        for (const auto& tile : it->second) {
-            result += tile.name + "," + 
-                      std::to_string(tile.offsetX) + "," +
-                      std::to_string(tile.offsetY) + "," +
-                      std::to_string(tile.scaleX) + "," +
-                      std::to_string(tile.scaleY) + "\n";
-        }
-    }
-    return result;
-}
-
-std::string AtlasManager::exportAllToString() const {
-    std::string result;
-    for (const auto& [atlasIndex, tiles] : atlases) {
-        result += "# Atlas " + std::to_string(atlasIndex) + "\n";
-        result += "# Format: name,offsetX,offsetY,scaleX,scaleY\n";
-        for (const auto& tile : tiles) {
-            result += std::to_string(atlasIndex) + "," +
-                      tile.name + "," + 
-                      std::to_string(tile.offsetX) + "," + 
-                      std::to_string(tile.offsetY) + "," + 
-                      std::to_string(tile.scaleX) + "," + 
-                      std::to_string(tile.scaleY) + "\n";
-        }
-        result += "\n";
-    }
-    return result;
-}
-
-bool AtlasManager::saveToFile(int atlasIndex, const std::string& filepath) const {
-    std::ofstream file(filepath);
-    if (!file.is_open()) {
-        return false;
-    }
-    file << exportToString(atlasIndex);
-    file.close();
-    return true;
-}
-
-bool AtlasManager::saveAllToFile(const std::string& filepath) const {
-    std::ofstream file(filepath);
-    if (!file.is_open()) {
-        return false;
-    }
-    file << exportAllToString();
-    file.close();
-    return true;
-}
-
-bool AtlasManager::loadFromFile(const std::string& filepath) {
-    std::ifstream file(filepath);
-    if (!file.is_open()) {
-        return false;
-    }
-    
-    atlases.clear();
-    std::string line;
-    int currentAtlasIndex = 0;
-    
-    while (std::getline(file, line)) {
-        // Skip comments and empty lines
-        if (line.empty() || line[0] == '#') {
-            continue;
-        }
-        
-        // Parse CSV line
-        std::stringstream ss(line);
-        std::string token;
-        std::vector<std::string> tokens;
-        
-        while (std::getline(ss, token, ',')) {
-            tokens.push_back(token);
-        }
-        
-        // Check if this is multi-atlas format (atlasIndex,name,offsetX,offsetY,scaleX,scaleY)
-        // or single atlas format (name,offsetX,offsetY,scaleX,scaleY)
-        if (tokens.size() == 6) {
-            // Multi-atlas format
-            int atlasIdx = std::stoi(tokens[0]);
-            std::string name = tokens[1];
-            float offsetX = std::stof(tokens[2]);
-            float offsetY = std::stof(tokens[3]);
-            float scaleX = std::stof(tokens[4]);
-            float scaleY = std::stof(tokens[5]);
-            addTile(atlasIdx, name, offsetX, offsetY, scaleX, scaleY);
-        } else if (tokens.size() == 5) {
-            // Single atlas format
-            std::string name = tokens[0];
-            float offsetX = std::stof(tokens[1]);
-            float offsetY = std::stof(tokens[2]);
-            float scaleX = std::stof(tokens[3]);
-            float scaleY = std::stof(tokens[4]);
-            addTile(currentAtlasIndex, name, offsetX, offsetY, scaleX, scaleY);
-        }
-    }
-    
-    file.close();
-    return true;
 }
 
 int AtlasManager::autoDetectTiles(int atlasIndex, const std::string& opacityImagePath, int threshold) {

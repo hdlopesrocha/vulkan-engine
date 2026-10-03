@@ -101,9 +101,6 @@ struct WaterParams {
 
     // Swell
     float waveSpeed = 32.0f;   // phase speed of the sine (m/s)
-    // LEGACY (no effect, kept for layout/API stability): never uploaded to
-    // the GPU — shaders use a neutral 1.0. Use Wave Height / Noise Scale.
-    float waveScale = 0.03f;
     float wavePeriod = 512.0f;      // swell wavelength (world units)
     float waveAmplitude = 8.0f;
 

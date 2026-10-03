@@ -12,7 +12,6 @@
 enum Layer {
     LAYER_OPAQUE = 0,
     LAYER_TRANSPARENT = 1,
-    LAYER_UI = 2,
     LAYER_COUNT = 3
 };
 
@@ -22,8 +21,6 @@ enum Layer {
 // dedicated pool instead of the scene's shared generation pool.
 class ThreadPool;
 
-// Visible nodes are reported via a callback lambda taking a NodeID and its version
-using VisibleNodeCallback = std::function<void(std::vector<OctreeNodeData>&)>;
 // One tessellation walk returns the chunk's whole LoD ladder: lods[i] is the
 // level-i mesh (0 = full-detail frontier, up to the chunk root's coarse cell).
 
