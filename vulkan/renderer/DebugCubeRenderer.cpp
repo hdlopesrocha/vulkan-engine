@@ -304,32 +304,26 @@ void DebugCubeRenderer::setCubes(const std::vector<CubeWithColor>& cubes) {
     activeCubes = cubes;
 }
 
-void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet) {
-    if (pipeline == VK_NULL_HANDLE || activeCubes.empty() || cubeVBO.vertexBuffer.buffer == VK_NULL_HANDLE || cubeVBO.indexCount == 0) {
-        return;
-    }
-    
-    // Update instance buffer before rendering
-    updateInstanceBuffer(app);
-    
+void DebugCubeRenderer::drawBboxStream(VkCommandBuffer cmd, VkDescriptorSet descriptorSet,
+                                       const VkBufferMemoryBarrier2* hostBarrier) {
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    
+
     // Bind descriptor sets: set 0 = UBO, set 1 = grid texture + instance buffer
     VkDescriptorSet descriptorSets[] = { descriptorSet, gridDescriptorSet };
     if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 2, descriptorSets, 0, nullptr);
-    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 
+    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
         0, 2, descriptorSets, 0, nullptr);
-    
+
     // Bind cube VBO
     const VkBuffer vertexBuffers[] = { cubeVBO.vertexBuffer.buffer };
     const VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(cmd, cubeVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    
+
     // Line width is specified statically in the pipeline (1.0). Do not call vkCmdSetLineWidth
     // unless the pipeline is created with VK_DYNAMIC_STATE_LINE_WIDTH and the device enables wideLines.
-    
+
     // Indirect-count draw: only the bounding boxes that survived the GPU frustum
     // cull (written into the terrain IR's bbox stream by indirect.comp, count in
     // bboxCountBuf) are drawn. maxDrawCount bounds the bbox command buffer capacity
@@ -343,7 +337,9 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
 
             // Compute-shader writes (bbox command/count) → indirect draw + vertex read.
             // Without this barrier the draw can race the dispatch and read pre-dispatch
-            // (zero/garbage) state, causing the boxes to flicker or vanish.
+            // (zero/garbage) state, causing the boxes to flicker or vanish. The async
+            // offscreen path additionally passes the host-write barrier for the
+            // instance buffer so it is merged into the same dependency.
             VkBufferMemoryBarrier2 bb[2] = {};
             auto setupBarrier = [&](VkBufferMemoryBarrier2& b, VkBuffer buf) {
                 b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
@@ -357,11 +353,23 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
             };
             setupBarrier(bb[0], bboxCompact);
             setupBarrier(bb[1], bboxCount);
-            VkDependencyInfo dep{};
-            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dep.bufferMemoryBarrierCount = 2;
-            dep.pBufferMemoryBarriers = bb;
-            vkCmdPipelineBarrier2(cmd, &dep);
+            if (hostBarrier) {
+                std::array<VkBufferMemoryBarrier2, 3> allBarriers{};
+                allBarriers[0] = bb[0];
+                allBarriers[1] = bb[1];
+                allBarriers[2] = *hostBarrier;
+                VkDependencyInfo dep{};
+                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.bufferMemoryBarrierCount = 3;
+                dep.pBufferMemoryBarriers = allBarriers.data();
+                vkCmdPipelineBarrier2(cmd, &dep);
+            } else {
+                VkDependencyInfo dep{};
+                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.bufferMemoryBarrierCount = 2;
+                dep.pBufferMemoryBarriers = bb;
+                vkCmdPipelineBarrier2(cmd, &dep);
+            }
 
             vkCmdDrawIndexedIndirectCount(cmd, bboxCompact, 0, bboxCount, 0,
                                         maxDrawCount, sizeof(VkDrawIndexedIndirectCommand));
@@ -369,7 +377,26 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
         }
     }
     // Fallback: draw all boxes (unculled) when the IR stream is unavailable.
+    // The offscreen path still needs its host-write barrier before the draw.
+    if (hostBarrier) {
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.bufferMemoryBarrierCount = 1;
+        dep.pBufferMemoryBarriers = hostBarrier;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
     vkCmdDrawIndexed(cmd, cubeVBO.indexCount, drawInstanceCount, 0, 0, 0);
+}
+
+void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet) {
+    if (pipeline == VK_NULL_HANDLE || activeCubes.empty() || cubeVBO.vertexBuffer.buffer == VK_NULL_HANDLE || cubeVBO.indexCount == 0) {
+        return;
+    }
+    
+    // Update instance buffer before rendering
+    updateInstanceBuffer(app);
+    
+    drawBboxStream(cmd, descriptorSet, nullptr);
 }
 
 void DebugCubeRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
@@ -467,74 +494,7 @@ void DebugCubeRenderer::renderToOffscreen(VulkanApp* app, VkCommandBuffer& cmd, 
         hostBarrier.offset = 0;
         hostBarrier.size = VK_WHOLE_SIZE;
 
-        if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline);
-        else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-        VkDescriptorSet descriptorSets[] = { descriptorSet, gridDescriptorSet };
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 2, descriptorSets, 0, nullptr);
-        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
-            0, 2, descriptorSets, 0, nullptr);
-
-        const VkBuffer vertexBuffers[] = { cubeVBO.vertexBuffer.buffer };
-        const VkDeviceSize offsets[] = { 0 };
-        vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
-        vkCmdBindIndexBuffer(cmd, cubeVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-        // Indirect-count draw: only the bounding boxes that survived the GPU frustum
-        // cull (written into the terrain IR's bbox stream by indirect.comp, count in
-        // bboxCount) are drawn. maxDrawCount bounds the bbox command buffer capacity
-        // (MAX_BBOX_CUBES), not the instance buffer. When the IR stream is unavailable we
-        // fall back to drawing every box unculled so the debug overlay still works.
-        if (terrainIR_ && cubeVBO.indexCount > 0) {
-            VkBuffer bboxCompact = terrainIR_->getBboxCompactBuffer(currentCullFrame);
-            VkBuffer bboxCount   = terrainIR_->getBboxCountBuffer(currentCullFrame);
-            if (bboxCompact != VK_NULL_HANDLE && bboxCount != VK_NULL_HANDLE) {
-                const uint32_t maxDrawCount = std::min(drawInstanceCount, terrainIR_->getMaxBboxCommands());
-
-                // Compute-shader writes (bbox command/count) -> indirect draw + vertex read.
-                VkBufferMemoryBarrier2 bb[2] = {};
-                auto setupBarrier = [&](VkBufferMemoryBarrier2& b, VkBuffer buf) {
-                    b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-                    b.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                    b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-                    b.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
-                    b.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-                    b.buffer = buf;
-                    b.offset = 0;
-                    b.size = VK_WHOLE_SIZE;
-                };
-                setupBarrier(bb[0], bboxCompact);
-                setupBarrier(bb[1], bboxCount);
-
-                std::array<VkBufferMemoryBarrier2, 3> allBarriers{};
-                allBarriers[0] = bb[0];
-                allBarriers[1] = bb[1];
-                allBarriers[2] = hostBarrier;
-                VkDependencyInfo dep{};
-                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dep.bufferMemoryBarrierCount = 3;
-                dep.pBufferMemoryBarriers = allBarriers.data();
-                vkCmdPipelineBarrier2(cmd, &dep);
-
-                vkCmdDrawIndexedIndirectCount(cmd, bboxCompact, 0, bboxCount, 0,
-                                            maxDrawCount, sizeof(VkDrawIndexedIndirectCommand));
-            } else {
-                // Fall back to unculled draw; still need the host barrier.
-                VkDependencyInfo dep{};
-                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dep.bufferMemoryBarrierCount = 1;
-                dep.pBufferMemoryBarriers = &hostBarrier;
-                vkCmdPipelineBarrier2(cmd, &dep);
-                vkCmdDrawIndexed(cmd, cubeVBO.indexCount, drawInstanceCount, 0, 0, 0);
-            }
-        } else {
-            VkDependencyInfo dep{};
-            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dep.bufferMemoryBarrierCount = 1;
-            dep.pBufferMemoryBarriers = &hostBarrier;
-            vkCmdPipelineBarrier2(cmd, &dep);
-            vkCmdDrawIndexed(cmd, cubeVBO.indexCount, drawInstanceCount, 0, 0, 0);
-        }
+        drawBboxStream(cmd, descriptorSet, &hostBarrier);
     }
 
     vkCmdEndRendering(cmd);

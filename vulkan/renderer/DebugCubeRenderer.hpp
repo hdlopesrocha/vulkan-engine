@@ -155,4 +155,9 @@ private:
     void loadGridTexture(VulkanApp* app);
     void createGridDescriptorSet(VulkanApp* app);
     void updateInstanceBuffer(VulkanApp* app);
+    // Shared tail of render()/renderToOffscreen(): pipeline + descriptor + VBO
+    // binds, bbox cull barrier (merged with hostBarrier when non-null), indirect
+    // draw and the unculled fallback. Callers own the render pass state.
+    void drawBboxStream(VkCommandBuffer cmd, VkDescriptorSet descriptorSet,
+                        const VkBufferMemoryBarrier2* hostBarrier);
 };
