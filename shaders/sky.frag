@@ -8,6 +8,7 @@ layout(location = VARY_NORMAL) in vec3 fragNormal;
 #include "includes/ubo.glsl"
 #include "includes/sky_view.glsl"
 #include "includes/perlin.glsl"
+#include "includes/clouds.glsl"
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -74,7 +75,18 @@ void main() {
     float flare = pow(max(sunDot, 0.0), 800.0 * (1.0 - sunElev * 0.5)) * sunFlare * dayFactor;
     // Sun color: warm white, modulated by sun elevation
     vec3 sunColor = mix(vec3(1.0, 0.95, 0.8), warmTint, sunFactor * 0.5);
-    // Add sun flare to color
+    // Sky background before clouds (gradient + stars + sun disc).
     vec3 color = baseColor + vec3(stars) + sunColor * flare;
+    // Volumetric clouds: raymarched through the three altitude tiers from the
+    // camera position. Slab intersection decides visibility, so this covers
+    // every direction: from below, from above (cloud tops), from inside, and
+    // at the horizon.
+    if (sky.cloudsEnabled) {
+        vec4 clouds = raymarchClouds(ubo.viewPosition, normalize(viewDir),
+                                     normalize(sunDir), sunColor * dayFactor
+                                     + vec3(0.02) * (1.0 - dayFactor),
+                                     color, dayFactor, 0);
+        color = color * clouds.a + clouds.rgb;
+    }
     outColor = vec4(color, 1.0);
 }

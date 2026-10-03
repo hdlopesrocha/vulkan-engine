@@ -60,6 +60,10 @@ void SettingsWidget::render() {
             // toggled
         }
         ImGuiComponents::TooltipOnHover("Toggle billboarding vegetation draws");
+        if (ImGui::Checkbox("Volumetric Clouds", &settings.cloudsEnabled)) {
+            // toggled
+        }
+        ImGuiComponents::TooltipOnHover("Master toggle for volumetric clouds (sky raymarch + ground shadows + reflections).\nMinimal preset disables; per-tier controls live in the Clouds widget.");
         ImGuiComponents::FieldLabel("Vegetation render scale", "Offscreen vegetation resolution");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Vegetation render scale", &settings.vegetationRenderScale, 0.25f, 1.0f, "%.2f");

@@ -4,6 +4,7 @@
 #include "SceneDescriptorLayout.hpp"
 #include "../ubo/SkyUniform.hpp"
 #include "../../utils/Settings.hpp"
+#include "../../widgets/CloudSettings.hpp"
 
 
 #include <stdexcept>
@@ -269,7 +270,8 @@ SceneRenderer::SceneRenderer() :
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
     debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
     waterWireframe(std::make_unique<WireframeRenderer>()),
-    skySettings(std::make_unique<SkySettings>())
+    skySettings(std::make_unique<SkySettings>()),
+    cloudSettings(std::make_unique<CloudSettings>())
 {
     // Vegetation cull is MERGED into the solid IndirectRenderer's single
     // indirect.comp dispatch, so the vegetation renderer must share the solid
@@ -406,6 +408,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // loop below propagates it to every per-frame set, and the copy must not
     // run before binding 6 exists.
     if (skyRenderer) {
+        skyRenderer->setCloudSettings(cloudSettings.get());
         VkDescriptorSet staticDs = app->getStaticDescriptorSet();
         if (staticDs != VK_NULL_HANDLE) {
             skyRenderer->init(app, *skySettings, staticDs);

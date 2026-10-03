@@ -10,6 +10,8 @@
 
 #include "includes/ubo.glsl"
 #include "includes/sky_view.glsl"
+#include "includes/perlin.glsl"
+#include "includes/clouds.glsl"
 
 // Push constant with equirect target resolution
 layout(push_constant) uniform PushConstants {
@@ -89,5 +91,18 @@ void main() {
     vec3 sunColor = mix(vec3(1.0, 0.95, 0.8), warmTint, sunFactor * 0.5);
 
     vec3 color = baseColor + vec3(stars) + sunColor * flare;
+    // Volumetric clouds in the reflection probe, marched from the camera like
+    // the on-screen sky (camera-dependent: MyApp bypasses the H8 cache and
+    // re-renders every frame while clouds are active). No direction guard:
+    // slab intersection handles every direction, including downward views of
+    // cloud tops when the camera flies above the slabs.
+    if (sky.cloudsEnabled) {
+        int halfSteps = int(clamp(sky.raymarchSteps * 0.5, 4.0, 12.0));
+        vec4 clouds = raymarchClouds(ubo.viewPosition, normalize(viewDir),
+                                     normalize(sunDir), sunColor * dayFactor
+                                     + vec3(0.02) * (1.0 - dayFactor),
+                                     color, dayFactor, halfSteps);
+        color = color * clouds.a + clouds.rgb;
+    }
     outColor = vec4(color, 1.0);
 }

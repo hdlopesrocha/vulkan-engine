@@ -8,6 +8,9 @@ public:
 
     // Global toggles
     bool enableShadows = true;
+    // Volumetric clouds (sky raymarch + ground shadows + reflections).
+    // Minimal preset disables; Maximum enables.
+    bool cloudsEnabled = true;
     // Toggle rendering of the main solid scene (terrain/meshes)
     bool renderSolid = true;
     bool waterEnabled = true;

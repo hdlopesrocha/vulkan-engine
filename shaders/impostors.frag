@@ -14,6 +14,9 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 #include "includes/ubo.glsl"
 #include "includes/debug_modes.glsl"
+#include "includes/sky_view.glsl"
+#include "includes/perlin.glsl"
+#include "includes/clouds.glsl"
 
 layout(set = 0, binding = 4) uniform sampler2D shadowMap;
 layout(set = 0, binding = 8) uniform sampler2D shadowMap1;
@@ -120,6 +123,10 @@ void main() {
         } else {
             shadow = 1.0;
         }
+    }
+    if (sky.cloudsEnabled && NdotL > 0.01) {
+        float cloudShadow = cloudShadowAt(inWorldPos);
+        shadow = 1.0 - (1.0 - shadow) * (1.0 - cloudShadow);
     }
 
     vec3 lighting = ambient + (diffuse + specular) * (1.0 - shadow);

@@ -160,6 +160,7 @@ MaterialNamed materialNamed(MaterialGPU m) {
 
 // Dedicated UBO for skysphere parameters. Bound separately so sky shaders
 // can read a small, focused uniform block instead of the large scene UBO.
+// The cloud block extends the same UBO (no new descriptor binding).
 layout(set = 0, binding = 6) uniform SkyUBO {
     vec4 skyHorizon; // rgb = horizon color, a = unused
     vec4 skyZenith;  // rgb = zenith color, a = unused
@@ -167,6 +168,17 @@ layout(set = 0, binding = 6) uniform SkyUBO {
     vec4 nightHorizon; // rgb = night horizon color
     vec4 nightZenith;  // rgb = night zenith color
     vec4 nightParams;  // x = night intensity (0..1), y = starIntensity, z/w unused
+    vec4 cloudToggles; // x = enabled, y = lowOn, z = midOn, w = highOn
+    vec4 cloudGlobal;  // x = densityScale, y = windSpeed, z = windAngleRad, w = detailStrength
+    vec4 cloudTime;    // x = time, y = shadowStrength, z = raymarchSteps, w = lightSteps
+    vec4 cloudLow;     // x = coverage, y = density, z = scale, w = windSpeedMul
+    vec4 cloudLowGeom; // x = baseHeight, y = thickness, zw unused
+    vec4 cloudMid;     // x = coverage, y = density, z = scale, w = windSpeedMul
+    vec4 cloudMidGeom; // x = baseHeight, y = thickness, zw unused
+    vec4 cloudHigh;    // x = coverage, y = density, z = scale, w = windSpeedMul
+    vec4 cloudHighGeom;// x = baseHeight, y = thickness, zw unused
+    vec4 cloudLight;   // x = silverLining, y = ambientBoost, z = sunForwardG, w = exposure
+    vec4 cloudAnim;    // x = timeScale, yzw unused
 } skyPacked;
 
 // Named view over the packed SkyUBO - same data, descriptive names. The builder below is the
@@ -182,6 +194,29 @@ struct SkyParamsNamed {
     vec3 nightZenithColor;
     float nightIntensity;
     float starIntensity;
+    // Clouds
+    bool cloudsEnabled;
+    bool lowEnabled;
+    bool midEnabled;
+    bool highEnabled;
+    float densityScale;
+    float windSpeed;
+    float windAngleRad;
+    float detailStrength;
+    float cloudTime;
+    float shadowStrength;
+    float raymarchSteps;
+    float lightSteps;
+    vec4 lowTier;      // coverage, density, scale, windMul
+    vec2 lowGeom;      // baseHeight, thickness
+    vec4 midTier;
+    vec2 midGeom;
+    vec4 highTier;
+    vec2 highGeom;
+    float silverLining;
+    float ambientBoost;
+    float sunForwardG;
+    float exposure;
 };
 
 SkyParamsNamed skyParamsNamed() {
@@ -195,6 +230,28 @@ SkyParamsNamed skyParamsNamed() {
     n.nightZenithColor = skyPacked.nightZenith.rgb;
     n.nightIntensity = skyPacked.nightParams.x;
     n.starIntensity = skyPacked.nightParams.y;
+    n.cloudsEnabled = skyPacked.cloudToggles.x > 0.5;
+    n.lowEnabled = skyPacked.cloudToggles.y > 0.5;
+    n.midEnabled = skyPacked.cloudToggles.z > 0.5;
+    n.highEnabled = skyPacked.cloudToggles.w > 0.5;
+    n.densityScale = skyPacked.cloudGlobal.x;
+    n.windSpeed = skyPacked.cloudGlobal.y;
+    n.windAngleRad = skyPacked.cloudGlobal.z;
+    n.detailStrength = skyPacked.cloudGlobal.w;
+    n.cloudTime = skyPacked.cloudTime.x;
+    n.shadowStrength = skyPacked.cloudTime.y;
+    n.raymarchSteps = skyPacked.cloudTime.z;
+    n.lightSteps = skyPacked.cloudTime.w;
+    n.lowTier = skyPacked.cloudLow;
+    n.lowGeom = skyPacked.cloudLowGeom.xy;
+    n.midTier = skyPacked.cloudMid;
+    n.midGeom = skyPacked.cloudMidGeom.xy;
+    n.highTier = skyPacked.cloudHigh;
+    n.highGeom = skyPacked.cloudHighGeom.xy;
+    n.silverLining = skyPacked.cloudLight.x;
+    n.ambientBoost = skyPacked.cloudLight.y;
+    n.sunForwardG = skyPacked.cloudLight.z;
+    n.exposure = skyPacked.cloudLight.w;
     return n;
 }
 

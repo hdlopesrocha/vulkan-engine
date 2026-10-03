@@ -35,6 +35,8 @@
 #include "widgets/SettingsWidget.hpp"
 #include "widgets/SkyWidget.hpp"
 #include "widgets/SkySettings.hpp"
+#include "widgets/CloudSettings.hpp"
+#include "widgets/CloudWidget.hpp"
 #include "widgets/WaterWidget.hpp"
 #include "widgets/GraphicsQualityWidget.hpp"
 #include "widgets/RenderTargetsWidget.hpp"
@@ -272,10 +274,11 @@ public:
     // swapchain-resize recreation.
     static constexpr uint32_t SKY_CACHE_WARMUP = 3; // frames in flight
     uint32_t skyRenderRuns = 0;          // frames actually rendered so far
-    float skySig[12] = {};               // last rendered input signature
+    float skySig[42] = {};               // last rendered input signature (sky + clouds + quantized time)
     bool skySigValid = false;            // skySig holds a rendered frame's values
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<SkyWidget> skyWidget;
+    std::shared_ptr<class CloudWidget> cloudWidget;
     std::shared_ptr<WaterWidget> waterWidget;
     std::shared_ptr<GraphicsQualityWidget> graphicsQualityWidget;
     std::shared_ptr<RenderTargetsWidget> renderTargetsWidget;
@@ -782,6 +785,7 @@ public:
         });
 
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
+        cloudWidget = std::make_shared<CloudWidget>(sceneRenderer->getCloudSettings());
         // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings, &shadowParams);
         // Water UI uses the application-owned water params vector and updates GPU state explicitly.
@@ -827,6 +831,7 @@ public:
         widgetManager.addWidget(graphicsQualityWidget);
         widgetManager.addWidget(lightWidget);
         widgetManager.addWidget(skyWidget);
+        widgetManager.addWidget(cloudWidget);
         widgetManager.addWidget(waterWidget);
         widgetManager.addWidget(renderTargetsWidget);
         widgetManager.addWidget(vulkanResourcesManagerWidget);
@@ -1074,6 +1079,8 @@ public:
             sceneRenderer->vegetationRenderer->setImpostorDistance(settings.impostorDistance);
         }
         if (sceneRenderer && sceneRenderer->skyRenderer) {
+            sceneRenderer->skyRenderer->setCloudTime(mainTime);
+            sceneRenderer->skyRenderer->setCloudsEnabled(settings.cloudsEnabled);
             sceneRenderer->skyRenderer->update(this);
         }
 
@@ -1673,32 +1680,55 @@ public:
         //     composite auto-waits it (registered signal) and water/solid360 wait it
         //     explicitly. The fullscreen sky draw stays in the solid color pass.
         //
-        // H8 (perf report 22): the equirect is view-independent — sky_equirect.frag
-        // reads only the SkyUniform block and the light direction/elevation, never
-        // the camera or time — so it is cached and re-rendered only when those
-        // inputs change. On a cached frame no command buffer is recorded or
-        // submitted; tlSky advances with a host signal (VK_SEMAPHORE_TYPE_TIMELINE
-        // permits vkSignalSemaphore), which consumers cannot observe differently
-        // from a GPU signal of the same value. Warmup frames always render (the
-        // offscreen target is empty until the first pass completes).
+        // H8 (perf report 22): the cloudless equirect is view-independent —
+        // sky_equirect.frag reads only the SkyUniform block and the light
+        // direction/elevation, never the camera — so it is cached and
+        // re-rendered only when those inputs change.
+        // With clouds ON the equirect is camera- AND time-dependent by design:
+        // sky_equirect.frag marches from ubo.viewPosition with the continuous
+        // sky.cloudTime, exactly like the on-screen sky. Caching it (even at
+        // the old 2 Hz quantization) freezes reflections in 0.5 s steps while
+        // the sky moves smoothly, and a fixed origin would shift the
+        // world-anchored pattern by the camera offset. So while clouds are
+        // active the probe re-renders every frame; when off, the H8 cache
+        // applies unchanged (cloudT collapses to 0).
         {
             SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
             const SkySettings& sky = this->sceneRenderer->getSkySettings();
+            const CloudSettings& clouds = this->sceneRenderer->getCloudSettings();
             const glm::vec3 skyLightDir = glm::normalize(light.getDirection());
-            const float skySigNow[12] = {
+            const bool cloudsActive = settings.cloudsEnabled && clouds.enabled;
+            // Quantize cloud time: 0.5 s steps balance drift smoothness vs cache hits.
+            const float cloudT = settings.cloudsEnabled && clouds.enabled
+                ? std::floor(mainTime * clouds.timeScale * 2.0f) / 2.0f : 0.0f;
+            const float skySigNow[42] = {
                 sky.horizonColor.x, sky.horizonColor.y, sky.horizonColor.z,
                 sky.zenithColor.x, sky.zenithColor.y, sky.zenithColor.z,
                 sky.warmth, sky.exponent, sky.sunFlare,
-                skyLightDir.x, skyLightDir.y, skyLightDir.z
+                skyLightDir.x, skyLightDir.y, skyLightDir.z,
+                settings.cloudsEnabled && clouds.enabled ? 1.0f : 0.0f,
+                clouds.lowEnabled ? 1.0f : 0.0f, clouds.midEnabled ? 1.0f : 0.0f, clouds.highEnabled ? 1.0f : 0.0f,
+                clouds.lowCoverage, clouds.midCoverage, clouds.highCoverage, cloudT,
+                clouds.lowDensity, clouds.midDensity, clouds.highDensity,
+                clouds.densityScale, clouds.windSpeed, clouds.windAngleDeg,
+                clouds.lowScale, clouds.midScale, clouds.highScale,
+                clouds.lowBaseHeight, clouds.midBaseHeight, clouds.highBaseHeight,
+                clouds.lowThickness, clouds.midThickness, clouds.highThickness,
+                clouds.detailStrength, clouds.exposure,
+                clouds.silverLining, clouds.ambientBoost, clouds.sunForwardG,
+                static_cast<float>(clouds.raymarchSteps), static_cast<float>(clouds.lightSteps)
             };
             bool skySigChanged = !skySigValid;
-            for (int i = 0; i < 12; ++i) {
+            for (int i = 0; i < 42; ++i) {
                 if (skySigNow[i] != skySig[i]) { skySigChanged = true; break; }
             }
+            // Clouds force a re-render every frame (see comment above):
+            // continuous time + camera-anchored origin. Cloudless skies keep
+            // the H8 cache (signature check only).
             const bool skyNeedsRender = !this->sceneRenderer->skyRenderer
-                || skyRenderRuns < SKY_CACHE_WARMUP || skySigChanged;
+                || skyRenderRuns < SKY_CACHE_WARMUP || skySigChanged || cloudsActive;
             if (skyNeedsRender) {
-                for (int i = 0; i < 12; ++i) skySig[i] = skySigNow[i];
+                for (int i = 0; i < 42; ++i) skySig[i] = skySigNow[i];
                 skySigValid = true;
                 ++skyRenderRuns;
                 asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, v]() {

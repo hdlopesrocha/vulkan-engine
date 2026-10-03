@@ -38,6 +38,7 @@ class World;
 #include "BrushRenderer.hpp"
 #include "IndirectRenderer.hpp"
 #include "RayTracingResources.hpp"
+#include "../../widgets/CloudSettings.hpp"
 #include "../streaming/UploadManager.hpp"   // TerrainStreamer: async streaming orchestration
 #include "../../world/World.hpp"
 
@@ -88,6 +89,9 @@ public:
     // Sky settings owned by this renderer
     std::unique_ptr<SkySettings> skySettings;
     SkySettings& getSkySettings() { return *skySettings; }
+    // Volumetric cloud settings (three altitude tiers). Shares the SkyUBO.
+    std::unique_ptr<CloudSettings> cloudSettings;
+    CloudSettings& getCloudSettings() { return *cloudSettings; }
 
     SceneRenderer();
     ~SceneRenderer();

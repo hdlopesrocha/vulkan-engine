@@ -7,6 +7,7 @@
 #include "../ShaderStage.hpp"
 #include "../ubo/UniformObject.hpp"
 #include "../../widgets/SkySettings.hpp"
+#include "../../widgets/CloudSettings.hpp"
 #include <array>
 #include "CommandBufferState.hpp"
 
@@ -23,6 +24,10 @@ public:
 
     // Initialize the sky sphere and internal VBO (optional)
     void init(VulkanApp* app, SkySettings& skySettings, VkDescriptorSet descriptorSet);
+    // Attach cloud settings (shares the SkyUBO) + animation clock.
+    void setCloudSettings(CloudSettings* clouds);
+    void setCloudTime(float t);
+    void setCloudsEnabled(bool e);
 
     // Update sky internals (e.g. SkySphere animation)
     void update(VulkanApp* app);
@@ -68,6 +73,11 @@ private:
     // fullscreen triangles with no sphere geometry (the sphere pipelines and
     // VBO were removed with Solid360Renderer — perf report 22 M9).
     std::unique_ptr<SkySphere> skySphere;
+    // Cloud attachment staged before SkySphere exists (init order).
+    CloudSettings* pendingClouds = nullptr;
+    float pendingCloudTime = 0.0f;
+    bool pendingCloudsEnabled = true;
+    bool hasPendingCloudsEnabled = false;
 
     // --- Offscreen equirectangular sky resources matching MAX_FRAMES_IN_FLIGHT ---
     static constexpr uint32_t SKY_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;

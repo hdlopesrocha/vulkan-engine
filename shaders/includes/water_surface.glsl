@@ -1,4 +1,7 @@
 #include "water_render_view.glsl"
+#include "sky_view.glsl"
+#include "perlin.glsl"
+#include "clouds.glsl"
 // Water surface shading + ray helpers — extracted from water.frag so the
 // water pass and the future main-pass water variant share one
 // implementation (Phase-1 water-in-main migration). Writes the global
@@ -1594,14 +1597,32 @@ void shadeWaterSurface() {
 
 
     // === SHADOW ON WATER ===
-    // Direct shadow map sampling is disabled for water because the water
-    // surface sits at a different height than the terrain, causing the
-    // EVSM shadow to misalign with the terrain shadow visible through
-    // refraction.  This misalignment creates a visible bright halo around
-    // vegetation shadows.  The refracted scene (sceneColorTex) already
-    // carries the correct terrain/vegetation shadows, so the water
-    // surface is darkened naturally through refraction.
+    // CSM macro shadow cast onto the water surface by the SOLID scene
+    // (terrain, vegetation). Same cascades, N·L bias and global toggle as
+    // the solid path; the light-space position is projected per fragment
+    // from the displaced world position (identical to the solid TES
+    // projection, just not interpolated). The water surface is NOT a shadow
+    // caster (ShadowRenderer skips it), so the bed under the surface cannot
+    // self-shadow it — only real occluders (hills, cliffs, trees) darken
+    // the water. The refracted bottom keeps the solid pass's own shadow via
+    // sceneColorTex; this term adds the surface-level shadow the refraction
+    // path cannot carry (grazing/mirror pixels sampling sky, not bottom).
     float shadow = 0.0;
+    if (ubo.shadowsEnabled) {
+        float NdotL = max(dot(normal, lightDir), 0.0);
+        if (NdotL > 0.01) {
+            float bias = max(0.002 * (1.0 - NdotL), 0.0005);
+            vec4 fragPosLightSpace = ubo.lightSpaceMatrix * vec4(fragPosWorld, 1.0);
+            shadow = ShadowCalculation(fragPosLightSpace, fragPosWorld, bias);
+        } else {
+            shadow = 1.0;
+        }
+    }
+    // Volumetric cloud shadows on water (same projection as terrain).
+    if (sky.cloudsEnabled) {
+        float cloudShadow = cloudShadowAt(fragPosWorld);
+        shadow = 1.0 - (1.0 - shadow) * (1.0 - cloudShadow);
+    }
     
     // === WATER COLOR COMPOSITION ===
     // Water tint colors from UBO (declared in the Beer-Lambert block above).
@@ -1923,8 +1944,8 @@ void shadeWaterSurface() {
         return;
     }
     if (dbgMode == DEBUG_MODE_SHADOW) {
-        // Water never samples the shadow map (see SHADOW ON WATER above):
-        // always 0 by design.
+        // CSM shadow on the water surface (see SHADOW ON WATER above):
+        // white = lit, black = occluded by solid geometry.
         outColor = vec4(vec3(shadow), 1.0);
         return;
     }

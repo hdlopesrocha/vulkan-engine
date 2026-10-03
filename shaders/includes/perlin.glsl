@@ -1,5 +1,7 @@
 // Perlin noise utilities for GLSL shaders
 // 3D and 4D Perlin noise with fractional Brownian motion (FBM)
+#ifndef PERLIN_GLSL
+#define PERLIN_GLSL
 
 // PCG-style integer hash (xsh rs) plus a uint->[0,1) float conversion.
 // Bit-mixing replaces the classic fract(sin(dot(...))) hash: it avoids
@@ -270,3 +272,5 @@ float fbm(vec4 p, int octaves, float persistence) {
 float fbm(vec3 p, int octaves) {
     return fbm(p, octaves, 0.5, 2.0);
 }
+
+#endif // PERLIN_GLSL

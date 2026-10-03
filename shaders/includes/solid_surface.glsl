@@ -1,4 +1,6 @@
 #include "sky_view.glsl"
+#include "perlin.glsl"
+#include "clouds.glsl"
 // Solid (terrain) surface shading — extracted from main.frag so the
 // fragment entry point stays a thin dispatcher (see Phase-1 water-in-main
 // migration). Writes the global outColor; early returns (debug views,
@@ -280,6 +282,18 @@ void shadeSolidSurface() {
     // occluded. RT never brightens CSM shadows and never double-darkens.
     totalShadow = 1.0 - (1.0 - shadow) * (1.0 - clamp(rtLocalShadow, 0.0, 1.0));
 #endif
+    // Volumetric cloud shadows: project the fragment along the sun direction
+    // onto the three cloud slabs and attenuate direct light. Combined as an
+    // independent occluder with CSM/RT (clouds never brighten either term).
+    // Skipped in the shadow pass (isShadowPass fast-path returned above) and
+    // when the surface faces away (NdotL == 0 keeps full shadow = 1.0).
+    float cloudShadow = 0.0;
+#ifndef BRUSH_PASS
+    if (sky.cloudsEnabled && NdotL > 0.01) {
+        cloudShadow = cloudShadowAt(fragPosWorld);
+        totalShadow = 1.0 - (1.0 - totalShadow) * (1.0 - cloudShadow);
+    }
+#endif
 
     // Blend material parameters (ambient/specular) by barycentric weights
     vec4 matFlags0 = materials[texIndices.x].materialFlags;
@@ -361,6 +375,15 @@ void shadeSolidSurface() {
             vec3 skyApprox = rtProceduralSky(normalize(reflDir), sky.horizonColor,
                                              sky.zenithColor, sky.exponent);
             skyApprox *= aoBlend * (1.0 - rough * 0.5);
+            // Clouds in reflections: the RT pipeline miss samples the equirect
+            // (which already contains the raymarched clouds). The inline
+            // procedural fallback above does not, so add the cheap single-sample
+            // cloud approximation here — both reflection paths then show clouds.
+            if (sky.cloudsEnabled) {
+                float reflDay = smoothstep(-0.2, 0.2, -ubo.lightElevation);
+                skyApprox += cloudApproxForReflection(normalize(reflDir),
+                    normalize(-ubo.lightDirection), reflDay) * aoBlend;
+            }
             vec3 rtColor = skyApprox;
             // Set when the ray-query resolved the reflection to a WATER proxy:
             // the SSR refinement samples the previous frame's SOLID render,

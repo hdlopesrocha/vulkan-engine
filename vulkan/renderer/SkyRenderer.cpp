@@ -134,11 +134,30 @@ void SkyRenderer::init(VulkanApp* app, SkySettings &settings, VkDescriptorSet de
     // report 22 M9).
     if (descriptorSet != VK_NULL_HANDLE && !skySphere) {
         skySphere = std::make_unique<SkySphere>();
+        if (pendingClouds) skySphere->setCloudSettings(pendingClouds);
+        skySphere->setCloudTime(pendingCloudTime);
+        if (hasPendingCloudsEnabled) skySphere->setCloudsEnabled(pendingCloudsEnabled);
         skySphere->init(app, settings, descriptorSet);
     } else if (descriptorSet != VK_NULL_HANDLE && skySphere) {
         // SkySphere already created — write its buffer to this additional descriptor set
         skySphere->writeDescriptorSet(app, descriptorSet);
     }
+}
+
+void SkyRenderer::setCloudSettings(CloudSettings* clouds) {
+    pendingClouds = clouds;
+    if (skySphere) skySphere->setCloudSettings(clouds);
+}
+
+void SkyRenderer::setCloudTime(float t) {
+    pendingCloudTime = t;
+    if (skySphere) skySphere->setCloudTime(t);
+}
+
+void SkyRenderer::setCloudsEnabled(bool e) {
+    pendingCloudsEnabled = e;
+    hasPendingCloudsEnabled = true;
+    if (skySphere) skySphere->setCloudsEnabled(e);
 }
 
 void SkyRenderer::update(VulkanApp* app) {
