@@ -24,7 +24,7 @@
 
 // Read guard for Octree::treeMutex. iterate* can nest (an iterate handler may
 // re-enter the octree, e.g. LocalScene::requestModel3D calls iterateTriangles
-// from inside an iterateFlat handler), and std::shared_mutex is not recursive,
+// from inside a traversal handler), and std::shared_mutex is not recursive,
 // so only the OUTERMOST iterate acquires the lock; inner ones (same thread)
 // piggyback on the outer read. apply takes the exclusive path (it is the only
 // writer) and is never re-entered from an iterate handler.
@@ -1313,51 +1313,11 @@ void Octree::shape(
     }
 }
 
-void Octree::iterate(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
-    OctreeSharedLock lock(treeMutex);
-	IteratorHandler handler;
-	handler.iterate(*this, data, iterateHandler, getOrderHandler);
-}
-
 void Octree::iterate(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
     OctreeSharedLock lock(treeMutex);
     OctreeNodeData data(0, root, *this, nullptr);
 	IteratorHandler handler;
 	handler.iterate(*this, data, iterateHandler, getOrderHandler);
-}
-
-void Octree::iterateFlat(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
-    OctreeSharedLock lock(treeMutex);
-    IteratorHandler handler;
-    handler.iterateFlatIn(*this, data, iterateHandler, getOrderHandler);
-}
-
-void Octree::iterateMultiThreaded(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler, const IterateThreadedHandler &iterateThreadedHandler) {
-    OctreeSharedLock lock(treeMutex);
-    OctreeNodeData data(0, root, *this, nullptr);
-    IteratorHandler handler;
-    handler.iterateMultiThreaded(*this, data, threadPool, iterateHandler, getOrderHandler, iterateThreadedHandler);
-}
-
-void Octree::iterateFlat(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
-    OctreeSharedLock lock(treeMutex);
-    OctreeNodeData data(0, root, *this, nullptr);
-    IteratorHandler handler;
-    handler.iterateFlatIn(*this, data, iterateHandler, getOrderHandler);
-}
-
-void Octree::iterateParallel(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
-    OctreeSharedLock lock(treeMutex);
-    IteratorHandler handler;
-    handler.iterateBFS(*this, data, iterateHandler, getOrderHandler);
-}
-
-void Octree::iterateParallel(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler) {
-    OctreeSharedLock lock(treeMutex);
-    OctreeNodeData data(0, root, *this, nullptr);
-    IteratorHandler handler;
-    handler.iterateBFS(*this, data, iterateHandler, getOrderHandler);
-    //handler.iterateParallelBFS(*this, data, threadPool);
 }
 
 void Octree::exportOctreeSerialization(OctreeSerialized * node) {

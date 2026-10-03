@@ -47,8 +47,6 @@ public:
     // remaining queue, and so may a cooperative waiter.
     bool runOneTask();
 
-    size_t threadCount() const;
-
 private:
     // Worker threads
     std::vector<std::thread> workers;

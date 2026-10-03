@@ -74,8 +74,3 @@ bool ThreadPool::runOneTask()
 	task();
 	return true;
 }
-
-size_t ThreadPool::threadCount() const
-{
-	return workers.size();
-}

@@ -89,13 +89,8 @@ class Octree: public BoundingCube {
         OctreeNodeDataHandler &updateHandler,
         OctreeNodeDataHandler &deleteHandler
     );
-    void iterate(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
-    void iterateFlat(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
+    // Kept: utils/BillboardOctreeSampler.cpp still calls this overload.
     void iterate(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
-    void iterateFlat(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
-    void iterateMultiThreaded(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler, const IterateThreadedHandler &iterateThreadedHandler);
-    void iterateParallel(OctreeNodeData &data, const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
-    void iterateParallel(const IterateHandler &iterateHandler, const IterateOrderHandler &getOrderHandler);
     bool intersect(const Ray& ray, glm::vec3& outPos) const;
     OctreeNodeLevel getNodeAt(const glm::vec3 &pos, int level, bool simplification) const;
     OctreeNode* getNodeAt(const glm::vec3 &pos, bool simplification) const;
