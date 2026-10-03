@@ -1169,6 +1169,23 @@ public:
             std::chrono::high_resolution_clock::now() - cpuUpdateT0).count();
     }
 
+    // Begin a ONE_TIME_SUBMIT primary command buffer for an async pass.
+    // `name` completes the error context after "vkBeginCommandBuffer failed
+    // for"; `tag` selects the log prefix. On failure the buffer is freed and
+    // VK_NULL_HANDLE is returned so the caller can decide how to bail out.
+    VkCommandBuffer beginAsyncTask(const char* name, const char* tag = "[Async]") {
+        VkCommandBuffer cmd = allocatePrimaryCommandBuffer();
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+            std::cerr << tag << " vkBeginCommandBuffer failed for " << name << std::endl;
+            freeCommandBuffer(cmd);
+            return VK_NULL_HANDLE;
+        }
+        return cmd;
+    }
+
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
 
         // H9: a water render-scale change rebuilds the water-side offscreen
@@ -1515,15 +1532,8 @@ public:
         if (sceneRenderer) {
             asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
                 MyApp* app = this;
-                VkCommandBuffer cullCmd = app->allocatePrimaryCommandBuffer();
-                VkCommandBufferBeginInfo cbegin{};
-                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                if (vkBeginCommandBuffer(cullCmd, &cbegin) != VK_SUCCESS) {
-                    std::cerr << "[Async] vkBeginCommandBuffer failed for cull" << std::endl;
-                    app->freeCommandBuffer(cullCmd);
-                    return;
-                }
+                VkCommandBuffer cullCmd = app->beginAsyncTask("cull");
+                if (cullCmd == VK_NULL_HANDLE) return;
                 // Timeline semaphore: the cull results are signaled once on tlCull with
                 // the current frame value v. Every consumer (shadow, veg, sdf, bbox,
                 // solid, brush-solid, water, solid360, and the composite) waits on
@@ -1612,11 +1622,8 @@ public:
             // solid/shadow/water passes. The composite auto-waits semBrushSolid
             // (registerSignal=true); the solid and water passes add it to their waits.
             {
-                VkCommandBuffer brushSolidCmd = allocatePrimaryCommandBuffer();
-                VkCommandBufferBeginInfo bbegin{};
-                bbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                bbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                if (vkBeginCommandBuffer(brushSolidCmd, &bbegin) == VK_SUCCESS) {
+                VkCommandBuffer brushSolidCmd = beginAsyncTask("brushSolid pass", "[MyApp]");
+                if (brushSolidCmd != VK_NULL_HANDLE) {
                     CommandBufferState brushState;
                     this->sceneRenderer->setCmdState(&brushState);
                     this->sceneRenderer->brushRenderer->recordEarlyPass(this, brushSolidCmd, frameIdx, *this->sceneRenderer->mainSolidRenderer, getMainDescriptorSet());
@@ -1624,9 +1631,6 @@ public:
                     // BrushSolid's signal is not registered for the composite: tlBrushSolid
                     // is transitively implied by tlBrushLiquid (Water->BrushLiquid).
                     submitCommandBufferAsyncToQueue(brushSolidCmd, getBrushSolidQueue(), &tlBrushSolid, {tlCull}, false, {}, {v}, v, {}, false);
-                } else {
-                    std::cerr << "[MyApp] vkBeginCommandBuffer failed for brushSolid pass" << std::endl;
-                    freeCommandBuffer(brushSolidCmd);
                 }
             }
         }
@@ -1730,15 +1734,8 @@ public:
                 ++skyRenderRuns;
                 asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, v]() {
                     MyApp* app = this;
-                    VkCommandBuffer skyCmd = app->allocatePrimaryCommandBuffer();
-                    VkCommandBufferBeginInfo cbegin{};
-                    cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                    cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                    if (vkBeginCommandBuffer(skyCmd, &cbegin) != VK_SUCCESS) {
-                        std::cerr << "[Async] vkBeginCommandBuffer failed for sky" << std::endl;
-                        app->freeCommandBuffer(skyCmd);
-                        return;
-                    }
+                    VkCommandBuffer skyCmd = app->beginAsyncTask("sky");
+                    if (skyCmd == VK_NULL_HANDLE) return;
                     CommandBufferState taskState;
                     this->sceneRenderer->setCmdState(&taskState);
                     if (this->sceneRenderer->skyRenderer)
@@ -1782,15 +1779,8 @@ public:
         if (sceneRenderer && sceneRenderer->mainSolidRenderer) {
             asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
                 MyApp* app = this;
-                VkCommandBuffer solidCmd = app->allocatePrimaryCommandBuffer();
-                VkCommandBufferBeginInfo cbegin{};
-                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                if (vkBeginCommandBuffer(solidCmd, &cbegin) != VK_SUCCESS) {
-                    std::cerr << "[Async] vkBeginCommandBuffer failed for solid" << std::endl;
-                    app->freeCommandBuffer(solidCmd);
-                    return;
-                }
+                VkCommandBuffer solidCmd = app->beginAsyncTask("solid");
+                if (solidCmd == VK_NULL_HANDLE) return;
                 // Own command-buffer state (see cull task).
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
@@ -2088,15 +2078,8 @@ public:
             const glm::vec3 vegCamPos = camera.getPosition();
             asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, vegCamPos, v]() {
                 MyApp* app = this;
-                VkCommandBuffer vegCmd = app->allocatePrimaryCommandBuffer();
-                VkCommandBufferBeginInfo cbegin{};
-                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                if (vkBeginCommandBuffer(vegCmd, &cbegin) != VK_SUCCESS) {
-                    std::cerr << "[Async] vkBeginCommandBuffer failed for vegetation" << std::endl;
-                    app->freeCommandBuffer(vegCmd);
-                    return;
-                }
+                VkCommandBuffer vegCmd = app->beginAsyncTask("vegetation");
+                if (vegCmd == VK_NULL_HANDLE) return;
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
                 VkImageView vegColorView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegColorView(frameIdx) : VK_NULL_HANDLE;
@@ -2242,15 +2225,8 @@ public:
                 if (!sdfEnabled && !sdfTransition && sdfRuns >= 3) return;
                 ++sdfRuns;
                 MyApp* app = this;
-                VkCommandBuffer sdfCmd = app->allocatePrimaryCommandBuffer();
-                VkCommandBufferBeginInfo cbegin{};
-                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                if (vkBeginCommandBuffer(sdfCmd, &cbegin) != VK_SUCCESS) {
-                    std::cerr << "[Async] vkBeginCommandBuffer failed for sdf" << std::endl;
-                    app->freeCommandBuffer(sdfCmd);
-                    return;
-                }
+                VkCommandBuffer sdfCmd = app->beginAsyncTask("sdf");
+                if (sdfCmd == VK_NULL_HANDLE) return;
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
                 if (this->sceneRenderer->debugSDFRenderer) {
@@ -2281,15 +2257,8 @@ public:
                 if (!bboxEnabled && !bboxTransition && bboxRuns >= 3) return;
                 ++bboxRuns;
                 MyApp* app = this;
-                VkCommandBuffer bboxCmd = app->allocatePrimaryCommandBuffer();
-                VkCommandBufferBeginInfo cbegin{};
-                cbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                cbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                if (vkBeginCommandBuffer(bboxCmd, &cbegin) != VK_SUCCESS) {
-                    std::cerr << "[Async] vkBeginCommandBuffer failed for bbox" << std::endl;
-                    app->freeCommandBuffer(bboxCmd);
-                    return;
-                }
+                VkCommandBuffer bboxCmd = app->beginAsyncTask("bbox");
+                if (bboxCmd == VK_NULL_HANDLE) return;
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
                 if (this->sceneRenderer->boundingBoxRenderer) {
@@ -2309,15 +2278,8 @@ public:
         if (waterEnabled && sceneRenderer) {
             asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
                 MyApp* app = this;
-                VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
-                VkCommandBufferBeginInfo beginInfo{};
-                beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
-                    std::cerr << "[Async] vkBeginCommandBuffer failed for backFace" << std::endl;
-                    app->freeCommandBuffer(cmd);
-                    return;
-                }
+                VkCommandBuffer cmd = app->beginAsyncTask("backFace");
+                if (cmd == VK_NULL_HANDLE) return;
                 // Reset the query slots owned by the water pass (14-15) so the GPU
                 // profiling timestamps below start from a clean state. The hybrid-RT
                 // dispatch slots (20-21) are reset inside their own gate below, next
@@ -2743,19 +2705,14 @@ public:
                 if (settings.waterEnabled && brushLiquidPresent && !waterPassEmpty && !settings.waterInMainPass) {
                     VkImageView blsky = (this->sceneRenderer->skyRenderer)
                         ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-                    VkCommandBuffer brushLiquidCmd = app->allocatePrimaryCommandBuffer();
-                    VkCommandBufferBeginInfo lblbegin{};
-                    lblbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                    lblbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                    if (vkBeginCommandBuffer(brushLiquidCmd, &lblbegin) == VK_SUCCESS) {
+                    VkCommandBuffer brushLiquidCmd = app->beginAsyncTask("brushLiquid pass", "[MyApp]");
+                    if (brushLiquidCmd != VK_NULL_HANDLE) {
                         CommandBufferState lblState;
                         this->sceneRenderer->setCmdState(&lblState);
                         this->sceneRenderer->mainLiquidRenderer->renderBrushLiquid(app, brushLiquidCmd, frameIdx, blsky, slot.waterDs2);
                         this->sceneRenderer->setCmdState(&taskState);
                         app->submitCommandBufferAsyncToQueue(brushLiquidCmd, app->getBrushLiquidQueue(), &tlBrushLiquid, {tlWater}, true, {}, {v}, v, {}, true);
                     } else {
-                        std::cerr << "[MyApp] vkBeginCommandBuffer failed for brushLiquid pass" << std::endl;
-                        app->freeCommandBuffer(brushLiquidCmd);
                         this->sceneRenderer->setCmdState(&taskState);
                     }
                 }
