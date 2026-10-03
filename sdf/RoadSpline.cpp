@@ -6,29 +6,8 @@
 
 RoadSpline::RoadSpline(const std::vector<ControlPoint>& controlPoints)
     : m_points(controlPoints)
-    , m_totalLength(0.0f)
-    , m_center(0.0f)
-    , m_boundingRadius(0.0f)
 {
     m_numSegments = std::max(0, (int)m_points.size() - 1);
-
-    for (const auto& cp : m_points)
-        m_center += cp.position;
-    if (!m_points.empty())
-        m_center /= (float)m_points.size();
-
-    for (const auto& cp : m_points)
-        m_boundingRadius = std::max(m_boundingRadius,
-            glm::distance(cp.position, m_center));
-
-    const int lengthSamples = 1000;
-    glm::vec3 prev = position(0.0f);
-    for (int i = 1; i <= lengthSamples; ++i) {
-        float t = (float)i / (float)lengthSamples;
-        glm::vec3 curr = position(t);
-        m_totalLength += glm::distance(curr, prev);
-        prev = curr;
-    }
 }
 
 void RoadSpline::decomposeT(float t, int& segIndex, float& segT) const {
@@ -128,11 +107,6 @@ glm::vec3 RoadSpline::up(float t) const {
         return glm::normalize(m_points[i1].up);
 
     return glm::normalize(slerp(m_points[i1].up, m_points[i2].up, segT));
-}
-
-void RoadSpline::closestPoint(const glm::vec3& p, float& outT, glm::vec3& outC,
-                               glm::vec3& outTan, glm::vec3& outUp) const {
-    closestPointInRange(p, 0.0f, 1.0f, outT, outC, outTan, outUp);
 }
 
 void RoadSpline::closestPointInRange(const glm::vec3& p, float tMin, float tMax,

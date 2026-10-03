@@ -129,14 +129,6 @@ glm::quat Math::eulerToQuat(float yaw, float pitch, float roll) {
     return qYaw * qPitch * qRoll; // Yaw first, then Pitch, then Roll
 }
 
-// Generate random float in range [0,1]
-
-float Math::randomFloat() {
-    thread_local std::mt19937 gen(std::random_device{}());
-    thread_local std::uniform_real_distribution<float> dis(0.0f, 1.0f);
-    return dis(gen);
-}
-
 glm::vec3 Math::solveLinearSystem(const glm::mat3& A, const glm::vec3& b) {
     float detA = glm::determinant(A);
     if (std::abs(detA) < 1e-6f) {
@@ -183,18 +175,6 @@ float Math::check(float p, float min, float max){
     }
 
     return out;
-}
-
-const char* toString(BrushMode v)
-{
-    switch (v)
-    {
-        case BrushMode::ADD:     return "Add";
-        case BrushMode::REMOVE:  return "Remove";
-        case BrushMode::REPLACE: return "Replace";
-        case BrushMode::PAINT:   return "Paint";
-        default:                 return "Unknown";
-    }
 }
 
 float Math::brightnessAndContrast(float color, float brightness, float contrast) {

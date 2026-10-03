@@ -1,6 +1,5 @@
 #include "Light.hpp"
 #include <glm/gtc/constants.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 
 Light::Light(const glm::vec3 &dir, const glm::vec3 &col, float intensity_)
@@ -8,22 +7,6 @@ Light::Light(const glm::vec3 &dir, const glm::vec3 &col, float intensity_)
 
 void Light::setDirection(const glm::vec3 &dir) {
     direction = glm::normalize(dir);
-}
-
-void Light::rotateEuler(float yawDeg, float pitchDeg) {
-    // Get current spherical coordinates
-    float azimuth, elevation;
-    getSpherical(azimuth, elevation);
-    
-    // Apply rotation
-    azimuth += yawDeg;
-    elevation += pitchDeg;
-    
-    // Clamp elevation to avoid gimbal lock
-    elevation = glm::clamp(elevation, -89.0f, 89.0f);
-    
-    // Set new direction
-    setFromSpherical(azimuth, elevation);
 }
 
 void Light::setFromSpherical(float azimuthDeg, float elevationDeg) {
@@ -51,45 +34,3 @@ void Light::getSpherical(float &azimuthDeg, float &elevationDeg) const {
     azimuthDeg = glm::degrees(std::atan2(dir.x, dir.z));
 }
 
-glm::vec3 Light::computeLightPosition(const glm::vec3& camPos, float distance) const {
-    glm::vec3 dir = glm::normalize(direction);
-    return camPos - dir * distance;
-}
-
-glm::mat4 Light::computeLightViewMatrix(const glm::vec3& targetPos, float orthoSize) const {
-    glm::vec3 dir = glm::normalize(direction);
-    // Position the light orthoSize units behind the target so the frustum
-    // (near=1, far=orthoSize*2) fully covers the region around the target.
-    glm::vec3 lightPos = targetPos - dir * orthoSize;
-    
-    glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
-    // Avoid gimbal lock when light is pointing straight up/down
-    if (glm::abs(glm::dot(dir, worldUp)) > 0.9f) {
-        worldUp = glm::vec3(1.0f, 0.0f, 0.0f);
-    }
-    
-    return glm::lookAt(lightPos, targetPos, worldUp);
-}
-
-glm::mat4 Light::computeLightProjectionMatrix(float orthoSize) const {
-    return glm::ortho(-orthoSize, orthoSize, -orthoSize, orthoSize, 1.0f, orthoSize * 2.0f);
-}
-
-glm::mat4 Light::computeLightSpaceMatrix(const glm::vec3& camPos, float orthoSize) const {
-    glm::vec3 dir = glm::normalize(direction);
-    glm::vec3 lightPos = camPos - dir * orthoSize * 0.5f;
-    
-    glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
-    if (glm::abs(glm::dot(dir, worldUp)) > 0.9f) {
-        worldUp = glm::vec3(1.0f, 0.0f, 0.0f);
-    }
-    
-    glm::mat4 lightView = glm::lookAt(lightPos, camPos, worldUp);
-    glm::mat4 lightProjection = glm::ortho(-orthoSize, orthoSize, -orthoSize, orthoSize, 1.0f, orthoSize * 2.0f);
-    return lightProjection * lightView;
-}
-
-void Light::setTarget(const glm::vec3& target, float orthoSize) {
-    targetPosition = target;
-    viewMatrix = computeLightViewMatrix(targetPosition, orthoSize);
-}

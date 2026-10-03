@@ -22,6 +22,5 @@ enum SdfType {
     TRIANGLE_STRIP,
     SWEEP
 };
-const char* toString(SdfType t);
 
  

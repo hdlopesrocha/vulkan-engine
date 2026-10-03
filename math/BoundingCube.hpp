@@ -14,12 +14,6 @@ public:
     BoundingCube(glm::vec3 min_, float length_);
     BoundingCube(const BoundingCube &other);
     void setLength(float l);
-    void setMinX(float v);
-    void setMinY(float v);
-    void setMinZ(float v);
-    void setMaxX(float v);
-    void setMaxY(float v);
-    void setMaxZ(float v);
     void setMax(glm::vec3 v);
 
     glm::vec3 getLength() const override;
@@ -44,16 +38,7 @@ public:
              + (vec.z >= min.z + half ? 1 : 0);
     }
 
-    bool overlaps1D(float aMin, float aMax, float bMin, float bMax) const;
-    bool overlapsX(const BoundingCube &o) const;
-    bool overlapsY(const BoundingCube &o) const;
-    bool overlapsZ(const BoundingCube &o) const;
-    bool isFaceAdjacent(const BoundingCube &other) const;
-    bool isNeighbor(const BoundingCube &o) const;
     bool intersects(const Ray& ray) const;
-
-    bool operator<(const BoundingCube& other) const;
-    bool operator==(const BoundingCube& other) const;
 };
 
 

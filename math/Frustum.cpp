@@ -11,33 +11,6 @@ Frustum::Frustum(glm::mat4 m)
 	m_planes[Near]   = m[3] + m[2];
 	m_planes[Far]    = m[3] - m[2];
 
-	glm::vec3 crosses[Combinations] = {
-		glm::cross(glm::vec3(m_planes[Left]),   glm::vec3(m_planes[Right])),
-		glm::cross(glm::vec3(m_planes[Left]),   glm::vec3(m_planes[Bottom])),
-		glm::cross(glm::vec3(m_planes[Left]),   glm::vec3(m_planes[Top])),
-		glm::cross(glm::vec3(m_planes[Left]),   glm::vec3(m_planes[Near])),
-		glm::cross(glm::vec3(m_planes[Left]),   glm::vec3(m_planes[Far])),
-		glm::cross(glm::vec3(m_planes[Right]),  glm::vec3(m_planes[Bottom])),
-		glm::cross(glm::vec3(m_planes[Right]),  glm::vec3(m_planes[Top])),
-		glm::cross(glm::vec3(m_planes[Right]),  glm::vec3(m_planes[Near])),
-		glm::cross(glm::vec3(m_planes[Right]),  glm::vec3(m_planes[Far])),
-		glm::cross(glm::vec3(m_planes[Bottom]), glm::vec3(m_planes[Top])),
-		glm::cross(glm::vec3(m_planes[Bottom]), glm::vec3(m_planes[Near])),
-		glm::cross(glm::vec3(m_planes[Bottom]), glm::vec3(m_planes[Far])),
-		glm::cross(glm::vec3(m_planes[Top]),    glm::vec3(m_planes[Near])),
-		glm::cross(glm::vec3(m_planes[Top]),    glm::vec3(m_planes[Far])),
-		glm::cross(glm::vec3(m_planes[Near]),   glm::vec3(m_planes[Far]))
-	};
-
-	m_points[0] = intersection<Left,  Bottom, Near>(crosses);
-	m_points[1] = intersection<Left,  Top,    Near>(crosses);
-	m_points[2] = intersection<Right, Bottom, Near>(crosses);
-	m_points[3] = intersection<Right, Top,    Near>(crosses);
-	m_points[4] = intersection<Left,  Bottom, Far>(crosses);
-	m_points[5] = intersection<Left,  Top,    Far>(crosses);
-	m_points[6] = intersection<Right, Bottom, Far>(crosses);
-	m_points[7] = intersection<Right, Top,    Far>(crosses);
-
 }
 
 ContainmentType Frustum::test(const AbstractBoundingBox &box) {
@@ -77,11 +50,3 @@ ContainmentType Frustum::test(const AbstractBoundingBox &box) {
 }
 
 
-template<Frustum::Planes a, Frustum::Planes b, Frustum::Planes c>
-glm::vec3 Frustum::intersection(glm::vec3* crosses)
-{
-	float D = glm::dot(glm::vec3(m_planes[a]), crosses[ij2k<b, c>::k]);
-	glm::vec3 res = glm::mat3(crosses[ij2k<b, c>::k], -crosses[ij2k<a, c>::k], crosses[ij2k<a, b>::k]) *
-		glm::vec3(m_planes[a].w, m_planes[b].w, m_planes[c].w);
-	return res * (-1.0f / D);
-}

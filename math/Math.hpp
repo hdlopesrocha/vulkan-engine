@@ -15,15 +15,12 @@
 
 class Math {
 public:
-    Math();
-    ~Math();
     static bool isBetween(float x, float min, float max);
     static int clamp(int val, int min, int max);
     static float clamp(float val, float min, float max);
     static glm::quat eulerToQuat(float yaw, float pitch, float roll);
     static float squaredDistPointAABB(glm::vec3 p, glm::vec3 min, glm::vec3 max);
     static float check(float p, float min, float max);
-    static float randomFloat();
     static glm::vec3 solveLinearSystem(const glm::mat3& A, const glm::vec3& b);
     static float brightnessAndContrast(float color, float brightness, float contrast);
 };

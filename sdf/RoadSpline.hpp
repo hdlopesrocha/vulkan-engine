@@ -19,27 +19,18 @@ public:
     glm::vec3 tangent(float t) const;
     glm::vec3 up(float t) const;
 
-    void closestPoint(const glm::vec3& p, float& outT, glm::vec3& outC,
-                      glm::vec3& outTan, glm::vec3& outUp) const;
-
     void closestPointInRange(const glm::vec3& p, float tMin, float tMax,
                              float& outT, glm::vec3& outC,
                              glm::vec3& outTan, glm::vec3& outUp) const;
 
     BoundingSphere boundingSphereInRange(float tMin, float tMax, float halfDiag) const;
 
-    float totalLength() const { return m_totalLength; }
     glm::vec3 startPoint() const { return m_points.front().position; }
     glm::vec3 endPoint() const { return m_points.back().position; }
-    glm::vec3 center() const { return m_center; }
-    float boundingRadius() const { return m_boundingRadius; }
 
 private:
     std::vector<ControlPoint> m_points;
     int m_numSegments;
-    float m_totalLength;
-    glm::vec3 m_center;
-    float m_boundingRadius;
 
     glm::vec3 catmullRomPos(const glm::vec3& p0, const glm::vec3& p1,
                             const glm::vec3& p2, const glm::vec3& p3, float t) const;

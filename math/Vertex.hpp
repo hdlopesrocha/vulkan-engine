@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <utility>
 #include <array>
-#include <tuple>
 #include <functional>
 
 inline uint64_t murmurMix(uint64_t k) {
@@ -52,11 +51,6 @@ public:
     Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), _pad0(0), hsv(0.0f, 0.5f, 0.5f) {}
 
     Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), _pad0(0), hsv(0.0f, 0.5f, 0.5f) {}
-
-    bool operator<(const Vertex& other) const {
-           return std::tie(position.x, position.y, position.z, normal.x, normal.y, normal.z, texCoord.x, texCoord.y, brushIndex)
-               < std::tie(other.position.x, other.position.y, other.position.z, other.normal.x, other.normal.y, other.normal.z, other.texCoord.x, other.texCoord.y, other.brushIndex);
-    }
 
     bool operator==(const Vertex& o) const {
         return std::bit_cast<uint64_t>(pack2(position.x, position.y)) == std::bit_cast<uint64_t>(pack2(o.position.x, o.position.y)) &&

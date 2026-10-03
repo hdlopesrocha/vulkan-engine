@@ -35,7 +35,6 @@ public:
     bool contains(const glm::vec3 &point) const;
     bool contains(const BoundingSphere &sphere) const;
     bool contains(const AbstractBoundingBox &cube) const;
-    bool intersects(const BoundingSphere &sphere) const;
     bool intersects(const AbstractBoundingBox &cube) const;
     ContainmentType test(const AbstractBoundingBox &cube) const;
     static glm::vec3 getShift(uint i);
