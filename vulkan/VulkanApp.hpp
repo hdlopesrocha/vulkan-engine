@@ -117,7 +117,6 @@ class VulkanApp {
     bool accelStructSupported = false;
     bool rayQuerySupported = false;
     bool rayPipelineSupported = false;
-    bool deferredHostOpsSupported = false;
     // VK_KHR_shader_clock / shaderDeviceClock: enables the device-scope
     // realtime clock used by the opt-in per-op RT profiling shader variants
     // (shaders/includes/rt_profile.glsl). Independent of RT support; when
@@ -201,13 +200,6 @@ class VulkanApp {
     // frame index for round-robin CPU frames-in-flight
     uint32_t currentFrame = 0;
 
-    // Timeline semaphore for async upload completion tracking.
-    // Replaces per-upload binary semaphores — every async transfer
-    // submission signals a strictly increasing value, and the graphics
-    // submission waits on the latest value to ensure all uploads complete
-    // before rendering.
-    VkSemaphore uploadTimeline = VK_NULL_HANDLE;
-    std::atomic<uint64_t> uploadTimelineValue{0};
     // Timeline semaphore for frame pacing. Replaces per-frame binary fences.
     // Each frame's queue submit signals a strictly increasing value. The CPU
     // waits on this at the start of drawFrame for the oldest in-flight frame.
@@ -262,8 +254,6 @@ private:
     
     // mutex used by runSingleTimeCommands and other transient-pool users
     std::mutex transientPoolMutex;
-    // mutex used by transfer-pool users
-    std::mutex transferPoolMutex;
     
 protected:
     // set when the framebuffer (GLFW window) is resized so we can recreate swapchain
@@ -277,8 +267,6 @@ protected:
     // ImGui integration state
     VkDescriptorPool imguiDescriptorPool = VK_NULL_HANDLE;
     bool imguiShowDemo = false;
-    double imguiLastTime = 0.0;
-    float imguiFps = 0.0f;
     // frame timing for update delta calculation
     double lastFrameTime = 0.0;
     // V-Sync preference (affects present mode selection)

@@ -11,15 +11,6 @@
 #include <fstream>
 #include <exception>
 
-// File-scope (not a VulkanApp instance member) tracking of the queue each
-// async-ring slot's fence was last submitted on. Kept out of the VulkanApp
-// instance layout on purpose: adding an instance member here was observed to
-// shift the class layout and expose a latent out-of-bounds write that
-// corrupted m_deferredDestroys. A file-scope array avoids perturbing layout.
-namespace {
-    VkQueue g_asyncSlotSubmitQueue[VulkanApp::ASYNC_CMD_POOL_RING_SIZE]{};
-}
-
 // VK_KHR_pipeline_binary may not be in older Vulkan headers (pre-1.4).
 // Define the extension name so we can check for runtime support.
 #ifndef VK_KHR_PIPELINE_BINARY_EXTENSION_NAME
@@ -465,13 +456,6 @@ void VulkanApp::cleanup() {
 
     // Tear down the staging ring buffer while the device is still valid
     stagingRing.cleanup();
-
-    // Destroy the upload timeline semaphore
-    if (uploadTimeline != VK_NULL_HANDLE) {
-        resources.removeSemaphore(uploadTimeline);
-        vkDestroySemaphore(device, uploadTimeline, nullptr);
-        uploadTimeline = VK_NULL_HANDLE;
-    }
 
     // Do not destroy objects that are tracked by VulkanResourceManager here.
     // Let the centralized manager perform destruction while the device is still valid.
@@ -980,7 +964,6 @@ void VulkanApp::createAsyncCmdPoolRing() {
             throw std::runtime_error("failed to create async ring fence");
         }
         resources.addFence(asyncCmdFenceRing[i], "VulkanApp: asyncCmdFenceRing");
-        g_asyncSlotSubmitQueue[i] = graphicsQueue;
     }
 }
 
@@ -2351,7 +2334,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             ringSlot = it->second;
         }
         VkFence slotFence = asyncCmdFenceRing[ringSlot];
-        g_asyncSlotSubmitQueue[ringSlot] = queue;
         VkSubmitInfo2 emptySubmit{};
         emptySubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
         VkResult sr = vkQueueSubmit2(queue, 1, &emptySubmit, slotFence);
@@ -2618,7 +2600,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         // recorded operations. Use the most recent pending update (barrier or
         // tracked-only) because tracked entries can represent implicit
         // render-pass transitions that affect the effective layout.
-        VkImageLayout pendingOld = VK_IMAGE_LAYOUT_UNDEFINED;
         {
             std::lock_guard<std::mutex> plk(pendingLayoutMutex);
             auto pit = commandBufferPendingLayouts.find(commandBuffer);
@@ -2650,7 +2631,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
                         // layers but the current request targets a single
                         // layer inside that range.
                         if (baseArrayLayer >= pendingBase && baseArrayLayer < pendingBase + pendingCount) {
-                            pendingOld = it->newLayout;
                             // A recorded barrier in the same command buffer is
                             // the authoritative subresource layout for any
                             // subsequent barrier in that command buffer.
@@ -2670,7 +2650,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
                     // validation-layer mismatches. Leave `effectiveOld`
                     // unchanged so we prefer the caller-supplied or
                     // authoritative tracked layout instead.
-                    (void)pendingOld;
                 }
             }
         }
@@ -3340,23 +3319,6 @@ void VulkanApp::createSyncObjects() {
     // imagesInFlight tracks the frameTimeline value when each swapchain image was last acquired
     imagesInFlight.clear();
     imagesInFlight.resize(numImages, 0);
-
-    // Create the upload timeline semaphore (replaces per-upload binary semaphores)
-    {
-        VkSemaphoreTypeCreateInfo typeInfo{};
-        typeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
-        typeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-        typeInfo.initialValue = 1; // start at 1 to avoid RADV value-0 wait crash
-
-        VkSemaphoreCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        createInfo.pNext = &typeInfo;
-        if (vkCreateSemaphore(device, &createInfo, nullptr, &uploadTimeline) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create upload timeline semaphore");
-        }
-        resources.addSemaphore(uploadTimeline, "VulkanApp: uploadTimeline");
-        uploadTimelineValue.store(1); // start at 1 (initialValue=1 avoids RADV value-0 crash)
-    }
 
     // async submission bookkeeping
     m_pendingCommandBuffers.clear();
@@ -4302,14 +4264,6 @@ void VulkanApp::drawFrame() {
         // call into the derived app to build the UI
         renderImGui();
     }
-
-    // update FPS (simple moving average could be added)
-    double now = glfwGetTime();
-    if (imguiLastTime > 0.0) {
-        double dt = now - imguiLastTime;
-        if (dt > 0.0) imguiFps = static_cast<float>(1.0 / dt);
-    }
-    imguiLastTime = now;
 
     // Exit screenshot: the close flag was set by GLFW (window X), by update()
     // (ESC) or by the Exit menu during renderImGui() above. Checked last so all
@@ -5347,9 +5301,6 @@ bool VulkanApp::isDeviceSuitable(VkPhysicalDevice physDevice) {
         // Pre-1.2 fallback: VK_KHR_draw_indirect_count / VK_AMD_draw_indirect_count
         // would provide the KHR entry point, but the engine calls core
         // vkCmdDrawIndexedIndirectCount directly, so 1.2+ is mandatory.
-        uint32_t extCount = 0;
-        vkEnumerateDeviceExtensionProperties(physDevice, nullptr, &extCount, nullptr);
-        (void)extCount;
         return false;
     }
     return true;
@@ -5708,7 +5659,6 @@ void VulkanApp::createLogicalDevice() {
         extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
         if (deferredHostOpsExtFound) {
             extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
-            deferredHostOpsSupported = true;
         }
         if (rtPipeOk) {
             extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
