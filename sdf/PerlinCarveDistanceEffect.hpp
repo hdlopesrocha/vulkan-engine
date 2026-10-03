@@ -13,8 +13,5 @@ class PerlinCarveDistanceEffect : public SignedDistanceEffect {
     float brightness;
     float contrast;
     PerlinCarveDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float frequency_, float threshold_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias);
-    ~PerlinCarveDistanceEffect();
-    const char* getLabel() const override;
     float distance(const glm::vec3 &p) const override;
-    SdfType getType() const override { return SdfType::CARVE_PERLIN; }
 };

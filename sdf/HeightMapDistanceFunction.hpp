@@ -15,7 +15,6 @@ public:
     BoundingBox getBox(float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;
     bool isContained(const BoundingCube &cube) const override;
-    const char* getLabel() const override;
 
 private:
     BoundingBox box;

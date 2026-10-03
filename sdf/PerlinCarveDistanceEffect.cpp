@@ -4,13 +4,6 @@ PerlinCarveDistanceEffect::PerlinCarveDistanceEffect(SignedDistanceFunction &fun
 
 }
 
-PerlinCarveDistanceEffect::~PerlinCarveDistanceEffect() {
-}
-
-const char* PerlinCarveDistanceEffect::getLabel() const {
-    return "Perlin Carve";
-}
-
 float PerlinCarveDistanceEffect::distance(const glm::vec3 &p) const {
     float d = function.distance(p);
     glm::vec3 localP = p - m_model.translate;

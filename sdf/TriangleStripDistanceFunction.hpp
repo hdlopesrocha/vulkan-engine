@@ -19,7 +19,6 @@ public:
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;
     bool isContained(const BoundingCube &cube) const override;
-    const char* getLabel() const override;
 
 private:
     glm::vec3 m_sphereCenter;

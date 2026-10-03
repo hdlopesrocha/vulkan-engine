@@ -3,7 +3,7 @@
 
 TaperedCapsuleDistanceFunction::TaperedCapsuleDistanceFunction(glm::vec3 a_, glm::vec3 b_, float r1_, float r2_,
                                                                const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::TAPERED_CAPSULE, 0.5f*(a_+b_)+model.translate, model), a(a_), b(b_), r1(r1_), r2(r2_)
+    : SignedDistanceFunction(0.5f*(a_+b_)+model.translate, model), a(a_), b(b_), r1(r1_), r2(r2_)
     , sphere(getSphere(model, bias)) {}
 
 float TaperedCapsuleDistanceFunction::distance(const glm::vec3 &p) const {
@@ -29,6 +29,3 @@ bool TaperedCapsuleDistanceFunction::isContained(const BoundingCube &cube) const
     return cube.contains(sphere);
 }
 
-const char* TaperedCapsuleDistanceFunction::getLabel() const {
-    return "Tapered Capsule";
-}

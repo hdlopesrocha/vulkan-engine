@@ -1,5 +1,4 @@
 #include "TriangleStripDistanceFunction.hpp"
-#include "SdfType.hpp"
 #include <algorithm>
 
 TriangleStripDistanceFunction::TriangleStripDistanceFunction(
@@ -7,7 +6,7 @@ TriangleStripDistanceFunction::TriangleStripDistanceFunction(
     const glm::vec3& v2_, const glm::vec3& v3_, float halfThick_,
     const glm::vec3& sphereCenter, float sphereRadius,
     const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::TRIANGLE_STRIP, sphereCenter, model)
+    : SignedDistanceFunction(sphereCenter, model)
     , v0(v0_), v1(v1_), v2(v2_), v3(v3_), halfThick(halfThick_)
     , m_sphereCenter(sphereCenter)
     , m_sphereRadius(sphereRadius)
@@ -42,6 +41,3 @@ bool TriangleStripDistanceFunction::isContained(const BoundingCube &cube) const 
     return cube.contains(sphere);
 }
 
-const char* TriangleStripDistanceFunction::getLabel() const {
-    return "TriangleStrip";
-}

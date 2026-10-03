@@ -3,13 +3,6 @@
 PerlinDistortDistanceEffect::PerlinDistortDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float frequency_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias) : SignedDistanceEffect(function_, model, bias + amplitude_ * 1.97f), amplitude(amplitude_), frequency(frequency_), offset(offset_), brightness(brightness_), contrast(contrast_) {
 }
 
-PerlinDistortDistanceEffect::~PerlinDistortDistanceEffect() {
-}
-
-const char* PerlinDistortDistanceEffect::getLabel() const {
-    return "Perlin Distort";
-}
-
 float PerlinDistortDistanceEffect::distance(const glm::vec3 &p) const {
     glm::vec3 localP = p - m_model.translate;
     glm::vec3 noise = SDF::distortPerlinFractal(localP + offset, frequency, 6, 2.0f, 0.5f);

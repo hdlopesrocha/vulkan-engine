@@ -13,7 +13,7 @@
 template<typename T>
 SweepSignedDistanceFunction<T>::SweepSignedDistanceFunction(const T &f1, const T &f2,
                                                             const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::SWEEP, model)
+    : SignedDistanceFunction(model)
     , function1(f1)
     , function2(f2)
     , posA(f1.getCenter())
@@ -76,11 +76,6 @@ ContainmentType SweepSignedDistanceFunction<T>::check(const BoundingCube &cube) 
 template<typename T>
 bool SweepSignedDistanceFunction<T>::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
-}
-
-template<typename T>
-const char* SweepSignedDistanceFunction<T>::getLabel() const {
-    return "Sweep";
 }
 
 template<typename T>

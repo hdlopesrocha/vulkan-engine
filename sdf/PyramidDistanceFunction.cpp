@@ -1,7 +1,7 @@
 #include "PyramidDistanceFunction.hpp"
 
 PyramidDistanceFunction::PyramidDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::PYRAMID, model.translate, model)
+    : SignedDistanceFunction(model.translate, model)
     , sphere(getSphere(model, bias)) {}
 
 float PyramidDistanceFunction::distance(const glm::vec3 &p) const {
@@ -16,10 +16,6 @@ float PyramidDistanceFunction::distance(const glm::vec3 &p) const {
     return d * minScale;
 }
 
-float PyramidDistanceFunction::boundingSphereRadius(float width, float depth, float height) const {
-    return glm::length(glm::vec3(width, height, depth));
-}
-
 BoundingSphere PyramidDistanceFunction::getSphere(const Transformation &model, float bias) const {
     return BoundingSphere(getCenter(), sqrt(0.5f) * glm::length(model.scale) + bias);
 }
@@ -32,6 +28,3 @@ bool PyramidDistanceFunction::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 }
 
-const char* PyramidDistanceFunction::getLabel() const {
-    return "Pyramid";
-}

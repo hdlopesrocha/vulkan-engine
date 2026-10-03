@@ -8,10 +8,6 @@ SignedDistanceEffect::SignedDistanceEffect(SignedDistanceFunction &function_, co
 
 SignedDistanceEffect::~SignedDistanceEffect() = default;
 
-void SignedDistanceEffect::setFunction(SignedDistanceFunction &function_) {
-    this->function = function_;
-}
-
 ContainmentType SignedDistanceEffect::check(const BoundingCube &cube) const {
     return sphere.test(cube);
 }

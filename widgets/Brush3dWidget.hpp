@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../sdf/SdfType.hpp"
 #include "../math/BrushMode.hpp"
 #include "../utils/Scene.hpp"
 #include <glm/glm.hpp>

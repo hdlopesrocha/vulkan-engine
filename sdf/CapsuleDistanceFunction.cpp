@@ -1,7 +1,7 @@
 #include "CapsuleDistanceFunction.hpp"
 
 CapsuleDistanceFunction::CapsuleDistanceFunction(glm::vec3 a_, glm::vec3 b_, float r, const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::CAPSULE, 0.5f*(a_+b_)+model.translate, model), a(a_), b(b_), radius(r), sphere(getSphere(model, bias)) {}
+    : SignedDistanceFunction(0.5f*(a_+b_)+model.translate, model), a(a_), b(b_), radius(r), sphere(getSphere(model, bias)) {}
 
 float CapsuleDistanceFunction::distance(const glm::vec3 &p) const {
     glm::vec3 pos = p - m_model.translate;
@@ -26,6 +26,3 @@ bool CapsuleDistanceFunction::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 }
 
-const char* CapsuleDistanceFunction::getLabel() const {
-    return "Capsule";
-}

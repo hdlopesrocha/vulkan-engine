@@ -3,7 +3,7 @@
 
 TaperedCylinderDistanceFunction::TaperedCylinderDistanceFunction(float r1_, float r2_,
                                                                 const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::TAPERED_CYLINDER, model.translate, model), r1(r1_), r2(r2_)
+    : SignedDistanceFunction(model.translate, model), r1(r1_), r2(r2_)
     , sphere(getSphere(model, bias)) {}
 
 float TaperedCylinderDistanceFunction::distance(const glm::vec3 &p) const {
@@ -30,6 +30,3 @@ bool TaperedCylinderDistanceFunction::isContained(const BoundingCube &cube) cons
     return cube.contains(sphere);
 }
 
-const char* TaperedCylinderDistanceFunction::getLabel() const {
-    return "Tapered Cylinder";
-}

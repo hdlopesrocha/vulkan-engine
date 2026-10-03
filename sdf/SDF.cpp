@@ -127,66 +127,6 @@ glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
     return result;
 }
 
-glm::vec3 SDF::getAveragePosition(float sdf[8], const BoundingCube &cube) {
-    // Early exit if there's no surface inside this cube
-    SpaceType eval = SDF::eval(sdf);
-    if(eval != SpaceType::Surface) {
-        return cube.getCenter();  // or some fallback value
-    }
-
-    std::vector<glm::vec3> positions;
-    for (int i = 0; i < 12; ++i) {
-        glm::ivec2 edge = SDF_EDGES[i];
-        float d0 = sdf[edge[0]];
-        float d1 = sdf[edge[1]];
-
-		bool sign0 = d0 < 0.0f;
-		bool sign1 = d1 < 0.0f;
-
-        if (sign0 != sign1) {
-            glm::vec3 p0 = cube.getCorner(edge[0]);
-            glm::vec3 p1 = cube.getCorner(edge[1]);
-            float t = d0 / (d0 - d1);  // Safe due to sign change
-            positions.push_back(p0 + t * (p1 - p0));
-        }
-    }
-
-    if (positions.empty()){
-        std::cout << "Invalid point!" << std::endl;
-        return cube.getCenter();  // fallback or invalid
-    }
-    glm::vec3 sum(0.0f);
-    for (const glm::vec3 &p : positions) {
-        sum += p;
-    }
-
-    return sum / static_cast<float>(positions.size());
-}
-
-glm::vec3 SDF::getAveragePosition2(float sdf[8], const BoundingCube &cube) {
-    glm::vec3 avg = getAveragePosition(sdf, cube);
-    glm::vec3 normal = getNormalFromPosition(sdf, cube, avg);
-    float d = interpolate(sdf, avg, cube);
-    return avg - normal * d;
-}
-
-glm::vec3 SDF::getNormal(float sdf[8], const BoundingCube& cube) {
-    const float dx = cube.getLengthX(); // or half size if your sdf spacing is half
-    const float inv2dx = 1.0f / (2.0f * dx);
-
-    // Gradient via central differences (CUBE_CORNERS convention: bit2=x, bit1=y, bit0=z)
-    float gx = (sdf[4] + sdf[5] + sdf[6] + sdf[7] - sdf[0] - sdf[1] - sdf[2] - sdf[3]) * 0.25f;
-    float gy = (sdf[2] + sdf[3] + sdf[6] + sdf[7] - sdf[0] - sdf[1] - sdf[4] - sdf[5]) * 0.25f;
-    float gz = (sdf[1] + sdf[3] + sdf[5] + sdf[7] - sdf[0] - sdf[2] - sdf[4] - sdf[6]) * 0.25f;
-
-    glm::vec3 normal = glm::vec3(gx, gy, gz) * inv2dx;
-    float nl = glm::length(normal);
-    if (nl < 1e-6f) {
-        return glm::vec3(0.0f, 1.0f, 0.0f);
-    }
-    return normal / nl;
-}
-
 glm::vec3 SDF::getNormalFromPosition(float sdf[8], const BoundingCube& cube, const glm::vec3& position) {
     glm::vec3 local = (position - cube.getMin()) / cube.getLength(); // Convert to [0,1]^3 within cube
 
@@ -239,10 +179,6 @@ float SDF::opIntersection(float d1, float d2) {
 
 float SDF::opPaint(float d1, float d2) {
     return opUnion(d1, opIntersection(d1, d2));
-}
-
-float SDF::opXor(float d1, float d2) {
-    return glm::max(glm::min(d1,d2),-glm::max(d1,d2));
 }
 
 float SDF::box(const glm::vec3 &p, const glm::vec3 len) {
@@ -388,17 +324,6 @@ float SDF::voronoi3D(const glm::vec3& p, float cellSize = 1.0f, float seed = 0.0
 }
 
 
-glm::vec3 faceOutward(const glm::vec3 &a, const glm::vec3 &b, const glm::vec3 &c, const glm::vec3 &centroid) {
-    // normal da face
-    glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
-
-    // se a normal aponta para dentro, inverter
-    if (glm::dot(n, centroid - a) > 0.0f)
-        n = -n;
-
-    return n;
-}
-
 // distance to segment AB
 inline float sdSegment(const glm::vec3 &p, const glm::vec3 &a, const glm::vec3 &b) {
     glm::vec3 pa = p - a;
@@ -512,13 +437,6 @@ float SDF::cone(const glm::vec3 &p) {
     return glm::sqrt(d) * glm::sign(s);
 }
 
-glm::vec3 SDF::distortPerlin(const glm::vec3 &p, float amplitude, float frequency) {
-    float noiseX = stb_perlin_noise3(p.x*frequency, p.y*frequency, p.z*frequency, 0, 0, 0);
-    float noiseY = stb_perlin_noise3((p.x+100)*frequency, (p.y+100)*frequency, (p.z+100)*frequency, 0, 0, 0);
-    float noiseZ = stb_perlin_noise3((p.x+200)*frequency, (p.y+200)*frequency, (p.z+200)*frequency, 0, 0, 0);
-    return p + amplitude * glm::vec3(noiseX, noiseY, noiseZ);
-}
-
 glm::vec3 SDF::distortPerlinFractal(const glm::vec3 &p, float frequency, int octaves, float lacunarity = 2.0f, float gain = 0.5f) {
     glm::vec3 totalNoise(0.0f);
     float freq = frequency;
@@ -586,21 +504,6 @@ float SDF::distortedCarveFractalSDF(const glm::vec3 &p,
     }
 
     return d;
-}
-
-float SDF::opSmoothUnion(float d1, float d2, float k) {
-    float h = glm::clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );
-    return glm::mix( d2, d1, h ) - k*h*(1.0-h);
-}
-
-float SDF::opSmoothSubtraction(float d1, float d2, float k) {
-    float h = glm::clamp( 0.5 - 0.5*(d2+d1)/k, 0.0, 1.0 );
-    return glm::mix( d1, -d2, h ) + k*h*(1.0-h);
-}
-
-float SDF::opSmoothIntersection(float d1, float d2, float k) {
-    float h = glm::clamp( 0.5 - 0.5*(d1-d2)/k, 0.0, 1.0 );
-    return glm::mix( d1, d2, h ) + k*h*(1.0-h);
 }
 
 // Safe trilinear lerp for SDF fields that may carry INFINITY sentinels (corners
@@ -687,22 +590,4 @@ SpaceType SDF::eval(const float sdf[8]) {
     }
     if (!hasPositive && !hasNegative) return SpaceType::Empty;
     return hasNegative && hasPositive ? SpaceType::Surface : (hasPositive ? SpaceType::Empty : SpaceType::Solid);
-}
-
-bool SDF::isSurfaceNet(const float sdf[8]) {
-    bool hasNeg = false;
-    bool hasPos = false;
-
-    for (int i = 0; i < 8; ++i) {
-        if (sdf[i] < 0.0f) hasNeg = true;
-        else               hasPos = true;
-
-        if (hasNeg && hasPos)
-            return true;
-    }
-    return false;
-}
-
-bool SDF::isSurfaceNet2(const float sdf[8]) {
-    return (sdf[0] < 0.0f) != (sdf[1] < 0.0f) || (sdf[0] < 0.0f) != (sdf[2] < 0.0f) || (sdf[0] < 0.0f) != (sdf[4] < 0.0f); 
 }

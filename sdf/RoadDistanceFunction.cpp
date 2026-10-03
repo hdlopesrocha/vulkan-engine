@@ -1,5 +1,4 @@
 #include "RoadDistanceFunction.hpp"
-#include "SdfType.hpp"
 #include <glm/glm.hpp>
 #include <algorithm>
 
@@ -8,7 +7,7 @@ RoadDistanceFunction::RoadDistanceFunction(RoadSpline* spline, float width, floa
                                             bool applyStartCap, bool applyEndCap,
                                             const glm::vec3& sphereCenter, float sphereRadius,
                                             const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::ROAD, model)
+    : SignedDistanceFunction(model)
     , m_spline(spline)
     , m_width(width)
     , m_height(height)
@@ -90,6 +89,3 @@ bool RoadDistanceFunction::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 }
 
-const char* RoadDistanceFunction::getLabel() const {
-    return "Road";
-}

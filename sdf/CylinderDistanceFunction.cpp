@@ -2,7 +2,7 @@
 #include "SDF.hpp"
 
 CylinderDistanceFunction::CylinderDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::CYLINDER, model.translate, model)
+    : SignedDistanceFunction(model.translate, model)
     , sphere(getSphere(model, bias)) {}
 
 float CylinderDistanceFunction::distance(const glm::vec3 &p) const {
@@ -28,6 +28,3 @@ bool CylinderDistanceFunction::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 }
 
-const char* CylinderDistanceFunction::getLabel() const {
-    return "Cylinder";
-}

@@ -1,7 +1,7 @@
 #include "OctreeDifferenceFunction.hpp"
 
 OctreeDifferenceFunction::OctreeDifferenceFunction(Octree * tree_, BoundingBox box_, float bias_, const Transformation &model)
-    : SignedDistanceFunction(SdfType::OCTREE_DIFFERENCE, box_.getCenter(), model), tree(tree_), box(box_), bias(bias_)
+    : SignedDistanceFunction(box_.getCenter(), model), tree(tree_), box(box_), bias(bias_)
     , m_box(getBox(bias_)) {}
 
 float OctreeDifferenceFunction::distance(const glm::vec3 &p) const {
@@ -29,6 +29,3 @@ bool OctreeDifferenceFunction::isContained(const BoundingCube &cube) const {
     return cube.contains(m_box);
 }
 
-const char* OctreeDifferenceFunction::getLabel() const {
-    return "Octree Difference";
-}

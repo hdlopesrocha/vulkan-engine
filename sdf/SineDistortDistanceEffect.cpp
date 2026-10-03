@@ -3,13 +3,6 @@
 SineDistortDistanceEffect::SineDistortDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float frequency_, glm::vec3 offset_, const Transformation &model, float bias) : SignedDistanceEffect(function_, model, bias + amplitude_ * 0.5f), amplitude(amplitude_), frequency(frequency_), offset(offset_) {
 }
 
-SineDistortDistanceEffect::~SineDistortDistanceEffect() {
-}
-
-const char* SineDistortDistanceEffect::getLabel() const {
-    return "Sine Distort";
-}
-
 float SineDistortDistanceEffect::distance(const glm::vec3 &p) const {
     glm::vec3 localP = p - m_model.translate;
     glm::vec3 pp = localP + offset;

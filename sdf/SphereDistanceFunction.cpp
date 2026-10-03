@@ -1,7 +1,7 @@
 #include "SphereDistanceFunction.hpp"
 
 SphereDistanceFunction::SphereDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::SPHERE, model.translate, model)
+    : SignedDistanceFunction(model.translate, model)
     , sphere(getSphere(model, bias)) {}
 
 float SphereDistanceFunction::distance(const glm::vec3 &p) const {
@@ -25,6 +25,3 @@ bool SphereDistanceFunction::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 }
 
-const char* SphereDistanceFunction::getLabel() const {
-    return "Sphere";
-}

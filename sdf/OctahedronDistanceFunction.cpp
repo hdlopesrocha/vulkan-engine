@@ -1,7 +1,7 @@
 #include "OctahedronDistanceFunction.hpp"
 
 OctahedronDistanceFunction::OctahedronDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::OCTAHEDRON, model.translate, model)
+    : SignedDistanceFunction(model.translate, model)
     , sphere(getSphere(model, bias)) {}
 
 float OctahedronDistanceFunction::distance(const glm::vec3 &p) const {
@@ -28,6 +28,3 @@ bool OctahedronDistanceFunction::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 }
 
-const char* OctahedronDistanceFunction::getLabel() const {
-    return "Octahedron";
-}

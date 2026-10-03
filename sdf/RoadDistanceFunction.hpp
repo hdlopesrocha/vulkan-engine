@@ -17,15 +17,6 @@ public:
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;
     bool isContained(const BoundingCube &cube) const override;
-    const char* getLabel() const override;
-
-    RoadSpline* getSpline() const { return m_spline; }
-    float getWidth() const { return m_width; }
-    float getHeight() const { return m_height; }
-    float getTMin() const { return m_tMin; }
-    float getTMax() const { return m_tMax; }
-    bool hasStartCap() const { return m_applyStartCap; }
-    bool hasEndCap() const { return m_applyEndCap; }
 
 private:
     RoadSpline* m_spline;

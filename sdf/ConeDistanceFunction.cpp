@@ -2,7 +2,7 @@
 #include "SDF.hpp"
 
 ConeDistanceFunction::ConeDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::CONE, model.translate, model)
+    : SignedDistanceFunction(model.translate, model)
     , sphere(getSphere(model, bias)) {}
 
 float ConeDistanceFunction::distance(const glm::vec3 &p) const {
@@ -28,6 +28,3 @@ bool ConeDistanceFunction::isContained(const BoundingCube &cube) const {
     return cube.contains(sphere);
 }
 
-const char* ConeDistanceFunction::getLabel() const {
-    return "Cone";
-}

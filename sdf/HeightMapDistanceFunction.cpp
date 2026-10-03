@@ -3,7 +3,7 @@
 #include "../math/HeightMap.hpp"
 
 HeightMapDistanceFunction::HeightMapDistanceFunction(HeightMap * map_, float bias, const Transformation &model)
-    : SignedDistanceFunction(SdfType::HEIGHTMAP, map_->getCenter(), model), map(map_)
+    : SignedDistanceFunction(map_->getCenter(), model), map(map_)
     , box(getBox(bias)) {}
 
 float HeightMapDistanceFunction::distance(const glm::vec3 &p) const {
@@ -36,6 +36,3 @@ bool HeightMapDistanceFunction::isContained(const BoundingCube &cube) const {
     return cube.contains(box);
 }
 
-const char* HeightMapDistanceFunction::getLabel() const {
-    return "Height Map";
-}

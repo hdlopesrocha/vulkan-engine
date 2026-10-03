@@ -15,8 +15,5 @@ class VoronoiCarveDistanceEffect : public SignedDistanceEffect {
     float brightness;
     float contrast;
     VoronoiCarveDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias);
-    ~VoronoiCarveDistanceEffect();
-    const char* getLabel() const override;
     float distance(const glm::vec3 &p) const override;
-    SdfType getType() const override { return SdfType::CARVE_VORONOI; }
 };
