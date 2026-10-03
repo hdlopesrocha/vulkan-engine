@@ -43,7 +43,7 @@ DEPFLAGS = -MMD -MP
 # the system 1.3 headers from libvulkan-dev. Also add common ImGui/stb includes.
 VK_SDK_INCLUDE = -Ithird_party/Vulkan-Headers/include
 INCLUDES = $(VK_SDK_INCLUDE) `pkg-config --cflags glfw3 vulkan` -I. -isystem third_party/imgui -isystem third_party/imgui/backends -I/usr/include/stb
-LIBS = `pkg-config --libs glfw3 vulkan` -lstb -ljpeg -lgdal -lz
+LIBS = `pkg-config --libs glfw3 vulkan` -lstb -ljpeg -lz
 
 # Wii Remote support via vendored wiiuse (third_party/wiiuse).
 # Auto-detects BlueZ so the library can be compiled even if not installed.
@@ -73,8 +73,6 @@ IMGUI_BACKEND_OBJS := $(patsubst third_party/imgui/backends/%.cpp,$(OBJ_DIR)/img
 IMGUI_OBJS := $(IMGUI_CORE_OBJS) $(IMGUI_BACKEND_OBJS)
 # shader sources and generated SPIR-V
 SRCS := $(wildcard MyApp.cpp world/*.cpp utils/*.cpp vulkan/*.cpp vulkan/renderer/*.cpp vulkan/streaming/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp space/*.cpp services/*.cpp) third_party/miniaudio/miniaudio_impl.cpp
-# Exclude legacy utils Camera implementation (migrated to math/Camera)
-SRCS := $(filter-out utils/Camera.cpp,$(SRCS))
 OBJ_DIR := $(OUT_DIR)/obj
 
 # Compose object lists, then forcibly filter out any absolute /imgui/*.o
@@ -478,7 +476,6 @@ install:
 						libglm-dev \
 						libshaderc-dev \
 						libstb-dev \
-						libgdal-dev \
 						libbluetooth-dev \
 						vulkan-tools
 	# Wiimote support uses the vendored wiiuse library (third_party/wiiuse)
