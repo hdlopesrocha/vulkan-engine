@@ -130,5 +130,4 @@ void StagingRingBuffer::release(Allocation& alloc) {
     }
 
     alloc.released = true;
-    cv_.notify_one();
 }

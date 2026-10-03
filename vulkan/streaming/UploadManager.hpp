@@ -2,7 +2,6 @@
 
 #include "StreamCommon.hpp"
 #include "LockFreeQueue.hpp"
-#include "ChunkBufferPool.hpp"
 #include "StagingBufferPool.hpp"
 
 #include <vulkan/vulkan.h>
@@ -32,15 +31,11 @@ public:
     void init(VulkanApp* app,
               VkDeviceSize chunkVertexBytes,
               VkDeviceSize chunkIndexBytes,
-              uint32_t stagingSlots = 32,
-              uint32_t initialChunkSlots = 64);
+              uint32_t stagingSlots = 32);
 
     // Worker threads call this (lock-free push). `job` must reference
-    // destination buffers acquired from the chunk pool and contain only CPU data.
+    // destination buffers and contain only CPU data.
     void enqueue(UploadJob&& job);
-
-    ChunkBufferPool& chunkPool() { return chunkPool_; }
-    const ChunkBufferPool& chunkPool() const { return chunkPool_; }
 
     // Byte capacity of a single staging slot. UploadManager is the ONLY upload
     // path: a job whose total footprint exceeds this is rejected by the caller
@@ -79,7 +74,6 @@ private:
     VkQueue        queue_ = VK_NULL_HANDLE;      // geometryTransferQueue() or graphicsQueue
     uint32_t       queueFamily_ = 0;             // graphics family (staging is EXCLUSIVE on it)
 
-    ChunkBufferPool chunkPool_;
     StagingBufferPool staging_;
     VkDeviceSize   slotSize_ = 0;
 
@@ -91,30 +85,18 @@ private:
     bool          m_timelineSupported = false;
 };
 
-// Orchestrates the whole subsystem: a ChunkBufferPool, the UploadManager, and
-// three independent worker ThreadPools (solid / water / brush). Each category's
-// meshing runs on its own pool of threads, so solid, water and brush geometry
-// are generated as parallel as the hardware allows; finished jobs stream through
-// the shared UploadManager without a per-frame budget.
+// Orchestrates the whole subsystem: the UploadManager and two independent
+// worker ThreadPools (solid / water). Each category's meshing runs on its own
+// pool of threads, so solid and water geometry are generated as parallel as the
+// hardware allows; finished jobs stream through the shared UploadManager
+// without a per-frame budget.
 class TerrainStreamer {
 public:
     void init(VulkanApp* app,
               VkDeviceSize chunkVertexBytes,
               VkDeviceSize chunkIndexBytes,
               uint32_t stagingSlots = 32,
-              uint32_t initialChunkSlots = 64,
               uint32_t workersPerCategory = 2);
-
-    // Schedule generation of one chunk's mesh for `category`. Acquires the GPU
-    // slot on the MAIN thread, then dispatches a CPU-only task to that category's
-    // worker pool. `generator` performs the meshing (Tesselator / water SDF /
-    // brush) and fills `job` (CPU data + destination buffers + onComplete).
-    // The task pushes the job to the upload queue; no Vulkan call happens on the
-    // worker thread.
-    void requestMesh(StreamCategory category,
-                     uint64_t chunkId,
-                     int lod,
-                     std::function<void(ChunkGPUBuffers&, UploadJob&)> generator);
 
     // Call ONCE per frame, before drawFrame's submit:
     void update(VulkanApp* app) {

@@ -3,7 +3,6 @@
 #include <vulkan/vulkan.h>
 #include "../third_party/VulkanMemoryAllocator/include/vk_mem_alloc.h"
 #include <mutex>
-#include <condition_variable>
 #include <vector>
 #include <cstddef>
 
@@ -40,5 +39,4 @@ private:
     VkDeviceSize     bytesInUse_ = 0;
     std::vector<FreeBlock> freeList_;
     std::mutex mutex_;
-    std::condition_variable cv_;
 };

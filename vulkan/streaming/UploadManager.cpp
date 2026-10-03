@@ -53,8 +53,7 @@ namespace streaming {
 void UploadManager::init(VulkanApp* app,
                          VkDeviceSize chunkVertexBytes,
                          VkDeviceSize chunkIndexBytes,
-                         uint32_t stagingSlots,
-                         uint32_t initialChunkSlots) {
+                         uint32_t stagingSlots) {
     app_    = app;
     vma_    = app->getVmaAllocator();
     device_ = app->getDevice();
@@ -70,8 +69,6 @@ void UploadManager::init(VulkanApp* app,
 
     auto qfi = app->findQueueFamilies(app->getPhysicalDevice());
     queueFamily_ = qfi.graphicsFamily.value();
-
-    chunkPool_.init(app, chunkVertexBytes, chunkIndexBytes, initialChunkSlots);
 
     const VkDeviceSize slotSize = chunkVertexBytes + chunkIndexBytes;
     slotSize_ = slotSize;
@@ -283,16 +280,8 @@ void UploadManager::prepareFrameWaits(VulkanApp* app) {
     // 1) Recycle completed staging slots on the MAIN thread. Non-blocking.
     for (auto& s : staging_.slots()) {
         if (!s.busy) continue;
-        vkGetFenceStatus(device_, s.fence);
-    }
-    for (auto& s : staging_.slots()) {
-        if (!s.busy) continue;
         if (isComplete(s)) {
-            // onComplete publishes the new buffers into the live scene and is
-            // responsible for returning the PREVIOUS chunk's slot to chunkPool_
-            // via app->deferDestroyUntilAllPending (so it is not reused while a
-            // frame in flight still reads it). The manager never touches the
-            // chunk slot — the slot just uploaded is now the chunk's live data.
+            // onComplete publishes the new buffers into the live scene.
             if (s.onComplete) s.onComplete();
             // Destroy the binary signal semaphore the manager created for this
             // job IF the app never took ownership of it via a frame-wait
@@ -331,7 +320,7 @@ void UploadManager::prepareFrameWaits(VulkanApp* app) {
     }
 
     // 2) Submit as many queued jobs as free staging slots allow. No per-frame cap.
-    //    Each slot, pick the HIGHEST-PRIORITY ready job across all three category
+    //    Each slot, pick the HIGHEST-PRIORITY ready job across both category
     //    queues (nearest-first streaming) while keeping categories independent in
     //    generation. Losers are re-pushed to the back of their own queue (lock-free).
     for (;;) {
@@ -359,13 +348,11 @@ void UploadManager::prepareFrameWaits(VulkanApp* app) {
         }
         if (!any) break;                                   // all queues drained → stop
 
-        // Guard against a malformed job with no data: complete it inline and
-        // return the acquired chunk slot to the pool (it never became live data).
+        // Guard against a malformed job with no data: complete it inline.
         bool hasData = false;
         for (auto& u : best.uploads) if (!u.cpuData.empty()) { hasData = true; break; }
         if (!hasData) {
             if (best.onComplete) best.onComplete();
-            if (best.chunkSlot) chunkPool_.release(static_cast<ChunkGPUBuffers*>(best.chunkSlot));
             continue;
         }
         submitJob(*s, std::move(best));
@@ -401,7 +388,6 @@ void UploadManager::destroy() {
         if (s.busy) {
             VulkanApp::waitFence(device_, s.fence);
             if (s.onComplete) s.onComplete();
-            if (s.chunkSlot) chunkPool_.release(static_cast<ChunkGPUBuffers*>(s.chunkSlot));
         }
         // Resolve binary-signal-semaphore ownership before StagingBufferPool::
         // destroy() (which unconditionally destroys any non-null signalSem):
@@ -440,7 +426,6 @@ void UploadManager::destroy() {
         while (q.tryPop(job)) {}
     }
     staging_.destroy();
-    chunkPool_.destroy();
     if (m_timeline) { vkDestroySemaphore(device_, m_timeline, nullptr); m_timeline = VK_NULL_HANDLE; }
 }
 
@@ -452,9 +437,8 @@ void TerrainStreamer::init(VulkanApp* app,
                            VkDeviceSize chunkVertexBytes,
                            VkDeviceSize chunkIndexBytes,
                            uint32_t stagingSlots,
-                           uint32_t initialChunkSlots,
                            uint32_t workersPerCategory) {
-    upload_.init(app, chunkVertexBytes, chunkIndexBytes, stagingSlots, initialChunkSlots);
+    upload_.init(app, chunkVertexBytes, chunkIndexBytes, stagingSlots);
     for (size_t i = 0; i < pools_.size(); ++i) {
         // ThreadPool owns a std::mutex → not movable; store via unique_ptr.
         auto& p = pools_[i];
@@ -467,28 +451,6 @@ void TerrainStreamer::init(VulkanApp* app,
         }
         p = std::make_unique<ThreadPool>(workersPerCategory);
     }
-}
-
-void TerrainStreamer::requestMesh(StreamCategory category,
-                                  uint64_t chunkId,
-                                  int lod,
-                                  std::function<void(ChunkGPUBuffers&, UploadJob&)> generator) {
-    // Acquire the destination GPU slot on the MAIN thread (Vulkan allocation
-    // happens here, never on a worker). The worker only does CPU meshing.
-    ChunkGPUBuffers* slot = upload_.chunkPool().acquire(chunkId);
-
-    pools_[(size_t)category]->enqueueDetached(
-        [this, category, chunkId, lod, slot, generator]() {
-            UploadJob job;
-            job.category  = category;
-            job.chunkId   = chunkId;
-            job.lod       = lod;
-            job.chunkSlot = slot;
-            // CPU-only mesh generation (Tesselator / water SDF / brush system).
-            // Worker never touches Vulkan — it only fills `job.cpuData`.
-            generator(*slot, job);
-            upload_.enqueue(std::move(job));
-        });
 }
 
 void TerrainStreamer::destroy() {

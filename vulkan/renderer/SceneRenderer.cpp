@@ -318,7 +318,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
                   /*chunkVertexBytes*/ 2u << 20,
                   /*chunkIndexBytes*/  2u << 20,
                   /*stagingSlots*/     32,
-                  /*initialChunkSlots*/ 8,
                   /*workersPerCategory*/ 2);
 
     // Route solid/water IndirectRenderer incremental copies through the manager.

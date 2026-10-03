@@ -12,17 +12,16 @@
 namespace streaming {
 
 // Which subsystem produced a given upload. Keeping categories separate lets
-// solid / water / brush meshes be generated and streamed fully in parallel.
+// solid / water meshes be generated and streamed fully in parallel.
 enum class StreamCategory : uint8_t {
     Solid = 0,
     Water = 1,
-    Brush = 2,
-    Count = 3
+    Count = 2
 };
 
 // One GPU destination buffer plus the exact CPU bytes that must be copied into it.
-// dst is a device-local buffer whose handle was created on the MAIN thread
-// (ChunkBufferPool), so worker threads only ever touch `cpuData` (plain RAM).
+// dst is a device-local buffer whose handle was created on the MAIN thread,
+// so worker threads only ever touch `cpuData` (plain RAM).
 struct BufferUpload {
     Buffer        dst{};              // destination device-local buffer (EXCLUSIVE, graphics family)
     VkDeviceSize  dstOffset = 0;      // byte offset inside dst
@@ -34,8 +33,6 @@ struct BufferUpload {
 // thread, which copies `cpuData` into staging and records the transfer.
 struct UploadJob {
     StreamCategory category = StreamCategory::Solid;
-    uint64_t       chunkId  = 0;      // metadata for completion callback (swap into scene graph)
-    int            lod      = 0;
 
     // Scheduling priority: HIGHER uploads sooner. Terrain streaming typically
     // sets this to -distance² from the camera so the nearest chunks stream in
@@ -46,8 +43,7 @@ struct UploadJob {
     // One per destination buffer (typically: vertex buffer + index buffer).
     std::vector<BufferUpload> uploads;
 
-    // Identifies the ChunkBufferPool slot this job fills. The manager releases
-    // the slot back to the pool once the GPU transfer retires.
+    // Reserved slot pointer (always null; retained for source compatibility).
     void* chunkSlot = nullptr;
 
     // Invoked ONCE on the main thread when the GPU copy is complete. Use it to
