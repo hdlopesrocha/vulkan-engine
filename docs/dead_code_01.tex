@@ -1,0 +1,1362 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{array}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+% Long unbreakable \texttt{} paths are the main source of overfull boxes;
+% loosen line breaking instead of running into the margin.
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\file}[1]{\textsl{#1}}
+\newcommand{\sev}[1]{\textbf{#1}}
+
+\title{Dead Code Report 01: Vulkan Engine \\
+\large Uncalled Methods, Vestigial State, Orphan Files, and Duplicated Blocks}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report audits the Vulkan engine at commit \texttt{6ba38f1} (2026-10-02)
+for code that is never executed, state that is never read, files that are
+never included, and blocks that are written more than once. The analysis
+combines a linker-level scan of every project object file (symbols that never
+appear as a relocation target, which covers direct calls, function pointers,
+and vtables), class-qualified textual verification, a header-inclusion scan,
+a shader binding cross-check, and an $n$-gram duplicate-block detector.
+
+The headline result is \textbf{129 methods with zero call sites} (about
+1{,}374 body lines plus 145 declaration lines), a further \textbf{$\sim$4{,}500
+lines} that the first pass missed because of common method names, cascading
+dead callers, or entire dead files: renderer entry points, the
+\code{TextureArrayManager} legacy load path, the \code{World}/\code{Chunk}
+chunk-map API, legacy \code{Model3D}/\code{ModelInstance} classes, the
+widget/event/service graveyards (including a 16-method dead \code{RadialMenu}
+API and a settings panel whose controls are wired to nothing), and roughly
+twenty never-included files in \code{space/}, \code{sdf/}, \code{math/}, and
+\code{utils/} (including \code{HeightMapTif}, the only GDAL user, so
+\code{-lgdal} can be dropped). Add an entirely unused \code{FrameGraph}
+abstraction ($\sim$160 lines), a compiled-but-idle \code{ChunkBufferPool} that
+still allocates $\sim$32\,MiB of GPU buffers, two orphan headers, one event
+class that is handled but never published, one descriptor set that no shader
+reads, an allocator header that hard-defines \code{NDEBUG} and disables its
+own debug checks, and 25 duplicated code blocks of 12 or more significant
+lines ($\sim$600 lines). A conservative total is \textbf{5{,}000--6{,}500
+removable lines} before any behaviour changes, and the report closes with a
+staged, copy-pasteable prompt that deletes the safe tier first and refactors
+the duplication second.
+\end{abstract}
+
+\tableofcontents
+
+\section{Scope and Methodology}
+\label{sec:method}
+
+\textbf{Snapshot.} HEAD \texttt{6ba38f1} (\textit{presets: keep vegetation at
+full resolution in Minimal}), 2026-10-02. Roughly 64{,}700 lines of C++ across
+399 project headers/sources, excluding \code{third_party/}, \code{bin/}, and
+shaders. The release build (\code{make -j8 all}) completes with
+\textbf{zero compiler warnings} under \code{-Wall -Wshadow}, so dead code is
+not visible in the build log; it had to be found structurally.
+
+\textbf{Working tree.} The analysis ran against the working tree, which
+contains uncommitted work-in-progress: LOD changes in
+\file{vulkan/renderer/IndirectRenderer.cpp} and \file{shaders/indirect.comp},
+an unrelated \code{cloc} tweak in the Makefile, and the deletion of
+\file{docs/perf\_report\_01}--\file{14} and \file{docs/ref\_report\_01}.
+The IndirectRenderer findings were verified against this working tree, but
+they should be re-checked with class-qualified greps before deletion if that
+in-progress work moves further.
+
+\textbf{Techniques.}
+\begin{enumerate}
+    \item \textbf{Relocation scan.} For every project object file, the set of
+    defined global text symbols (\code{nm -f posix}) was diffed against every
+    relocation target (\code{objdump -r}) and undefined symbol across all
+    objects. A symbol that is defined but never a relocation target has no
+    direct call, no address-taken use, and no vtable/function-pointer entry
+    anywhere in the project. Vendored VMA internals in
+    \file{vulkan/VmaImpl.cpp} are excluded (they are third-party code and
+    single-TU local calls are invisible to this method).
+    \item \textbf{Class-qualified textual verification.} Each candidate was
+    re-checked with \code{grep -rn} over all \code{.cpp}/\code{.hpp} files,
+    distinguishing declarations, definitions, log strings, and calls. This
+    second pass also catches methods whose names are too common for the
+    relocation scan alone (e.g.\ \code{beginPass}) and cross-checks the
+    renderer audit.
+    \item \textbf{Header-inclusion scan.} Every project header was searched as
+    an \code{\#include} target in all other sources; zero-reference headers
+    were inspected manually.
+    \item \textbf{Shader binding cross-check.} Every
+    \code{vkCmdBindDescriptorSets} call was compared with the \code{set = N}
+    declarations in the shaders actually bound to that pipeline.
+    \item \textbf{Duplicate-block detector.} All significant lines (comments,
+    braces, and blank lines removed) were shingled into 10-line windows; every
+    window occurring at two or more locations was merged into maximal blocks;
+    blocks shorter than 12 lines were discarded. 25 clusters survived, 23 of
+    which are real (two are declaration/definition echoes).
+\end{enumerate}
+
+\textbf{Caveats.} Virtual overrides, ImGui callbacks, and
+\code{std::function} targets are retained unless a class-qualified search
+proves no call site exists. Public API that is deliberately kept for a
+planned migration is called out as \emph{intentional-but-uncalled} rather
+than dead. Line counts are body spans measured by brace matching; they are
+estimates, not exact patch sizes.
+
+\textbf{Prior audit.} The repository contains \file{tasks.txt} (descriptor
+audit, 2026-08-01). Its findings were re-verified at HEAD:
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Finding & Status at \texttt{6ba38f1} & Note \\
+\midrule
+A --- water set-1 material binds & \textbf{fixed} & \code{getMaterialDescriptorSet} is gone \\
+B --- ImpostorCapture set-2 wind set & \textbf{still present} & \S\ref{sec:features} \\
+C --- Solid depth pre-pass set-1 bind & \textbf{still present} & whole function now dead \\
+D --- \code{shadowPass} unused parameter & \textbf{fixed} & refactored to \code{ShadowRenderer} \\
+\bottomrule
+\end{tabular}
+\end{center}
+The analogous unused parameter survives in
+\code{ShadowRenderer::beginShadowPass} (\S\ref{sec:params}).
+
+\section{Summary of Findings}
+\label{sec:summary}
+
+\begin{center}\footnotesize
+\begin{longtable}{p{0.46\textwidth}rr}
+\toprule
+Category & Count & Est.\ lines \\
+\midrule
+\endfirsthead
+\toprule
+Category & Count & Est.\ lines \\
+\midrule
+\endhead
+\multicolumn{3}{l}{\textbf{A. Code that is never executed}}\\
+Uncalled methods, relocation scan + textual check & 129 & 1{,}374 \\
+Renderer methods hidden by common names (class-qualified verified) & 14 & $\sim$500 \\
+Core methods hidden by common names / cascading dead callers & 20+ & $\sim$700 \\
+Space/SDF/math dead methods inside live files & 25+ & $\sim$750 \\
+App/widget/event/service dead methods, members, paths & 60+ & $\sim$1{,}000 \\
+Dead classes and never-included files (20 clusters) & 20 & 1{,}150 \\
+Dead classes (\code{Model3D}, \code{ModelInstance}, \code{Chunk}) & 3 & 95 \\
+Unused \code{FrameGraph} abstraction + \code{emitNoOpBarrier} & 2 & $\sim$160 \\
+Header declarations of the above & --- & $\sim$300 \\
+Idle \code{ChunkBufferPool} + \code{TerrainStreamer::requestMesh} & 2 & 176 \\
+\midrule
+\multicolumn{3}{l}{\textbf{B. State and configuration that is never used}}\\
+Dead members / write-only fields (renderers + core) & 40+ & $\sim$180 \\
+Unused function parameters (renderers + core) & 8+ & call-site churn only \\
+Orphan headers never included & 4 & 100 \\
+Dead build rule reference (\code{utils/Camera.cpp}) & 1 & 1 \\
+Dead helper script & 1 & 20 \\
+\midrule
+\multicolumn{3}{l}{\textbf{C. Dead feature paths}}\\
+\code{PageNavigationEvent} (handled, never published) & 1 & 25 \\
+ImpostorCapture set-2 wind binding + accessors & 1 set & $\sim$25 \\
+Water set-1 layout slot (unread by all water shaders) & 1 slot & $\sim$5 \\
+Vestigial indirect cascade descriptor machinery & 1 subsystem & $\sim$80 \\
+\midrule
+\multicolumn{3}{l}{\textbf{D. Duplication}}\\
+Duplicate blocks $\ge 12$ significant lines & 25 & $\sim$600 \\
+\code{aspectFromFormat} copies (4) / transition mapping copies (3) & 7 & $\sim$110 \\
+ImGui descriptor-pool + init copies & 2 & $\sim$45 \\
+\midrule
+\textbf{Conservative total} & & \textbf{5{,}000--6{,}500} \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+Severity is judged by risk, not by size: whole-method deletions (Tier~1 in the
+prompt) are behaviour-preserving and low risk; removing a descriptor set from
+a pipeline layout changes a shader interface and must be validated
+(Tier~2); extraction refactors (Tier~3) touch live code and need the full
+validation pass.
+
+\section{Dead Functions}
+\label{sec:deadfuncs}
+
+\subsection{Methods With Zero Call Sites}
+\label{sec:zerocall}
+
+The relocation scan produced 129 methods whose symbol is never referenced by
+any project object, and whose name has no call-shaped textual use outside its
+declaration and definition. They span every subsystem. The largest are:
+
+\begin{center}\footnotesize
+\begin{tabular}{L{0.40\textwidth} L{0.50\textwidth} r}
+\toprule
+Location & Method & Lines \\
+\midrule
+\file{space/Octree.cpp:1763} & \code{Octree::exportToBson} & 155 \\
+\file{vulkan/VulkanApp.cpp:4302} & \code{VulkanApp::createTextureImageArray} & 141 \\
+\file{events/NunchukPublisher.cpp:71} & \code{NunchukPublisher::autoConnectLoop} & 84 \\
+\file{utils/BillboardManager.cpp} & \code{BillboardManager::loadFromFile} & 62 \\
+\file{vulkan/VulkanApp.cpp} & \code{VulkanApp::createDeviceLocalBufferExclusive} & 53 \\
+\file{space/Octree.cpp} & \code{Octree::exportToJson} & 51 \\
+\file{utils/AtlasManager.cpp} & \code{AtlasManager::loadFromFile} & 50 \\
+\file{math/Ray.cpp} & \code{Ray::intersectAabb} & 34 \\
+\file{services/BillboardService.cpp} & \code{BillboardService::createBillboardArrayTextures} & 25 \\
+\file{vulkan/renderer/SolidRenderer.cpp:506} & \code{SolidRenderer::renderDepthPrepass} & 24 \\
+\file{vulkan/VulkanApp.cpp} & \code{VulkanApp::runSingleTimeCommandsOnTransfer} & 22 \\
+\file{MyApp.cpp:4028} & \code{MyApp::updateBrushAnimation} & 22 \\
+\file{math/BoundingCube.cpp} & \code{BoundingCube::isFaceAdjacent} & 21 \\
+\file{vulkan/renderer/BrushRenderer.cpp} & \code{BrushRenderer::clearMeshes} & 19 \\
+\file{vulkan/renderer/VegetationRenderer.cpp} & \code{getDensityDebugCubes} & 19 \\
+\file{vulkan/VulkanApp.cpp} & \code{VulkanApp::createTextureImageView} & 19 \\
+\file{space/OctreeVisibilityChecker.cpp} & \code{OctreeVisibilityChecker::getOrder} & 18 \\
+\file{utils/BillboardOctreeSampler.cpp} & \code{collectGrassPositions} & 17 \\
+\file{math/Camera.cpp} & \code{Camera::rotateEuler} & 17 \\
+\file{utils/AtlasManager.cpp} & \code{AtlasManager::exportAllToString} & 17 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The complete 129-row table with definition line numbers is Appendix~\ref{app:full}.
+Grouped by subsystem, the pattern is consistent:
+
+\begin{itemize}
+    \item \textbf{Serialization that no longer has a consumer.}
+    \code{Octree::exportToJson}, \code{exportToBson},
+    \code{exportNodesSerialization}, \code{exportOctreeSerialization};
+    \code{AtlasManager} and \code{BillboardManager} \code{loadFromFile} /
+    \code{saveToFile} / \code{export*} families. Together these are roughly
+    400 lines of I/O code with no remaining caller.
+    \item \textbf{Superseded renderer entry points.} The renderer audit
+    (\S\ref{sec:renderer}) found a second wave of uncalled methods whose names
+    were too generic for the first pass: \code{SolidRenderer::beginPass} and
+    \code{endPass} (122 lines), four uncalled draw helpers, and
+    \code{WaterRenderer::render} (45 lines).
+    \item \textbf{Obsolete helpers and accessors.} \code{VulkanApp::findMemoryType},
+    \code{isResourceRegistered}, \code{setVSyncEnabled},
+    \code{keyCallback}; \code{VulkanResourceManager::addBuffer/addImage/
+    addDeviceMemory/addFramebuffer}; \code{EditableTexture} getters;
+    \code{Widget::getIcon/setIcon}; 16 \code{RadialMenu} setters;
+    \code{LightWidget} azimuth/elevation accessors.
+    \item \textbf{One-shot stubs.} \code{MyApp::setupScene} is a five-line stub
+    whose comment says it is ``kept for call-site compatibility'' but it has
+    no call sites; \code{MyApp::updateBrushAnimation} (22 lines) has none
+    either.
+\end{itemize}
+
+\subsection{Renderer Methods Missed by the Name-Agnostic Scan}
+\label{sec:renderer}
+
+The following were verified with class-qualified searches and are invisible
+to the first pass only because their method names also occur on other classes.
+
+\begin{center}\footnotesize
+\begin{tabular}{L{0.24\textwidth} L{0.30\textwidth} r L{0.30\textwidth}}
+\toprule
+Location & Method & Lines & Evidence \\
+\midrule
+\file{IndirectRenderer.cpp:1638} & \code{prepareCullWithDescriptor} & 275 & last caller was the deleted Solid360 path \\
+\file{IndirectRenderer.cpp:1976} & \code{drawIndirectOnly} (2 overloads) & 26 & only \code{drawPrepared}/\code{drawCascadeOnly} used \\
+\file{IndirectRenderer.cpp:3136} & \code{updateCascadeDescriptor} + refresh & 57 & refresh has no callers \\
+\file{IndirectRenderer.cpp:210} & \code{ensureFaceScratchBuffers} & 34 & read only inside dead \code{prepareCullWithDescriptor} \\
+\file{SolidRenderer.cpp:93} & \code{SolidRenderer::beginPass} & 71 & only decl+def \\
+\file{SolidRenderer.cpp:165} & \code{SolidRenderer::endPass} & 51 & only decl+def \\
+\file{SolidRenderer.cpp:566--612} & \code{drawColorExternal}, \code{drawBrushOverlay}, \code{drawBrushColor} & 34 & only decl+def \\
+\file{WaterRenderer.cpp:1669} & \code{WaterRenderer::render} & 45 & \code{renderPass}/\code{renderMainTargets} are the live paths \\
+\file{SceneRenderer.cpp:1897} & \code{processChunkSlotted} & 23 & only decl+def \\
+\file{SceneRenderer.cpp:2021} & \code{hasModelForNode} & 7 & only decl+def \\
+\file{RendererUtils.hpp:285} & \code{FrameGraph} + resource structs & 136 & no use outside its own TU \\
+\file{RendererUtils.hpp:251} & \code{emitNoOpBarrier} & 24 & only definition \\
+\file{VegetationRenderer.cpp:1157} & density debug trio & 52 & no widget calls them \\
+\file{DebugCubeRenderer.cpp:589} & \code{addCubeForNode}, \code{clearBoundingBoxes} & 8 & producer for \code{nodeDebugCubes} is gone \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\code{IndirectRenderer::prepareCullWithDescriptor} is the single largest
+deletion in the repository: 275 lines, plus the cascade descriptor state and
+face scratch buffers that only it reads (a further $\sim$80 lines). Its last
+caller was \code{Solid360Renderer}, which no longer exists; the remaining
+mentions are comments in \code{VulkanApp.cpp:5814} and header notes.
+\code{SolidRenderer::beginPass}/\code{endPass} are the old self-contained
+render-pass wrappers, superseded by the deferred pipeline helpers
+(\code{drawDepth}, \code{drawColor}, \code{drawColorExternal}).
+
+\subsection{Core Methods Missed by the Name-Agnostic Scan}
+\label{sec:coreextra}
+
+\begin{center}\footnotesize
+\begin{tabular}{L{0.24\textwidth} L{0.30\textwidth} r L{0.30\textwidth}}
+\toprule
+Location & Method & Lines & Why it was missed \\
+\midrule
+\file{TextureArrayManager.cpp:616} & \code{create} & 55 & common name \\
+\file{TextureArrayManager.cpp:678} & \code{updateLayerFromEditableMap} & 173 & called only by dead \code{updateLayerFromEditable} \\
+\file{VulkanApp.cpp:1777} & \code{submitCommandBufferAsync} (2-arg) & 7 & overload resolution \\
+\file{VulkanApp.cpp:1767} & \code{hasPendingCommandBuffers} & 6 & comment-only mention \\
+\file{VulkanApp.cpp:4135} & \code{findMemoryType} & 13 & common name (in table) \\
+\file{VulkanApp.cpp:201--229} & five ImGui C bridges & 29 & never referenced by the backend \\
+\file{VulkanApp.hpp:230,648,655} & \code{getCommandPool}, \code{getFrameCounter}, \code{getDepthImage} & 3 & inline \\
+\file{VulkanApp.hpp:467} & \code{createTextureImage} & 1 & declared, never defined \\
+\file{MaterialManager.hpp:25,35} & \code{count}, const \code{getBuffer} & 2 & overload \\
+\file{EditableTexture.cpp} & private \code{transitionImageLayout}, \code{copyBufferToImage} & 8 & common names \\
+\file{VertexBufferObject.cpp:4} & \code{destroy} & 7 & superseded by resource manager \\
+\file{UniformObject.hpp:32--42} & \code{setMaterial}, \code{printPassParams} & 11 & legacy UBO helpers \\
+\file{World.cpp:15--68} & \code{getOrCreateChunk}, \code{removeChunk}, \code{visitChunks}, \code{chunkCount}, \code{setDirtyCallback} & 54 & cascading from \code{markChunkDirty} \\
+\file{UploadManager.cpp:472} & \code{TerrainStreamer::requestMesh} & 21 & no call site; pools idle \\
+\file{ChunkBufferPool.cpp:56} & \code{acquire} (and the whole pool) & 155 & only caller is \code{requestMesh} \\
+\file{IndirectRenderer.cpp:3136} & \code{updateCascadeDescriptor} & 30 & called only by dead refresh \\
+\file{VegetationRenderer.cpp:1157} & \code{computeDensityFactor} & 18 & part of dead density trio \\
+\file{IndirectRenderer.cpp:1976} & \code{drawIndirectOnly} & 26 & never bound \\
+\file{IndirectRenderer.hpp:422} & \code{copyRTGeometrySpans} & 32 & no caller \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The largest of these, \code{TextureArrayManager::create} and
+\code{updateLayerFromEditableMap} (228 lines), are the pre-allocator load
+path; \code{MyApp} now uses \code{allocate()} plus \code{loadTriples()}.
+The \code{World} chunk-map API is a complete dead subsystem: every entry
+point is reachable only from \code{markChunkDirty}, which itself has no
+caller, so \code{chunkMap_} is always empty and no \code{Chunk} is ever
+constructed. \code{ChunkBufferPool} is compiled and initialized with eight
+slots, each two 2\,MiB buffers ($\sim$32\,MiB device-local) that are never
+acquired because the only \code{acquire()} caller is the dead
+\code{TerrainStreamer::requestMesh}. \code{Model3D} and
+\code{ModelInstance} (\file{vulkan/Model3D.*}, \file{vulkan/ModelInstance.*},
+47 lines) are compiled legacy wrappers with no includer.
+
+\textbf{Bug-adjacent finding.} \code{VulkanApp::pipelineLayout} is never
+assigned (the pipeline creation path uses a local variable), so
+\code{getPipelineLayout()} has always returned \code{VK_NULL_HANDLE}.
+Its only consumer, \code{IndirectRenderer::drawIndirectOnly}, ignores the
+parameter anyway, which is why nothing has broken. This should be fixed or
+the whole chain deleted, not silently left.
+
+\subsection{Space, SDF, Math, and Utils Methods Inside Live Files}
+\label{sec:spaceextra}
+
+\begin{center}\footnotesize
+\begin{tabular}{L{0.24\textwidth} L{0.30\textwidth} r L{0.30\textwidth}}
+\toprule
+Location & Method & Lines & Note \\
+\midrule
+\file{space/Octree.cpp:1316--1361} & seven \code{Octree::iterate*} wrappers & 50 & \code{LocalScene} calls \code{IteratorHandler} directly \\
+\file{space/IteratorHandler.cpp:206--360} & \code{iterate}, \code{iterateFlatIn}, \code{iterateFlatOut}, \code{iterateBFS} & 209 & reachable only from the dead wrappers \\
+\file{space/IteratorHandler.cpp:11--91} & \code{iterateParallelBFS} & 81 & also logically broken (waits on a CV that is never notified) \\
+\file{space/Octree.cpp:1363--1609} & \code{exportOctreeSerialization}, \code{exportToJson}, \code{exportToBson} & 226 & no callers; $\sim$206 lines are JSON/BSON emitters \\
+\file{space/OctreeNode.cpp:152} & \code{OctreeNode::compress} & 24 & self-recursion only \\
+\file{space/OctreeNode.cpp:66} & \code{setChildren(OctreeAllocator\&, uint[8])} & 11 & pointer overload is the live one \\
+\file{space/OctreeAllocator.cpp:29} & \code{getBlockSize}, \code{getAllocatedBlocksCount} & 12 & no callers \\
+\file{space/ThreadPool.cpp:78} & \code{threadCount()} & 4 & only dead \code{iterateParallelBFS} \\
+\file{math/Light.cpp:13--95} & \code{rotateEuler}, \code{computeLight*}, \code{getProjection}, \code{setTarget} & $\sim$60 & \code{ShadowParams} uses view/projection directly \\
+\file{math/BoundingCube.cpp:65--159} & six setters, \code{overlaps1D/X/Y/Z}, \code{isFaceAdjacent}, \code{isNeighbor}, \code{operator</==} & $\sim$75 & no call sites \\
+\file{math/Frustum.cpp:14--41,80--87} & \code{m\_points[8]}, \code{intersection<>}, \code{ij2k}, \code{crosses} & $\sim$40 & written eight times in the constructor, never read \\
+\file{math/RoadSpline.cpp:133--136} & \code{closestPoint}, \code{totalLength}, \code{center}, \code{boundingRadius} & $\sim$30 & plus the ctor work that feeds them \\
+\file{math/Geometry.cpp} & \code{calculateTangents} (no-op), \code{getNormal}, \code{getCenter} & 15 & no callers \\
+\file{sdf/SDF.cpp} & \code{opXor}, smooth ops, \code{distortPerlin}, \code{getAveragePosition2}, \code{getNormal}, \code{isSurfaceNet/2} & $\sim$110 & static helpers with no callers \\
+\file{sdf/SignedDistanceFunction.hpp} & \code{getType} + 15 overrides + \code{SdfType} & $\sim$15 & tags set in constructors, never read \\
+\file{sdf/SignedDistanceFunction.hpp} & \code{getLabel} + 15 overrides & $\sim$60 & zero call sites \\
+\file{sdf/RoadDistanceFunction.hpp} & seven accessors & 7 & no callers \\
+\file{utils/AtlasManager.cpp} & I/O family (\code{save/load/export}) + 6-arg \code{addTile} & $\sim$110 & \code{clear(int)} is live, do not remove \\
+\file{utils/BillboardManager.cpp} & sampling + I/O family & $\sim$140 & \code{clear()} is live, do not remove \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \code{SDF::opUnion} helper is called only by the dead \code{opXor}, and
+the \code{getLabel}/\code{getType} overrides are pure virtual API with no
+caller anywhere; removing them lets the \code{SdfType} enum shrink to
+nothing. \code{Frustum} computes a complete eight-corner point set in its
+constructor for a \code{crosses} test that no one calls; the plane tests are
+the only live path.
+
+\subsection{Dead Files and Classes}
+\label{sec:deadfiles}
+
+Twenty file clusters are never included or instantiated. All of them are
+compiled into both binaries by the Makefile wildcards, so they are not just
+dead weight in the tree --- they are built and linked on every invocation.
+
+\begin{center}\footnotesize
+\begin{longtable}{L{0.55\textwidth} L{0.34\textwidth} r}
+\toprule
+Files & What it is & Lines \\
+\midrule
+\endfirsthead
+\toprule
+Files & What it is & Lines \\
+\midrule
+\endhead
+\file{math/HeightMapTif.*} & GDAL-backed height map; \textbf{the only GDAL user} & 152 \\
+\file{space/MeshSimplifier.*} & vertex-cluster decimator, zero callers & 176 \\
+\file{utils/BillboardBaseModel.*} & six-plane base mesh, never instantiated & 129 \\
+\file{space/OctreeVisibilityChecker.*} & order-based visibility helper & 69 \\
+\file{math/SphereModel.*} & sphere mesh helper & 54 \\
+\file{math/Plane.*} & plane primitive (README lists it, code does not use it) & 53 \\
+\file{space/ConcurrentQueue.*} & MPSC queue used only by dead \code{iterateParallelBFS} & 52 \\
+\file{utils/SettingsFile.*} & settings I/O superseded by widgets & 51 \\
+\file{math/Tile.*} + \file{math/TileDraw.*} & tile drawing helpers & 42 \\
+\file{space/OctreeNodeCubeSerialized.*} & serialization only reached from dead export chain & 39 \\
+\file{utils/BillboardOctreeSampler.*} & grass sampler, zero callers & 33 \\
+\file{space/InstanceData.*} & template argument only for never-accessed layer members & 30 \\
+\file{space/StackFrame.*} + \file{StackFrameOut.hpp} & stack frames for dead flat iteration & 25 \\
+\file{space/ForwardingHandler.*} & forwarding handler, never included & 22 \\
+\file{space/InstanceBuilder.tpp} + \file{GeometryBuilder.tpp} + \file{InstanceBuilderHandler.tpp} & templates never included & 26 \\
+\file{utils/OctreeLayer.tpp} + \file{utils/NodeInfo.tpp} + \file{math/InstanceGeometry.tpp} + \file{math/Geometry.tpp} & layer/instance template cluster, never accessed & 91 \\
+\file{math/Brush3d.*} & legacy brush class (TODO stub), superseded by \code{utils/Brush3dManager} & 25 \\
+\file{math/Triple.hpp} & orphan template & 11 \\
+\file{vulkan/Model3D.*} + \file{vulkan/ModelInstance.*} & legacy wrappers & 47 \\
+\file{world/Chunk.hpp} & dead class behind the dead \code{World} chunk API & 48 \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\textbf{Dependency payoff.} \file{math/HeightMapTif.cpp} is the sole
+\code{<gdal/...>} consumer in the project, so deleting it also removes
+\code{-lgdal} from the link line and the GDAL install from
+\file{Makefile:481}. That is one fewer system dependency for every build.
+
+\subsection{Application, Widget, Event, and Service Code}
+\label{sec:appextra}
+
+\begin{center}\footnotesize
+\begin{tabular}{L{0.24\textwidth} L{0.30\textwidth} r L{0.30\textwidth}}
+\toprule
+Location & Method / member & Lines & Note \\
+\midrule
+\file{MyApp.cpp:3528} & \code{MyApp::setupScene} (stub) & 7 & no call sites \\
+\file{MyApp.cpp:4028} & \code{MyApp::updateBrushAnimation} + \code{brushAnimTime} & 27 & no call sites \\
+\file{MyApp.cpp:291--353} & \code{mixerWidgetPendingAdd}, \code{sceneLoading}, \code{descriptorSet}, \code{cubeCount} & 6 & write-only \\
+\file{VulkanApp.cpp:201--229} & five ImGui C bridges & 29 & backend never calls them \\
+\file{SettingsWidget.hpp:16--43} & all 14 settings getters & 14 & no callers \\
+\file{SettingsWidget.cpp:262} & \code{onDumpShadowDepth} button & 5 & callback never assigned \\
+\file{KeyboardPublisher.hpp:26--31} & speed setters/members & 8 & \code{update()} uses \code{cam.*} \\
+\file{GamepadPublisher.cpp:76} & \code{menuButtonPressed} + \code{menuPrev} & 8 & no callers \\
+\file{MousePublisher.cpp:29} & \code{deltaTime} parameter & 1 & \code{(void)} \\
+\file{Widget.cpp:13--19} & \code{toggle}, \code{getIcon}, \code{setIcon} (2) & 6 & no callers \\
+\file{WidgetManager.cpp:35} & \code{getWidget} & 9 & no callers \\
+\file{RenderTargetsWidget.hpp} & staging buffers, Solid360 cube-face arrays, dead UI & $\sim$100 & never allocated/sampled \\
+\file{QueueTimelineWidget.hpp:31,35} & \code{latestFrame\_}, \code{slots\_} & 2 & shadowed by locals \\
+\file{VulkanResourcesManagerWidget.cpp:46} & dead \code{names[]} + \code{(void)} & 5 & duplicated in \code{render()} \\
+\file{OctreeExplorerWidget.hpp:20,25} & \code{setCamera}, \code{octreeReady} & 3 & no readers \\
+\file{BillboardCreator.cpp:39,93} & \code{cleanup}, \code{getComposedAlbedoTexture}, \code{textureManager} & 17 & no callers \\
+\file{BillboardService.cpp:42} & \code{createBillboardArrayTextures}, \code{isInitialized} & 28 & no callers \\
+\file{TextureMixer.cpp:35--274} & empty \code{init}, \code{cleanup}, \code{setOnTextureGenerated}, \code{consumeLogs} & 35 & callback always null \\
+\file{TextureMixerWidget.hpp:18} & \code{diagLog} & 1 & never referenced \\
+\file{TextureViewerWidget.cpp:101} & \code{setTextureMixer} path & 9 & mixer always null \\
+\file{WaterWidget.hpp:12} & \code{getCurrentLayer} & 1 & no callers \\
+\file{Brush3dWidget.hpp:31--33} & \code{isDirty}, \code{clearDirty}, \code{getEntries} & 4 & no callers \\
+\file{SkyWidget.hpp:25--34} & nine forwarding accessors + local \code{SkyMode} & 12 & real type is \code{SkySettings::Mode} \\
+\file{LightWidget.hpp:32--36} & azimuth/elevation accessors & 5 & no callers \\
+\file{RadialMenu.hpp:50--97} & 16 dead setters/getters & 55 & configured in constructor \\
+\file{ImpostorService.hpp:41} & \code{billboardCount} & 1 & write-only \\
+\file{RadialMenuHandler.hpp:46--59} & \code{isHomePrev}, \code{isMiddleMousePrev}, \code{detectSelectBack}, \code{routeActiveRing}, \code{routeSubpageSelection}, \code{LabelRingKind::LIGHT} & 25 & two are declared but never defined \\
+\file{ControllerContext.hpp:69,199--200} & \code{id}, \code{activePageIndex}, \code{activeSubpageIndex} & 4 & only dead paths use them \\
+\file{ControllerManager.hpp:35--52} & \code{context(ControllerId)} (2 overloads) & 10 & no callers \\
+\file{ControllerParameters.hpp:26} & \code{wiimoteTransSpeed} & 1 & never read \\
+\file{ControllerInput.hpp:22} & \code{hsvDelta} & 8 & never written; COLOR branch unreachable \\
+\file{Event.hpp:14--21} + 16 overrides & \code{name()}, \code{make\_event} & 20 & no call site \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \code{SettingsWidget} block deserves special mention: all fourteen
+getters are uncalled, and the settings struct fields they read
+(\code{showDebugCubes}, \code{flipKeyboardRotation},
+\code{flipGamepadRotation}, \code{moveSpeed}, \code{angularSpeedDeg},
+\code{adaptiveTessellation}) are written by the UI and never consumed ---
+\file{MyApp.cpp:1068--1069} hardcodes \code{false} where the flip flags would
+go. The V-Sync checkbox is the same story: \code{Settings::vsyncEnabled} is
+written by the widget, never synchronized to \code{VulkanApp::vsyncEnabled},
+and \code{setVSyncEnabled} has no callers, so the \code{vsyncChanged}
+condition in \code{drawFrame} is permanently false.
+
+\textbf{Intentional-but-uncalled.} \code{SceneRenderer::bindSet0ForFrame} is
+explicitly documented as ``kept uncalled so the classic path stays valid''
+pending a descriptor-buffer cutover (\file{SceneRenderer.cpp:1108--1109}).
+It is excluded from the deletion tiers and should stay until that migration
+lands.
+
+\subsection{Cascading Deletions}
+\label{sec:cascade}
+
+Some functions are live only because a dead function calls them. Removing the
+root makes the callee dead too:
+\begin{itemize}
+    \item \code{SDF::opUnion} is called only by the dead \code{SDF::opXor};
+    the \code{opSmoothUnion/Subtraction/Intersection} family and
+    \code{SDF::isSurfaceNet/2}, \code{getAveragePosition2},
+    \code{distortPerlin} have no callers at all.
+    \item \code{ImpostorCapture::capture} is public and called only by
+    \code{captureAll}; it should become private rather than deleted.
+    \item \code{VegetationRenderer::getWindParamsDescSet*} exists only to
+    feed the vestigial ImpostorCapture set~2 (\S\ref{sec:features}).
+    \item \code{IndirectRenderer::updateCascadeDescriptor} is called only by
+    \code{refreshCascadeDescriptorsIfNeeded}, which itself has no callers.
+\end{itemize}
+
+\section{Dead Members, Parameters, and State}
+\label{sec:params}
+
+\subsection{Renderer Members and Parameters}
+\label{sec:rendermembers}
+
+The renderer audit found the following write-only or never-read state
+(class-qualified verified):
+
+\begin{itemize}
+    \item \code{ImpostorCapture} raw memory members \code{uboMemory},
+    \code{captureVertMem}, \code{captureInstMem}, \code{captureIdxMem},
+    \code{captureInvVPMemory} are assigned but never read (buffers are owned
+    by \code{VulkanResourceManager}); \code{getCaptureInvVP()} has no callers.
+    \item \code{BrushBackFaceRenderer::appPtr} is assigned but never read, and
+    its depth/pipeline getters have no callers; the Water back-face renderer's
+    equivalents are live.
+    \item \code{IndirectRenderer} vestigial cascade state:
+    \code{cascadeCullPipeline}, \code{cascadeCullLayout},
+    \code{cascadeCullDescSetLayout}, \code{cascadeCullDescPool},
+    \code{cascadeBindingVersion_}, \code{cascadeDescWrittenVersion_},
+    \code{cascadeDescIndirectBuffer}, \code{cascadeDescBoundsBuffer},
+    \code{cascadeDescApp}, \code{visibleLodsScratch},
+    \code{visibleLodsScratchFaces},
+    \code{cascadeCullFrames[].descSet} (never even allocated), and
+    \code{faceScratchSize_}.
+    \item \code{DebugCubeRenderer::nodeDebugCubes} is read by
+    \code{renderOverlay} but has no producer left, because
+    \code{addCubeForNode} is dead; \code{removeCubeForNode}/\code{clearCubes}
+    operate on an always-empty map.
+    \item Accessor graveyards: \code{SolidRenderer} pipeline getters,
+    \code{WaterRenderer::getWaterBodyImage/getWaterColumnImage} and the
+    layout get/set pairs, \code{BrushRenderer::getColorImage/getDepthImage},
+    \code{VegetationRenderer::isPreallocated}, \code{PostProcessRenderer::
+    isReady}, \code{ShadowRenderer::getShadowPipeline}, and roughly a dozen
+    \code{IndirectRenderer} getters (see the audit table).
+\end{itemize}
+
+Unused function parameters (all with a \code{(void)param;} guard and a live
+call site that still passes a value):
+
+\begin{center}
+\begin{tabular}{L{0.54\textwidth} L{0.38\textwidth}}
+\toprule
+Function & Unused parameter \\
+\midrule
+\code{ShadowRenderer::beginShadowPass} & \code{lightSpaceMatrix} \\
+\code{WaterRenderer::updateSceneTexturesBinding} & \code{frameIndex} \\
+\code{WaterRenderer::renderMainTargets} & \code{skyView} \\
+\code{VegetationRenderer::drawDepth/drawColor} & \code{viewProj} \\
+\code{VegetationRenderer::buildWindPushConstants} & \code{cameraPos} \\
+\code{ChunkBufferPool::acquire} & \code{chunkId} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Lifecycle overrides (\code{cleanup}, \code{destroyRenderTargets}) also carry
+unused \code{VulkanApp*} parameters; those are interface contracts and must
+not be removed.
+
+\subsection{Core, Streaming, and UBO State}
+\label{sec:corestate}
+
+\begin{itemize}
+    \item \code{VulkanApp::uploadTimeline}/\code{uploadTimelineValue} are
+    created, stored, and destroyed but never waited on; the frame timeline
+    and \code{UploadManager}'s own timeline do the actual synchronization.
+    \item \code{VulkanApp::transferPoolMutex} is never locked (the transfer
+    pool it guarded no longer exists); \code{imguiFps} is written every
+    frame and never read; the file-scope
+    \code{g\_asyncSlotSubmitQueue} is written twice and never read.
+    \item \code{StagingRingBuffer::cv\_} is notified but never waited on;
+    \code{ChunkBufferPool::ChunkGPUBuffers::vertexCapacity/indexCapacity} are
+    written but never read; \code{UploadJob::chunkId/lod} are written only by
+    the dead \code{requestMesh}.
+    \item \code{WaterParamsGPU} reserves nine fields that are written as
+    zeros and declared in \file{ubo.glsl} but never read
+    (\code{reserved3}, \code{causticExtraParams}, \code{waveZones},
+    \code{waveComponent2}, \code{waveBreaker}, and four
+    \code{region*Color} fields; $\sim$36 lines across C++ and GLSL).
+    \code{PerlinPushConstants::debugOutput} is never assigned and documented
+    as unused in \file{perlin\_noise.comp:43}.
+    \item \code{UploadManager::processUploads} begins with a loop that calls
+    \code{vkGetFenceStatus} and discards the result; the real completion loop
+    follows immediately after. \code{VulkanApp::isDeviceSuitable} computes
+    \code{extCount} and discards it. \code{pendingOld} in
+    \code{recordTransitionImageLayoutLayer} is assigned and never read.
+    \item \code{world/Chunk.hpp} is an entirely dead class
+    (\code{layer} and \code{version} are written and never read), and
+    \file{vulkan/Model3D.*}/\file{ModelInstance.*} are dead compiled
+    wrappers.
+\end{itemize}
+
+\subsection{Application, Widgets, Events, Math, and Space}
+\label{sec:othermembers}
+
+\textbf{Space and math write-only state.}
+\begin{itemize}
+    \item \code{Octree::chunks} and \code{Octree::mutex} are never
+    referenced; \code{shapeCounter}, \code{threadsCreated},
+    \code{prunedEmptyNodes}, and \code{prunedSolidNodes} are incremented or
+    reset in roughly fifteen places and never read, not even in logs.
+    \item \code{ThreadContext::cube} is stored by the constructor and never
+    read; \code{invokedCubeCalls} and \code{mutex} are never referenced.
+    \code{LocalScene::requestSDFCubes/requestBoundingBoxes} construct a
+    \code{ThreadContext} and capture it in lambdas that ignore it.
+    \item \code{ShapeArgs::DeferredChunkEvent} and \code{deferredEventsMutex}
+    describe a deferred-event vector that no longer exists.
+    \item \code{Frustum::m\_points} is written eight times in the constructor
+    and never read (the dead \code{crosses}/\code{intersection} path is its
+    only consumer).
+    \item \code{WaterParams::waveScale} is assigned in \file{MyApp.cpp:662}
+    and \file{:683} with the comment ``never uploaded'' and is never read.
+    \code{Geometry::center} is written only by \code{setCenter}, which is
+    called only from the dead instance/mesh-simplifier cluster.
+    \item \code{Allocator::deallocatedSet} sits inside an
+    \code{\#ifndef NDEBUG} block that the header's own
+    \code{\#define NDEBUG 1} makes unreachable (\S\ref{sec:orphans}).
+    \item \code{Scene.hpp}'s \code{VisibleNodeCallback} alias and
+    \code{LAYER\_UI} enum value have zero uses.
+    \item \code{Vertex::operator<} has no call sites (the robin map uses
+    \code{operator==} plus \code{VertexHasher}).
+\end{itemize}
+
+\textbf{Dead branches and locals.}
+\code{WaterBrush::paint} contains an if/else where both arms assign the same
+\code{water} value; \code{Tesselator::handle} has a constant-true
+\code{bool triplanar = true}; \code{ShadowParams::update} computes a local
+\code{res} and discards it; the brush paint overrides ignore their
+\code{vertex} parameter. None of these change behaviour when removed, but
+each is a sign the surrounding code stopped being exercised.
+
+\textbf{Widget and event state.}
+\begin{itemize}
+    \item \code{RenderTargetsWidget} carries the largest pile: six staging
+    fields that are only null-guarded in cleanup and never allocated,
+    \code{frameCounter}/\code{updateInterval}/\code{useGpuPreview} write-only,
+    the legacy Solid360 cube-face depth arrays that are allocated and never
+    sampled, and a dead debug block
+    (\file{RenderTargetsWidget.cpp:1286--1290}).
+    \item \code{QueueTimelineWidget::latestFrame\_} is assigned and never
+    read; \code{slots\_} is shadowed by a local constant.
+    \item \code{OctreeExplorerWidget::octreeReady} is never touched;
+    \code{setCamera} has no callers.
+    \item \code{TextureMixer::debugOutput} is written by its widget and never
+    read; the matching \code{PerlinPushConstants::debugOutput} is never
+    filled, and \code{editableLayer} becomes write-only once the dead preview
+    accessor goes.
+    \item \code{ImpostorService::billboardCount} is write-only;
+    \code{ControllerParameters::wiimoteTransSpeed} is never read;
+    \code{ControllerAction::hsvDelta} is never written, making the COLOR
+    branch of the controller input handler unreachable.
+    \item \code{ControllerContext::id()}, \code{activePageIndex()},
+    \code{activeSubpageIndex()}, and both
+    \code{ControllerManager::context(ControllerId)} overloads have no
+    callers; the first three are used only by the dead
+    \code{PageNavigationEvent} path.
+\end{itemize}
+
+\textbf{MyApp dead branches.} \file{MyApp.cpp:832} has an accidental
+\code{if (octreeExplorerWidget)} with an empty body that swallows the
+vegetation \code{init()} call on the next line (the widget is created
+unconditionally, so the guard is always true but meaningless).
+\file{MyApp.cpp:858--867} calls \code{setBillboardArrayTextures} before the
+bake, when the views are still \code{VK\_NULL\_HANDLE}; the later call at
+\file{MyApp.cpp:3684} re-wires correctly, so the first call is a provable
+no-op. \file{MyApp.cpp:504} computes
+\code{std::max(loadedTextureLayers, loadedTextureLayers + 1)}, which is always
+the second argument, so the following zero-check is dead. The GPU profiling
+readback still names shadow/cull/brush slots that no pass writes
+(\file{MyApp.cpp:1342--1349} says so in a comment); the fields and ImGui rows
+can be removed and the query pool shrunk.
+
+
+\section{Orphan Files and Build References}
+\label{sec:orphans}
+
+The dead-file table in \S\ref{sec:deadfiles} covers the source clusters. This
+section covers the remaining non-source items and build configuration:
+
+\begin{itemize}
+    \item \file{vulkan/ubo/PassUBO.hpp} --- \code{PassUBO<T>} is never
+    referenced; the header does not even include \code{Buffer} or
+    \code{VulkanApp}, so it cannot compile standalone. Delete the file.
+    \item \file{scripts/fetch\_imgui\_backends.sh} --- downloads ImGui 1.90.4
+    backend files into \code{third_party/imgui}, which is now a submodule
+    with those files vendored. Nothing (Makefile, README, CI) references the
+    script. Delete it.
+    \item \file{Makefile} ---
+    \code{SRCS := \$(filter-out utils/Camera.cpp,\$(SRCS))} filters a file
+    that does not exist (the camera lives in \file{math/Camera.cpp}). The
+    line is dead configuration; remove it or keep it with a comment if the
+    historical guard is still wanted.
+    \item \file{Makefile} --- \code{-lgdal} and the GDAL install in the
+    \code{install} target become dead once \file{math/HeightMapTif.*} is
+    removed.
+\end{itemize}
+
+\textbf{The \code{NDEBUG} landmine.} \file{space/Allocator.hpp:11} contains
+\code{\#define NDEBUG 1} at file scope. This header is included by
+\code{OctreeAllocator.hpp}, and therefore by \code{Octree.hpp},
+\code{LocalScene.cpp}, \code{Octree.cpp}, \code{OctreeNode.cpp},
+\code{ChildBlock.cpp}, \code{OctreeFile.cpp}, \code{OctreeNodeFile.cpp}, and
+\code{DebugCubeRenderer.cpp}. Consequences: (a) the allocator's own
+\code{\#ifndef NDEBUG} double-alloc/double-free/validity checks
+(\file{Allocator.tpp:15--17,40--67,104--108,131--135,145--156}) can never
+compile, so \code{deallocatedSet} is dead state; and (b) every including TU
+has \code{NDEBUG} defined even in a debug build, silently disabling
+\code{assert}s there. The release build hides this because the Makefile
+already passes \code{-DNDEBUG}. Remove the \code{\#define} and either delete
+the now-unreachable check blocks or let them compile in debug builds.
+
+\section{Dead Feature Paths}
+\label{sec:features}
+
+\subsection{\code{PageNavigationEvent} Is Handled but Never Published}
+\label{sec:pagenav}
+
+\file{events/PageNavigationEvent.hpp} defines a \code{PageNavigationEvent}
+carrying a \code{ControllerId} and an action (next/previous page/subpage).
+\code{ControllerContext::handle} implements it, \code{ControllerContext::
+applyAction} switches on it, and \code{ControllerManager} subscribes every
+context for it --- but no code ever constructs or publishes one. A repository
+grep for \code{make\_shared<PageNavigationEvent>} returns nothing; the
+keyboard publisher emits only camera, fullscreen, close, brush, and rebuild
+events. The class, its include, the \code{dynamic\_cast} branch, the
+\code{applyAction} switch, and the subscription comment are all dead. Either
+delete them, or wire the missing publisher (the keyboard comment in
+\file{MyApp.cpp:939} claims such events exist, so this is likely a lost
+feature rather than intentional removal). The report treats it as
+\emph{dead until proven otherwise}.
+
+\subsection{ImpostorCapture Binds a Set No Shader Reads}
+\label{sec:impostorwind}
+
+\file{ImpostorCapture.cpp:312--316} binds three descriptor sets
+(\code{uboDescSet}, \code{texDescSet}, \code{windParamsDescSet}), and
+\file{ImpostorCapture.cpp:669} puts the wind-params layout in slot~2 of the
+pipeline layout. The capture shaders use only set~0
+(\file{capture.vert:20}) and sets~0--1 (\file{capture.frag:17--27}); set~2 is
+unreachable from every stage. The binding, the layout slot, the readiness
+check at \file{ImpostorCapture.cpp:36--42}, the \code{sharedVegRenderer}
+member, and \code{VegetationRenderer::getWindParamsDescSetLayout/getWindParamsDescSet}
+exist only for this vestigial set. Cascade:
+\code{ImpostorCapture::init} drops its \code{VegetationRenderer*} parameter;
+\code{ImpostorService} stops passing it; the two
+\code{VegetationRenderer} accessors are deleted. This is the last surviving
+finding from \file{tasks.txt}.
+
+\subsection{Water Pipeline Layout Slot~1 Is Never Read}
+\label{sec:waterset1}
+
+Finding~A removed all set-1 bind sites, but the layout slot remains:
+\file{WaterRenderer.cpp:726--730} and \file{SceneRenderer.cpp:866--870} still
+place the material layout at index~1, while water shaders declare sets~0 and
+2 only. The slot is harmless (an unused layout entry) but misleading.
+Removing it means renumbering water set~2 to set~1 in
+\file{shaders/includes/water\_frag\_stage.glsl},
+\file{water\_tese.glsl}, and the \code{set=2} bind sites; the report marks
+this as optional/low priority because it touches shader interfaces.
+
+\subsection{Discarded Pipeline Layouts}
+\label{sec:discardedlayouts}
+
+Several renderer paths create a fresh \code{VkPipelineLayout} from the same
+\code{setLayouts} only to discard the handle with \code{(void)layout}:
+\file{SolidRenderer.cpp:287--301,306--320,371--380,403--411,415--423,432--440}
+(six layouts) and \file{ShadowRenderer.cpp:179--192} (one).
+\code{createGraphicsPipeline} always creates its own layout, so the fix is a
+\code{GraphicsPipelineConfig} flag or overload that accepts an existing
+\code{VkPipelineLayout}. This is waste rather than dead code, but it is the
+same family of cleanup.
+
+\subsection{No-Op Features and Latent Bugs}
+\label{sec:noop}
+
+Several dead paths are dead \emph{features}, where the UI still promises a
+behaviour that nothing implements. These deserve fixing or removing rather
+than silent deletion:
+
+\begin{itemize}
+    \item \textbf{V-Sync.} The settings checkbox writes
+    \code{Settings::vsyncEnabled}; nothing synchronizes it to
+    \code{VulkanApp::vsyncEnabled}; \code{setVSyncEnabled} has no caller; the
+    \code{vsyncChanged} branch in \code{drawFrame} is permanently false.
+    \item \textbf{Input speed and rotation flips.}
+    \code{Settings::moveSpeed}, \code{angularSpeedDeg},
+    \code{flipKeyboardRotation}, and \code{flipGamepadRotation} are UI-only;
+    the publishers use \code{cam.speed}/\code{cam.angularSpeedRad} and
+    \file{MyApp.cpp:1068--1069} hardcodes \code{false}.
+    \item \textbf{Adaptive tessellation and debug cubes.}
+    \code{Settings::adaptiveTessellation} and \code{showDebugCubes} have no
+    consumer; the dead cube API in \code{DebugCubeRenderer} is the other half
+    of the same removed feature.
+    \item \textbf{Shadow-depth dump button.}
+    \code{SettingsWidget::onDumpShadowDepth} is never assigned, so the button
+    does nothing.
+    \item \textbf{Shore foam.} \code{WaterParams::foamShoreAmount} is packed
+    into the water UBO and copied in \file{ubo.glsl}, but no shader samples
+    it; the widget slider is labelled ``legacy'' and is a no-op.
+    \item \textbf{Texture generation callback.}
+    \code{TextureMixer::setOnTextureGenerated} is never called, so
+    \code{onTextureGeneratedCallback} is always null and
+    \code{consumeLogs} has no consumer.
+    \item \textbf{Format-string bug in a live path.}
+    \file{widgets/components/ScrollablePicker.cpp:41} calls
+    \code{SetTooltipIfHovered("\%zu")} with no argument --- undefined
+    behaviour in a path that is not dead. Flagged here because it sits inside
+    the same widget cluster.
+\end{itemize}
+
+\section{Duplication Catalogue}
+\label{sec:duplication}
+
+The detector reports 25 clusters of $\ge 12$ significant duplicated lines.
+The following are the actionable ones; two raw hits are
+declaration/definition echoes and are ignored
+(\file{PostProcessRenderer.cpp:343} vs its header, and the two
+\code{createGraphicsPipeline} declarations in \file{VulkanApp.hpp:518/549}).
+
+\subsection{Image-Layout Transition Logic Is Triplicated}
+\label{sec:transitions}
+
+\code{VulkanApp} contains one static helper,
+\code{fillTransitionStagesAccess} (\file{VulkanApp.cpp:2437}), used by the
+recording paths (\code{recordTransitionImageLayoutLayer},
+\code{recordTransitionBatch}). The synchronous paths re-implement the same
+\code{effectiveOld}/\code{newLayout} if/else chain verbatim:
+\file{VulkanApp.cpp:3030--3086} inside \code{transitionImageLayoutLayer} and
+\file{VulkanApp.cpp:3148--3200} inside
+\code{transitionImageLayoutLayerForce}. The detector measures a 33-line
+identical block between the helper and the synchronous copy, and the two
+synchronous copies are near-identical too. Refactor: expose the helper to the
+class (it is a file-static), and have both synchronous variants build a
+\code{VkImageMemoryBarrier2}, call it, and submit --- or better, have them
+record via the existing \code{recordTransitionImageLayoutLayer} and submit
+once, which removes the copies entirely.
+
+\subsection{\code{aspectFromFormat} Exists Four Times}
+\label{sec:aspect}
+
+The format-to-aspect switch appears as a lambda at
+\file{VulkanApp.cpp:2140} (in \code{transitionImageLayout}), a static helper
+at \file{VulkanApp.cpp:2415}, and lambdas at \file{VulkanApp.cpp:2964} and
+\file{VulkanApp.cpp:3125}. Three copies should be replaced by the one static
+helper; roughly 30 lines disappear and future format additions only need one
+edit.
+
+\subsection{ImGui Descriptor Pool and Init Block Duplicated}
+\label{sec:imgui}
+
+\code{initImGui} (\file{VulkanApp.cpp:683--712}) and the swapchain-recreation
+path (\file{VulkanApp.cpp:5326--5370}) contain the same 11-entry
+\code{pool\_sizes} array, the same \code{VkDescriptorPoolCreateInfo}, and the
+same \code{ImGui\_ImplVulkan\_InitInfo} fill (26-line block measured between
+\file{VulkanApp.cpp:740} and \file{VulkanApp.cpp:5351}). Extract
+\code{createImGuiDescriptorPool()} and \code{fillImGuiInitInfo()}; the
+recreation path currently risks drifting from the initial one.
+
+\subsection{Back-Face Depth Pass Setup Duplicated}
+\label{sec:backface}
+
+\code{BrushBackFaceRenderer::renderBackFacePass}
+(\file{BrushBackFaceRenderer.cpp:142--170}) and
+\code{WaterBackFaceRenderer::renderBackFacePass}
+(\file{WaterBackFaceRenderer.cpp:386--414}) share a 27-line block: transition
+guard, \code{VkClearValue}, \code{VkRenderingAttachmentInfo},
+\code{VkRenderingInfo}, \code{vkCmdBeginRendering}, viewport, and scissor.
+Only the clear depth (0.0 vs 1.0) and the pipeline handle differ. Extract
+\code{RendererUtils::beginDepthOnlyPass(cmd, imageView, extent, clearDepth)}
+and a matching end helper.
+
+\subsection{DebugCubeRenderer Draws the Same Bounding-Box Stream Twice}
+\label{sec:debugcube}
+
+\code{DebugCubeRenderer::render} (\file{DebugCubeRenderer.cpp:315--372}) and
+\code{renderToOffscreen} (\file{DebugCubeRenderer.cpp:502--569}) duplicate the
+pipeline bind, descriptor bind, VBO/IBO bind, cull barrier,
+\code{vkCmdDrawIndexedIndirectCount}, and the unculled fallback (27-line
+block). Extract \code{drawBboxStream(cmd)}; the only intended difference is
+the render target.
+
+\subsection{Water End-of-Pass Barriers Duplicated}
+\label{sec:waterend}
+
+\code{endWaterGeometryPass} (\file{WaterRenderer.cpp:1337--1382}) and
+\code{endWaterGeometryPassWithDepth} (\file{WaterRenderer.cpp:1385--1445})
+build the same \code{BatchTransition} records for color, body, and column
+(23-line block); the second only appends the depth image. Extract a
+\code{buildWaterEndTransitions()} helper and let the depth variant append one
+entry.
+
+\subsection{Smaller Duplications Worth Folding}
+
+\begin{itemize}
+    \item \textbf{Sampler creation boilerplate} --- the same
+    \code{VkSamplerCreateInfo} fill appears in \file{EditableTexture.cpp:40}
+    and \file{DebugCubeRenderer.cpp:160} (14 lines), and in at least five more
+    renderers per the earlier duplication audit (recoverable from git
+    history). A
+    \code{RendererUtils::createSampler(app, filter, addressMode)} helper would
+    collapse them.
+    \item \textbf{IndirectRenderer binding flags} ---
+    \file{IndirectRenderer.cpp:2350--2385} lists 37 identical
+    \code{VK\_DESCRIPTOR\_BINDING\_UPDATE\_AFTER\_BIND\_BIT} entries
+    (35-line measured block). Replace with
+    \code{std::fill(std::begin(bindingFlags), std::end(bindingFlags), VK\_DESCRIPTOR\_BINDING\_UPDATE\_AFTER\_BIND\_BIT)}.
+    \item \textbf{Indirect command write} ---
+    \file{IndirectRenderer.cpp:2931--2946} and \file{:2980--2995} repeat the
+    map/write/unmap of a \code{VkDrawIndexedIndirectCommand} (16 lines);
+    extract \code{writeIndirectCommand(buffer, index, cmd)}.
+    \item \textbf{Cube face tables} ---
+    \file{ImpostorCapture.cpp:726} and \file{VegetationRenderer.cpp:1057}
+    define the same \code{baseTangents[6]} / \code{outwardDirs[4]} tables
+    (20 lines); move them to \file{RendererUtils.hpp}.
+    \item \textbf{\code{aspectFromFormat} in TextureArrayManager} ---
+    \file{TextureArrayManager.cpp:878--899} and \file{:937--958} repeat a
+    22-line layer-lookup body; fold into one private helper.
+    \item \textbf{TexturePreviewTabs} --- \file{TexturePreviewTabs.cpp:14--29}
+    and \file{:35--50} repeat the texture-ID lookup (16 lines).
+    \item \textbf{IteratorHandler} --- \file{IteratorHandler.cpp:42--58} and
+    \file{:116--132} repeat the order/iterate dispatch (17 lines).
+    \item \textbf{NunchukPublisher} --- \file{NunchukPublisher.cpp:407--418}
+    and \file{:626--637} repeat the joystick dead-zone block (12 lines).
+    \item \textbf{Column layout algorithm} ---
+    \file{SettingsWidget.cpp:469--480} and
+    \file{widgets/components/ColumnLayout.hpp:111--122} contain the same
+    best-height column packing (12 lines); one should call the other.
+    \item \textbf{Debug rendering info} ---
+    \file{DebugCubeRenderer.cpp:471--486} and
+    \file{DebugSDFRenderer.cpp:279--294} repeat the \code{VkRenderingInfo}
+    fill (16 lines); this is the same helper family as
+    \S\ref{sec:backface}.
+    \item \textbf{Water/Wireframe viewport state} ---
+    \file{WaterRenderer.cpp:823--835} and \file{WireframeRenderer.cpp:87--99}
+    repeat the \code{VkPipelineViewportStateCreateInfo} fill (13 lines).
+    \item \textbf{BillboardService destroy lambda} ---
+    \file{BillboardService.cpp:47--59} and \file{:80--92} define the same
+    \code{destroyArrayResources} lambda (15 lines); make it a private method.
+    \item \textbf{Backface/Brush vertex setup} ---
+    \file{BrushBackFaceRenderer.cpp:160} and \file{PostProcessRenderer.cpp:578}
+    repeat viewport/scissor setup (12 lines); same helper as
+    \S\ref{sec:backface}.
+    \item \textbf{SDF primitive boilerplate} --- ten primitive classes repeat
+    the same \code{check()} body (\code{return sphere.test(cube);}), the same
+    \code{isContained()} body, the same \code{BoundingSphere sphere} member,
+    and the same \code{getSphere} math for Sphere/Cylinder/Torus/Octahedron
+    ($\sim$90 lines). Hoist \code{check}/\code{isContained} into
+    \code{SignedDistanceFunction} and share \code{getSphere} where the math
+    matches.
+    \item \textbf{\code{OctreeFile} vs \code{OctreeNodeFile}} --- the two
+    recursive serializers repeat the same field packing, gzip read/write, and
+    chunk-name flow ($\sim$100 lines). One should own the recursion and the
+    other should delegate.
+    \item \textbf{\code{SDF.cpp} duplicate helpers} --- \code{distToSegment}
+    and \code{sdSegment} are the same math under two names, and the global
+    \code{faceOutward} duplicates a local lambda in \code{pyramid} (12
+    lines).
+    \item \textbf{SDF effect boilerplate} --- four effect classes define
+    empty out-of-line destructors and unused \code{getLabel()} overrides
+    (16 lines) that can be defaulted/deleted with the dead tag API.
+    \item \textbf{\code{BoundingBox}/\code{BoundingCube} setter families} ---
+    the same six setters exist in both classes; four per class are dead
+    (12 lines plus API surface).
+    \item \textbf{\code{OctreeNodeData} copy constructor} --- re-implements
+    the implicit member-wise copy (4 lines); \code{= default} is equivalent.
+    \item \textbf{\code{SettingsWidget} helpers} ---
+    \file{SettingsWidget.cpp:15--46} re-implements \code{ColSeparator},
+    \code{TooltipOnHover}, \code{LabelOnTop}, and \code{FieldLabel} that
+    already exist in \file{widgets/components/ColumnLayout.hpp:19--53}
+    ($\sim$35 lines).
+    \item \textbf{Texture preview tabs} ---
+    \file{TextureViewerWidget.cpp:71--222} repeats five nearly identical
+    preview-tab blocks (albedo/normal/height/roughness/AO) and
+    \file{TexturePreviewTabs.cpp:11--74} repeats three more ($\sim$185 lines
+    combined). Factor a \code{tab(name, map, pickerId)} helper or loop over
+    the map indices.
+    \item \textbf{Page-icon drawing} --- \file{GamepadWidget.cpp:13--32}
+    duplicates \file{ControllerParametersWidget.cpp:14--21,37--41}
+    ($\sim$20 lines).
+    \item \textbf{Queue name lists} --- \file{QueueTimelineWidget.cpp:51--63}
+    and \file{VulkanResourcesManagerWidget.cpp:46--49,115--117} repeat the
+    same queue-role names (10 lines); one shared table would keep them
+    consistent.
+    \item \textbf{MyApp async-pass boilerplate} --- the
+    \code{VkCommandBufferBeginInfo} + begin + error log sequence appears
+    roughly ten times in \file{MyApp.cpp}
+    (1565, 1661, 1780, 1812, 1832, 2140, 2292, 2331, 2360, 2793);
+    a \code{beginAsyncTask(name)} helper saves $\sim$60 lines.
+    \item \textbf{MyApp tessellation threads} --- the
+    \code{sceneProcessThread} + solid/water thread pair is repeated three
+    times (\file{MyApp.cpp:4065,4120,4140}); extract
+    \code{startTessellationThreads(label)} ($\sim$25 lines).
+    \item \textbf{MyApp material table} --- twelve repeated
+    \code{materials[N].mappingMode/...} blocks
+    (\file{MyApp.cpp:510--612}) are table-driven data; a loop over
+    \code{\{index, heightScale, reflection\}} removes $\sim$90 lines.
+    \item \textbf{MyApp brush SDF switch} --- \code{forEachBrushSDF} has ten
+    near-identical construct-and-maybe-sweep cases
+    (\file{MyApp.cpp:3707--3818}); a template helper
+    \code{applyPrimitive<T>(...)} removes $\sim$100 lines.
+    \item \textbf{MyApp water texture binding} --- the ten-image scene
+    texture gather is repeated for \code{waterDs}, \code{waterDs2}, and the
+    water-in-main path (\file{MyApp.cpp:2507--2513,2661--2696}); one
+    \code{gatherWaterViews(frame)} helper saves $\sim$35 lines.
+    \item \textbf{BillboardService destroy lambda} --- the same lambda
+    appears a third time in \file{BillboardService.cpp:22--25} as well as
+    \file{:47--57} and \file{:80--90}; make it a private method ($\sim$20
+    lines).
+\end{itemize}
+
+\section{Verification Plan}
+\label{sec:verify}
+
+Every tier of the prompt must end with the same checks; deletion of uncalled
+code is safe only after proving it is uncalled in \emph{both} build modes
+(the release build defines \code{USE\_IMGUI}; the debug build does not, so
+widget-only callers matter).
+
+\begin{enumerate}
+    \item \code{make -j8 all} --- app, server, and shaders build with zero
+    new warnings. The server target links the \code{space/}, \code{sdf/},
+    \code{math/}, and \code{utils/} objects, so it is the guard for those
+    deletions.
+    \item \code{make debug} --- proves the deleted symbols are not used by
+    debug-only paths.
+    \item \code{VULKAN\_GPU\_ASSISTED=1 make run-debug > logs/run.log 2>\&1}
+    --- confirm zero validation errors. Binding/layout changes
+    (\S\ref{sec:features}) must be checked here specifically: a set removed
+    from a pipeline layout but still bound, or vice versa, produces
+    \code{VUID-VkGraphicsPipelineCreateInfo-layout} /
+    descriptor-set-compatibility errors.
+    \item \code{grep -rn "symbol"} for each removed name --- must return only
+    comments, or nothing.
+    \item Visual smoke test: load a scene, toggle brush/water/vegetation,
+    confirm identical output. The duplication refactors
+    (\S\ref{sec:transitions}--\S\ref{sec:waterend}) are the only changes that
+    can alter behaviour, so they should be separate commits from the
+    deletions.
+\end{enumerate}
+
+\section{Proposed Prompt}
+\label{sec:prompt}
+
+The prompt below is written to be pasted directly into a coding agent running
+in this repository. It is staged so that each tier is independently
+buildable, and it forbids mixing behaviour-changing refactors with pure
+deletions. Adjust the ``Tier 1'' scope to the desired risk appetite.
+
+\begin{tcolorbox}[promptbox={Prompt --- Dead-code sweep and duplication refactor}]
+Goal: remove dead code and collapse duplication in the Vulkan engine at
+\code{/home/hdlrocha/vulkan-engine} without changing rendering behaviour.
+Read \code{AGENTS.md} first. Never modify \code{third_party/}. Do not mix
+tiers in one commit.
+
+Tier 1 --- pure deletions (no behaviour change). (a) Delete the never-included
+files and classes listed in \S3.5 of \code{docs/dead\_code\_01.tex}:
+\code{math/HeightMapTif.*} (then drop \code{-lgdal} from the Makefile and the
+GDAL install), \code{space/MeshSimplifier.*}, \code{utils/BillboardBaseModel.*},
+\code{space/OctreeVisibilityChecker.*}, \code{math/SphereModel.*},
+\code{math/Plane.*}, \code{space/ConcurrentQueue.*}, \code{utils/SettingsFile.*},
+\code{math/Tile.*}, \code{math/TileDraw.*},
+\code{space/OctreeNodeCubeSerialized.*}, \code{utils/BillboardOctreeSampler.*},
+\code{space/InstanceData.*}, \code{space/StackFrame.*}, \code{space/StackFrameOut.hpp},
+\code{space/ForwardingHandler.*}, the three \code{space/*.tpp} templates, the
+\code{utils/OctreeLayer.tpp}/\code{NodeInfo.tpp}/\code{math/*.tpp} cluster,
+\code{math/Brush3d.*}, \code{math/Triple.hpp}, \code{vulkan/Model3D.*},
+\code{vulkan/ModelInstance.*}, \code{world/Chunk.hpp},
+\code{vulkan/ubo/PassUBO.hpp}, and
+\code{scripts/fetch\_imgui\_backends.sh}. (b) Delete the methods in Appendix~A
+that have no call sites, plus the class-qualified extras in \S3.2--\S3.4:
+\code{IndirectRenderer::prepareCullWithDescriptor} (275 lines) and its
+cascade (\code{updateCascadeDescriptor}, \code{refreshCascadeDescriptorsIfNeeded},
+\code{ensureFaceScratchBuffers}, \code{drawIndirectOnly}), the whole
+\code{RendererUtils::FrameGraph} class and \code{emitNoOpBarrier},
+\code{SolidRenderer::beginPass/endPass} and the uncalled draw helpers,
+\code{WaterRenderer::render}, \code{SceneRenderer::processChunkSlotted},
+\code{hasModelForNode}, \code{TextureArrayManager::create} and
+\code{updateLayerFromEditableMap}, the \code{Octree}/\code{AtlasManager}/
+\code{BillboardManager}/\code{Light}/\code{BoundingCube}/\code{SDF}
+dead families, the seven \code{Octree::iterate*} wrappers and the
+\code{IteratorHandler} functions only they reach, the \code{RadialMenu}
+setters, \code{Widget::getIcon/setIcon}, \code{VulkanResourceManager} unused
+API, the ImGui C bridges, and the \code{MyApp::setupScene}/
+\code{updateBrushAnimation} stubs. (c) Delete the application/widget/event/
+service graveyard in \S3.6: VulkanApp's dead buffer/texture helpers
+($\sim$350 lines), MyApp's write-only members, all fourteen
+\code{SettingsWidget} getters, the publisher speed/flip members and
+\code{menuButtonPressed}, \code{Widget::toggle}, \code{WidgetManager::getWidget},
+the \code{RenderTargetsWidget} staging and Solid360 leftovers,
+\code{BillboardCreator::cleanup}, \code{BillboardService}'s dead pair,
+\code{TextureMixer}'s dead lifecycle methods, the \code{SkyWidget} forwarding
+accessors, \code{RadialMenuHandler}'s dead declarations,
+\code{ControllerManager::context}, \code{ControllerParameters::wiimoteTransSpeed},
+and \code{Event::name()}/\code{make\_event} plus their 16 overrides. Keep
+\code{SceneRenderer::bindSet0ForFrame} (documented as intentionally
+uncalled) and keep \code{AtlasManager::clear(int)}/\code{BillboardManager::clear()}
+(live). For each deletion, remove the header declaration too. Do not touch
+virtual overrides or lifecycle signatures.
+
+Tier 2 --- dead feature paths and state. (a) Delete \code{PageNavigationEvent}
+and its handling/subscription, or restore its publisher if the keyboard
+page-switch feature is wanted --- choose deletion and note it in the commit.
+(b) Remove ImpostorCapture's set-2 wind binding: drop \code{layouts[2]} and
+the third bound set, the readiness check, the \code{sharedVegRenderer}
+member, the \code{init(VegetationRenderer*)} parameter, and the
+\code{VegetationRenderer::getWindParamsDescSetLayout/getWindParamsDescSet}
+accessors, updating \code{ImpostorService} accordingly. (c) Delete the
+write-only members and unused \code{(void)} parameters listed in \S4,
+except lifecycle overrides. (d) Remove \code{\#define NDEBUG 1} from
+\code{space/Allocator.hpp} and let the allocator's debug checks compile
+again (verify with \code{make debug}); delete \code{deallocatedSet} only if
+the checks are intentionally retired. (e) Replace the discarded pipeline
+layouts with an overload of \code{createGraphicsPipeline} that accepts an
+existing \code{VkPipelineLayout}, or delete the \code{(void)} layout blocks
+if the layouts are truly redundant. (f) Resolve
+\code{VulkanApp::pipelineLayout}: either store the created layout in the
+member or delete the member, getter, and the parameter that ignores it.
+(g) For every no-op feature in \S6.5, choose fix or remove and say which:
+V-Sync, input speed/rotation settings, adaptive tessellation, debug cubes,
+the shadow-depth dump button, shore foam, and the texture-generation
+callback. Fix the \code{ScrollablePicker} format-string bug. Also repair
+\file{MyApp.cpp:832} (the accidental \code{if} swallowing vegetation init)
+and delete the provably no-op \code{setBillboardArrayTextures} call at
+\file{MyApp.cpp:858}.
+
+Tier 3 --- duplication refactors, one commit per item. (1) Make
+\code{fillTransitionStagesAccess} reusable and route
+\code{transitionImageLayoutLayer}/\code{Force} through the recording path so
+the triplicated if/else chain disappears; replace the three
+\code{aspectFromFormat} copies with the single static helper. (2) Extract
+ImGui pool/init helpers. (3) Add
+\code{RendererUtils::beginDepthOnlyPass/endDepthOnlyPass} and use it in both
+back-face renderers. (4) Extract the \code{DebugCubeRenderer} bounding-box
+stream draw. (5) Extract the water end-transition builder. (6) Replace the
+37-line \code{bindingFlags} literal with \code{std::fill}; extract
+\code{writeIndirectCommand}; share the cube face tables; fold the
+TextureArrayManager, TexturePreviewTabs, IteratorHandler, NunchukPublisher,
+ColumnLayout, sampler-creation, and viewport-state duplicates. (7) Hoist the
+SDF primitive \code{check}/\code{isContained}/\code{getSphere} boilerplate,
+deduplicate \code{OctreeFile}/\code{OctreeNodeFile}, and remove the
+\code{SDF.cpp} twin helpers. (8) Fold the widget/app duplication: the
+\code{SettingsWidget} helpers into \code{ColumnLayout}, the five
+\code{TextureViewerWidget} preview tabs, the three
+\code{TexturePreviewTabs} tabs, the page-icon helper, the queue-name table,
+and MyApp's async-pass boilerplate, tessellation-thread starter, material
+table, \code{forEachBrushSDF} switch, and water texture gather. (9)
+Optional: renumber water set 2 to set 1 and drop the unused layout slot only
+if the shader edits stay mechanical.
+
+After each tier run: \code{make -j8 all}, \code{make debug}, and
+\code{VULKAN\_GPU\_ASSISTED=1 make run-debug > logs/run.log 2>\&1}; confirm
+zero warnings and zero validation errors. Grep for every removed symbol to
+prove no call site remains. Report per tier: files changed, lines removed,
+build result, validation result, and any finding that turned out to be live
+(restore it and say why). Do not delete anything whose only evidence is a
+name match --- verify with class-qualified searches.
+\end{tcolorbox}
+
+\begin{tcolorbox}[promptbox={Prompt --- short form (for a quick sweep)}]
+Remove dead code in this repo, staged. First delete the never-included files
+in \code{docs/dead\_code\_01.tex} \S3.5 (including \code{math/HeightMapTif.*}
+and its \code{-lgdal} link flag), the orphan headers, the dead script, and
+every method listed in Appendix~A, plus
+\code{IndirectRenderer::prepareCullWithDescriptor}, the \code{FrameGraph}
+class, and the \code{World} chunk API, keeping
+\code{SceneRenderer::bindSet0ForFrame} and the live \code{clear()} methods.
+Then remove the ImpostorCapture wind set~2, \code{PageNavigationEvent}, the
+application/widget/event/service graveyard in \S3.6, the write-only state in
+\S4, and the \code{NDEBUG} define in \code{space/Allocator.hpp}, and decide
+fix-or-remove for each no-op feature in \S6.5. Finally deduplicate the
+VulkanApp transition mapping, \code{aspectFromFormat}, the ImGui pool/init
+block, the two back-face pass setups, the SDF primitive boilerplate, and the
+widget/MyApp repetition. Verify with \code{make -j8 all}, \code{make debug},
+and \code{VULKAN\_GPU\_ASSISTED=1 make run-debug}; no warnings, no validation
+errors, no behaviour change.
+\end{tcolorbox}
+
+\appendix
+\section{Complete Dead-Method Table}
+\label{app:full}
+
+Methods whose symbol is never a relocation target in any project object and
+whose name has no call-shaped textual use outside declaration/definition.
+``Lines'' is the brace-matched body span. Renderer methods verified by
+class-qualified search but hidden from the automated pass (common names) are
+in \S\ref{sec:renderer}.
+
+{\footnotesize
+\begin{longtable}{L{0.40\textwidth} L{0.48\textwidth} r}
+\toprule
+Location & Method & Lines \\
+\midrule
+\endfirsthead
+\toprule
+Location & Method & Lines \\
+\midrule
+\endhead
+\texttt{MyApp.cpp:3528} & \texttt{MyApp::setupScene} & 5 \\
+\texttt{MyApp.cpp:4028} & \texttt{MyApp::updateBrushAnimation} & 22 \\
+\texttt{events/GamepadPublisher.cpp:76} & \texttt{GamepadPublisher::menuButtonPressed} & 6 \\
+\texttt{events/NunchukPublisher.cpp:71} & \texttt{NunchukPublisher::autoConnectLoop} & 84 \\
+\texttt{events/RadialMenuHandler.cpp:172} & \texttt{RadialMenuHandler::detectSelectBack} & 16 \\
+\texttt{math/BoundingBox.cpp:48} & \texttt{BoundingBox::setMaxX} & 3 \\
+\texttt{math/BoundingBox.cpp:56} & \texttt{BoundingBox::setMaxZ} & 3 \\
+\texttt{math/BoundingBox.cpp:60} & \texttt{BoundingBox::setMinX} & 3 \\
+\texttt{math/BoundingBox.cpp:68} & \texttt{BoundingBox::setMinZ} & 3 \\
+\texttt{math/BoundingCube.cpp:118} & \texttt{BoundingCube::isNeighbor} & 10 \\
+\texttt{math/BoundingCube.cpp:133} & \texttt{BoundingCube::setMinX} & 3 \\
+\texttt{math/BoundingCube.cpp:141} & \texttt{BoundingCube::setMinZ} & 3 \\
+\texttt{math/BoundingCube.cpp:149} & \texttt{BoundingCube::setMaxX} & 3 \\
+\texttt{math/BoundingCube.cpp:157} & \texttt{BoundingCube::setMaxZ} & 3 \\
+\texttt{math/Geometry.cpp:7} & \texttt{Geometry::calculateTangents} & 6 \\
+\texttt{math/Light.cpp:54} & \texttt{Light::computeLightPosition} & 4 \\
+\texttt{math/Light.cpp:74} & \texttt{Light::computeLightProjectionMatrix} & 3 \\
+\texttt{math/Light.cpp:78} & \texttt{Light::computeLightSpaceMatrix} & 13 \\
+\texttt{math/Light.cpp:92} & \texttt{Light::setTarget} & 4 \\
+\texttt{math/Math.cpp:134} & \texttt{Math::randomFloat} & 5 \\
+\texttt{sdf/PyramidDistanceFunction.cpp:19} & \texttt{PyramidDistanceFunction::boundingSphereRadius} & 3 \\
+\texttt{sdf/SDF.cpp:166} & \texttt{SDF::getAveragePosition2} & 6 \\
+\texttt{sdf/SDF.cpp:244} & \texttt{SDF::opXor} & 3 \\
+\texttt{sdf/SDF.cpp:515} & \texttt{SDF::distortPerlin} & 6 \\
+\texttt{sdf/SDF.cpp:591} & \texttt{SDF::opSmoothUnion} & 4 \\
+\texttt{sdf/SDF.cpp:596} & \texttt{SDF::opSmoothSubtraction} & 4 \\
+\texttt{sdf/SDF.cpp:601} & \texttt{SDF::opSmoothIntersection} & 4 \\
+\texttt{sdf/SDF.cpp:692} & \texttt{SDF::isSurfaceNet} & 13 \\
+\texttt{sdf/SDF.cpp:706} & \texttt{SDF::isSurfaceNet2} & 3 \\
+\texttt{sdf/SignedDistanceEffect.cpp:11} & \texttt{SignedDistanceEffect::setFunction} & 3 \\
+\texttt{services/BillboardService.cpp:42} & \texttt{BillboardService::createBillboardArrayTextures} & 25 \\
+\texttt{services/TextureMixer.cpp:54} & \texttt{TextureMixer::setOnTextureGenerated} & 3 \\
+\texttt{services/TextureMixer.cpp:209} & \texttt{TextureMixer::consumeLogs} & 6 \\
+\texttt{space/Octree.cpp:1349} & \texttt{Octree::iterateParallel} & 5 \\
+\texttt{space/Octree.cpp:1349} & \texttt{Octree::iterateParallel} & 5 \\
+\texttt{space/Octree.cpp:1363} & \texttt{Octree::exportOctreeSerialization} & 12 \\
+\texttt{space/Octree.cpp:1376} & \texttt{Octree::exportNodesSerialization} & 7 \\
+\texttt{space/Octree.cpp:1403} & \texttt{Octree::exportToJson} & 51 \\
+\texttt{space/Octree.cpp:1455} & \texttt{Octree::exportToBson} & 155 \\
+\texttt{space/OctreeVisibilityChecker.cpp:33} & \texttt{OctreeVisibilityChecker::getOrder} & 18 \\
+\texttt{utils/AtlasManager.cpp:41} & \texttt{AtlasManager::getTiles} & 8 \\
+\texttt{utils/AtlasManager.cpp:62} & \texttt{AtlasManager::clearAll} & 3 \\
+\texttt{utils/AtlasManager.cpp:66} & \texttt{AtlasManager::exportToString} & 15 \\
+\texttt{utils/AtlasManager.cpp:82} & \texttt{AtlasManager::exportAllToString} & 17 \\
+\texttt{utils/AtlasManager.cpp:100} & \texttt{AtlasManager::saveToFile} & 9 \\
+\texttt{utils/AtlasManager.cpp:110} & \texttt{AtlasManager::saveAllToFile} & 9 \\
+\texttt{utils/AtlasManager.cpp:120} & \texttt{AtlasManager::loadFromFile} & 50 \\
+\texttt{utils/BillboardBaseModel.cpp:12} & \texttt{BillboardBaseModel::getVertices} & 3 \\
+\texttt{utils/BillboardBaseModel.cpp:16} & \texttt{BillboardBaseModel::getIndices} & 3 \\
+\texttt{utils/BillboardManager.cpp:9} & \texttt{BillboardManager::setCandidatePositions} & 4 \\
+\texttt{utils/BillboardManager.cpp:14} & \texttt{BillboardManager::setBillboardCount} & 4 \\
+\texttt{utils/BillboardManager.cpp:19} & \texttt{BillboardManager::getBillboardPositions} & 3 \\
+\texttt{utils/BillboardManager.cpp:67} & \texttt{BillboardManager::getBillboards} & 3 \\
+\texttt{utils/BillboardManager.cpp:163} & \texttt{BillboardManager::exportAll} & 11 \\
+\texttt{utils/BillboardManager.cpp:175} & \texttt{BillboardManager::saveToFile} & 7 \\
+\texttt{utils/BillboardManager.cpp:183} & \texttt{BillboardManager::loadFromFile} & 62 \\
+\texttt{utils/BillboardOctreeSampler.cpp:4} & \texttt{BillboardOctreeSampler::collectGrassPositions} & 17 \\
+\texttt{vulkan/EditableTexture.cpp:99} & \texttt{EditableTexture::setPixelGray} & 8 \\
+\texttt{vulkan/EditableTexture.cpp:148} & \texttt{EditableTexture::getView} & 1 \\
+\texttt{vulkan/EditableTexture.cpp:149} & \texttt{EditableTexture::getSampler} & 1 \\
+\texttt{vulkan/EditableTexture.cpp:151} & \texttt{EditableTexture::getDirty} & 1 \\
+\texttt{vulkan/EditableTexture.cpp:154} & \texttt{EditableTexture::getBytesPerPixel} & 1 \\
+\texttt{vulkan/EditableTexture.cpp:161} & \texttt{EditableTexture::getTextureImage} & 8 \\
+\texttt{vulkan/TextureArrayManager.cpp:672} & \texttt{TextureArrayManager::updateLayerFromEditable} & 3 \\
+\texttt{vulkan/VulkanApp.cpp:405} & \texttt{VulkanApp::keyCallback} & 5 \\
+\texttt{vulkan/VulkanApp.cpp:832} & \texttt{VulkanApp::setVSyncEnabled} & 6 \\
+\texttt{vulkan/VulkanApp.cpp:1210} & \texttt{VulkanApp::runSingleTimeCommandsOnTransfer} & 7 \\
+\texttt{vulkan/VulkanApp.cpp:3423} & \texttt{VulkanApp::createTextureImageArray} & 141 \\
+\texttt{vulkan/VulkanApp.cpp:3565} & \texttt{VulkanApp::createTextureImageView} & 19 \\
+\texttt{vulkan/VulkanApp.cpp:4135} & \texttt{VulkanApp::findMemoryType} & 12 \\
+\texttt{vulkan/VulkanApp.cpp:4251} & \texttt{VulkanApp::isResourceRegistered} & 5 \\
+\texttt{vulkan/VulkanApp.cpp:4354} & \texttt{VulkanApp::createDeviceLocalBufferExclusive} & 53 \\
+\texttt{vulkan/VulkanResourceManager.cpp:14} & \texttt{VulkanResourceManager::addDeviceMemory} & 9 \\
+\texttt{vulkan/VulkanResourceManager.cpp:24} & \texttt{VulkanResourceManager::addImage} & 9 \\
+\texttt{vulkan/VulkanResourceManager.cpp:68} & \texttt{VulkanResourceManager::addFramebuffer} & 9 \\
+\texttt{vulkan/VulkanResourceManager.cpp:78} & \texttt{VulkanResourceManager::addBuffer} & 9 \\
+\texttt{vulkan/VulkanResourceManager.cpp:225} & \texttt{VulkanResourceManager::removeImageVma} & 11 \\
+\texttt{vulkan/VulkanResourceManager.cpp:238} & \texttt{VulkanResourceManager::removeShaderModule} & 1 \\
+\texttt{vulkan/VulkanResourceManager.cpp:247} & \texttt{VulkanResourceManager::getDeviceMemoryMap} & 1 \\
+\texttt{vulkan/VulkanResourceManager.cpp:259} & \texttt{VulkanResourceManager::getSemaphoreMap} & 1 \\
+\texttt{vulkan/VulkanResourceManager.cpp:260} & \texttt{VulkanResourceManager::getFenceMap} & 1 \\
+\texttt{vulkan/VulkanResourceManager.cpp:261} & \texttt{VulkanResourceManager::getCommandPoolMap} & 1 \\
+\texttt{vulkan/renderer/BrushRenderer.cpp:157} & \texttt{BrushRenderer::clearMeshes} & 19 \\
+\texttt{vulkan/renderer/DebugCubeRenderer.cpp:589} & \texttt{DebugCubeRenderer::addCubeForNode} & 4 \\
+\texttt{vulkan/renderer/DebugCubeRenderer.cpp:619} & \texttt{DebugCubeRenderer::clearBoundingBoxes} & 4 \\
+\texttt{vulkan/renderer/IndirectRenderer.cpp:2020} & \texttt{IndirectRenderer::getMeshInfo} & 7 \\
+\texttt{vulkan/renderer/IndirectRenderer.cpp:3120} & \texttt{IndirectRenderer::destroyCascadeCull} & 15 \\
+\texttt{vulkan/renderer/IndirectRenderer.cpp:3186} & \texttt{IndirectRenderer::refreshCascadeDescriptorsIfNeeded} & 8 \\
+\texttt{vulkan/renderer/RendererUtils.cpp:22} & \texttt{RendererUtils::FrameGraph::addPass} & 6 \\
+\texttt{vulkan/renderer/SceneRenderer.cpp:2021} & \texttt{SceneRenderer::hasModelForNode} & 7 \\
+\texttt{vulkan/renderer/SolidRenderer.cpp:506} & \texttt{SolidRenderer::renderDepthPrepass} & 24 \\
+\texttt{vulkan/renderer/SolidRenderer.cpp:566} & \texttt{SolidRenderer::drawColorExternal} & 12 \\
+\texttt{vulkan/renderer/SolidRenderer.cpp:590} & \texttt{SolidRenderer::drawBrushOverlay} & 10 \\
+\texttt{vulkan/renderer/SolidRenderer.cpp:601} & \texttt{SolidRenderer::drawBrushColor} & 12 \\
+\texttt{vulkan/renderer/VegetationRenderer.cpp:1176} & \texttt{VegetationRenderer::getDensityDebugCubes} & 19 \\
+\texttt{vulkan/renderer/VegetationRenderer.cpp:1196} & \texttt{VegetationRenderer::getAverageDensityFactor} & 18 \\
+\texttt{vulkan/renderer/WaterRenderer.cpp:582} & \texttt{WaterRenderer::getWaterBodyLayout} & 4 \\
+\texttt{vulkan/renderer/WaterRenderer.cpp:587} & \texttt{WaterRenderer::setWaterBodyLayout} & 3 \\
+\texttt{vulkan/renderer/WaterRenderer.cpp:591} & \texttt{WaterRenderer::getWaterColumnLayout} & 4 \\
+\texttt{vulkan/renderer/WaterRenderer.cpp:596} & \texttt{WaterRenderer::setWaterColumnLayout} & 3 \\
+\texttt{widgets/BillboardCreator.cpp:93} & \texttt{BillboardCreator::getComposedAlbedoTexture} & 4 \\
+\texttt{widgets/LightWidget.cpp:118} & \texttt{LightWidget::getAzimuth} & 1 \\
+\texttt{widgets/LightWidget.cpp:119} & \texttt{LightWidget::getElevation} & 1 \\
+\texttt{widgets/LightWidget.cpp:121} & \texttt{LightWidget::setAzimuth} & 1 \\
+\texttt{widgets/LightWidget.cpp:122} & \texttt{LightWidget::setElevation} & 1 \\
+\texttt{widgets/RadialMenu.cpp:25} & \texttt{RadialMenu::SetDeadZoneRadius} & 1 \\
+\texttt{widgets/RadialMenu.cpp:26} & \texttt{RadialMenu::SetInnerRadius} & 1 \\
+\texttt{widgets/RadialMenu.cpp:27} & \texttt{RadialMenu::SetOuterRadius} & 1 \\
+\texttt{widgets/RadialMenu.cpp:28} & \texttt{RadialMenu::SetRingSpacing} & 1 \\
+\texttt{widgets/RadialMenu.cpp:29} & \texttt{RadialMenu::SetTextSize} & 1 \\
+\texttt{widgets/RadialMenu.cpp:31} & \texttt{RadialMenu::SetHoverColor} & 1 \\
+\texttt{widgets/RadialMenu.cpp:32} & \texttt{RadialMenu::SetSelectedColor} & 1 \\
+\texttt{widgets/RadialMenu.cpp:33} & \texttt{RadialMenu::SetBackgroundColor} & 1 \\
+\texttt{widgets/RadialMenu.cpp:34} & \texttt{RadialMenu::SetOutlineColor} & 1 \\
+\texttt{widgets/RadialMenu.cpp:35} & \texttt{RadialMenu::SetSliderFillColor} & 1 \\
+\texttt{widgets/RadialMenu.cpp:36} & \texttt{RadialMenu::SetSliderTrackColor} & 1 \\
+\texttt{widgets/RadialMenu.cpp:98} & \texttt{RadialMenu::ClearRings} & 1 \\
+\texttt{widgets/RadialMenu.cpp:172} & \texttt{RadialMenu::GetHoveredLabelItem} & 8 \\
+\texttt{widgets/RadialMenu.cpp:181} & \texttt{RadialMenu::GetHoveredLabelTextItem} & 8 \\
+\texttt{widgets/RadialMenu.cpp:198} & \texttt{RadialMenu::SetHSVSliderValue} & 5 \\
+\texttt{widgets/RadialMenu.cpp:218} & \texttt{RadialMenu::SetCenterLabels} & 4 \\
+\texttt{widgets/Widget.cpp:17} & \texttt{Widget::getIcon} & 1 \\
+\texttt{widgets/Widget.cpp:18} & \texttt{Widget::setIcon} & 1 \\
+\texttt{widgets/Widget.cpp:18} & \texttt{Widget::setIcon} & 1 \\
+\texttt{widgets/WidgetManager.cpp:35} & \texttt{WidgetManager::getWidget} & 9 \\
+\texttt{world/World.cpp:28} & \texttt{World::getChunk} & 5 \\
+\texttt{world/World.cpp:28} & \texttt{World::getChunk} & 5 \\
+\texttt{world/World.cpp:48} & \texttt{World::removeAllChunks} & 7 \\
+\texttt{world/World.cpp:56} & \texttt{World::markChunkDirty} & 13 \\
+\bottomrule
+\end{longtable}}
+
+\end{document}
