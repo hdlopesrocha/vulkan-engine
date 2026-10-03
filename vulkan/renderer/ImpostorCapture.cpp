@@ -32,8 +32,15 @@ void ImpostorCapture::generateFibonacciDirs() {
 
 // ─────────────────────────────────────────── Public API ─────────────────────
 
-void ImpostorCapture::init(VulkanApp* app) {
+void ImpostorCapture::init(VulkanApp* app, VegetationRenderer* vegRenderer) {
     if (!app || initDone) return;
+    if (!vegRenderer ||
+        vegRenderer->getWindParamsDescSetLayout() == VK_NULL_HANDLE ||
+        vegRenderer->getWindParamsDescSet() == VK_NULL_HANDLE) {
+        fprintf(stderr, "[ImpostorCapture] init: vegetation renderer wind params not ready, capture disabled\n");
+        return;
+    }
+    sharedVegRenderer = vegRenderer;
 
     generateFibonacciDirs();
 
@@ -303,11 +310,11 @@ void ImpostorCapture::capture(VulkanApp* app,
             else vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, capturePipeline);
 
             const uint32_t dynOffset = static_cast<uint32_t>(viewIdx * uboStride);
-            VkDescriptorSet sets[2] = { uboDescSet, texDescSet };
+            VkDescriptorSet sets[3] = { uboDescSet, texDescSet, sharedVegRenderer->getWindParamsDescSet() };
             if (cmdState) cmdState->bindGraphicsDescriptorSets(cb,
-                                    capturePipelineLayout, 0, 2, sets, 1, &dynOffset);
+                                    capturePipelineLayout, 0, 3, sets, 1, &dynOffset);
             else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    capturePipelineLayout, 0, 2, sets, 1, &dynOffset);
+                                    capturePipelineLayout, 0, 3, sets, 1, &dynOffset);
 
             vkCmdPushConstants(cb, capturePipelineLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -660,10 +667,10 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pcRange.size       = sizeof(CapturePC);
 
-    VkDescriptorSetLayout layouts[2] = { uboDescSetLayout, texDescSetLayout };
+    VkDescriptorSetLayout layouts[3] = { uboDescSetLayout, texDescSetLayout, sharedVegRenderer->getWindParamsDescSetLayout() };
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.setLayoutCount         = 2;
+    layoutInfo.setLayoutCount         = 3;
     layoutInfo.pSetLayouts            = layouts;
     layoutInfo.pushConstantRangeCount = 1;
     layoutInfo.pPushConstantRanges    = &pcRange;
@@ -800,6 +807,7 @@ void ImpostorCapture::allocateDescSets(VulkanApp* app) {
                      uboBuffer, 0, sizeof(CaptureUBO))
         .flush();
     // Texture descriptor is written in updateTexDescSet() at capture time.
+    // Set=2 wind params descriptor is shared with the VegetationRenderer.
 }
 
 void ImpostorCapture::updateTexDescSet(VkDevice device,
