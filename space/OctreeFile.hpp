@@ -11,8 +11,4 @@ public:
     void readFromStream(std::istream& in);
     void save(std::string baseFolder, float chunkSize);
     void load(std::string baseFolder, float chunkSize);
-    OctreeNode * loadRecursive(int i, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename_, const BoundingCube &cube, std::string baseFolder);
-    uint saveRecursive(OctreeNode * node, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename_, const BoundingCube &cube, std::string baseFolder);
 };
-
- 

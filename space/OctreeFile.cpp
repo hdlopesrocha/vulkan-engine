@@ -2,13 +2,11 @@
 #include "OctreeSerialized.hpp"
 #include "Octree.hpp"
 #include "OctreeNode.hpp"
-#include "OctreeAllocator.hpp"
-#include "ChildBlock.hpp"
 #include "OctreeNodeFile.hpp"
-#include "../sdf/SDF.hpp"
-#include "../math/BrushMode.hpp"
 #include "../math/Math.hpp"
-#include <unordered_map>
+#include <fstream>
+#include <sstream>
+#include <iostream>
 
 
 
@@ -36,7 +34,7 @@ void OctreeFile::readFromStream(std::istream& in) {
 		return;
 	}
 	// Force full-tree recursive reconstruction from in-stream node array.
-	tree->root = loadRecursive(0, &nodes, 0.0f, filename, *tree, "");
+	tree->root = OctreeNodeFile::loadSubtree(tree, NULL, 0, *tree, &nodes, true, 0.0f, filename, "");
 }
 
 void OctreeFile::writeToStream(std::ostream& out) {
@@ -44,7 +42,7 @@ void OctreeFile::writeToStream(std::ostream& out) {
 
 	if (tree->root != nullptr) {
 		// Force full-tree recursive flattening into the in-stream node array.
-		saveRecursive(tree->root, &nodes, 0.0f, filename, *tree, "");
+		OctreeNodeFile::saveSubtree(tree, tree->root, &nodes, true, 0.0f, filename, *tree, "");
 	}
 
 	OctreeSerialized octreeSerialized;
@@ -59,51 +57,6 @@ void OctreeFile::writeToStream(std::ostream& out) {
 		out.write(reinterpret_cast<const char*>(nodes.data()), nodes.size() * sizeof(OctreeNodeSerialized));
 	}
 }
-
-std::string getChunkName(const BoundingCube &cube) {
-	glm::vec3 p = cube.getMin();
-	return std::to_string(cube.getLengthX()) + "_" + std::to_string(p.x) + "_" +  std::to_string(p.y) + "_" + std::to_string(p.z);
-}
-
-OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename_, const BoundingCube &cube, std::string baseFolder) {
-	OctreeNodeSerialized serialized = nodes->at(i);
-	glm::vec3 position = SDF::getPosition(serialized.sdf, cube);
-	glm::vec3 normal = SDF::getNormalFromPosition(serialized.sdf, cube, position);
-	Vertex vertex(position, normal, glm::vec2(0), serialized.brushIndex);
-	vertex.hsv = serialized.hsv;
-
-	OctreeNode * node = tree->allocator->allocate()->init(vertex);
-	node->setSDF(serialized.sdf);
-	node->bits = serialized.bits;
-	node->setLod(serialized.lod);
-	node->setChunkLod(serialized.chunkLod);
-
-	bool isLeaf = true;
-	for(int j=0; j < 8; ++j) {
-		if(serialized.children[j] != 0) {
-			isLeaf = false;
-			break;
-		}
-	}
-	ChildBlock * block = isLeaf ? NULL : node->allocate(*tree->allocator)->init();
-	if(cube.getLengthX() > chunkSize) {
-		for(int j=0 ; j <8 ; ++j){
-			int index = serialized.children[j];
-			if(index != 0) {
-				BoundingCube c = cube.getChild(j);
-				block->set(j , loadRecursive(index, nodes, chunkSize, filename_, c,baseFolder), *tree->allocator);
-			}
-		}
-	} else {
-		std::string chunkName = getChunkName(cube);
-			OctreeNodeFile * file = new OctreeNodeFile(tree, node, baseFolder + "/" + filename_+ "_" + chunkName + ".bin");
-		file->load(baseFolder, cube);
-		delete file;
-	}
-
-	return node;
-}
-
 
 void OctreeFile::load(std::string baseFolder, float chunkSize) {
 	std::string filePath = baseFolder + "/" + filename+".bin";
@@ -131,7 +84,7 @@ void OctreeFile::load(std::string baseFolder, float chunkSize) {
 		tree->setMin(octreeSerialized.min);
 		tree->setLength(octreeSerialized.length);
 		tree->chunkSize = octreeSerialized.chunkSize;
-		tree->root = loadRecursive(0,&nodes, chunkSize, filename, *tree, baseFolder);
+		tree->root = OctreeNodeFile::loadSubtree(tree, NULL, 0, *tree, &nodes, true, chunkSize, filename, baseFolder);
 	}
 
     file.close();
@@ -139,41 +92,8 @@ void OctreeFile::load(std::string baseFolder, float chunkSize) {
 	std::cout << "OctreeFile::load('" << filePath <<"') Ok!" << std::endl;
 }
 
-
-uint OctreeFile::saveRecursive(OctreeNode * node, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename_, const BoundingCube &cube, std::string baseFolder) {
-	if(node!=NULL) {
-		OctreeNodeSerialized n = OctreeNodeSerialized();
-		n.brushIndex = node->vertex.brushIndex;
-		n.hsv = node->vertex.hsv;
-		n.bits = node->bits;
-		SDF::copySDF(node->sdf, n.sdf);
-		n.lod = node->getLod();
-		n.chunkLod = node->getChunkLod();
-
-		uint index = nodes->size(); 
-		nodes->push_back(n);
-
-		if(cube.getLengthX() > chunkSize) {
-			OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-			node->getChildren(*tree->allocator, children);
-
-			for(int i=0; i < 8; ++i) {
-				BoundingCube c = cube.getChild(i);
-				(*nodes)[index].children[i] = saveRecursive(children[i], nodes, chunkSize, filename, c, baseFolder);
-			}
-		} else {
-			std::string chunkName = getChunkName(cube);
-			OctreeNodeFile file(tree, node, baseFolder + "/" + filename_ + "_" + chunkName + ".bin");
-			file.save(baseFolder);
-		}
-		return index;
-	}
-	return 0;
-}
-
 void OctreeFile::save(std::string baseFolder, float chunkSize){
 	ensureFolderExists(baseFolder);
-    std::vector<OctreeNodeSerialized> nodes;
 	std::string filePath = baseFolder + "/" + filename+".bin";
 	std::ofstream file = std::ofstream(filePath, std::ios::binary);
     if (!file) {
@@ -181,12 +101,13 @@ void OctreeFile::save(std::string baseFolder, float chunkSize){
         return;
     }
 
-	saveRecursive(tree->root, &nodes, chunkSize, filename, *tree, baseFolder);
-
     std::ostringstream decompressed;
 	if (chunkSize == 0.0f) {
 		writeToStream(decompressed);
 	} else {
+		std::vector<OctreeNodeSerialized> nodes;
+		OctreeNodeFile::saveSubtree(tree, tree->root, &nodes, true, chunkSize, filename, *tree, baseFolder);
+
 		OctreeSerialized  octreeSerialized;
 		octreeSerialized.min = tree->getMin();
 		octreeSerialized.length = tree->getLengthX();
@@ -198,14 +119,11 @@ void OctreeFile::save(std::string baseFolder, float chunkSize){
 		decompressed.write(reinterpret_cast<const char*>(&size), sizeof(size_t) );
 		decompressed.write(reinterpret_cast<const char*>(nodes.data()), nodes.size() * sizeof(OctreeNodeSerialized) );
 	}
-	
+
 	std::istringstream inputStream(decompressed.str());
  	gzipCompressToOfstream(inputStream, file);
 	file.close();
 
-	nodes.clear();
-
 	std::cout << "OctreeFile::save('" << filePath <<"') Ok!" << std::endl;
 
 }
-
