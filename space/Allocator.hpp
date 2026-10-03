@@ -8,7 +8,6 @@
 #include <climits>
 #include <stdexcept>
 #include <iostream>
-#define NDEBUG 1
 
 template <typename T>
 class Allocator {
