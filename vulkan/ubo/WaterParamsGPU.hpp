@@ -48,4 +48,14 @@ struct WaterParamsGPU {
     glm::vec4 regionShoalColor;   // reserved
     glm::vec4 regionDeepColor;    // reserved
     glm::vec4 regionTintParams;   // x=unused, y=tint shore fade depth (m), zw=unused
+
+    // ── Music-reactive audio input (written by WaterRenderer::updateMusicAudio,
+    //    fed live by the MusicWidget analysis; read by MUSIC_REACTIVE_WATER) ──
+    glm::vec4 musicAudio1; // x=smoothed audioAmplitude 0..1, y=bassEnergy 0..1, z=midEnergy 0..1, w=highEnergy 0..1
+    glm::vec4 musicAudio2; // x=beatIntensity 0..1, y=music-reactive input enabled 1/0, zw=reserved
 };
+
+// The GLSL mirror (shaders/includes/ubo.glsl WaterParamsGPU) must declare
+// the exact same vec4 sequence; the SSBO array stride is sizeof(this).
+static_assert(sizeof(WaterParamsGPU) == 42 * sizeof(glm::vec4),
+              "WaterParamsGPU layout drifted from shaders/includes/ubo.glsl");

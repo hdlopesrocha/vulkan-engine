@@ -327,6 +327,11 @@ struct WaterParamsGPU {
     vec4 regionShoalColor;   // reserved
     vec4 regionDeepColor;    // reserved
     vec4 regionTintParams;   // x=unused, y=tint shore fade depth (m), zw=unused   // x=blend softness, y=tint shore fade depth (m), zw=unused
+
+    // Music-reactive audio input (mirrors vulkan/ubo/WaterParamsGPU.hpp):
+    // written per frame by the MusicWidget analysis pipeline.
+    vec4 musicAudio1; // x=smoothed audioAmplitude 0..1, y=bassEnergy, z=midEnergy, w=highEnergy
+    vec4 musicAudio2; // x=beatIntensity 0..1, y=reactive input enabled 1/0, zw=reserved
 };
 
 layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {
@@ -415,6 +420,13 @@ struct WaterParamsNamed {
     float volumetricPhaseG;
     vec3 volumetricColor;
     float tintShoreFadeDepth;
+    // Music-reactive audio input (MusicWidget analysis, per-frame upload).
+    float audioAmplitude;
+    float bassEnergy;
+    float midEnergy;
+    float highEnergy;
+    float beatIntensity;
+    bool musicReactive;
 };
 
 WaterParamsNamed waterParamsNamed(WaterParamsGPU p) {
@@ -491,5 +503,11 @@ WaterParamsNamed waterParamsNamed(WaterParamsGPU p) {
     n.volumetricPhaseG = p.volumetricParams.z;
     n.volumetricColor = p.volumetricColor.rgb;
     n.tintShoreFadeDepth = p.regionTintParams.y;
+    n.audioAmplitude = p.musicAudio1.x;
+    n.bassEnergy = p.musicAudio1.y;
+    n.midEnergy = p.musicAudio1.z;
+    n.highEnergy = p.musicAudio1.w;
+    n.beatIntensity = p.musicAudio2.x;
+    n.musicReactive = p.musicAudio2.y > 0.5;
     return n;
 }

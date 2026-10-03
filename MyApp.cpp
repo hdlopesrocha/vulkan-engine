@@ -3020,6 +3020,21 @@ public:
 
         // Render all widgets
         widgetManager.renderAll();
+
+        // Music analysis runs even when the widget window is hidden, then
+        // the compact features are forwarded into the water GPU params
+        // (SSBO musicAudio vecs) for MUSIC_REACTIVE_WATER. The analyser owns
+        // the FFT; the shader only reads these uploaded values.
+        if (mp3Widget) {
+            mp3Widget->tick();
+            if (sceneRenderer && sceneRenderer->mainLiquidRenderer) {
+                const AudioFeatures& af = mp3Widget->audioFeatures();
+                const bool active = mp3Widget->musicReactiveActive() && af.valid;
+                sceneRenderer->mainLiquidRenderer->updateMusicAudio(
+                    af.amplitude, af.bassEnergy, af.midEnergy, af.highEnergy,
+                    af.beatIntensity, active);
+            }
+        }
     }
 
     void draw(VkCommandBuffer &commandBuffer) override {

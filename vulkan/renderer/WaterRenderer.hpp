@@ -268,6 +268,15 @@ public:
     // never hit a stale cache entry.
     void invalidateSceneTexturesBinding(VkDescriptorSet ds);
 
+    // Live music-analysis upload (MusicWidget -> GPU, for MUSIC_REACTIVE_WATER).
+    // Patches ONLY the two musicAudio vecs of every layer's SSBO entry, so it
+    // stays consistent with full-struct uploads from updateGPUParamsForLayer()
+    // regardless of call order. Same persistently-mapped memcpy pattern as the
+    // other per-frame uploads; call once per frame after the widgets render.
+    // All energies/amplitude/beat are 0..1; enabled=false writes silence.
+    void updateMusicAudio(float amplitude, float bass, float mid, float high,
+                          float beat, bool enabled);
+
     // Allocate a fresh per-frame scene-texture descriptor set, free the previous
     // one, and update it with the given views. Returns the new set (or
     // VK_NULL_HANDLE on failure). The previous set is freed only after its command

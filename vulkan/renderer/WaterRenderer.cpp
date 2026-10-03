@@ -15,6 +15,7 @@
 #include <array>
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <glm/gtc/matrix_transform.hpp>
 #include "../ShaderStage.hpp"
 #include "../includes/locations.hpp"
@@ -167,6 +168,11 @@ WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
     gpu.regionShoalColor = glm::vec4(0.0f);                 // reserved
     gpu.regionDeepColor = glm::vec4(0.0f);                  // reserved
     gpu.regionTintParams = glm::vec4(0.0f, p.tintShoreFadeDepth, 0.0f, 0.0f);
+    // Music-reactive audio input: owned by updateMusicAudio() (live values
+    // from the MusicWidget analysis). Defaults to silent/disabled; the
+    // full-struct uploads here must not carry stale audio.
+    gpu.musicAudio1 = glm::vec4(0.0f);
+    gpu.musicAudio2 = glm::vec4(0.0f);
     return gpu;
 }
 
@@ -211,6 +217,35 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
     data = waterParamsBuffer.map(offset);
     memcpy(data, &gpu, sizeof(WaterParamsGPU));
     waterParamsBuffer.unmap(); // VMA persistent mapping
+}
+
+void WaterRenderer::updateMusicAudio(float amplitude, float bass, float mid, float high,
+                                     float beat, bool enabled) {
+    if (!appPtr) return;
+    if (waterParamsBuffer.buffer == VK_NULL_HANDLE || waterParamsBuffer.mappedData == nullptr) return;
+    if (waterParamsCount == 0) return;
+
+    // Clamp at the upload boundary so a misbehaving producer can never push
+    // out-of-range values into the shader.
+    const glm::vec4 audio1(enabled ? std::clamp(amplitude, 0.0f, 1.0f) : 0.0f,
+                           enabled ? std::clamp(bass, 0.0f, 1.0f) : 0.0f,
+                           enabled ? std::clamp(mid, 0.0f, 1.0f) : 0.0f,
+                           enabled ? std::clamp(high, 0.0f, 1.0f) : 0.0f);
+    const glm::vec4 audio2(enabled ? std::clamp(beat, 0.0f, 1.0f) : 0.0f,
+                           enabled ? 1.0f : 0.0f, 0.0f, 0.0f);
+
+    // Patch only the two trailing vecs of each layer entry (offsets via
+    // offsetof, so layout edits stay correct). Small (32 B/layer), coherent
+    // host-visible writes — no barrier needed on the upload path, same as
+    // updateGPUParamsForLayer().
+    const size_t off1 = offsetof(WaterParamsGPU, musicAudio1);
+    const size_t off2 = offsetof(WaterParamsGPU, musicAudio2);
+    for (uint32_t layer = 0; layer < waterParamsCount; ++layer) {
+        char* base = static_cast<char*>(waterParamsBuffer.mappedData) +
+                     static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
+        memcpy(base + off1, &audio1, sizeof(audio1));
+        memcpy(base + off2, &audio2, sizeof(audio2));
+    }
 }
 
 void WaterRenderer::cleanup(VulkanApp* app) {
