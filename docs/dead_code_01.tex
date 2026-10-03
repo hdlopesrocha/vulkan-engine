@@ -74,8 +74,8 @@ twenty never-included files in \code{space/}, \code{sdf/}, \code{math/}, and
 \code{-lgdal} can be dropped). Add an entirely unused \code{FrameGraph}
 abstraction ($\sim$160 lines), a compiled-but-idle \code{ChunkBufferPool} that
 still allocates $\sim$32\,MiB of GPU buffers, two orphan headers, one event
-class that is handled but never published, one descriptor set that no shader
-reads, an allocator header that hard-defines \code{NDEBUG} and disables its
+class that is handled but never published, an allocator header that
+hard-defines \code{NDEBUG} and disables its
 own debug checks, and 25 duplicated code blocks of 12 or more significant
 lines ($\sim$600 lines). A conservative total is \textbf{5{,}000--6{,}500
 removable lines} before any behaviour changes, and the report closes with a
@@ -148,7 +148,7 @@ audit, 2026-08-01). Its findings were re-verified at HEAD:
 Finding & Status at \texttt{6ba38f1} & Note \\
 \midrule
 A --- water set-1 material binds & \textbf{fixed} & \code{getMaterialDescriptorSet} is gone \\
-B --- ImpostorCapture set-2 wind set & \textbf{still present} & \S\ref{sec:features} \\
+B --- ImpostorCapture set-2 wind set & \textbf{report corrected} & required by \file{vegetation\_capture.vert}; see \S\ref{sec:impostorwind} \\
 C --- Solid depth pre-pass set-1 bind & \textbf{still present} & whole function now dead \\
 D --- \code{shadowPass} unused parameter & \textbf{fixed} & refactored to \code{ShadowRenderer} \\
 \bottomrule
@@ -191,7 +191,6 @@ Dead helper script & 1 & 20 \\
 \midrule
 \multicolumn{3}{l}{\textbf{C. Dead feature paths}}\\
 \code{PageNavigationEvent} (handled, never published) & 1 & 25 \\
-ImpostorCapture set-2 wind binding + accessors & 1 set & $\sim$25 \\
 Water set-1 layout slot (unread by all water shaders) & 1 slot & $\sim$5 \\
 Vestigial indirect cascade descriptor machinery & 1 subsystem & $\sim$80 \\
 \midrule
@@ -523,8 +522,10 @@ root makes the callee dead too:
     \code{distortPerlin} have no callers at all.
     \item \code{ImpostorCapture::capture} is public and called only by
     \code{captureAll}; it should become private rather than deleted.
-    \item \code{VegetationRenderer::getWindParamsDescSet*} exists only to
-    feed the vestigial ImpostorCapture set~2 (\S\ref{sec:features}).
+    \item \code{VegetationRenderer::getWindParamsDescSet*} exists to feed the
+    ImpostorCapture capture pipeline's set~2, which is \emph{required} by
+    \file{vegetation\_capture.vert} (see the correction in
+    \S\ref{sec:impostorwind}); it must stay.
     \item \code{IndirectRenderer::updateCascadeDescriptor} is called only by
     \code{refreshCascadeDescriptorsIfNeeded}, which itself has no callers.
 \end{itemize}
@@ -761,22 +762,30 @@ delete them, or wire the missing publisher (the keyboard comment in
 feature rather than intentional removal). The report treats it as
 \emph{dead until proven otherwise}.
 
-\subsection{ImpostorCapture Binds a Set No Shader Reads}
+\subsection{ImpostorCapture Set~2 Is Required (Report Correction)}
 \label{sec:impostorwind}
 
-\file{ImpostorCapture.cpp:312--316} binds three descriptor sets
-(\code{uboDescSet}, \code{texDescSet}, \code{windParamsDescSet}), and
-\file{ImpostorCapture.cpp:669} puts the wind-params layout in slot~2 of the
-pipeline layout. The capture shaders use only set~0
-(\file{capture.vert:20}) and sets~0--1 (\file{capture.frag:17--27}); set~2 is
-unreachable from every stage. The binding, the layout slot, the readiness
-check at \file{ImpostorCapture.cpp:36--42}, the \code{sharedVegRenderer}
-member, and \code{VegetationRenderer::getWindParamsDescSetLayout/getWindParamsDescSet}
-exist only for this vestigial set. Cascade:
-\code{ImpostorCapture::init} drops its \code{VegetationRenderer*} parameter;
-\code{ImpostorService} stops passing it; the two
-\code{VegetationRenderer} accessors are deleted. This is the last surviving
-finding from \file{tasks.txt}.
+\textbf{Correction (2026-10-03).} The original version of this section
+claimed the capture pipeline's set~2 wind binding was vestigial because it
+checked the wrong shader. \code{ImpostorCapture::createPipeline} loads
+\file{shaders/vegetation\_capture.vert.spv}, not
+\file{capture.vert.spv}: it is a \code{-DVEGETATION\_CAPTURE} variant of
+\file{vegetation.vert} and declares
+\code{layout(set = 2, binding = 0) uniform WindParamsUBO windParamsPacked}.
+Removing the set produced a validation error at
+\code{vkCreateGraphicsPipelines}:
+
+\begin{quote}\footnotesize
+\code{VUID-VkGraphicsPipelineCreateInfo-layout-07988}: SPIR-V
+(\code{VK\_SHADER\_STAGE\_VERTEX\_BIT}) uses descriptor [Set 2, Binding 0,
+variable \code{windParamsPacked}] but was not declared in the pipeline layout.
+\end{quote}
+
+The removal was reverted in \code{a5d6676}; the three-set
+\code{capturePipelineLayout}, the third bound set, the readiness check,
+\code{sharedVegRenderer}, the \code{init(VegetationRenderer*)} parameter, the
+\code{ImpostorService} plumbing, and the two \code{VegetationRenderer}
+accessors are all live and must stay. This finding is withdrawn.
 
 \subsection{Water Pipeline Layout Slot~1 Is Never Read}
 \label{sec:waterset1}
@@ -1132,11 +1141,13 @@ virtual overrides or lifecycle signatures.
 Tier 2 --- dead feature paths and state. (a) Delete \code{PageNavigationEvent}
 and its handling/subscription, or restore its publisher if the keyboard
 page-switch feature is wanted --- choose deletion and note it in the commit.
-(b) Remove ImpostorCapture's set-2 wind binding: drop \code{layouts[2]} and
-the third bound set, the readiness check, the \code{sharedVegRenderer}
-member, the \code{init(VegetationRenderer*)} parameter, and the
-\code{VegetationRenderer::getWindParamsDescSetLayout/getWindParamsDescSet}
-accessors, updating \code{ImpostorService} accordingly. (c) Delete the
+(b) Do NOT touch ImpostorCapture's set-2 wind binding: the capture pipeline
+loads \file{vegetation\_capture.vert}, which declares
+\code{windParamsPacked} at set~2, so \code{layouts[2]}, the third bound set,
+the readiness check, \code{sharedVegRenderer}, the
+\code{init(VegetationRenderer*)} parameter, and the
+\code{VegetationRenderer} accessors are required (see the correction in
+\S\ref{sec:impostorwind}). (c) Delete the
 write-only members and unused \code{(void)} parameters listed in \S4,
 except lifecycle overrides. (d) Remove \code{\#define NDEBUG 1} from
 \code{space/Allocator.hpp} and let the allocator's debug checks compile
@@ -1196,7 +1207,8 @@ every method listed in Appendix~A, plus
 \code{IndirectRenderer::prepareCullWithDescriptor}, the \code{FrameGraph}
 class, and the \code{World} chunk API, keeping
 \code{SceneRenderer::bindSet0ForFrame} and the live \code{clear()} methods.
-Then remove the ImpostorCapture wind set~2, \code{PageNavigationEvent}, the
+Keep the ImpostorCapture wind set~2 (required by \code{vegetation\_capture.vert}),
+then remove \code{PageNavigationEvent}, the
 application/widget/event/service graveyard in \S3.6, the write-only state in
 \S4, and the \code{NDEBUG} define in \code{space/Allocator.hpp}, and decide
 fix-or-remove for each no-op feature in \S6.5. Finally deduplicate the
