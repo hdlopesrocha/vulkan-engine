@@ -2065,24 +2065,19 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
     vkDestroyFence(device, fence, nullptr);
 }
 
+// File-scope helpers shared by every image-layout transition path in this
+// translation unit (defined below, next to the recording paths): the
+// format -> aspect mapping and the (effectiveOld, newLayout) ->
+// (srcAccess, dstAccess, srcStage, dstStage) table. Forward-declared here so
+// the synchronous transition functions can call the same single copy.
+static VkImageAspectFlags aspectFromFormat(VkFormat fmt);
+static bool fillTransitionStagesAccess(VkImageMemoryBarrier2& barrier, VkImageLayout effectiveOld, VkImageLayout newLayout,
+                                       VkPipelineStageFlags2& sourceStage, VkPipelineStageFlags2& destinationStage);
+
 void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t arrayLayers) {
     if (image == VK_NULL_HANDLE) {
         throw std::runtime_error("transitionImageLayout called with VK_NULL_HANDLE image!");
     }
-    auto aspectFromFormat = [](VkFormat fmt) -> VkImageAspectFlags {
-        switch (fmt) {
-            case VK_FORMAT_D16_UNORM:
-            case VK_FORMAT_X8_D24_UNORM_PACK32:
-            case VK_FORMAT_D32_SFLOAT:
-                return VK_IMAGE_ASPECT_DEPTH_BIT;
-            case VK_FORMAT_D16_UNORM_S8_UINT:
-            case VK_FORMAT_D24_UNORM_S8_UINT:
-            case VK_FORMAT_D32_SFLOAT_S8_UINT:
-                return VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
-            default:
-                return VK_IMAGE_ASPECT_COLOR_BIT;
-        }
-    };
 
     runSingleTimeCommands([&](VkCommandBuffer commandBuffer){
         // For whole-image synchronous transitions use baseArrayLayer=0 and
@@ -2127,30 +2122,13 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = arrayLayers;
 
-        VkPipelineStageFlags2 sourceStage;
-        VkPipelineStageFlags2 destinationStage;
+        VkPipelineStageFlags2 sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        VkPipelineStageFlags2 destinationStage = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
 
         // Use the authoritative old layout (effectiveOld) when selecting
         // access masks and pipeline stages so they match barrier.oldLayout.
-        if (effectiveOld == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-
-            sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        } else if (effectiveOld == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-
-            sourceStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        } else if ((effectiveOld == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || effectiveOld == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            // Transition depth attachment -> shader read (for sampling depth textures)
-            barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        } else {
+        // Shared mapping table: identical semantics to the recording paths.
+        if (!fillTransitionStagesAccess(barrier, effectiveOld, newLayout, sourceStage, destinationStage)) {
             throw std::invalid_argument("unsupported layout transition!");
         }
 
@@ -2379,7 +2357,11 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            // Cover every shader stage that may sample the image (vertex through
+            // compute), matching the other *_->SHADER_READ cases. The whole-image
+            // synchronous path already used the full set, so folding all callers
+            // onto this table must not narrow it.
+            destinationStage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         } else if (effectiveOld == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_GENERAL) {
             barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
             barrier.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
@@ -2889,20 +2871,6 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-        auto aspectFromFormat = [](VkFormat fmt) -> VkImageAspectFlags {
-            switch (fmt) {
-                case VK_FORMAT_D16_UNORM:
-                case VK_FORMAT_X8_D24_UNORM_PACK32:
-                case VK_FORMAT_D32_SFLOAT:
-                    return VK_IMAGE_ASPECT_DEPTH_BIT;
-                case VK_FORMAT_D16_UNORM_S8_UINT:
-                case VK_FORMAT_D24_UNORM_S8_UINT:
-                case VK_FORMAT_D32_SFLOAT_S8_UINT:
-                    return VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
-                default:
-                    return VK_IMAGE_ASPECT_COLOR_BIT;
-            }
-        };
         barrier.subresourceRange.aspectMask = aspectFromFormat(format);
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = mipLevels;
@@ -2954,64 +2922,9 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
         VkPipelineStageFlags2 sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
         VkPipelineStageFlags2 destinationStage = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
 
-        // Common transitions supported here — add cases as needed.
-        if (effectiveOld == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        } else if (effectiveOld == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        } else if (effectiveOld == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_GENERAL) {
-            barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        } else if (effectiveOld == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        } else if ((effectiveOld == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || effectiveOld == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            // Depth pre-passes (e.g. water back-face) write at EARLY_FRAGMENT_TESTS,
-            // so the source must include EARLY (not just LATE). The sampled image can
-            // be read in the tessellation evaluation shader too, so the destination
-            // covers all graphics/compute shader stages (matching the COLOR ->
-            // SHADER_READ case used elsewhere).
-            sourceStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        } else if (effectiveOld == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
-            // Transition from shader-read back to a depth attachment layout (write or read-only).
-            barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-                barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            } else {
-                barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            }
-            sourceStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        } else if (effectiveOld == VK_IMAGE_LAYOUT_UNDEFINED && (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
-            // Initialize depth-format image into a depth attachment layout from UNDEFINED.
-            barrier.srcAccessMask = 0;
-            if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-                barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            } else {
-                barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            }
-            sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
-        } else if (effectiveOld == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            // Initialize any image (color or depth) directly to shader-read layout.
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        } else {
+        // Shared (effectiveOld, newLayout) mapping table — same barrier fields
+        // as the recording paths. Unhandled pairs keep this caller's message.
+        if (!fillTransitionStagesAccess(barrier, effectiveOld, newLayout, sourceStage, destinationStage)) {
             throw std::runtime_error("transitionImageLayoutLayer: Unsupported image layout transition requested (no fallback allowed)");
         }
 
@@ -3050,20 +2963,6 @@ void VulkanApp::transitionImageLayoutLayerForce(VkImage image, VkFormat format, 
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-        auto aspectFromFormat = [](VkFormat fmt) -> VkImageAspectFlags {
-            switch (fmt) {
-                case VK_FORMAT_D16_UNORM:
-                case VK_FORMAT_X8_D24_UNORM_PACK32:
-                case VK_FORMAT_D32_SFLOAT:
-                    return VK_IMAGE_ASPECT_DEPTH_BIT;
-                case VK_FORMAT_D16_UNORM_S8_UINT:
-                case VK_FORMAT_D24_UNORM_S8_UINT:
-                case VK_FORMAT_D32_SFLOAT_S8_UINT:
-                    return VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
-                default:
-                    return VK_IMAGE_ASPECT_COLOR_BIT;
-            }
-        };
         barrier.subresourceRange.aspectMask = aspectFromFormat(format);
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = mipLevels;
@@ -3079,59 +2978,9 @@ void VulkanApp::transitionImageLayoutLayerForce(VkImage image, VkFormat format, 
             throw std::runtime_error("transitionImageLayoutLayerForce: TRANSFER_DST_OPTIMAL requested for depth image (no fallback allowed)");
         }
 
-        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
-            // Force initial transition for depth images from UNDEFINED into a depth attachment layout.
-            barrier.srcAccessMask = 0;
-            if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-                barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            } else {
-                barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            }
-            sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
-        } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_GENERAL) {
-            barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        } else if (oldLayout == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        } else if ((oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            // Depth pre-passes write at EARLY_FRAGMENT_TESTS, so the source must
-            // include it.  Widen destination to match recordTransitionImageLayoutLayer.
-            sourceStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
-            barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-                barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            } else {
-                barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            }
-            sourceStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            // Initialize any image (color or depth) directly to shader-read layout.
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        } else {
+        // Shared (oldLayout, newLayout) mapping table — same barrier fields as
+        // the recording paths. Unhandled pairs keep this caller's message.
+        if (!fillTransitionStagesAccess(barrier, oldLayout, newLayout, sourceStage, destinationStage)) {
             throw std::runtime_error("transitionImageLayoutLayerForce: Unsupported image layout transition requested (no fallback allowed)");
         }
 
