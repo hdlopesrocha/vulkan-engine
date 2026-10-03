@@ -248,4 +248,129 @@ inline void transitionImageLayout(
     BarrierStats::noteBarrier(1);
 }
 
+// ─── Dynamic-rendering pass setup ────────────────────────────────────────────
+// Begin a depth-only pass: the depth attachment is CLEARed to `clearDepth` and
+// a full-target viewport/scissor is set. Pair with endDepthOnlyPass(). The
+// attachment/rendering structs are consumed by vkCmdBeginRendering before this
+// returns, so the locals do not need to outlive the call.
+inline void beginDepthOnlyPass(
+    VkCommandBuffer cmd,
+    VkImageView     depthImageView,
+    uint32_t        width,
+    uint32_t        height,
+    float           clearDepth)
+{
+    VkClearValue clear{};
+    clear.depthStencil = {clearDepth, 0};
+
+    VkRenderingAttachmentInfo depthAtt{};
+    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAtt.imageView = depthImageView;
+    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAtt.clearValue = clear;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = {width, height};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 0;
+    renderingInfo.pDepthAttachment = &depthAtt;
+
+    vkCmdBeginRendering(cmd, &renderingInfo);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(width);
+    viewport.height = static_cast<float>(height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {width, height};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+}
+
+inline void endDepthOnlyPass(VkCommandBuffer cmd) {
+    vkCmdEndRendering(cmd);
+}
+
+// Begin a color+depth pass: both attachments CLEARed with the caller's values,
+// full-target viewport/scissor set. Callers end with vkCmdEndRendering.
+inline void beginColorDepthPass(
+    VkCommandBuffer cmd,
+    VkImageView     colorImageView,
+    VkImageView     depthImageView,
+    uint32_t        width,
+    uint32_t        height,
+    const VkClearValue& colorClear,
+    const VkClearValue& depthClear)
+{
+    VkRenderingAttachmentInfo colorAtt{};
+    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAtt.imageView = colorImageView;
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.clearValue = colorClear;
+
+    VkRenderingAttachmentInfo depthAtt{};
+    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAtt.imageView = depthImageView;
+    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAtt.clearValue = depthClear;
+
+    VkRenderingInfo ri{};
+    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    ri.renderArea.offset = {0, 0};
+    ri.renderArea.extent = {width, height};
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &colorAtt;
+    ri.pDepthAttachment = &depthAtt;
+    vkCmdBeginRendering(cmd, &ri);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(width);
+    viewport.height = static_cast<float>(height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {width, height};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+}
+
+// Fill the standard dynamic viewport/scissor pipeline state used by the
+// water and wireframe pipelines: one viewport/scissor, VIEWPORT + SCISSOR
+// dynamic. pDynamicStates points at a function-local constexpr table that
+// stays valid for the duration of the pipeline create call.
+inline void fillViewportScissorState(
+    VkPipelineViewportStateCreateInfo& viewportState,
+    VkPipelineDynamicStateCreateInfo&  dynamicState)
+{
+    viewportState = {};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    static constexpr VkDynamicState dynamicStates[] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+    dynamicState = {};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = 2;
+    dynamicState.pDynamicStates = dynamicStates;
+}
+
 } // namespace RendererUtils

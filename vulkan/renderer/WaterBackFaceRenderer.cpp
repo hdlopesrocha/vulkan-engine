@@ -380,39 +380,8 @@ void WaterBackFaceRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t
         backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
-    VkClearValue bfClear{};
-    bfClear.depthStencil = {1.0f, 0};
-
-    VkRenderingAttachmentInfo depthAtt{};
-    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depthAtt.imageView = backFaceDepthImageViews[frameIndex];
-    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depthAtt.clearValue = bfClear;
-
-    VkRenderingInfo renderingInfo{};
-    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = {renderWidth, renderHeight};
-    renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 0;
-    renderingInfo.pDepthAttachment = &depthAtt;
-
-    vkCmdBeginRendering(cmd, &renderingInfo);
-
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(renderWidth);
-    viewport.height = static_cast<float>(renderHeight);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = {renderWidth, renderHeight};
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    // Depth attachment uses LOAD_OP_CLEAR (1.0).
+    RendererUtils::beginDepthOnlyPass(cmd, backFaceDepthImageViews[frameIndex], renderWidth, renderHeight, 1.0f);
 
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, activePipelineHandle);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipelineHandle);
@@ -432,7 +401,7 @@ void WaterBackFaceRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t
         indirect.drawPrepared(cmd);
     }
 
-    vkCmdEndRendering(cmd);
+    RendererUtils::endDepthOnlyPass(cmd);
 
     // Transition depth: DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
     if (app) {

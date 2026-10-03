@@ -134,39 +134,7 @@ void BrushBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     }
 
     // Clear to 0.0 (near) since GREATER comparison means farthest depth wins
-    VkClearValue bfClear{};
-    bfClear.depthStencil = {0.0f, 0};
-
-    VkRenderingAttachmentInfo depthAtt{};
-    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depthAtt.imageView = backFaceDepthImageViews[frameIndex];
-    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depthAtt.clearValue = bfClear;
-
-    VkRenderingInfo renderingInfo{};
-    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = {renderWidth, renderHeight};
-    renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 0;
-    renderingInfo.pDepthAttachment = &depthAtt;
-
-    vkCmdBeginRendering(cmd, &renderingInfo);
-
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(renderWidth);
-    viewport.height = static_cast<float>(renderHeight);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = {renderWidth, renderHeight};
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    RendererUtils::beginDepthOnlyPass(cmd, backFaceDepthImageViews[frameIndex], renderWidth, renderHeight, 0.0f);
 
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, backFacePipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, backFacePipeline);
@@ -183,7 +151,7 @@ void BrushBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
         indirect.drawPrepared(cmd);
     }
 
-    vkCmdEndRendering(cmd);
+    RendererUtils::endDepthOnlyPass(cmd);
 
     // Transition depth: DEPTH_STENCIL_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
     if (app) {

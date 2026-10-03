@@ -256,39 +256,7 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
 
     VkClearValue sdfColorClear{}; sdfColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
     VkClearValue sdfDepthClear{}; sdfDepthClear.depthStencil = {1.0f, 0};
-
-    VkRenderingAttachmentInfo colorAtt{};
-    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAtt.imageView = colorView;
-    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAtt.clearValue = sdfColorClear;
-    VkRenderingAttachmentInfo depthAtt{};
-    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depthAtt.imageView = depthView;
-    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depthAtt.clearValue = sdfDepthClear;
-
-    VkRenderingInfo ri{};
-    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    ri.renderArea.offset = {0, 0};
-    ri.renderArea.extent = {w, h};
-    ri.layerCount = 1;
-    ri.colorAttachmentCount = 1;
-    ri.pColorAttachments = &colorAtt;
-    ri.pDepthAttachment = &depthAtt;
-    vkCmdBeginRendering(cmd, &ri);
-
-    VkViewport viewport{};
-    viewport.x = 0.0f; viewport.y = 0.0f; viewport.width = static_cast<float>(w); viewport.height = static_cast<float>(h);
-    viewport.minDepth = 0.0f; viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    VkRect2D scissor{};
-    scissor.offset = {0, 0}; scissor.extent = {w, h};
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    RendererUtils::beginColorDepthPass(cmd, colorView, depthView, w, h, sdfColorClear, sdfDepthClear);
 
     // Nothing to draw (disabled, no cubes, or missing buffers): clear only, then resolve to SRO.
     if (!enabled || !hasCubes_ || vertexBuffer.buffer == VK_NULL_HANDLE ||
