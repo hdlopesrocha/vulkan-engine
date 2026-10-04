@@ -12,7 +12,7 @@ struct SdfSmokeConfig {
     float density = 2.0f;      // base material density (rebuilds scene)
     float absorption = 0.75f;   // (rebuilds scene)
     float scattering = 8.0f;   // (rebuilds scene)
-    float growthDuration = 2.0f;  // rapid expansion time (s)
+    float growthDuration = 0.5f;  // rapid expansion time (s)
     float loopDuration = 10.0f;   // animation repeat period (s)
     float dissipation = 0.15f;
     float noiseScale = 256.0f;    // 1/m
