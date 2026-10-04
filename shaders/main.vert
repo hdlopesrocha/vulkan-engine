@@ -1,6 +1,9 @@
 #version 450
 #extension GL_ARB_shader_draw_parameters : require
 
+#include "ubo/WaterParamsNamed.glsl"
+#include "types/WaterVertexWave.glsl"
+
 #include "includes/ubo.glsl"
 #include "includes/water_render_view.glsl"
 #include "includes/locations.glsl"

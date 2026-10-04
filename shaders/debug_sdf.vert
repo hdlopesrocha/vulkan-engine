@@ -1,5 +1,8 @@
 #version 450
 
+#include "types/DebugSdfInstanceData.glsl"
+#include "types/DebugSdfInstanceDataNamed.glsl"
+
 #include "includes/locations.glsl"
 
 layout(location = ATTR_POS) in vec3 inPosition;
@@ -10,36 +13,14 @@ layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
 
 #include "includes/ubo.glsl"
 
-struct InstanceData {
-    mat4 model;
-    vec4 sdf0;
-    vec4 sdf1;
-    vec4 meta; // meta.x = brushIndex (stored as float)
-};
 
 layout(set = 1, binding = 0, std430) readonly buffer InstanceBuffer {
-    InstanceData instances[];
+    DebugSdfInstanceData instances[];
 };
 
-// Named view over the packed InstanceData - same data, descriptive names. The builder below is the
-// only place the packed component letters are read; every other access uses the
-// named attributes.
-// sdf0/sdf1 pack the 8 box-corner SDF values, meta.x carries the brush index.
-struct InstanceDataNamed {
-    mat4 model;
-    float sdfCorner0;
-    float sdfCorner1;
-    float sdfCorner2;
-    float sdfCorner3;
-    float sdfCorner4;
-    float sdfCorner5;
-    float sdfCorner6;
-    float sdfCorner7;
-    int brushIndex;
-};
 
-InstanceDataNamed instanceNamed(InstanceData p) {
-    InstanceDataNamed n;
+DebugSdfInstanceDataNamed instanceNamed(DebugSdfInstanceData p) {
+    DebugSdfInstanceDataNamed n;
     n.model = p.model;
     n.sdfCorner0 = p.sdf0.x;
     n.sdfCorner1 = p.sdf0.y;
@@ -53,7 +34,7 @@ InstanceDataNamed instanceNamed(InstanceData p) {
     return n;
 }
 
-float getCornerSdf(InstanceDataNamed inst, uint cornerIndex) {
+float getCornerSdf(DebugSdfInstanceDataNamed inst, uint cornerIndex) {
     if (cornerIndex == 0u) return inst.sdfCorner0;
     if (cornerIndex == 1u) return inst.sdfCorner1;
     if (cornerIndex == 2u) return inst.sdfCorner2;
@@ -65,7 +46,7 @@ float getCornerSdf(InstanceDataNamed inst, uint cornerIndex) {
 }
 
 void main() {
-    InstanceDataNamed inst = instanceNamed(instances[gl_InstanceIndex]);
+    DebugSdfInstanceDataNamed inst = instanceNamed(instances[gl_InstanceIndex]);
     vec4 worldPos = inst.model * vec4(inPosition, 1.0);
     gl_Position = ubo.viewProjection * worldPos;
     fragSdf = getCornerSdf(inst, inCornerIndex);

@@ -17,49 +17,14 @@
 #ifndef SDF_MATERIAL_GLSL
 #define SDF_MATERIAL_GLSL
 
-struct SdfDefinitionGPU {
-    vec4 params0;
-    vec4 params1;
-    uvec4 meta; // x=prim(SDF_PRIM_*), y=op(SDF_OP_*), z=deformFlags, w=bitcast float smoothK
-};
+#include "../ubo/SdfDefinitionGPU.glsl"
+#include "../ubo/SdfMaterialGPU.glsl"
 
-struct SdfInstanceGPU {
-    vec4 posScale;   // xyz=world pos, w=uniform scale
-    vec4 rotSeed;    // xyz=euler XYZ radians, w=animation seed
-    vec4 sizeParams; // x=heightScale, y=radiusScale, z=intensity, w=unused
-    uvec4 indices;   // x=defIdx, y=matIdx, z=containerIdx, w=flags
-    vec4 boundsMin;  // world AABB min
-    vec4 boundsMax;  // world AABB max
-};
 
-struct SdfMaterialGPU {
-    vec4 baseColor;
-    vec4 surfaceParams; // x=roughness, y=metallic, z=opacity, w=mode float
-    vec4 emission;      // rgb=color, w=intensity
-    vec4 volumeParams;  // x=density, y=absorption, z=scattering, w=tempScale
-    vec4 extra;         // x=smoothK, y=noiseScale, z=turbulence, w=riseSpeed
-};
 
-struct SdfContainerGPU {
-    vec4 boundsMin;
-    vec4 boundsMax;
-    uvec4 gridInfo;   // x,y,z=resolution, w=global index-buffer start
-    uvec4 gridOffset; // x=global cell-buffer start, y=index start, z=count, w=flags
-};
 
-struct SdfGridCellGPU {
-    uint offset;
-    uint count;
-    uint _pad0;
-    uint _pad1;
-};
 
-struct SdfParamsUBO {
-    vec4 timeDebug;   // x=time, y=packedModeDebug(float bits of (mode<<16|flags)), z=maxSteps, w=safety
-    vec4 marchParams; // x=minStep, y=maxStep, z=epsilon, w=earlyTerm opacity threshold
-    vec4 fireColors0; // reserved gradient low (generic)
-    vec4 fireColors1; // reserved gradient high (generic)
-};
+
 
 float sdfUnpackSmoothK(SdfDefinitionGPU def) {
     return uintBitsToFloat(def.meta.w);

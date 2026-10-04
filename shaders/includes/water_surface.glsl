@@ -1,3 +1,6 @@
+
+#include "../ubo/WaterParamsNamed.glsl"
+#include "../types/WaterWaveField.glsl"
 #include "water_render_view.glsl"
 #include "sky_view.glsl"
 #include "perlin.glsl"

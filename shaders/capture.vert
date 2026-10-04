@@ -1,5 +1,7 @@
 #version 450
 
+#include "ubo/UniformObjectNamed.glsl"
+
 // Pass-through vertex shader for impostor capture.
 // Reads instance data and forwards to the geometry shader (vegetation.geom)
 // which expands each point into a full billboard.
@@ -22,13 +24,6 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     vec4 viewPos;
 } uboPacked;
 
-// Named view over the packed SolidParamsUBO - same data, descriptive names. The builder below is the
-// only place the packed component letters are read; every other access uses the
-// named attributes.
-struct UniformObjectNamed {
-    mat4 viewProjection;
-    vec3 viewPosition;
-};
 
 UniformObjectNamed uniformObjectNamed() {
     UniformObjectNamed n;

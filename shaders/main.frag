@@ -10,6 +10,10 @@
 // top-level #extension: directives inside includes are illegal after tokens.
 #ifdef RT_PROFILE
 #extension GL_EXT_shader_realtime_clock : require
+
+#include "ubo/RTProxyMetaGLSL.glsl"
+#include "ubo/RayTracingParamsGLSL.glsl"
+#include "ubo/RayTracingParamsNamed.glsl"
 #endif
 #include "includes/locations.glsl"
 

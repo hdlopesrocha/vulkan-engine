@@ -15,6 +15,8 @@
 #ifndef RT_REFLECTION_GLSL
 #define RT_REFLECTION_GLSL
 
+#include "../ubo/WaterParamsNamed.glsl"
+
 // Forward declarations for the H6 hint overloads below (GLSL free functions
 // must be declared before use; the 5-arg cores are defined further down).
 vec3 rtTraceMirror(vec3 origin, vec3 dir, int extraBounces, float minHit, int hintCascade);

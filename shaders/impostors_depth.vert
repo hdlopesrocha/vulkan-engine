@@ -1,5 +1,8 @@
 #version 450
 
+#include "ubo/UniformObjectNamed.glsl"
+#include "ubo/WindParamsNamed.glsl"
+
 #include "includes/locations.glsl"
 
 layout(location = ATTR_UV) in vec2 inCornerUV;
@@ -17,13 +20,6 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     vec4 viewPos;
 } uboPacked;
 
-// Named view over the packed SolidParamsUBO - same data, descriptive names. The builder below is the
-// only place the packed component letters are read; every other access uses the
-// named attributes.
-struct UniformObjectNamed {
-    mat4 viewProjection;
-    vec3 viewPosition;
-};
 
 UniformObjectNamed uniformObjectNamed() {
     UniformObjectNamed n;
@@ -43,28 +39,6 @@ layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 cameraPosAndFalloff;
 } windParamsPacked;
 
-// Named view over the packed WindParamsUBO - same data, descriptive names. The builder below is the
-// only place the packed component letters are read; every other access uses the
-// named attributes.
-struct WindParamsNamed {
-    vec2 windDirection;
-    float windStrength;
-    float windBaseFrequency;
-    float windSpeed;
-    float gustFrequency;
-    float gustStrength;
-    float skewAmount;
-    float trunkStiffness;
-    float noiseScale;
-    float verticalFlutter;
-    float turbulence;
-    bool densityEnabled;
-    float nearDistance;
-    float farDistance;
-    float minFactor;
-    vec3 cameraPosition;
-    float densityFalloff;
-};
 
 WindParamsNamed windParamsNamed() {
     WindParamsNamed n;

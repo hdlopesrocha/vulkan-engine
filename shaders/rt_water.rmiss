@@ -6,6 +6,10 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 
+#include "types/RTPayload.glsl"
+#include "ubo/RayTracingParamsGLSL.glsl"
+#include "ubo/RayTracingParamsNamed.glsl"
+
 #include "includes/rt_params.glsl"
 
 layout(set = 0, binding = 3) uniform RTBlock { RayTracingParamsGLSL rtPacked; };

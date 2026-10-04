@@ -1,3 +1,11 @@
+
+#include "../ubo/MaterialGPU.glsl"
+#include "../ubo/MaterialNamed.glsl"
+#include "../ubo/SkyParamsNamed.glsl"
+#include "../ubo/UniformObjectNamed.glsl"
+#include "../ubo/WaterParamsGPU.glsl"
+#include "../ubo/WaterParamsNamed.glsl"
+#include "../ubo/WaterRenderParamsNamed.glsl"
 // UBO layout must match the CPU-side UniformObject (std140-like):
 // mat4 viewProjection; vec4 viewPos; vec4 lightDir; vec4 lightColor;
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
@@ -19,39 +27,6 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     vec4 brushHSV;          // x=H(0..360), y=S(0..1), z=V(0..1), w=unused
 } uboPacked;
 
-// Named view over the packed SolidParamsUBO - same data, descriptive names. The builder below is the
-// only place the packed component letters are read; every other access uses the
-// named attributes.
-struct UniformObjectNamed {
-    mat4 viewProjection;
-    vec3 viewPosition;
-    vec3 lightDirection;
-    float lightElevation;
-    vec3 lightColor;
-    bool cubemapCapture;
-    bool normalMappingEnabled;
-    bool shadowsEnabled;
-    int debugMode;
-    bool roughnessEnabled;
-    bool ambientOcclusionEnabled;
-    float triplanarThreshold;
-    float triplanarExponent;
-    float tessNearDist;
-    float tessFarDist;
-    float tessellationFactor;
-    bool isShadowPass;
-    bool tessellationEnabled;
-    float nearPlane;
-    float farPlane;
-    mat4 lightSpaceMatrix;
-    mat4 lightSpaceMatrix1;
-    mat4 lightSpaceMatrix2;
-    mat4 invViewProjection;
-    float brushTextureIndex;
-    float brushMode;
-    float brushPhase;
-    vec3 brushHsv;
-};
 
 UniformObjectNamed uniformObjectNamed() {
     UniformObjectNamed n;
@@ -88,47 +63,11 @@ UniformObjectNamed uniformObjectNamed() {
 
 UniformObjectNamed ubo = uniformObjectNamed();
 
-// Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (6 vec4s).
-// Access this as `materials[brushIndex]` from shaders. Uses std430 for tightly-packed vec4 alignment.
-struct MaterialGPU {
-    vec4 materialFlags;    // .x = skipEnvMap (set during cubemap capture), .z = ambientFactor
-    vec4 mappingParams;    // x = mappingEnabled (0/1), y = tessLevel, z = invertHeight (0/1), w = tessHeightScale
-    vec4 specularParams;   // x = specularStrength, y = shininess
-    vec4 triplanarParams;  // x = scaleU, y = scaleV, z = triplanarEnabled (0/1)
-    vec4 normalParams;     // x = flipNormalY (0/1), y = swapNormalXZ (0/1), z = invertWidth (0/1)
-    vec4 tessLevelParams;  // x = minLevel, y = maxLevel, z = reflectionStrength, w = reserved
-    vec4 roughnessAOParams; // x = roughnessFactor, y = aoFactor, z = useAO (1.0/0.0)
-};
 
 layout(std430, set = 0, binding = 5) readonly buffer Materials {
     MaterialGPU materials[];
 };
 
-// Named view over the packed MaterialGPU - same data, descriptive names. The builder below is the
-// only place the packed component letters are read; every other access uses the
-// named attributes.
-struct MaterialNamed {
-    bool skipEnvMap;
-    float ambientFactor;
-    bool mappingEnabled;
-    float tessLevel;
-    bool invertHeight;
-    float tessHeightScale;
-    float specularStrength;
-    float shininess;
-    float triplanarScaleU;
-    float triplanarScaleV;
-    bool triplanarEnabled;
-    bool flipNormalY;
-    bool swapNormalXZ;
-    bool invertWidth;
-    float minLevel;
-    float maxLevel;
-    float reflectionStrength;
-    float roughnessFactor;
-    float aoFactor;
-    bool useAO;
-};
 
 MaterialNamed materialNamed(MaterialGPU m) {
     MaterialNamed n;
@@ -181,43 +120,6 @@ layout(set = 0, binding = 6) uniform SkyUBO {
     vec4 cloudAnim;    // x = timeScale, yzw unused
 } skyPacked;
 
-// Named view over the packed SkyUBO - same data, descriptive names. The builder below is the
-// only place the packed component letters are read; every other access uses the
-// named attributes.
-struct SkyParamsNamed {
-    vec3 horizonColor;
-    vec3 zenithColor;
-    float warmth;
-    float exponent;
-    float sunFlare;
-    vec3 nightHorizonColor;
-    vec3 nightZenithColor;
-    float nightIntensity;
-    float starIntensity;
-    // Clouds
-    bool cloudsEnabled;
-    bool lowEnabled;
-    bool midEnabled;
-    bool highEnabled;
-    float densityScale;
-    float windSpeed;
-    float windAngleRad;
-    float detailStrength;
-    float cloudTime;
-    float shadowStrength;
-    float raymarchSteps;
-    float lightSteps;
-    vec4 lowTier;      // coverage, density, scale, windMul
-    vec2 lowGeom;      // baseHeight, thickness
-    vec4 midTier;
-    vec2 midGeom;
-    vec4 highTier;
-    vec2 highGeom;
-    float silverLining;
-    float ambientBoost;
-    float sunForwardG;
-    float exposure;
-};
 
 SkyParamsNamed skyParamsNamed() {
     SkyParamsNamed n;
@@ -260,16 +162,6 @@ layout(set = 0, binding = 10) uniform WaterRenderUBO {
     vec4 depthParams; // x = solidSceneDepthTex is THIS frame's solid depth (1/0); yzw unused
 } waterRenderUBOPacked;
 
-// Named view over the packed WaterRenderUBO - same data, descriptive names. The builder below is the
-// only place the packed component letters are read; every other access uses the
-// named attributes.
-struct WaterRenderParamsNamed {
-    float waterTime;
-    bool refractionAllowed;
-    bool reflectionAllowed;
-    bool blurAllowed;
-    bool solidDepthIsCurrent;
-};
 
 WaterRenderParamsNamed waterRenderParamsNamed() {
     WaterRenderParamsNamed n;
@@ -282,151 +174,9 @@ WaterRenderParamsNamed waterRenderParamsNamed() {
 }
 
 
-struct WaterParamsGPU {
-    vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
-    vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    vec4 params3;  // x=noiseTimeSpeed, y=noiseLacunarity, z=specularIntensity, w=specularPower
-    vec4 glitterParams; // x=glitterIntensity, yzw=unused
-    vec4 blurParams; // x=enableBlur, y=max radius (pixels), z=radius per meter (px/m), w=unused
-    vec4 waveParams; // x=tessNoiseInfluence, y=unused, z=waveAmplitude, w=depthFalloff
-    vec4 reserved1;  // x=enableReflection, y=enableRefraction, zw=unused
-    vec4 reserved2;  // w=uniformReflection, xyz=unused
-    vec4 reserved3;  // x=cube360Available, yzw=unused
-    vec4 tessParams; // x=tessNearDist, y=tessFarDist, z=tessMinLevel, w=tessMaxLevel
-    vec4 causticColor; // rgb = caustic tint, w = unused
-    vec4 causticParams; // x = softness (|J| floor), y = intensity, zw = unused
-    vec4 causticExtraParams; // reserved (wave-shape caustics: no mode/line/speed knobs)
-    vec4 absorptionParams; // xyz = Beer-Lambert coeff, w = absorption scale
-    vec4 refractionParams; // x = IOR, y = max thickness cap, z = shore fade depth, w = unused
-
-    // Shore-wave system (mirrors vulkan/ubo/WaterParamsGPU.hpp).
-    vec4 waveToggles;      // x=enableWaves, y=enableFoam, z=enableVolumetric, w=unused
-    vec4 waveZones;        // x=deep depth(>=), y=break depth, z=shallow depth, w=unused
-    vec4 waveDirection;    // xy=shore direction (unit, world XZ), zw=unused
-    vec4 waveShape;        // reserved (was: zone crest sharpness / shoal gain)
-    vec4 waveShoal;        // xyz reserved, w=breaker tint band half-width
-    vec4 waveComponent1;   // x=crest scale(1/period), y=speed(m/s), z=amplitude, w=unused
-    vec4 waveComponent2;   // reserved (was: the second/cross swell train)
-    vec4 waveBreaker;      // reserved (was: breaker bump / chop / whitecap / height falloff)
-    vec4 waveCurl;         // reserved (was: breaker lip skew / crest hook)
-    vec4 waveWarp;         // xyz reserved, w=shore gradient step(texels)
-    vec4 waveMask;         // x=scale, y=threshold, z=softness, w=time speed
-    vec4 foamParams;       // x=crest threshold, y=trail phase, z=decay/m, w=color amount
-    vec4 foamNoise;        // x=scale, y=time speed, z=noise amount, w=shore amount
-    vec4 foamExtra;        // x=mask floor, y=diffuse floor, z=ambient, w=unused
-    vec4 foamContact;      // x=contact width(world), y=contact amount, z=contact alpha, w=contact pulse floor
-    vec4 foamShape;        // x=edge hardness, y=coverage, zw=reserved
-    vec4 foamColor;        // rgb=foam color, a=unused
-    vec4 volumetricParams; // x=strength, y=density, z=Henyey-Greenstein g, w=unused
-    vec4 volumetricColor;  // rgb=volumetric scatter tint, a=unused
-
-    // Depth-region tint (mirrors vulkan/ubo/WaterParamsGPU.hpp)   // rgb = tint at the waterline (d < zoneShallow) // rgb = foam-decay-band tint (zoneShallow..zoneBreak) // rgb = breaker-line tint (around zoneBreak)   // rgb = shoaling-band tint (zoneBreak..zoneDeep)    // rgb = open-ocean tint (d >= zoneDeep)
-    vec4 regionShoreColor;   // rgb = the single water colour (one region)
-    vec4 regionShallowColor; // reserved
-    vec4 regionBreakerColor; // reserved
-    vec4 regionShoalColor;   // reserved
-    vec4 regionDeepColor;    // reserved
-    vec4 regionTintParams;   // x=unused, y=tint shore fade depth (m), zw=unused   // x=blend softness, y=tint shore fade depth (m), zw=unused
-
-    // Music-reactive audio input (mirrors vulkan/ubo/WaterParamsGPU.hpp):
-    // written per frame by the MusicWidget analysis pipeline.
-    vec4 musicAudio1; // x=smoothed audioAmplitude 0..1, y=bassEnergy, z=midEnergy, w=highEnergy
-    vec4 musicAudio2; // x=beatIntensity 0..1, y=reactive input enabled 1/0, zw=reserved
-};
 
 layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {
     WaterParamsGPU waterParams[];
-};
-// ── Named view over the packed WaterParamsGPU. ───────────────────────────
-// Same data, descriptive names: the packed wave-mask threshold reads as
-// `wp.waveMaskThreshold`, the foam-noise period scale as
-// `wp.foamNoisePeriodScale`, and so on for every component. Built once where the params are obtained (the
-// SSBO array itself stays packed, so the layout is untouched), then passed to
-// the helpers BY VALUE - the compiler keeps it in registers and drops every
-// field a call site does not read.
-//
-// Fields ending in `Scale` are spatial scales, i.e. 1/period: the CPU converts
-// the authored periods once at the upload boundary (waterGpuPeriodsToScales).
-struct WaterParamsNamed {
-    float refractionStrength;
-    float fresnelPower;
-    float transparency;
-    float reflectionStrength;
-    float waterTint;
-    float noiseScale;
-    float noiseOctaves;
-    float noisePersistence;
-    float noiseTimeSpeed;
-    float noiseLacunarity;
-    float specularIntensity;
-    float specularPower;
-    float glitterIntensity;
-    bool enableBlur;
-    float blurRadius;
-    float blurDepthScale;
-    float tessNoiseInfluence;
-    float bumpAmplitude;
-    float depthFalloff;
-    bool enableReflection;
-    bool enableRefraction;
-    bool uniformReflection;
-    float tessNearDist;
-    float tessFarDist;
-    float tessMinLevel;
-    float tessMaxLevel;
-    vec3 causticColor;
-    float causticSoftness;
-    float causticIntensity;
-    vec3 absorption;
-    float absorptionScale;
-    float waterIor;
-    float maxThickness;
-    float shoreFadeDepth;
-    bool enableWaves;
-    bool enableFoam;
-    bool enableVolumetric;
-    vec2 waveDirection;
-    float breakerWidth;
-    float wavePeriodScale;
-    float shoreWaveFade;
-    float shoreWaveSlope;
-    float waveSteepness;
-    float waveCrestSharpness;
-    float rippleHeight;
-    vec3 waterColor;
-    float waveSpeed;
-    float waveAmplitude;
-    float shoreGradientStep;
-    float foamCrestThreshold;
-    float foamTrailPhase;
-    float foamDecay;
-    float foamColorAmount;
-    float foamNoisePeriodScale;
-    float foamNoiseSpeed;
-    float foamNoiseAmount;
-    float foamShoreAmount;
-    float foamMaskFloor;
-    float foamDiffuseFloor;
-    float foamAmbient;
-    float foamContactWidth;
-    float foamContactAmount;
-    float foamContactAlpha;
-    float foamContactFloor;
-    float foamEdge;
-    float foamCoverage;
-    vec3 foamColor;
-    float volumetricStrength;
-    float volumetricDensity;
-    float volumetricPhaseG;
-    vec3 volumetricColor;
-    float tintShoreFadeDepth;
-    // Music-reactive audio input (MusicWidget analysis, per-frame upload).
-    float audioAmplitude;
-    float bassEnergy;
-    float midEnergy;
-    float highEnergy;
-    float beatIntensity;
-    bool musicReactive;
 };
 
 WaterParamsNamed waterParamsNamed(WaterParamsGPU p) {

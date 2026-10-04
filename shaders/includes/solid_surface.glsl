@@ -1,3 +1,5 @@
+
+#include "../ubo/WaterParamsNamed.glsl"
 #include "sky_view.glsl"
 #include "perlin.glsl"
 #include "clouds.glsl"

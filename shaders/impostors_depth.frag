@@ -1,5 +1,7 @@
 #version 450
 
+#include "ubo/UniformObjectNamed.glsl"
+
 #include "includes/locations.glsl"
 
 layout(location = VARY_UV) in vec3 inTexCoord;  // xy=UV, z=float(layerIdx)
@@ -10,13 +12,6 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     vec4 viewPos;
 } uboPacked;
 
-// Named view over the packed SolidParamsUBO - same data, descriptive names. The builder below is the
-// only place the packed component letters are read; every other access uses the
-// named attributes.
-struct UniformObjectNamed {
-    mat4 viewProjection;
-    vec3 viewPosition;
-};
 
 UniformObjectNamed uniformObjectNamed() {
     UniformObjectNamed n;

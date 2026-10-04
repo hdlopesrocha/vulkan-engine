@@ -1,5 +1,7 @@
 #version 450
 
+#include "ubo/SdfContainerGPU.glsl"
+
 // Generic SDF proxy vertex shader: one unit-cube instance per CONTAINER.
 // The proxy bounds per-pixel work to visible containers; the fragment shader
 // traverses the container's uniform grid (definitions/materials/instances).

@@ -1,3 +1,5 @@
+
+#include "../ubo/MaterialNamed.glsl"
 // Tessellation displacement function
 vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec3 worldPos, vec3 worldNormal, vec2 uv, ivec3 texIndices, vec3 weights) {
 

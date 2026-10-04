@@ -1,3 +1,5 @@
+
+#include "../ubo/WaterParamsNamed.glsl"
 #include "water_render_view.glsl"
 // Water TCS (moved from water.tesc). Requires: ubo, locations,
 // perlin, water_noise, waterParams/waterRenderUBO (ubo.glsl).

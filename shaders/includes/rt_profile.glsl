@@ -24,6 +24,8 @@
 #ifndef RT_PROFILE_GLSL
 #define RT_PROFILE_GLSL
 
+#include "../types/RTProfileScope.glsl"
+
 // Op ids are ALWAYS defined: call sites use the macros below, which compile to
 // no-ops without RT_PROFILE, so the production and profile sources stay
 // textually identical at the instrumented sites.
@@ -59,11 +61,6 @@ bool rtProfSample() {
 #endif
 }
 
-struct RTProfileScope {
-    uint op;
-    uint t0;
-    bool sampled;
-};
 
 // Device-scope realtime clock in nanoseconds; only the low 32 bits are kept
 // (a single ray operation is far below the 4.29 s 32-bit wrap). The clock is

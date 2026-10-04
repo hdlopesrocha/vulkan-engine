@@ -1,6 +1,8 @@
 #ifndef WATER_TINT_GLSL
 #define WATER_TINT_GLSL
 
+#include "../ubo/WaterParamsNamed.glsl"
+
 // Water tint: ONE region, so this is a single colour. `depth` is kept in the
 // signature because the callers key the shore fade and the tint blend to it,
 // but there is no depth-band palette any more.

@@ -1,63 +1,19 @@
+
+#include "../ubo/RTProxyMetaGLSL.glsl"
+#include "../ubo/RTProxyMetaNamed.glsl"
+#include "../ubo/RayTracingParamsGLSL.glsl"
+#include "../ubo/RayTracingParamsNamed.glsl"
 // Hybrid RT shared declarations (raster ray queries + RT pipeline).
 // The struct layout must match RayTracingParams (C++). Each shader declares
 // its own uniform BLOCK with the set/binding of its pipeline; this file only
 // defines the struct + helpers so raster (set 0) and RT-pipeline sets agree.
 
-struct RayTracingParamsGLSL {
-    vec4 toggles;      // x=reflections y=refractions z=thickness w=localShadows
-    vec4 distances;    // x=maxReflect y=maxRefract z=maxShadowDist w=roughnessThreshold
-    vec4 water;        // x=IOR, y=maxWaterThickness (hit clamp), z=coarseBoxSize (deep/sky fallback), w=maxReflectionBounces
-    vec4 absorption;   // rgb=Beer-Lambert coeff, a=thicknessScale
-    vec4 debug;        // x=DebugMode (see debug_modes.glsl), y=tlasReady, z=selfSkipDist, w=useWaterPipeline
-    mat4 invViewProj;
-    mat4 prevViewProj; // previous frame's view-projection (temporal SSR reprojection)
-    vec4 viewPos;
-    vec4 rtResolution; // xy=size, zw=1/size
-    vec4 clipPlanes;   // x=near, y=far
-    vec4 sunDir;       // xyz=direction TO sun
-    vec4 sunColor;
-    vec4 rayParams;    // x=rayScaleMode (0=full-rate, 1=checkerboard half-rate),
-                       // y=contribMin (skip inline ray when lobe contribution below),
-                       // z=singleRay (1=Fresnel stochastic reflection-xor-refraction,
-                       //   0=dual-trace reference),
-                       // w=waterReflections (1 = water reflection rays enabled)
-    vec4 waterDepth;   // x=water-region depth source: 1 = ray-traced solid
-                       // bottom (world-space vertical drop) in the water TES,
-                       // 0 = raster only (solid scene depth + water volume back
-                       // face). yzw reserved.
-};
 
 // Named view over the packed RayTracingParamsGLSL - same data, descriptive names. The builder below is the
 // only place the packed component letters are read; every other access uses the
 // named attributes.
 
 
-struct RayTracingParamsNamed {
-    bool reflectionsEnabled;
-    bool refractionsEnabled;
-    bool thicknessEnabled;
-    bool localShadowsEnabled;
-    float maxRefractDistance;
-    float maxShadowDistance;
-    float roughnessThreshold;
-    float waterIor;
-    float maxWaterThickness;
-    float coarseBoxSize;
-    int maxReflectionBounces;
-    int debugMode;
-    bool tlasReady;
-    float selfSkipDist;
-    bool useWaterPipeline;
-    bool checkerboardReflections;
-    float reflectionContribMin;
-    bool singleRay;
-    bool waterReflections;
-    bool rayTracedWaterDepth;
-    vec3 viewPosition;
-    vec3 sunDirection;
-    vec3 sunColor;
-    mat4 invViewProj;
-};
 
 RayTracingParamsNamed rayTracingParamsNamed(RayTracingParamsGLSL p) {
     RayTracingParamsNamed n;
@@ -88,36 +44,8 @@ RayTracingParamsNamed rayTracingParamsNamed(RayTracingParamsGLSL p) {
     return n;
 }
 
-// Shared ray payload (rgen + rmiss + rchit). MUST stay a single variable:
-// SPIR-V allows at most one IncomingRayPayloadKHR per entry point
-// (VUID-StandaloneSpirv-IncomingRayPayloadKHR-04700).
-struct RTPayload {
-    vec3 color;        // hit color (or sky on miss)
-    float hitDistance; // hitT (or -1 on miss)
-    float coarseF;     // 0=fine box (use hit as-is), 1=coarse (feather to deep/sky)
-};
 
-struct RTProxyMetaGLSL {    vec4 minAndMatId;  // xyz=AABB min, w=material id
-    vec4 maxAndFlags;  // xyz=AABB max, w=flags
-    vec4 albedoRough;  // rgb=avg albedo, a=roughness
-    vec4 extra;        // x=horizontal footprint (max x/z extent, for coarse-box fallback), yzw reserved
-};
 
-// Named view over the packed RTProxyMetaGLSL - same data, descriptive names. The builder below is the
-// only place the packed component letters are read; every other access uses the
-// named attributes.
-struct RTProxyMetaNamed {
-    vec3 boxMin;
-    vec2 boxMinXZ;   // horizontal extent of boxMin
-    float materialId;
-    vec3 boxMax;
-    vec2 boxMaxXZ;   // horizontal extent of boxMax
-    float boxTop;    // boxMax.y: the box top edge
-    bool isWater;
-    vec3 albedo;
-    float roughness;
-    float footprint;
-};
 
 RTProxyMetaNamed rtProxyMetaNamed(RTProxyMetaGLSL p) {
     RTProxyMetaNamed n;
