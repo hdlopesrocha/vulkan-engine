@@ -10,7 +10,6 @@ layout(location = VARY_BRUSHPATCH) flat in int inBrushIndex;
 layout(location = VARY_POSWORLD) in      vec3 inWorldPos;
 layout(location = VARY_PLANE_NORMAL) flat in vec3 inPlaneNormal;
 layout(location = VARY_POSLIGHT) flat in vec3 inTangentWS;
-layout(location = VARY_ROTFRAC) in float inFireSeed; // per-instance random (fire snapshots)
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 layout(location = FRAG_OUT_NORMAL) out vec4 outNormal; // world-space normal, encoded to [0,1]
@@ -35,25 +34,8 @@ layout(push_constant) uniform PushConstants {
     float impostorDistance;
 };
 
-#include "includes/fire_common.glsl"
-
 void main() {
     vec3 coord = vec3(inTexCoord.xy, inTexCoord.z);
-
-    // Fire snapshot: the crossed planes shade procedurally (same flame
-    // function as the live billboards) at capture time. The animation clock
-    // is frozen, so all views share one consistent flame shape. The alpha
-    // floor matches the runtime passes (0.02) so the faint halo survives in
-    // the snapshot and apparent flame size matches the billboards.
-    if (inBrushIndex == FIRE_BILLBOARD_INDEX) {
-        vec4 flame = evaluateFire(inTexCoord.xy, inFireSeed, windTime);
-        if (flame.a < 0.02) discard;
-        outColor.rgb = flame.rgb;
-        outColor.a   = flame.a;
-        outNormal   = vec4(0.5, 0.5, 1.0, 1.0); // unused (fire is unlit at runtime)
-        outDepth    = gl_FragCoord.z;
-        return;
-    }
 
     vec4  leafAlbedo  = texture(albedoArray,  coord);
     float opacity     = texture(opacityArray, coord).r;

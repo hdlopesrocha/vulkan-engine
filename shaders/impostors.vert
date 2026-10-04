@@ -99,19 +99,6 @@ layout(push_constant) uniform PushConstants {
     float impostorDistance;
 };
 
-// Fire params (set=2, binding=1) for procedural fire-quad sizing. Must match
-// FireParamsUBO (vulkan/ubo/FireUBO.hpp). Values only — no flame functions
-// (those need fbm, unavailable with perlin2d.glsl here).
-layout(set = 2, binding = 1) uniform FireParamsUBO {
-    vec4 fireEnabledSizeSpeedIntensity; // x=enabled, y=size, z=speed, w=intensity
-    vec4 fireShape;                     // x=flicker, y=noiseScale, z=heightScale, w=turbulence
-    vec4 fireMotion;                    // x=riseSpeed, y=windInfluence, z=alpha, w=emissive
-    vec4 fireInnerColor;
-    vec4 fireMidColor;
-    vec4 fireOuterColor;
-    vec4 fireExtra;                     // x=smoke
-} fireParamsImp;
-
 #include "includes/perlin2d.glsl"
 #include "includes/vegetation_common.glsl"
 
@@ -120,19 +107,6 @@ void main() {
     int billboardIdx = int(floor(instanceData.w));
     float rotFrac = fract(instanceData.w);
     outRotFrac = rotFrac;
-
-    // Fire impostors shade procedurally (same as fire billboards): no capture
-    // exists for flames, which stay animated at every distance. When fire is
-    // disabled in the widget, fire instances collapse (atlas layer 3 is out
-    // of bounds for the 3-layer capture arrays).
-    bool isFire = (billboardIdx == FIRE_BILLBOARD_INDEX);
-    bool fireOn = fireParamsImp.fireEnabledSizeSpeedIntensity.x > 0.5;
-    if (isFire && !fireOn) {
-        outTexCoord = vec3(0.0); outWorldPos = worldPos; outFaceNormal = vec3(0.0, 1.0, 0.0);
-        outInstanceOffset = worldPos;
-        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-        return;
-    }
 
     vec3 camPos = ubo.viewPosition;
     float dist = distance(worldPos, camPos);
@@ -185,33 +159,13 @@ void main() {
         if (dt > bestDot) { bestDot = dt; bestIdx = i; }
     }
 
-    int layerIdx = clamp(billboardIdx, 0, 3) * NUM_VIEWS + bestIdx;
+    int layerIdx = clamp(billboardIdx, 0, 2) * NUM_VIEWS + bestIdx;
 
     float hs = inBakedHeight;
 
     vec3 center;
     float quadHalfW;
     float quadHalfH;
-    float fireCenterH = 0.0f;
-    if (isFire) {
-        // Procedural fire quad: sized to the CAPTURE FRAME (not the flame
-        // core) so the full-frame snapshot UVs map 1:1 with no shrinking.
-        // Same formula as ImpostorCapture::capture (frame half-extent from
-        // live settings); transparent margins are discarded, so the bigger
-        // quad costs only a few transparent pixels. Flame center anchors the
-        // quad so base and tip land on their world footprint.
-        // Width additionally tracks the per-instance variation the billboards
-        // use (snapshots bake wVar 0.85 from the canonical rotFrac 0), so
-        // wide instances don't shrink at the hand-off.
-        float fSize = max(fireParamsImp.fireEnabledSizeSpeedIntensity.y, 0.1);
-        float fHeightScale = max(fireParamsImp.fireShape.z, 0.1);
-        float fireHLive = fSize * fHeightScale;
-        float frameHE = 0.5773503 * max(fireHLive * 0.92, fSize * 1.0);
-        float wVarLive = (0.85 + 0.3 * rotFrac) / 0.85;
-        quadHalfW = frameHE * wVarLive;
-        quadHalfH = frameHE;
-        fireCenterH = fireHLive * 0.5;
-    }
 
     // Match the capture setup: the plant was captured at heightScale=1.0 with a
     // fixed-size square framebuffer. The plant occupies only 34.6% of the image
@@ -225,11 +179,7 @@ void main() {
     vec3 surfN = inInstanceNormal;
     float surfNLen2 = dot(surfN, surfN);
     surfN = (surfNLen2 > 1e-8) ? surfN * inversesqrt(surfNLen2) : vec3(0.0, 1.0, 0.0);
-    if (isFire) {
-        center = worldPos + surfN * fireCenterH;
-    } else {
-        center = worldPos + surfN * (billboardScale * hs * 0.5);
-    }
+    center = worldPos + surfN * (billboardScale * hs * 0.5);
     vec3 worldUp = vec3(0.0, 1.0, 0.0);
 
     vec3 right;
@@ -246,11 +196,8 @@ void main() {
     // billboardScale and scaled uFrac by hs, which cancelled out and rendered
     // every impostor at the capture size - tall plants shrank and short ones
     // were cropped at the hand-off.)
-    // Fire quads were sized above (full-quad procedural flames, no crop).
-    if (!isFire) {
-        quadHalfW = 0.75 * billboardScale * hs;
-        quadHalfH = 0.5  * billboardScale * hs;
-    }
+    quadHalfW = 0.75 * billboardScale * hs;
+    quadHalfH = 0.5  * billboardScale * hs;
     right = right * quadHalfW;
     vec3 up = upDir * quadHalfH;
 
@@ -265,18 +212,12 @@ void main() {
     // Crop UV to the plant's bounding box within the captured image.
     // The plant occupies UV.V in [0.327, 0.673] (vertical) and
     // UV.U in [0.5 ± 1.5/2.8867] (horizontal), independent of hs.
-    // Fire skips the crop: flames shade procedurally from the raw quad UV
-    // (impostors.frag derives the fire type from the layer index).
-    if (isFire) {
-        outTexCoord = vec3(inCornerUV, float(layerIdx));
-    } else {
-        float uFrac = 1.5 / 2.886751346;      // 1.5 / (2 * 2.5 * tan(30°))
-        float vFrac = 1.0 / 2.886751346;      // billboardScale / (2 * 2.5 * billboardScale * tan(30°))
-        float vOff  = 0.5 - 0.5 / 2.886751346;
-        outTexCoord = vec3(0.5 + (inCornerUV.x - 0.5) * uFrac,
-                           inCornerUV.y * vFrac + vOff,
-                           float(layerIdx));
-    }
+    float uFrac = 1.5 / 2.886751346;      // 1.5 / (2 * 2.5 * tan(30°))
+    float vFrac = 1.0 / 2.886751346;      // billboardScale / (2 * 2.5 * billboardScale * tan(30°))
+    float vOff  = 0.5 - 0.5 / 2.886751346;
+    outTexCoord = vec3(0.5 + (inCornerUV.x - 0.5) * uFrac,
+                       inCornerUV.y * vFrac + vOff,
+                       float(layerIdx));
     outWorldPos = finalPos;
     gl_Position = ubo.viewProjection * vec4(finalPos, 1.0);
 }

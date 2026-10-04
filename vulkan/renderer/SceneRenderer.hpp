@@ -33,6 +33,7 @@ class World;
 #include "ShadowRenderer.hpp"
 #include "DebugCubeRenderer.hpp"
 #include "DebugSDFRenderer.hpp"
+#include "SdfRenderer.hpp"
 #include "WireframeRenderer.hpp"
 #include "WaterBackFaceRenderer.hpp"
 #include "BrushRenderer.hpp"
@@ -80,6 +81,11 @@ public:
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
     std::unique_ptr<DebugSDFRenderer> debugSDFRenderer;
+    // Generic GPU-driven SDF renderer (surface/volume/emissive/transparent).
+    // Independent from the terrain octree; fire is its first consumer (volumetric
+    // material + instanced flame SDF + spatial grid). Own offscreen targets,
+    // composited by PostProcess after vegetation/water.
+    std::unique_ptr<SdfRenderer> sdfRenderer;
     std::unique_ptr<WireframeRenderer> waterWireframe;
 
     // See setWaterRenderScale().
@@ -414,7 +420,7 @@ private:
         IndirectRenderer& brushWaterIR,
         const std::function<uint32_t(Layer layer, NodeID nid, bool isBrush)>& takeOldSlot,
         const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version, bool isBrush)>& onChunkPublished,
-        const std::function<void(NodeID nid, const Geometry& geom, bool isBrush)>& onFinestPublished);
+        const std::function<void(NodeID nid, const Geometry& geom, bool isBrush, uint8_t lod)>& onFinestPublished);
 
     // Age out main-stream pending-delete slots older than MAX_FRAMES_IN_FLIGHT
     // (genuine deletions with no replacement chunk).

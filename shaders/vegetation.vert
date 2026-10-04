@@ -32,7 +32,6 @@ layout(location = VARY_BRUSHPATCH) flat out int outBrushIndex;
 layout(location = VARY_POSWORLD) out vec3 outWorldPos;
 layout(location = VARY_PLANE_NORMAL) flat out vec3 outPlaneNormal;
 layout(location = VARY_POSLIGHT) flat out vec3 outTangentWS;
-layout(location = VARY_ROTFRAC) out float outFireSeed; // per-instance random for fire animation
 
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 viewProjection;
@@ -119,20 +118,6 @@ layout(push_constant) uniform PushConstants {
     float impostorDistance;
 };
 
-// Fire params (set=2, binding=1). Must match FireParamsUBO
-// (vulkan/ubo/FireUBO.hpp). The capture pipeline shares the vegetation
-// set=2 layout, so this block is also valid in the VEG_CAPTURE variant
-// (fire snapshots size from the live fire settings).
-layout(set = 2, binding = 1) uniform FireParamsUBO {
-    vec4 fireEnabledSizeSpeedIntensity; // x=enabled, y=size, z=speed, w=intensity
-    vec4 fireShape;                     // x=flicker, y=noiseScale, z=heightScale, w=turbulence
-    vec4 fireMotion;                    // x=riseSpeed, y=windInfluence, z=alpha, w=emissive
-    vec4 fireInnerColor;
-    vec4 fireMidColor;
-    vec4 fireOuterColor;
-    vec4 fireExtra;                     // x=smoke
-} fireParamsVert;
-
 #include "includes/perlin2d.glsl"
 #include "includes/vegetation_common.glsl"
 
@@ -210,7 +195,6 @@ vec3 applyWindSkew(vec3 basePos, vec3 right, float heightFactor) {
 void main() {
     // Sentinel: instance was skipped by generator (empty biome or steep slope).
     if (instanceData.w < 0.0) {
-        outFireSeed = 0.0;
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
@@ -220,30 +204,6 @@ void main() {
 
     int billboardIdx = int(floor(instanceData.w));
     float rotFrac = fract(instanceData.w);
-    outFireSeed = rotFrac;
-
-    // Fire instances share the crossed-plane mesh but shade procedurally.
-    // When fire is disabled in the widget, fire instances collapse instead
-    // of sampling atlas layer 3 (out of bounds: the atlas has 3 layers).
-    bool isFireIndex = (billboardIdx == FIRE_BILLBOARD_INDEX);
-    bool fireOn = fireParamsVert.fireEnabledSizeSpeedIntensity.x > 0.5;
-    if (isFireIndex && !fireOn) {
-        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
-        return;
-    }
-    bool isFire = isFireIndex && fireOn;
-
-    // Draw-mode protocol on windEnabled: 2.0 selects the fire-only pass.
-    // Flames render in dedicated draws (blended, no inter-fire depth writes)
-    // so the crossed planes accumulate instead of z-fighting; normal passes
-    // draw vegetation only. Shadow (-1.0) never reaches this shader (it has
-    // its own vertex shader, which drops fire). Placed before the trig so
-    // culled instances skip all heavy work.
-    bool fireOnlyPass = windEnabled > 1.5;
-    if (isFire != fireOnlyPass) {
-        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
-        return;
-    }
 
     // Distance-based culling, hoisted above per-instance decode (perf report
     // 22 H4): the condition uses only worldPos/camPos, so culled instances
@@ -259,9 +219,6 @@ void main() {
     // the impostors did not visually replace, reading as a bare ring; the
     // half-res Minimal vegetation target made each 4x4 Bayer block cover
     // 8x8 screen pixels, so the ring was unmissable.
-    // Fire hands off exactly like vegetation (procedural fire impostors in
-    // impostors.vert/impostors.frag); only the shadow map vertex shaders
-    // collapse fire, since flames cast no shadow.
     if (impostorDistance > 0.0 && distance(worldPos, camPos) >= impostorDistance) {
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
         return;
@@ -273,8 +230,6 @@ void main() {
     float theta = rotFrac * 6.28318530718;
     float cosT = cos(theta);
     float sinT = sin(theta);
-
-    bool shadowPass = windEnabled < 0.0;
 
     // Per-instance height variation: baked (see inBakedHeight decl).
     // Identical to vegetationHeightScale(worldPos.xz); the bake covers all
@@ -293,45 +248,13 @@ void main() {
     // Compute height factor for wind: 0 = bottom, 1 = top
     float heightFactor = (cornerType == 2 || cornerType == 3) ? 1.0 : 0.0;
 
-    vec3 localPos;
-    vec3 windOffset;
-    if (isFire) {
-        // Fire quad sizing comes from the fire widget (not billboardScale),
-        // with per-instance width variation and flicker-driven height pulse.
-        // The VEG_CAPTURE variant uses the same branch: snapshots are framed
-        // for exactly this sizing (see ImpostorCapture::capture).
-        float fireSize = max(fireParamsVert.fireEnabledSizeSpeedIntensity.y, 0.1);
-        float fireHeightScale = max(fireParamsVert.fireShape.z, 0.1);
-        float fireFlicker = fireParamsVert.fireShape.x;
-        float fireSpeed = max(fireParamsVert.fireEnabledSizeSpeedIntensity.z, 0.0);
-        float fireTurb = max(fireParamsVert.fireShape.w, 0.0);
-        float fireWindInfl = fireParamsVert.fireMotion.y;
-        float wVar = 0.85 + 0.3 * rotFrac;
-        float hFlick = 1.0 + fireFlicker * 0.12
-                     * sin(windTime * (4.0 + fireSpeed * 2.0) + rotFrac * 43.0);
-        vec3 rlp = rotateY(inLocalPos, cosT, sinT);
-        rlp.x *= fireSize * wVar;
-        rlp.z *= fireSize * wVar;
-        rlp.y *= fireSize * fireHeightScale * hFlick;
-        localPos = rlp;
-        // Wind bends flames weakly; flame wobble grows toward the tip so
-        // neighbours desync instead of swaying uniformly.
-        vec3 baseWind = applyWindSkew(worldPos + localPos, tangent, heightFactor);
-        float wob = sin(windTime * fireSpeed * 3.1 + rotFrac * 61.0 + heightFactor * 4.0);
-        float wob2 = cos(windTime * fireSpeed * 2.3 + rotFrac * 47.0 + heightFactor * 3.0);
-        vec3 wobble = vec3(wob * 0.10 * fireSize * (0.4 + fireTurb) * (0.2 + heightFactor),
-                           abs(wob2) * 0.05 * fireSize * heightFactor,
-                           wob2 * 0.10 * fireSize * (0.4 + fireTurb) * (0.2 + heightFactor));
-        windOffset = baseWind * clamp(fireWindInfl, 0.0, 1.0) + wobble;
-    } else {
-        // Scale the pre-computed corner offsets by the per-instance billboard size.
-        // Base corners use hs=0.5, h=1.0, tilt=1.0 — scale by billboardScale * heightVariation.
-        float scale = billboardScale * heightScale;
-        localPos = rotateY(inLocalPos, cosT, sinT) * scale;
+    // Scale the pre-computed corner offsets by the per-instance billboard size.
+    // Base corners use hs=0.5, h=1.0, tilt=1.0 — scale by billboardScale * heightVariation.
+    float scale = billboardScale * heightScale;
+    vec3 localPos = rotateY(inLocalPos, cosT, sinT) * scale;
 
-        // Apply wind displacement
-        windOffset = applyWindSkew(worldPos + localPos, tangent, heightFactor);
-    }
+    // Apply wind displacement
+    vec3 windOffset = applyWindSkew(worldPos + localPos, tangent, heightFactor);
 
     // Final world position. The billboard frame tilts onto the surface normal
     // (shortest arc from +Y) so grass grows along the terrain, not world-up.

@@ -53,9 +53,4 @@
 #define VARY_COLOR 22
 #define VARY_HSV 23
 
-// Vegetation billboard index reserved for procedural animated fire
-// (see VegetationRenderer::kFireBillboardIndex). Fire instances share the
-// crossed-plane mesh but skip the atlas fetch and shade procedurally.
-#define FIRE_BILLBOARD_INDEX 3
-
 #endif // LOCATIONS_GLSL

@@ -1,7 +1,6 @@
 #include "ImpostorService.hpp"
 #include "../vulkan/VulkanApp.hpp"
 #include "../vulkan/renderer/VegetationRenderer.hpp"
-#include <algorithm>
 
 ImpostorService::ImpostorService() {}
 
@@ -38,28 +37,10 @@ void ImpostorService::captureAll(float scale) {
     if (!vulkanApp || srcAlbedo == VK_NULL_HANDLE || srcSampler == VK_NULL_HANDLE)
         return;
 
-    // Snapshots bake at setup time, before any frame draw has synced the
-    // UBOs. Push live fire settings now or fire captures bake stale init
-    // defaults (tiny flames) inside live-sized frames. Wind stays unsynced
-    // on purpose (calm, deterministic snapshots).
-    if (vegRenderer) vegRenderer->updateFireParamsUBO();
     capture.captureAll(vulkanApp,
                        srcAlbedo, srcNormal, srcOpacity, srcSampler,
                        scale);
     rewire();
-}
-
-void ImpostorService::captureFireOnly() {
-    if (!vulkanApp || !vegRenderer ||
-        srcAlbedo == VK_NULL_HANDLE || srcSampler == VK_NULL_HANDLE)
-        return;
-
-    vegRenderer->updateFireParamsUBO();
-    const float fireScale = std::max(0.1f, vegRenderer->getFireSettings().size);
-    capture.capture(vulkanApp,
-                    srcAlbedo, srcNormal, srcOpacity, srcSampler,
-                    fireScale, VegetationRenderer::kFireBillboardIndex);
-    // No rewire needed: the same array views already point at layers 60-79.
 }
 
 void ImpostorService::rewire() {

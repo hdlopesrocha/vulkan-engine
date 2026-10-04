@@ -113,14 +113,6 @@ void main() {
     int billboardIdx = int(floor(instanceData.w));
     float rotFrac = fract(instanceData.w);
 
-    // Fire casts no shadow (this vertex shader feeds the shadow maps only).
-    if (billboardIdx == FIRE_BILLBOARD_INDEX) {
-        outTexCoord = vec3(0.0); outInstanceOffset = worldPos;
-        outWorldPos = vec3(0.0);
-        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-        return;
-    }
-
     if (impostorDistance <= 0.0) {
         outTexCoord = vec3(0.0); outInstanceOffset = worldPos;
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0);

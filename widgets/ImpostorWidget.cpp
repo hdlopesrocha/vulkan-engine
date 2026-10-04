@@ -25,8 +25,8 @@ void ImpostorWidget::render() {
         ImGui::Text("Billboard:");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(140.0f);
-        const char* names[] = { "Foliage (0)", "Grass (1)", "Wild (2)", "Fire (3)" };
-        const int   nameCount = 4;
+        const char* names[] = { "Foliage (0)", "Grass (1)", "Wild (2)" };
+        const int   nameCount = 3;
         if (selectedBillboard >= nameCount) selectedBillboard = 0;
         ImGui::Combo("##BillboardSel", &selectedBillboard, names, nameCount);
     }

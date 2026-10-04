@@ -86,6 +86,10 @@ layout(set = 0, binding = 14) uniform sampler2D bboxDepthTex;
 //           0 = crisp), B/A unused.
 layout(set = 0, binding = 15) uniform sampler2D waterBodyTex;
 layout(set = 0, binding = 16) uniform sampler2D waterColumnTex;
+// Generic SDF volume (fire/smoke/clouds) offscreen color (premultiplied-ish
+// emission, A = opacity) + depth. Owned by SdfRenderer.
+layout(set = 0, binding = 17) uniform sampler2D fireColorTex;
+layout(set = 0, binding = 18) uniform sampler2D fireDepthTex;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -266,7 +270,20 @@ void main() {
         }
     }
 
-    // 5. Debug overlays (SDF cubes + mesh bounding boxes) — composited after the
+    // 5. Generic SDF volume (fire): emissive accumulation composited by depth.
+    // The volume target stores front-to-back accumulation whose rgb is
+    // already transmittance-weighted, so the correct OVER is
+    // dst*(1-a) + src (a plain mix() would dim the fire twice).
+    float fireDepth = texture(fireDepthTex, uv).r;
+    if (fireDepth < 1.0 && !(obstacleDepth < fireDepth)) {
+        vec4 fireColor = textureLod(fireColorTex, uv, 0.0);
+        float fa = clamp(fireColor.a, 0.0, 1.0);
+        if (fa > 0.0) {
+            finalColor = finalColor * (1.0 - fa) + fireColor.rgb;
+        }
+    }
+
+    // 6. Debug overlays (SDF cubes + mesh bounding boxes) — composited after the
     // brush so they sit on top, but still occluded by solid + vegetation geometry.
     // Both render to their own offscreen depth; we hide a debug fragment that is
     // behind the current obstacle (solid or vegetation) surface.

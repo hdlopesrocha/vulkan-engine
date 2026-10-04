@@ -18,10 +18,6 @@ public:
                    VkSampler sampler);
     void setVegetationRenderer(VegetationRenderer* renderer) { vegRenderer = renderer; }
     void captureAll(float scale);
-    // Re-bake only the fire snapshots (layers 60-79) from the live fire
-    // settings. Use after tuning fire size/height/noise/colors so distant
-    // flames match the billboards (snapshots are static by design).
-    void captureFireOnly();
     void rewire();
     void invalidateImGuiDescriptors();
     void recreateImGuiDescriptors();

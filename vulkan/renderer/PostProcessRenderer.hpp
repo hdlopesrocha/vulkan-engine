@@ -46,6 +46,7 @@ public:
                 VkImageView vegColorView, VkImageView vegDepthView,
                 VkImageView sdfColorView, VkImageView sdfDepthView,
                 VkImageView bboxColorView, VkImageView bboxDepthView,
+                VkImageView fireColorView, VkImageView fireDepthView,
                 float brushAlpha, float brushMode,
                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
                 const glm::vec3& viewPos,
@@ -66,10 +67,10 @@ private:
     // buffers (one per frame slot). No-op when !app->useDescriptorBuffer().
     void createDescriptorBuffers(VulkanApp* app);
     void destroyDescriptorBuffers(VulkanApp* app);
-    // Write one frame slot's descriptor-buffer memory (bindings 0-16).
+    // Write one frame slot's descriptor-buffer memory (bindings 0-18).
     // Returns false when the DB path cannot be used (caller falls back).
     bool writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t slot,
-                                     const std::array<VkDescriptorImageInfo, 17>& imageInfos,
+                                     const std::array<VkDescriptorImageInfo, 19>& imageInfos,
                                      const VkDescriptorImageInfo& skyImageInfo,
                                      const VkDescriptorBufferInfo& bufferInfo);
 
@@ -81,11 +82,11 @@ private:
     std::array<TrackedHandle<VkDescriptorSet>, FRAMES_IN_FLIGHT> descriptorSets;
 
     // Descriptor-buffer state (live only when useDescriptorBuffer()).
-    // Layout = descriptorSetLayout (17 bindings: 16 images + 1 UBO).
+    // Layout = descriptorSetLayout (19 bindings: 18 images + 1 UBO).
     std::array<Buffer, FRAMES_IN_FLIGHT> descBuffers_{};
     std::array<VkDeviceAddress, FRAMES_IN_FLIGHT> descAddresses_{};
     VkDeviceSize descSetSize_ = 0;
-    std::array<VkDeviceSize, 17> descBindingOffsets_{};
+    std::array<VkDeviceSize, 19> descBindingOffsets_{};
     bool descReady_ = false;
 
     // Per-frame-slot cache of the last descriptor contents written by render().
@@ -101,9 +102,9 @@ private:
     // vkCmdBindDescriptorBuffersEXT): cache miss triggers direct
     // DescriptorBufferHelper host writes (plain memcpys, no driver validation).
     struct FrameDescriptorSignature {
-        std::array<VkSampler, 17> samplers{};
-        std::array<VkImageView, 17> views{};
-        std::array<VkImageLayout, 17> layouts{};
+        std::array<VkSampler, 19> samplers{};
+        std::array<VkImageView, 19> views{};
+        std::array<VkImageLayout, 19> layouts{};
         VkBuffer uboBuffer = VK_NULL_HANDLE;
         VkDeviceSize uboOffset = 0;
         VkDeviceSize uboRange = 0;

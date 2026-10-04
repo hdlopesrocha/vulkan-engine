@@ -112,13 +112,6 @@ void main() {
         return;
     }
 
-    // Fire casts no shadow (it is a light source): collapse fire instances.
-    if (int(floor(instanceData.w)) == FIRE_BILLBOARD_INDEX) {
-        outWorldPos = vec3(0.0);
-        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
-        return;
-    }
-
     int cornerType = inCornerNormalData & 0xFF;
 
     vec3 worldPos = instanceData.xyz;

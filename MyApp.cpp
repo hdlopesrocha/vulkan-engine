@@ -54,7 +54,8 @@
 #include "widgets/QueueTimelineWidget.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/WindWidget.hpp"
-#include "widgets/FireWidget.hpp"
+#include "widgets/SdfWidget.hpp"
+#include "sdf/gpu/SdfScene.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
 #include "widgets/Brush3dWidget.hpp"
 #include "widgets/MusicWidget.hpp"
@@ -200,6 +201,7 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
             renderer->world()->chunkManager().removeChunk(base);
             if (renderer->debugCubeRenderer) renderer->debugCubeRenderer->removeCubeForNode(nid);
             if (renderer->debugSDFRenderer) renderer->debugSDFRenderer->removeCubesForNode(nid);
+            if (renderer->sdfRenderer) renderer->sdfRenderer->removeLavaChunk(static_cast<uintptr_t>(nid));
             return;
         }
 
@@ -297,7 +299,9 @@ public:
     std::shared_ptr<QueueTimelineWidget> queueTimelineWidget;
     std::shared_ptr<VegetationAtlasEditor> vegetationAtlasEditor;
     std::shared_ptr<WindWidget> windWidget;
-    std::shared_ptr<FireWidget> fireWidget;
+    // Generic SDF volumes UI (SDF fire is always on; anchors stream in
+    // from lava chunks, so no CPU scene mirror lives here).
+    std::shared_ptr<SdfWidget> sdfWidget;
     std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     std::shared_ptr<RadialMenu> radialMenu;
@@ -813,10 +817,14 @@ public:
         queueTimelineWidget = std::make_shared<QueueTimelineWidget>(this);
         queueTimelineWidget->updateWithApp(this);
         windWidget = std::make_shared<WindWidget>(sceneRenderer->vegetationRenderer.get());
-        fireWidget = std::make_shared<FireWidget>(sceneRenderer->vegetationRenderer.get());
-        fireWidget->setOnRecaptureFire([this]() {
-            if (impostorService) impostorService->captureFireOnly();
-        });
+        sdfWidget = std::make_shared<SdfWidget>(
+            sceneRenderer->sdfRenderer.get());
+        // Generic SDF fire volume (spec §19) is the fire path; flame
+        // anchors stream in from brush-4 lava chunks as they publish (see
+        // SceneRenderer::processPendingMeshes ingest hook).
+        if (sceneRenderer->sdfRenderer) {
+            sceneRenderer->sdfRenderer->setRenderMode(SdfRenderer::RenderMode::Volume);
+        }
         mp3Widget = std::make_shared<MusicWidget>();
 
         // Radial menu (input-agnostic overlay, not a Widget subclass)
@@ -844,7 +852,7 @@ public:
         widgetManager.addWidget(queueTimelineWidget);
         widgetManager.addWidget(vegetationAtlasEditor);
         widgetManager.addWidget(windWidget);
-        widgetManager.addWidget(fireWidget);
+        widgetManager.addWidget(sdfWidget);
         widgetManager.addWidget(mp3Widget);
         widgetManager.addWidget(billboardCreator);
         widgetManager.addWidget(impostorWidget);
@@ -2207,29 +2215,17 @@ public:
             });
         }
 
-        // --- SDF debug cubes on its own command buffer (signals semSdf) ---
-        // Renders to its own offscreen color+depth framebuffer (decoupled from the
-        // solid pass) so it runs in parallel with the solid/vegetation shading on the
-        // dedicated sdfQueue. Depends on the cull task's SDF compact/count buffers
-        // (written by the terrain IR's indirect.comp), so it waits on its own
-        // cull-result semaphore (semCullSdf). When the overlay is disabled it only
-        // clears the offscreen so the composite shows no SDF cubes.
+        // --- SDF debug cubes + generic SDF volumes (fire) on one CB (signals tlSdf) ---
+        // Both render to their own offscreens on the dedicated sdfQueue.
+        // Debug cubes depend on the cull task's SDF buffers (tlCull); the
+        // generic SdfRenderer (fire) is self-contained (own grid upload) and
+        // shares the same submit so only one tlSdf signal is needed.
         {
             const bool sdfEnabled = settings.showSDFDebug;
             asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, v]() {
-                // C3: elide the whole task (no CB, no submit, no signal) in
-                // steady-state disabled. Sound: targets stay clear +
-                // SHADER_READ_ONLY from warmup/final clears, nothing else
-                // writes them, and the composite only waits on timelines
-                // registered by submits that actually run. Warmup (3 runs =
-                // frames in flight) covers initial state + pipelining; any
-                // toggle forces one run. Single-worker pool: statics safe.
-                static bool sdfPrevEnabled = false;
-                static uint32_t sdfRuns = 0;
-                const bool sdfTransition = (sdfEnabled != sdfPrevEnabled);
-                sdfPrevEnabled = sdfEnabled;
-                if (!sdfEnabled && !sdfTransition && sdfRuns >= 3) return;
-                ++sdfRuns;
+                // SDF fire is always on, so the task runs every frame (no
+                // steady-state elision: the same CB carries the fire render).
+                // The debug-cubes pass is gated by sdfEnabled internally.
                 MyApp* app = this;
                 VkCommandBuffer sdfCmd = app->beginAsyncTask("sdf");
                 if (sdfCmd == VK_NULL_HANDLE) return;
@@ -2237,6 +2233,18 @@ public:
                 this->sceneRenderer->setCmdState(&taskState);
                 if (this->sceneRenderer->debugSDFRenderer) {
                     this->sceneRenderer->debugSDFRenderer->render(this, sdfCmd, app->getMainDescriptorSet(), frameIdx, sdfEnabled);
+                }
+                // Generic SDF volume (fire): GPU-procedural animation needs no
+                // CPU scene edits; just stream the time uniform per frame.
+                // Occlusion is resolved in the composite by depth, so the SDF
+                // pass intentionally does NOT sample the solid depth target
+                // (racing the solid pass discarded every pixel).
+                if (this->sceneRenderer->sdfRenderer) {
+                    float t = this->mainTime * (this->sdfWidget ? this->sdfWidget->timeScale : 1.0f);
+                    this->sceneRenderer->sdfRenderer->setFrame(frameIdx);
+                    this->sceneRenderer->sdfRenderer->updateParams(t, frameIdx);
+                    this->sceneRenderer->sdfRenderer->prepareCull(sdfCmd);
+                    this->sceneRenderer->sdfRenderer->render(this, sdfCmd, app->getMainDescriptorSet(), frameIdx, true);
                 }
                 // Wait on semCullSdf (own binary semaphore, distinct from the main
                 // CB's semMainCull) so the cull task's GPU-written SDF buffers are
@@ -3087,6 +3095,12 @@ public:
                 bboxColorView = sceneRenderer->boundingBoxRenderer->getBboxColorView(frameIdx);
                 bboxDepthView = sceneRenderer->boundingBoxRenderer->getBboxDepthView(frameIdx);
             }
+            VkImageView fireColorView = VK_NULL_HANDLE;
+            VkImageView fireDepthView = VK_NULL_HANDLE;
+            if (sceneRenderer->sdfRenderer) {
+                fireColorView = sceneRenderer->sdfRenderer->getSdfColorView(frameIdx);
+                fireDepthView = sceneRenderer->sdfRenderer->getSdfDepthView(frameIdx);
+            }
             float brushAlpha = 0.5f;
             float brushMode = 0.0f;
             const BrushEntry* brushEntry = brushManager.getSelectedEntry();
@@ -3129,6 +3143,8 @@ public:
                 sdfDepthView,
                 bboxColorView,
                 bboxDepthView,
+                fireColorView,
+                fireDepthView,
                 brushAlpha,
                 brushMode,
                 viewProj,
@@ -3903,6 +3919,9 @@ void MyApp::resetSceneState() {
         if (sceneRenderer->debugSDFRenderer) sceneRenderer->debugSDFRenderer->clearCubes();
         if (sceneRenderer->vegetationRenderer) {
             sceneRenderer->vegetationRenderer->clearAllInstances();
+        }
+        if (sceneRenderer->sdfRenderer) {
+            sceneRenderer->sdfRenderer->clearLava();
         }
     }
 

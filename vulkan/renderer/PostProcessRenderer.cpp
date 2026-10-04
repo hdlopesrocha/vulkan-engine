@@ -58,8 +58,8 @@ void PostProcessRenderer::createSampler(VulkanApp* app) {
 void PostProcessRenderer::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    // Descriptor set layout – 17 bindings (16 image samplers + 1 UBO)
-    std::array<VkDescriptorSetLayoutBinding, 17> bindings{};
+    // Descriptor set layout – 19 bindings (18 image samplers + 1 UBO)
+    std::array<VkDescriptorSetLayoutBinding, 19> bindings{};
 
     for (int i = 0; i < 6; ++i) {
         bindings[i].binding = i;
@@ -134,6 +134,18 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     bindings[16].descriptorCount = 1;
     bindings[16].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    // Generic SDF volume (fire/smoke/clouds) offscreen color + depth.
+    // Owned by SdfRenderer; composited by depth like the debug SDF cubes.
+    bindings[17].binding = 17;
+    bindings[17].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[17].descriptorCount = 1;
+    bindings[17].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[18].binding = 18;
+    bindings[18].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[18].descriptorCount = 1;
+    bindings[18].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     DescriptorAllocator descAlloc{device, app};
     // Descriptor-buffer path: the layout must carry DESCRIPTOR_BUFFER_BIT_EXT
     // (VUID-requires it for vkGetDescriptorSetLayoutSizeEXT /
@@ -197,7 +209,7 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
     VkDescriptorPoolSize poolSizesDesc[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16 * FRAMES_IN_FLIGHT},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18 * FRAMES_IN_FLIGHT},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * FRAMES_IN_FLIGHT}
     };
     descriptorPool = descAlloc.createPool(
@@ -211,8 +223,8 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
 }
 
 // ─── Descriptor Buffers (VK_EXT_descriptor_buffer, Phase 2) ────────────────
-// 3 buffers (one per frame slot). Layout = descriptorSetLayout (17 bindings:
-// 16 images + 1 UBO). Static bindings 0-4, 6-16 are stable per frame slot;
+// 3 buffers (one per frame slot). Layout = descriptorSetLayout (19 bindings:
+// 18 images + 1 UBO). Static bindings 0-4, 6-16 are stable per frame slot;
 // binding 5 holds the UBO device address (written once — per-frame UBO
 // contents stream via memcpy into uniformBuffer, no descriptor update).
 
@@ -252,7 +264,7 @@ void PostProcessRenderer::createDescriptorBuffers(VulkanApp* app) {
         descBuffers_[i] = b;
         descAddresses_[i] = addr;
     }
-    for (uint32_t binding = 0; binding < 17; ++binding) {
+    for (uint32_t binding = 0; binding < 19; ++binding) {
         VkDeviceSize off = 0;
         app->fpGetDescriptorSetLayoutBindingOffsetEXT(device, descriptorSetLayout, binding, &off);
         descBindingOffsets_[binding] = off;
@@ -290,7 +302,7 @@ void PostProcessRenderer::destroyDescriptorBuffers(VulkanApp* app) {
 }
 
 bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t slot,
-                                    const std::array<VkDescriptorImageInfo, 17>& imageInfos,
+                                    const std::array<VkDescriptorImageInfo, 19>& imageInfos,
                                     const VkDescriptorImageInfo& skyImageInfo,
                                     const VkDescriptorBufferInfo& bufferInfo) {
     if (!app || !descReady_ || slot >= FRAMES_IN_FLIGHT) return false;
@@ -325,6 +337,8 @@ bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t s
     wImg(14, imageInfos[14]);
     wImg(15, imageInfos[15]);
     wImg(16, imageInfos[16]);
+    wImg(17, imageInfos[17]);
+    wImg(18, imageInfos[18]);
     // Dynamic binding 5 (UBO): address written once per slot; contents stream
     // via memcpy. vkGetDescriptorEXT forbids VK_WHOLE_SIZE, so the exact range
     // is passed.
@@ -349,6 +363,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                    VkImageView vegColorView, VkImageView vegDepthView,
                                    VkImageView sdfColorView, VkImageView sdfDepthView,
                                    VkImageView bboxColorView, VkImageView bboxDepthView,
+                                   VkImageView fireColorView, VkImageView fireDepthView,
                                    float brushAlpha, float brushMode,
                                    const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                    const glm::vec3& viewPos,
@@ -389,7 +404,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     uniformBuffer.unmap(); // VMA persistent mapping
 
     // Prepare image infos and only write descriptors for valid image views
-    std::array<VkDescriptorImageInfo, 17> imageInfos{};
+    std::array<VkDescriptorImageInfo, 19> imageInfos{};
     {
         static bool diagPrinted = false;
         if (!diagPrinted) {
@@ -435,6 +450,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // G per-material blur radius) for the depth-guided water blur.
     imageInfos[15] = {linearSampler, waterBodyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[16] = {linearSampler, waterColumnView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Generic SDF volume (fire) offscreen color + depth.
+    imageInfos[17] = {linearSampler, fireColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    imageInfos[18] = {linearSampler, fireDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
 
@@ -453,7 +471,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // updates. UBO contents stream via mapped memcpy above. `valid` starts
     // false, so the first frame always writes.
     FrameDescriptorSignature sig;
-    for (int i = 0; i < 17; ++i) {
+    for (int i = 0; i < 19; ++i) {
         if (i == 5) continue; // binding 5 is the UBO, stored separately below
         sig.samplers[i] = imageInfos[i].sampler;
         sig.views[i] = imageInfos[i].imageView;
@@ -568,6 +586,17 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
             writer.writeImage(currentDs, 16, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                               imageInfos[16].sampler, imageInfos[16].imageView,
                               imageInfos[16].imageLayout);
+        }
+        // Generic SDF volume fire (bindings 17/18)
+        if (imageInfos[17].imageView != VK_NULL_HANDLE && imageInfos[17].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 17, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[17].sampler, imageInfos[17].imageView,
+                              imageInfos[17].imageLayout);
+        }
+        if (imageInfos[18].imageView != VK_NULL_HANDLE && imageInfos[18].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 18, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[18].sampler, imageInfos[18].imageView,
+                              imageInfos[18].imageLayout);
         }
 
         writer.flush();

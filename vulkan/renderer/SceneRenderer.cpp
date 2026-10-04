@@ -130,6 +130,9 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (debugSDFRenderer) {
         debugSDFRenderer->cleanup(app);
     }
+    if (sdfRenderer) {
+        sdfRenderer->cleanup(app);
+    }
     if (waterWireframe) {
         waterWireframe->cleanup(app);
     }
@@ -156,6 +159,7 @@ void SceneRenderer::setCmdState(CommandBufferState* state) {
     if (debugCubeRenderer) debugCubeRenderer->setCmdState(state);
     if (boundingBoxRenderer) boundingBoxRenderer->setCmdState(state);
     if (debugSDFRenderer) debugSDFRenderer->setCmdState(state);
+    if (sdfRenderer) sdfRenderer->setCmdState(state);
     if (waterWireframe) waterWireframe->setCmdState(state);
     if (mainLiquidRenderer) mainLiquidRenderer->setCmdState(state);
     if (brushRenderer) brushRenderer->setCmdState(state);
@@ -214,6 +218,7 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         // Water + back-face targets render at Settings::waterRenderScale.
         recreateWaterTargets(app, width, height);
         if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, width, height);
+        if (sdfRenderer) sdfRenderer->createRenderTargets(app, width, height);
         if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, width, height);
         // Hybrid RT outputs are swapchain-sized (half-res): recreate + re-point
         // bindings 15/16 everywhere (views are new handles). TLAS/params/meta
@@ -377,11 +382,16 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     if (debugSDFRenderer) {
         debugSDFRenderer->init(app);
     }
+    if (!sdfRenderer) sdfRenderer = std::make_unique<SdfRenderer>();
+    if (sdfRenderer) {
+        sdfRenderer->init(app);
+    }
 
     // Own offscreen framebuffers for the debug SDF cubes and mesh bounding boxes so
     // they can be rendered on their own parallel async command buffers (composited
     // by postprocess.frag against the solid scene depth).
     if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    if (sdfRenderer) sdfRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
 
     // Create per-frame main uniform buffers (TRANSFER_DST for vkCmdCopyBuffer from staging)
@@ -518,6 +528,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // recreateWaterTargets(), once the water pipelines exist.)
 
     if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    if (sdfRenderer) sdfRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     // Hybrid RT: no cubemap targets — init the proxy BLAS/TLAS + water RT
     // pipeline instead. Unsupported devices get a null-safe stub (raster +
@@ -859,6 +870,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // frame's water pass.
     recreateWaterTargets(app, app->getWidth(), app->getHeight());
     if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    if (sdfRenderer) sdfRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
 
     // Create the solid wireframe pipeline (owned by SolidRenderer) and the
@@ -1378,7 +1390,7 @@ size_t SceneRenderer::publishPendingMeshes(
     IndirectRenderer& brushWaterIR,
     const std::function<uint32_t(Layer layer, NodeID nid, bool isBrush)>& takeOldSlot,
     const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version, bool isBrush)>& onChunkPublished,
-    const std::function<void(NodeID nid, const Geometry& geom, bool isBrush)>& onFinestPublished)
+    const std::function<void(NodeID nid, const Geometry& geom, bool isBrush, uint8_t lod)>& onFinestPublished)
 {
     // One-slot-per-chunk publish. Each queue entry is a self-contained
     // geometry chunk (one mesh per chunk — chunks arrive one by one). The
@@ -1585,7 +1597,7 @@ size_t SceneRenderer::publishPendingMeshes(
         // only in the thinnest high-detail disc around the camera, with no
         // overdraw because overlapping rungs are never simultaneously visible.
         if (layer == LAYER_OPAQUE && vegetationRenderer && !lod.geom.vertices.empty()) {
-            onFinestPublished(nid, lod.geom, isBrush);
+            onFinestPublished(nid, lod.geom, isBrush, lod.lod);
         }
 
         ++slotsPublished;
@@ -1655,6 +1667,10 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // memory on the ImGui path.
     lastOpaqueVisible_ = mainSolidRenderer->getIndirectRenderer().readVisibleCount(app);
     lastTransparentVisible_ = mainLiquidRenderer->getIndirectRenderer().readVisibleCount(app);
+
+    // Coalesced SDF fire rebuild: chunk ingests above only flag dirty; the
+    // scene flatten (grids) runs at most once per frame here.
+    if (sdfRenderer) sdfRenderer->rebuildLavaIfDirty();
 
     if (batch.empty()) {
         // No new geometry yet (brush tessellation may still be running). Keep
@@ -1736,9 +1752,15 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
             }
         },
         // onFinestPublished: grass chunks (main scene only) drive vegetation
-        // from their level-0 (finest) geometry.
-        [this, app](NodeID nid, const Geometry& geom, bool isBrush) {
+        // from their level-0 (finest) geometry. Lava chunks (brush 4) drive
+        // the generic SDF fire the same way (flame anchors, not billboards),
+        // but ONLY at the finest rung: ancestors nest over the same lava, so
+        // coarser rungs would stack duplicate flames floating off the true
+        // surface (the GPU LoD gate that hides this for grass does not exist
+        // for SDF volumes). Frontier chunks tile the whole terrain.
+        [this, app](NodeID nid, const Geometry& geom, bool isBrush, uint8_t lod) {
             if (!isBrush && this->vegetationRenderer) this->vegetationRenderer->generateForChunk(app, nid, geom);
+            if (!isBrush && lod == 0 && this->sdfRenderer) this->sdfRenderer->ingestLavaChunk(static_cast<uintptr_t>(nid), geom);
         });
 
     // ── Orphan + grace sweeps (one sweep for ALL old slots) ──────────────────
