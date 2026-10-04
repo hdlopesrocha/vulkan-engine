@@ -5,7 +5,7 @@
 #include <glm/glm.hpp>
 #include <cstdint>
 
-struct SmokeTuning {
+struct SmokeGPU {
     glm::vec4 timing;   // x = growth duration (s), y = loop duration (s),
                         // z = dissipation, w = unused
     glm::vec4 noise;    // x = noise scale, y = noise strength,
@@ -20,4 +20,4 @@ struct SmokeTuning {
                         // z = turbulence strength, w = turbulence speed
     glm::vec4 render;   // x = shadow samples, y = shadow strength, zw unused
 };
-static_assert(sizeof(SmokeTuning) == 128, "SmokeTuning must be 128 bytes");
+static_assert(sizeof(SmokeGPU) == 128, "SmokeGPU must be 128 bytes");

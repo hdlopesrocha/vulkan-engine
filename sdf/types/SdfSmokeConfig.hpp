@@ -15,7 +15,7 @@ struct SdfSmokeConfig {
     float growthDuration = 4.0f;  // rapid expansion time (s)
     float loopDuration = 10.0f;   // animation repeat period (s)
     float dissipation = 0.15f;
-    float noiseScale = 0.1f;    // 1/m
+    float noiseScale = 32.0f;    // 1/m
     float noiseStrength = 1.0f;
     float noiseWarp = 0.6f;
     float windSpeed = 4.0f;       // m/s

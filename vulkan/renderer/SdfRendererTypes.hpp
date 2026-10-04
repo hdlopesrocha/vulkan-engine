@@ -25,7 +25,7 @@ struct SdfFrameSlot {
     Buffer gridCell;    // SdfGpuGridCell (binding 4)
     Buffer gridIndex;   // uint32_t (binding 5)
     Buffer params;      // SdfParamsUBO uniform (binding 6)
-    Buffer smoke;       // SmokeState: tuning + bullets (binding 8)
+    Buffer smoke;       // SmokeFragBulletGPU: tuning + bullets (binding 8)
     uint32_t instanceCap = 0;
     uint32_t definitionCap = 0;
     uint32_t materialCap = 0;

@@ -4,11 +4,11 @@
 // Updated on demand (widget tweaks, bullet fire), never per frame: time
 // comes from the shared params UBO, bullet motion/refill are GPU functions
 // of it.
-#include "SmokeTuning.hpp"
+#include "SmokeGPU.hpp"
 #include "BulletGPU.hpp"
 
-struct SmokeState {
-    SmokeTuning tuning;
+struct SmokeFragBulletGPU {
+    SmokeGPU tuning;
     BulletGPU bullets[kSmokeMaxBullets];
 };
-static_assert(sizeof(SmokeState) == 128 + 8 * 48, "SmokeState size mismatch");
+static_assert(sizeof(SmokeFragBulletGPU) == 128 + 8 * 48, "SmokeFragBulletGPU size mismatch");

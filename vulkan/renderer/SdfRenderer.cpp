@@ -1,5 +1,6 @@
 #include "SdfRenderer.hpp"
-#include "types/SdfProxyVertex.hpp"
+#include "sdf/types/SdfProxyVertex.hpp"
+#include "vulkan/renderer/SdfSceneFlatten.hpp"
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
 #include "RendererUtils.hpp"
@@ -38,7 +39,7 @@ void SdfRenderer::init(VulkanApp* app) {
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         writeSlotBinding(s, 6, slot.params, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
         // Smoke state: fixed size, created once, streamed on demand.
-        slot.smoke = app->createBuffer(sizeof(SmokeState), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        slot.smoke = app->createBuffer(sizeof(SmokeFragBulletGPU), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         writeSlotBinding(s, 8, slot.smoke, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     }
@@ -206,9 +207,9 @@ void SdfRenderer::repackDebugMode() {
 }
 
 void SdfRenderer::extractFlattened() {
-    // Single flatten() call keeps container gridInfo/gridOffset consistent
-    // with the global cell/index arrays (see SdfScene::flatten).
-    sdf_gpu::SdfScene::FlattenedScene flat = pendingScene_.flatten();
+    // Single FlattenSdfScene() call keeps container gridInfo/gridOffset
+    // consistent with the global cell/index arrays (see SdfSceneFlatten.hpp).
+    SdfFlattenedScene flat = FlattenSdfScene(pendingScene_);
     instances_ = std::move(flat.instances);
     definitions_ = std::move(flat.definitions);
     materials_ = std::move(flat.materials);

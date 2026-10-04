@@ -5,8 +5,8 @@
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "CommandBufferState.hpp"
-#include "types/SdfEffectConfig.hpp"
-#include "types/SdfStats.hpp"
+#include "sdf/types/SdfEffectConfig.hpp"
+#include "sdf/types/SdfStats.hpp"
 #include "SdfRendererTypes.hpp"
 #include <array>
 #include <cstdint>
@@ -19,24 +19,22 @@ class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 
 // ─── Required scene / GPU types ────────────────────────────────────────────
 // -I. (repo root) is on the build include path, so the root-relative forms
-// below resolve. GPU-wire structs live in types/ (one file per struct).
-#if __has_include("sdf/gpu/SdfScene.hpp")
-#include "sdf/gpu/SdfScene.hpp"
-#endif
+// below resolve. GPU-wire structs live in vulkan/types/ (one file per struct).
+#include "sdf/types/SdfScene.hpp"
 #include "vulkan/types/SdfDefinitionGPU.hpp"
 #include "vulkan/types/SdfInstanceGPU.hpp"
 #include "vulkan/types/SdfMaterialGPU.hpp"
 #include "vulkan/types/SdfContainerGPU.hpp"
 #include "vulkan/types/SdfGridCellGPU.hpp"
 #include "vulkan/ubo/SdfParamsUBO.hpp"
-#include "vulkan/types/SmokeState.hpp"
+#include "vulkan/types/SmokeFragBulletGPU.hpp"
 
 // ─── GPU types (canonical std430 contract, one file per struct in types/) ──
 // SdfDefinitionGPU / SdfInstanceGPU / SdfMaterialGPU / SdfContainerGPU /
-// SdfGridCellGPU / SdfParamsUBO / SmokeState define the contract consumed by
+// SdfGridCellGPU / SdfParamsUBO / SmokeFragBulletGPU define the contract consumed by
 // shaders/sdf.vert(.frag) at set=1 bindings 0..8.
 // The CPU scene (sdf_gpu::SdfScene) flattens into exactly these vectors via
-// SdfScene::flatten().
+// FlattenSdfScene (see vulkan/renderer/SdfSceneFlatten.hpp).
 
 // Generic GPU-driven SDF renderer: one instanced proxy-cube draw per SDF
 // container; the fragment shader traverses definitions/materials/grid for the
@@ -252,7 +250,7 @@ private:
     // (1 def/mat/container/instance); all behavior below streams through
     // the smoke SSBO without scene rebuilds, except position/radius/base
     // material which reshape the scene.
-    SmokeState smokeState_ = {}; // SSBO mirror: tuning + bullets
+    SmokeFragBulletGPU smokeState_ = {}; // SSBO mirror: tuning + bullets
     uint32_t bulletRoundRobin_ = 1; // next manual slot (1..7)
 
     VkImageView pendingDepthView_ = VK_NULL_HANDLE;

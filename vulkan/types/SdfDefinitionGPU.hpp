@@ -20,7 +20,7 @@
 //   Smoke:      params0.x = maximum radius (marching bounds + loop anchor),
 //               params0.y = per-instance seed, params0.zw unused. Growth,
 //               dissipation, noise, wind, bullets and render tuning live in
-//               the smoke state buffer (set=1 binding 8, SmokeState below),
+//               the smoke state buffer (set=1 binding 8, SmokeFragBulletGPU below),
 //               NOT here, so widget tweaks never rebuild scene geometry.
 // meta.x = SdfPrimitiveType, meta.y = SdfOpType,
 // meta.z = deform flags (SdfDeformFlags bits),

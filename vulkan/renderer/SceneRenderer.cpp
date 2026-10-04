@@ -3,7 +3,7 @@
 #include "RendererUtils.hpp"
 #include "SceneDescriptorLayout.hpp"
 #include "../ubo/SkyUniform.hpp"
-#include "../../utils/Settings.hpp"
+#include "types/Settings.hpp"
 #include "../../widgets/CloudSettings.hpp"
 
 
