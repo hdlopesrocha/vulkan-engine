@@ -344,7 +344,7 @@ public:
             opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), sizePerTile*0.25, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         glm::vec3 fireSpotPosition(0.0f, 1200.0f, 0.0f);
-        float fireSpotHeight = 32.0f;
+        float fireSpotHeight = 64.0f;
         float fireSpotRadius = 128.0f;
 
         {
