@@ -262,10 +262,12 @@ void main() {
 
     // Visible tracer round: analytic gold capsule proxy, evaluated ONCE
     // before the march (the old per-sample sphere test aliased into stacked
-    // horizontal discs). Each live in-flight bullet is approximated by K=4
-    // spheres tapering from tail to nose; exact ray/sphere roots give a
-    // banding-free hit distance. The smoke container expands over the flight
-    // path, so the proxy is covered even outside the current smoke ball.
+    // horizontal discs). Each live in-flight bullet is approximated by K=8
+    // overlapping spheres tapering from tail to nose; exact ray/sphere
+    // roots give a banding-free hit distance. The tail is floored at 40% of
+    // the nose so a widening cone still reads as ONE continuous slug
+    // instead of two detached balls. The smoke container expands over the
+    // flight path, so the proxy is covered even outside the smoke ball.
     float bestT = 1e5;
     vec3 bestC = vec3(0.0);
     float bestR = 0.0;
@@ -276,15 +278,15 @@ void main() {
         if (!bst.live || !bst.headOnPath) continue;
         vec3 bD = bbl.b.xyz / max(length(bbl.b.xyz), 1e-6);
         vec3 head = bbl.a.xyz + bD * bst.traveled;
-        float tailR = max(bbl.a.w * 0.30, 0.5);
         float noseR = max(bbl.c.x * 0.30, 0.3);
+        float tailR = max(max(bbl.a.w * 0.30, noseR * 0.4), 0.5);
         // Round length follows the bigger end so a widening cone (small
         // launch bore, huge head bore) renders as one growing round.
         float L = max(max(bbl.a.w, bbl.c.x), 1.0);
         vec3 tail = head - bD * (L * 0.7);
         vec3 nose = head + bD * (L * 0.3);
-        for (int k = 0; k < 4; ++k) {
-            float fk = float(k) / 3.0;
+        for (int k = 0; k < 8; ++k) {
+            float fk = float(k) / 7.0;
             vec3 center = mix(tail, nose, fk);
             float radius = mix(tailR, noseR, fk);
             vec3 oc = ro - center;
