@@ -248,7 +248,7 @@ private:
         float intensity = 1.0f;
     };
     std::unordered_map<uintptr_t, std::vector<LavaAnchor>> lavaByChunk_;
-    float lavaDensity_ = 0.1f; // flames per m² of lava surface at ingest (1 per 100 m²)
+    float lavaDensity_ = 1.0f; // flames per m² of lava surface at ingest (1 per m²)
     float lavaScale_ = 32.0f;   // anchor scale multiplier at ingest
     float lavaSpikiness_ = 0.35f; // flame spike amplitude (0 = smooth rounded capsule)
     float lavaTipRadius_ = 0.125f; // flame tip radius, local units (0 = sharp cone tip)
