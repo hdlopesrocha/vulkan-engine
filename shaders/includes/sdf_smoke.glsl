@@ -348,10 +348,17 @@ float smokeMarchSDF(vec3 wpos, SdfInstanceGPU inst, SdfDefinitionGPU def, float 
         vec3 core = bl.a.xyz + D * sC;
         // Subtract the FULL tapered capsule: the bore is a void in the
         // marched field (not a fraction of it), so the march steps through
-        // and smoke reads as flowing away around the bullet.
+        // and smoke reads as flowing away around the bullet. The carve
+        // heals with the same refill fade as the density thinning: a
+        // fade-free void would keep forcing max-length march steps through
+        // refilled smoke, aliasing the noise into chunks.
+        float bSpeed = max(length(bl.b.xyz), 1e-3);
+        float refill = max(smokeTuning.tunnel.w, 0.05);
+        float passAge = max(st.age - sC / bSpeed, 0.0);
+        float fade = exp(-passAge * refill);
         float bd = (length(wpos - core)
                     - max(smokeBulletRadius(bl, sC, st.traveled), 0.25)) / max(ds, 1e-4);
-        d = max(d, -bd);
+        d = max(d, -bd * fade);
     }
     return d * ds;
 }
