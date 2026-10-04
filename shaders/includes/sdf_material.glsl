@@ -1,4 +1,4 @@
-// Generic SDF GPU layouts — MUST match vulkan/ubo/SdfUBO.hpp field order.
+// Generic SDF GPU layouts — MUST match types/Sdf*GPU.hpp field order.
 // std430, all vec4/uvec4 aligned. CPU structs:
 //   SdfDefinitionGPU { vec4 params0; vec4 params1; uvec4 meta; } // 48B, meta=(prim,op,deformFlags,bitcast(smoothK))
 //   SdfInstanceGPU { vec4 posScale; vec4 rotSeed; vec4 sizeParams; uvec4 indices; vec4 boundsMin; vec4 boundsMax; } // 96B

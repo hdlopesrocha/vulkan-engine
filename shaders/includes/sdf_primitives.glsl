@@ -2,7 +2,7 @@
 // All primitives share one signature so the dispatcher can evaluate any
 // definition: float sdfX(vec3 p, vec4 p0, vec4 p1).
 //
-// Parameter packing (matches vulkan/ubo/SdfUBO.hpp + sdf/gpu/SdfScene.cpp):
+// Parameter packing (matches types/Sdf*GPU.hpp + sdf/gpu/SdfScene.cpp):
 //   sphere:      p0.x = radius
 //   box:         p0.xyz = half extents
 //   rounded box: p0.xyz = half extents (outer), p1.x = corner radius
@@ -27,6 +27,7 @@
 #define SDF_PRIM_TORUS 6u
 #define SDF_PRIM_PLANE 7u
 #define SDF_PRIM_FLAME 8u
+#define SDF_PRIM_SMOKE 9u
 
 float sdSphere(vec3 p, vec4 p0, vec4 p1) {
     return length(p) - max(p0.x, 0.0);
@@ -154,6 +155,11 @@ float sdfPrimitive(vec3 p, uint primType, vec4 p0, vec4 p1) {
     }
     if (primType == SDF_PRIM_FLAME) {
         return sdTaperedFlame(p, p0, p1);
+    }
+    if (primType == SDF_PRIM_SMOKE) {
+        // Static maximum-radius sphere; growth is applied in
+        // smokeMarchSDF (sdfEvalInstance branches before dispatch).
+        return sdSphere(p, p0, p1);
     }
     return 1e5;
 }

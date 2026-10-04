@@ -5,6 +5,9 @@
 #include "../VulkanApp.hpp"
 #include "../TrackedHandle.hpp"
 #include "CommandBufferState.hpp"
+#include "types/SdfEffectConfig.hpp"
+#include "types/SdfStats.hpp"
+#include "SdfRendererTypes.hpp"
 #include <array>
 #include <cstdint>
 #include <mutex>
@@ -14,22 +17,24 @@
 
 class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 
-// ─── Required scene / params types (built by a parallel agent) ───────────────
-// The includes below are mandatory per spec; each is guarded so this renderer
-// still compiles standalone while sdf/gpu/SdfScene.hpp and
-// vulkan/ubo/SdfUBO.hpp do not exist yet. -I. (repo root) is on the build
-// include path, so the root-relative forms resolve once the files land.
+// ─── Required scene / GPU types ────────────────────────────────────────────
+// -I. (repo root) is on the build include path, so the root-relative forms
+// below resolve. GPU-wire structs live in types/ (one file per struct).
 #if __has_include("sdf/gpu/SdfScene.hpp")
 #include "sdf/gpu/SdfScene.hpp"
 #endif
-#if __has_include("vulkan/ubo/SdfUBO.hpp")
-#include "vulkan/ubo/SdfUBO.hpp"
-#endif
+#include "types/SdfDefinitionGPU.hpp"
+#include "types/SdfInstanceGPU.hpp"
+#include "types/SdfMaterialGPU.hpp"
+#include "types/SdfContainerGPU.hpp"
+#include "types/SdfGridCellGPU.hpp"
+#include "types/SdfParamsUBO.hpp"
+#include "types/SmokeState.hpp"
 
-// ─── GPU types (canonical, from the parallel SDF-framework agents) ──────────
+// ─── GPU types (canonical std430 contract, one file per struct in types/) ──
 // SdfDefinitionGPU / SdfInstanceGPU / SdfMaterialGPU / SdfContainerGPU /
-// SdfGridCellGPU / SdfParamsUBO live in vulkan/ubo/SdfUBO.hpp and define the
-// std430 contract consumed by shaders/sdf.vert(.frag) at set=1 bindings 0..6.
+// SdfGridCellGPU / SdfParamsUBO / SmokeState define the contract consumed by
+// shaders/sdf.vert(.frag) at set=1 bindings 0..8.
 // The CPU scene (sdf_gpu::SdfScene) flattens into exactly these vectors via
 // SdfScene::flatten().
 
@@ -42,21 +47,6 @@ class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 class SdfRenderer : public Renderer {
 public:
     enum class RenderMode : uint32_t { Surface = 0, Volume = 1, Emissive = 2, Transparent = 3 };
-
-    // CPU-side counters. GPU traversal counters (cell visits, fragments) need
-    // a timestamp/occlusion query pool which is not wired yet — those fields
-    // are stubs kept at 0 until then.
-    struct Stats {
-        uint32_t containerCount = 0;
-        uint32_t definitionCount = 0;
-        uint32_t materialCount = 0;
-        uint32_t gridCellCount = 0;
-        uint32_t lastDrawInstances = 0;
-        uint64_t lastCellVisits = 0; // stub: needs query pool
-        uint64_t lastFragments = 0;  // stub: needs query pool
-        uint32_t lavaAnchors = 0;    // flame anchors from brush-4 lava chunks
-        uint32_t lavaChunks = 0;     // lava-bearing chunks currently tracked
-    };
 
     SdfRenderer();
     ~SdfRenderer() override;
@@ -85,8 +75,7 @@ public:
     // setScene copies the CPU mirror and flags the GPU upload dirty. Call from
     // the render thread (or load path), NOT from a worker while prepareCull /
     // render for the same frame is recording.
-    void setScene(const sdf_gpu::SdfScene& scene);
-    // Re-extract GPU mirrors from the pending scene if dirty (CPU only).
+    void setScene(const sdf_gpu::SdfScene& scene);    // Re-extract GPU mirrors from the pending scene if dirty (CPU only).
     // Returns true when a re-upload was staged.
     bool rebuildGridIfDirty();
     // Convenience: rebuildGridIfDirty() now (upload itself happens in
@@ -117,29 +106,60 @@ public:
     // and anchor scale multiplier. Apply to newly streamed chunks
     // (same limitation as the vegetation density control).
     void setLavaDensity(float d);
-    float lavaDensity() const;
     void setLavaScale(float s);
-    float lavaScale() const;
     // Flame shape (tapered two-radii capsule + spikes). Applied at scene
     // rebuild (new def params); marks lava dirty so the next
     // rebuildLavaIfDirty() re-flattens.
     void setLavaSpikiness(float s);
-    float lavaSpikiness() const;
     void setLavaTipRadius(float r);
-    float lavaTipRadius() const;
     // Tapered-capsule shape (local units, multiplied by instance scale).
     // Applied at scene rebuild; mark lava dirty so the next
     // rebuildLavaIfDirty() re-flattens.
     void setLavaBaseRadius(float r);
-    float lavaBaseRadius() const;
     void setLavaHeight(float h);
-    float lavaHeight() const;
     void setLavaSpikeFreq(float f);
-    float lavaSpikeFreq() const;
     // Volumetric density multiplier (lower = more transparent, like real
     // flames). Applied at scene rebuild; marks lava dirty.
     void setLavaFlameDensity(float d);
-    float lavaFlameDensity() const;
+
+    // ── Smoke bomb + bullets (second generic consumer) ──────────────────
+    // A static-topology smoke scene (1 Smoke-sphere def/mat/container/
+    // instance) merged with the lava scene on every rebuild. Growth, noise,
+    // bullets and render tuning live in the smoke state SSBO (binding 8)
+    // and NEVER rebuild geometry; only position/radius/base material touch
+    // the scene. Bullet motion, wake aging and refill are pure GPU functions
+    // of global time, so in-flight bullets need no CPU updates.
+    void ensureSmokeScene(); // (re)build smokeScene_ from smoke params; caller holds sceneMutex, then refreshMerged()
+    void setSmokeEnabled(bool e);
+    void setSmokePosition(const glm::vec3& p);
+    void setSmokeRadius(float r);
+    void setSmokeGrowthDuration(float s);
+    void setSmokeLoopDuration(float s);
+    void setSmokeDissipation(float d);
+    void setSmokeNoiseScale(float s);
+    void setSmokeNoiseStrength(float s);
+    void setSmokeNoiseWarp(float s);
+    void setSmokeWind(float speed, float angleDeg);
+    void setSmokeDensityScale(float s);
+    void setSmokeDensity(float d); // base material density (rebuilds scene)
+    void setSmokeAbsorption(float a);
+    void setSmokeScattering(float s);
+    void setSmokeTunnel(float strength, float falloff);
+    void setSmokeWake(float strength, float radius, float expansion, float length, float dissipation);
+    void setSmokePressure(float radius, float strength, float waveSpeed, float waveFreq, float waveFalloff);
+    void setSmokeTurbulence(float scale, float strength, float speed);
+    void setSmokeShadow(int samples, float strength);
+    // Bullet defaults (stamped into slots on fire; slot 0 = auto-loop template).
+    void setBulletDefaults(float radius, float speed, float length, float angleDeg);
+    void setAutoFire(bool on);
+    // Fire a bullet along angleDeg (default: widget angle) from an
+    // auto-crossing start. Round-robins manual slots 1..7.
+    void fireBullet(float angleDeg);
+    void clearBullets();
+    uint32_t bulletSlotsUsed() const;
+    // Smoke debug views (§24: 0 = normal, 1-10 per spec list). Upper nibble
+    // of debugFlags; fire views (low nibble) are preserved.
+    void setSmokeDebug(uint32_t v);
 
     // ── Per-frame parameters (packed into SdfParamsUBO) ──
     // SdfParamsUBO carries no renderer-mode field, so timeDebug.y packs two
@@ -164,38 +184,16 @@ public:
     // frame's offscreen color+depth. Ends SHADER_READ_ONLY for composite.
     void render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet mainDescriptorSet, uint32_t frameIdx, bool enabled = true);
 
-    const Stats& getStats() const { return stats_; }
+    const SdfStats& getStats() const { return stats_; }
     uint32_t getContainerCount() const { return stats_.containerCount; }
     bool hasScene() const { return stats_.containerCount > 0; }
 
-private:
-    struct CubeVertex {
-        glm::vec3 position;
-    };
+    // Shared effect tuning (single instance used by renderer + widgets).
+    SdfEffectConfig& config() { return config_; }
+    const SdfEffectConfig& config() const { return config_; }
 
-    // One slot per frame in flight: every buffer a draw reads is slot-local,
-    // so a host rewrite for frame N can never race an in-flight draw of frame
-    // N-1/N-2 that references a different slot. Static scene data could share
-    // one buffer, but per-slot copies keep the lifetime story trivial (same
-    // pattern as DebugSDFRenderer::cullFrames) at negligible memory cost.
-    // The single persistent buffer + host barrier alternative would race when
-    // 3 frames are in flight (frame N+1 rewrite vs frame N draw), which is why
-    // triple-buffering is used instead.
-    struct FrameSlot {
-        Buffer instance;    // SdfGpuInstance per container (set=1 binding 0)
-        Buffer definition;  // SdfGpuDefinition (binding 1)
-        Buffer material;    // SdfGpuMaterial (binding 2)
-        Buffer container;   // SdfGpuContainer (binding 3)
-        Buffer gridCell;    // SdfGpuGridCell (binding 4)
-        Buffer gridIndex;   // uint32_t (binding 5)
-        Buffer params;      // SdfParamsUBO uniform (binding 6)
-        uint32_t instanceCap = 0;
-        uint32_t definitionCap = 0;
-        uint32_t materialCap = 0;
-        uint32_t containerCap = 0;
-        uint32_t gridCellCap = 0;
-        uint32_t gridIndexCap = 0;
-    };
+private:
+    std::array<SdfFrameSlot, SDF_FRAMES> slots;
 
     TrackedHandle<VkPipeline> pipeline;
     TrackedHandle<VkPipelineLayout> pipelineLayout;
@@ -214,14 +212,15 @@ private:
     std::array<VkDescriptorSet, SDF_FRAMES> sdfSets{};
     VkSampler depthSampler = VK_NULL_HANDLE;
 
-    std::array<FrameSlot, SDF_FRAMES> slots;
     uint32_t currentFrame_ = 0;
 
     // CPU mirrors (canonical GPU types) + dirty flags (guarded; setScene may
     // come from the load path). params_ mirrors SdfParamsUBO with the
     // timeDebug.y packing documented on updateParams.
     mutable std::mutex sceneMutex;
-    sdf_gpu::SdfScene pendingScene_; // last setScene() copy; flattened on rebuild
+    sdf_gpu::SdfScene pendingScene_; // merged lava + smoke; flattened on rebuild
+    sdf_gpu::SdfScene lavaScene_;    // fire scene from lava anchors
+    sdf_gpu::SdfScene smokeScene_;   // static-topology smoke bomb scene
     std::vector<SdfInstanceGPU> instances_;
     std::vector<SdfDefinitionGPU> definitions_;
     std::vector<SdfMaterialGPU> materials_;
@@ -238,32 +237,29 @@ private:
     // params change marks ALL slots dirty; flush clears only the slot written.
     std::array<bool, SDF_FRAMES> sceneDirtySlots_ = {true, true, true};
     std::array<bool, SDF_FRAMES> paramsDirtySlots_ = {true, true, true};
+    std::array<bool, SDF_FRAMES> smokeDirtySlots_ = {true, true, true};
+    float lastTime_ = 0.0f; // global time of the last updateParams (bullet birth clock)
 
-    // Lava-anchored flame collection (brush-4 chunk geometry -> anchors).
-    struct LavaAnchor {
-        glm::vec3 pos = glm::vec3(0.0f);
-        glm::vec3 euler = glm::vec3(0.0f); // Y-up frame tilted onto the surface normal
-        float scale = 1.0f;
-        float heightScale = 1.0f; // per-instance flame stretch (0.8-1.4)
-        float seed = 0.0f;
-        float intensity = 1.0f;
-    };
-    std::unordered_map<uintptr_t, std::vector<LavaAnchor>> lavaByChunk_;
-    float lavaDensity_ = 1.0f; // flames per m² of lava surface at ingest (1 per m²)
-    float lavaScale_ = 32.0f;   // anchor scale multiplier at ingest
-    float lavaSpikiness_ = 0.35f; // flame spike amplitude (0 = smooth rounded capsule)
-    float lavaTipRadius_ = 0.125f; // flame tip radius, local units (0 = sharp cone tip)
-    float lavaBaseRadius_ = 1.0f; // flame base radius, local units
-    float lavaHeight_ = 1.0f;     // flame base-to-tip height, local units
-    float lavaSpikeFreq_ = 2.0f;  // tongue count around the flame axis
-    float lavaFlameDensity_ = 0.05f; // volumetric density (lower = glassier)
+    // Lava-anchored flame collection (brush-4 chunk geometry -> anchors,
+    // stored as scene FlameAnchors so chunk edits replace and deletions
+    // remove their flames with no conversion step).
+    std::unordered_map<uintptr_t, std::vector<sdf_gpu::SdfScene::FlameAnchor>> lavaByChunk_;
+    // Shared tuning (single source of truth for renderer + widgets).
+    SdfEffectConfig config_;
     bool lavaDirty_ = false;    // anchors changed -> rebuild staged
+
+    // Smoke bomb state (second generic consumer). Scene topology is static
+    // (1 def/mat/container/instance); all behavior below streams through
+    // the smoke SSBO without scene rebuilds, except position/radius/base
+    // material which reshape the scene.
+    SmokeState smokeState_ = {}; // SSBO mirror: tuning + bullets
+    uint32_t bulletRoundRobin_ = 1; // next manual slot (1..7)
 
     VkImageView pendingDepthView_ = VK_NULL_HANDLE;
     VkImageLayout pendingDepthLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     std::array<VkImageView, SDF_FRAMES> boundDepthViews_{};
 
-    Stats stats_;
+    SdfStats stats_;
     VulkanApp* app_ = nullptr; // stashed for buffer (re)allocation
 
     // Offscreen color+depth targets (one per frame in flight).
@@ -285,10 +281,17 @@ private:
     void createPipeline(VulkanApp* app);
     // Flatten pendingScene_ into the gpu mirror vectors (CPU only).
     void extractFlattened();
+    // Re-merge lava + smoke scenes into pendingScene_ and flatten (caller
+    // holds sceneMutex). Marks all scene slots dirty.
+    void refreshMergedLocked();
     // Re-pack timeDebug.y from renderMode_ + debugFlags_ (see updateParams).
     void repackDebugMode();
     void ensureSlotCapacity(uint32_t slot); // grow slot buffers with headroom; rewrites slot set bindings
     void flushSlotUploads(uint32_t slot);   // memcpy dirty mirrors/params into slot buffers
+    void flushSmokeUpload(uint32_t slot);   // memcpy dirty smoke state into the slot buffer
     void writeSlotBinding(uint32_t slot, uint32_t binding, const Buffer& buf, VkDescriptorType type);
     void refreshDepthBinding(uint32_t slot); // rewrite binding 7 iff the view changed for this slot
+    // Auto-loop bullet template (slot 0) from widget defaults (caller holds sceneMutex).
+    void refreshAutoBulletLocked();
+    void markSmokeSSBO(); // flag all smoke slots dirty (tuning/bullet change, no re-flatten)
 };

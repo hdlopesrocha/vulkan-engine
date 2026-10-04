@@ -6,17 +6,6 @@
 SdfWidget::SdfWidget(SdfRenderer* sdf)
     : Widget("SDF Volumes"), sdfRenderer(sdf) {
     isOpen = false;
-    if (sdfRenderer) {
-        const float d = sdfRenderer->lavaDensity();
-        lavaAreaPerFlame = (d > 0.0f) ? (1.0f / d) : 10000.0f;
-        lavaScale = sdfRenderer->lavaScale();
-        lavaSpikiness = sdfRenderer->lavaSpikiness();
-        lavaTipRadius = sdfRenderer->lavaTipRadius();
-        lavaBaseRadius = sdfRenderer->lavaBaseRadius();
-        lavaHeight = sdfRenderer->lavaHeight();
-        lavaSpikeFreq = sdfRenderer->lavaSpikeFreq();
-        lavaFlameDensity = sdfRenderer->lavaFlameDensity();
-    }
 }
 
 void SdfWidget::render() {
@@ -32,40 +21,53 @@ void SdfWidget::render() {
     if (ImGui::CollapsingHeader("Fire (SDF volume)", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SliderFloat("Time scale", &timeScale, 0.0f, 4.0f, "%.2f");
         if (sdfRenderer) {
-            if (ImGui::SliderFloat("m² per flame", &lavaAreaPerFlame, 100.0f, 100000.0f, "%.0f",
+            // Bindings are per-frame locals initialized from the shared
+            // config (the only stored copy); setters clamp + flag rebuilds.
+            SdfEffectConfig& cfg = sdfRenderer->config();
+            float v = 0.0f;
+            // Display-only conversion: the shared value is flames/m².
+            float areaPerFlame = (cfg.lava.density > 0.0f) ? (1.0f / cfg.lava.density) : 10000.0f;
+            if (ImGui::SliderFloat("m² per flame", &areaPerFlame, 100.0f, 100000.0f, "%.0f",
                                    ImGuiSliderFlags_Logarithmic)) {
-                sdfRenderer->setLavaDensity(1.0f / std::max(lavaAreaPerFlame, 1.0f));
+                sdfRenderer->setLavaDensity(1.0f / std::max(areaPerFlame, 1.0f));
             }
             ImGuiHelpers::SetTooltipIfHovered("Lava surface area per flame (default 1 per 10000 m²). Applies to newly streamed chunks.");
-            if (ImGui::SliderFloat("Flame scale", &lavaScale, 0.25f, 1024.0f, "%.1f",
+            v = cfg.lava.scale;
+            if (ImGui::SliderFloat("Flame scale", &v, 0.25f, 1024.0f, "%.1f",
                                   ImGuiSliderFlags_Logarithmic)) {
-                sdfRenderer->setLavaScale(lavaScale);
+                sdfRenderer->setLavaScale(v);
             }
             ImGuiHelpers::SetTooltipIfHovered("Flame size multiplier (log scale, up to 1024). Applies to newly streamed chunks.");
-            if (ImGui::SliderFloat("Spikiness", &lavaSpikiness, 0.0f, 1.5f, "%.2f")) {
-                sdfRenderer->setLavaSpikiness(lavaSpikiness);
+            v = cfg.lava.spikiness;
+            if (ImGui::SliderFloat("Spikiness", &v, 0.0f, 1.5f, "%.2f")) {
+                sdfRenderer->setLavaSpikiness(v);
             }
             ImGuiHelpers::SetTooltipIfHovered("Flame tongue amplitude (0 = smooth rounded capsule). Applies on next scene rebuild.");
-            if (ImGui::SliderFloat("Tip radius", &lavaTipRadius, 0.01f, 32.0f, "%.2f",
+            v = cfg.lava.tipRadius;
+            if (ImGui::SliderFloat("Tip radius", &v, 0.01f, 32.0f, "%.2f",
                                    ImGuiSliderFlags_Logarithmic)) {
-                sdfRenderer->setLavaTipRadius(lavaTipRadius);
+                sdfRenderer->setLavaTipRadius(v);
             }
             ImGuiHelpers::SetTooltipIfHovered("Flame tip roundness, local units x flame scale (= meters at scale 32). 0.01 ~ sharp cone tip. Applies on next scene rebuild.");
-            if (ImGui::SliderFloat("Base radius", &lavaBaseRadius, 0.05f, 32.0f, "%.2f",
+            v = cfg.lava.baseRadius;
+            if (ImGui::SliderFloat("Base radius", &v, 0.05f, 32.0f, "%.2f",
                                    ImGuiSliderFlags_Logarithmic)) {
-                sdfRenderer->setLavaBaseRadius(lavaBaseRadius);
+                sdfRenderer->setLavaBaseRadius(v);
             }
             ImGuiHelpers::SetTooltipIfHovered("Flame base width, local units x flame scale (= meters at scale 32, up to 1024 m). Applies on next scene rebuild.");
-            if (ImGui::SliderFloat("Height", &lavaHeight, 0.5f, 10.0f, "%.2f")) {
-                sdfRenderer->setLavaHeight(lavaHeight);
+            v = cfg.lava.height;
+            if (ImGui::SliderFloat("Height", &v, 0.5f, 10.0f, "%.2f")) {
+                sdfRenderer->setLavaHeight(v);
             }
             ImGuiHelpers::SetTooltipIfHovered("Flame base-to-tip height in local units (x instance scale). Applies on next scene rebuild.");
-            if (ImGui::SliderFloat("Spike freq", &lavaSpikeFreq, 0.5f, 6.0f, "%.2f")) {
-                sdfRenderer->setLavaSpikeFreq(lavaSpikeFreq);
+            v = cfg.lava.spikeFreq;
+            if (ImGui::SliderFloat("Spike freq", &v, 0.5f, 6.0f, "%.2f")) {
+                sdfRenderer->setLavaSpikeFreq(v);
             }
             ImGuiHelpers::SetTooltipIfHovered("Tongue count around the flame axis. Applies on next scene rebuild.");
-            if (ImGui::SliderFloat("Flame density", &lavaFlameDensity, 0.05f, 1.5f, "%.2f")) {
-                sdfRenderer->setLavaFlameDensity(lavaFlameDensity);
+            v = cfg.lava.flameDensity;
+            if (ImGui::SliderFloat("Flame density", &v, 0.05f, 1.5f, "%.2f")) {
+                sdfRenderer->setLavaFlameDensity(v);
             }
             ImGuiHelpers::SetTooltipIfHovered("Volumetric density (lower = more transparent, like real flames). Applies on next scene rebuild.");
         }

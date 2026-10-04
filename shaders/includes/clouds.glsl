@@ -92,6 +92,40 @@ vec2 cloudTierDomain(vec2 xz, int tier, vec4 t) {
 // The domain is a hash-tiled field of ellipsoid puffs (one candidate per
 // feature cell, ~18% of cells empty for broken sky), smooth-unioned over
 // the 3x3 neighborhood for coherent masses with rounded transitions.
+// One puff layer at the given domain frequency. Cells hold at most one
+// ellipsoid puff (bounding-sphere SDF: exact and conservative), empty with
+// a coverage- and region-dependent probability so spacing varies organically
+// between clumps and gaps. seedOff decorrelates layers.
+float cloudPuffLayer(vec3 p, vec2 sp, vec2 wind, float scaleEff, int tier,
+                     vec4 t, vec2 geom, float seedOff, float rMul, float region) {
+    vec2 cellId = floor(sp);
+    float thickness = max(geom.y, 1.0);
+    float aspect = clamp(thickness * scaleEff, 0.05, 1.0);
+    float cov = clamp(t.x, 0.0, 1.0);
+    float emptyFrac = (1.0 - cov) * 0.55 - region * 0.4;
+    float best = 1e5;
+    for (int jx = -1; jx <= 1; ++jx) {
+        for (int jy = -1; jy <= 1; ++jy) {
+            vec2 cid = cellId + vec2(float(jx), float(jy));
+            float sb = float(tier) * 17.0 + seedOff;
+            float h0 = sdfHash(vec3(cid, sb + 1.0));
+            if (h0 < emptyFrac) continue; // gap between masses
+            float h1 = sdfHash(vec3(cid, sb + 2.0));
+            float h2 = sdfHash(vec3(cid, sb + 3.0));
+            float h3 = sdfHash(vec3(cid, sb + 4.0));
+            vec2 centerXZ = (cid + 0.5 + (vec2(h1, h2) - 0.5) * 0.7 - wind) / scaleEff;
+            float rxz = (0.30 + 0.25 * h3) * (0.55 + 0.9 * region) * rMul / scaleEff;
+            float cry = geom.x + thickness * (0.35 + 0.3 * h1);
+            float rry = rxz * aspect * (0.7 + 0.6 * h2);
+            vec3 c = vec3(centerXZ.x, cry, centerXZ.y);
+            float r = max(rxz, rry);
+            float d = length(p - c) - r;
+            best = opSmoothUnion(best, d, max(rxz * 0.15, 1.0));
+        }
+    }
+    return best;
+}
+
 float cloudPuffSDF(vec3 p, int tier) {
     vec4 t;
     vec2 geom;
@@ -105,31 +139,19 @@ float cloudPuffSDF(vec3 p, int tier) {
     // for direct queries such as the light march).
     if (p.y <= geom.x || p.y >= geom.x + thickness) return 1e5;
     vec2 sp = cloudTierDomain(p.xz, tier, t);
-    vec2 cellId = floor(sp);
-    // Puff vertical extent follows the slab (flat discs for thin slabs).
-    float aspect = clamp(thickness * scale, 0.05, 1.0);
-    float best = 1e5;
-    for (int jx = -1; jx <= 1; ++jx) {
-        for (int jy = -1; jy <= 1; ++jy) {
-            vec2 cid = cellId + vec2(float(jx), float(jy));
-            float seedBase = float(tier) * 17.0;
-            float h0 = sdfHash(vec3(cid, seedBase + 1.0));
-            if (h0 < 0.18) continue; // empty cell: gap between masses
-            float h1 = sdfHash(vec3(cid, seedBase + 2.0));
-            float h2 = sdfHash(vec3(cid, seedBase + 3.0));
-            float h3 = sdfHash(vec3(cid, seedBase + 4.0));
-            vec2 centerXZ = (cid + 0.5 + (vec2(h1, h2) - 0.5) * 0.6 - cloudWindVec(t.w)) / scale;
-            float rxz = (0.30 + 0.25 * h3) / scale;
-            float cry = geom.x + thickness * (0.35 + 0.3 * h1);
-            float rry = rxz * aspect * (0.7 + 0.6 * h2);
-            // Conservative bound: bounding sphere of the ellipsoid puff.
-            // (Exact ellipsoid distance is not a lower bound; the sphere is.)
-            vec3 c = vec3(centerXZ.x, cry, centerXZ.y);
-            float r = max(rxz, rry);
-            float d = length(p - c) - r;
-            best = opSmoothUnion(best, d, max(rxz * 0.15, 1.0));
-        }
-    }
+    vec2 wind = cloudWindVec(t.w);
+    // Large-scale regional mask: slow fbm breaks the lattice into organic
+    // clumps and gaps (variable spacing instead of uniform cells).
+    float region = sdfNoise(vec3(sp * 0.11, float(tier) * 7.3 + 3.0));
+    float best = cloudPuffLayer(p, sp, wind, scale, tier, t, geom, 0.0, 1.0, region);
+    // Second layer at an incommensurate frequency/size: the combined field
+    // has no single repetition period, so tiling reads as natural variety
+    // instead of a pattern. Smooth-union keeps it conservative.
+    vec2 sp2 = sp * 2.7 + vec2(5.3, 1.7);
+    vec2 wind2 = wind * 2.7 + vec2(5.3, 1.7);
+    best = opSmoothUnion(best,
+        cloudPuffLayer(p, sp2, wind2, scale * 2.7, tier, t, geom, 11.0, 0.55, region),
+        20.0);
     return best;
 }
 

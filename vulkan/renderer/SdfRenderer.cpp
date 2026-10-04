@@ -1,4 +1,5 @@
 #include "SdfRenderer.hpp"
+#include "types/SdfProxyVertex.hpp"
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
 #include "RendererUtils.hpp"
@@ -25,27 +26,58 @@ void SdfRenderer::init(VulkanApp* app) {
     // marchParams=(minStep,maxStep,epsilon,earlyTerm). Defaults match the
     // fragment shader fallbacks so a zero time still raymarches sanely.
     params_.timeDebug = glm::vec4(0.0f, 0.0f, 64.0f, 0.7f);
-    params_.marchParams = glm::vec4(0.05f, std::clamp(lavaScale_, 1.0f, 32.0f), 0.01f, 0.99f);
+    params_.marchParams = glm::vec4(0.05f, std::clamp(config_.lava.scale, 1.0f, 32.0f), 0.01f, 0.99f);
     params_.fireColors0 = glm::vec4(0.6f, 0.05f, 0.0f, 0.0f);
     params_.fireColors1 = glm::vec4(1.0f, 0.95f, 0.6f, 0.0f);
     repackDebugMode();
     renderMode_ = RenderMode::Volume; // fire-first default; generic modes via setRenderMode
     repackDebugMode();
     for (uint32_t s = 0; s < SDF_FRAMES; ++s) {
-        FrameSlot& slot = slots[s];
+        SdfFrameSlot& slot = slots[s];
         slot.params = app->createBuffer(sizeof(SdfParamsUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         writeSlotBinding(s, 6, slot.params, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        // Smoke state: fixed size, created once, streamed on demand.
+        slot.smoke = app->createBuffer(sizeof(SmokeState), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        writeSlotBinding(s, 8, slot.smoke, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     }
     sceneDirtySlots_.fill(true);
     paramsDirtySlots_.fill(true);
+    smokeDirtySlots_.fill(true);
+    // Default smoke tuning mirrors SdfEffectConfig defaults (single source:
+    // SdfSmokeConfig); the SSBO mirror is packed here once, widget edits
+    // stream through the setters below.
+    smokeState_.tuning.timing = glm::vec4(config_.smoke.growthDuration,
+        config_.smoke.loopDuration, config_.smoke.dissipation, 0.0f);
+    smokeState_.tuning.noise = glm::vec4(config_.smoke.noiseScale,
+        config_.smoke.noiseStrength, config_.smoke.noiseWarp, 0.0f);
+    {
+        const float rad = glm::radians(config_.smoke.windAngleDeg);
+        smokeState_.tuning.wind = glm::vec4(config_.smoke.windSpeed * std::cos(rad),
+            config_.smoke.windSpeed * std::sin(rad), config_.smoke.densityScale, 0.0f);
+    }
+    smokeState_.tuning.tunnel = glm::vec4(config_.smoke.tunnelStrength,
+        config_.smoke.tunnelFalloff, config_.smoke.wakeStrength, config_.smoke.wakeDissipation);
+    smokeState_.tuning.wake = glm::vec4(config_.smoke.wakeRadius,
+        config_.smoke.wakeExpansion, config_.smoke.wakeLength, 0.0f);
+    smokeState_.tuning.pressure = glm::vec4(config_.smoke.pressureRadius,
+        config_.smoke.pressureStrength, config_.smoke.pressureWaveSpeed,
+        config_.smoke.pressureWaveFreq);
+    smokeState_.tuning.turbWave = glm::vec4(config_.smoke.pressureWaveFalloff,
+        config_.smoke.turbScale, config_.smoke.turbStrength, config_.smoke.turbSpeed);
+    smokeState_.tuning.render = glm::vec4(static_cast<float>(config_.smoke.shadowSamples),
+        config_.smoke.shadowStrength, 0.0f, 0.0f);
+    refreshAutoBulletLocked();
+    ensureSmokeScene();
+    refreshMergedLocked();
     createPipeline(app);
 }
 
 void SdfRenderer::createCubeBuffers(VulkanApp* app) {
     // Unit proxy cube in [0,1]^3; per-instance model matrix maps it onto the
     // container AABB. Position-only vertex input (ATTR_POS).
-    const std::vector<CubeVertex> vertices = {
+    const std::vector<SdfProxyVertex> vertices = {
         {{0.0f, 0.0f, 0.0f}}, {{0.0f, 0.0f, 1.0f}}, {{0.0f, 1.0f, 1.0f}}, {{0.0f, 1.0f, 0.0f}},
         {{1.0f, 0.0f, 0.0f}}, {{1.0f, 1.0f, 0.0f}}, {{1.0f, 1.0f, 1.0f}}, {{1.0f, 0.0f, 1.0f}},
         {{0.0f, 0.0f, 0.0f}}, {{1.0f, 0.0f, 0.0f}}, {{1.0f, 0.0f, 1.0f}}, {{0.0f, 0.0f, 1.0f}},
@@ -68,7 +100,7 @@ void SdfRenderer::createCubeBuffers(VulkanApp* app) {
 
     // Device-local via the async transfer path (same as DebugSDFRenderer).
     vertexBuffer = app->createDeviceLocalBufferAsync(vertices.data(),
-        vertices.size() * sizeof(CubeVertex),
+        vertices.size() * sizeof(SdfProxyVertex),
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, nullptr);
     indexBuffer = app->createDeviceLocalBufferAsync(indices.data(),
         indices.size() * sizeof(uint32_t),
@@ -79,9 +111,10 @@ void SdfRenderer::createCubeBuffers(VulkanApp* app) {
 void SdfRenderer::createDescriptorSet(VulkanApp* app) {
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
-    // set=1 bindings 0..7: 0 instances, 1 definitions, 2 materials,
-    // 3 containers, 4 gridCells, 5 gridIndices, 6 params UBO, 7 sceneDepth.
-    VkDescriptorSetLayoutBinding bindings[8]{};
+    // set=1 bindings 0..8: 0 instances, 1 definitions, 2 materials,
+    // 3 containers, 4 gridCells, 5 gridIndices, 6 params UBO, 7 sceneDepth,
+    // 8 smoke state (tuning + bullets, fragment only).
+    VkDescriptorSetLayoutBinding bindings[9]{};
     auto storage = [&](uint32_t b, VkShaderStageFlags stages) {
         bindings[b].binding = b;
         bindings[b].descriptorCount = 1;
@@ -95,6 +128,7 @@ void SdfRenderer::createDescriptorSet(VulkanApp* app) {
     storage(3, kVertFrag); // containers read by vertex (proxy transform fallback) + fragment
     storage(4, VK_SHADER_STAGE_FRAGMENT_BIT);
     storage(5, VK_SHADER_STAGE_FRAGMENT_BIT);
+    storage(8, VK_SHADER_STAGE_FRAGMENT_BIT); // smoke tuning + bullets
     bindings[6].binding = 6;
     bindings[6].descriptorCount = 1;
     bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -105,10 +139,10 @@ void SdfRenderer::createDescriptorSet(VulkanApp* app) {
     bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     descriptorSetLayout = descAlloc.createLayout(
-        bindings, 8, 0, nullptr, "SdfRenderer: descriptorSetLayout");
+        bindings, 9, 0, nullptr, "SdfRenderer: descriptorSetLayout");
 
     VkDescriptorPoolSize poolSizes[3] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * SDF_FRAMES},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7 * SDF_FRAMES},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * SDF_FRAMES},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 * SDF_FRAMES},
     };
@@ -151,10 +185,10 @@ void SdfRenderer::createPipeline(VulkanApp* app) {
     auto [pipelineHandle, layoutHandle] = app->createGraphicsPipeline(
         {vertStage.info, fragStage.info},
         std::vector<VkVertexInputBindingDescription>{
-            VkVertexInputBindingDescription{0, sizeof(CubeVertex), VK_VERTEX_INPUT_RATE_VERTEX}
+            VkVertexInputBindingDescription{0, sizeof(SdfProxyVertex), VK_VERTEX_INPUT_RATE_VERTEX}
         },
         {
-            VkVertexInputAttributeDescription{ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(CubeVertex, position)}
+            VkVertexInputAttributeDescription{ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SdfProxyVertex, position)}
         },
         setLayouts,
         nullptr,
@@ -190,9 +224,62 @@ void SdfRenderer::extractFlattened() {
 
 void SdfRenderer::setScene(const sdf_gpu::SdfScene& scene) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    pendingScene_ = scene;
+    lavaScene_ = scene;
+    refreshMergedLocked();
+}
+
+void SdfRenderer::refreshMergedLocked() {
+    // pendingScene_ is always the merge: independent emitters (lava fire,
+    // smoke bombs, future effects) share one GPU upload and one march.
+    pendingScene_ = sdf_gpu::SdfScene::merge(lavaScene_, smokeScene_);
     extractFlattened();
     sceneDirtySlots_.fill(true);
+    // One-time proof of what the merged scene holds (instances per type).
+    static bool loggedOnce = false;
+    if (!loggedOnce) {
+        loggedOnce = true;
+        size_t smokeCount = smokeScene_.instances().size();
+        size_t lavaCount = lavaScene_.instances().size();
+        if (!smokeScene_.containers().empty()) {
+            const glm::vec3 mn = smokeScene_.containers().front().aabb.getMin();
+            const glm::vec3 mx = smokeScene_.containers().front().aabb.getMax();
+            fprintf(stderr, "[SdfRenderer] scene: smoke instances=%zu "
+                "container=[(%.0f,%.0f,%.0f)-(%.0f,%.0f,%.0f)] lava instances=%zu\n",
+                smokeCount, mn.x, mn.y, mn.z,
+                mx.x, mx.y, mx.z, lavaCount);
+        } else {
+            fprintf(stderr, "[SdfRenderer] scene: smoke DISABLED/empty, lava instances=%zu\n",
+                lavaCount);
+        }
+    }
+}
+
+void SdfRenderer::ensureSmokeScene() {
+    // Static topology: 1 def/mat/container/instance. All behavior streams
+    // through the smoke SSBO, so widget tweaks below never come here —
+    // only position/radius/base material reshape the scene.
+    if (config_.smoke.enabled) {
+        smokeScene_ = sdf_gpu::SdfScene::createSmokeBomb(config_.smoke.pos, config_.smoke.radius, config_.smoke.seed);
+        // Cover bullet flight paths: bullets fly horizontally (XZ) from
+        // auto-crossing starts through and past the smoke. The static margin
+        // fits the longest paths; cells outside the smoke AABB stay empty
+        // and march at DDA-skip cost only.
+        if (!smokeScene_.containers().empty()) {
+            auto& c = smokeScene_.containers()[0];
+            const float ext = 1200.0f;
+            const glm::vec3 mn = c.aabb.getMin() - glm::vec3(ext, 0.0f, ext);
+            const glm::vec3 mx = c.aabb.getMax() + glm::vec3(ext, 0.0f, ext);
+            c.aabb = BoundingBox(mn, mx);
+        }
+    } else {
+        smokeScene_.clear();
+    }
+    if (!smokeScene_.materials().empty()) {
+        auto& m = smokeScene_.materials()[0];
+        m.density = config_.smoke.density;
+        m.absorption = config_.smoke.absorption;
+        m.scattering = config_.smoke.scattering;
+    }
 }
 
 bool SdfRenderer::rebuildGridIfDirty() {
@@ -211,6 +298,7 @@ void SdfRenderer::updateParams(float timeSec, uint32_t frameIndex) {
     setFrame(frameIndex);
     std::lock_guard<std::mutex> lock(sceneMutex);
     params_.timeDebug.x = timeSec;
+    lastTime_ = timeSec; // bullet birth clock (fireBullet stamps this)
     repackDebugMode();
     paramsDirtySlots_.fill(true);
 }
@@ -224,10 +312,21 @@ void SdfRenderer::setRenderMode(RenderMode mode) {
 
 void SdfRenderer::setDebugFlags(uint32_t flags) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    debugFlags_ = flags;
+    // Preserve the smoke debug nibble (bits 4-7, owned by setSmokeDebug).
+    debugFlags_ = (debugFlags_ & ~0x0Fu) | (flags & 0x0Fu);
     repackDebugMode();
     paramsDirtySlots_.fill(true);
 }
+
+void SdfRenderer::setSmokeDebug(uint32_t v) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.debugView = v & 0x0Fu;
+    // Preserve the fire debug nibble (bits 0-3, owned by setDebugFlags).
+    debugFlags_ = (debugFlags_ & 0x0Fu) | ((v & 0x0Fu) << 4u);
+    repackDebugMode();
+    paramsDirtySlots_.fill(true);
+}
+
 
 void SdfRenderer::setMarchParams(float maxSteps, float epsilon) {
     std::lock_guard<std::mutex> lock(sceneMutex);
@@ -262,7 +361,7 @@ void SdfRenderer::ingestLavaChunk(uintptr_t nid, const Geometry& geom) {
     auto it = lavaByChunk_.find(nid);
     const bool had = (it != lavaByChunk_.end());
     lavaByChunk_.erase(nid);
-    if (geom.indices.size() < 3 || geom.vertices.empty() || lavaDensity_ <= 0.0f) {
+    if (geom.indices.size() < 3 || geom.vertices.empty() || config_.lava.density <= 0.0f) {
         if (had) lavaDirty_ = true;
         return;
     }
@@ -296,7 +395,7 @@ void SdfRenderer::ingestLavaChunk(uintptr_t nid, const Geometry& geom) {
         const glm::vec3& v2 = geom.vertices[i2].position;
         const float area = 0.5f * glm::length(glm::cross(v1 - v0, v2 - v0));
         const float lavaFrac = static_cast<float>(lavaVerts) / 3.0f;
-        const float expected = std::max(0.0f, area * lavaFrac * lavaDensity_);
+        const float expected = std::max(0.0f, area * lavaFrac * config_.lava.density);
         uint32_t n = static_cast<uint32_t>(std::floor(expected));
         if (unit(rng) < expected - static_cast<float>(n)) ++n;
         for (uint32_t s = 0; s < n; ++s) triSlots.push_back({i0, i1, i2, lavaVerts});
@@ -320,7 +419,7 @@ void SdfRenderer::ingestLavaChunk(uintptr_t nid, const Geometry& geom) {
     size_t total = 0;
     for (const auto& kv : lavaByChunk_) total += kv.second.size();
 
-    std::vector<LavaAnchor> anchors;
+    std::vector<sdf_gpu::SdfScene::FlameAnchor> anchors;
     anchors.reserve(std::min(triSlots.size(), kMaxLavaPerChunk));
     for (const auto& sl : triSlots) {
         if (anchors.size() >= kMaxLavaPerChunk) break;
@@ -360,8 +459,8 @@ void SdfRenderer::ingestLavaChunk(uintptr_t nid, const Geometry& geom) {
             const float n2 = glm::dot(bw, bw);
             if (n2 > 1e-8f) nrm = bw * (1.0f / std::sqrt(n2));
         }
-        const float scale = lavaScale_ * (0.7f + 0.6f * unit(rng));
-        LavaAnchor a;
+        const float scale = config_.lava.scale * (0.7f + 0.6f * unit(rng));
+        sdf_gpu::SdfScene::FlameAnchor a;
         // Plant the flame base on the surface: the tapered flame starts at
         // the anchor (local y=0) and rises +Y, so only a small lift keeps the
         // base out of the ground through noise deformation (the buried rest
@@ -403,44 +502,38 @@ bool SdfRenderer::rebuildLavaIfDirty() {
     size_t total = 0;
     for (const auto& kv : lavaByChunk_) total += kv.second.size();
     all.reserve(total);
+    // Same type on both sides now (collector stores FlameAnchors directly):
+    // concatenation only, no field-by-field conversion.
     for (const auto& kv : lavaByChunk_) {
-        for (const auto& a : kv.second) {
-            sdf_gpu::SdfScene::FlameAnchor f;
-            f.pos = a.pos;
-            f.euler = a.euler;
-            f.scale = a.scale;
-            f.heightScale = a.heightScale;
-            f.seed = a.seed;
-            f.intensity = a.intensity;
-            all.push_back(f);
-        }
+        all.insert(all.end(), kv.second.begin(), kv.second.end());
     }
     pendingScene_ = [&] {
         sdf_gpu::SdfScene::FlameShape shape;
-        shape.baseRadius = lavaBaseRadius_;
-        shape.height = lavaHeight_;
-        shape.tipRadius = lavaTipRadius_;
-        shape.spikiness = lavaSpikiness_;
-        shape.spikeFreq = lavaSpikeFreq_;
-        shape.density = lavaFlameDensity_;
+        shape.baseRadius = config_.lava.baseRadius;
+        shape.height = config_.lava.height;
+        shape.tipRadius = config_.lava.tipRadius;
+        shape.spikiness = config_.lava.spikiness;
+        shape.spikeFreq = config_.lava.spikeFreq;
+        shape.density = config_.lava.flameDensity;
         return sdf_gpu::SdfScene::createFireFromAnchors(all, shape);
     }();
-    extractFlattened();
-    sceneDirtySlots_.fill(true);
+    lavaScene_ = pendingScene_;
+    refreshMergedLocked();
     stats_.lavaAnchors = static_cast<uint32_t>(all.size());
     stats_.lavaChunks = static_cast<uint32_t>(lavaByChunk_.size());
     {
-        const auto& cs = pendingScene_.containers();
+        const auto& cs = lavaScene_.containers();
         if (cs.empty()) {
-            fprintf(stderr, "[SdfRenderer] lava rebuild: anchors=%zu chunks=%zu (empty scene)\n",
+            fprintf(stderr, "[SdfRenderer] lava rebuild: anchors=%zu chunks=%zu (no lava containers)\n",
                 all.size(), lavaByChunk_.size());
         } else {
-            const auto& c = cs.front();
+            const glm::vec3 mn = cs.front().aabb.getMin();
+            const glm::vec3 mx = cs.front().aabb.getMax();
             fprintf(stderr, "[SdfRenderer] lava rebuild: anchors=%zu chunks=%zu "
                 "container=[(%.1f,%.1f,%.1f)-(%.1f,%.1f,%.1f)] grid=%ux%ux%u\n",
                 all.size(), lavaByChunk_.size(),
-                c.minp.x, c.minp.y, c.minp.z, c.maxp.x, c.maxp.y, c.maxp.z,
-                c.resolution.x, c.resolution.y, c.resolution.z);
+                mn.x, mn.y, mn.z, mx.x, mx.y, mx.z,
+                cs.front().resolution.x, cs.front().resolution.y, cs.front().resolution.z);
         }
     }
     return true;
@@ -448,107 +541,352 @@ bool SdfRenderer::rebuildLavaIfDirty() {
 
 void SdfRenderer::setLavaDensity(float d) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    lavaDensity_ = std::max(0.0f, d);
+    config_.lava.density = std::max(0.0f, d);
 }
 
-float SdfRenderer::lavaDensity() const {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    return lavaDensity_;
-}
 
 void SdfRenderer::setLavaScale(float s) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    lavaScale_ = std::clamp(s, 0.1f, 1024.0f);
+    config_.lava.scale = std::clamp(s, 0.1f, 1024.0f);
     // Keep raymarching efficient for big flames: the adaptive step is
     // dt = clamp(d*safety, minStep, maxStep), so a 1 m maxStep would burn
     // all 64 steps just approaching a 100 m flame. Scale the ceiling with
     // the flames (sphere tracing stays conservative); interior steps stay
     // small because d is small there.
-    params_.marchParams.y = std::clamp(lavaScale_, 1.0f, 32.0f);
+    params_.marchParams.y = std::clamp(config_.lava.scale, 1.0f, 32.0f);
     paramsDirtySlots_.fill(true);
 }
 
-float SdfRenderer::lavaScale() const {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    return lavaScale_;
-}
 
 void SdfRenderer::setLavaSpikiness(float s) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     const float v = std::clamp(s, 0.0f, 1.5f);
-    if (v == lavaSpikiness_) return;
-    lavaSpikiness_ = v;
+    if (v == config_.lava.spikiness) return;
+    config_.lava.spikiness = v;
     lavaDirty_ = true; // def params changed -> re-flatten on next rebuild
 }
 
-float SdfRenderer::lavaSpikiness() const {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    return lavaSpikiness_;
-}
 
 void SdfRenderer::setLavaTipRadius(float r) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     const float v = std::clamp(r, 0.0f, 32.0f);
-    if (v == lavaTipRadius_) return;
-    lavaTipRadius_ = v;
+    if (v == config_.lava.tipRadius) return;
+    config_.lava.tipRadius = v;
     lavaDirty_ = true;
 }
 
-float SdfRenderer::lavaTipRadius() const {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    return lavaTipRadius_;
-}
 
 void SdfRenderer::setLavaBaseRadius(float r) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     const float v = std::clamp(r, 0.05f, 32.0f);
-    if (v == lavaBaseRadius_) return;
-    lavaBaseRadius_ = v;
+    if (v == config_.lava.baseRadius) return;
+    config_.lava.baseRadius = v;
     lavaDirty_ = true;
 }
 
-float SdfRenderer::lavaBaseRadius() const {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    return lavaBaseRadius_;
-}
 
 void SdfRenderer::setLavaHeight(float h) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     const float v = std::clamp(h, 0.5f, 10.0f);
-    if (v == lavaHeight_) return;
-    lavaHeight_ = v;
+    if (v == config_.lava.height) return;
+    config_.lava.height = v;
     lavaDirty_ = true;
 }
 
-float SdfRenderer::lavaHeight() const {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    return lavaHeight_;
-}
 
 void SdfRenderer::setLavaSpikeFreq(float f) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     const float v = std::clamp(f, 0.5f, 6.0f);
-    if (v == lavaSpikeFreq_) return;
-    lavaSpikeFreq_ = v;
+    if (v == config_.lava.spikeFreq) return;
+    config_.lava.spikeFreq = v;
     lavaDirty_ = true;
 }
 
-float SdfRenderer::lavaSpikeFreq() const {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    return lavaSpikeFreq_;
-}
 
 void SdfRenderer::setLavaFlameDensity(float d) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     const float v = std::clamp(d, 0.05f, 1.5f);
-    if (v == lavaFlameDensity_) return;
-    lavaFlameDensity_ = v;
+    if (v == config_.lava.flameDensity) return;
+    config_.lava.flameDensity = v;
     lavaDirty_ = true;
 }
 
-float SdfRenderer::lavaFlameDensity() const {
+
+// ─── Smoke bomb + bullets ─────────────────────────────────────────────────
+// Scene-affecting setters rebuild the static smoke topology (cheap: 1 def /
+// mat / container / instance) and re-merge; tuning setters only stream the
+// smoke SSBO (no re-flatten).
+
+void SdfRenderer::markSmokeSSBO() {
+    smokeDirtySlots_.fill(true);
+}
+
+void SdfRenderer::refreshAutoBulletLocked() {
+    const float rad = glm::radians(config_.bullet.angleDeg);
+    const glm::vec3 dir(std::cos(rad), 0.0f, std::sin(rad));
+    const glm::vec3 start = config_.smoke.pos - dir * (config_.smoke.radius + 60.0f);
+    BulletGPU& b = smokeState_.bullets[0];
+    b.a = glm::vec4(start, config_.bullet.radius);
+    b.b = glm::vec4(dir, config_.bullet.length);
+    b.c = glm::vec4(config_.bullet.speed, 0.0f, config_.bullet.autoFire ? 1.0f : 0.0f, 1.0f); // flags bit0 = auto-loop
+    markSmokeSSBO();
+}
+
+void SdfRenderer::setSmokeEnabled(bool e) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    return lavaFlameDensity_;
+    if (e == config_.smoke.enabled) return;
+    config_.smoke.enabled = e;
+    ensureSmokeScene();
+    refreshMergedLocked();
+}
+
+
+void SdfRenderer::setSmokePosition(const glm::vec3& p) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    if (p == config_.smoke.pos) return;
+    config_.smoke.pos = p;
+    ensureSmokeScene();
+    refreshAutoBulletLocked();
+    refreshMergedLocked();
+}
+
+
+void SdfRenderer::setSmokeRadius(float r) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(r, 8.0f, 1024.0f);
+    if (v == config_.smoke.radius) return;
+    config_.smoke.radius = v;
+    ensureSmokeScene();
+    refreshAutoBulletLocked();
+    refreshMergedLocked();
+}
+
+
+void SdfRenderer::setSmokeGrowthDuration(float s) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.growthDuration = std::clamp(s, 0.5f, 60.0f);
+    smokeState_.tuning.timing.x = config_.smoke.growthDuration;
+    markSmokeSSBO();
+}
+
+
+void SdfRenderer::setSmokeLoopDuration(float s) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.loopDuration = std::clamp(s, 2.0f, 120.0f);
+    smokeState_.tuning.timing.y = config_.smoke.loopDuration;
+    markSmokeSSBO();
+}
+
+
+void SdfRenderer::setSmokeDissipation(float d) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.dissipation = std::clamp(d, 0.0f, 2.0f);
+    smokeState_.tuning.timing.z = config_.smoke.dissipation;
+    markSmokeSSBO();
+}
+
+
+void SdfRenderer::setSmokeNoiseScale(float s) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.noiseScale = std::clamp(s, 0.001f, 0.2f);
+    smokeState_.tuning.noise.x = config_.smoke.noiseScale;
+    markSmokeSSBO();
+}
+
+
+void SdfRenderer::setSmokeNoiseStrength(float s) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.noiseStrength = std::clamp(s, 0.0f, 2.0f);
+    smokeState_.tuning.noise.y = config_.smoke.noiseStrength;
+    markSmokeSSBO();
+}
+
+
+void SdfRenderer::setSmokeNoiseWarp(float s) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.noiseWarp = std::clamp(s, 0.0f, 2.0f);
+    smokeState_.tuning.noise.z = config_.smoke.noiseWarp;
+    markSmokeSSBO();
+}
+
+
+void SdfRenderer::setSmokeWind(float speed, float angleDeg) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.windSpeed = std::clamp(speed, 0.0f, 60.0f);
+    config_.smoke.windAngleDeg = angleDeg;
+    const float rad = glm::radians(config_.smoke.windAngleDeg);
+    smokeState_.tuning.wind.x = config_.smoke.windSpeed * std::cos(rad);
+    smokeState_.tuning.wind.y = config_.smoke.windSpeed * std::sin(rad);
+    markSmokeSSBO();
+}
+
+
+
+void SdfRenderer::setSmokeDensityScale(float s) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.densityScale = std::clamp(s, 0.0f, 3.0f);
+    smokeState_.tuning.wind.z = config_.smoke.densityScale;
+    markSmokeSSBO();
+}
+
+
+void SdfRenderer::setSmokeDensity(float d) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(d, 0.05f, 2.0f);
+    if (v == config_.smoke.density) return;
+    config_.smoke.density = v;
+    ensureSmokeScene();
+    refreshMergedLocked();
+}
+
+
+void SdfRenderer::setSmokeAbsorption(float a) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(a, 0.0f, 3.0f);
+    if (v == config_.smoke.absorption) return;
+    config_.smoke.absorption = v;
+    ensureSmokeScene();
+    refreshMergedLocked();
+}
+
+
+void SdfRenderer::setSmokeScattering(float s) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(s, 0.0f, 2.0f);
+    if (v == config_.smoke.scattering) return;
+    config_.smoke.scattering = v;
+    ensureSmokeScene();
+    refreshMergedLocked();
+}
+
+
+void SdfRenderer::setSmokeTunnel(float strength, float falloff) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.tunnelStrength = std::clamp(strength, 0.0f, 1.0f);
+    smokeState_.tuning.tunnel.x = config_.smoke.tunnelStrength;
+    config_.smoke.tunnelFalloff = std::clamp(falloff, 0.5f, 100.0f);
+    smokeState_.tuning.tunnel.y = config_.smoke.tunnelFalloff;
+    markSmokeSSBO();
+}
+
+
+
+void SdfRenderer::setSmokeWake(float strength, float radius, float expansion, float length, float dissipation) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.wakeStrength = std::clamp(strength, 0.0f, 2.0f);
+    smokeState_.tuning.tunnel.z = config_.smoke.wakeStrength;
+    config_.smoke.wakeRadius = std::clamp(radius, 0.5f, 100.0f);
+    smokeState_.tuning.wake.x = config_.smoke.wakeRadius;
+    config_.smoke.wakeExpansion = std::clamp(expansion, 0.0f, 1.0f);
+    smokeState_.tuning.wake.y = config_.smoke.wakeExpansion;
+    config_.smoke.wakeLength = std::clamp(length, 1.0f, 500.0f);
+    smokeState_.tuning.wake.z = config_.smoke.wakeLength;
+    config_.smoke.wakeDissipation = std::clamp(dissipation, 0.05f, 3.0f);
+    smokeState_.tuning.tunnel.w = config_.smoke.wakeDissipation;
+    markSmokeSSBO();
+}
+
+
+
+
+
+
+void SdfRenderer::setSmokePressure(float radius, float strength, float waveSpeed, float waveFreq, float waveFalloff) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.pressureRadius = std::clamp(radius, 0.5f, 150.0f);
+    smokeState_.tuning.pressure.x = config_.smoke.pressureRadius;
+    config_.smoke.pressureStrength = std::clamp(strength, 0.0f, 30.0f);
+    smokeState_.tuning.pressure.y = config_.smoke.pressureStrength;
+    config_.smoke.pressureWaveSpeed = std::clamp(waveSpeed, 0.0f, 300.0f);
+    smokeState_.tuning.pressure.z = config_.smoke.pressureWaveSpeed;
+    config_.smoke.pressureWaveFreq = std::clamp(waveFreq, 0.01f, 3.0f);
+    smokeState_.tuning.pressure.w = config_.smoke.pressureWaveFreq;
+    config_.smoke.pressureWaveFalloff = std::clamp(waveFalloff, 0.001f, 1.0f);
+    smokeState_.tuning.turbWave.x = config_.smoke.pressureWaveFalloff;
+    markSmokeSSBO();
+}
+
+
+
+
+
+
+void SdfRenderer::setSmokeTurbulence(float scale, float strength, float speed) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.turbScale = std::clamp(scale, 0.001f, 1.0f);
+    smokeState_.tuning.turbWave.y = config_.smoke.turbScale;
+    config_.smoke.turbStrength = std::clamp(strength, 0.0f, 10.0f);
+    smokeState_.tuning.turbWave.z = config_.smoke.turbStrength;
+    config_.smoke.turbSpeed = std::clamp(speed, 0.0f, 10.0f);
+    smokeState_.tuning.turbWave.w = config_.smoke.turbSpeed;
+    markSmokeSSBO();
+}
+
+
+
+
+void SdfRenderer::setSmokeShadow(int samples, float strength) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.shadowSamples = std::clamp(samples, 1, 8);
+    smokeState_.tuning.render.x = static_cast<float>(config_.smoke.shadowSamples);
+    config_.smoke.shadowStrength = std::clamp(strength, 0.0f, 1.0f);
+    smokeState_.tuning.render.y = config_.smoke.shadowStrength;
+    markSmokeSSBO();
+}
+
+
+
+void SdfRenderer::setBulletDefaults(float radius, float speed, float length, float angleDeg) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.bullet.radius = std::clamp(radius, 0.5f, 100.0f);
+    config_.bullet.speed = std::clamp(speed, 1.0f, 1000.0f);
+    config_.bullet.length = std::clamp(length, 10.0f, 2000.0f);
+    config_.bullet.angleDeg = angleDeg;
+    refreshAutoBulletLocked();
+}
+
+
+
+
+
+void SdfRenderer::setAutoFire(bool on) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.bullet.autoFire = on;
+    refreshAutoBulletLocked();
+}
+
+
+void SdfRenderer::fireBullet(float angleDeg) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float rad = glm::radians(angleDeg);
+    const glm::vec3 dir(std::cos(rad), 0.0f, std::sin(rad));
+    const glm::vec3 start = config_.smoke.pos - dir * (config_.smoke.radius + 60.0f);
+    // Manual slots are 1..7 (slot 0 = auto-loop template, never overwritten).
+    const uint32_t slot = 1 + ((bulletRoundRobin_ - 1) % (kSmokeMaxBullets - 1));
+    BulletGPU& m = smokeState_.bullets[slot];
+    m.a = glm::vec4(start, config_.bullet.radius);
+    m.b = glm::vec4(dir, config_.bullet.length);
+    m.c = glm::vec4(config_.bullet.speed, lastTime_, 1.0f, 0.0f);
+    bulletRoundRobin_ = slot + 1;
+    if (bulletRoundRobin_ >= kSmokeMaxBullets) bulletRoundRobin_ = 1;
+    markSmokeSSBO();
+}
+
+void SdfRenderer::clearBullets() {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    for (uint32_t i = 1; i < kSmokeMaxBullets; ++i) {
+        smokeState_.bullets[i].c.z = 0.0f; // intensity 0 = empty
+    }
+    markSmokeSSBO();
+}
+
+uint32_t SdfRenderer::bulletSlotsUsed() const {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    uint32_t n = 0;
+    for (uint32_t i = 1; i < kSmokeMaxBullets; ++i) {
+        if (smokeState_.bullets[i].c.z > 0.0f) ++n;
+    }
+    return n;
 }
 
 // ─── Upload + barrier ────────────────────────────────────────────────────────
@@ -560,7 +898,7 @@ void SdfRenderer::writeSlotBinding(uint32_t slot, uint32_t binding, const Buffer
 }
 
 void SdfRenderer::ensureSlotCapacity(uint32_t slot) {
-    FrameSlot& f = slots[slot];
+    SdfFrameSlot& f = slots[slot];
     const size_t maxRange = static_cast<size_t>(app_->getMaxStorageBufferRange());
     auto grow = [&](Buffer& buf, uint32_t& cap, size_t elemSize, size_t need, uint32_t binding) {
         if (need < 1) need = 1; // keep bindings valid even when the scene is empty
@@ -591,7 +929,7 @@ void SdfRenderer::ensureSlotCapacity(uint32_t slot) {
 
 void SdfRenderer::flushSlotUploads(uint32_t slot) {
     if (slot >= SDF_FRAMES) return;
-    FrameSlot& f = slots[slot];
+    SdfFrameSlot& f = slots[slot];
     if (sceneDirtySlots_[slot]) {
         ensureSlotCapacity(slot);
         auto copy = [](Buffer& dst, const void* src, size_t bytes) {
@@ -613,6 +951,15 @@ void SdfRenderer::flushSlotUploads(uint32_t slot) {
     }
 }
 
+void SdfRenderer::flushSmokeUpload(uint32_t slot) {
+    if (slot >= SDF_FRAMES) return;
+    SdfFrameSlot& f = slots[slot];
+    if (!smokeDirtySlots_[slot]) return;
+    if (f.smoke.mappedData != nullptr)
+        std::memcpy(f.smoke.mappedData, &smokeState_, sizeof(smokeState_));
+    smokeDirtySlots_[slot] = false;
+}
+
 void SdfRenderer::refreshDepthBinding(uint32_t slot) {
     if (pendingDepthView_ == VK_NULL_HANDLE) return;
     if (boundDepthViews_[slot] == pendingDepthView_) return; // dedupe: no per-frame rewrites
@@ -630,6 +977,7 @@ void SdfRenderer::prepareCull(VkCommandBuffer cmd) {
     {
         std::lock_guard<std::mutex> lock(sceneMutex);
         flushSlotUploads(slot);
+        flushSmokeUpload(slot);
         refreshDepthBinding(slot);
     }
     if (stats_.containerCount == 0) return;
@@ -639,12 +987,13 @@ void SdfRenderer::prepareCull(VkCommandBuffer cmd) {
     // visible to the shader stages on the recording queue. NULL handles are
     // skipped (a slot whose buffers were never allocated must not emit a
     // barrier entry — VUID forbids VK_NULL_HANDLE there).
-    FrameSlot& f = slots[slot];
-    VkBuffer bufs[7] = {f.instance.buffer, f.definition.buffer, f.material.buffer,
-                         f.container.buffer, f.gridCell.buffer, f.gridIndex.buffer, f.params.buffer};
-    VkBufferMemoryBarrier2 barriers[7]{};
+    SdfFrameSlot& f = slots[slot];
+    VkBuffer bufs[8] = {f.instance.buffer, f.definition.buffer, f.material.buffer,
+                         f.container.buffer, f.gridCell.buffer, f.gridIndex.buffer, f.params.buffer,
+                         f.smoke.buffer};
+    VkBufferMemoryBarrier2 barriers[8]{};
     uint32_t n = 0;
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
         if (bufs[i] == VK_NULL_HANDLE) continue;
         barriers[n].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
         barriers[n].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
@@ -700,7 +1049,7 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
         return;
     }
 
-    FrameSlot& f = slots[slot];
+    SdfFrameSlot& f = slots[slot];
     if (f.instance.buffer == VK_NULL_HANDLE) {
         vkCmdEndRendering(cmd);
         app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
@@ -716,11 +1065,12 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
     // different command buffer/queue; without this the draw can read
     // pre-upload state. Same pattern as DebugSDFRenderer::render.
     // NULL handles are skipped (see prepareCull).
-    VkBuffer bufs[7] = {f.instance.buffer, f.definition.buffer, f.material.buffer,
-                         f.container.buffer, f.gridCell.buffer, f.gridIndex.buffer, f.params.buffer};
-    VkBufferMemoryBarrier2 barriers[7]{};
+    VkBuffer bufs[8] = {f.instance.buffer, f.definition.buffer, f.material.buffer,
+                         f.container.buffer, f.gridCell.buffer, f.gridIndex.buffer, f.params.buffer,
+                         f.smoke.buffer};
+    VkBufferMemoryBarrier2 barriers[8]{};
     uint32_t nBar = 0;
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
         if (bufs[i] == VK_NULL_HANDLE) continue;
         barriers[nBar].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
         barriers[nBar].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
@@ -863,10 +1213,11 @@ void SdfRenderer::cleanup(VulkanApp* app) {
         s.gridCell = {};
         s.gridIndex = {};
         s.params = {};
+        s.smoke = {};
         s.instanceCap = s.definitionCap = s.materialCap = 0;
         s.containerCap = s.gridCellCap = s.gridIndexCap = 0;
     }
     depthSampler = VK_NULL_HANDLE;
-    stats_ = Stats{};
+    stats_ = SdfStats{};
     app_ = nullptr;
 }

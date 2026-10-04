@@ -16,6 +16,7 @@ layout(location = VARY_BRUSHPATCH) flat in int fragContainerIndex;
 #include "includes/sdf_primitives.glsl"
 #include "includes/sdf_ops.glsl"
 #include "includes/sdf_noise.glsl"
+#include "includes/sdf_smoke.glsl"
 
 layout(std430, set = 1, binding = 0) readonly buffer SdfInstanceBuffer {
     SdfInstanceGPU sdfInstances[];
@@ -86,6 +87,11 @@ vec3 sdfWorldToLocal(vec3 wpos, SdfInstanceGPU inst, out float outScale) {
 
 float sdfEvalInstance(vec3 wpos, SdfInstanceGPU inst, SdfDefinitionGPU def,
                       SdfMaterialGPU mat, float time) {
+    // Smoke volumes march their grown radius + bullet-carved field
+    // (sdf_smoke.glsl); all other primitives share the path below.
+    if (def.meta.x == SDF_PRIM_SMOKE) {
+        return smokeMarchSDF(wpos, inst, def, time);
+    }
     float ds;
     vec3 q = sdfWorldToLocal(wpos, inst, ds);
     // Optional repeat before primitive eval (deform bit4): period from params1.xyz.
@@ -148,7 +154,8 @@ void main() {
     vec3 bMax = cont.boundsMax.xyz;
     uvec3 dim = uvec3(max(cont.gridInfo.x, 1u), max(cont.gridInfo.y, 1u), max(cont.gridInfo.z, 1u));
     uint cellBase = cont.gridOffset.x;
-    uint indexBase = cont.gridInfo.w; // == gridOffset.y (global index start)
+    // NOTE: gridInfo.w (global index start) is already baked into each
+    // cell's offset by flatten(); it must NOT be added again here.
 
     vec3 ro = ubo.viewPosition;
     vec3 toFrag = fragWorldPos - ro;
@@ -212,6 +219,17 @@ void main() {
     int steps = 0;
     int hits = 0;          // steps where >=1 candidate SDF was evaluated
     float minAbsD = 1e5;   // closest approach to any flame surface this ray
+    // Last-sample smoke metrics (§24 debug views 1-9).
+    float dbgSmokeSDF = 1e5;
+    float dbgSmokeDens = 0.0;
+    float dbgSmokeBullet = 1e5;
+    float dbgSmokeTunnel = 0.0;
+    float dbgSmokePress = 0.0;
+    float dbgSmokeWave = 0.0;
+    float dbgSmokeTurb = 0.0;
+    float dbgSmokeWake = 0.0;
+    float dbgSmokeFinal = 0.0;
+    float dbgSmokeLight = 0.0;
     bool hit = false;
     float hitT = tEnter;
     vec3 hitColor = vec3(0.0);
@@ -235,7 +253,11 @@ void main() {
         uint cellAddr = cellBase + lin;
         uint coff = 0u, ccnt = 0u;
         if (cellAddr < uint(nCells)) {
-            coff = sdfGridCells[cellAddr].offset + indexBase;
+            // Cell offsets are already global (flatten() rebases each
+            // container's cells into the shared index buffer); adding
+            // indexBase again would double-count and read out of range,
+            // silently emptying every non-first container.
+            coff = sdfGridCells[cellAddr].offset;
             ccnt = sdfGridCells[cellAddr].count;
         }
         if (ccnt == 0u) {
@@ -275,6 +297,32 @@ void main() {
         hits++;
         minAbsD = min(minAbsD, abs(dBest));
 
+        // Visible tracer round: emissive sphere at the simulated bullet head.
+        // Same head math as the interaction field, so the visual and the
+        // physics agree by construction. Renders in all modes (projectile,
+        // not volume); the smoke container covers the flight path.
+        {
+            float loopDurB = max(smokeTuning.timing.y, 1.0);
+            float loopTB = smokeLoopT(time, loopDurB);
+            float loopStartB = time - loopTB;
+            float dBullet = 1e5;
+            for (int bi = 0; bi < 8; ++bi) {
+                BulletGPU bbl = smokeBullets[bi];
+                if (bbl.c.z <= 0.0) continue;
+                SmokeBulletState bst = smokeBulletState(bbl, time, loopStartB, loopDurB);
+                if (!bst.live || bst.traveled <= 0.0) continue;
+                vec3 bD = bbl.b.xyz / max(length(bbl.b.xyz), 1e-6);
+                vec3 head = bbl.a.xyz + bD * bst.traveled;
+                float visR = clamp(bbl.a.w * 0.25, 0.5, 10.0);
+                dBullet = min(dBullet, length(p - head) - visR);
+            }
+            if (dBullet < eps) {
+                outColor = vec4(vec3(1.0, 0.72, 0.25) * 2.5, 1.0);
+                gl_FragDepth = sdfProjDepth(ro, rd, t);
+                return;
+            }
+        }
+
         // Surface mode (or any mode hitting the zero crossing): shade opaque hit.
         if (dBest < eps && (renderMode == 0u || renderMode == 3u)) {
             float e = max(eps * 2.0, 0.004);
@@ -296,18 +344,58 @@ void main() {
             dBest = eps;
         }
 
-        // Scale-aware volumetric stepping: the SDF distance scale of the
-        // closest flame (dsBest ~ its world size) drives both the minimum
-        // step and the density softness. Fixed 0.05 m steps could never
-        // penetrate a 100 m flame (all 64 steps die in the cool skin, so the
-        // hot core never contributes); fixed 0.15 m softness gave razor
-        // silhouettes instead of soft volumetric edges. Scaled together the
-        // edge is always ~3 steps wide and the march reaches the core.
+        // Scale-aware volumetric stepping (fire path): the SDF distance
+        // scale of the closest flame (dsBest ~ its world size) drives both
+        // the minimum step and the density softness. Smoke instances take
+        // the smoke branch below instead (own step law + density).
         float dsBest = max(bestInst.posScale.w *
                            min(max(bestInst.sizeParams.y, 1e-3),
                                max(bestInst.sizeParams.x, 1e-3)), 1e-3);
         float wScale = clamp(dsBest, 1.0, 32.0);
-        float dt = clamp(dBest * safety, minStep * wScale, maxStep);
+        float dt = minStep * wScale;
+        float densV = 0.0;
+        vec3 emisV = vec3(0.0);
+        bool isSmoke = (bestDef.meta.x == SDF_PRIM_SMOKE);
+        if (isSmoke) {
+            float loopDurS = max(smokeTuning.timing.y, 1.0);
+            float loopTS = smokeLoopT(time, loopDurS);
+            float loopStartS = time - loopTS;
+            vec3 scS = bestInst.posScale.xyz;
+            float maxRS = max(bestDef.params0.x, 1.0);
+            float seedS = bestInst.rotSeed.w;
+            float densMulS = max(bestMat.volumeParams.x, 0.0) * max(smokeTuning.wind.z, 0.0);
+            float rNowS = smokeGrowthRadius(maxRS, loopTS, max(smokeTuning.timing.x, 0.5));
+            // Smoke adaptive step: exact sphere-tracing outside, interior
+            // distance-scaled inside (robust from meters to kilometers).
+            float stepBase = (dBest >= 0.0) ? dBest * safety : -dBest * 0.15;
+            dt = clamp(stepBase + minStep * wScale, minStep * wScale, maxStep);
+            SmokeSample ssm = smokeSampleDensity(p, scS, rNowS, maxRS, smokeTuning, time,
+                                                 loopStartS, loopDurS, seedS, densMulS);
+            dbgSmokeSDF = ssm.sdf;
+            dbgSmokeDens = ssm.density;
+            dbgSmokeBullet = ssm.bullet;
+            dbgSmokeTunnel = ssm.tunnel;
+            dbgSmokePress = ssm.pressure;
+            dbgSmokeWave = ssm.wave;
+            dbgSmokeTurb = ssm.turb;
+            dbgSmokeWake = ssm.wake;
+            dbgSmokeFinal = ssm.finalD;
+            densV = ssm.density;
+            if (densV > 0.001) {
+                vec3 sunDirW = -normalize(ubo.lightDirection);
+                float ltSm = 1.0;
+                emisV = smokeShade(p, rd, scS, rNowS, maxRS, smokeTuning, bestMat, time,
+                                   loopStartS, loopDurS, seedS, densMulS,
+                                   sunDirW, ubo.lightColor, ltSm);
+                dbgSmokeLight = ltSm;
+            }
+        } else {
+        if (dBest < eps) {
+            // Volume/emissive modes treat the interior as dense (no hard surface).
+            dBest = eps;
+        }
+
+        dt = clamp(dBest * safety, minStep * wScale, maxStep);
         float soft = 0.15 * wScale;
         float body = 1.0 - smoothstep(-soft, soft, dBest);
         if (body > 0.001) {
@@ -325,16 +413,61 @@ void main() {
             float temp = clamp((1.0 - hn) * (0.35 + 0.65 * clamp(body, 0.0, 1.0)) + (nse - 0.5) * 0.35, 0.0, 1.0);
             temp *= max(bestMat.volumeParams.w, 0.0) * max(bestInst.sizeParams.z, 0.0);
             vec4 ve = sdfEvaluateVolume(dBest, hn, nse, bestMat, temp);
-            float extinct = clamp(ve.a * (0.5 + bestMat.volumeParams.y), 0.0, 4.0);
+            densV = ve.a;
+            emisV = ve.rgb;
+        } // end if (body > 0.001), fire path
+        } // end else (non-smoke path)
+        // Shared front-to-back accumulation for fire and smoke volumes.
+        if (densV > 0.001) {
+            float extinct = clamp(densV * (0.5 + bestMat.volumeParams.y), 0.0, 4.0);
             float aStep = clamp(1.0 - exp(-extinct * dt * 2.0), 0.0, 1.0);
             if (tFirst < 0.0 && (1.0 - trans) + aStep * trans > 0.03) tFirst = t;
             float wgt = trans * aStep;
-            accum += wgt * ve.rgb;
+            accum += wgt * emisV;
             tDepthAccum += wgt * t; // weights telescope to alpha: centroid = sum/alpha
             trans *= (1.0 - aStep);
             if ((1.0 - trans) >= opacityThresh) break; // early termination
         }
         t += dt;
+    }
+
+    // Smoke debug views (§24): 0 = normal smoke (falls through), 1-10 below.
+    // Stored in debugFlags bits 4-7 so the fire debug views (bits 0-2) are
+    // unaffected.
+    uint smokeDbg = (debugFlags >> 4u) & 15u;
+    if (smokeDbg >= 1u && smokeDbg <= 10u) {
+        vec3 sd = vec3(0.0);
+        if (smokeDbg == 1u) {
+            // Base smoke SDF sign: blue = inside, white = boundary, red = outside.
+            float b = max(containerH * 0.02, 1.0);
+            if (abs(dbgSmokeSDF) < b) sd = vec3(1.0);
+            else if (dbgSmokeSDF < 0.0) sd = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, 0.1), clamp(-dbgSmokeSDF / (b * 8.0), 0.0, 1.0));
+            else sd = mix(vec3(1.0, 0.0, 0.0), vec3(0.1, 0.0, 0.0), clamp(dbgSmokeSDF / (b * 8.0), 0.0, 1.0));
+        } else if (smokeDbg == 2u) {
+            sd = vec3(clamp(dbgSmokeDens, 0.0, 1.0));
+        } else if (smokeDbg == 3u) {
+            float v = clamp(dbgSmokeBullet / 50.0, -1.0, 1.0);
+            sd = (v < 0.0) ? vec3(-v, 0.0, 0.0) : vec3(0.0, v, v * 0.5);
+        } else if (smokeDbg == 4u) {
+            sd = vec3(clamp(dbgSmokeTunnel, 0.0, 1.0));
+        } else if (smokeDbg == 5u) {
+            sd = vec3(clamp(abs(dbgSmokePress), 0.0, 1.0));
+        } else if (smokeDbg == 6u) {
+            float w = clamp(dbgSmokeWave * 0.5 + 0.5, 0.0, 1.0);
+            sd = vec3(w, w * 0.6, w * 0.3);
+        } else if (smokeDbg == 7u) {
+            sd = vec3(clamp(dbgSmokeTurb, 0.0, 1.0));
+        } else if (smokeDbg == 8u) {
+            sd = vec3(clamp(dbgSmokeWake, 0.0, 1.0));
+        } else if (smokeDbg == 9u) {
+            sd = vec3(clamp(dbgSmokeFinal, 0.0, 1.0));
+        } else {
+            float h = maxSteps > 0 ? clamp(float(steps) / float(maxSteps), 0.0, 1.0) : 0.0;
+            sd = mix(vec3(0.0, 0.1, 0.0), vec3(0.0, 1.0, 0.3), h);
+        }
+        outColor = vec4(sd, 1.0);
+        gl_FragDepth = sdfProjDepth(ro, rd, (tFirst >= 0.0) ? tFirst : tEnter);
+        return;
     }
 
     if (debugView) {

@@ -40,7 +40,10 @@ glm::vec3 localHalfExtents(SdfPrimitiveType prim, const glm::vec4& p0,
                            float radial, float height, float uni) {
     const float r = std::max(p0.x, 0.0f);
     switch (prim) {
-        case SdfPrimitiveType::Sphere: {
+        case SdfPrimitiveType::Sphere:
+        case SdfPrimitiveType::Smoke: {
+            // Smoke uses the sphere domain at its maximum radius (growth is
+            // density-side, so bounds stay static while the look loops).
             const float rr = std::max(r * radial, 0.001f);
             return glm::vec3(rr);
         }
@@ -129,8 +132,7 @@ uint32_t SdfScene::addMaterial(const Material& m) {
 
 uint32_t SdfScene::addContainer(const glm::vec3& minp, const glm::vec3& maxp, glm::uvec3 res) {
     Container c;
-    c.minp = minp;
-    c.maxp = maxp;
+    c.aabb = BoundingBox(minp, maxp);
     c.resolution = glm::uvec3(std::max(res.x, 1u), std::max(res.y, 1u), std::max(res.z, 1u));
     containers_.push_back(std::move(c));
     return static_cast<uint32_t>(containers_.size() - 1);
@@ -153,7 +155,7 @@ void SdfScene::clear() {
     containers_.clear();
 }
 
-glm::vec4 SdfScene::computeInstanceBoundsMin(const Instance& in) const {
+BoundingBox SdfScene::computeInstanceBounds(const Instance& in) const {
     glm::vec3 half(0.5f);
     float pad = 0.5f;
     if (in.defIdx < definitions_.size()) {
@@ -180,37 +182,7 @@ glm::vec4 SdfScene::computeInstanceBoundsMin(const Instance& in) const {
                        glm::vec3(std::abs(r[1].x), std::abs(r[1].y), std::abs(r[1].z)),
                        glm::vec3(std::abs(r[2].x), std::abs(r[2].y), std::abs(r[2].z)));
     const glm::vec3 worldHalf = ar * half;
-    return glm::vec4(in.pos - worldHalf, 0.0f);
-}
-
-glm::vec4 SdfScene::computeInstanceBoundsMax(const Instance& in) const {
-    glm::vec3 half(0.5f);
-    float pad = 0.5f;
-    if (in.defIdx < definitions_.size()) {
-        const Definition& def = definitions_[in.defIdx];
-        float turbulence = 0.6f;
-        if (in.matIdx < materials_.size()) turbulence = materials_[in.matIdx].turbulence;
-        const float uni = std::max(in.scale, 0.0001f);
-        const float radial = uni * std::max(in.radiusScale, 0.0001f);
-        const float height = uni * std::max(in.heightScale, 0.0001f);
-        half = localHalfExtents(def.prim, def.params0, radial, height, uni);
-        pad = deformationPadding(def, turbulence);
-        if (def.prim == SdfPrimitiveType::Flame) {
-            // Spike displacement is spikiness (local) * instance scale in
-            // world units; without this, giant spiky flames escape their
-            // bounds and get wrongly culled by the bound test / grid.
-            pad += std::max(def.params1.y, 0.0f) * uni;
-        }
-    } else {
-        half = glm::vec3(0.5f * std::max(in.scale, 0.0001f));
-    }
-    half += glm::vec3(pad);
-    const glm::mat3 r = rotationFromEuler(in.euler);
-    const glm::mat3 ar(glm::vec3(std::abs(r[0].x), std::abs(r[0].y), std::abs(r[0].z)),
-                       glm::vec3(std::abs(r[1].x), std::abs(r[1].y), std::abs(r[1].z)),
-                       glm::vec3(std::abs(r[2].x), std::abs(r[2].y), std::abs(r[2].z)));
-    const glm::vec3 worldHalf = ar * half;
-    return glm::vec4(in.pos + worldHalf, 0.0f);
+    return BoundingBox(in.pos - worldHalf, in.pos + worldHalf);
 }
 
 SdfScene::BuiltGrid SdfScene::buildContainerGrid(uint32_t containerIdx) const {
@@ -230,11 +202,11 @@ SdfScene::BuiltGrid SdfScene::buildContainerGrid(uint32_t containerIdx) const {
     }
     if (cellCount == 0) return out;
 
-    glm::vec3 extent = c.maxp - c.minp;
+    glm::vec3 length = c.aabb.getLength();
     glm::vec3 cellSize(1.0f);
-    if (extent.x > 1e-6f) cellSize.x = extent.x / static_cast<float>(nx);
-    if (extent.y > 1e-6f) cellSize.y = extent.y / static_cast<float>(ny);
-    if (extent.z > 1e-6f) cellSize.z = extent.z / static_cast<float>(nz);
+    if (length.x > 1e-6f) cellSize.x = length.x / static_cast<float>(nx);
+    if (length.y > 1e-6f) cellSize.y = length.y / static_cast<float>(ny);
+    if (length.z > 1e-6f) cellSize.z = length.z / static_cast<float>(nz);
 
     // Candidate instances: union of the container's index list and any
     // instance whose containerIdx matches (deduped).
@@ -257,15 +229,22 @@ SdfScene::BuiltGrid SdfScene::buildContainerGrid(uint32_t containerIdx) const {
     std::vector<std::vector<uint32_t>> tmp(cellCount);
     for (uint32_t gi : candidates) {
         const Instance& inst = instances_[gi];
-        const glm::vec4 bmin4 = computeInstanceBoundsMin(inst);
-        const glm::vec4 bmax4 = computeInstanceBoundsMax(inst);
-        const glm::vec3 bmin(bmin4.x, bmin4.y, bmin4.z);
-        const glm::vec3 bmax(bmax4.x, bmax4.y, bmax4.z);
+        const BoundingBox bBox = computeInstanceBounds(inst);
+        const glm::vec3 bmin = bBox.getMin();
+        const glm::vec3 bmax = bBox.getMax();
         // Skip instances fully outside the container.
-        if (bmax.x < c.minp.x || bmax.y < c.minp.y || bmax.z < c.minp.z) continue;
-        if (bmin.x > c.maxp.x || bmin.y > c.maxp.y || bmin.z > c.maxp.z) continue;
-        glm::vec3 cbmin(std::max(bmin.x, c.minp.x), std::max(bmin.y, c.minp.y), std::max(bmin.z, c.minp.z));
-        glm::vec3 cbmax(std::min(bmax.x, c.maxp.x), std::min(bmax.y, c.maxp.y), std::min(bmax.z, c.maxp.z));
+        if (bmax.x < c.aabb.getMinX() || bmax.y < c.aabb.getMinY() || bmax.z < c.aabb.getMinZ()) continue;
+        if (bmin.x > c.aabb.getMaxX() || bmin.y > c.aabb.getMaxY() || bmin.z > c.aabb.getMaxZ()) continue;
+        glm::vec3 cbmin(
+            std::max(bmin.x, c.aabb.getMinX()), 
+            std::max(bmin.y, c.aabb.getMinY()), 
+            std::max(bmin.z, c.aabb.getMinZ())
+        );
+        glm::vec3 cbmax(
+            std::min(bmax.x, c.aabb.getMaxX()), 
+            std::min(bmax.y, c.aabb.getMaxY()), 
+            std::min(bmax.z, c.aabb.getMaxZ())
+        );
         auto axisRange = [&](float lo, float hi, float origin, float cs, uint32_t n) {
             int i0 = 0, i1 = 0;
             if (cs > 1e-9f) {
@@ -277,9 +256,9 @@ SdfScene::BuiltGrid SdfScene::buildContainerGrid(uint32_t containerIdx) const {
             if (i1 < i0) std::swap(i0, i1);
             return std::pair<int, int>(i0, i1);
         };
-        const auto rx = axisRange(cbmin.x, cbmax.x, c.minp.x, cellSize.x, nx);
-        const auto ry = axisRange(cbmin.y, cbmax.y, c.minp.y, cellSize.y, ny);
-        const auto rz = axisRange(cbmin.z, cbmax.z, c.minp.z, cellSize.z, nz);
+        const auto rx = axisRange(cbmin.x, cbmax.x, c.aabb.getMinX(), cellSize.x, nx);
+        const auto ry = axisRange(cbmin.y, cbmax.y, c.aabb.getMinY(), cellSize.y, ny);
+        const auto rz = axisRange(cbmin.z, cbmax.z, c.aabb.getMinZ(), cellSize.z, nz);
         for (int z = rz.first; z <= rz.second; ++z) {
             for (int y = ry.first; y <= ry.second; ++y) {
                 for (int x = rx.first; x <= rx.second; ++x) {
@@ -337,8 +316,9 @@ void SdfScene::flattenInstances(std::vector<SdfInstanceGPU>& out) const {
         out[i].rotSeed = glm::vec4(in.euler, in.seed);
         out[i].sizeParams = glm::vec4(in.heightScale, in.radiusScale, in.intensity, 0.0f);
         out[i].indices = glm::uvec4(in.defIdx, in.matIdx, in.containerIdx, 0u);
-        out[i].boundsMin = computeInstanceBoundsMin(in);
-        out[i].boundsMax = computeInstanceBoundsMax(in);
+        BoundingBox b = computeInstanceBounds(in);
+        out[i].boundsMin = glm::vec4(b.getMin(), 0.0f);
+        out[i].boundsMax = glm::vec4(b.getMax(), 0.0f);
     }
 }
 
@@ -364,8 +344,8 @@ void SdfScene::flattenContainers(std::vector<SdfContainerGPU>& out) const {
                 }
             }
         }
-        out[i].boundsMin = glm::vec4(c.minp, 0.0f);
-        out[i].boundsMax = glm::vec4(c.maxp, 0.0f);
+        out[i].boundsMin = glm::vec4(c.aabb.getMinX(), c.aabb.getMinY(), c.aabb.getMinZ(), 0.0f);
+        out[i].boundsMax = glm::vec4(c.aabb.getMaxX(), c.aabb.getMaxY(), c.aabb.getMaxZ(), 0.0f);
         out[i].gridInfo = glm::uvec4(c.resolution.x, c.resolution.y, c.resolution.z, 0u);
         out[i].gridOffset = glm::uvec4(0u, 0u, count, 0u);
     }
@@ -415,8 +395,8 @@ SdfScene::FlattenedScene SdfScene::flatten() const {
                 }
             }
         }
-        f.containers[ci].boundsMin = glm::vec4(c.minp, 0.0f);
-        f.containers[ci].boundsMax = glm::vec4(c.maxp, 0.0f);
+        f.containers[ci].boundsMin = glm::vec4(c.aabb.getMinX(), c.aabb.getMinY(), c.aabb.getMinZ(), 0.0f);
+        f.containers[ci].boundsMax = glm::vec4(c.aabb.getMaxX(), c.aabb.getMaxY(), c.aabb.getMaxZ(), 0.0f);
         f.containers[ci].gridInfo = glm::uvec4(c.resolution.x, c.resolution.y, c.resolution.z, indexStart);
         f.containers[ci].gridOffset = glm::uvec4(cellStart, indexStart, count, 0u);
         for (auto& cell : g.cells) cell.offset += indexStart;
@@ -597,4 +577,78 @@ glm::vec3 sdf_gpu::SdfScene::eulerAlignYToNormal(const glm::vec3& n) {
         e.z = 0.0f;
     }
     return e;
+}
+
+sdf_gpu::SdfScene sdf_gpu::SdfScene::merge(const SdfScene& a, const SdfScene& b) {
+    SdfScene out;
+    out.definitions_ = a.definitions_;
+    out.definitions_.insert(out.definitions_.end(), b.definitions_.begin(), b.definitions_.end());
+    out.materials_ = a.materials_;
+    out.materials_.insert(out.materials_.end(), b.materials_.begin(), b.materials_.end());
+    const uint32_t defBase = static_cast<uint32_t>(a.definitions_.size());
+    const uint32_t matBase = static_cast<uint32_t>(a.materials_.size());
+    const uint32_t contBase = static_cast<uint32_t>(a.containers_.size());
+    const uint32_t instBase = static_cast<uint32_t>(a.instances_.size());
+    out.containers_ = a.containers_;
+    for (const Container& c : b.containers_) {
+        Container nc = c;
+        nc.instanceIndices.clear();
+        for (uint32_t gi : c.instanceIndices) nc.instanceIndices.push_back(gi + instBase);
+        out.containers_.push_back(std::move(nc));
+    }
+    out.instances_ = a.instances_;
+    for (size_t i = 0; i < b.instances_.size(); ++i) {
+        Instance in = b.instances_[i];
+        in.defIdx += defBase;
+        in.matIdx += matBase;
+        in.containerIdx += contBase;
+        out.instances_.push_back(in);
+    }
+    return out;
+}
+
+sdf_gpu::SdfScene sdf_gpu::SdfScene::createSmokeBomb(const glm::vec3& center, float maxRadius, float seed) {
+    SdfScene scene;
+    Definition d;
+    d.prim = SdfPrimitiveType::Smoke;
+    d.op = SdfOpType::Union;
+    d.params0 = glm::vec4(std::max(maxRadius, 1.0f), seed, 0.0f, 0.0f);
+    d.params1 = glm::vec4(0.0f);
+    d.deformFlags = 0u; // smoke warps its own noise domain; no flame deform
+    d.smoothK = 0.5f;
+    scene.addDefinition(d);
+
+    Material m;
+    m.mode = SdfMaterialType::Volume;
+    m.baseColor = glm::vec4(0.62f, 0.60f, 0.58f, 1.0f); // neutral gray body
+    m.roughness = 1.0f;
+    m.metallic = 0.0f;
+    m.opacity = 1.0f;
+    m.emission = glm::vec4(0.0f); // scattering-shaded, no blackbody emission
+    m.density = 0.5f;
+    m.absorption = 0.6f;
+    m.scattering = 0.7f;
+    m.tempScale = 0.0f; // temperature path disabled for smoke
+    m.noiseScale = 2.5f;
+    m.turbulence = 0.6f;
+    m.riseSpeed = 1.5f;
+    scene.addMaterial(m);
+
+    const float pad = std::max(maxRadius * 0.25f, 4.0f);
+    scene.addContainer(center - glm::vec3(pad + maxRadius),
+                       center + glm::vec3(pad + maxRadius),
+                       glm::uvec3(4u, 4u, 4u));
+    Instance in;
+    in.defIdx = 0;
+    in.matIdx = 0;
+    in.pos = center;
+    in.euler = glm::vec3(0.0f);
+    in.scale = 1.0f;
+    in.heightScale = 1.0f;
+    in.radiusScale = 1.0f;
+    in.intensity = 1.0f;
+    in.seed = seed;
+    in.containerIdx = 0;
+    scene.addInstance(in);
+    return scene;
 }

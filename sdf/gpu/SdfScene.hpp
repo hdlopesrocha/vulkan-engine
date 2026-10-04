@@ -1,62 +1,40 @@
 #pragma once
 // Generic CPU-side SDF scene for the GPU-driven SDF framework.
 // Independent from space/Octree and from sdf/*DistanceFunction (not included).
-// Only standard C++23 + GLM + vulkan/ubo/SdfUBO.hpp are used.
+// Scene description structs live in types/ (one file per struct, shared, no
+// Vulkan dependency); GPU-wire flattening uses the types/Sdf*GPU structs.
 #include <cstdint>
 #include <vector>
 
 #include <glm/glm.hpp>
 
-#include "vulkan/ubo/SdfUBO.hpp"
+#include "types/SdfDefinition.hpp"
+#include "types/SdfMaterial.hpp"
+#include "types/SdfInstance.hpp"
+#include "types/SdfContainer.hpp"
+#include "types/SdfFlameAnchor.hpp"
+#include "types/SdfFlameShape.hpp"
+#include "types/SdfDefinitionGPU.hpp"
+#include "types/SdfInstanceGPU.hpp"
+#include "types/SdfMaterialGPU.hpp"
+#include "types/SdfContainerGPU.hpp"
+#include "types/SdfGridCellGPU.hpp"
+#include "math/BoundingBox.hpp"
 
 namespace sdf_gpu {
 
 class SdfScene {
 public:
-    struct Definition {
-        SdfPrimitiveType prim = SdfPrimitiveType::Sphere;
-        SdfOpType op = SdfOpType::Union;
-        glm::vec4 params0 = glm::vec4(0.0f);
-        glm::vec4 params1 = glm::vec4(0.0f);
-        uint32_t deformFlags = 0;
-        float smoothK = 0.5f;
-    };
-
-    struct Material {
-        SdfMaterialType mode = SdfMaterialType::Volume;
-        glm::vec4 baseColor = glm::vec4(1.0f);
-        float roughness = 0.5f;
-        float metallic = 0.0f;
-        float opacity = 1.0f;
-        glm::vec4 emission = glm::vec4(1.0f, 0.5f, 0.1f, 2.0f);
-        float density = 1.0f;
-        float absorption = 0.5f;
-        float scattering = 0.5f;
-        float tempScale = 1.0f;
-        float noiseScale = 2.5f;
-        float turbulence = 0.6f;
-        float riseSpeed = 1.5f;
-    };
-
-    struct Instance {
-        uint32_t defIdx = 0;
-        uint32_t matIdx = 0;
-        glm::vec3 pos = glm::vec3(0.0f);
-        glm::vec3 euler = glm::vec3(0.0f);
-        float scale = 1.0f;
-        float heightScale = 1.0f;
-        float radiusScale = 1.0f;
-        float intensity = 1.0f;
-        float seed = 0.0f;
-        uint32_t containerIdx = 0;
-    };
-
-    struct Container {
-        glm::vec3 minp = glm::vec3(0.0f);
-        glm::vec3 maxp = glm::vec3(1.0f);
-        glm::uvec3 resolution = glm::uvec3(8u, 8u, 8u);
-        std::vector<uint32_t> instanceIndices;
-    };
+    // Scene description types live in types/ (one file per struct, shared
+    // with renderer/widgets); aliased here so existing SdfScene::X code is
+    // unaffected. Flatten machinery (BuiltGrid/FlattenedScene) stays nested:
+    // it references the GPU-wire structs and belongs to the builder.
+    using Definition = sdf_gpu::Definition;
+    using Material = sdf_gpu::Material;
+    using Instance = sdf_gpu::Instance;
+    using Container = sdf_gpu::Container;
+    using FlameAnchor = sdf_gpu::FlameAnchor;
+    using FlameShape = sdf_gpu::FlameShape;
 
     struct BuiltGrid {
         std::vector<SdfGridCellGPU> cells;
@@ -94,8 +72,7 @@ public:
     // height/radius scales, rotated by euler, then padded generously for
     // deformation: pad = 0.5 + turbulence*0.5 (+ smoothK for smooth ops,
     // plus small extras for twist/bend/taper/repeat bits when set).
-    glm::vec4 computeInstanceBoundsMin(const Instance& in) const;
-    glm::vec4 computeInstanceBoundsMax(const Instance& in) const;
+    BoundingBox computeInstanceBounds(const Instance& in) const;
 
     // Uniform grid for one container: cells = res.x*res.y*res.z with
     // offset/count into a contiguous index buffer. Each instance is inserted
@@ -116,6 +93,18 @@ public:
     // gridInfo.w = index start, gridOffset = (cellStart, indexStart, count, 0).
     FlattenedScene flatten() const;
 
+    // Merge two scenes into one (definitions/materials/containers/instances
+    // concatenated with index remap). Lets independent emitters (lava fire,
+    // smoke bombs, future effects) share one GPU upload and one march.
+    static SdfScene merge(const SdfScene& a, const SdfScene& b);
+
+    // Smoke-bomb scene: 1 Smoke-sphere definition (maximum radius), 1 gray
+    // volumetric material, 1 static container, 1 instance. Growth, noise,
+    // bullets and render tuning live in the smoke state buffer, so this
+    // topology never needs rebuilding for widget tweaks.
+    static SdfScene createSmokeBomb(const glm::vec3& center, float maxRadius,
+                                     float seed = 0.0f);
+
     // Default fire demo: 1 capsule flame definition, 1 volumetric fire
     // material, 1 container AABB, N instances with random pos/scale/seed
     // (std::mt19937 seeded with 1234).
@@ -123,30 +112,9 @@ public:
                                     glm::vec3 center = glm::vec3(0.0f),
                                     float areaSize = 20.0f);
 
-    // One flame anchor: world position + per-instance variation. Produced by
-    // the lava collector (brush-4 triangles) or any other emitter; the SDF
-    // scene itself stays independent of terrain/octree representations.
-    struct FlameAnchor {
-        glm::vec3 pos = glm::vec3(0.0f);
-        glm::vec3 euler = glm::vec3(0.0f); // R = Rx * Ry * Rz, local +Y = flame axis
-        float scale = 1.0f;
-        float heightScale = 1.0f; // per-instance vertical stretch
-        float seed = 0.0f;
-        float intensity = 1.0f;
-    };
-    // Fire scene from explicit anchors: tapered base-anchored flame
-    // definition, volumetric fire material, container auto-fit to the
-    // anchors (padded for flame height + deformation) with an adaptive
-    // uniform grid targeting ~6 m cells (clamped to 1..24 per axis). Empty
+    // Fire scene from explicit anchors (tapered base-anchored flames,
+    // container auto-fit, adaptive grid targeting ~6 m cells). Empty
     // anchors -> scene with no containers (renders nothing).
-    struct FlameShape {
-        float baseRadius = 1.0f;  // local units, scaled by instance scale
-        float height = 3.2f;     // base disk (y=0) to tip, local units
-        float tipRadius = 0.25f; // 0 = sharp cone tip, = base = capsule
-        float spikiness = 0.35f; // spike amplitude, 0 = smooth rounded capsule
-        float spikeFreq = 2.0f;  // tongue count around the axis
-        float density = 0.35f;   // volumetric density multiplier (lower = glassier)
-    };
     static SdfScene createFireFromAnchors(const std::vector<FlameAnchor>& anchors,
                                           const FlameShape& shape);
 
