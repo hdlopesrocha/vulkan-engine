@@ -328,6 +328,7 @@ void SdfRenderer::updateParams(float timeSec, uint32_t frameIndex) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     params_.timeDebug.x = timeSec;
     lastTime_ = timeSec; // bullet birth clock (fireBullet stamps this)
+    syncAutoBulletLocked(); // re-arm auto when a manual round dies (transition-only write)
     repackDebugMode();
     paramsDirtySlots_.fill(true);
 }
@@ -662,8 +663,35 @@ void SdfRenderer::refreshAutoBulletLocked() {
     b.a = glm::vec4(start, config_.bullet.radius);
     b.b = glm::vec4(dir * config_.bullet.speed, config_.bullet.length);
     b.c = glm::vec4(config_.bullet.finalRadius, config_.bullet.loopDuration,
-                    config_.bullet.autoFire ? 1.0f : 0.0f, config_.smoke.growthDuration);
+                    1.0f, config_.smoke.growthDuration);
+    syncAutoBulletLocked(); // applies autoFire + single-flight (marks dirty on change)
     markSmokeSSBO();
+}
+
+bool SdfRenderer::anyManualBulletLiveLocked() const {
+    for (uint32_t i = 1; i < kSmokeMaxBullets; ++i) {
+        const BulletGPU& b = smokeState_.bullets[i];
+        if (b.c.z <= 0.0f) continue;
+        const float speed = std::max(glm::length(glm::vec3(b.b)), 1e-3f);
+        const float travelTime = std::max(b.b.w, 1e-3f) / speed;
+        const float age = (b.c.y > 0.0f)
+            ? std::fmod(lastTime_ - b.c.w, b.c.y)
+            : (lastTime_ - b.c.w);
+        // Same live window as the shader (flight + 8 s wake grace).
+        if (age >= 0.0f && age <= travelTime + 8.0f) return true;
+    }
+    return false;
+}
+
+void SdfRenderer::syncAutoBulletLocked() {
+    // Single-flight: a live manual round suppresses the auto bullet until
+    // it dies, so at most one bullet (auto XOR manual) is ever in flight.
+    // Only writes on transitions, so steady state costs nothing.
+    const float want = (config_.bullet.autoFire && !anyManualBulletLiveLocked()) ? 1.0f : 0.0f;
+    if (smokeState_.bullets[0].c.z != want) {
+        smokeState_.bullets[0].c.z = want;
+        markSmokeSSBO();
+    }
 }
 
 void SdfRenderer::setSmokeEnabled(bool e) {
@@ -893,8 +921,8 @@ void SdfRenderer::setSmokeShadow(int samples, float strength) {
 void SdfRenderer::setBulletDefaults(float radiusStart, float radiusEnd, float speed,
                                     float length, float angleDeg, float loopDuration) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    config_.bullet.radius = std::clamp(radiusStart, 0.5f, 100.0f);
-    config_.bullet.finalRadius = std::clamp(radiusEnd, 0.5f, 100.0f);
+    config_.bullet.radius = std::clamp(radiusStart, 0.5f, 256.0f);
+    config_.bullet.finalRadius = std::clamp(radiusEnd, 0.5f, 256.0f);
     config_.bullet.speed = std::clamp(speed, 1.0f, 1000.0f);
     config_.bullet.length = std::clamp(length, 10.0f, 2000.0f);
     config_.bullet.angleDeg = angleDeg;
@@ -918,20 +946,20 @@ void SdfRenderer::fireBullet(float angleDeg) {
     const float rad = glm::radians(angleDeg);
     const glm::vec3 dir(std::cos(rad), 0.0f, std::sin(rad));
     const glm::vec3 start = config_.smoke.pos - dir * (config_.smoke.radius + 60.0f);
-    // Manual slots are 1..7 (slot 0 = auto-loop template, never overwritten).
-    const uint32_t slot = 1 + ((bulletRoundRobin_ - 1) % (kSmokeMaxBullets - 1));
-    BulletGPU& m = smokeState_.bullets[slot];
+    // Single-flight: exactly one bullet at a time. Clear any previous manual
+    // round (rapid firing can't stack tunnels) and stamp the single manual
+    // slot; slot 0 stays the auto-loop template, suppressed below while the
+    // manual round lives.
+    for (uint32_t i = 1; i < kSmokeMaxBullets; ++i)
+        smokeState_.bullets[i].c.z = 0.0f;
+    BulletGPU& m = smokeState_.bullets[1];
     m.a = glm::vec4(start, config_.bullet.radius);
-    // BulletGPU ABI: b = (velocity m/s, length). phase = lastTime_ folded into
-    // the loop, so age 0 at fire => the manual bullet is born now; c.z = 1
-    // marks it in flight.
+    // BulletGPU ABI: b = (velocity m/s, length). One-shot: c.y = 0 disables
+    // the per-bullet loop in the shader, so the round flies once (born now:
+    // phase = lastTime_) and then disappears; c.z = 1 marks it in flight.
     m.b = glm::vec4(dir * config_.bullet.speed, config_.bullet.length);
-    // One-shot: c.y = 0 disables the per-bullet loop in the shader, so a
-    // manually fired bullet flies once and then disappears instead of
-    // restarting forever (only the auto bullet recycles, one per smoke loop).
     m.c = glm::vec4(config_.bullet.finalRadius, 0.0f, 1.0f, lastTime_);
-    bulletRoundRobin_ = slot + 1;
-    if (bulletRoundRobin_ >= kSmokeMaxBullets) bulletRoundRobin_ = 1;
+    syncAutoBulletLocked();
     markSmokeSSBO();
 }
 

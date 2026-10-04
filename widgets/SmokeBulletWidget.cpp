@@ -106,7 +106,7 @@ void SmokeBulletWidget::render() {
         if (bChanged) {
             sdfRenderer->setBulletDefaults(br, bfr, bs, bl, ba, bld);
         }
-        ImGuiHelpers::SetTooltipIfHovered("Auto bullet: one shot per loop duration. Manually fired bullets are one-shot.");
+        ImGuiHelpers::SetTooltipIfHovered("Single-flight: one bullet at a time. The auto bullet fires once per loop duration; a manual round replaces any previous one and pauses auto until it dies.");
         float ts = cfg.bullet.tunnelStrength;
         float tf = cfg.bullet.tunnelFalloff;
         bool tChanged = false;

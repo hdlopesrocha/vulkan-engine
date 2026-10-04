@@ -258,7 +258,8 @@ private:
     // the smoke SSBO without scene rebuilds, except position/radius/base
     // material which reshape the scene.
     SmokeFragBulletGPU smokeState_ = {}; // SSBO mirror: tuning + bullets
-    uint32_t bulletRoundRobin_ = 1; // next manual slot (1..7)
+    // Manual rounds always use slot 1 (slot 0 is the auto-loop template);
+    // firing clears any previous manual round: single-flight, one at a time.
 
     VkImageView pendingDepthView_ = VK_NULL_HANDLE;
     VkImageLayout pendingDepthLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -299,4 +300,8 @@ private:
     // Auto-loop bullet template (slot 0) from widget defaults (caller holds sceneMutex).
     void refreshAutoBulletLocked();
     void markSmokeSSBO(); // flag all smoke slots dirty (tuning/bullet change, no re-flatten)
+    // Single-flight policy: at most one bullet at a time. A live manual
+    // round suppresses the auto bullet until it dies (wake grace included).
+    bool anyManualBulletLiveLocked() const;
+    void syncAutoBulletLocked();
 };
