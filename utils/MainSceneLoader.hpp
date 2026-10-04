@@ -74,10 +74,9 @@ public:
         Octree::OctreeNodeDataHandler &transparentDeleteHandler
         ) {
 
-        int sizePerTile = 30;
+        int sizePerTile = 32;
         int tiles= 256;
         int height = 2048;
-        float minSize = 30;
         glm::vec4 translate(0.0f);
         glm::vec4 scale(1.0f);
 
@@ -92,10 +91,10 @@ public:
             std::cout << "\tHeightMap"<< std::endl;
             HeightMap heightMap = HeightMap(cache, mapBox, sizePerTile);
             std::cout << "\tHeightMapDistanceFunction"<< std::endl;
-            HeightMapDistanceFunction function = HeightMapDistanceFunction(&heightMap, minSize);
+            HeightMapDistanceFunction function = HeightMapDistanceFunction(&heightMap, sizePerTile);
             
             std::cout << "\topaqueLayer.add(heightmap)"<< std::endl;
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, LandBrush(), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, LandBrush(), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         {
             std::cout << "\topaqueLayer.add(box)"<< std::endl;
@@ -103,8 +102,8 @@ public:
             glm::vec3 len = glm::vec3(512.0f);
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
-            BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            BoxDistanceFunction function = BoxDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -113,8 +112,8 @@ public:
             glm::vec3 len = glm::vec3(512.0f);
             BoundingSphere sphere = BoundingSphere(min+3.0f*len/4.0f, 256);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
-            SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(5), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            SphereDistanceFunction function = SphereDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(5), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -123,8 +122,8 @@ public:
             glm::vec3 len = glm::vec3(512.0f);
             BoundingSphere sphere = BoundingSphere(min+len, 128);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
-            SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, model, SimpleBrush(20), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            SphereDistanceFunction function = SphereDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, model, SimpleBrush(20), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -133,8 +132,8 @@ public:
             glm::vec3 len = glm::vec3(512.0f);
             BoundingSphere sphere = BoundingSphere(min+3.0f*len/4.0f, 128);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
-            SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, model, SimpleBrush(4), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            SphereDistanceFunction function = SphereDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, model, SimpleBrush(4), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         
         {
@@ -143,9 +142,9 @@ public:
             glm::vec3 a = glm::vec3(0,0, -3000);
             glm::vec3 b = glm::vec3(0,500,0);
             float r = 256.0f;
-            CapsuleDistanceFunction function(a, b, r, model, minSize);
-            PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, 64.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
-            opaqueLayer.apply(DeleteSignedDistanceOperation(), distortedFunction, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            CapsuleDistanceFunction function(a, b, r, model, sizePerTile);
+            PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, 64.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f, model, sizePerTile);
+            opaqueLayer.apply(DeleteSignedDistanceOperation(), distortedFunction, model, SimpleBrush(7), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -153,8 +152,8 @@ public:
             glm::vec3 center = glm::vec3(1500+512.0f,512.0f,500+512.0f);
             BoundingSphere sphere = BoundingSphere(center, 64);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
-            SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
+            SphereDistanceFunction function = SphereDistanceFunction(model, sizePerTile);
+            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(1), sizePerTile, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
 
         {
@@ -162,8 +161,8 @@ public:
             glm::vec3 center = glm::vec3(1500+256.0f,256.0f,500+512.0f + 256.0f);
             BoundingSphere sphere = BoundingSphere(center, 128);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
-            SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(2), minSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
+            SphereDistanceFunction function = SphereDistanceFunction(model, sizePerTile);
+            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(2), sizePerTile, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
 
         {
@@ -171,8 +170,8 @@ public:
             glm::vec3 center = glm::vec3(0,512, 512*0);
             float radius = 256.0f;
             Transformation model = Transformation(glm::vec3(radius), center, 0, 0, 0);
-            OctahedronDistanceFunction function = OctahedronDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            OctahedronDistanceFunction function = OctahedronDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -183,10 +182,10 @@ public:
             Transformation modelA = Transformation(glm::vec3(radius), centerA, 0, 0, 0);
             Transformation modelB = Transformation(glm::vec3(radius*0.5f), centerB, 45, 0, 0);
             Transformation sweepModel = Transformation(glm::vec3(radius), (centerA + centerB) * 0.5f, 0, 0, 0);
-            OctahedronDistanceFunction fn1(modelA, minSize);
-            OctahedronDistanceFunction fn2(modelB, minSize);
-            SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, minSize*0.25f);
-            opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            OctahedronDistanceFunction fn1(modelA, sizePerTile);
+            OctahedronDistanceFunction fn2(modelB, sizePerTile);
+            SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, sizePerTile*0.25f);
+            opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), sizePerTile*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -194,8 +193,8 @@ public:
             glm::vec3 center = glm::vec3(0,512, 512*1);
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
-            PyramidDistanceFunction function = PyramidDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            PyramidDistanceFunction function = PyramidDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -203,8 +202,8 @@ public:
             glm::vec3 center = glm::vec3(0,512, 512*2);
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
-            TorusDistanceFunction function = TorusDistanceFunction(glm::vec2(0.5, 0.25), model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(3), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            TorusDistanceFunction function = TorusDistanceFunction(glm::vec2(0.5, 0.25), model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(3), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -212,8 +211,8 @@ public:
             glm::vec3 center = glm::vec3(0,512, 512*3);
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
-            ConeDistanceFunction function = ConeDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            ConeDistanceFunction function = ConeDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -221,8 +220,8 @@ public:
             glm::vec3 center = glm::vec3(0,512, 512*4);
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
-            CylinderDistanceFunction function = CylinderDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(4), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            CylinderDistanceFunction function = CylinderDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(4), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -230,8 +229,8 @@ public:
             glm::vec3 center = glm::vec3(0,512, 512*5);
             float radius = 256.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
-            TaperedCylinderDistanceFunction function(0.25f, 0.5f, model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(11), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            TaperedCylinderDistanceFunction function(0.25f, 0.5f, model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(11), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -241,8 +240,8 @@ public:
             Transformation model(glm::vec3(radius), center, 0,0,0);
             TaperedCapsuleDistanceFunction function(
                 glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f), 0.5f, 0.25f,
-                model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(11), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(11), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -251,8 +250,8 @@ public:
             glm::vec3 len = glm::vec3(32.0f, 256.0f, 256.0f);
             BoundingBox box = BoundingBox(center - len * 0.5f, center + len * 0.5f);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
-            BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(6), minSize*0.5f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            BoxDistanceFunction function = BoxDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(6), sizePerTile*0.5f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
     
@@ -262,9 +261,9 @@ public:
             glm::vec3 center = glm::vec3(512,512, 512*0);
             float radius = 200.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
-            SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, 48.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), distortedFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            SphereDistanceFunction function = SphereDistanceFunction(model, sizePerTile);
+            PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, 48.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f, model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), distortedFunction, model, SimpleBrush(15), sizePerTile*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -272,9 +271,9 @@ public:
             glm::vec3 center = glm::vec3(512,512, 512*1);
             float radius = 200.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
-            SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(function, 64.0f, 0.1f/32.0f, 0.1f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            SphereDistanceFunction function = SphereDistanceFunction(model, sizePerTile);
+            PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(function, 64.0f, 0.1f/32.0f, 0.1f, glm::vec3(0), 0.0f, 1.0f, model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), sizePerTile*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -282,9 +281,9 @@ public:
             glm::vec3 center = glm::vec3(512,512, 512*2);
             float radius = 200.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
-            SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            SineDistortDistanceEffect carvedFunction = SineDistortDistanceEffect(function, 32.0f, 0.1f/2.0f, glm::vec3(0), model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            SphereDistanceFunction function = SphereDistanceFunction(model, sizePerTile);
+            SineDistortDistanceEffect carvedFunction = SineDistortDistanceEffect(function, 32.0f, 0.1f/2.0f, glm::vec3(0), model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), sizePerTile*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -292,9 +291,9 @@ public:
             glm::vec3 center = glm::vec3(512,512, 512*3);
             float radius = 200.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
-            SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, 64.0f, 64.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            SphereDistanceFunction function = SphereDistanceFunction(model, sizePerTile);
+            VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, 64.0f, 64.0f, glm::vec3(0), 0.0f, 1.0f, model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), sizePerTile*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
@@ -302,16 +301,16 @@ public:
             glm::vec3 center = glm::vec3(512,512, 512*4);
             float radius = 200.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
-            SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, 64.0f, 64.0f, glm::vec3(0), 0.0f, -1.0f, model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), minSize*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            SphereDistanceFunction function = SphereDistanceFunction(model, sizePerTile);
+            VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, 64.0f, 64.0f, glm::vec3(0), 0.0f, -1.0f, model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), sizePerTile*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         {
             Transformation model = Transformation();
             std::cout << "\ttransparentLayer.add(water)"<< std::endl;
             BoundingBox waterBox = mapBox;
-            float bias = minSize*2.0;
+            float bias = sizePerTile*2.0;
             waterBox.setMax(mapBox.getMax() - glm::vec3(bias));
             waterBox.setMin(mapBox.getMin() + glm::vec3(bias));
             waterBox.setMaxY(0);
@@ -322,7 +321,7 @@ public:
                 glm::vec3(0.0f, 1.0f, 0.0f)
             );
             OctreeDifferenceFunction function(&opaqueLayer, waterBox, bias);
-            transparentLayer.apply(AddSignedDistanceOperation(), function, model, waterBrush, minSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
+            transparentLayer.apply(AddSignedDistanceOperation(), function, model, waterBrush, sizePerTile, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
     
         {
@@ -331,8 +330,8 @@ public:
             glm::vec3 len = glm::vec3(512.0f);
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
-            BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize*4, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            BoxDistanceFunction function = BoxDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), sizePerTile*4, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         
         {
@@ -341,31 +340,41 @@ public:
             glm::vec3 len = glm::vec3(512.0f);
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
-            BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), minSize*0.25, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            BoxDistanceFunction function = BoxDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), sizePerTile*0.25, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
-        
+        glm::vec3 fireSpotPosition(0.0f, 1200.0f, 0.0f);
+        float fireSpotHeight = 32.0f;
+        float fireSpotRadius = 128.0f;
+
+        {
+            std::cout << "\ttransparentLayer.add(sphere)"<< std::endl;
+            BoundingSphere sphere = BoundingSphere(fireSpotPosition, fireSpotRadius);
+            Transformation model = Transformation(glm::vec3(sphere.radius,fireSpotHeight,sphere.radius), sphere.center, 0, 0, 0);
+            SphereDistanceFunction function = SphereDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(4), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+        }
+
+
         {
             std::cout << "\topaqueLayer.add(road)"<< std::endl;
             std::vector<RoadSpline::ControlPoint> ctrlPts;
             glm::vec3 up(0.0f, 1.0f, 0.0f);
-
             int numPts = 32;
-            float radius = 1500.0f;
             for (int i = 0; i <= numPts; ++i) {
                 float t = (float)i / (float)numPts;
                 float angle = t * 2.0f * glm::pi<float>();
-                float x = radius * glm::cos(angle);
-                float z = radius * glm::sin(angle);
-                float y = 256.0f;
-                ctrlPts.emplace_back(glm::vec3(x, y, z), up);
+                float x = fireSpotRadius * glm::cos(angle);
+                float y = fireSpotHeight;
+                float z = fireSpotRadius * glm::sin(angle);
+                ctrlPts.emplace_back(fireSpotPosition + glm::vec3(x, y, z), up);
             }
 
             RoadSpline roadSpline(ctrlPts);
             Transformation roadModel = Transformation();
             int numSegs = 24;
             float overlap = 0.05f;
-            float halfDiag = glm::length(glm::vec2(256.0f, 256.0f)) * 0.5f;
+            float halfDiag = glm::length(glm::vec2(fireSpotRadius, fireSpotRadius)) * 0.5f;
             for (int i = 0; i < numSegs; ++i) {
                 float t0 = (float)i / (float)numSegs;
                 float t1 = (float)(i + 1) / (float)numSegs;
@@ -374,28 +383,28 @@ public:
                 bool startCap = false;
                 bool endCap   = false;
                 BoundingSphere segSphere = roadSpline.boundingSphereInRange(tMin, tMax, halfDiag);
-                RoadDistanceFunction roadFunc(&roadSpline, 512.0f, 64.0f,
+                RoadDistanceFunction roadFunc(&roadSpline, 32.0f, 3*32.0f,
                                               tMin, tMax, startCap, endCap,
-                                              segSphere.center, segSphere.radius, Transformation(), minSize);
+                                              segSphere.center, segSphere.radius, Transformation(), sizePerTile);
                 opaqueLayer.apply(AddSignedDistanceOperation(), roadFunc, roadModel,
-                                  SimpleBrush(12),
-                                  minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                                  SimpleBrush(14),
+                                  sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
             }
         }
-
+        glm::vec3 ringPosition(0.0f, 800.0f, 0.0f);
+        glm::vec3 ringSize(512.0f, 32.0f, 512.0f);
         {
-            int numSegs = 96;
+            int numSegs = 256;
             float angleStep = 2.0f * glm::pi<float>() / numSegs;
             float overlap = 0.05f;
-            float unitInner = 1.00f - 512.0f / 1500.0f;
+            float unitInner = 1.00f - 512.0f / 1024.0f;
             float unitOuter = 1.00f;
-            float unitHalfThick = 32.0f / 1500.0f;
-            float worldScale = 1500.0f;
-            float heights[1] = { 800.0f };
+            float unitHalfThick = 64.0f / 1024.0f;
+            float worldScale = 1024.0f;
             for (int ringIdx = 0; ringIdx < 1; ++ringIdx) {
-                std::cout << "\topaqueLayer.add(triangleStrip " << ringIdx << ")" << std::endl;
+                std::cout << "\ttransparentLayer.add(triangleStrip " << ringIdx << ")" << std::endl;
                 Transformation tsModel = Transformation(glm::vec3(worldScale),
-                    glm::vec3(0.0f, heights[ringIdx], 0.0f), 0, 0, 0);
+                    ringPosition, 0, 0, 0);
                 for (int i = 0; i < numSegs; ++i) {
                     float a0 = i * angleStep;
                     float a1 = (i + 1) * angleStep;
@@ -408,8 +417,10 @@ public:
                     float aMin = a0 - overlap * angleStep;
                     float aMax = a1 + overlap * angleStep;
                     float hh = unitHalfThick * worldScale;
-                    float y = heights[ringIdx];
-                    glm::vec3 aabbMin(1e30f), aabbMax(-1e30f);
+                    float y = ringPosition.y;
+                    BoundingBox aabb;
+                    aabb.setMin(glm::vec3(std::numeric_limits<float>::max()));
+                    aabb.setMax(glm::vec3(std::numeric_limits<float>::lowest()));
                     int samples = 4;
                     for (int j = 0; j <= samples; ++j) {
                         float a = aMin + (aMax - aMin) * ((float)j / (float)samples);
@@ -417,18 +428,19 @@ public:
                         float rOuter = unitOuter * worldScale;
                         glm::vec3 inner(rInner * glm::cos(a), y - hh, rInner * glm::sin(a));
                         glm::vec3 outer(rOuter * glm::cos(a), y + hh, rOuter * glm::sin(a));
-                        aabbMin = glm::min(aabbMin, inner);
-                        aabbMin = glm::min(aabbMin, outer);
-                        aabbMax = glm::max(aabbMax, inner);
-                        aabbMax = glm::max(aabbMax, outer);
+                        aabb.setMin(glm::min(aabb.getMin(), inner));
+                        aabb.setMin(glm::min(aabb.getMin(), outer));
+                        aabb.setMax(glm::max(aabb.getMax(), inner));
+                        aabb.setMax(glm::max(aabb.getMax(), outer));
                     }
-                    glm::vec3 segCenter = (aabbMin + aabbMax) * 0.5f;
-                    float segRadius = glm::distance(segCenter, aabbMax);
+                    glm::vec3 segCenter = aabb.getCenter();
+                    float segRadius = glm::length(aabb.getLength()) * 0.5f;
+
                     TriangleStripDistanceFunction tsFunc(v0, v1, v2, v3, unitHalfThick,
-                                                         segCenter, segRadius, tsModel, minSize);
-                    opaqueLayer.apply(AddSignedDistanceOperation(), tsFunc, tsModel,
-                                      SimpleBrush(14),
-                                      minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                                                         segCenter, segRadius, tsModel, sizePerTile);
+                    transparentLayer.apply(AddSignedDistanceOperation(), tsFunc, tsModel,
+                                      SimpleBrush(0),
+                                      sizePerTile*0.25f, simplifier, transparentUpdateHandler, transparentDeleteHandler);
                 }
             }
         }
@@ -440,8 +452,8 @@ public:
             glm::vec3 len = glm::vec3(256.0f, 512.0f, 512.0f);
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
-            BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            BoxDistanceFunction function = BoxDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         
         {
@@ -450,8 +462,8 @@ public:
             glm::vec3 len = glm::vec3(256.0f, 512.0f, 512.0f);
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
-            BoxDistanceFunction function = BoxDistanceFunction(model, minSize);
-            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), minSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            BoxDistanceFunction function = BoxDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
 
