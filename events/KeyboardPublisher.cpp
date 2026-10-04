@@ -15,7 +15,7 @@
 #include "ControllerContext.hpp"
 #include "ControllerInput.hpp"
 #include "../utils/Brush3dManager.hpp"
-#include "../utils/Brush3dEntry.hpp"
+#include "types/BrushEntry.hpp"
 #include <algorithm>
 
 // Returns true on the rising edge of a key press (press, not held).

@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
 #include <string>
-#include "BillboardLayer.hpp"
+#include "types/BillboardLayer.hpp"
 
 // Represents a complete billboard composed of multiple layers
 struct Billboard {

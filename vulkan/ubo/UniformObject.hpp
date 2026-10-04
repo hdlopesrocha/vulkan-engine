@@ -1,7 +1,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
-#include "../../utils/MaterialProperties.hpp"
+#include "types/MaterialProperties.hpp"
 #include <cstddef>
 #include <iostream>
 

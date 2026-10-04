@@ -2,7 +2,7 @@
 
 #include "Widget.hpp"
 #include "../vulkan/renderer/WaterRenderer.hpp"
-#include "../utils/WaterParams.hpp"
+#include "types/WaterParams.hpp"
 #include <vector>
 
 class WaterWidget : public Widget {

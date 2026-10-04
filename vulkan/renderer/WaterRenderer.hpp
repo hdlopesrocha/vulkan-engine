@@ -17,7 +17,7 @@
 #include "../ubo/UniformObject.hpp"
 #include "../../widgets/SkySettings.hpp"
 #include "../../space/Model3DVersion.hpp"
-#include "../../utils/WaterParams.hpp"
+#include "types/WaterParams.hpp"
 #include "../ubo/WaterParamsGPU.hpp"
 #include "../ubo/WaterRenderUBO.hpp"
 #include "../ubo/WaterUBO.hpp"

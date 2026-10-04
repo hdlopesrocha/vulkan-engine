@@ -2,8 +2,8 @@
 #include <vector>
 #include <string>
 #include <glm/glm.hpp>
-#include "../utils/BillboardLayer.hpp"
-#include "../utils/Billboard.hpp"
+#include "types/BillboardLayer.hpp"
+#include "types/Billboard.hpp"
 
 // Manages billboard instance positions for rendering and billboard layer definitions for the editor
 class BillboardManager {

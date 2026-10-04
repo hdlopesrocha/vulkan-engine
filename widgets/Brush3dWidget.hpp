@@ -7,7 +7,7 @@
 #include <vector>
 #include <functional>
 
-#include "../utils/Brush3dEntry.hpp"
+#include "types/BrushEntry.hpp"
 #include "../utils/Brush3dManager.hpp"
 
 class TextureArrayManager;

@@ -5,7 +5,7 @@
 #include "../utils/AtlasManager.hpp"
 #include "../vulkan/TextureArrayManager.hpp"
 #include "../vulkan/EditableTexture.hpp"
-#include "../utils/AtlasTextureData.hpp"
+#include "types/AtlasTextureData.hpp"
 #include "../services/BillboardService.hpp"
 #include <imgui.h>
 #include <string>

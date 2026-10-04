@@ -6,7 +6,7 @@
 #include "TranslateCameraEvent.hpp"
 #include "RotateCameraEvent.hpp"
 #include "../utils/Brush3dManager.hpp"
-#include "../utils/Brush3dEntry.hpp"
+#include "types/BrushEntry.hpp"
 
 // Aggregated input a publisher wants to apply this frame, expressed in a
 // controller-agnostic way. The publisher is responsible for mapping its raw

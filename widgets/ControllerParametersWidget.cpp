@@ -4,7 +4,7 @@
 #include "components/ImGuiHelpers.hpp"
 
 #include "../utils/Brush3dManager.hpp"
-#include "../utils/Brush3dEntry.hpp"
+#include "types/BrushEntry.hpp"
 #include "../events/ControllerContext.hpp"
 
 ControllerParametersWidget::ControllerParametersWidget(ControllerManager* cm_, Brush3dManager* brushManager_)

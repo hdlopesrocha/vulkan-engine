@@ -8,7 +8,7 @@
 #include "../math/Ray.hpp"
 #include "../space/Octree.hpp"
 #include "../utils/Brush3dManager.hpp"
-#include "../utils/Brush3dEntry.hpp"
+#include "types/BrushEntry.hpp"
 #include "RebuildBrushEvent.hpp"
 #include "ApplyBrushToSceneEvent.hpp"
 

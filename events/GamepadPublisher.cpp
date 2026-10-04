@@ -11,7 +11,7 @@
 #include "ControllerInput.hpp"
 
 #include "../utils/Brush3dManager.hpp"
-#include "../utils/Brush3dEntry.hpp"
+#include "types/BrushEntry.hpp"
 
 #include <GLFW/glfw3.h>
 #include <algorithm>

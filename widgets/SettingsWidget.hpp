@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../utils/Settings.hpp"
+#include "types/Settings.hpp"
 #include "../utils/ShadowParams.hpp"
 #include <imgui.h>
 

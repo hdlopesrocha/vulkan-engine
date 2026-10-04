@@ -3,7 +3,7 @@
 #include "Scene.hpp"
 #include "../space/Octree.hpp"
 #include "../space/Tesselator.hpp"
-#include "../utils/Settings.hpp"
+#include "types/Settings.hpp"
 #include <unordered_map>
 #include <mutex>
 

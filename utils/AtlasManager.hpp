@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <set>
 
-#include "AtlasTile.hpp"
+#include "types/AtlasTile.hpp"
 
 // Manages atlas tile definitions for multiple texture atlases (no ImGui dependency)
 // Each atlas is identified by an integer index (e.g., texture index)

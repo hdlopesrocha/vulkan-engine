@@ -10,7 +10,7 @@
 #include "../../utils/BillboardManager.hpp"
 #include "../VertexBufferObject.hpp"
 #include "../../utils/Scene.hpp" // for NodeID
-#include "../ubo/VegetationUBO.hpp"
+#include "../ubo/WindParamsUBO.hpp"
 #include <vector>
 #include <deque>
 #include <unordered_map>

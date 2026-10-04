@@ -1,7 +1,7 @@
 #pragma once
 
-#include "GraphicsQuality.hpp"
-#include "Settings.hpp"
+#include "types/GraphicsQuality.hpp"
+#include "types/Settings.hpp"
 
 // Command that applies a graphics-quality preset to the runtime settings:
 //   Maximum — every secondary-visibility ray path on (RT solid/water

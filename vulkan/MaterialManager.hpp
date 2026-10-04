@@ -2,7 +2,7 @@
 
 #include "vulkan.hpp"
 #include "Buffer.hpp"
-#include "../utils/MaterialProperties.hpp"
+#include "types/MaterialProperties.hpp"
 #include "ubo/MaterialGPU.hpp"
 #include <vector>
 

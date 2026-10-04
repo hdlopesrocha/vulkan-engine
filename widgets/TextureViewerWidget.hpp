@@ -4,7 +4,7 @@
 #include <functional>
 #include "../vulkan/TextureArrayManager.hpp"
 #include "../vulkan/MaterialManager.hpp"
-#include "../utils/MaterialProperties.hpp"
+#include "types/MaterialProperties.hpp"
 #include "Widget.hpp"
 
 class TextureViewer : public Widget {
