@@ -346,7 +346,7 @@ public:
     std::string pendingLoadPath;
 
     // Camera and input
-    Camera camera = Camera(glm::vec3(-128.0f, 1400.0f, 0.0f), Math::eulerToQuat(-90.0f, 0.0f, 0.0f));
+    Camera camera = Camera(glm::vec3(-512.0f, 1400.0f, 0.0f), Math::eulerToQuat(-90.0f, 0.0f, 0.0f));
     Light light = Light(glm::vec3(-1.0f, -1.0f, -1.0f));
     EventManager eventManager;
     KeyboardPublisher keyboardPublisher;

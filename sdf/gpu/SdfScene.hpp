@@ -14,11 +14,11 @@
 #include "types/SdfContainer.hpp"
 #include "types/SdfFlameAnchor.hpp"
 #include "types/SdfFlameShape.hpp"
-#include "types/SdfDefinitionGPU.hpp"
-#include "types/SdfInstanceGPU.hpp"
-#include "types/SdfMaterialGPU.hpp"
-#include "types/SdfContainerGPU.hpp"
-#include "types/SdfGridCellGPU.hpp"
+#include "vulkan/types/SdfDefinitionGPU.hpp"
+#include "vulkan/types/SdfInstanceGPU.hpp"
+#include "vulkan/types/SdfMaterialGPU.hpp"
+#include "vulkan/types/SdfContainerGPU.hpp"
+#include "vulkan/types/SdfGridCellGPU.hpp"
 #include "math/BoundingBox.hpp"
 
 namespace sdf_gpu {

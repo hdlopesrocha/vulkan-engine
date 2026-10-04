@@ -9,13 +9,13 @@ struct SdfSmokeConfig {
     glm::vec3 pos = glm::vec3(0.0f, 1400.0f, 0.0f);
     float radius = 256.0f;     // maximum radius, marching bounds (m)
     float seed = 0.0f;
-    float density = 0.1f;      // base material density (rebuilds scene)
+    float density = 2.0f;      // base material density (rebuilds scene)
     float absorption = 0.5f;   // (rebuilds scene)
     float scattering = 0.7f;   // (rebuilds scene)
     float growthDuration = 4.0f;  // rapid expansion time (s)
     float loopDuration = 10.0f;   // animation repeat period (s)
     float dissipation = 0.15f;
-    float noiseScale = 0.015f;    // 1/m
+    float noiseScale = 0.1f;    // 1/m
     float noiseStrength = 1.0f;
     float noiseWarp = 0.6f;
     float windSpeed = 4.0f;       // m/s

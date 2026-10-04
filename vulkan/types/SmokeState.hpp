@@ -4,8 +4,8 @@
 // Updated on demand (widget tweaks, bullet fire), never per frame: time
 // comes from the shared params UBO, bullet motion/refill are GPU functions
 // of it.
-#include "types/SmokeTuning.hpp"
-#include "types/BulletGPU.hpp"
+#include "SmokeTuning.hpp"
+#include "BulletGPU.hpp"
 
 struct SmokeState {
     SmokeTuning tuning;

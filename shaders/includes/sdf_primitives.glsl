@@ -2,7 +2,7 @@
 // All primitives share one signature so the dispatcher can evaluate any
 // definition: float sdfX(vec3 p, vec4 p0, vec4 p1).
 //
-// Parameter packing (matches types/Sdf*GPU.hpp + sdf/gpu/SdfScene.cpp):
+// Parameter packing (matches vulkan/types/Sdf*GPU.hpp + sdf/gpu/SdfScene.cpp):
 //   sphere:      p0.x = radius
 //   box:         p0.xyz = half extents
 //   rounded box: p0.xyz = half extents (outer), p1.x = corner radius
