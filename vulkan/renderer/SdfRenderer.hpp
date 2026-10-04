@@ -148,8 +148,15 @@ public:
     void setSmokeTurbulence(float scale, float strength, float speed);
     void setSmokeShadow(int samples, float strength);
     // Bullet defaults (stamped into slots on fire; slot 0 = auto-loop template).
-    void setBulletDefaults(float radius, float speed, float length, float angleDeg);
+    // radiusStart = launch radius, radiusEnd = radius at the head; loopDuration
+    // is the per-bullet cycle (s). Matches the BulletGPU ABI.
+    void setBulletDefaults(float radiusStart, float radiusEnd, float speed, float length,
+                           float angleDeg, float loopDuration);
     void setAutoFire(bool on);
+    // Gold tracer shading (smoke SSBO gold0/1/2; streams, no scene rebuild).
+    void setBulletGold(const glm::vec3& deep, const glm::vec3& bright,
+                       float specPower, float specStrength, float fresnelBoost,
+                       float warmFloor, float patternScale, float normalDistort);
     // Fire a bullet along angleDeg (default: widget angle) from an
     // auto-crossing start. Round-robins manual slots 1..7.
     void fireBullet(float angleDeg);

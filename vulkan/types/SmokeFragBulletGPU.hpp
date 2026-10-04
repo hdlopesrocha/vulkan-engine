@@ -11,4 +11,4 @@ struct SmokeFragBulletGPU {
     SmokeGPU tuning;
     BulletGPU bullets[kSmokeMaxBullets];
 };
-static_assert(sizeof(SmokeFragBulletGPU) == 128 + 8 * 48, "SmokeFragBulletGPU size mismatch");
+static_assert(sizeof(SmokeFragBulletGPU) == sizeof(SmokeGPU) + 8 * 48, "SmokeFragBulletGPU size mismatch");

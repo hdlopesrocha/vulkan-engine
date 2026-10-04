@@ -21,32 +21,19 @@
 #ifndef SDF_SMOKE_GLSL
 #define SDF_SMOKE_GLSL
 
+#include "../ubo/BulletGPU.glsl"
+#include "../ubo/SdfDefinitionGPU.glsl"
+#include "../ubo/SdfInstanceGPU.glsl"
+#include "../ubo/SdfMaterialGPU.glsl"
+#include "../types/SmokeBulletFX.glsl"
+#include "../types/SmokeBulletState.glsl"
+#include "../ubo/SmokeGPU.glsl"
+#include "../types/SmokeSample.glsl"
+
 // Forward declaration: defined in sdf.frag below this include.
 vec3 sdfWorldToLocal(vec3 wpos, SdfInstanceGPU inst, out float outScale);
 
-// Mirrors SdfUBO.hpp (std430): SmokeGPU = 8 vec4, BulletGPU = 3 vec4.
-struct SmokeGPU {
-    vec4 timing;    // x = growth duration (s), y = loop duration (s),
-                    // z = dissipation, w = unused
-    vec4 noise;     // x = noise scale (1/m), y = noise strength,
-                    // z = warp strength, w = unused
-    vec4 wind;      // xy = wind velocity (m/s), z = live density scale, w = unused
-    vec4 tunnel;    // x = tunnel strength, y = tunnel falloff (m),
-                    // z = wake strength, w = wake dissipation = refill rate (1/s)
-    vec4 wake;      // x = wake radius (m), y = wake expansion,
-                    // z = wake length (m), w = unused
-    vec4 pressure;  // x = pressure radius (m), y = pressure strength,
-                    // z = wave speed (m/s), w = wave frequency (1/m)
-    vec4 turbWave;  // x = wave falloff (1/m), y = turbulence scale (1/m),
-                    // z = turbulence strength, w = turbulence speed (1/s)
-    vec4 render;    // x = shadow samples, y = shadow strength, zw unused
-};
 
-struct BulletGPU {
-    vec4 a; // xyz = path start (world), w = tunnel radius (m)
-    vec4 b; // xyz = direction (unit), w = path length (m)
-    vec4 c; // x = speed (m/s), y = birth time (s), z = intensity, w = flags (bit0 = auto-loop)
-};
 
 layout(std430, set = 1, binding = 8) readonly buffer SmokeBlock {
     SmokeGPU smokeTuning;
@@ -84,25 +71,32 @@ float smokeBulletSDF(vec3 p, BulletGPU bl, float radius) {
     return length(p - q.xyz) - max(radius, 1e-3);
 }
 
-// Per-bullet runtime state. Motion, wake age and refill are pure GPU
-// functions of global time: auto-loop bullets are reborn every loop from
-// widget params, manual bullets use their stamped birth time.
-struct SmokeBulletState {
-    bool live;
-    float traveled; // head distance along path (m)
-    float age;      // seconds since birth
-};
+// Tapered carve radius (capped capsule): radiusStart at launch, radiusEnd
+// at the head. s is the clamped path coordinate of the query.
+float smokeBulletRadius(BulletGPU bl, float s, float traveled) {
+    float f = clamp(s / max(traveled, 1e-3), 0.0, 1.0);
+    return mix(bl.a.w, bl.c.x, f);
+}
 
-SmokeBulletState smokeBulletState(BulletGPU bl, float time, float loopStart, float loopDur) {
+
+SmokeBulletState smokeBulletState(BulletGPU bl, float time) {
     SmokeBulletState st;
-    float birth = (((int(bl.c.w) & 1) != 0)) ? loopStart : bl.c.y;
-    float speed = max(bl.c.x, 1e-3);
+    float speed = max(length(bl.b.xyz), 1e-3);
     float pathLen = max(bl.b.w, 1e-3);
-    st.age = time - birth;
-    st.traveled = clamp(speed * max(st.age, 0.0), 0.0, pathLen);
+    float travelTime = pathLen / speed;
+    // c.y > 0: looping projectile (the auto bullet restarts every smoke
+    // loop). c.y == 0: ONE-SHOT projectile — fired once (phase = birth time)
+    // and never recycled, so manually fired bullets cannot stack up into a
+    // train of looping projectiles.
+    if (bl.c.y > 0.0) {
+        st.age = mod(time - bl.c.w, max(bl.c.y, 1e-3));
+    } else {
+        st.age = time - bl.c.w;
+    }
+    st.traveled = clamp(speed * st.age, 0.0, pathLen);
+    st.headOnPath = st.age <= travelTime + 0.05;
     // Grace window past the pass for wake visibility + refill.
-    st.live = (bl.c.z > 0.0) && (st.age >= 0.0)
-             && (st.age <= pathLen / speed + 8.0);
+    st.live = (bl.c.z > 0.0) && (st.age <= travelTime + 8.0);
     return st;
 }
 
@@ -111,13 +105,15 @@ SmokeBulletState smokeBulletState(BulletGPU bl, float time, float loopStart, flo
 // jumps many meters per frame (low fps strobing looks like z-fighting).
 // Capsule-only, no noise — cheap enough for march + shadow samples.
 float smokeTunnelCore(vec3 p, BulletGPU bl, SmokeBulletState st, SmokeGPU t) {
-    float speed = max(bl.c.x, 1e-3);
+    float speed = max(length(bl.b.xyz), 1e-3);
     float refill = max(t.tunnel.w, 0.05);
-    float radius = max(bl.a.w, 0.5);
     float fall = max(t.tunnel.y, 0.5);
     vec3 D = bl.b.xyz / max(length(bl.b.xyz), 1e-6);
     float sRaw = dot(p - bl.a.xyz, D);
     if (sRaw < 0.0) return 0.0;
+    // Tapered carve radius at this query's (clamped) path coordinate.
+    float sQ = clamp(sRaw, 0.0, st.traveled);
+    float radius = max(smokeBulletRadius(bl, sQ, st.traveled), 0.5);
     float span = min(speed * 0.25, radius * 2.0);
     float core = 0.0;
     for (int m = 0; m < 3; ++m) {
@@ -132,20 +128,8 @@ float smokeTunnelCore(vec3 p, BulletGPU bl, SmokeBulletState st, SmokeGPU t) {
     return core;
 }
 
-// Bullet interaction field at p (geometry only, no noise — cheap): tunnel
-// thinning [0,1], domain displacement, shock-wave value, wake and
-// turbulence magnitudes (for debug views). Anisotropic by construction
-// (§28): compression ahead of the head, radial push at the sides,
-// expanding turbulent wake behind.
-struct SmokeBulletFX {
-    float thin;      // multiplicative density removal (tunnel core)
-    vec3 displace;   // noise-domain displacement (pressure + wake + swirl)
-    float wave;      // shock-wave modulation value
-    float wake;      // wake influence (debug + thinning)
-    float turb;      // turbulence magnitude (debug)
-};
 
-SmokeBulletFX smokeBulletFX(vec3 p, float time, float loopStart, float loopDur, SmokeGPU t) {
+SmokeBulletFX smokeBulletFX(vec3 p, float time, SmokeGPU t) {
     SmokeBulletFX fx;
     fx.thin = 0.0;
     fx.displace = vec3(0.0);
@@ -156,11 +140,11 @@ SmokeBulletFX smokeBulletFX(vec3 p, float time, float loopStart, float loopDur, 
     for (int i = 0; i < 8; ++i) {
         BulletGPU bl = smokeBullets[i];
         if (bl.c.z <= 0.0) continue;
-        SmokeBulletState st = smokeBulletState(bl, time, loopStart, loopDur);
+        SmokeBulletState st = smokeBulletState(bl, time);
         if (!st.live) continue;
         vec3 D = bl.b.xyz / max(length(bl.b.xyz), 1e-6);
+        float bSpeed = max(length(bl.b.xyz), 1e-3);
         float pathLen = max(bl.b.w, 1e-3);
-        float radius = max(bl.a.w, 0.5);
         float sRaw = dot(p - bl.a.xyz, D);
         // --- forward compression precursor ahead of the head (§28 front) ---
         if (sRaw > st.traveled && sRaw < st.traveled + max(t.wake.z, 1.0)) {
@@ -177,9 +161,10 @@ SmokeBulletFX smokeBulletFX(vec3 p, float time, float loopStart, float loopDur, 
         vec3 R = p - Q;
         float r = length(R);
         // Passage age drives refill: the tunnel collapses back over time.
-        float passAge = max(st.age - s / max(bl.c.x, 1e-3), 0.0);
+        // No hard cutoff here: fade decays smoothly to 0, so the refill
+        // boundary never draws a visible seam ring on the cloud.
+        float passAge = max(st.age - s / bSpeed, 0.0);
         float fade = exp(-passAge * refillRate);
-        if (fade <= 0.003) continue;
         // --- tunnel core thinning (§5), fading as smoke refills (§12) ---
         float core = smokeTunnelCore(p, bl, st, t);
         fx.thin = max(fx.thin, core * clamp(t.tunnel.x, 0.0, 1.0));
@@ -200,7 +185,11 @@ SmokeBulletFX smokeBulletFX(vec3 p, float time, float loopStart, float loopDur, 
         float wakeI = exp(-pow(r / wakeR, 2.0)) * wlong * fade;
         vec3 cx = cross(D, rdir);
         float ring = sin(min(r / wakeR * 3.14159, 3.14159)); // 0 on axis: no NaN swirl
-        vec3 swirl = cx / max(length(cx), 1e-3) * ring;
+        // Guard against the on-axis singularity of cross(D, rdir): the length
+        // of cx goes to 0 on the bullet axis, so normalizing it there would
+        // produce NaN streaks. The ring factor already vanishes on-axis.
+        float cl = length(cx);
+        vec3 swirl = (cl > 1e-3) ? cx / cl : vec3(0.0);
         float turbPh = time * max(t.turbWave.w, 0.0) + r * max(t.turbWave.y, 1e-4);
         vec3 turbVec = swirl * sin(turbPh) * max(t.turbWave.z, 0.0);
         fx.displace += (rdir * wakeI * 1.5 + turbVec * wakeI) * clamp(t.tunnel.z, 0.0, 2.0);
@@ -221,7 +210,10 @@ float smokeBaseDensity(vec3 p, vec3 center, float rNow, float maxR,
     if (edge <= 0.0) return 0.0;
     // Wind advects the noise domain (pattern drifts with +wind, §18).
     vec3 wp = p - vec3(t.wind.x, 0.0, t.wind.y) * time;
-    float ns = max(t.noise.x, 1e-5);
+    // Noise sample scale, clamped to a resolvable band: out-of-range scales
+    // (e.g. 256 1/m over a 256 m ball) alias to sub-millimetre features the
+    // march cannot resolve, which renders as flat grey streaks.
+    float ns = clamp(t.noise.x, 0.001, 0.5);
     // Low-frequency warp of the sample domain (§2).
     vec3 wq = wp * ns * 0.15 + seed;
     vec3 warp = (vec3(sdfNoise(wq), sdfNoise(wq + 7.3), sdfNoise(wq + 3.1)) - 0.5)
@@ -239,24 +231,9 @@ float smokeBaseDensity(vec3 p, vec3 center, float rNow, float maxR,
     return clamp(n, 0.0, 2.0) * edge * er * mass * max(densityMul, 0.0);
 }
 
-// Full per-sample smoke evaluation (march path): base density at the
-// bullet-displaced position, tunnel/wake thinning, wave modulation,
-// temporal dissipation. Debug metrics are returned for the §24 views.
-struct SmokeSample {
-    float density;  // base layered density (pre-bullet, debug view 2)
-    float sdf;      // grown sphere SDF (for debug)
-    float bullet;   // min bullet-path SDF (for debug)
-    float tunnel;
-    float pressure;
-    float wave;
-    float turb;
-    float wake;
-    float finalD;   // post-tunnel/wave/fade density (debug view 9)
-};
 
 SmokeSample smokeSampleDensity(vec3 p, vec3 center, float rNow, float maxR,
-                               SmokeGPU t, float time, float loopStart, float loopDur,
-                               float seed, float densityMul) {
+                               SmokeGPU t, float time, float seed, float densityMul) {
     SmokeSample s;
     s.sdf = length(p - center) - rNow;
     s.bullet = 1e5;
@@ -270,15 +247,16 @@ SmokeSample smokeSampleDensity(vec3 p, vec3 center, float rNow, float maxR,
     for (int i = 0; i < 8; ++i) {
         BulletGPU bl = smokeBullets[i];
         if (bl.c.z <= 0.0) continue;
-        SmokeBulletState st = smokeBulletState(bl, time, loopStart, loopDur);
+        SmokeBulletState st = smokeBulletState(bl, time);
         if (!st.live || st.traveled <= 0.0) continue;
         vec3 D = bl.b.xyz / max(length(bl.b.xyz), 1e-6);
         float sHead = dot(p - bl.a.xyz, D);
         float sC = clamp(sHead, 0.0, st.traveled);
-        float bd = length(p - (bl.a.xyz + D * sC)) - max(bl.a.w * 0.5, 0.25);
+        float bd = length(p - (bl.a.xyz + D * sC))
+                 - max(smokeBulletRadius(bl, sC, st.traveled), 0.25);
         s.bullet = min(s.bullet, bd);
     }
-    SmokeBulletFX fx = smokeBulletFX(p, time, loopStart, loopDur, t);
+    SmokeBulletFX fx = smokeBulletFX(p, time, t);
     s.tunnel = fx.thin;
     s.wave = fx.wave;
     s.wake = fx.wake;
@@ -302,13 +280,12 @@ SmokeSample smokeSampleDensity(vec3 p, vec3 center, float rNow, float maxR,
 // displacement/wake noise (the tunnel CORE is still honored so holes let
 // light through).
 float smokeShadowDensity(vec3 p, vec3 center, float rNow, float maxR,
-                         SmokeGPU t, float time, float loopStart, float loopDur,
-                         float seed, float densityMul) {
+                         SmokeGPU t, float time, float seed, float densityMul) {
     float dens = smokeBaseDensity(p, center, rNow, maxR, t, time, seed, densityMul);
     for (int i = 0; i < 8; ++i) {
         BulletGPU bl = smokeBullets[i];
         if (bl.c.z <= 0.0) continue;
-        SmokeBulletState st = smokeBulletState(bl, time, loopStart, loopDur);
+        SmokeBulletState st = smokeBulletState(bl, time);
         if (!st.live || st.traveled <= 0.0) continue;
         dens *= 1.0 - smokeTunnelCore(p, bl, st, t) * clamp(t.tunnel.x, 0.0, 1.0);
     }
@@ -320,17 +297,22 @@ float smokeShadowDensity(vec3 p, vec3 center, float rNow, float maxR,
 // gray -> warm gray), fixed-correlation HG-ish forward boost, cheap
 // self-shadow march toward the sun (§16).
 vec3 smokeShade(vec3 p, vec3 viewDir, vec3 center, float rNow, float maxR,
-                SmokeGPU t, SdfMaterialGPU mat, float time, float loopStart, float loopDur,
+                SmokeGPU t, SdfMaterialGPU mat, float time,
                 float seed, float densityMul, vec3 sunDirW, vec3 sunColor, out float outTrans) {
     int shadowSteps = int(clamp(t.render.x, 1.0, 8.0));
-    float shadowLen = max(rNow * 1.2, 1.0);
+    // LOCAL self-shadow: the march resolves density variation around the
+    // sample (a few noise wavelengths), NOT the whole ball. The old
+    // rNow*1.2 length integrated ~300 m of smoke in 3 steps, so every sample
+    // saturated to trans≈0 and the cloud rendered as a black blob with only
+    // a bright rim where the march exited the ball early.
+    float shadowLen = clamp(rNow * 0.15, 8.0, 64.0);
     float ldt = shadowLen / float(shadowSteps);
     float trans = 1.0;
     vec3 lp = p + sunDirW * ldt * 0.5;
     for (int j = 0; j < 8; ++j) {
         if (j >= shadowSteps) break;
         trans *= exp(-smokeShadowDensity(lp, center, rNow, maxR, t, time,
-                                         loopStart, loopDur, seed, densityMul)
+                                         seed, densityMul)
                      * ldt * max(mat.volumeParams.y, 0.0));
         lp += sunDirW * ldt;
     }
@@ -354,18 +336,21 @@ float smokeMarchSDF(vec3 wpos, SdfInstanceGPU inst, SdfDefinitionGPU def, float 
     float maxR = max(def.params0.x, 1.0);
     float loopDur = max(smokeTuning.timing.y, 1.0);
     float loopT = smokeLoopT(time, loopDur);
-    float loopStart = time - loopT;
     float rNow = smokeGrowthRadius(maxR, loopT, max(smokeTuning.timing.x, 0.5));
     float d = length(q) - rNow / max(ds, 1e-4);
     for (int i = 0; i < 8; ++i) {
         BulletGPU bl = smokeBullets[i];
         if (bl.c.z <= 0.0) continue;
-        SmokeBulletState st = smokeBulletState(bl, time, loopStart, loopDur);
+        SmokeBulletState st = smokeBulletState(bl, time);
         if (!st.live || st.traveled <= 0.0) continue;
         vec3 D = bl.b.xyz / max(length(bl.b.xyz), 1e-6);
         float sC = clamp(dot(wpos - bl.a.xyz, D), 0.0, st.traveled);
         vec3 core = bl.a.xyz + D * sC;
-        float bd = (length(wpos - core) - max(bl.a.w * 0.35, 0.25)) / max(ds, 1e-4);
+        // Subtract the FULL tapered capsule: the bore is a void in the
+        // marched field (not a fraction of it), so the march steps through
+        // and smoke reads as flowing away around the bullet.
+        float bd = (length(wpos - core)
+                    - max(smokeBulletRadius(bl, sC, st.traveled), 0.25)) / max(ds, 1e-4);
         d = max(d, -bd);
     }
     return d * ds;

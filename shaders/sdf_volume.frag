@@ -1,5 +1,15 @@
 #version 450
 
+#include "ubo/BulletGPU.glsl"
+#include "ubo/SdfContainerGPU.glsl"
+#include "ubo/SdfDefinitionGPU.glsl"
+#include "ubo/SdfGridCellGPU.glsl"
+#include "ubo/SdfInstanceGPU.glsl"
+#include "ubo/SdfMaterialGPU.glsl"
+#include "ubo/SdfParamsUBO.glsl"
+#include "types/SmokeBulletState.glsl"
+#include "types/SmokeSample.glsl"
+
 // Generic SDF raymarcher: surface + volume + emissive + transparent modes
 // sharing one traversal. Container proxy -> ray/AABB -> scene-depth clamp ->
 // uniform-grid DDA (empty-space skipping) -> candidate AABB test ->
@@ -110,10 +120,17 @@ float sdfEvalInstance(vec3 wpos, SdfInstanceGPU inst, SdfDefinitionGPU def,
         float hh = max(def.params0.y, 1e-3);
         qn = q * (3.2 / hh);
     }
+    // Procedural deformation offsets (noise + spikes) are not metric: adding
+    // them can push |grad d| above 1 by roughly (deform amplitude / feature
+    // size), so the returned distance may overestimate the true distance and
+    // sphere tracing would skip through the field. Flag every deformed
+    // definition and compensate below; the undeformed path is unchanged.
+    bool deformed = false;
     if ((deform & 1u) != 0u) {
         float turb = mat.extra.z;
         float rise = mat.extra.w;
         d += sdfFlameDeform(qn, time, inst.rotSeed.w, turb, rise);
+        deformed = true;
     }
     if (def.meta.x == SDF_PRIM_FLAME) {
         // Tapered-flame spikes (params1.y = amplitude, .z = frequency):
@@ -121,7 +138,16 @@ float sdfEvalInstance(vec3 wpos, SdfInstanceGPU inst, SdfDefinitionGPU def,
         float spk = max(def.params1.y, 0.0);
         if (spk > 0.001) {
             d += sdfFlameSpikes(qn, hhn, inst.rotSeed.w, def.params1.z, spk);
+            deformed = true;
         }
+    }
+    // Conservative Lipschitz compensation for noise/spike-deformed fields:
+    // halve the canonical distance so the world distance (d * ds) can no
+    // longer overestimate the true distance by more than the deform gain.
+    // A uniform factor cancels in sdfSurfaceNormal (normalize), so shading
+    // is unaffected; only the march step bound becomes conservative.
+    if (deformed) {
+        d *= 0.5;
     }
     return d * ds;
 }
@@ -234,56 +260,89 @@ void main() {
     float hitT = tEnter;
     vec3 hitColor = vec3(0.0);
 
+    // Visible tracer round: analytic gold capsule proxy, evaluated ONCE
+    // before the march (the old per-sample sphere test aliased into stacked
+    // horizontal discs). Each live in-flight bullet is approximated by K=4
+    // spheres tapering from tail to nose; exact ray/sphere roots give a
+    // banding-free hit distance. The smoke container expands over the flight
+    // path, so the proxy is covered even outside the current smoke ball.
+    float bestT = 1e5;
+    vec3 bestC = vec3(0.0);
+    float bestR = 0.0;
+    for (int bi = 0; bi < 8; ++bi) {
+        BulletGPU bbl = smokeBullets[bi];
+        if (bbl.c.z <= 0.0) continue;
+        SmokeBulletState bst = smokeBulletState(bbl, time);
+        if (!bst.live || !bst.headOnPath) continue;
+        vec3 bD = bbl.b.xyz / max(length(bbl.b.xyz), 1e-6);
+        vec3 head = bbl.a.xyz + bD * bst.traveled;
+        float tailR = max(bbl.a.w * 0.30, 0.5);
+        float noseR = max(bbl.c.x * 0.30, 0.3);
+        // Round length follows the bigger end so a widening cone (small
+        // launch bore, huge head bore) renders as one growing round.
+        float L = max(max(bbl.a.w, bbl.c.x), 1.0);
+        vec3 tail = head - bD * (L * 0.7);
+        vec3 nose = head + bD * (L * 0.3);
+        for (int k = 0; k < 4; ++k) {
+            float fk = float(k) / 3.0;
+            vec3 center = mix(tail, nose, fk);
+            float radius = mix(tailR, noseR, fk);
+            vec3 oc = ro - center;
+            float bq = dot(oc, rd);
+            float cq = dot(oc, oc) - radius * radius;
+            float disc = bq * bq - cq;
+            if (disc > 0.0) {
+                float tHit = -bq - sqrt(disc);
+                if (tHit > 0.0 && tHit < bestT) {
+                    bestT = tHit;
+                    bestC = center;
+                    bestR = radius;
+                }
+            }
+        }
+    }
+
     for (int i = 0; i < SDF_MAX_STEPS_HARD; i++) {
         if (i >= maxSteps || t > tExit) break;
         steps = i + 1;
         vec3 p = ro + rd * t;
 
-        // Visible tracer round: metallic GOLD sphere at the simulated bullet
-        // head. Evaluated for EVERY march step (not just occupied cells) so
-        // the bullet renders along its whole flight path, including the
-        // approach outside the smoke. Same head math as the interaction
-        // field, so the visual and the physics agree by construction.
-        // Renders in all modes (projectile, not volume); the smoke container
-        // covers the flight path. Procedural gold: exact sphere normal
-        // perturbed by two sdfNoise taps, mottled deep-gold/champagne map,
-        // Blinn-Phong spec + fresnel, warm-glow floor so the round reads at
-        // night/in shadow. GPU-pure: no textures, no new uniforms.
-        {
-            float loopDurB = max(smokeTuning.timing.y, 1.0);
-            float loopTB = smokeLoopT(time, loopDurB);
-            float loopStartB = time - loopTB;
-            float dBullet = 1e5;
-            vec3 bestHead = vec3(0.0);
-            for (int bi = 0; bi < 8; ++bi) {
-                BulletGPU bbl = smokeBullets[bi];
-                if (bbl.c.z <= 0.0) continue;
-                SmokeBulletState bst = smokeBulletState(bbl, time, loopStartB, loopDurB);
-                if (!bst.live || bst.traveled <= 0.0) continue;
-                vec3 bD = bbl.b.xyz / max(length(bbl.b.xyz), 1e-6);
-                vec3 head = bbl.a.xyz + bD * bst.traveled;
-                float visR = clamp(bbl.a.w * 0.25, 0.5, 10.0);
-                float dB = length(p - head) - visR;
-                if (dB < dBullet) { dBullet = dB; bestHead = head; }
-            }
-            if (dBullet < eps) {
-                vec3 bN = (p - bestHead) / max(length(p - bestHead), 1e-6);
-                vec3 tang = normalize(abs(bN.y) < 0.99 ? cross(bN, vec3(0.0, 1.0, 0.0)) : cross(bN, vec3(1.0, 0.0, 0.0)));
-                float e0 = sdfNoise(p * 2.0 + bestHead);
-                float e1 = sdfNoise(p * 2.0 + bestHead + vec3(4.7));
-                vec3 bNt = normalize(bN + (tang * (e0 - 0.5) + cross(bN, tang) * (e1 - 0.5)) * 0.6);
-                float pat = sdfNoise(p * 0.8 + bestHead);
-                vec3 V = -rd;
-                vec3 L = -normalize(ubo.lightDirection);
-                float dif = max(dot(bNt, L), 0.0);
-                float spec = pow(max(dot(bNt, normalize(L + V)), 0.0), 64.0);
-                float fres = pow(1.0 - max(dot(bNt, V), 0.0), 3.0);
-                vec3 gold = mix(vec3(0.45, 0.22, 0.05), vec3(1.0, 0.85, 0.55), clamp(pat * 0.65 + fres * 0.6, 0.0, 1.0));
-                vec3 goldCol = gold * (ubo.lightColor * (0.25 + 0.9 * dif) + vec3(1.0, 0.72, 0.25) * 0.35) + ubo.lightColor * spec * 2.0;
-                outColor = vec4(goldCol, 1.0);
-                gl_FragDepth = sdfProjDepth(ro, rd, t);
-                return;
-            }
+        // Analytic tracer hit (proxy computed before the loop): stop at the
+        // exact ray/sphere entry and shade the gold round attenuated by the
+        // smoke accumulated so far (front-to-back correct via trans).
+        if (bestT < 1e4 && t >= bestT) {
+            vec3 hp = ro + rd * bestT;
+            vec3 bN = (hp - bestC) / max(bestR, 1e-4);
+            vec3 tang = normalize(abs(bN.y) < 0.99 ? cross(bN, vec3(0.0, 1.0, 0.0)) : cross(bN, vec3(1.0, 0.0, 0.0)));
+            float e0 = sdfNoise(hp * 2.0 + bestC);
+            float e1 = sdfNoise(hp * 2.0 + bestC + vec3(4.7));
+            // Normal distortion gain is widget-controlled: guard the normalize
+            // so a cancelling perturbation can never divide by zero.
+            vec3 bNp = bN + (tang * (e0 - 0.5) + cross(bN, tang) * (e1 - 0.5))
+                            * max(smokeTuning.gold2.w, 0.0);
+            vec3 bNt = (dot(bNp, bNp) > 1e-12) ? normalize(bNp) : bN;
+            float pat = sdfNoise(hp * max(smokeTuning.gold1.w, 0.0) + bestC);
+            vec3 V = -rd;
+            vec3 L = -normalize(ubo.lightDirection);
+            float dif = max(dot(bNt, L), 0.0);
+            // Guarded half-vector: L + V degenerates when the view direction
+            // is (anti)parallel to the light. The base is clamped to [0,1]
+            // so the power argument can never go negative; a non-positive
+            // specular power disables the lobe instead of hitting pow(0, 0).
+            vec3 H = L + V;
+            float hl = length(H);
+            float specDot = (hl > 1e-4) ? clamp(dot(bNt, H / hl), 0.0, 1.0) : 0.0;
+            float specPower = smokeTuning.gold0.w;
+            float spec = (specPower > 1e-3) ? pow(specDot, specPower) : 0.0;
+            float fres = pow(clamp(1.0 - max(dot(bNt, V), 0.0), 0.0, 1.0), 3.0);
+            vec3 gold = mix(smokeTuning.gold0.rgb, smokeTuning.gold1.rgb,
+                            clamp(pat * 0.65 + fres * smokeTuning.gold2.y, 0.0, 1.0));
+            vec3 goldCol = gold * (ubo.lightColor * (0.25 + 0.9 * dif)
+                                   + vec3(1.0, 0.72, 0.25) * smokeTuning.gold2.z)
+                         + ubo.lightColor * spec * smokeTuning.gold2.x;
+            outColor = vec4(accum + trans * goldCol, 1.0);
+            gl_FragDepth = sdfProjDepth(ro, rd, bestT);
+            return;
         }
 
         vec3 fpos = clamp((p - bMin) / cellSize, vec3(0.0), vec3(dim) - vec3(1e-4));
@@ -308,13 +367,21 @@ void main() {
             ccnt = sdfGridCells[cellAddr].count;
         }
         if (ccnt == 0u) {
-            t = t + dtCell + 1e-4; // empty-space skipping: one DDA jump
+            // Empty-space skipping: one DDA jump to the cell exit, with a
+            // guaranteed minimum progress. A ray sitting exactly on a cell
+            // boundary face (dtCell == 0 there) would otherwise advance only
+            // the 1e-4 epsilon per iteration and never leave the boundary
+            // cell inside the step budget — that froze every ray leaving the
+            // camera's cell through the boundary planes (the half-screen
+            // "no smoke" cross artifact when the camera sits on a grid wall).
+            t = t + max(dtCell, minStep) + 1e-4;
             continue;
         }
 
         uint n = min(ccnt, SDF_MAX_CANDIDATES);
         float dBest = 1e5;
         float dMin = 1e5;
+        float nearestBox = 1e5; // distance to the closest rejected AABB
         SdfInstanceGPU bestInst;
         SdfDefinitionGPU bestDef;
         SdfMaterialGPU bestMat;
@@ -331,8 +398,12 @@ void main() {
             if (di >= uint(nDefs) || mi >= uint(nMats)) continue;
             SdfMaterialGPU m0 = sdfMaterials[mi];
             vec3 oq = max(max(inst.boundsMin.xyz - p, p - inst.boundsMax.xyz), vec3(0.0));
+            float ob = length(oq); // exact distance to the instance AABB
             float skipR = maxStep + 0.1 + abs(m0.extra.z);
-            if (length(oq) > skipR) continue; // conservative bounds reject
+            if (ob > skipR) {
+                nearestBox = min(nearestBox, ob); // conservative advance source
+                continue;
+            }
             SdfDefinitionGPU dd = sdfDefinitions[di];
             float d = sdfEvalInstance(p, inst, dd, m0, time);
             float kk = clamp(sdfUnpackSmoothK(dd), 0.0, 2.0);
@@ -340,7 +411,19 @@ void main() {
             else { dBest = sdfCombine(dBest, d, dd.meta.y, kk); }
             if (d < dMin) { dMin = d; bestInst = inst; bestDef = dd; bestMat = m0; }
         }
-        if (!haveBest) { t = t + dtCell + 1e-4; continue; }
+        if (!haveBest) {
+            // Every candidate was out of bounds: advance by the conservative
+            // distance to the nearest instance AABB (bounded by the DDA cell
+            // exit) instead of by the cell exit alone. The old full-cell jump
+            // could overshoot a smoke volume whose bounds are inside a huge
+            // cell, and on an exact cell-boundary start it froze the march
+            // (dtCell == 0 -> no progress within the step budget), producing
+            // the crossed half-plane holes. The max(..., minStep) keeps a
+            // guaranteed minimum advance in every case.
+            float jump = min(max(dtCell, 0.0), max(nearestBox, minStep));
+            t = t + max(jump, minStep) + 1e-4;
+            continue;
+        }
         hits++;
         minAbsD = min(minAbsD, abs(dBest));
 
@@ -360,6 +443,10 @@ void main() {
             gl_FragDepth = sdfProjDepth(ro, rd, t);
             return;
         }
+        // Raw field sign before the volume clamp: negative means the sample
+        // is inside a (possibly deformed) primitive. The fire branch uses it
+        // for the interior step bound; smoke keeps its own step law.
+        bool insideField = (dBest < 0.0);
         if (dBest < eps) {
             // Volume/emissive modes treat the interior as dense (no hard surface).
             dBest = eps;
@@ -380,18 +467,21 @@ void main() {
         if (isSmoke) {
             float loopDurS = max(smokeTuning.timing.y, 1.0);
             float loopTS = smokeLoopT(time, loopDurS);
-            float loopStartS = time - loopTS;
             vec3 scS = bestInst.posScale.xyz;
             float maxRS = max(bestDef.params0.x, 1.0);
             float seedS = bestInst.rotSeed.w;
             float densMulS = max(bestMat.volumeParams.x, 0.0) * max(smokeTuning.wind.z, 0.0);
             float rNowS = smokeGrowthRadius(maxRS, loopTS, max(smokeTuning.timing.x, 0.5));
-            // Smoke adaptive step: exact sphere-tracing outside, interior
-            // distance-scaled inside (robust from meters to kilometers).
-            float stepBase = (dBest >= 0.0) ? dBest * safety : -dBest * 0.15;
-            dt = clamp(stepBase + minStep * wScale, minStep * wScale, maxStep);
+            // Smoke step law: exact sphere tracing OUTSIDE the volume;
+            // INSIDE, a uniform step tied to the noise wavelength so the
+            // layered features are sampled finely enough to avoid marched
+            // plane banding across a huge (256 m) ball. Dense smoke
+            // terminates early, so the finer steps stay cheap.
+            float wl = 1.0 / clamp(smokeTuning.noise.x, 0.001, 0.5);
+            float interiorStep = clamp(wl * 0.6, 0.4, max(rNowS * 0.04, 1.0));
+            dt = (dBest >= 0.0) ? clamp(dBest * safety, minStep, maxStep) : interiorStep;
             SmokeSample ssm = smokeSampleDensity(p, scS, rNowS, maxRS, smokeTuning, time,
-                                                 loopStartS, loopDurS, seedS, densMulS);
+                                                 seedS, densMulS);
             dbgSmokeSDF = ssm.sdf;
             dbgSmokeDens = ssm.density;
             dbgSmokeBullet = ssm.bullet;
@@ -401,12 +491,15 @@ void main() {
             dbgSmokeTurb = ssm.turb;
             dbgSmokeWake = ssm.wake;
             dbgSmokeFinal = ssm.finalD;
-            densV = ssm.density;
+            // Accumulate the FINAL density (post tunnel-thinning, wave and
+            // loop-end fade), so the render matches debug view 9 and the
+            // bullet visibly carves the cloud instead of ghosting through it.
+            densV = ssm.finalD;
             if (densV > 0.001) {
                 vec3 sunDirW = -normalize(ubo.lightDirection);
                 float ltSm = 1.0;
                 emisV = smokeShade(p, rd, scS, rNowS, maxRS, smokeTuning, bestMat, time,
-                                   loopStartS, loopDurS, seedS, densMulS,
+                                   seedS, densMulS,
                                    sunDirW, ubo.lightColor, ltSm);
                 dbgSmokeLight = ltSm;
             }
@@ -416,7 +509,23 @@ void main() {
             dBest = eps;
         }
 
-        dt = clamp(dBest * safety, minStep * wScale, maxStep);
+        // Fire step law: for deformed definitions (noise-deform bit0 or a
+        // FLAME with spikes) the step is additionally capped at the deform
+        // feature scale dtCap = dsBest (noise features are O(1) canonical
+        // units, i.e. about one instance size). This keeps the deformed
+        // bands sampled instead of skipping them with a maxStep-sized jump;
+        // undeformed primitives keep the original plain maxStep clamp.
+        bool deformStep = ((bestDef.meta.z & 1u) != 0u) || (bestDef.meta.x == SDF_PRIM_FLAME);
+        float dtCap = dsBest;
+        dt = deformStep
+             ? clamp(dBest * safety, minStep * wScale, min(maxStep, dtCap))
+             : clamp(dBest * safety, minStep * wScale, maxStep);
+        // Interior of a deformed field: sample evenly at half the deform
+        // feature scale even when dBest was clamped to eps above (the raw
+        // sample said we are inside), instead of taking minStep-sized jumps.
+        if (deformStep && insideField) {
+            dt = min(dt, dtCap * 0.5);
+        }
         float soft = 0.15 * wScale;
         float body = 1.0 - smoothstep(-soft, soft, dBest);
         if (body > 0.001) {

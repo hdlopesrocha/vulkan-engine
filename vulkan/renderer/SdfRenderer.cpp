@@ -47,8 +47,9 @@ void SdfRenderer::init(VulkanApp* app) {
     paramsDirtySlots_.fill(true);
     smokeDirtySlots_.fill(true);
     // Default smoke tuning mirrors SdfEffectConfig defaults (single source:
-    // SdfSmokeConfig); the SSBO mirror is packed here once, widget edits
-    // stream through the setters below.
+    // SdfSmokeConfig for the cloud, SdfBulletConfig for bullet FX/gold); the
+    // SSBO mirror is packed here once, widget edits stream through the
+    // setters below.
     smokeState_.tuning.timing = glm::vec4(config_.smoke.growthDuration,
         config_.smoke.loopDuration, config_.smoke.dissipation, 0.0f);
     smokeState_.tuning.noise = glm::vec4(config_.smoke.noiseScale,
@@ -58,17 +59,21 @@ void SdfRenderer::init(VulkanApp* app) {
         smokeState_.tuning.wind = glm::vec4(config_.smoke.windSpeed * std::cos(rad),
             config_.smoke.windSpeed * std::sin(rad), config_.smoke.densityScale, 0.0f);
     }
-    smokeState_.tuning.tunnel = glm::vec4(config_.smoke.tunnelStrength,
-        config_.smoke.tunnelFalloff, config_.smoke.wakeStrength, config_.smoke.wakeDissipation);
-    smokeState_.tuning.wake = glm::vec4(config_.smoke.wakeRadius,
-        config_.smoke.wakeExpansion, config_.smoke.wakeLength, 0.0f);
-    smokeState_.tuning.pressure = glm::vec4(config_.smoke.pressureRadius,
-        config_.smoke.pressureStrength, config_.smoke.pressureWaveSpeed,
-        config_.smoke.pressureWaveFreq);
-    smokeState_.tuning.turbWave = glm::vec4(config_.smoke.pressureWaveFalloff,
-        config_.smoke.turbScale, config_.smoke.turbStrength, config_.smoke.turbSpeed);
+    smokeState_.tuning.tunnel = glm::vec4(config_.bullet.tunnelStrength,
+        config_.bullet.tunnelFalloff, config_.bullet.wakeStrength, config_.bullet.wakeDissipation);
+    smokeState_.tuning.wake = glm::vec4(config_.bullet.wakeRadius,
+        config_.bullet.wakeExpansion, config_.bullet.wakeLength, 0.0f);
+    smokeState_.tuning.pressure = glm::vec4(config_.bullet.pressureRadius,
+        config_.bullet.pressureStrength, config_.bullet.pressureWaveSpeed,
+        config_.bullet.pressureWaveFreq);
+    smokeState_.tuning.turbWave = glm::vec4(config_.bullet.pressureWaveFalloff,
+        config_.bullet.turbScale, config_.bullet.turbStrength, config_.bullet.turbSpeed);
     smokeState_.tuning.render = glm::vec4(static_cast<float>(config_.smoke.shadowSamples),
         config_.smoke.shadowStrength, 0.0f, 0.0f);
+    smokeState_.tuning.gold0 = glm::vec4(config_.bullet.goldDeep, config_.bullet.goldSpecPower);
+    smokeState_.tuning.gold1 = glm::vec4(config_.bullet.goldBright, config_.bullet.goldPatternScale);
+    smokeState_.tuning.gold2 = glm::vec4(config_.bullet.goldSpecStrength,
+        config_.bullet.goldFresnelBoost, config_.bullet.goldWarmFloor, config_.bullet.goldNormalDistort);
     refreshAutoBulletLocked();
     ensureSmokeScene();
     refreshMergedLocked();
@@ -236,6 +241,9 @@ void SdfRenderer::refreshMergedLocked() {
     extractFlattened();
     sceneDirtySlots_.fill(true);
     // One-time proof of what the merged scene holds (instances per type).
+    // Extended with the exact smoke-side values that decide visibility, so
+    // a "sky where the cloud should be" report can be bisected from the log
+    // alone (CPU state sane here + sky on screen = GPU delivery failure).
     static bool loggedOnce = false;
     if (!loggedOnce) {
         loggedOnce = true;
@@ -252,6 +260,26 @@ void SdfRenderer::refreshMergedLocked() {
             fprintf(stderr, "[SdfRenderer] scene: smoke DISABLED/empty, lava instances=%zu\n",
                 lavaCount);
         }
+        const SmokeGPU& st = smokeState_.tuning;
+        const BulletGPU& b0 = smokeState_.bullets[0];
+        float mden = -1.0f, mabs = -1.0f;
+        if (!smokeScene_.materials().empty()) {
+            mden = smokeScene_.materials()[0].density;
+            mabs = smokeScene_.materials()[0].absorption;
+        }
+        fprintf(stderr, "[SdfRenderer] smoke state: timing=(%.2f,%.2f,%.2f) "
+            "noise=(%.4f,%.2f,%.2f) wind=(%.2f,%.2f,%.2f) mat(d=%.2f,a=%.2f) "
+            "march(maxStep=%.2f,maxSteps=%.0f) mode=%u flags=%u\n",
+            st.timing.x, st.timing.y, st.timing.z,
+            st.noise.x, st.noise.y, st.noise.z,
+            st.wind.x, st.wind.y, st.wind.z, mden, mabs,
+            params_.marchParams.y, params_.timeDebug.z,
+            static_cast<uint32_t>(renderMode_), debugFlags_);
+        fprintf(stderr, "[SdfRenderer] bullet0: a=(%.0f,%.0f,%.0f,r%.1f) "
+            "vel=(%.0f,%.0f,%.0f) len=%.0f c=(rEnd%.1f,loop%.1f,int%.1f,ph%.1f)\n",
+            b0.a.x, b0.a.y, b0.a.z, b0.a.w,
+            b0.b.x, b0.b.y, b0.b.z, b0.b.w,
+            b0.c.x, b0.c.y, b0.c.z, b0.c.w);
     }
 }
 
@@ -626,10 +654,15 @@ void SdfRenderer::refreshAutoBulletLocked() {
     const float rad = glm::radians(config_.bullet.angleDeg);
     const glm::vec3 dir(std::cos(rad), 0.0f, std::sin(rad));
     const glm::vec3 start = config_.smoke.pos - dir * (config_.smoke.radius + 60.0f);
+    // BulletGPU ABI: a = (start, radiusStart), b = (velocity m/s, length),
+    // c = (radiusEnd, loopDuration, intensity, phase). Auto bullet: phase =
+    // growthDuration so it waits out the smoke bloom inside each loop; the
+    // auto-fire flag lives in c.z (0 = empty slot).
     BulletGPU& b = smokeState_.bullets[0];
     b.a = glm::vec4(start, config_.bullet.radius);
-    b.b = glm::vec4(dir, config_.bullet.length);
-    b.c = glm::vec4(config_.bullet.speed, 0.0f, config_.bullet.autoFire ? 1.0f : 0.0f, 1.0f); // flags bit0 = auto-loop
+    b.b = glm::vec4(dir * config_.bullet.speed, config_.bullet.length);
+    b.c = glm::vec4(config_.bullet.finalRadius, config_.bullet.loopDuration,
+                    config_.bullet.autoFire ? 1.0f : 0.0f, config_.smoke.growthDuration);
     markSmokeSSBO();
 }
 
@@ -763,10 +796,10 @@ void SdfRenderer::setSmokeScattering(float s) {
 
 void SdfRenderer::setSmokeTunnel(float strength, float falloff) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    config_.smoke.tunnelStrength = std::clamp(strength, 0.0f, 1.0f);
-    smokeState_.tuning.tunnel.x = config_.smoke.tunnelStrength;
-    config_.smoke.tunnelFalloff = std::clamp(falloff, 0.5f, 100.0f);
-    smokeState_.tuning.tunnel.y = config_.smoke.tunnelFalloff;
+    config_.bullet.tunnelStrength = std::clamp(strength, 0.0f, 1.0f);
+    smokeState_.tuning.tunnel.x = config_.bullet.tunnelStrength;
+    config_.bullet.tunnelFalloff = std::clamp(falloff, 0.5f, 100.0f);
+    smokeState_.tuning.tunnel.y = config_.bullet.tunnelFalloff;
     markSmokeSSBO();
 }
 
@@ -774,16 +807,16 @@ void SdfRenderer::setSmokeTunnel(float strength, float falloff) {
 
 void SdfRenderer::setSmokeWake(float strength, float radius, float expansion, float length, float dissipation) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    config_.smoke.wakeStrength = std::clamp(strength, 0.0f, 2.0f);
-    smokeState_.tuning.tunnel.z = config_.smoke.wakeStrength;
-    config_.smoke.wakeRadius = std::clamp(radius, 0.5f, 100.0f);
-    smokeState_.tuning.wake.x = config_.smoke.wakeRadius;
-    config_.smoke.wakeExpansion = std::clamp(expansion, 0.0f, 1.0f);
-    smokeState_.tuning.wake.y = config_.smoke.wakeExpansion;
-    config_.smoke.wakeLength = std::clamp(length, 1.0f, 500.0f);
-    smokeState_.tuning.wake.z = config_.smoke.wakeLength;
-    config_.smoke.wakeDissipation = std::clamp(dissipation, 0.05f, 3.0f);
-    smokeState_.tuning.tunnel.w = config_.smoke.wakeDissipation;
+    config_.bullet.wakeStrength = std::clamp(strength, 0.0f, 2.0f);
+    smokeState_.tuning.tunnel.z = config_.bullet.wakeStrength;
+    config_.bullet.wakeRadius = std::clamp(radius, 0.5f, 100.0f);
+    smokeState_.tuning.wake.x = config_.bullet.wakeRadius;
+    config_.bullet.wakeExpansion = std::clamp(expansion, 0.0f, 1.0f);
+    smokeState_.tuning.wake.y = config_.bullet.wakeExpansion;
+    config_.bullet.wakeLength = std::clamp(length, 1.0f, 500.0f);
+    smokeState_.tuning.wake.z = config_.bullet.wakeLength;
+    config_.bullet.wakeDissipation = std::clamp(dissipation, 0.05f, 3.0f);
+    smokeState_.tuning.tunnel.w = config_.bullet.wakeDissipation;
     markSmokeSSBO();
 }
 
@@ -794,16 +827,16 @@ void SdfRenderer::setSmokeWake(float strength, float radius, float expansion, fl
 
 void SdfRenderer::setSmokePressure(float radius, float strength, float waveSpeed, float waveFreq, float waveFalloff) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    config_.smoke.pressureRadius = std::clamp(radius, 0.5f, 150.0f);
-    smokeState_.tuning.pressure.x = config_.smoke.pressureRadius;
-    config_.smoke.pressureStrength = std::clamp(strength, 0.0f, 30.0f);
-    smokeState_.tuning.pressure.y = config_.smoke.pressureStrength;
-    config_.smoke.pressureWaveSpeed = std::clamp(waveSpeed, 0.0f, 300.0f);
-    smokeState_.tuning.pressure.z = config_.smoke.pressureWaveSpeed;
-    config_.smoke.pressureWaveFreq = std::clamp(waveFreq, 0.01f, 3.0f);
-    smokeState_.tuning.pressure.w = config_.smoke.pressureWaveFreq;
-    config_.smoke.pressureWaveFalloff = std::clamp(waveFalloff, 0.001f, 1.0f);
-    smokeState_.tuning.turbWave.x = config_.smoke.pressureWaveFalloff;
+    config_.bullet.pressureRadius = std::clamp(radius, 0.5f, 150.0f);
+    smokeState_.tuning.pressure.x = config_.bullet.pressureRadius;
+    config_.bullet.pressureStrength = std::clamp(strength, 0.0f, 30.0f);
+    smokeState_.tuning.pressure.y = config_.bullet.pressureStrength;
+    config_.bullet.pressureWaveSpeed = std::clamp(waveSpeed, 0.0f, 300.0f);
+    smokeState_.tuning.pressure.z = config_.bullet.pressureWaveSpeed;
+    config_.bullet.pressureWaveFreq = std::clamp(waveFreq, 0.01f, 3.0f);
+    smokeState_.tuning.pressure.w = config_.bullet.pressureWaveFreq;
+    config_.bullet.pressureWaveFalloff = std::clamp(waveFalloff, 0.001f, 1.0f);
+    smokeState_.tuning.turbWave.x = config_.bullet.pressureWaveFalloff;
     markSmokeSSBO();
 }
 
@@ -814,12 +847,32 @@ void SdfRenderer::setSmokePressure(float radius, float strength, float waveSpeed
 
 void SdfRenderer::setSmokeTurbulence(float scale, float strength, float speed) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    config_.smoke.turbScale = std::clamp(scale, 0.001f, 1.0f);
-    smokeState_.tuning.turbWave.y = config_.smoke.turbScale;
-    config_.smoke.turbStrength = std::clamp(strength, 0.0f, 10.0f);
-    smokeState_.tuning.turbWave.z = config_.smoke.turbStrength;
-    config_.smoke.turbSpeed = std::clamp(speed, 0.0f, 10.0f);
-    smokeState_.tuning.turbWave.w = config_.smoke.turbSpeed;
+    config_.bullet.turbScale = std::clamp(scale, 0.001f, 1.0f);
+    smokeState_.tuning.turbWave.y = config_.bullet.turbScale;
+    config_.bullet.turbStrength = std::clamp(strength, 0.0f, 10.0f);
+    smokeState_.tuning.turbWave.z = config_.bullet.turbStrength;
+    config_.bullet.turbSpeed = std::clamp(speed, 0.0f, 10.0f);
+    smokeState_.tuning.turbWave.w = config_.bullet.turbSpeed;
+    markSmokeSSBO();
+}
+
+
+void SdfRenderer::setBulletGold(const glm::vec3& deep, const glm::vec3& bright,
+                                float specPower, float specStrength, float fresnelBoost,
+                                float warmFloor, float patternScale, float normalDistort) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.bullet.goldDeep = glm::clamp(deep, glm::vec3(0.0f), glm::vec3(4.0f));
+    config_.bullet.goldBright = glm::clamp(bright, glm::vec3(0.0f), glm::vec3(4.0f));
+    config_.bullet.goldSpecPower = std::clamp(specPower, 1.0f, 512.0f);
+    config_.bullet.goldSpecStrength = std::clamp(specStrength, 0.0f, 10.0f);
+    config_.bullet.goldFresnelBoost = std::clamp(fresnelBoost, 0.0f, 4.0f);
+    config_.bullet.goldWarmFloor = std::clamp(warmFloor, 0.0f, 1.0f);
+    config_.bullet.goldPatternScale = std::clamp(patternScale, 0.05f, 8.0f);
+    config_.bullet.goldNormalDistort = std::clamp(normalDistort, 0.0f, 2.0f);
+    smokeState_.tuning.gold0 = glm::vec4(config_.bullet.goldDeep, config_.bullet.goldSpecPower);
+    smokeState_.tuning.gold1 = glm::vec4(config_.bullet.goldBright, config_.bullet.goldPatternScale);
+    smokeState_.tuning.gold2 = glm::vec4(config_.bullet.goldSpecStrength,
+        config_.bullet.goldFresnelBoost, config_.bullet.goldWarmFloor, config_.bullet.goldNormalDistort);
     markSmokeSSBO();
 }
 
@@ -837,12 +890,15 @@ void SdfRenderer::setSmokeShadow(int samples, float strength) {
 
 
 
-void SdfRenderer::setBulletDefaults(float radius, float speed, float length, float angleDeg) {
+void SdfRenderer::setBulletDefaults(float radiusStart, float radiusEnd, float speed,
+                                    float length, float angleDeg, float loopDuration) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    config_.bullet.radius = std::clamp(radius, 0.5f, 100.0f);
+    config_.bullet.radius = std::clamp(radiusStart, 0.5f, 100.0f);
+    config_.bullet.finalRadius = std::clamp(radiusEnd, 0.5f, 100.0f);
     config_.bullet.speed = std::clamp(speed, 1.0f, 1000.0f);
     config_.bullet.length = std::clamp(length, 10.0f, 2000.0f);
     config_.bullet.angleDeg = angleDeg;
+    config_.bullet.loopDuration = std::clamp(loopDuration, 1.0f, 60.0f);
     refreshAutoBulletLocked();
 }
 
@@ -866,8 +922,14 @@ void SdfRenderer::fireBullet(float angleDeg) {
     const uint32_t slot = 1 + ((bulletRoundRobin_ - 1) % (kSmokeMaxBullets - 1));
     BulletGPU& m = smokeState_.bullets[slot];
     m.a = glm::vec4(start, config_.bullet.radius);
-    m.b = glm::vec4(dir, config_.bullet.length);
-    m.c = glm::vec4(config_.bullet.speed, lastTime_, 1.0f, 0.0f);
+    // BulletGPU ABI: b = (velocity m/s, length). phase = lastTime_ folded into
+    // the loop, so age 0 at fire => the manual bullet is born now; c.z = 1
+    // marks it in flight.
+    m.b = glm::vec4(dir * config_.bullet.speed, config_.bullet.length);
+    // One-shot: c.y = 0 disables the per-bullet loop in the shader, so a
+    // manually fired bullet flies once and then disappears instead of
+    // restarting forever (only the auto bullet recycles, one per smoke loop).
+    m.c = glm::vec4(config_.bullet.finalRadius, 0.0f, 1.0f, lastTime_);
     bulletRoundRobin_ = slot + 1;
     if (bulletRoundRobin_ >= kSmokeMaxBullets) bulletRoundRobin_ = 1;
     markSmokeSSBO();
@@ -883,9 +945,20 @@ void SdfRenderer::clearBullets() {
 
 uint32_t SdfRenderer::bulletSlotsUsed() const {
     std::lock_guard<std::mutex> lock(sceneMutex);
+    // Count only bullets still in flight (or within the wake grace window):
+    // one-shot manual bullets stay in their slot after the pass, so a raw
+    // intensity test would over-report forever.
     uint32_t n = 0;
     for (uint32_t i = 1; i < kSmokeMaxBullets; ++i) {
-        if (smokeState_.bullets[i].c.z > 0.0f) ++n;
+        const BulletGPU& b = smokeState_.bullets[i];
+        if (b.c.z <= 0.0f) continue;
+        const float speed = std::max(glm::length(glm::vec3(b.b)), 1e-3f);
+        const float pathLen = std::max(b.b.w, 1e-3f);
+        const float travelTime = pathLen / speed;
+        const float age = (b.c.y > 0.0f)
+            ? std::fmod(lastTime_ - b.c.w, b.c.y)
+            : (lastTime_ - b.c.w);
+        if (age <= travelTime + 8.0f) ++n;
     }
     return n;
 }

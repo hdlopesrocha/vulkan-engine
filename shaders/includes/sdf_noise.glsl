@@ -109,7 +109,7 @@ float sdfFlameSpikes(vec3 q, float h, float seed, float freq, float amp) {
     if (amp <= 1e-6 || h <= 1e-6) {
         return 0.0;
     }
-    float ang = atan(q.z, q.x);
+    float ang = (dot(q.xz, q.xz) > 1e-12) ? atan(q.z, q.x) : 0.0;
     float hn = clamp(q.y / h, 0.0, 1.0);
     // Periodic around the axis (cos/sin pair) so there is no seam; the y
     // channel scrolls slowly upward for rising tongues.
