@@ -369,6 +369,7 @@ void SdfRenderer::ingestLavaChunk(uintptr_t nid, const Geometry& geom) {
         a.pos = p + nrm * (0.3f * scale);
         a.euler = sdf_gpu::SdfScene::eulerAlignYToNormal(nrm);
         a.scale = scale;
+        a.heightScale = 0.8f + 0.6f * unit(rng); // per-instance stretch
         a.seed = unit(rng) * 100.0f;
         a.intensity = 1.0f;
         anchors.push_back(a);
@@ -408,6 +409,7 @@ bool SdfRenderer::rebuildLavaIfDirty() {
             f.pos = a.pos;
             f.euler = a.euler;
             f.scale = a.scale;
+            f.heightScale = a.heightScale;
             f.seed = a.seed;
             f.intensity = a.intensity;
             all.push_back(f);

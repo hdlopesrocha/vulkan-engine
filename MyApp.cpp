@@ -2235,21 +2235,27 @@ public:
                     this->sceneRenderer->debugSDFRenderer->render(this, sdfCmd, app->getMainDescriptorSet(), frameIdx, sdfEnabled);
                 }
                 // Generic SDF volume (fire): GPU-procedural animation needs no
-                // CPU scene edits; just stream the time uniform per frame.
-                // Occlusion is resolved in the composite by depth, so the SDF
-                // pass intentionally does NOT sample the solid depth target
-                // (racing the solid pass discarded every pixel).
+                // CPU scene edits; just stream the time uniform per frame. The
+                // in-shader depth clamp samples the solid depth, which is
+                // valid here because this submit waits on tlSolid (same wait
+                // the water pass uses) after the solid pass transitioned it
+                // to SHADER_READ_ONLY.
                 if (this->sceneRenderer->sdfRenderer) {
                     float t = this->mainTime * (this->sdfWidget ? this->sdfWidget->timeScale : 1.0f);
                     this->sceneRenderer->sdfRenderer->setFrame(frameIdx);
                     this->sceneRenderer->sdfRenderer->updateParams(t, frameIdx);
+                    if (this->sceneRenderer->mainSolidRenderer) {
+                        VkImageView dv = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
+                        if (dv != VK_NULL_HANDLE)
+                            this->sceneRenderer->sdfRenderer->setSceneDepth(dv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    }
                     this->sceneRenderer->sdfRenderer->prepareCull(sdfCmd);
                     this->sceneRenderer->sdfRenderer->render(this, sdfCmd, app->getMainDescriptorSet(), frameIdx, true);
                 }
-                // Wait on semCullSdf (own binary semaphore, distinct from the main
-                // CB's semMainCull) so the cull task's GPU-written SDF buffers are
-                // visible before the SDF pass reads them; signal semSdf for the composite.
-                app->submitCommandBufferAsyncToQueue(sdfCmd, app->getSdfQueue(), &tlSdf, {tlCull}, true, {}, {v}, v, {}, true);
+                // Wait on tlCull (cull buffers) AND tlSolid (solid depth is
+                // sampled for occlusion after its SHADER_READ_ONLY transition,
+                // exactly like the water pass); signal tlSdf for the composite.
+                app->submitCommandBufferAsyncToQueue(sdfCmd, app->getSdfQueue(), &tlSdf, {tlCull, tlSolid}, true, {}, {v, v}, v, {}, true);
             });
         }
 

@@ -244,6 +244,7 @@ private:
         glm::vec3 pos = glm::vec3(0.0f);
         glm::vec3 euler = glm::vec3(0.0f); // Y-up frame tilted onto the surface normal
         float scale = 1.0f;
+        float heightScale = 1.0f; // per-instance flame stretch (0.8-1.4)
         float seed = 0.0f;
         float intensity = 1.0f;
     };

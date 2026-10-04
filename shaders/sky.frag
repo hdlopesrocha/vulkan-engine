@@ -8,6 +8,7 @@ layout(location = VARY_NORMAL) in vec3 fragNormal;
 #include "includes/ubo.glsl"
 #include "includes/sky_view.glsl"
 #include "includes/perlin.glsl"
+#include "includes/debug_modes.glsl"
 #include "includes/clouds.glsl"
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
@@ -87,6 +88,16 @@ void main() {
                                      + vec3(0.02) * (1.0 - dayFactor),
                                      color, dayFactor, 0);
         color = color * clouds.a + clouds.rgb;
+    }
+    // SDF cloud inspection (§29): replaces the final sky color with the
+    // selected volume diagnostic. The equirect probe always renders the
+    // final image so reflections stay clean.
+    int dbgMode = ubo.debugMode;
+    if (dbgMode >= DEBUG_MODE_CLOUD_SDF && dbgMode <= DEBUG_MODE_CLOUD_SKIP) {
+        vec3 dbgCol = cloudDebugView(ubo.viewPosition, normalize(viewDir),
+                                     normalize(sunDir), dbgMode - DEBUG_MODE_CLOUD_SDF + 1);
+        outColor = vec4(dbgCol, 1.0);
+        return;
     }
     outColor = vec4(color, 1.0);
 }

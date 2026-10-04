@@ -45,6 +45,16 @@ const int DEBUG_MODE_WATER_SPECULAR_NOISE = 37;
 const int DEBUG_MODE_SHORE_DIRECTION = 38;
 const int DEBUG_MODE_WATER_GERSTNER = 39;
 const int DEBUG_MODE_VEGETATION_LOD = 40;
+const int DEBUG_MODE_CLOUD_SDF = 41;
+const int DEBUG_MODE_CLOUD_BASE_DENSITY = 42;
+const int DEBUG_MODE_CLOUD_COVERAGE = 43;
+const int DEBUG_MODE_CLOUD_WARP = 44;
+const int DEBUG_MODE_CLOUD_EROSION = 45;
+const int DEBUG_MODE_CLOUD_FINAL_DENSITY = 46;
+const int DEBUG_MODE_CLOUD_LIGHTING = 47;
+const int DEBUG_MODE_CLOUD_SHADOWS = 48;
+const int DEBUG_MODE_CLOUD_STEPS = 49;
+const int DEBUG_MODE_CLOUD_SKIP = 50;
 
 // Views whose displayed value is produced by traced reflection/refraction
 // rays force the full-quality reference path (full-rate + dual-trace) so the

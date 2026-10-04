@@ -130,6 +130,7 @@ public:
         glm::vec3 pos = glm::vec3(0.0f);
         glm::vec3 euler = glm::vec3(0.0f); // R = Rx * Ry * Rz, local +Y = flame axis
         float scale = 1.0f;
+        float heightScale = 1.0f; // per-instance vertical stretch
         float seed = 0.0f;
         float intensity = 1.0f;
     };

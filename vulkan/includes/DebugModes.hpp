@@ -66,6 +66,18 @@ enum class DebugMode : int {
     VegetationLod,        // vegetation only: RED = billboard fragment, BLUE = impostor fragment
                           //            (renders the raw surfaces, no shading, so the LOD
                           //            hand-off boundary is directly visible)
+    // SDF cloud volume inspection (sky pass only; 0 = Final Cloud is the
+    // default render). Other surfaces ignore these IDs (normal shading).
+    CloudSdf,             // SDF sign: blue = inside domain, white = boundary, red = outside
+    CloudBaseDensity,     // base shape-noise band, grayscale
+    CloudCoverage,        // coverage-remapped field, grayscale
+    CloudWarp,            // domain-warp magnitude, grayscale
+    CloudErosion,         // edge-erosion factor, grayscale
+    CloudFinalDensity,    // full evaluated density, grayscale
+    CloudLighting,        // sun transmittance at the probe, grayscale
+    CloudShadows,         // cloudShadowAt at the probe point, grayscale
+    CloudSteps,           // ray-march density-evaluation heat (red)
+    CloudSkip,            // fraction marched via SDF empty-space jumps (green)
     Count
 };
 
@@ -111,6 +123,16 @@ inline constexpr const char* kDebugModeNames[] = {
     "Water Shore Direction",
     "Water Gerstner",
     "Vegetation LOD (red=billboard, blue=impostor)",
+    "Cloud SDF (blue=in, white=edge, red=out)",
+    "Cloud Base Density",
+    "Cloud Coverage",
+    "Cloud Domain Warp",
+    "Cloud Erosion",
+    "Cloud Final Density",
+    "Cloud Lighting Transmittance",
+    "Cloud Shadows",
+    "Cloud Ray Steps",
+    "Cloud Empty-Space Skip",
 };
 
 static_assert(sizeof(kDebugModeNames) / sizeof(kDebugModeNames[0])

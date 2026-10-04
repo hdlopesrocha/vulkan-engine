@@ -61,6 +61,23 @@ float sdfFbm(vec3 p) {
     return total / max(norm, 1e-6);
 }
 
+// N-octave fBm in [0, 1] (normalized). sdfFbm(p) == sdfFbmOct(p, 3).
+// Used by volumetric consumers (cloud bands) that need per-band detail.
+float sdfFbmOct(vec3 p, int octaves) {
+    float total = 0.0;
+    float amplitude = 0.5;
+    float frequency = 1.0;
+    float norm = 0.0;
+    for (int i = 0; i < 6; ++i) {
+        if (i >= octaves) break;
+        total += sdfNoise(p * frequency) * amplitude;
+        norm += amplitude;
+        amplitude *= 0.5;
+        frequency *= 2.0;
+    }
+    return total / max(norm, 1e-6);
+}
+
 // Domain warp: offsets p by two low-frequency noise channels scaled by t
 // (t = warp strength in world units). 2 noise evals.
 vec3 sdfDomainWarp(vec3 p, float t, float seed) {

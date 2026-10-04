@@ -554,7 +554,7 @@ SdfScene SdfScene::createFireFromAnchors(const std::vector<FlameAnchor>& anchors
         in.pos = a.pos;
         in.euler = a.euler;
         in.scale = std::max(a.scale, 0.05f);
-        in.heightScale = 1.0f;
+        in.heightScale = a.heightScale;
         in.radiusScale = 1.0f;
         in.intensity = a.intensity;
         in.seed = a.seed;

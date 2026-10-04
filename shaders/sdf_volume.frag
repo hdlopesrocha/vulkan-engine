@@ -62,7 +62,7 @@ bool sdfRayAabb(vec3 ro, vec3 rd, vec3 bMin, vec3 bMax,
 
 float sdfSceneDistance(vec3 ro, vec2 uv) {
     vec2 cuv = clamp(uv, vec2(0.0), vec2(1.0));
-    float raw = texture(sdfSceneDepth, cuv).r;
+    float raw = textureLod(sdfSceneDepth, cuv, 0.0).r;
     if (raw >= 1.0) return 1e5;
     vec4 w = ubo.invViewProjection * vec4(cuv * 2.0 - 1.0, raw, 1.0);
     if (abs(w.w) < 1e-8) return 1e5;
@@ -160,13 +160,16 @@ void main() {
     if (!sdfRayAabb(ro, rd, bMin, bMax, tEnter, tExit)) discard;
     tEnter = max(tEnter, 0.0);
 
-    // NOTE: no in-pass scene-depth clamp. The async SDF task only waits on
-    // tlCull, so the solid depth target is still an attachment (or stale)
-    // here — sampling it raced the solid pass and discarded everything.
-    // Occlusion against opaque geometry is resolved in the composite
-    // (postprocess.frag), which runs after tlSdf AND tlSolid and compares
-    // the volume depth against the scene depth. sdfSceneDepth stays bound
-    // but unsampled.
+    // Depth-clamp against the opaque scene (binding 7): the SDF task waits
+    // on tlSolid, after which the solid pass has transitioned its depth to
+    // SHADER_READ_ONLY_OPTIMAL, so sampling here is race-free. Fully
+    // occluded rays discard; partially occluded rays march only to the
+    // occluder. (Explicit LOD: divergent flow, derivatives undefined here.)
+    vec4 pclip = ubo.viewProjection * vec4(fragWorldPos, 1.0);
+    if (pclip.w > 1e-6) {
+        vec2 suv = pclip.xy / pclip.w * 0.5 + 0.5;
+        tExit = min(tExit, sdfSceneDistance(ro, suv));
+    }
     if (tEnter >= tExit) discard;
 
     // March params from SdfParamsUBO (CPU layout): timeDebug=(t,packed,maxSteps,safety),
