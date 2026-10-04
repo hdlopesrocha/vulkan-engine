@@ -239,6 +239,53 @@ void main() {
         steps = i + 1;
         vec3 p = ro + rd * t;
 
+        // Visible tracer round: metallic GOLD sphere at the simulated bullet
+        // head. Evaluated for EVERY march step (not just occupied cells) so
+        // the bullet renders along its whole flight path, including the
+        // approach outside the smoke. Same head math as the interaction
+        // field, so the visual and the physics agree by construction.
+        // Renders in all modes (projectile, not volume); the smoke container
+        // covers the flight path. Procedural gold: exact sphere normal
+        // perturbed by two sdfNoise taps, mottled deep-gold/champagne map,
+        // Blinn-Phong spec + fresnel, warm-glow floor so the round reads at
+        // night/in shadow. GPU-pure: no textures, no new uniforms.
+        {
+            float loopDurB = max(smokeTuning.timing.y, 1.0);
+            float loopTB = smokeLoopT(time, loopDurB);
+            float loopStartB = time - loopTB;
+            float dBullet = 1e5;
+            vec3 bestHead = vec3(0.0);
+            for (int bi = 0; bi < 8; ++bi) {
+                BulletGPU bbl = smokeBullets[bi];
+                if (bbl.c.z <= 0.0) continue;
+                SmokeBulletState bst = smokeBulletState(bbl, time, loopStartB, loopDurB);
+                if (!bst.live || bst.traveled <= 0.0) continue;
+                vec3 bD = bbl.b.xyz / max(length(bbl.b.xyz), 1e-6);
+                vec3 head = bbl.a.xyz + bD * bst.traveled;
+                float visR = clamp(bbl.a.w * 0.25, 0.5, 10.0);
+                float dB = length(p - head) - visR;
+                if (dB < dBullet) { dBullet = dB; bestHead = head; }
+            }
+            if (dBullet < eps) {
+                vec3 bN = (p - bestHead) / max(length(p - bestHead), 1e-6);
+                vec3 tang = normalize(abs(bN.y) < 0.99 ? cross(bN, vec3(0.0, 1.0, 0.0)) : cross(bN, vec3(1.0, 0.0, 0.0)));
+                float e0 = sdfNoise(p * 2.0 + bestHead);
+                float e1 = sdfNoise(p * 2.0 + bestHead + vec3(4.7));
+                vec3 bNt = normalize(bN + (tang * (e0 - 0.5) + cross(bN, tang) * (e1 - 0.5)) * 0.6);
+                float pat = sdfNoise(p * 0.8 + bestHead);
+                vec3 V = -rd;
+                vec3 L = -normalize(ubo.lightDirection);
+                float dif = max(dot(bNt, L), 0.0);
+                float spec = pow(max(dot(bNt, normalize(L + V)), 0.0), 64.0);
+                float fres = pow(1.0 - max(dot(bNt, V), 0.0), 3.0);
+                vec3 gold = mix(vec3(0.45, 0.22, 0.05), vec3(1.0, 0.85, 0.55), clamp(pat * 0.65 + fres * 0.6, 0.0, 1.0));
+                vec3 goldCol = gold * (ubo.lightColor * (0.25 + 0.9 * dif) + vec3(1.0, 0.72, 0.25) * 0.35) + ubo.lightColor * spec * 2.0;
+                outColor = vec4(goldCol, 1.0);
+                gl_FragDepth = sdfProjDepth(ro, rd, t);
+                return;
+            }
+        }
+
         vec3 fpos = clamp((p - bMin) / cellSize, vec3(0.0), vec3(dim) - vec3(1e-4));
         ivec3 cell = clamp(ivec3(floor(fpos)), ivec3(0), ivec3(dim) - ivec3(1));
         vec3 cellMin = bMin + vec3(cell) * cellSize;
@@ -296,32 +343,6 @@ void main() {
         if (!haveBest) { t = t + dtCell + 1e-4; continue; }
         hits++;
         minAbsD = min(minAbsD, abs(dBest));
-
-        // Visible tracer round: emissive sphere at the simulated bullet head.
-        // Same head math as the interaction field, so the visual and the
-        // physics agree by construction. Renders in all modes (projectile,
-        // not volume); the smoke container covers the flight path.
-        {
-            float loopDurB = max(smokeTuning.timing.y, 1.0);
-            float loopTB = smokeLoopT(time, loopDurB);
-            float loopStartB = time - loopTB;
-            float dBullet = 1e5;
-            for (int bi = 0; bi < 8; ++bi) {
-                BulletGPU bbl = smokeBullets[bi];
-                if (bbl.c.z <= 0.0) continue;
-                SmokeBulletState bst = smokeBulletState(bbl, time, loopStartB, loopDurB);
-                if (!bst.live || bst.traveled <= 0.0) continue;
-                vec3 bD = bbl.b.xyz / max(length(bbl.b.xyz), 1e-6);
-                vec3 head = bbl.a.xyz + bD * bst.traveled;
-                float visR = clamp(bbl.a.w * 0.25, 0.5, 10.0);
-                dBullet = min(dBullet, length(p - head) - visR);
-            }
-            if (dBullet < eps) {
-                outColor = vec4(vec3(1.0, 0.72, 0.25) * 2.5, 1.0);
-                gl_FragDepth = sdfProjDepth(ro, rd, t);
-                return;
-            }
-        }
 
         // Surface mode (or any mode hitting the zero crossing): shade opaque hit.
         if (dBest < eps && (renderMode == 0u || renderMode == 3u)) {

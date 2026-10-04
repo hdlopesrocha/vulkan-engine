@@ -24,8 +24,8 @@
 // Forward declaration: defined in sdf.frag below this include.
 vec3 sdfWorldToLocal(vec3 wpos, SdfInstanceGPU inst, out float outScale);
 
-// Mirrors SdfUBO.hpp (std430): SmokeTuning = 8 vec4, BulletGPU = 3 vec4.
-struct SmokeTuning {
+// Mirrors SdfUBO.hpp (std430): SmokeGPU = 8 vec4, BulletGPU = 3 vec4.
+struct SmokeGPU {
     vec4 timing;    // x = growth duration (s), y = loop duration (s),
                     // z = dissipation, w = unused
     vec4 noise;     // x = noise scale (1/m), y = noise strength,
@@ -49,7 +49,7 @@ struct BulletGPU {
 };
 
 layout(std430, set = 1, binding = 8) readonly buffer SmokeBlock {
-    SmokeTuning smokeTuning;
+    SmokeGPU smokeTuning;
     BulletGPU smokeBullets[8];
 };
 
@@ -110,7 +110,7 @@ SmokeBulletState smokeBulletState(BulletGPU bl, float time, float loopStart, flo
 // over trailing head positions keeps the bore continuous when the head
 // jumps many meters per frame (low fps strobing looks like z-fighting).
 // Capsule-only, no noise — cheap enough for march + shadow samples.
-float smokeTunnelCore(vec3 p, BulletGPU bl, SmokeBulletState st, SmokeTuning t) {
+float smokeTunnelCore(vec3 p, BulletGPU bl, SmokeBulletState st, SmokeGPU t) {
     float speed = max(bl.c.x, 1e-3);
     float refill = max(t.tunnel.w, 0.05);
     float radius = max(bl.a.w, 0.5);
@@ -145,7 +145,7 @@ struct SmokeBulletFX {
     float turb;      // turbulence magnitude (debug)
 };
 
-SmokeBulletFX smokeBulletFX(vec3 p, float time, float loopStart, float loopDur, SmokeTuning t) {
+SmokeBulletFX smokeBulletFX(vec3 p, float time, float loopStart, float loopDur, SmokeGPU t) {
     SmokeBulletFX fx;
     fx.thin = 0.0;
     fx.displace = vec3(0.0);
@@ -214,7 +214,7 @@ SmokeBulletFX smokeBulletFX(vec3 p, float time, float loopStart, float loopDur, 
 // march and shadow queries): growth envelope x soft boundary x warped
 // large/medium/fine noise x expansion thinning. Pure GPU, animated.
 float smokeBaseDensity(vec3 p, vec3 center, float rNow, float maxR,
-                       SmokeTuning t, float time, float seed, float densityMul) {
+                       SmokeGPU t, float time, float seed, float densityMul) {
     // Soft irregular boundary (SDF-side softness; breakup comes from noise).
     float dc = length(p - center);
     float edge = 1.0 - smoothstep(rNow * 0.55, rNow, dc);
@@ -255,7 +255,7 @@ struct SmokeSample {
 };
 
 SmokeSample smokeSampleDensity(vec3 p, vec3 center, float rNow, float maxR,
-                               SmokeTuning t, float time, float loopStart, float loopDur,
+                               SmokeGPU t, float time, float loopStart, float loopDur,
                                float seed, float densityMul) {
     SmokeSample s;
     s.sdf = length(p - center) - rNow;
@@ -302,7 +302,7 @@ SmokeSample smokeSampleDensity(vec3 p, vec3 center, float rNow, float maxR,
 // displacement/wake noise (the tunnel CORE is still honored so holes let
 // light through).
 float smokeShadowDensity(vec3 p, vec3 center, float rNow, float maxR,
-                         SmokeTuning t, float time, float loopStart, float loopDur,
+                         SmokeGPU t, float time, float loopStart, float loopDur,
                          float seed, float densityMul) {
     float dens = smokeBaseDensity(p, center, rNow, maxR, t, time, seed, densityMul);
     for (int i = 0; i < 8; ++i) {
@@ -320,7 +320,7 @@ float smokeShadowDensity(vec3 p, vec3 center, float rNow, float maxR,
 // gray -> warm gray), fixed-correlation HG-ish forward boost, cheap
 // self-shadow march toward the sun (§16).
 vec3 smokeShade(vec3 p, vec3 viewDir, vec3 center, float rNow, float maxR,
-                SmokeTuning t, SdfMaterialGPU mat, float time, float loopStart, float loopDur,
+                SmokeGPU t, SdfMaterialGPU mat, float time, float loopStart, float loopDur,
                 float seed, float densityMul, vec3 sunDirW, vec3 sunColor, out float outTrans) {
     int shadowSteps = int(clamp(t.render.x, 1.0, 8.0));
     float shadowLen = max(rNow * 1.2, 1.0);
