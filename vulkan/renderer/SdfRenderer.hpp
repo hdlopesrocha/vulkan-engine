@@ -136,6 +136,10 @@ public:
     float lavaHeight() const;
     void setLavaSpikeFreq(float f);
     float lavaSpikeFreq() const;
+    // Volumetric density multiplier (lower = more transparent, like real
+    // flames). Applied at scene rebuild; marks lava dirty.
+    void setLavaFlameDensity(float d);
+    float lavaFlameDensity() const;
 
     // ── Per-frame parameters (packed into SdfParamsUBO) ──
     // SdfParamsUBO carries no renderer-mode field, so timeDebug.y packs two
@@ -244,13 +248,14 @@ private:
         float intensity = 1.0f;
     };
     std::unordered_map<uintptr_t, std::vector<LavaAnchor>> lavaByChunk_;
-    float lavaDensity_ = 0.0006f; // flames per m² of lava surface at ingest (1 per 10000 m²)
+    float lavaDensity_ = 0.1f; // flames per m² of lava surface at ingest (1 per 100 m²)
     float lavaScale_ = 32.0f;   // anchor scale multiplier at ingest
     float lavaSpikiness_ = 0.35f; // flame spike amplitude (0 = smooth rounded capsule)
-    float lavaTipRadius_ = 0.25f; // flame tip radius, local units (0 = sharp cone tip)
+    float lavaTipRadius_ = 0.125f; // flame tip radius, local units (0 = sharp cone tip)
     float lavaBaseRadius_ = 1.0f; // flame base radius, local units
-    float lavaHeight_ = 3.2f;     // flame base-to-tip height, local units
+    float lavaHeight_ = 1.0f;     // flame base-to-tip height, local units
     float lavaSpikeFreq_ = 2.0f;  // tongue count around the flame axis
+    float lavaFlameDensity_ = 0.05f; // volumetric density (lower = glassier)
     bool lavaDirty_ = false;    // anchors changed -> rebuild staged
 
     VkImageView pendingDepthView_ = VK_NULL_HANDLE;

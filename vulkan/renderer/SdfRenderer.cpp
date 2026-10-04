@@ -420,6 +420,7 @@ bool SdfRenderer::rebuildLavaIfDirty() {
         shape.tipRadius = lavaTipRadius_;
         shape.spikiness = lavaSpikiness_;
         shape.spikeFreq = lavaSpikeFreq_;
+        shape.density = lavaFlameDensity_;
         return sdf_gpu::SdfScene::createFireFromAnchors(all, shape);
     }();
     extractFlattened();
@@ -533,6 +534,19 @@ void SdfRenderer::setLavaSpikeFreq(float f) {
 float SdfRenderer::lavaSpikeFreq() const {
     std::lock_guard<std::mutex> lock(sceneMutex);
     return lavaSpikeFreq_;
+}
+
+void SdfRenderer::setLavaFlameDensity(float d) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(d, 0.05f, 1.5f);
+    if (v == lavaFlameDensity_) return;
+    lavaFlameDensity_ = v;
+    lavaDirty_ = true;
+}
+
+float SdfRenderer::lavaFlameDensity() const {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    return lavaFlameDensity_;
 }
 
 // ─── Upload + barrier ────────────────────────────────────────────────────────

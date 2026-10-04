@@ -444,7 +444,7 @@ SdfScene SdfScene::createFireDemo(uint32_t flameCount, glm::vec3 center, float a
     fire.roughness = 0.5f;
     fire.metallic = 0.0f;
     fire.opacity = 1.0f;
-    fire.emission = glm::vec4(1.0f, 0.5f, 0.1f, 2.0f);
+    fire.emission = glm::vec4(1.0f, 0.92f, 0.78f, 2.5f);
     fire.density = 1.0f;
     fire.absorption = 0.5f;
     fire.scattering = 0.5f;
@@ -504,8 +504,11 @@ void addFlameDefinitionAndMaterial(SdfScene& scene,
     fire.roughness = 0.5f;
     fire.metallic = 0.0f;
     fire.opacity = 1.0f;
-    fire.emission = glm::vec4(1.0f, 0.5f, 0.1f, 2.0f);
-    fire.density = 1.0f;
+    // Near-white tint: the temperature gradient (white-hot base through
+    // yellow/orange to dark-red tip) carries the hue. An orange tint here
+    // would multiply the whites/yellows down and paint every flame flat.
+    fire.emission = glm::vec4(1.0f, 0.92f, 0.78f, 2.5f);
+    fire.density = shape.density;
     fire.absorption = 0.5f;
     fire.scattering = 0.5f;
     fire.tempScale = 1.0f;

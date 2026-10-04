@@ -15,6 +15,7 @@ SdfWidget::SdfWidget(SdfRenderer* sdf)
         lavaBaseRadius = sdfRenderer->lavaBaseRadius();
         lavaHeight = sdfRenderer->lavaHeight();
         lavaSpikeFreq = sdfRenderer->lavaSpikeFreq();
+        lavaFlameDensity = sdfRenderer->lavaFlameDensity();
     }
 }
 
@@ -63,6 +64,10 @@ void SdfWidget::render() {
                 sdfRenderer->setLavaSpikeFreq(lavaSpikeFreq);
             }
             ImGuiHelpers::SetTooltipIfHovered("Tongue count around the flame axis. Applies on next scene rebuild.");
+            if (ImGui::SliderFloat("Flame density", &lavaFlameDensity, 0.05f, 1.5f, "%.2f")) {
+                sdfRenderer->setLavaFlameDensity(lavaFlameDensity);
+            }
+            ImGuiHelpers::SetTooltipIfHovered("Volumetric density (lower = more transparent, like real flames). Applies on next scene rebuild.");
         }
         if (sdfRenderer) {
             auto st = sdfRenderer->getStats();

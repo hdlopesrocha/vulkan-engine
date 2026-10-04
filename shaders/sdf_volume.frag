@@ -293,8 +293,19 @@ void main() {
             dBest = eps;
         }
 
-        float dt = clamp(dBest * safety, minStep, maxStep);
-        float soft = 0.15;
+        // Scale-aware volumetric stepping: the SDF distance scale of the
+        // closest flame (dsBest ~ its world size) drives both the minimum
+        // step and the density softness. Fixed 0.05 m steps could never
+        // penetrate a 100 m flame (all 64 steps die in the cool skin, so the
+        // hot core never contributes); fixed 0.15 m softness gave razor
+        // silhouettes instead of soft volumetric edges. Scaled together the
+        // edge is always ~3 steps wide and the march reaches the core.
+        float dsBest = max(bestInst.posScale.w *
+                           min(max(bestInst.sizeParams.y, 1e-3),
+                               max(bestInst.sizeParams.x, 1e-3)), 1e-3);
+        float wScale = clamp(dsBest, 1.0, 32.0);
+        float dt = clamp(dBest * safety, minStep * wScale, maxStep);
+        float soft = 0.15 * wScale;
         float body = 1.0 - smoothstep(-soft, soft, dBest);
         if (body > 0.001) {
             // Flame-local height fraction drives temperature and the top
