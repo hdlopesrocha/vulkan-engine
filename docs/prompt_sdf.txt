@@ -1,0 +1,1009 @@
+Implement a generic, high-performance GPU-driven Signed Distance Field (SDF) rendering framework in Vulkan.
+
+The objective is to create a reusable SDF renderer that can render many different procedural objects and volumetric effects.
+
+The first concrete use case must be procedural fire, but the renderer itself MUST NOT be designed specifically around fire.
+
+The architecture should support:
+
+- procedural solid SDF objects
+- emissive SDF objects
+- volumetric SDF objects
+- fire
+- smoke
+- clouds
+- fog volumes
+- magical/energy effects
+- procedural shapes
+- future SDF-based materials and effects
+
+The SDF renderer must be independent from the existing terrain/octree representation.
+
+The existing terrain octree may share low-level GPU, AABB, buffer, and rendering infrastructure where appropriate, but do not merge the terrain octree and the generic SDF scene representation into one system.
+
+==================================================
+1. CORE ARCHITECTURE
+==================================================
+
+Create a generic SDF rendering architecture with these conceptual layers:
+
+    SDF Scene
+        |
+        +-- SDF Objects
+        |
+        +-- SDF Operations
+        |
+        +-- Materials / Volume Properties
+        |
+        v
+    Spatial Acceleration
+        |
+        v
+    SDF Renderer
+        |
+        +-- Surface rendering
+        +-- Volumetric rendering
+        +-- Emissive rendering
+        +-- Transparent rendering
+        |
+        v
+    Vulkan rendering pipeline
+
+The renderer must not contain fire-specific assumptions.
+
+Fire should be implemented as a specialized SDF material/volume using the generic renderer.
+
+==================================================
+2. SDF SCENE
+==================================================
+
+Create an SDF scene representation.
+
+An SDF scene contains a collection of SDF nodes/objects.
+
+Each SDF object should have:
+
+- world transform
+- local bounds
+- world-space bounds
+- SDF type
+- material reference
+- operation parameters
+- animation parameters where required
+- instance data
+
+The scene must support many objects.
+
+Avoid CPU-side object traversal during rendering.
+
+The GPU should receive compact, GPU-friendly buffers.
+
+==================================================
+3. SDF PRIMITIVES
+==================================================
+
+Implement a reusable library of procedural SDF primitives.
+
+At minimum support:
+
+- sphere
+- box
+- rounded box
+- capsule
+- cylinder
+- cone
+- torus
+- plane
+
+Design the system so additional primitives can be added without modifying the entire renderer.
+
+Each primitive must provide:
+
+    float sdf(vec3 p, parameters)
+
+Use local-space evaluation where possible.
+
+World transforms should transform the ray/sample point into the object's local coordinate system rather than requiring every primitive to implement world-space transformations independently.
+
+==================================================
+4. SDF OPERATIONS
+==================================================
+
+Implement standard SDF operations.
+
+At minimum:
+
+- union
+- intersection
+- subtraction
+- smooth union
+- smooth intersection
+- smooth subtraction
+
+Also support transformations such as:
+
+- translation
+- rotation
+- scale
+- repetition
+- mirroring
+
+Keep operations modular.
+
+Do not hard-code fire-specific operations into the core renderer.
+
+==================================================
+5. DOMAIN DEFORMATION
+==================================================
+
+Support optional procedural domain deformation.
+
+Examples:
+
+- noise displacement
+- domain warping
+- twist
+- bend
+- taper
+- repetition
+
+These operations should be optional and parameterized.
+
+Do not evaluate expensive deformation functions when an object does not use them.
+
+==================================================
+6. SDF MATERIAL MODEL
+==================================================
+
+Separate the geometric SDF from the rendering material.
+
+An SDF determines:
+
+    distance
+
+The material determines what happens when the ray interacts with the SDF.
+
+Support material categories such as:
+
+    Surface
+    Emissive
+    Volume
+    Transparent
+
+A material should be able to provide properties such as:
+
+- base color
+- roughness
+- metallic
+- emission
+- opacity
+- density
+- temperature
+- absorption
+- scattering parameters
+
+Do not assume that every SDF is an opaque surface.
+
+==================================================
+7. GENERIC RAY / SDF INTERSECTION
+==================================================
+
+Implement a generic SDF ray marcher.
+
+Given:
+
+    rayOrigin
+    rayDirection
+    tMin
+    tMax
+
+perform SDF-guided ray marching.
+
+The basic step should use the SDF distance:
+
+    distance = sceneSDF(position)
+
+Use adaptive stepping.
+
+Do NOT use a tiny constant step size throughout the entire ray.
+
+Support:
+
+- minimum step
+- maximum step
+- safety factor
+- maximum iterations
+- hit epsilon
+- early termination
+
+The renderer must be robust against small and large SDF objects.
+
+==================================================
+8. SURFACE MODE
+==================================================
+
+Implement an SDF surface renderer.
+
+For surface SDFs:
+
+1. ray march toward the surface
+2. detect the zero crossing / hit
+3. calculate the surface normal
+4. evaluate the material
+5. integrate with the existing renderer
+
+Calculate normals using the SDF gradient.
+
+Use a configurable normal estimation method.
+
+Avoid excessive SDF evaluations where possible.
+
+==================================================
+9. VOLUMETRIC MODE
+==================================================
+
+Implement a generic volumetric SDF mode.
+
+A volumetric SDF is NOT treated as an opaque surface.
+
+Instead:
+
+    SDF
+      ↓
+    density
+      ↓
+    volumetric integration
+
+The density conversion must be configurable.
+
+Support:
+
+- density falloff
+- emission
+- absorption
+- scattering
+- extinction
+
+Perform front-to-back accumulation.
+
+Support early termination.
+
+This mode will be used by fire and smoke.
+
+==================================================
+10. EMISSIVE MODE
+==================================================
+
+Support purely emissive SDFs.
+
+An emissive SDF can contribute:
+
+- color
+- emission intensity
+
+without necessarily being opaque.
+
+The fire renderer will use this mode combined with volumetric density.
+
+==================================================
+11. SPATIAL ACCELERATION
+==================================================
+
+Do NOT evaluate every SDF object for every pixel.
+
+The renderer must use spatial acceleration.
+
+Implement a GPU-friendly spatial structure.
+
+Prefer:
+
+    SDF Scene
+       ↓
+    coarse spatial grid
+       ↓
+    optional BVH / hierarchy
+       ↓
+    candidate SDF objects
+       ↓
+    local SDF evaluation
+
+Use flat GPU buffers.
+
+Avoid pointer-heavy dynamic structures.
+
+The exact acceleration structure should be chosen based on GPU performance and compatibility with the existing Vulkan renderer.
+
+==================================================
+12. SPATIAL GRID
+==================================================
+
+Implement an optional uniform 3D spatial grid for SDF objects.
+
+Each cell stores:
+
+    offset
+    count
+
+and references a contiguous object-index buffer.
+
+Objects should be inserted into every cell their conservative world-space bounds overlap.
+
+This allows the renderer to quickly determine which SDF objects can affect a ray position.
+
+The grid must support:
+
+- static scenes
+- dynamic objects
+- rebuilding when necessary
+
+Do not rebuild the grid every frame unless object bounds actually change.
+
+==================================================
+13. EMPTY SPACE SKIPPING
+==================================================
+
+Exploit the spatial grid during ray marching.
+
+If a ray enters a grid cell containing no SDF objects:
+
+    skip the cell
+
+Do not perform unnecessary SDF evaluations.
+
+Use efficient ray/grid traversal, such as 3D DDA, where appropriate.
+
+Conceptually:
+
+    ray
+     ↓
+    current grid cell
+     ↓
+    cell contains no objects
+     ↓
+    jump to next cell
+
+This is a critical optimization.
+
+==================================================
+14. OBJECT BOUNDS
+==================================================
+
+Every SDF object must have a conservative bounding volume.
+
+Prefer:
+
+- sphere
+- AABB
+
+depending on what is most efficient.
+
+Before evaluating the expensive SDF:
+
+    test candidate object bounds
+
+If the ray/sample cannot interact with the object:
+
+    skip it
+
+Do not execute procedural noise or complex SDF operations for rejected objects.
+
+==================================================
+15. COMBINED SDF
+==================================================
+
+At a given sample position:
+
+    sceneSDF(p)
+
+should evaluate only the relevant candidate objects.
+
+For a union:
+
+    d = min(d0, d1, d2, ...)
+
+For intersection:
+
+    d = max(d0, d1, d2, ...)
+
+For subtraction:
+
+    d = max(d0, -d1)
+
+Support material/object identification where required.
+
+If the closest SDF object must be identified, return both:
+
+    distance
+    objectID
+
+Do not evaluate irrelevant objects.
+
+==================================================
+16. INSTANCE SUPPORT
+==================================================
+
+Support instancing.
+
+Many SDF objects may reference the same SDF definition.
+
+For example:
+
+    Flame definition
+        |
+        +-- instance 0
+        +-- instance 1
+        +-- instance 2
+        +-- ...
+        +-- instance N
+
+The instance should only need to store:
+
+- transform
+- parameters
+- material reference
+- animation seed
+
+Avoid duplicating SDF definitions.
+
+==================================================
+17. PROCEDURAL ANIMATION
+==================================================
+
+Support GPU-side procedural animation.
+
+SDF objects may use:
+
+    globalTime
+    animationSeed
+    instance parameters
+
+to animate their domain.
+
+Examples:
+
+- deformation
+- displacement
+- noise
+- movement
+- scale
+- rotation
+
+Do not require CPU-side updates every frame for procedural animation.
+
+==================================================
+18. GENERIC VOLUME INTERFACE
+==================================================
+
+Create a generic volume evaluation interface.
+
+Conceptually:
+
+    evaluateSDF(...)
+        -> distance
+
+    evaluateDensity(...)
+        -> density
+
+    evaluateMaterial(...)
+        -> material
+
+This separation is important.
+
+For example:
+
+    Fire:
+        SDF
+        density
+        temperature
+        emission
+
+    Smoke:
+        SDF
+        density
+        absorption
+
+    Cloud:
+        SDF
+        density
+        scattering
+
+The core renderer must not know these effects are different.
+
+==================================================
+19. FIRE IMPLEMENTATION
+==================================================
+
+Implement fire as the first consumer of the generic SDF renderer.
+
+Do NOT implement a separate fire renderer.
+
+The fire should use:
+
+    Generic SDF Scene
+        +
+    Volumetric Material
+        +
+    Procedural Noise
+        +
+    Temperature
+        +
+    Emission
+
+The fire should support:
+
+- multiple instanced flames
+- animated turbulence
+- flame stretching
+- flame flickering
+- density
+- temperature
+- emission
+- color gradient
+- early ray termination
+
+The fire must use the same spatial acceleration system as every other SDF object.
+
+==================================================
+20. FIRE FLAME SDF
+==================================================
+
+Construct the flame from generic SDF primitives.
+
+Use combinations of:
+
+- ellipsoids
+- capsules
+- tapered primitives
+- smooth unions
+
+Then deform the domain with animated procedural noise.
+
+The flame should have a natural teardrop-like shape.
+
+Each flame instance should have an independent animation seed.
+
+==================================================
+21. FIRE TEMPERATURE
+==================================================
+
+Use the generic material system to implement temperature.
+
+Temperature may depend on:
+
+- height
+- density
+- SDF position
+- procedural noise
+
+Use temperature to drive:
+
+- emission intensity
+- emission color
+
+Support a gradient approximately from:
+
+    dark red
+    red
+    orange
+    yellow
+    white
+
+==================================================
+22. FIRE VOLUMETRIC RENDERING
+==================================================
+
+Fire must use volumetric ray marching.
+
+Do not render the fire as an opaque SDF surface.
+
+The ray should accumulate:
+
+- density
+- opacity
+- emission
+
+Use:
+
+- adaptive SDF stepping
+- spatial empty-space skipping
+- flame bounds
+- early termination
+
+The fire renderer must not ray march every flame independently.
+
+Use one camera ray and evaluate the relevant local SDF scene.
+
+==================================================
+23. CONTAINER / VOLUME PROXY
+==================================================
+
+For groups of SDF volumes, support an optional container AABB.
+
+For fire:
+
+    FireContainer AABB
+          ↓
+    proxy rasterization
+          ↓
+    ray/AABB intersection
+          ↓
+    spatial grid
+          ↓
+    SDF evaluation
+
+Do not perform full-screen SDF ray marching.
+
+Only pixels whose camera rays intersect an SDF container should execute the SDF ray marcher.
+
+==================================================
+24. DEPTH INTEGRATION
+==================================================
+
+Integrate with the existing scene depth buffer.
+
+If an SDF volume is completely occluded:
+
+    discard
+
+If partially occluded:
+
+    clamp ray interval using scene depth
+
+For example:
+
+    tExit = min(tExit, sceneDepth)
+
+Reuse existing depth infrastructure.
+
+==================================================
+25. RENDERING MODES
+==================================================
+
+The generic SDF renderer should support at least:
+
+    Surface
+    Volume
+    Emissive
+    Transparent
+
+Design the renderer so additional modes can be added later.
+
+Do not duplicate the ray/AABB/spatial traversal implementation for each mode.
+
+The expensive geometric traversal should be shared.
+
+==================================================
+26. VULKAN PIPELINE
+==================================================
+
+Integrate the renderer into the existing Vulkan architecture.
+
+Before implementation, inspect the existing renderer and reuse:
+
+- command buffers
+- render passes / dynamic rendering
+- descriptor sets
+- GPU buffers
+- shader storage buffers
+- camera systems
+- depth resources
+- synchronization
+- image layouts
+- indirect rendering infrastructure
+- GPU profiling
+
+Do not create duplicate infrastructure where an existing equivalent already exists.
+
+==================================================
+27. GPU DATA STRUCTURES
+==================================================
+
+Prefer flat GPU buffers such as:
+
+    SDFDefinitionBuffer
+    SDFInstanceBuffer
+    SDFMaterialBuffer
+    SDFBoundsBuffer
+    SDFGridBuffer
+    SDFGridIndexBuffer
+
+Use compact structures.
+
+Respect Vulkan alignment requirements.
+
+Avoid dynamic GPU memory allocation during rendering.
+
+==================================================
+28. CPU RESPONSIBILITIES
+==================================================
+
+CPU:
+
+- create SDF definitions
+- create instances
+- update transforms when necessary
+- calculate conservative bounds
+- rebuild spatial structures when bounds change
+- upload scene data
+
+GPU:
+
+- proxy rasterization
+- ray generation
+- ray/AABB tests
+- grid traversal
+- object bounds tests
+- SDF evaluation
+- procedural animation
+- surface intersection
+- volumetric integration
+- emission
+- density
+- material evaluation
+
+Do not require per-frame CPU updates for purely procedural animation.
+
+==================================================
+29. PERFORMANCE REQUIREMENTS
+==================================================
+
+The renderer must NOT scale as:
+
+    screen pixels × total SDF objects
+
+The target behavior is closer to:
+
+    visible screen area
+        ×
+    spatially relevant cells
+        ×
+    locally relevant SDF objects
+        ×
+    ray-march complexity
+
+Use all of the following where appropriate:
+
+- container AABB culling
+- frustum culling
+- depth culling
+- spatial grid
+- optional BVH
+- object bounds
+- empty-space skipping
+- adaptive SDF stepping
+- early ray termination
+- instancing
+- procedural GPU animation
+
+==================================================
+30. AVOID OVER-ENGINEERING
+==================================================
+
+Do not immediately build an extremely complicated general-purpose SDF compiler or node graph.
+
+The first implementation should use a compact typed representation of primitives and operations that can be efficiently evaluated on the GPU.
+
+The architecture must be extensible, but performance and simplicity are more important than supporting arbitrary user-generated SDF expression trees in the first version.
+
+==================================================
+31. DEBUGGING
+==================================================
+
+Add optional debug visualization for:
+
+- SDF object bounds
+- container bounds
+- spatial grid cells
+- active SDF objects
+- ray-march steps
+- SDF iterations
+- grid cells visited
+- SDF evaluations
+- volume samples
+- early terminations
+
+Also expose profiling counters for:
+
+- visible SDF containers
+- SDF fragments
+- grid cells visited
+- empty cells skipped
+- candidate objects
+- rejected object bounds
+- SDF evaluations
+- ray-march iterations
+- volume samples
+- terminated rays
+
+Disable debugging by default.
+
+==================================================
+32. IMPLEMENTATION PHASES
+==================================================
+
+Implement incrementally.
+
+PHASE 1 — CORE SDF
+
+Implement:
+
+- SDF definitions
+- SDF instances
+- primitive SDFs
+- transforms
+- basic ray marching
+- surface intersection
+
+Verify that simple spheres, boxes, capsules and other primitives render correctly.
+
+PHASE 2 — MATERIALS
+
+Implement:
+
+- SDF surface materials
+- emission
+- basic transparency
+
+Keep geometry and material evaluation separated.
+
+PHASE 3 — SPATIAL ACCELERATION
+
+Implement:
+
+- object bounds
+- FireContainer/general SDF container bounds
+- spatial grid
+- GPU object index lists
+- empty-space skipping
+
+Profile this before adding complex effects.
+
+PHASE 4 — VOLUMETRICS
+
+Implement:
+
+- density
+- extinction
+- emission
+- volumetric integration
+- early termination
+
+PHASE 5 — PROCEDURAL DEFORMATION
+
+Implement:
+
+- noise
+- domain warping
+- displacement
+- animation
+
+PHASE 6 — FIRE
+
+Implement fire using ONLY the generic SDF infrastructure.
+
+Add:
+
+- flame SDF
+- turbulence
+- temperature
+- emission
+- density
+- instancing
+
+PHASE 7 — OPTIMIZATION
+
+Profile the complete implementation.
+
+Optimize:
+
+- buffer layout
+- spatial grid resolution
+- SDF evaluation
+- noise evaluation
+- ray marching
+- GPU divergence
+- memory access
+- descriptor access
+- synchronization
+
+Do not optimize blindly. Use profiling data.
+
+==================================================
+33. FUTURE EXTENSIBILITY
+==================================================
+
+The architecture should make it possible to later implement:
+
+- smoke
+- clouds
+- fog
+- lava
+- magical energy
+- force fields
+- procedural rocks
+- destruction effects
+- volumetric explosions
+- procedural particles
+- signed-distance terrain objects
+
+without creating a completely new renderer.
+
+All of these should be able to reuse:
+
+- SDF primitives
+- transformations
+- spatial acceleration
+- ray/AABB intersection
+- ray marching
+- volume integration
+- material system
+- GPU buffers
+- Vulkan infrastructure
+
+==================================================
+34. IMPORTANT ARCHITECTURAL RULE
+==================================================
+
+Keep these concepts separate:
+
+    SDF Geometry
+        =
+    "What is the distance?"
+
+    Spatial Acceleration
+        =
+    "Where could an SDF exist?"
+
+    Material
+        =
+    "How does the SDF look?"
+
+    Volume
+        =
+    "How does density/emission/scattering behave?"
+
+    Renderer
+        =
+    "How do we efficiently evaluate it?"
+
+Do not mix these responsibilities.
+
+==================================================
+35. FINAL RESULT
+==================================================
+
+The final result should be a reusable GPU-driven Vulkan SDF rendering framework.
+
+The first visible application must be procedural fire, but the renderer must remain generic.
+
+The renderer should efficiently support scenes containing many SDF instances by combining:
+
+    instancing
+    +
+    container bounds
+    +
+    spatial grid
+    +
+    object bounds
+    +
+    empty-space skipping
+    +
+    adaptive SDF ray marching
+    +
+    early termination
+
+The implementation must prioritize GPU performance and efficient memory access.
+
+It must integrate with the existing Vulkan renderer rather than creating a separate rendering architecture.
+
+Before changing code, inspect the existing renderer and identify the most appropriate integration points.
+
+After implementation, provide a concise summary of:
+- files changed
+- new GPU buffers
+- new shaders
+- new rendering passes
+- synchronization requirements
+- how SDF spatial culling works
+- how fire uses the generic SDF renderer
+- any remaining performance limitations

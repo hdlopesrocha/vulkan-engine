@@ -1,0 +1,477 @@
+Implement a music analysis system integrated directly into the existing MUSIC WIDGET.
+
+The existing widget is responsible for loading/selecting a music file.
+
+Extend this widget so that, after a music file is loaded, it automatically performs real-time audio analysis and displays the analysis directly inside the same widget.
+
+Do NOT create a separate music-analysis window.
+
+Do NOT replace the existing music-loading functionality.
+
+==================================================
+
+1. MUSIC LOADING
+   ==================================================
+
+Keep the existing music loading interface and behaviour.
+
+When the user selects or loads an audio file:
+
+1. Load the audio file.
+2. Decode the audio data.
+3. Create/connect the audio analysis pipeline.
+4. Start real-time analysis during playback.
+5. Update the visualisations continuously.
+
+Support the audio formats already supported by the existing application.
+
+The analysis must work with the actual audio being played.
+
+==================================================
+2. AUDIO ANALYSIS
+=================
+
+Implement a fast real-time FFT analysis.
+
+Use an efficient FFT implementation appropriate for real-time rendering.
+
+The FFT should run continuously while the music is playing.
+
+Use a configurable FFT size, for example:
+
+* 512
+* 1024
+* 2048
+* 4096
+
+Choose a sensible default for real-time performance.
+
+Prefer a power-of-two FFT size.
+
+Apply an appropriate window function such as Hann/Hanning before the FFT to reduce spectral leakage.
+
+The analysis should produce:
+
+* Frequency bins
+* Magnitude/amplitude per frequency bin
+* Overall amplitude
+* Bass energy
+* Mid-frequency energy
+* High-frequency energy
+* Optional beat/transient intensity
+
+These values will later be consumed by the music-reactive water brush.
+
+==================================================
+3. MUSIC WIDGET LAYOUT
+======================
+
+Extend the existing music widget so that it contains:
+
+---
+
+## MUSIC
+
+[ Load Music ]
+
+[ filename / track name ]
+
+[ Play ] [ Pause ] [ Stop ]
+
+[ playback position ]
+
+---
+
+## WAVEFORM
+
+A real-time waveform graph showing:
+
+Amplitude
+↑
+│       /\        /
+│  /\  /  \  /\  /  
+│ /  /    /  /    
+└────────────────────────→ Time
+
+The waveform should represent the actual audio signal in the current playback buffer.
+
+---
+
+## FFT SPECTRUM
+
+A second graph showing the frequency spectrum:
+
+Amplitude
+↑
+│       ██
+│    ███████
+│  ███████████
+│ █████████████
+└────────────────────────→ Frequency
+
+The X axis represents frequency.
+
+The Y axis represents amplitude/magnitude.
+
+Use a logarithmic frequency scale if appropriate for music visualisation.
+
+Display useful frequency labels such as:
+
+20 Hz
+50 Hz
+100 Hz
+200 Hz
+500 Hz
+1 kHz
+2 kHz
+5 kHz
+10 kHz
+20 kHz
+
+Do not display every FFT bin as a textual label.
+
+==================================================
+4. WAVEFORM GRAPH
+=================
+
+The first graph should display the audio waveform/amplitude over time.
+
+Show the recent audio samples or a short time window around the current playback position.
+
+The waveform should update continuously during playback.
+
+The graph should make it visually obvious where:
+
+* Quiet sections occur
+* Loud sections occur
+* Transients occur
+* Strong beats occur
+
+Use a smoothed and downsampled representation if necessary to keep rendering inexpensive.
+
+Do not render thousands of individual UI primitives if a more efficient drawing method is available.
+
+==================================================
+5. FFT GRAPH
+============
+
+The second graph should display the current FFT spectrum.
+
+X axis:
+
+Frequency in Hz.
+
+Y axis:
+
+Magnitude/amplitude.
+
+Use logarithmic frequency mapping so that the low-frequency region is visually useful.
+
+The graph should update in real time.
+
+Use smoothing between FFT frames so the bars/curve do not jitter excessively.
+
+Allow the FFT magnitude to decay smoothly rather than instantly disappearing.
+
+The spectrum should clearly show bass, mids and highs.
+
+==================================================
+6. FREQUENCY BANDS
+==================
+
+Calculate and expose at least these frequency bands:
+
+BASS
+Approximately:
+20–250 Hz
+
+MID
+Approximately:
+250 Hz–4 kHz
+
+HIGH
+Approximately:
+4–20 kHz
+
+Do not hard-code these ranges if the existing application architecture supports configurable values.
+
+Calculate normalized energy values:
+
+bassEnergy
+midEnergy
+highEnergy
+
+These values will be used by the music-reactive water brush.
+
+==================================================
+7. AMPLITUDE
+============
+
+Calculate an overall amplitude value from the audio signal.
+
+Expose:
+
+audioAmplitude
+
+Normalize it to a useful range such as:
+
+0.0 → 1.0
+
+Apply temporal smoothing.
+
+Optionally expose both:
+
+instantAmplitude
+smoothedAmplitude
+
+This allows the renderer to distinguish between immediate transients and general loudness.
+
+==================================================
+8. BEAT / TRANSIENT DETECTION
+=============================
+
+Add lightweight beat/transient detection.
+
+Do not implement a complex machine-learning beat detector.
+
+Use the existing amplitude/FFT information to detect significant transient increases.
+
+For example:
+
+currentEnergy > smoothedEnergy * threshold
+
+When a transient occurs, produce:
+
+beatIntensity
+
+with a smooth decay over time.
+
+Normalize it to:
+
+0.0 → 1.0
+
+This value will later control ripple effects in the MUSIC_REACTIVE_WATER brush.
+
+==================================================
+9. DATA PROVIDED TO THE RENDERER
+================================
+
+Expose the audio analysis data through the existing rendering/GPU parameter mechanism.
+
+At minimum provide:
+
+audioAmplitude
+bassEnergy
+midEnergy
+highEnergy
+beatIntensity
+
+Also expose the FFT data if the renderer needs access to the spectrum.
+
+Avoid uploading unnecessary amounts of data every frame.
+
+If the shader only needs frequency bands, upload the compact values.
+
+If detailed FFT data is required later, provide a compact FFT buffer or texture through the existing GPU architecture.
+
+==================================================
+10. WIDGET CONTROLS
+===================
+
+Add useful controls to the music widget.
+
+For example:
+
+FFT Size:
+[ 512 ▼ ]
+
+Window:
+[ Hann ▼ ]
+
+Spectrum Smoothing:
+[ slider ]
+
+Amplitude Smoothing:
+[ slider ]
+
+Beat Sensitivity:
+[ slider ]
+
+Show Waveform:
+[ checkbox ]
+
+Show FFT:
+[ checkbox ]
+
+Log Frequency:
+[ checkbox ]
+
+The controls should use the existing UI framework and styling.
+
+Do not introduce a new UI framework.
+
+==================================================
+11. VISUAL QUALITY
+==================
+
+The waveform and FFT visualisations should look like an integrated part of the application.
+
+The FFT should be visually easy to read.
+
+The waveform should provide an immediate visual representation of the audio.
+
+The spectrum should clearly distinguish low, medium and high frequencies.
+
+Add subtle visual markers for:
+
+Bass
+Mid
+High
+
+if this can be done without cluttering the graph.
+
+Optionally display small real-time values:
+
+Amplitude: 0.72
+Bass: 0.81
+Mid: 0.54
+High: 0.32
+Beat: 0.67
+
+These values should update continuously.
+
+==================================================
+12. PERFORMANCE
+===============
+
+The analysis must be lightweight enough to run continuously alongside the renderer.
+
+Avoid unnecessary allocations during playback.
+
+Do not allocate new FFT buffers every frame.
+
+Create reusable buffers when the music is loaded.
+
+Reuse FFT plans/state where the chosen FFT implementation supports this.
+
+Perform audio analysis independently from the rendering frame rate where appropriate.
+
+Do not block the rendering thread while loading or decoding audio.
+
+==================================================
+13. ARCHITECTURE
+================
+
+Before implementing anything, inspect the existing codebase and determine:
+
+1. Where the music widget is implemented.
+2. How music files are currently loaded.
+3. How audio playback is implemented.
+4. Which audio library is being used.
+5. Which UI framework is used.
+6. How per-frame data is passed to the renderer.
+7. Where the water brush parameters are stored.
+8. How GPU buffers/uniforms are updated.
+
+Integrate with those systems instead of introducing duplicate systems.
+
+Keep the audio analysis module independent from the water shader.
+
+The architecture should conceptually be:
+
+Music File
+↓
+Audio Decoder
+↓
+Audio Playback
+↓
+Audio Analysis
+↓
+┌──────────────────────────────┐
+│                              │
+↓                              ↓
+Waveform                    FFT
+│                              │
+↓                              ↓
+Amplitude                  Frequency Spectrum
+│                              │
+└──────────────┬───────────────┘
+↓
+Audio Feature Extraction
+↓
+┌──────────┼──────────┐
+↓          ↓          ↓
+Bass        Mid        High
+│
+↓
+Beat Detection
+│
+↓
+GPU Audio Parameters
+│
+↓
+MUSIC_REACTIVE_WATER
+│
+↓
+Music-reactive water
+====================
+
+14. IMPORTANT SEPARATION
+    ==================================================
+
+The music widget is responsible for:
+
+* Loading music
+* Playback
+* Audio analysis
+* FFT
+* Waveform visualisation
+* Displaying analysis values
+* Providing analysed audio parameters
+
+The water shader is responsible for:
+
+* Reading the audio parameters
+* Generating procedural effects
+* Modifying water displacement
+* Modifying normals
+* Modifying reflection
+* Modifying refraction
+* Generating luminous lines
+* Applying music-reactive colour
+
+Do not put FFT calculations inside the water shader.
+
+Do not make the water shader responsible for decoding or analysing audio.
+
+==================================================
+15. FINAL RESULT
+================
+
+The user should be able to:
+
+1. Open the existing music widget.
+2. Load a music file.
+3. Press Play.
+4. Immediately see the waveform updating.
+5. Immediately see the FFT spectrum updating.
+6. See amplitude and frequency information.
+7. See bass/mid/high energy values.
+8. See beat/transient activity.
+9. Have these values automatically available to the MUSIC_REACTIVE_WATER brush.
+
+The complete system should feel like one integrated pipeline:
+
+LOAD MUSIC
+↓
+ANALYSE MUSIC
+↓
+VISUALISE WAVEFORM + FFT
+↓
+EXTRACT AUDIO FEATURES
+↓
+SEND PARAMETERS TO GPU
+↓
+MUSIC_REACTIVE_WATER
+
+Keep the implementation clean, efficient and consistent with the existing project architecture.

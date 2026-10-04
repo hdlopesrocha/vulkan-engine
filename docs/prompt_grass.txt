@@ -1,0 +1,1893 @@
+Absolutely. Below is the rewritten prompt with **all impostor/billboard concepts removed**. The system is entirely SDF-based, with performance coming from hierarchical grass representation, GPU culling, screen-space LOD, procedural density reduction, spatial acceleration, adaptive ray marching, and aggressive empty-space skipping.
+
+```text
+Implement a high-performance procedural SDF-based grass rendering system using the existing generic SDF Renderer.
+
+IMPORTANT:
+This implementation must NOT use impostors, billboards, camera-facing planes, baked grass textures, or any existing impostor representation.
+
+The grass must remain entirely SDF-based at every LOD.
+
+The goal is to achieve realistic grass at close range while supporting very large terrain areas with GPU-driven rendering and aggressive performance optimization.
+
+Do not create a separate rendering architecture specifically for grass. Integrate grass as a consumer of the existing generic SDF rendering system.
+
+============================================================
+1. FIRST: INSPECT THE EXISTING ENGINE
+============================================================
+
+Before implementing anything:
+
+- Inspect the existing SDF renderer.
+- Inspect the existing vegetation/grass implementation.
+- Inspect the terrain representation and terrain coordinate system.
+- Inspect existing GPU culling.
+- Inspect existing indirect rendering.
+- Inspect existing material system.
+- Inspect existing shadow rendering and CSM.
+- Inspect existing compute pipelines and GPU buffers.
+- Inspect existing camera and projection code.
+- Inspect existing Vulkan descriptor/buffer infrastructure.
+
+Understand the physical scale of the existing vegetation.
+
+The new SDF grass must have approximately the same physical dimensions as the existing grass.
+
+Do not arbitrarily redefine the grass scale.
+
+Reuse existing infrastructure whenever possible.
+
+Do not introduce duplicate systems for functionality that already exists.
+
+============================================================
+2. CORE REQUIREMENT
+============================================================
+
+Create a fully procedural SDF grass system.
+
+Every visible grass representation must be generated from SDFs.
+
+Do NOT use:
+
+- impostors
+- billboards
+- camera-facing quads
+- six-plane grass
+- Fibonacci impostor grids
+- baked grass cards
+- billboard textures
+- sprite-based grass
+- mesh-based grass as the primary representation
+
+The system should instead represent grass hierarchically using SDF geometry.
+
+The fundamental representation should be:
+
+Grass Field
+    -> Grass Regions
+        -> Grass Clumps
+            -> Procedural Grass Blades
+                -> SDF primitives / combinations
+
+The hierarchy exists primarily to allow the GPU to avoid evaluating unnecessary grass.
+
+============================================================
+3. GRASS REPRESENTATION
+============================================================
+
+Create a hierarchical procedural representation.
+
+Do NOT allocate one GPU object for every individual blade.
+
+Instead, represent large areas of grass using compact procedural descriptors.
+
+Conceptually:
+
+GrassRegion
+    position
+    extent
+    density
+    species/type
+    seed
+    terrain parameters
+    wind parameters
+
+GrassClump
+    position
+    radius
+    height
+    density
+    seed
+    species
+    variation parameters
+
+Grass blades are generated procedurally from the clump seed.
+
+The GPU should derive individual blades deterministically.
+
+Do not store every blade position unless profiling demonstrates that this is actually beneficial.
+
+Prefer compact procedural generation.
+
+============================================================
+4. HIERARCHICAL SDF GRASS
+============================================================
+
+Grass must be represented hierarchically.
+
+At close range:
+
+- generate individual blades
+- use detailed blade SDFs
+- preserve curvature
+- preserve width variation
+- preserve height variation
+- preserve orientation variation
+- preserve local density
+
+At medium range:
+
+- reduce the number of evaluated blades
+- simplify the blade SDF
+- reduce procedural deformation complexity
+- reduce noise/octave count
+- reduce blade detail
+- retain the overall grass silhouette
+
+At farther range:
+
+- represent groups of blades as simplified SDF clumps
+- evaluate a single or small number of SDF volumes representing the aggregate grass mass
+- preserve the overall shape and density impression
+- avoid evaluating every blade individually
+
+At very far range:
+
+- use extremely simplified SDF grass coverage volumes
+- represent large grass regions using low-frequency SDF geometry
+- avoid individual blade evaluation completely
+
+IMPORTANT:
+
+This is NOT an impostor system.
+
+Even the farthest representation must remain an SDF representation.
+
+============================================================
+5. SCREEN-SPACE LOD
+============================================================
+
+LOD must primarily be determined using projected screen-space size.
+
+Do not use distance alone.
+
+For every GrassRegion and GrassClump calculate:
+
+- distance to camera
+- projected screen-space radius
+- projected screen-space height
+- estimated pixel coverage
+- view direction
+- camera-relative importance
+
+Use projected size to determine how much SDF detail is actually necessary.
+
+Example conceptual LOD:
+
+LOD 0:
+    Grass blades are large on screen.
+    Full detailed SDF blades.
+
+LOD 1:
+    Blades occupy fewer pixels.
+    Simplified SDF blades.
+
+LOD 2:
+    Individual blades are still visually relevant,
+    but aggregate SDF clumps are sufficient.
+
+LOD 3:
+    Grass is represented as simplified SDF coverage volumes.
+
+LOD 4:
+    Extremely low-frequency SDF coverage.
+
+The exact thresholds must be configurable.
+
+Do not hard-code arbitrary distances.
+
+============================================================
+6. PIXEL-BASED GRASS TERMINATION
+============================================================
+
+Introduce an explicit screen-space termination rule.
+
+If the projected width of a grass blade is below a configurable number of pixels, do not perform expensive detailed SDF evaluation for that blade.
+
+For example:
+
+if projectedBladeWidth < threshold:
+    replace detailed blade evaluation with aggregate clump evaluation
+
+The threshold must be configurable and should be selected based on visual quality.
+
+This is critical.
+
+There is no reason to ray march detailed geometry that occupies significantly less than one pixel.
+
+============================================================
+7. TEMPORAL LOD STABILITY
+============================================================
+
+Prevent grass from constantly changing representation as the camera moves.
+
+Use LOD hysteresis.
+
+For example:
+
+Enter LOD 1 at:
+    projectedSize < A
+
+Return to LOD 0 at:
+    projectedSize > B
+
+where B > A.
+
+This prevents rapid LOD switching.
+
+LOD decisions should also be deterministic.
+
+Do not randomly regenerate different grass every frame.
+
+A GrassRegion/GrassClump must produce the same procedural grass given the same seed.
+
+============================================================
+8. PROCEDURAL GRASS BLADE SDF
+============================================================
+
+Implement a procedural blade SDF.
+
+The blade should not simply be a vertical capsule.
+
+Create a curved blade using a parameterized centerline.
+
+Conceptually:
+
+base
+    |
+    |\
+    | \
+    |  \
+    |   )
+    |  )
+    | )
+    tip
+
+The centerline should support:
+
+- curvature
+- bending
+- lean
+- height variation
+- width variation
+- directional variation
+
+The blade cross-section should approximate realistic grass geometry.
+
+Support:
+
+- narrow blades
+- broad blades
+- curved blades
+- bent blades
+- slightly twisted blades
+
+The exact blade shape must remain inexpensive to evaluate.
+
+Avoid expensive procedural geometry when a simpler SDF formulation produces the same visual result.
+
+============================================================
+9. BLADE VARIATION
+============================================================
+
+Every blade should have deterministic variation.
+
+Use a procedural seed to vary:
+
+- height
+- width
+- curvature
+- orientation
+- lean direction
+- bend amount
+- color
+- roughness
+- local density
+
+Do not store these values individually.
+
+Derive them from:
+
+clumpSeed
+bladeIndex
+species
+regionSeed
+
+Use a cheap deterministic hash.
+
+Avoid expensive random-number generation inside the ray marcher.
+
+============================================================
+10. GRASS SPECIES
+============================================================
+
+Design the system so that multiple grass species/types can exist.
+
+For example:
+
+GrassType:
+    blade width
+    blade height
+    curvature
+    density
+    color range
+    roughness
+    wind response
+    clump radius
+    clump density
+
+Do not duplicate shaders for every grass species.
+
+Use parameters.
+
+The same generic SDF grass implementation should support different grass appearances.
+
+============================================================
+11. GRASS CLUMP SDF
+============================================================
+
+Implement an aggregate GrassClump SDF.
+
+A clump should approximately represent the volume occupied by multiple grass blades.
+
+The clump SDF should be able to combine:
+
+- several low-frequency elongated SDF structures
+- directional density
+- randomized radial distribution
+- height falloff
+- base concentration
+- upper taper
+
+The result should look like a dense group of grass when viewed from farther away.
+
+Do not simply use a sphere.
+
+The clump should have:
+
+- a relatively dense base
+- vertically elongated structure
+- irregular upper boundary
+- directional variation
+- natural asymmetry
+
+============================================================
+12. PROCEDURAL DENSITY REDUCTION
+============================================================
+
+When grass becomes smaller on screen, reduce the number of blades evaluated.
+
+Do not simply reduce ray-march iterations while continuing to evaluate thousands of blades.
+
+Use hierarchical density reduction.
+
+For example:
+
+High detail:
+    64 blades
+
+Medium:
+    24 blades
+
+Low:
+    8 procedural blades
+
+Very low:
+    aggregate clump SDF
+
+The exact numbers must be configurable.
+
+The selection of blades must be deterministic.
+
+============================================================
+13. IMPORTANCE-BASED BLADE SELECTION
+============================================================
+
+Within a clump, do not necessarily evaluate all blades.
+
+Prioritize blades according to their visual contribution.
+
+Potential factors:
+
+- distance from camera
+- orientation relative to camera
+- projected size
+- contribution to silhouette
+- clump density
+- local visibility
+
+Use deterministic selection.
+
+Do not generate a different random subset every frame.
+
+============================================================
+14. GPU-DRIVEN GRASS CULLING
+============================================================
+
+Perform grass culling on the GPU.
+
+The CPU should NOT individually submit grass blades.
+
+Use GPU-generated visible GrassRegions and GrassClumps.
+
+Cull using:
+
+- frustum
+- distance
+- projected size
+- bounding sphere
+- bounding box
+- optional depth/occlusion information
+- terrain visibility
+- LOD requirements
+
+The CPU should primarily manage large-scale grass configuration.
+
+The GPU should determine what actually needs rendering.
+
+============================================================
+15. TWO-LEVEL SPATIAL ACCELERATION
+============================================================
+
+Implement spatial acceleration.
+
+Recommended hierarchy:
+
+Terrain
+    |
+    +-- GrassRegion grid
+            |
+            +-- GrassClump grid
+                    |
+                    +-- procedural blades
+
+Use a regular spatial grid or another lightweight spatial structure.
+
+Avoid requiring a heavyweight dynamic BVH unless profiling demonstrates that it is beneficial.
+
+The main goal is to quickly reject entire regions of grass.
+
+============================================================
+16. REGION-LEVEL EMPTY SPACE SKIPPING
+============================================================
+
+If a GrassRegion contains no visible or potentially visible grass:
+
+skip it entirely.
+
+If the camera ray does not intersect the region bounds:
+
+skip it.
+
+If a region is behind the camera:
+
+skip it.
+
+If projected size is below the grass visibility threshold:
+
+skip it.
+
+Do not enter detailed SDF evaluation unnecessarily.
+
+============================================================
+17. CLUMP-LEVEL EMPTY SPACE SKIPPING
+============================================================
+
+Inside a visible GrassRegion:
+
+test individual GrassClump bounds.
+
+Use conservative bounds.
+
+Before evaluating the clump SDF:
+
+ray/AABB or ray/sphere intersection must reject clumps that cannot contribute.
+
+This should happen before expensive SDF evaluation.
+
+============================================================
+18. SDF RAY MARCHING
+============================================================
+
+Use adaptive sphere tracing where the SDF quality permits it.
+
+The ray marcher must support:
+
+- adaptive step size
+- maximum step count
+- minimum step size
+- hit epsilon
+- distance-based precision
+- early termination
+- bounding-volume entry/exit
+
+Do NOT march through empty space at a constant tiny step.
+
+The SDF must provide sufficiently conservative distances for sphere tracing.
+
+============================================================
+19. HIERARCHICAL RAY MARCHING
+============================================================
+
+Use the hierarchy during ray marching.
+
+Conceptually:
+
+Ray
+ |
+ +-- GrassRegion A
+ |      no intersection -> skip
+ |
+ +-- GrassRegion B
+        |
+        +-- Clump 1
+        |      no intersection -> skip
+        |
+        +-- Clump 2
+               |
+               +-- detailed blade SDF
+
+Only descend into the hierarchy when necessary.
+
+This is one of the most important performance optimizations.
+
+============================================================
+20. COARSE-TO-FINE SDF EVALUATION
+============================================================
+
+Do not immediately evaluate detailed blade SDFs.
+
+Use:
+
+1. Region bound
+2. Clump bound
+3. Aggregate clump SDF
+4. Individual blade SDF
+
+Only evaluate the next level when the ray approaches the corresponding surface.
+
+This should dramatically reduce the number of expensive blade evaluations.
+
+============================================================
+21. SDF DISTANCE FIELD CONSERVATIVENESS
+============================================================
+
+The SDF implementation must remain sufficiently conservative for sphere tracing.
+
+Do not introduce deformations that make the returned distance invalid without compensating for them.
+
+If noise or bending modifies the SDF:
+
+- use appropriate distance correction
+- or use a conservative Lipschitz bound
+
+Avoid artifacts caused by over-stepping.
+
+============================================================
+22. ADAPTIVE NOISE DETAIL
+============================================================
+
+Do not evaluate high-frequency noise everywhere.
+
+Use screen-space and LOD dependent noise.
+
+Close:
+
+- full blade curvature
+- high-quality variation
+
+Medium:
+
+- reduced noise
+
+Far:
+
+- low-frequency aggregate variation
+
+Very far:
+
+- no high-frequency noise
+
+The shader must avoid calculating noise that cannot affect the final pixel.
+
+============================================================
+23. WIND
+============================================================
+
+Implement procedural wind directly in the SDF formulation.
+
+Wind should affect:
+
+- blade bending
+- blade lean
+- clump deformation
+
+Use a shared low-frequency wind field.
+
+Do not evaluate expensive noise independently for every blade.
+
+Prefer:
+
+world position
+    -> low-frequency wind field
+    -> local phase
+    -> blade deformation
+
+Use deterministic phase offsets from the blade seed.
+
+The result should be coherent rather than every blade moving independently.
+
+============================================================
+24. WIND LOD
+============================================================
+
+Reduce wind complexity with distance.
+
+Close:
+
+- individual blade motion
+
+Medium:
+
+- simplified blade bending
+
+Far:
+
+- aggregate clump deformation
+
+Very far:
+
+- low-frequency grass-field movement
+
+Do not perform high-frequency animation for grass that occupies only a few pixels.
+
+============================================================
+25. TERRAIN CONFORMANCE
+============================================================
+
+Grass must conform to the existing terrain.
+
+The grass base must follow terrain height and orientation.
+
+Support:
+
+- terrain height
+- terrain normal
+- slope
+- local terrain deformation
+
+Avoid floating grass.
+
+Avoid grass penetrating the terrain.
+
+Where practical, derive terrain information from existing terrain data rather than evaluating an expensive terrain SDF repeatedly.
+
+============================================================
+26. SLOPE AND DENSITY CONTROL
+============================================================
+
+Allow grass density to depend on terrain properties.
+
+For example:
+
+flat terrain:
+    high density
+
+moderate slope:
+    reduced density
+
+steep slope:
+    configurable density
+
+cliff:
+    little or no grass
+
+Support density masks.
+
+Do not generate grass in areas where the terrain material indicates that grass should not exist.
+
+============================================================
+27. GRASS PATCHES
+============================================================
+
+Support large-scale density variation.
+
+Avoid perfectly uniform grass.
+
+Use a low-frequency density function:
+
+density(worldPosition)
+
+This should produce:
+
+- dense patches
+- sparse patches
+- irregular boundaries
+- natural variation
+
+The density function must be cheap.
+
+Do not evaluate high-frequency noise for this purpose.
+
+============================================================
+28. GRASS MATERIAL
+============================================================
+
+Implement a realistic grass material.
+
+Support:
+
+- base color variation
+- roughness
+- subtle specular response
+- subsurface/transmission-like response
+- backlighting
+- translucency approximation
+- ambient contribution
+
+Grass should not look like opaque plastic.
+
+Use view direction and lighting direction to produce subtle transmission/backlighting.
+
+Keep the material computation LOD-aware.
+
+============================================================
+29. GRASS COLOR VARIATION
+============================================================
+
+Color should vary procedurally.
+
+Support:
+
+- species variation
+- blade variation
+- height-based variation
+- clump variation
+- seasonal parameters
+
+Use inexpensive hash-based variation.
+
+Do not store per-blade colors.
+
+============================================================
+30. SHADOWS
+============================================================
+
+Integrate grass with the existing shadow system.
+
+However, shadow rendering must use an even more aggressive LOD than the main camera.
+
+For shadows:
+
+Close:
+    detailed grass SDF
+
+Medium:
+    simplified grass SDF
+
+Far:
+    simplified aggregate clump SDF
+
+Very far:
+    potentially skip grass shadow contribution
+
+Do not spend expensive SDF ray marching on grass that contributes negligible shadow information.
+
+Use projected shadow importance to determine shadow LOD.
+
+============================================================
+31. CSM OPTIMIZATION
+============================================================
+
+Integrate with the existing CSM system.
+
+Grass should not automatically receive the same rendering complexity in every cascade.
+
+Use cascade-dependent detail.
+
+Near cascade:
+    higher detail
+
+Middle cascade:
+    simplified clumps
+
+Far cascade:
+    highly simplified aggregate grass
+
+If a cascade's texel footprint is larger than individual blades, do not evaluate individual blades.
+
+This is especially important for performance.
+
+============================================================
+32. RAY TRACING COMPATIBILITY
+============================================================
+
+The SDF grass system must be compatible with the existing hybrid rasterization + hardware ray tracing architecture.
+
+Do not create unnecessary BLAS geometry for every grass blade.
+
+Prefer procedural SDF intersection where supported by the existing ray-query architecture.
+
+If grass participates in ray tracing:
+
+- use hierarchical bounds
+- reject regions first
+- reject clumps second
+- evaluate detailed SDF only when necessary
+
+Do not construct a BLAS containing millions of individual grass blades.
+
+============================================================
+33. REFLECTION / RT LOD
+============================================================
+
+Grass seen through reflections should use lower SDF detail than directly visible grass where possible.
+
+Use ray contribution / projected importance.
+
+For low-contribution secondary rays:
+
+- simplify grass
+- reduce blade count
+- reduce noise
+- use aggregate clumps
+
+Do not spend primary-camera quality on insignificant secondary-ray grass.
+
+============================================================
+34. VR / STEREO
+============================================================
+
+The system must work correctly for stereo rendering.
+
+LOD decisions should be stable between the two eyes.
+
+Prefer shared GrassRegion and GrassClump visibility/LOD decisions based on a conservative stereo volume or camera midpoint.
+
+Do not allow one eye to see a completely different grass representation unless required by visibility.
+
+Avoid:
+
+- eye-to-eye popping
+- different procedural seeds
+- unstable density
+- temporal mismatch
+
+The system must remain temporally stable for VR.
+
+============================================================
+35. TEMPORAL STABILITY
+============================================================
+
+Grass must not shimmer excessively.
+
+Procedural sampling must be stable across frames.
+
+Avoid regenerating different blade distributions every frame.
+
+Use:
+
+- deterministic seeds
+- stable spatial coordinates
+- stable LOD transitions
+- temporal hysteresis
+
+If the renderer has temporal accumulation/TAA:
+
+integrate grass carefully with the existing system.
+
+Do not introduce unstable high-frequency stochastic patterns.
+
+============================================================
+36. OCCLUSION CULLING
+============================================================
+
+If the engine already has a depth pyramid / Hi-Z system, integrate GrassRegion and GrassClump occlusion testing.
+
+Do not implement a completely separate occlusion system if one already exists.
+
+Use conservative occlusion tests.
+
+Prefer:
+
+GrassRegion occlusion
+    -> GrassClump occlusion
+    -> detailed SDF
+
+instead of testing every blade.
+
+============================================================
+37. GPU INDIRECT DISPATCH
+============================================================
+
+Use GPU-driven indirect rendering/dispatch where appropriate.
+
+The CPU should not issue individual draw calls for:
+
+- regions
+- clumps
+- blades
+
+Generate compact visible work lists on the GPU.
+
+Avoid unnecessary CPU/GPU synchronization.
+
+Avoid readbacks.
+
+The CPU should not wait for grass visibility results.
+
+============================================================
+38. BUFFER DESIGN
+============================================================
+
+Use compact GPU structures.
+
+Do not store redundant per-blade information.
+
+Prefer:
+
+GrassRegion:
+    bounds
+    seed
+    density
+    type
+
+GrassClump:
+    position
+    bounds
+    seed
+    type
+    density
+
+Everything else should be derived procedurally whenever practical.
+
+Keep buffers compact and cache-friendly.
+
+============================================================
+39. COMPUTE WORK COMPACTION
+============================================================
+
+Use compute shaders to compact visible grass work.
+
+Conceptually:
+
+All GrassRegions
+        |
+        v
+Frustum / distance / projected-size culling
+        |
+        v
+Visible GrassRegions
+        |
+        v
+Clump culling
+        |
+        v
+Visible GrassClumps
+        |
+        v
+SDF rendering
+
+Avoid launching expensive work for objects that have already been rejected.
+
+============================================================
+40. AVOID MASSIVE THREAD DIVERGENCE
+============================================================
+
+The SDF renderer must avoid excessive shader divergence.
+
+Do not make every invocation perform completely different expensive procedural operations.
+
+Group work by LOD where possible.
+
+For example:
+
+LOD 0 work
+LOD 1 work
+LOD 2 work
+LOD 3 work
+
+This allows more coherent GPU execution.
+
+============================================================
+41. RAY-MARCH BUDGET
+============================================================
+
+Introduce strict ray-marching budgets.
+
+Make configurable:
+
+- maximum steps
+- minimum step
+- hit epsilon
+- maximum SDF evaluations
+- maximum blade evaluations
+- maximum clump evaluations
+
+The system must never accidentally perform unbounded work.
+
+============================================================
+42. EARLY TERMINATION
+============================================================
+
+Terminate ray marching immediately when:
+
+- a valid grass surface is hit
+- ray exits the grass hierarchy
+- accumulated contribution becomes negligible
+- maximum distance is reached
+- maximum steps are reached
+
+Do not continue evaluating grass behind an already visible grass surface unless transparency requires it.
+
+============================================================
+43. TRANSPARENCY / MULTIPLE BLADES
+============================================================
+
+Grass can have many overlapping blades.
+
+Avoid requiring expensive full transparency sorting.
+
+Prefer an opaque or alpha-tested-like SDF surface model where compatible with the renderer.
+
+If multiple layers are required:
+
+limit the number of intersections.
+
+Do not recursively trace unlimited grass layers.
+
+============================================================
+44. DISTANCE-BASED COMPLEXITY
+============================================================
+
+Complexity should fall continuously as visual importance decreases.
+
+Near:
+
+high geometric detail
+high blade density
+high-quality wind
+high-quality material
+
+Medium:
+
+reduced blade count
+simplified SDF
+reduced noise
+simplified wind
+
+Far:
+
+aggregate SDF
+very low procedural complexity
+low-frequency wind
+
+Very far:
+
+large-scale SDF coverage only
+
+This is the main replacement for the removed impostor system.
+
+============================================================
+45. GRASS COVERAGE SDF
+============================================================
+
+Implement a large-scale GrassCoverage SDF.
+
+This represents broad areas of grass without individual blades.
+
+The coverage SDF should support:
+
+- terrain conforming
+- density
+- height
+- patch variation
+- wind
+- species/type
+
+It should be extremely cheap to evaluate.
+
+This allows kilometers of grass coverage without requiring individual blade evaluation everywhere.
+
+============================================================
+46. COVERAGE FIELD
+============================================================
+
+Use a low-frequency procedural field to determine:
+
+grass presence
+grass density
+grass height
+grass variation
+
+The field must be spatially stable.
+
+Do not animate the density field itself.
+
+Only animate deformation/wind.
+
+============================================================
+47. MULTI-SCALE GRASS
+============================================================
+
+Use multiple spatial frequencies.
+
+Large scale:
+    grass regions
+
+Medium scale:
+    grass patches
+
+Small scale:
+    clumps
+
+Fine scale:
+    individual blades
+
+The renderer should only evaluate the frequencies that can affect the current pixel.
+
+This is effectively a hierarchical procedural detail system.
+
+============================================================
+48. SDF MATERIAL LOD
+============================================================
+
+LOD should affect not only geometry.
+
+Also reduce:
+
+- noise
+- curvature
+- material variation
+- wind detail
+- transmission complexity
+- shadow complexity
+
+A far grass pixel should not execute the same shader complexity as a close grass pixel.
+
+============================================================
+49. GPU MEMORY EFFICIENCY
+============================================================
+
+Do not allocate massive per-blade buffers.
+
+Grass should scale primarily with:
+
+number of regions
++
+number of clumps
+
+rather than:
+
+number of blades
+
+This is essential for large terrain.
+
+============================================================
+50. STREAMING / TERRAIN SCALE
+============================================================
+
+Grass should support very large terrain.
+
+Do not generate the entire world's grass representation.
+
+Generate/activate GrassRegions around the relevant world area.
+
+Reuse region descriptors as the player moves.
+
+Keep distant regions procedural rather than storing enormous amounts of data.
+
+============================================================
+51. PLAYER/CAMERA FOLLOWING
+============================================================
+
+If the terrain is streamed around the player:
+
+grass regions should follow the same streaming mechanism.
+
+Do not introduce a separate world-streaming architecture.
+
+When regions enter the active area:
+
+generate/update their compact descriptors.
+
+When they leave:
+
+release or recycle their GPU representation.
+
+============================================================
+52. NO CPU BLADE GENERATION
+============================================================
+
+Do not generate millions of grass blades on the CPU.
+
+The CPU may generate:
+
+- region descriptors
+- coarse clump descriptors
+- seeds
+- density parameters
+
+But actual blade generation and selection should happen on the GPU.
+
+============================================================
+53. GENERIC SDF RENDERER INTEGRATION
+============================================================
+
+Grass must be implemented as a consumer of the generic SDF renderer.
+
+Do not hard-code grass-specific ray marching into unrelated renderer code.
+
+Expose grass through the generic SDF object/volume abstraction.
+
+The generic renderer should know how to:
+
+- intersect bounds
+- evaluate SDFs
+- ray march
+- evaluate materials
+- perform LOD
+- terminate rays
+
+Grass should provide the required procedural SDF functions and parameters.
+
+============================================================
+54. SEPARATE GEOMETRY / MATERIAL / VOLUME
+============================================================
+
+Keep these responsibilities separate.
+
+Geometry:
+
+- blade SDF
+- clump SDF
+- coverage SDF
+
+Material:
+
+- color
+- roughness
+- transmission
+- lighting response
+
+Volume:
+
+- density
+- coverage
+- height
+- species parameters
+
+Rendering:
+
+- ray marching
+- culling
+- LOD
+- acceleration
+
+Do not create a monolithic grass shader containing the entire system.
+
+============================================================
+55. DEBUG VISUALIZATION
+============================================================
+
+Add debug modes for:
+
+- GrassRegions
+- GrassClumps
+- GrassCoverage
+- LOD level
+- SDF bounds
+- ray count
+- SDF evaluation count
+- blade evaluation count
+- clump evaluation count
+- culled regions
+- culled clumps
+- ray-march step count
+- shadow grass complexity
+
+Use different debug views without changing the underlying architecture.
+
+============================================================
+56. PERFORMANCE COUNTERS
+============================================================
+
+Add GPU-visible statistics where practical:
+
+grass regions tested
+grass regions visible
+grass regions culled
+clumps tested
+clumps visible
+clumps culled
+blade evaluations
+SDF evaluations
+ray-march steps
+rays entering grass
+rays terminating in bounds
+rays hitting grass
+shadow grass evaluations
+
+These counters are important for optimization.
+
+============================================================
+57. PERFORMANCE PRIORITIES
+============================================================
+
+Optimize in this order:
+
+1. Region-level culling
+2. Clump-level culling
+3. Screen-space LOD
+4. Empty-space skipping
+5. Hierarchical SDF evaluation
+6. Blade-count reduction
+7. Ray-march optimization
+8. Noise reduction
+9. Material simplification
+10. Shadow simplification
+
+Do not optimize visual micro-details before eliminating unnecessary SDF work.
+
+============================================================
+58. DO NOT OVERUSE NOISE
+============================================================
+
+Noise is expensive.
+
+Do not use multiple procedural noise functions for every blade.
+
+Prefer a small number of shared fields.
+
+For example:
+
+low-frequency density noise
++
+medium-frequency clump variation
++
+deterministic blade hash
+
+This should provide natural variation without excessive GPU cost.
+
+============================================================
+59. AVOID TRIGONOMETRIC OVERHEAD
+============================================================
+
+Where practical:
+
+- precompute constants
+- use inexpensive hash functions
+- reuse intermediate values
+- avoid repeated sin/cos operations
+- avoid calculating values that are not required for the current LOD
+
+Do not sacrifice visual quality unnecessarily, but aggressively remove redundant mathematical work.
+
+============================================================
+60. SDF COMPOSITION
+============================================================
+
+Support standard SDF operations where useful:
+
+union
+smooth union
+intersection
+subtraction
+transform
+elongation
+bending
+twisting
+
+However, do not build excessively deep SDF expression trees for every blade.
+
+Flatten or specialize hot-path expressions where necessary.
+
+The generic SDF system should remain flexible while grass uses optimized procedural evaluation.
+
+============================================================
+61. SPECIALIZED GRASS FAST PATH
+============================================================
+
+If profiling demonstrates that generic SDF dispatch is too expensive for grass:
+
+implement an optimized grass SDF evaluation path inside the generic SDF framework.
+
+Do NOT duplicate the renderer.
+
+The optimization should preserve the generic interface while allowing specialized shader code for the grass implementation.
+
+============================================================
+62. VISUAL QUALITY TARGET
+============================================================
+
+Close-range grass should look like actual procedural grass rather than blobs.
+
+It should exhibit:
+
+- individual blades
+- natural variation
+- realistic curvature
+- dense clustering
+- believable wind
+- terrain conformity
+- realistic lighting
+- subtle translucency
+- natural color variation
+
+The transition to clump-level SDFs must preserve the visual impression of dense grass.
+
+============================================================
+63. LOD TRANSITIONS
+============================================================
+
+Avoid visible popping.
+
+Use:
+
+- hysteresis
+- smooth density transitions
+- gradual blade reduction
+- smooth clump activation
+- continuous parameter changes
+
+Do not simply switch between completely unrelated SDFs at a distance.
+
+Where possible, interpolate:
+
+density
+height
+detail frequency
+blade contribution
+
+============================================================
+64. TEMPORAL CROSS-FADE WITHOUT IMPOSTORS
+============================================================
+
+LOD transitions may use temporal blending between two SDF representations.
+
+This is NOT an impostor system.
+
+Both representations remain SDF-based.
+
+For example:
+
+detailed blade SDF
+        +
+aggregate clump SDF
+
+can coexist temporarily during a transition.
+
+The blend should be deterministic and stable.
+
+Do not introduce texture-based cross-fading.
+
+============================================================
+65. MAIN CAMERA VS SECONDARY RAYS
+============================================================
+
+Different rendering contexts may use different SDF detail.
+
+Primary camera:
+
+highest quality
+
+Reflections:
+
+medium quality depending on contribution
+
+Refractions:
+
+medium/low quality depending on contribution
+
+Shadow rays:
+
+low quality
+
+This prevents expensive grass SDF evaluation from dominating secondary rendering.
+
+============================================================
+66. GRASS RENDER ORDER
+============================================================
+
+Integrate grass correctly with the existing renderer.
+
+Grass should participate in:
+
+- depth
+- lighting
+- shadows
+- reflections
+- refractions where appropriate
+- atmospheric effects
+- post-processing
+
+Do not create a completely independent render pipeline.
+
+============================================================
+67. VULKAN IMPLEMENTATION
+============================================================
+
+Use the existing Vulkan infrastructure.
+
+Follow existing conventions for:
+
+- descriptor sets
+- pipelines
+- shader modules
+- buffers
+- synchronization
+- command buffers
+- compute dispatches
+- indirect dispatch/draw
+- resource lifetime
+
+Do not introduce unnecessary new Vulkan abstractions.
+
+============================================================
+68. SYNCHRONIZATION
+============================================================
+
+Avoid CPU/GPU synchronization.
+
+The desired flow is:
+
+CPU:
+    update compact grass parameters
+
+GPU:
+    cull regions
+
+GPU:
+    cull clumps
+
+GPU:
+    determine LOD
+
+GPU:
+    render SDF grass
+
+GPU:
+    produce lighting/shadow contribution
+
+CPU should not read back the results.
+
+============================================================
+69. FRAME-TO-FRAME STABILITY
+============================================================
+
+Do not rebuild all grass every frame.
+
+Only update what changes:
+
+- camera-dependent visibility
+- LOD
+- wind time
+- dynamic terrain changes
+
+Static region/clump descriptors should remain persistent.
+
+============================================================
+70. DYNAMIC TERRAIN SUPPORT
+============================================================
+
+If terrain changes dynamically:
+
+only invalidate affected GrassRegions.
+
+Do not rebuild the entire grass field.
+
+Support localized updates.
+
+============================================================
+71. CONFIGURATION
+============================================================
+
+Expose configuration for:
+
+Grass enabled
+Grass density
+Grass maximum distance
+Grass minimum projected size
+LOD thresholds
+LOD hysteresis
+Blade count per clump
+Clump density
+Clump size
+Blade height
+Blade width
+Blade curvature
+Wind strength
+Wind frequency
+Noise detail
+Material parameters
+Shadow density
+Shadow LOD
+Ray-march maximum steps
+SDF hit epsilon
+
+Do not scatter constants throughout shaders.
+
+============================================================
+72. DEFAULT QUALITY PRESETS
+============================================================
+
+Create sensible presets such as:
+
+Low:
+    low blade density
+    aggressive clump LOD
+    low ray-march budget
+
+Medium:
+    balanced
+
+High:
+    high close-range blade density
+    more detailed SDF
+
+Ultra:
+    maximum close-range quality
+    larger grass visibility range
+    higher ray-march budget
+
+The presets must modify parameters rather than selecting completely different implementations.
+
+============================================================
+73. PROFILING
+============================================================
+
+Profile separately:
+
+CPU cost
+GPU culling cost
+SDF evaluation cost
+ray-marching cost
+material cost
+shadow cost
+memory bandwidth
+GPU occupancy
+shader divergence
+
+Do not assume the bottleneck.
+
+Measure it.
+
+============================================================
+74. PERFORMANCE ACCEPTANCE CRITERIA
+============================================================
+
+The implementation is NOT considered complete merely because the grass looks correct.
+
+It must demonstrate:
+
+- large grass coverage
+- GPU-driven culling
+- compact memory usage
+- bounded ray-marching
+- strong empty-space skipping
+- screen-space LOD
+- hierarchical SDF evaluation
+- stable temporal behavior
+- efficient shadows
+
+The number of evaluated individual blades should decrease dramatically with distance.
+
+The majority of distant grass should never reach detailed blade SDF evaluation.
+
+============================================================
+75. IMPLEMENTATION PHASES
+============================================================
+
+Implement in the following order.
+
+PHASE 1:
+Integrate a basic procedural SDF grass blade with the generic SDF renderer.
+
+PHASE 2:
+Implement GrassClump and procedural blade generation.
+
+PHASE 3:
+Implement GrassRegion hierarchy.
+
+PHASE 4:
+Implement GPU region culling.
+
+PHASE 5:
+Implement GPU clump culling.
+
+PHASE 6:
+Implement screen-space LOD.
+
+PHASE 7:
+Implement hierarchical SDF ray marching.
+
+PHASE 8:
+Implement aggregate GrassClump SDF.
+
+PHASE 9:
+Implement large-scale GrassCoverage SDF.
+
+PHASE 10:
+Implement procedural wind.
+
+PHASE 11:
+Implement realistic grass material.
+
+PHASE 12:
+Integrate CSM shadow LOD.
+
+PHASE 13:
+Integrate secondary-ray / RT LOD.
+
+PHASE 14:
+Implement stereo/VR stability.
+
+PHASE 15:
+Add profiling and debug visualization.
+
+PHASE 16:
+Profile and optimize the actual bottlenecks.
+
+============================================================
+76. IMPORTANT IMPLEMENTATION RULES
+============================================================
+
+Do NOT:
+
+- add impostors
+- add billboards
+- add camera-facing grass planes
+- add baked grass textures
+- reuse the old impostor renderer as a fallback
+- generate millions of CPU-side blades
+- create one GPU object per blade
+- ray march every blade for every pixel
+- use distance-only LOD
+- use unlimited ray marching
+- perform unnecessary CPU/GPU synchronization
+- duplicate the generic SDF renderer
+- create unnecessary BLAS geometry for every blade
+
+Do:
+
+- use hierarchical SDFs
+- use screen-space LOD
+- use GPU culling
+- use compact procedural descriptors
+- use deterministic procedural generation
+- use aggressive empty-space skipping
+- use coarse-to-fine SDF evaluation
+- reduce blade density with distance
+- use aggregate SDF clumps
+- use large-scale SDF coverage
+- reduce material complexity with LOD
+- reduce shadow complexity with LOD
+- support stereo rendering
+- preserve temporal stability
+- profile everything
+
+============================================================
+77. FINAL ARCHITECTURE
+============================================================
+
+The final system should conceptually be:
+
+                TERRAIN
+                   |
+                   v
+          GRASS REGION GRID
+                   |
+          GPU FRUSTUM CULL
+                   |
+          GPU SIZE / LOD TEST
+                   |
+                   v
+             GRASS CLUMPS
+                   |
+          GPU BOUNDS CULL
+                   |
+          PROJECTED SIZE TEST
+                   |
+                   v
+        +----------------------+
+        |                      |
+        |      SDF LOD         |
+        |                      |
+        +----------------------+
+             /    |      \
+            /     |       \
+           v      v        v
+       Blades   Simple   Coverage
+       SDF      Clump     SDF
+          \       |        /
+           \      |       /
+            \     |      /
+             v    v     v
+          HIERARCHICAL
+          SDF RAY MARCH
+                 |
+                 v
+          GRASS MATERIAL
+                 |
+        +--------+--------+
+        |                 |
+        v                 v
+      LIGHTING          SHADOWS
+        |                 |
+        +--------+--------+
+                 |
+                 v
+             FINAL IMAGE
+
+There must be NO impostor stage anywhere in this architecture.
+
+============================================================
+78. FINAL TASK
+============================================================
+
+Implement this system directly into the existing engine.
+
+Before changing code:
+
+1. inspect the current SDF renderer
+2. inspect the current vegetation system
+3. inspect the existing GPU culling
+4. inspect the existing indirect rendering
+5. inspect the existing terrain interface
+6. inspect the existing shadow/CSM system
+7. inspect the existing RT integration
+
+Then implement the system incrementally.
+
+Preserve existing functionality while replacing the old grass representation with the new SDF grass implementation.
+
+Do not remove unrelated vegetation systems until the new SDF grass implementation is functional.
+
+Once the SDF grass implementation is validated, remove obsolete grass-specific rendering code that is no longer required.
+
+The final result must be a fully GPU-driven, hierarchical, procedural SDF grass system with:
+
+- realistic close-range blades
+- aggregate SDF clumps
+- large-scale SDF coverage
+- screen-space LOD
+- GPU culling
+- deterministic procedural generation
+- aggressive empty-space skipping
+- adaptive ray marching
+- efficient shadows
+- RT compatibility
+- VR/stereo stability
+- low CPU overhead
+- compact GPU memory usage
+
+Most importantly:
+
+THE SYSTEM MUST REMAIN 100% SDF-BASED AT EVERY LOD.
+
+NO IMPOSTORS.
+NO BILLBOARDS.
+NO GRASS CARDS.
+NO CAMERA-FACING PLANES.
+NO TEXTURE-BASED GRASS REPRESENTATION.
+```

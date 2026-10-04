@@ -1,0 +1,983 @@
+# Replace the Existing Cloud System with an SDF-Based Volumetric Cloud Renderer
+
+Replace the current cloud rendering implementation with a new **SDF-based procedural volumetric cloud system**.
+
+The objective is to preserve the existing cloud system's externally visible behavior, parameters, controls, and visual intent while completely replacing the underlying cloud representation and rendering technique.
+
+This is a **replacement of the current cloud renderer**, not a second independent cloud implementation.
+
+Do not remove or unnecessarily rename the existing cloud parameters.
+
+The existing cloud configuration should continue to control the new renderer wherever the parameter has an equivalent meaning.
+
+---
+
+# 1. Core Objective
+
+Replace the current cloud representation/rendering with:
+
+```text
+Cloud SDF
+    +
+Procedural Density
+    +
+Layered Noise
+    +
+Volumetric Ray Marching
+    +
+Lighting / Scattering
+```
+
+The final clouds should remain visually consistent with the existing cloud system, but the new implementation should provide a more coherent volumetric representation and a cleaner foundation for:
+
+* dynamic cloud shapes,
+* cloud expansion,
+* cloud erosion,
+* cloud density,
+* wind,
+* lighting,
+* shadows,
+* cloud intersections,
+* future volumetric effects.
+
+Do not implement a simple sphere with noise applied to its surface.
+
+The SDF must define the actual volumetric cloud domain.
+
+---
+
+# 2. Preserve the Existing Cloud Parameters
+
+First inspect the existing cloud implementation and identify **all parameters currently controlling the clouds**.
+
+Preserve them.
+
+Examples may include parameters controlling:
+
+* cloud size,
+* cloud height,
+* cloud thickness,
+* cloud density,
+* coverage,
+* softness,
+* noise scale,
+* noise strength,
+* detail,
+* wind,
+* speed,
+* animation,
+* lighting,
+* scattering,
+* extinction,
+* absorption,
+* cloud color,
+* shadow strength,
+* step size,
+* quality,
+* number of samples,
+* erosion,
+* turbulence,
+* altitude,
+* falloff.
+
+The exact parameter names must be taken from the existing implementation.
+
+Do not invent replacement parameters when an existing parameter already represents the same concept.
+
+The new renderer should consume the existing parameters.
+
+If an old parameter cannot map directly to the new SDF representation, preserve the parameter and document how it is mapped.
+
+---
+
+# 3. Existing API Compatibility
+
+The rest of the engine should not need to know that the cloud implementation changed.
+
+Keep the existing public cloud interface wherever practical.
+
+The replacement should therefore follow:
+
+```text
+Existing Cloud Configuration
+            ↓
+Existing Cloud Parameters
+            ↓
+New SDF Cloud Representation
+            ↓
+New Volumetric Renderer
+```
+
+Avoid requiring unrelated renderer code to be rewritten.
+
+Do not duplicate the cloud configuration system.
+
+Do not create a second set of cloud parameters.
+
+---
+
+# 4. Cloud SDF
+
+Create a procedural SDF representing the cloud volume.
+
+The cloud SDF should define the overall cloud shape.
+
+A basic cloud domain can begin from an ellipsoid or vertically constrained volume rather than a perfect sphere.
+
+Conceptually:
+
+```text
+baseCloudSDF(p)
+```
+
+The cloud shape should support:
+
+* horizontal expansion,
+* vertical thickness,
+* rounded formations,
+* irregular boundaries,
+* multiple cloud masses,
+* smooth transitions.
+
+The SDF should represent the **potential cloud volume**.
+
+It does not directly represent opacity.
+
+---
+
+# 5. Procedural Cloud Density
+
+Separate:
+
+```text
+Cloud SDF
+```
+
+from:
+
+```text
+Cloud Density
+```
+
+The SDF determines where cloud volume can exist.
+
+Procedural noise determines the internal density.
+
+Conceptually:
+
+```text
+cloudSDF = evaluateCloudSDF(p);
+
+if (cloudSDF > 0)
+    return 0;
+```
+
+Then evaluate density inside the SDF volume.
+
+The density should be generated from layered procedural noise.
+
+---
+
+# 6. Layered Noise
+
+Use multiple frequency bands.
+
+At minimum:
+
+```text
+Base Shape Noise
+Medium Detail Noise
+Fine Detail Noise
+```
+
+The low-frequency component controls large cloud formations.
+
+The medium-frequency component controls:
+
+* billowing,
+* rolling structures,
+* cloud breakup.
+
+The high-frequency component controls:
+
+* small wisps,
+* erosion,
+* fine edges.
+
+Conceptually:
+
+```text
+shapeNoise
+detailNoise
+fineNoise
+```
+
+Combine them into the final density.
+
+Avoid making the cloud look like simple Perlin noise.
+
+The final result should resemble coherent volumetric cloud structures.
+
+---
+
+# 7. Domain Warping
+
+Use domain warping to avoid obvious procedural patterns.
+
+Conceptually:
+
+```text
+warp = noise(p * warpScale + windOffset);
+
+samplePosition =
+    p +
+    warp * warpStrength;
+```
+
+Evaluate the higher-frequency cloud noise at the warped position.
+
+Use the existing cloud parameters to determine the appropriate scale and strength.
+
+---
+
+# 8. Cloud Coverage
+
+Preserve the existing cloud coverage parameter.
+
+Map it into the SDF/density system.
+
+Coverage should control how much of the cloud domain contains actual cloud material.
+
+For example:
+
+```text
+density = remap(
+    density,
+    coverageThreshold,
+    1.0,
+    0.0,
+    1.0
+);
+```
+
+Use a smooth transition.
+
+Do not create a hard binary cutoff.
+
+---
+
+# 9. Cloud Edge Erosion
+
+Cloud boundaries must be irregular.
+
+Use noise to erode the SDF boundary or density boundary.
+
+Conceptually:
+
+```text
+erodedSDF =
+    cloudSDF +
+    erosionNoise(p) * erosionStrength;
+```
+
+or equivalently modify density near the SDF boundary.
+
+The exact approach should be selected based on performance and numerical stability.
+
+The result should have:
+
+* rounded cloud tops,
+* broken edges,
+* soft wisps,
+* irregular bottoms,
+* natural-looking transitions.
+
+---
+
+# 10. Vertical Cloud Profile
+
+Respect the existing cloud altitude and thickness parameters.
+
+Create a vertical density profile.
+
+For example:
+
+```text
+height01 =
+    saturate(
+        (p.y - cloudBase) /
+        cloudHeight
+    );
+```
+
+Use this to control cloud density.
+
+The vertical profile should support:
+
+* dense cloud interiors,
+* softer bottoms,
+* soft tops,
+* vertically varying density.
+
+Do not make the cloud density uniform from bottom to top.
+
+---
+
+# 11. Multiple Cloud Formations
+
+If the existing system supports multiple cloud regions or procedural cloud coverage, preserve that behavior.
+
+The SDF architecture should allow multiple cloud primitives to be combined.
+
+For example:
+
+```text
+cloudSDF =
+    smoothUnion(
+        cloudA,
+        cloudB
+    );
+```
+
+Use smooth SDF combinations rather than hard Boolean unions where appropriate.
+
+This should create coherent cloud formations rather than disconnected geometric objects.
+
+---
+
+# 12. Wind
+
+Preserve the existing wind parameters.
+
+Wind should affect the procedural cloud domain.
+
+Conceptually:
+
+```text
+windOffset =
+    windDirection *
+    windSpeed *
+    time;
+```
+
+Apply the offset to the noise domain.
+
+Cloud structures should therefore evolve and move naturally.
+
+Do not simply translate the entire cloud volume unless that is how the existing implementation behaves.
+
+Prefer:
+
+```text
+moving volume
++
+evolving noise
++
+wind-driven distortion
+```
+
+---
+
+# 13. Cloud Animation
+
+Preserve the existing animation behavior.
+
+The new cloud system should support temporally evolving noise.
+
+Avoid frozen procedural noise.
+
+Use time-dependent offsets and/or domain warping.
+
+For example:
+
+```text
+animatedPosition =
+    p +
+    windOffset +
+    turbulenceOffset;
+```
+
+The cloud should slowly evolve rather than visibly repeating a small texture pattern.
+
+---
+
+# 14. Volumetric Ray Marching
+
+Replace the current cloud rendering approach with volumetric ray marching.
+
+For each camera ray:
+
+1. intersect the ray with the cloud SDF bounding volume,
+2. determine the valid ray interval,
+3. ray march through the cloud,
+4. evaluate the SDF,
+5. skip empty space,
+6. evaluate procedural density,
+7. evaluate lighting,
+8. accumulate scattering/extinction,
+9. terminate when opacity becomes sufficiently high.
+
+Do not ray march the entire atmosphere.
+
+Only march where the cloud SDF indicates that cloud volume may exist.
+
+---
+
+# 15. SDF Empty-Space Skipping
+
+Use the SDF to accelerate the ray marcher.
+
+If:
+
+```text
+cloudSDF(p) > 0
+```
+
+the sample is outside the cloud.
+
+Use the SDF distance to safely advance through empty space where possible.
+
+Conceptually:
+
+```text
+distanceToCloud = cloudSDF(p);
+
+if (distanceToCloud > emptySpaceThreshold)
+{
+    rayT += distanceToCloud;
+    continue;
+}
+```
+
+Do not blindly use the SDF as a ray-march step if the procedural density deformation invalidates the distance bound.
+
+Ensure the resulting step is conservative.
+
+The goal is to substantially reduce expensive noise evaluations in empty regions.
+
+---
+
+# 16. Adaptive Ray Marching
+
+Use larger steps through empty/low-density regions.
+
+Use smaller steps near:
+
+* cloud boundaries,
+* high-density regions,
+* rapidly changing density,
+* strong lighting transitions.
+
+Conceptually:
+
+```text
+stepSize =
+    mix(
+        largeStep,
+        smallStep,
+        density
+    );
+```
+
+The final implementation should avoid unnecessary fixed-size high-frequency marching.
+
+---
+
+# 17. Density Evaluation Pipeline
+
+Organize density evaluation approximately as:
+
+```text
+Cloud SDF
+    ↓
+Vertical Profile
+    ↓
+Coverage
+    ↓
+Domain Warp
+    ↓
+Base Noise
+    ↓
+Detail Noise
+    ↓
+Fine Noise
+    ↓
+Edge Erosion
+    ↓
+Final Density
+```
+
+Keep this evaluation modular.
+
+For example:
+
+```text
+float evaluateCloudSDF(vec3 p);
+
+float evaluateCloudDensity(
+    vec3 p,
+    float time
+);
+
+float evaluateCloudLighting(
+    vec3 p,
+    vec3 lightDirection
+);
+```
+
+---
+
+# 18. Lighting
+
+Preserve the existing cloud lighting model as closely as possible.
+
+The new implementation should support volumetric scattering.
+
+At minimum support:
+
+* direct sunlight,
+* cloud self-shadowing,
+* ambient contribution,
+* forward scattering,
+* back scattering.
+
+The cloud should become brighter when viewed toward the light and darker when viewed away from it.
+
+---
+
+# 19. Cloud Self-Shadowing
+
+Implement efficient cloud self-shadowing.
+
+From each cloud sample, trace a small number of samples toward the primary light.
+
+Do not perform expensive full-resolution secondary ray marching.
+
+Use a low sample count.
+
+For example:
+
+```text
+lightTransmittance =
+    sampleCloudDensityAlongLightRay();
+```
+
+Then:
+
+```text
+lighting *= lightTransmittance;
+```
+
+Expose the existing cloud shadow parameters if they already exist.
+
+---
+
+# 20. Phase Function
+
+Implement a physically plausible approximation of volumetric scattering.
+
+Use a Henyey-Greenstein-style phase function or another inexpensive phase approximation.
+
+Conceptually:
+
+```text
+phase =
+    henyeyGreenstein(
+        dot(viewDirection, lightDirection),
+        anisotropy
+    );
+```
+
+Preserve any existing anisotropy/scattering parameters where applicable.
+
+This should provide realistic silver-lining and forward-scattering behavior.
+
+---
+
+# 21. Silver Lining
+
+The cloud renderer should naturally produce a bright rim when the sun is behind the cloud.
+
+Do not implement this as a separate fake billboard effect.
+
+It should emerge from:
+
+```text
+density
++
+light transmittance
++
+phase function
++
+view direction
+```
+
+This should work automatically with changing sun position.
+
+---
+
+# 22. Cloud Shadows on the Scene
+
+If the existing system projects cloud shadows onto terrain/objects, preserve that behavior.
+
+The new cloud density representation should be usable for cloud-shadow evaluation.
+
+Do not create a completely separate cloud representation just for shadows.
+
+Reuse the SDF/density system where practical.
+
+For performance, use a lower-resolution or simplified evaluation for cloud shadows.
+
+---
+
+# 23. Rendering Resolution
+
+If the current cloud renderer uses a reduced resolution, preserve the existing behavior.
+
+If the current implementation renders clouds at full resolution, consider moving the new volumetric cloud pass to a lower-resolution render target.
+
+For example:
+
+```text
+1/2 resolution
+1/4 resolution
+```
+
+followed by temporal reconstruction/upscaling.
+
+The exact resolution should remain configurable.
+
+Do not sacrifice the existing image quality unnecessarily.
+
+---
+
+# 24. Temporal Reprojection
+
+If compatible with the existing renderer, implement temporal accumulation for the volumetric cloud pass.
+
+Use:
+
+* previous-frame cloud color,
+* motion vectors,
+* camera motion,
+* wind motion.
+
+Reproject previous cloud samples into the current frame.
+
+Use temporal blending to reduce the number of ray-march samples required per frame.
+
+Avoid ghosting around rapidly changing cloud boundaries.
+
+---
+
+# 25. Performance Requirements
+
+This replacement must be designed around GPU performance.
+
+The primary expensive operations are:
+
+```text
+procedural noise
+ray marching
+light sampling
+```
+
+Optimize these aggressively.
+
+Use:
+
+* SDF bounding-volume intersection,
+* SDF empty-space skipping,
+* adaptive ray steps,
+* early ray termination,
+* reduced-resolution rendering,
+* temporal accumulation,
+* compact noise evaluation,
+* limited shadow samples.
+
+Do not calculate high-frequency noise when the sample is clearly outside the cloud.
+
+Do not calculate lighting for samples with negligible density.
+
+Recommended evaluation order:
+
+```text
+Ray / Cloud Bounds
+        ↓
+SDF
+        ↓
+Empty-Space Skip
+        ↓
+Cheap Density
+        ↓
+Detailed Noise
+        ↓
+Final Density
+        ↓
+Lighting
+        ↓
+Accumulation
+```
+
+---
+
+# 26. GPU-Only Evaluation
+
+The cloud density should be evaluated on the GPU.
+
+Do not generate cloud geometry on the CPU.
+
+Do not generate a CPU-side voxel volume.
+
+Do not upload a large 3D density texture every frame.
+
+The cloud should be procedurally evaluated by the shader.
+
+---
+
+# 27. Remove the Old Rendering Path
+
+Once the new SDF renderer is working correctly, remove the old cloud rendering implementation.
+
+Do not leave two active cloud renderers unless temporarily required during development.
+
+Remove:
+
+* obsolete cloud shaders,
+* obsolete cloud-specific geometry,
+* obsolete cloud render passes,
+* obsolete cloud textures,
+* obsolete buffers,
+* obsolete descriptor bindings,
+* obsolete CPU generation code.
+
+However, preserve configuration parameters that remain useful.
+
+Do not remove parameters simply because their implementation changed.
+
+---
+
+# 28. Preserve Existing Cloud UI
+
+The existing cloud configuration/debug UI should continue to work.
+
+The user should not need to learn a completely new cloud interface.
+
+Map the existing parameters into the new SDF system.
+
+If new parameters are absolutely necessary, add them only where there is no existing equivalent.
+
+Clearly separate:
+
+```text
+Existing Parameters
+```
+
+from:
+
+```text
+New SDF Renderer Parameters
+```
+
+Avoid parameter duplication.
+
+---
+
+# 29. Debug Views
+
+Add optional debug modes for development.
+
+At minimum:
+
+```text
+0 = Final Cloud
+1 = Cloud SDF
+2 = Base Density
+3 = Coverage
+4 = Domain Warp
+5 = Erosion
+6 = Final Density
+7 = Lighting
+8 = Cloud Shadows
+9 = Ray-March Steps
+10 = Empty-Space Skipping
+```
+
+These modes should make it possible to verify that the SDF and density field are behaving correctly.
+
+---
+
+# 30. SDF Debug Visualization
+
+The SDF debug mode should visualize:
+
+```text
+SDF < 0  -> inside cloud domain
+SDF = 0  -> cloud boundary
+SDF > 0  -> outside cloud domain
+```
+
+Use the visualization to verify that the cloud domain is correct independently of procedural density.
+
+---
+
+# 31. Existing Cloud Behavior
+
+Before replacing the renderer, inspect the current implementation and document:
+
+1. all existing cloud parameters,
+2. how each parameter affects the current renderer,
+3. how cloud placement works,
+4. how cloud animation works,
+5. how wind works,
+6. how cloud lighting works,
+7. how cloud shadows work,
+8. how clouds are composited with the scene.
+
+Then map these behaviors into the SDF renderer.
+
+Do not assume the current system's behavior from parameter names alone.
+
+Use the actual implementation as the source of truth.
+
+---
+
+# 32. Visual Compatibility
+
+The first implementation target should be:
+
+> Same cloud parameters + same intended appearance + completely different underlying representation.
+
+Do not immediately redesign the visual style.
+
+First reproduce the existing appearance with the SDF renderer.
+
+Only after visual parity is achieved should additional improvements be introduced.
+
+This makes debugging much easier.
+
+---
+
+# 33. Future Extensibility
+
+Design the SDF cloud system so additional volumetric effects can later be implemented using the same infrastructure.
+
+The system should make it possible to add:
+
+* smoke,
+* fog volumes,
+* explosions,
+* fire,
+* volumetric dust,
+* atmospheric disturbances,
+* projectile interaction,
+* cloud deformation.
+
+Use reusable concepts such as:
+
+```text
+SDF evaluation
+Density evaluation
+Domain warping
+Volume ray marching
+Volume lighting
+Volume shadows
+```
+
+Do not hard-code the implementation around one particular cloud shape.
+
+---
+
+# 34. Recommended Architecture
+
+Conceptually structure the new implementation as:
+
+```text
+Existing Cloud Parameters
+            |
+            v
+     Cloud Configuration
+            |
+            v
+       Cloud SDF
+            |
+            +------> Density / Noise
+            |
+            +------> Wind / Animation
+            |
+            +------> Coverage / Erosion
+            |
+            v
+    Volumetric Ray Marcher
+            |
+            +------> Lighting
+            |
+            +------> Self Shadow
+            |
+            +------> Phase Function
+            |
+            v
+      Temporal Accumulation
+            |
+            v
+       Cloud Composite
+```
+
+Keep these stages logically separated.
+
+---
+
+# 35. Important Constraint
+
+Do not replace the existing cloud system with a mesh-based solution.
+
+Do not use:
+
+* cloud billboards,
+* particle sprites,
+* pre-generated cloud meshes,
+* CPU voxelization,
+* static 3D textures as the primary representation.
+
+The new implementation must fundamentally be:
+
+```text
+SDF + Procedural Density + Volumetric Ray Marching
+```
+
+---
+
+# 36. Final Acceptance Criteria
+
+The implementation is complete when:
+
+1. The existing cloud system has been fully inspected.
+2. All relevant existing cloud parameters are preserved.
+3. Existing cloud UI continues to control the new renderer.
+4. The old cloud rendering path has been replaced.
+5. Clouds are represented by an SDF-defined volume.
+6. Cloud density is generated procedurally.
+7. Multiple noise frequencies create realistic cloud structures.
+8. Coverage and erosion behave correctly.
+9. Wind and animation continue working.
+10. Cloud lighting remains visually consistent.
+11. Cloud self-shadowing works.
+12. Cloud shadows remain compatible with the scene.
+13. Volumetric ray marching is bounded by the cloud SDF.
+14. Empty-space skipping is implemented.
+15. Adaptive ray marching is implemented.
+16. The implementation is GPU-driven.
+17. No CPU voxel volume is generated.
+18. The renderer can operate at reduced resolution if necessary.
+19. Temporal accumulation can be used to reduce ray-march cost.
+20. Debug views allow inspection of the SDF and density field.
+21. Obsolete cloud rendering resources are removed.
+22. No unnecessary duplicate cloud parameters are introduced.
+23. The resulting clouds visually match the intent of the previous system.
+24. The new architecture is reusable for other procedural volumetric effects.
+
+The most important requirement is:
+
+**Do not change the cloud system's user-facing behavior unnecessarily. Replace the underlying cloud representation and renderer while preserving the existing parameters and visual controls.**
+
+The final architecture should provide a much stronger foundation for realistic procedural volumetric effects while remaining performant enough for real-time Vulkan rendering.

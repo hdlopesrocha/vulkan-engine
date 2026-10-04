@@ -1,0 +1,996 @@
+
+# Implement a Procedural SDF Volumetric Smoke Bomb with Bullet Interaction
+
+Implement a new procedural volumetric effect representing a **Counter-Strike-style smoke grenade**, but entirely procedurally generated using a **signed distance field (SDF)** and volumetric ray marching.
+
+The smoke must expand over time into a large spherical/roughly spherical volume, using layered procedural noise to create realistic turbulent smoke.
+
+A bullet can then travel through the smoke volume. The bullet must behave as a **negative SDF operation / subtraction volume**, creating a temporary cylindrical tunnel through the smoke. The bullet's movement must also generate realistic aerodynamic disturbances, pressure waves, and turbulence in the surrounding smoke.
+
+The result should look like a real bullet passing through a dense smoke cloud rather than simply clipping a cylinder through it.
+
+---
+
+## 1. Smoke Volume
+
+Create a procedural smoke volume centered around the smoke-bomb position.
+
+The base volume should be approximately spherical, but it must not look like a perfect mathematical sphere.
+
+Use an SDF representation:
+
+```text
+sphereSDF(p, center, radius)
+```
+
+The smoke radius increases over time.
+
+For example:
+
+```text
+radius = growthCurve(time)
+```
+
+Use a smooth growth curve rather than linear expansion.
+
+The smoke should:
+
+* start relatively small,
+* rapidly expand,
+* reach a large maximum radius,
+* then remain approximately stable,
+* optionally slowly dissipate.
+
+The volume should have a soft and irregular boundary.
+
+Do NOT simply render a solid sphere.
+
+The sphere defines the potential smoke region, while procedural density determines where smoke actually exists.
+
+---
+
+# 2. Procedural Smoke Density
+
+Use volumetric ray marching through the SDF-defined smoke volume.
+
+The smoke density must be generated procedurally using multiple layers of noise.
+
+Use:
+
+* low-frequency Perlin/simplex noise for large smoke structures,
+* medium-frequency noise for turbulent structures,
+* high-frequency noise for fine wisps.
+
+Conceptually:
+
+```text
+densityNoise =
+    largeNoise * largeWeight +
+    mediumNoise * mediumWeight +
+    fineNoise * fineWeight;
+```
+
+Warp the sampling position using lower-frequency noise before evaluating the higher-frequency noise.
+
+For example:
+
+```text
+warp = noise(lowFrequencyPosition + time * windVelocity);
+
+samplePosition += warp * warpStrength;
+```
+
+Then evaluate the density.
+
+The smoke should have:
+
+* large rolling formations,
+* turbulent edges,
+* holes,
+* wisps,
+* irregular density,
+* continuously evolving structures.
+
+Avoid obvious Perlin-noise blobs.
+
+The noise must be animated over time.
+
+---
+
+# 3. Smoke SDF / Density Relationship
+
+Separate the concepts of:
+
+1. smoke volume,
+2. smoke density,
+3. bullet interaction,
+4. aerodynamic disturbance.
+
+Do not destroy the entire smoke SDF when the bullet passes.
+
+Instead, calculate a final density field.
+
+Conceptually:
+
+```text
+baseSmokeSDF = sphereSDF(p, smokeCenter, smokeRadius);
+
+baseDensity = proceduralSmokeDensity(p, time);
+
+finalDensity = baseDensity;
+```
+
+The SDF should primarily determine whether the ray is inside the smoke volume.
+
+Density determines how much smoke is actually present.
+
+Use smooth transitions at the volume boundary.
+
+---
+
+# 4. Bullet as an SDF Subtraction
+
+Represent the bullet trajectory as a finite swept cylinder/capsule.
+
+Given:
+
+```text
+bulletStart
+bulletDirection
+bulletTravelDistance
+bulletRadius
+```
+
+construct a cylindrical/capsule SDF representing the bullet's path.
+
+Do NOT use an infinite cylinder.
+
+The bullet path should have a finite beginning and end.
+
+Conceptually:
+
+```text
+bulletPathSDF = capsuleSDF(
+    bulletStart,
+    bulletEnd,
+    bulletRadius
+);
+```
+
+Then use this as a subtraction operation against the smoke.
+
+The basic Boolean operation is:
+
+```text
+smokeMinusBullet =
+    max(baseSmokeSDF, -bulletPathSDF);
+```
+
+However, do not make the final visual effect a perfectly clean cylindrical tunnel.
+
+The bullet should disturb the smoke rather than simply deleting it permanently.
+
+Therefore use the bullet SDF primarily to create a temporary low-density core.
+
+---
+
+# 5. Bullet Tunnel
+
+As the bullet moves through the smoke, create a low-density wake behind it.
+
+The center of the bullet path should have strongly reduced smoke density.
+
+For example:
+
+```text
+bulletInfluence =
+    1.0 - smoothstep(
+        bulletRadius,
+        bulletRadius + falloff,
+        distanceToBulletPath
+    );
+```
+
+Then:
+
+```text
+density *= 1.0 - bulletInfluence * tunnelStrength;
+```
+
+The tunnel should gradually refill.
+
+Do not leave an unrealistic permanent hole.
+
+The smoke should flow back into the tunnel over time.
+
+---
+
+# 6. Bullet Aerodynamic Disturbance
+
+The most important part of the effect is the interaction between the bullet and smoke.
+
+The bullet must generate an aerodynamic disturbance around its trajectory.
+
+Model this as a combination of:
+
+* radial pressure displacement,
+* forward compression,
+* lateral shock/wake disturbance,
+* turbulent wake,
+* gradual dissipation.
+
+The bullet direction is:
+
+```text
+D = normalize(bulletEnd - bulletStart);
+```
+
+For every point `p` in the smoke volume, calculate the closest point on the bullet trajectory.
+
+Let:
+
+```text
+Q = closestPointOnSegment(p, bulletStart, bulletEnd);
+```
+
+and:
+
+```text
+R = p - Q;
+```
+
+Then:
+
+```text
+radialDistance = length(R);
+```
+
+This provides a local coordinate system around the bullet trajectory.
+
+---
+
+# 7. Radial Pressure Wave
+
+Create a radial pressure disturbance around the bullet.
+
+The disturbance should be strongest near the bullet path and decrease smoothly with distance.
+
+For example:
+
+```text
+pressure =
+    exp(
+        -(radialDistance * radialDistance) /
+        (2.0 * pressureRadius * pressureRadius)
+    );
+```
+
+The pressure should not simply delete smoke.
+
+Instead, use it to displace the procedural noise domain.
+
+For example:
+
+```text
+displacement =
+    normalize(R) *
+    pressure *
+    pressureStrength;
+```
+
+Then:
+
+```text
+disturbedPosition =
+    p + displacement;
+```
+
+Evaluate the smoke noise at `disturbedPosition`.
+
+This makes the smoke appear physically pushed away from the bullet trajectory.
+
+---
+
+# 8. Bullet Shock / Wave Front
+
+Create a propagating disturbance travelling outward from the bullet trajectory.
+
+The wave should propagate approximately radially away from the bullet path.
+
+Use a wave function such as:
+
+```text
+wave =
+    sin(
+        radialDistance * waveFrequency
+        - elapsedTime * waveSpeed
+    );
+```
+
+Multiply it by an attenuation term:
+
+```text
+wave *= exp(-radialDistance * waveFalloff);
+```
+
+However, do not allow the wave to exist everywhere indefinitely.
+
+Limit it to the region recently affected by the bullet.
+
+The wave amplitude should decay with:
+
+* distance from the bullet trajectory,
+* time since the bullet passed.
+
+---
+
+# 9. Bullet Wake
+
+Behind the bullet, create a turbulent wake.
+
+The wake should be elongated along the bullet direction.
+
+Calculate the longitudinal coordinate:
+
+```text
+longitudinalDistance =
+    dot(p - bulletStart, D);
+```
+
+Only generate the wake behind the bullet:
+
+```text
+behindBullet =
+    longitudinalDistance < currentBulletDistance;
+```
+
+Create an anisotropic wake radius.
+
+The wake should be:
+
+* narrow immediately behind the bullet,
+* slightly expanding behind it,
+* turbulent,
+* gradually disappearing.
+
+Use additional noise to break up the wake.
+
+Conceptually:
+
+```text
+wakeRadius =
+    initialRadius +
+    longitudinalDistance * wakeExpansion;
+```
+
+Then:
+
+```text
+wakeInfluence =
+    radialFalloff *
+    longitudinalFalloff *
+    turbulentNoise;
+```
+
+Use the wake to displace and thin the smoke.
+
+---
+
+# 10. Turbulence Around the Bullet
+
+The bullet wake should generate secondary turbulent motion.
+
+Use the bullet trajectory to create a local velocity/displacement field.
+
+For example:
+
+```text
+radialVelocity = normalize(R);
+
+turbulence =
+    curlNoise(disturbedPosition + time * turbulenceVelocity);
+```
+
+Combine the radial pressure displacement and turbulent displacement:
+
+```text
+totalDisplacement =
+    pressureDisplacement +
+    wakeDisplacement +
+    turbulence * turbulenceStrength;
+```
+
+Then evaluate the smoke density using:
+
+```text
+samplePosition =
+    p + totalDisplacement;
+```
+
+This is important.
+
+The bullet should modify the **noise domain**, not merely produce a geometric hole.
+
+That makes the smoke react naturally.
+
+---
+
+# 11. Pressure Wave Propagation
+
+The disturbance should propagate outward at a configurable speed.
+
+Expose parameters such as:
+
+```text
+pressureWaveSpeed
+pressureWaveRadius
+pressureWaveStrength
+pressureWaveFalloff
+wakeStrength
+wakeExpansion
+turbulenceStrength
+turbulenceScale
+```
+
+The effect should support different bullet velocities.
+
+A faster bullet should produce:
+
+* stronger directional disturbance,
+* narrower initial wake,
+* faster propagation along the trajectory,
+* stronger turbulence.
+
+---
+
+# 12. Smoke Refill
+
+The smoke must naturally refill the bullet tunnel.
+
+Do not permanently subtract the bullet cylinder from the smoke.
+
+Instead, calculate a temporal disturbance.
+
+For example:
+
+```text
+disturbanceAge =
+    time - bulletPassTime;
+```
+
+Then:
+
+```text
+disturbanceStrength =
+    exp(-disturbanceAge * refillRate);
+```
+
+The disturbance should decay continuously.
+
+As the disturbance decays:
+
+```text
+finalDensity
+```
+
+should progressively return toward the normal procedural smoke density.
+
+This should produce a visible but temporary bullet path.
+
+---
+
+# 13. Volumetric Ray Marching
+
+Render the smoke using volumetric ray marching.
+
+For each camera ray:
+
+1. intersect the ray with the smoke bounding volume,
+2. obtain entry and exit distances,
+3. ray march only through the relevant interval,
+4. evaluate the procedural density,
+5. apply bullet interaction,
+6. accumulate optical density,
+7. accumulate lighting/scattering,
+8. terminate early when opacity becomes sufficiently high.
+
+Use the smoke SDF to accelerate ray marching where possible.
+
+Do not march through empty space unnecessarily.
+
+---
+
+# 14. SDF-Based Ray March Optimization
+
+The smoke's spherical SDF should be used as an acceleration structure.
+
+First intersect the camera ray against the smoke bounding sphere.
+
+Only ray march inside that interval.
+
+Additionally, use the SDF to skip empty regions when the density is negligible.
+
+Do NOT perform expensive procedural noise evaluation when the point is clearly outside the smoke volume.
+
+Structure the shader so that cheap tests happen before expensive noise calculations.
+
+Preferred evaluation order:
+
+```text
+ray/sphere intersection
+        ↓
+SDF distance test
+        ↓
+cheap density rejection
+        ↓
+bullet interaction
+        ↓
+noise domain warping
+        ↓
+expensive noise evaluation
+        ↓
+density
+        ↓
+lighting/scattering
+        ↓
+accumulation
+```
+
+---
+
+# 15. Lighting
+
+The smoke must respond correctly to the scene lighting.
+
+Implement volumetric single-scattering approximation.
+
+The smoke should become:
+
+* brighter toward the light,
+* darker in shadow,
+* more opaque in dense regions,
+* softer around thin wisps.
+
+Support the existing scene sun/light system.
+
+Do not introduce an expensive full volumetric global illumination system.
+
+Prioritize performance.
+
+---
+
+# 16. Self-Shadowing
+
+Implement inexpensive approximate volumetric self-shadowing.
+
+A small number of light samples should be taken through the smoke toward the primary light.
+
+Avoid a large number of secondary ray marches.
+
+Use configurable:
+
+```text
+shadowSamples
+shadowStepSize
+shadowStrength
+```
+
+Allow the implementation to reduce shadow samples when performance is limited.
+
+---
+
+# 17. Smoke Color
+
+The smoke should not simply be pure gray.
+
+Use physically plausible atmospheric smoke colors based on lighting.
+
+Base color can be approximately:
+
+```text
+dark gray → gray → slightly warm gray
+```
+
+depending on lighting.
+
+Allow:
+
+```text
+smokeColor
+density
+absorption
+scattering
+```
+
+to be configurable.
+
+---
+
+# 18. Wind
+
+Add global wind.
+
+The entire smoke volume should respond to wind.
+
+Use:
+
+```text
+windVelocity
+```
+
+to offset the noise domain:
+
+```text
+noisePosition += windVelocity * time;
+```
+
+The bullet wake should also interact with the moving smoke.
+
+The bullet disturbance must remain in world space rather than simply moving with the smoke sphere.
+
+---
+
+# 19. Smoke Expansion
+
+The smoke bomb should expand dynamically.
+
+Use:
+
+```text
+radius = smoothGrowthCurve(time);
+```
+
+The smoke should initially be concentrated near the grenade.
+
+As time progresses:
+
+```text
+radius ↑
+```
+
+while the smoke density decreases slightly as the volume expands.
+
+This should preserve approximately plausible total smoke mass rather than simply making a sphere progressively more opaque.
+
+---
+
+# 20. Multiple Bullet Support
+
+The system should support multiple simultaneous bullets.
+
+Do not hard-code a single bullet.
+
+Represent bullets as a GPU buffer:
+
+```text
+struct BulletInteraction
+{
+    vec3 start;
+    vec3 direction;
+    float length;
+    float radius;
+    float speed;
+    float time;
+};
+```
+
+The shader should iterate over active bullet interactions.
+
+Use a configurable maximum number of bullets.
+
+Optimize this path carefully.
+
+For a large number of bullets, consider spatial partitioning or clustering so every smoke sample does not need to evaluate every bullet.
+
+---
+
+# 21. Visual Goal
+
+The final visual result should resemble:
+
+* a dense tactical smoke grenade,
+* expanding into a turbulent spherical cloud,
+* continuously evolving procedural smoke,
+* realistic soft boundaries,
+* rolling internal structures,
+* a bullet entering the cloud,
+* a temporary cylindrical low-density path,
+* smoke being pushed radially outward,
+* a propagating pressure disturbance,
+* a turbulent wake behind the bullet,
+* smoke gradually collapsing back into the wake,
+* secondary turbulent motion around the trajectory.
+
+The bullet should appear to physically interact with the smoke.
+
+Avoid the appearance of:
+
+> "A cylinder was subtracted from a sphere."
+
+Instead it should look like:
+
+> "A fast projectile physically displaced and disturbed a volumetric cloud."
+
+---
+
+# 22. Performance Requirements
+
+This must be designed for real-time Vulkan rendering.
+
+Prioritize GPU performance.
+
+Avoid unnecessary CPU simulation.
+
+The smoke should be evaluated procedurally in the shader.
+
+Use:
+
+* adaptive ray-march step sizes,
+* sphere/SDF intersection,
+* early empty-space termination,
+* early opacity termination,
+* reduced noise evaluations,
+* temporal coherence where possible,
+* lower-resolution volumetric rendering if appropriate,
+* temporal reprojection if compatible with the renderer.
+
+Do not calculate expensive Perlin noise multiple times per ray step unless necessary.
+
+Prefer combining multiple noise frequencies efficiently.
+
+---
+
+# 23. Vulkan Integration
+
+Integrate the effect cleanly into the existing Vulkan renderer.
+
+Do not create an isolated prototype renderer.
+
+Reuse the existing:
+
+* camera system,
+* frame timing,
+* descriptor infrastructure,
+* command buffers,
+* render targets,
+* synchronization,
+* GPU resource management,
+* scene lighting.
+
+The implementation should fit the existing rendering architecture.
+
+Use the existing shader conventions and Vulkan abstractions.
+
+Do not introduce unnecessary dependencies.
+
+---
+
+# 24. Debugging Views
+
+Add optional debug modes for development:
+
+```text
+0 = normal smoke
+1 = base smoke SDF
+2 = density
+3 = bullet SDF
+4 = bullet tunnel
+5 = pressure field
+6 = wave field
+7 = turbulence
+8 = wake
+9 = final density
+10 = ray-march steps
+```
+
+This is important for tuning the effect.
+
+---
+
+# 25. Parameters
+
+Expose the important parameters through the existing configuration/debug UI.
+
+At minimum:
+
+```text
+Smoke
+-----
+growthDuration
+maximumRadius
+density
+noiseScale
+noiseStrength
+noiseWarp
+windVelocity
+dissipation
+
+Bullet
+------
+bulletRadius
+bulletSpeed
+bulletLength
+tunnelStrength
+tunnelFalloff
+
+Pressure
+--------
+pressureRadius
+pressureStrength
+pressureWaveSpeed
+pressureWaveFrequency
+pressureWaveFalloff
+
+Wake
+----
+wakeStrength
+wakeRadius
+wakeExpansion
+wakeLength
+wakeDissipation
+
+Turbulence
+----------
+turbulenceScale
+turbulenceStrength
+turbulenceSpeed
+
+Rendering
+---------
+rayStepSize
+maximumSteps
+densityScale
+absorption
+scattering
+shadowSamples
+shadowStrength
+```
+
+---
+
+# 26. Implementation Constraints
+
+Do not fake the effect using a billboard, particle system, or pre-baked texture.
+
+The smoke must be generated procedurally.
+
+Do not use a static 3D texture as the primary smoke representation.
+
+The smoke volume must come from:
+
+```text
+SDF + procedural noise + ray marching
+```
+
+The bullet interaction must come from:
+
+```text
+bullet trajectory SDF
++
+pressure/displacement field
++
+turbulent wake
++
+temporal dissipation
+```
+
+The final result must remain entirely GPU-driven.
+
+---
+
+# 27. Recommended Mathematical Structure
+
+Organize the implementation around functions conceptually similar to:
+
+```text
+float smokeSDF(vec3 p)
+
+float baseSmokeDensity(vec3 p, float time)
+
+float bulletPathSDF(vec3 p, BulletInteraction bullet)
+
+float bulletInfluence(vec3 p, BulletInteraction bullet)
+
+vec3 bulletPressureDisplacement(
+    vec3 p,
+    BulletInteraction bullet,
+    float time
+)
+
+vec3 bulletWakeDisplacement(
+    vec3 p,
+    BulletInteraction bullet,
+    float time
+)
+
+float bulletPressureWave(
+    vec3 p,
+    BulletInteraction bullet,
+    float time
+)
+
+vec3 bulletTurbulence(
+    vec3 p,
+    BulletInteraction bullet,
+    float time
+)
+
+float evaluateSmokeDensity(
+    vec3 p,
+    float time
+)
+```
+
+The final density should conceptually be:
+
+```text
+baseDensity
+    ↓
+bullet displacement
+    ↓
+pressure disturbance
+    ↓
+wake turbulence
+    ↓
+wave modulation
+    ↓
+temporal dissipation
+    ↓
+final smoke density
+```
+
+---
+
+# 28. Important Physical Detail
+
+Do not model the bullet disturbance as a simple symmetric expanding sphere.
+
+A real projectile produces a strongly directional disturbance.
+
+The implementation must distinguish between:
+
+```text
+front of bullet
+side of bullet
+behind bullet
+```
+
+The front should contain compression.
+
+The sides should contain radial displacement.
+
+The rear should contain a turbulent wake.
+
+The disturbance should therefore be anisotropic.
+
+Use the bullet direction vector and longitudinal coordinate to construct this anisotropy.
+
+---
+
+# 29. Final Acceptance Criteria
+
+The implementation is complete when:
+
+1. A smoke grenade creates a growing volumetric spherical smoke cloud.
+2. The smoke is procedurally generated using layered animated noise.
+3. The smoke has realistic turbulent structure rather than obvious noise blobs.
+4. A bullet can enter the smoke.
+5. The bullet creates a temporary low-density tunnel.
+6. The tunnel is based on an SDF/capsule representation.
+7. Smoke is displaced around the projectile path.
+8. A directional pressure disturbance propagates through the smoke.
+9. A turbulent wake forms behind the bullet.
+10. The wake expands and dissipates naturally.
+11. The smoke gradually refills the bullet path.
+12. Multiple bullets can interact with the volume.
+13. The effect is fully GPU-driven.
+14. Ray marching is bounded by the smoke SDF.
+15. Empty-space and early-termination optimizations are implemented.
+16. Lighting and volumetric scattering work with the existing renderer.
+17. No billboard or pre-baked volume is used.
+18. The final effect visually resembles a real projectile passing through dense smoke.
+
+Focus on **physical plausibility, procedural detail, and GPU efficiency**, rather than simply producing a visually convincing static effect.
+Make the animation repeat every 10s (adjusteable in SmokeBulletWidget where all properties and parameters can be adjusted)
+
+put that smoke at (0,2048,0) with radius 128, bulletSize 32, duration 10

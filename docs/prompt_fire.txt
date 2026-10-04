@@ -1,0 +1,844 @@
+Yes. I would replace the previous prompt with this version, because it is more GPU-oriented and specifically avoids the expensive **“one ray march per flame”** approach.
+
+```text
+Implement a high-performance GPU-driven procedural fire rendering system in Vulkan.
+
+The system must render many animated procedural flames inside a FireContainer / tank using Signed Distance Fields (SDFs), while minimizing per-pixel and per-flame work.
+
+The primary performance objective is to avoid:
+- full-screen fire ray marching
+- evaluating every flame for every pixel
+- performing a separate ray march for every flame
+- repeatedly traversing a large BVH for every ray-march step
+- sampling the SDF at unnecessarily small fixed intervals
+
+The preferred architecture is:
+
+    FireContainer AABB
+            ↓
+    proxy rasterization
+            ↓
+    ray / AABB intersection
+            ↓
+    spatial grid / hierarchy
+            ↓
+    relevant flame candidates
+            ↓
+    ONE unified SDF ray march
+            ↓
+    density + temperature + emission
+            ↓
+    compositing
+
+The implementation must integrate with the existing Vulkan renderer and reuse existing infrastructure wherever possible.
+
+==================================================
+1. FIRE CONTAINER
+==================================================
+
+Create a FireContainer representation.
+
+A FireContainer represents one volume containing many procedural flame instances.
+
+Each FireContainer contains:
+
+- world-space AABB
+- flame instance range
+- spatial acceleration structure
+- fire parameters
+- animation parameters
+
+The AABB is the first level of culling.
+
+The system must never perform fire ray marching for pixels that cannot intersect the FireContainer.
+
+==================================================
+2. INSTANCED FLAMES
+==================================================
+
+Flames must be instanced.
+
+Do NOT generate individual meshes for each flame.
+
+Each FlameInstance should contain at least:
+
+- position
+- rotation
+- scale
+- size
+- animation seed
+- animation phase
+- intensity multiplier
+- optional shape parameters
+
+All instances use the same procedural SDF implementation.
+
+Instances should look different through their parameters and animation seed.
+
+Different instances must be able to have:
+
+- different heights
+- different widths
+- different turbulence
+- different animation phases
+- different intensity
+- slightly different shapes
+
+Do not duplicate shader code per flame.
+
+==================================================
+3. FIRE PROXY RASTERIZATION
+==================================================
+
+Do not ray march the entire screen.
+
+Rasterize a proxy representing the FireContainer.
+
+The proxy can be the FireContainer world-space AABB.
+
+The proxy exists only to generate fragments for pixels potentially affected by the fire.
+
+For every fragment:
+
+1. reconstruct the camera ray
+2. intersect the ray with the FireContainer AABB
+3. calculate:
+
+   tEnter
+   tExit
+
+4. discard if there is no intersection
+5. clamp the ray interval to the container
+
+The ray march must only occur between tEnter and tExit.
+
+Use existing camera and depth infrastructure.
+
+==================================================
+4. DEPTH OCCLUSION
+==================================================
+
+Use the existing scene depth buffer to avoid evaluating fire that is completely behind opaque geometry.
+
+The fire pass should determine the maximum usable ray distance from the scene depth whenever appropriate.
+
+For example:
+
+    ray interval =
+        [tEnter, min(tExit, sceneDepth)]
+
+If the resulting interval is empty:
+
+    discard
+
+Do not introduce a separate depth system if the renderer already provides suitable depth information.
+
+==================================================
+5. SPATIAL ACCELERATION
+==================================================
+
+Use a two-level spatial structure.
+
+Preferred architecture:
+
+    FireContainer
+          ↓
+    uniform 3D spatial grid
+          ↓
+    local flame lists
+          ↓
+    optional small BVH / hierarchy
+
+The spatial grid should divide each FireContainer into a configurable number of cells.
+
+For example:
+
+    8 × 8 × 8
+
+or:
+
+    16 × 16 × 16
+
+depending on the number of flames.
+
+Each cell stores the flame instances whose bounding volumes overlap that cell.
+
+The exact structure should be chosen based on GPU efficiency and the existing renderer architecture.
+
+Avoid extremely complicated pointer-heavy structures.
+
+Prefer flat GPU buffers with integer offsets/counts.
+
+==================================================
+6. WHY A SPATIAL GRID
+==================================================
+
+The grid is specifically intended to avoid traversing a large hierarchy at every ray-march step.
+
+At any ray position:
+
+    p
+
+calculate the corresponding spatial cell.
+
+Then retrieve the small list of potentially relevant flames.
+
+Conceptually:
+
+    ray position
+         ↓
+    grid coordinate
+         ↓
+    cell
+         ↓
+    flame candidates
+         ↓
+    evaluate SDF only for those candidates
+
+Do NOT evaluate all flames.
+
+Do NOT traverse the entire flame hierarchy at every step.
+
+==================================================
+7. RAY MARCHING
+==================================================
+
+Perform ONE unified ray march through the FireContainer.
+
+Do NOT perform:
+
+    ray march flame 0
+    ray march flame 1
+    ray march flame 2
+    ...
+
+Instead perform:
+
+    ray
+     ↓
+    spatial cell
+     ↓
+    candidate flames
+     ↓
+    combined local SDF
+     ↓
+    next ray position
+
+The combined SDF at a point should conceptually be:
+
+    sceneSDF(p) =
+        min(
+            flameSDF(p, flameA),
+            flameSDF(p, flameB),
+            ...
+        )
+
+However, only evaluate the flames associated with the current spatial cell.
+
+If neighboring cells may affect the current point because flame bounds overlap cell boundaries, include the required neighboring cells.
+
+Do not introduce visual gaps at cell boundaries.
+
+==================================================
+8. SDF-BASED ADAPTIVE STEPPING
+==================================================
+
+Use the SDF to determine the ray-march step size.
+
+Do NOT use a tiny constant step throughout the entire volume.
+
+When the ray is far from any flame:
+
+    take a large step
+
+When approaching a flame:
+
+    reduce the step size
+
+When inside or near a dense flame region:
+
+    use smaller steps
+
+The step size must remain conservative enough to avoid skipping important volumetric features.
+
+Add configurable minimum and maximum step sizes.
+
+Conceptually:
+
+    distance = sceneSDF(rayPosition)
+
+    step =
+        clamp(
+            distance * safetyFactor,
+            minimumStep,
+            maximumStep
+        )
+
+Use a configurable safety factor below 1 where necessary.
+
+==================================================
+9. EMPTY-SPACE SKIPPING
+==================================================
+
+Large parts of the FireContainer will normally contain no fire.
+
+Exploit this aggressively.
+
+If the spatial cell contains no flame candidates:
+
+    skip the cell completely
+
+Ideally advance directly to the next spatial-cell boundary instead of performing many small ray-march steps through empty space.
+
+Implement efficient ray/grid traversal where appropriate.
+
+A 3D DDA-style traversal can be used to move from one grid cell to the next.
+
+The intended algorithm is:
+
+    ray enters FireContainer
+
+    ↓
+
+    determine starting grid cell
+
+    ↓
+
+    evaluate flames in current cell
+
+    ↓
+
+    use SDF-guided stepping while appropriate
+
+    ↓
+
+    when leaving the cell:
+        advance to next cell
+
+    ↓
+
+    continue until tExit
+
+This should dramatically reduce work in sparse fire volumes.
+
+==================================================
+10. FLAME BOUNDING VOLUMES
+==================================================
+
+Each flame should have a conservative bounding volume.
+
+Prefer a simple sphere or AABB.
+
+Before evaluating the expensive procedural flame SDF:
+
+    ray/sample point
+        ↓
+    flame bound test
+        ↓
+    reject
+        OR
+    evaluate flame SDF
+
+This provides another cheap culling layer.
+
+Do not evaluate complex noise/deformation for a flame that cannot contribute.
+
+==================================================
+11. PROCEDURAL FLAME SDF
+==================================================
+
+Implement the flame as a procedural SDF.
+
+The base shape should resemble an elongated flame / teardrop.
+
+Use combinations of:
+
+- spheres
+- ellipsoids
+- capsules
+- tapered primitives
+- smooth unions
+
+The final shape should remain continuous and controllable.
+
+Do not rely on a pre-generated mesh.
+
+==================================================
+12. ANIMATED DEFORMATION
+==================================================
+
+Deform the SDF procedurally using animated noise.
+
+The deformation should produce:
+
+- upward motion
+- lateral flickering
+- turbulent edges
+- flame stretching
+- flame contraction
+- irregular flame tips
+
+Use:
+
+    globalTime
+    +
+    animationSeed
+    +
+    instance parameters
+
+to decorrelate flames.
+
+Avoid synchronized animation between all instances.
+
+The animation should be evaluated procedurally in the shader.
+
+Do not regenerate flame geometry every frame.
+
+==================================================
+13. MULTI-SCALE NOISE
+==================================================
+
+Use multiple scales of procedural noise where useful.
+
+For example:
+
+- low-frequency noise for large flame movement
+- medium-frequency noise for turbulent deformation
+- high-frequency noise for fine edges
+
+Avoid excessive noise evaluations.
+
+Performance is important.
+
+Prefer reusing noise values or deriving multiple effects from shared samples where practical.
+
+Do not blindly add multiple expensive noise functions.
+
+==================================================
+14. DENSITY
+==================================================
+
+Convert the SDF into a smooth volumetric density.
+
+The flame is NOT an opaque surface.
+
+Density should:
+
+- approach zero outside the flame
+- increase toward the interior
+- vary with procedural deformation
+- optionally vary with height
+- optionally vary with temperature
+
+Use a smooth density falloff.
+
+The density function must remain stable enough for adaptive ray marching.
+
+==================================================
+15. TEMPERATURE
+==================================================
+
+Calculate a procedural temperature value.
+
+Temperature can depend on:
+
+- density
+- normalized flame height
+- local SDF position
+- flame parameters
+- noise
+
+Use temperature to drive emission color.
+
+Support a configurable color gradient approximately ranging through:
+
+    dark red
+        ↓
+    red
+        ↓
+    orange
+        ↓
+    yellow
+        ↓
+    white-hot
+
+The hottest regions should have the strongest emission.
+
+==================================================
+16. VOLUMETRIC ACCUMULATION
+==================================================
+
+Perform front-to-back volumetric accumulation.
+
+Accumulate:
+
+- density
+- opacity
+- emission
+
+Use early termination.
+
+If accumulated opacity reaches a configurable threshold:
+
+    terminate the ray
+
+Do not continue sampling once additional contribution becomes negligible.
+
+==================================================
+17. MULTIPLE FLAMES
+==================================================
+
+Multiple flames may overlap.
+
+The renderer must combine them correctly.
+
+Do not simply select the closest flame.
+
+At each relevant spatial cell:
+
+1. retrieve candidate flames
+2. evaluate their bounding volumes
+3. evaluate relevant SDFs
+4. combine their contribution
+5. accumulate density/emission
+
+The implementation should avoid duplicate evaluation when the same flame overlaps multiple neighboring cells.
+
+==================================================
+18. GRID CELL TRANSITION
+==================================================
+
+Pay particular attention to flames crossing spatial-cell boundaries.
+
+A flame may overlap multiple cells.
+
+The implementation must not produce:
+
+- seams
+- discontinuities
+- disappearing flame sections
+- incorrect density at boundaries
+
+Use conservative flame bounds when inserting instances into cells.
+
+==================================================
+19. FIRE LIGHT / EMISSION
+==================================================
+
+The flame is primarily emissive.
+
+Do not implement expensive dynamic light propagation unless an existing engine system already supports it.
+
+Expose accumulated fire intensity in a way that can later be used for:
+
+- local fire lighting
+- illumination
+- glow
+- post-processing
+
+Do not make these features mandatory for the first implementation.
+
+==================================================
+20. TEMPORAL OPTIMIZATION
+==================================================
+
+Design the system so temporal optimization can be added later.
+
+Keep enough information available to potentially support:
+
+- previous-frame fire output
+- temporal reprojection
+- adaptive sampling
+- reduced sampling on stable regions
+
+Do NOT implement expensive temporal reconstruction unless it fits naturally into the existing renderer.
+
+The initial implementation must remain visually stable without relying on temporal accumulation.
+
+==================================================
+21. GPU DATA STRUCTURES
+==================================================
+
+Use flat GPU-friendly buffers.
+
+Avoid pointer-heavy CPU-style structures.
+
+Recommended conceptual buffers:
+
+    FireContainerBuffer
+    FlameInstanceBuffer
+    FlameBoundsBuffer
+    FireGridBuffer
+    FireGridIndexBuffer
+
+Each grid cell should contain:
+
+    offset
+    count
+
+and the actual flame indices should be stored in a contiguous index buffer.
+
+Use integer offsets rather than dynamic GPU pointers.
+
+Follow Vulkan alignment requirements.
+
+Reuse existing buffer allocation and descriptor infrastructure.
+
+==================================================
+22. GPU/CPU RESPONSIBILITIES
+==================================================
+
+CPU:
+
+- create FireContainers
+- create/update flame instances
+- calculate conservative flame bounds
+- build/rebuild spatial grid when instances move
+- upload GPU data
+
+GPU:
+
+- container proxy rasterization
+- ray/AABB intersection
+- depth clipping
+- spatial grid traversal
+- flame bound tests
+- SDF evaluation
+- procedural animation
+- density
+- temperature
+- emission
+- volumetric accumulation
+
+Animation must not require CPU updates every frame.
+
+==================================================
+23. DYNAMIC INSTANCES
+==================================================
+
+Do not rebuild the spatial grid every frame merely because the flame animation changes.
+
+The grid describes the spatial distribution of flame instances.
+
+Animation happens inside the SDF.
+
+Only rebuild/update the grid when:
+
+- flames are added
+- flames are removed
+- flame positions change
+- flame scales change significantly
+- flame bounds change
+
+==================================================
+24. PERFORMANCE TARGET
+==================================================
+
+The system must be designed so that the amount of work scales primarily with:
+
+    visible FireContainers
+    ×
+    visible screen area
+    ×
+    relevant spatial cells
+    ×
+    relevant flame candidates
+
+It must NOT scale as:
+
+    screen pixels × total number of flames
+
+Avoid algorithms that accidentally produce the latter behavior.
+
+Add profiling counters for:
+
+- FireContainers processed
+- FireContainer fragments
+- rays entering fire volumes
+- spatial cells visited
+- empty cells skipped
+- flame bounds tested
+- flame SDF evaluations
+- ray-march iterations
+- early-terminated rays
+
+These counters should be optionally enabled for debugging/profiling.
+
+==================================================
+25. DEBUG VISUALIZATION
+==================================================
+
+Add optional debug visualization for:
+
+- FireContainer AABBs
+- spatial grid cells
+- flame bounds
+- flame instances
+- number of visited cells
+- number of SDF evaluations
+- ray-march iteration count
+
+Keep this disabled by default.
+
+==================================================
+26. VULKAN INTEGRATION
+==================================================
+
+Integrate with the existing Vulkan renderer.
+
+Before implementing the system, inspect the current architecture and identify existing mechanisms for:
+
+- render passes
+- dynamic rendering if used
+- indirect rendering
+- GPU buffers
+- descriptor sets
+- shader storage buffers
+- camera matrices
+- depth buffers
+- synchronization
+- image layouts
+- command buffers
+- GPU profiling
+
+Reuse these systems.
+
+Do not create duplicate Vulkan infrastructure.
+
+Follow the project's existing naming, memory-management, synchronization, and shader conventions.
+
+==================================================
+27. RENDERING PIPELINE
+==================================================
+
+The intended pipeline is:
+
+    Scene
+      |
+      +--------------------+
+      |                    |
+      v                    v
+ Main Raster Pass      Fire Proxy Pass
+                           |
+                           v
+                    FireContainer AABB
+                           |
+                           v
+                     Ray / AABB
+                           |
+                           v
+                     Depth clip
+                           |
+                           v
+                  3D grid traversal
+                           |
+                           v
+                  Flame bound tests
+                           |
+                           v
+                  Combined local SDF
+                           |
+                           v
+                Adaptive ray marching
+                           |
+                           v
+                 Density + emission
+                           |
+                           v
+                       Composite
+
+Do not convert this into a full-screen compute pass unless profiling demonstrates a clear advantage.
+
+==================================================
+28. IMPORTANT OPTIMIZATION PRINCIPLE
+==================================================
+
+The most important design principle is:
+
+DO NOT RAY MARCH EACH FLAME.
+
+Instead:
+
+    ONE CAMERA RAY
+          ↓
+    ONE CONTAINER
+          ↓
+    SPATIAL GRID
+          ↓
+    RELEVANT FLAMES
+          ↓
+    ONE UNIFIED SDF
+          ↓
+    ONE VOLUMETRIC INTEGRATION
+
+The spatial grid and SDF distance field should work together to skip empty space.
+
+==================================================
+29. IMPLEMENTATION ORDER
+==================================================
+
+Implement incrementally.
+
+Phase 1:
+- FireContainer
+- FlameInstance
+- AABB proxy
+- ray/AABB intersection
+
+Phase 2:
+- single procedural SDF flame
+- density
+- emission
+- basic ray marching
+
+Phase 3:
+- multiple flame instances
+- unified SDF
+
+Phase 4:
+- spatial grid
+- flat GPU grid buffers
+- grid traversal
+
+Phase 5:
+- flame bounds
+- empty-space skipping
+- adaptive SDF stepping
+
+Phase 6:
+- animated turbulence
+- multi-scale deformation
+- temperature
+
+Phase 7:
+- depth integration
+- compositing
+- early termination
+
+Phase 8:
+- profiling
+- optimization
+- debug visualization
+
+Keep the renderer compiling and functional after every phase.
+
+==================================================
+30. FINAL REQUIREMENT
+==================================================
+
+The final implementation should support a FireContainer containing hundreds or thousands of procedural flame instances while keeping per-pixel work bounded by the local spatial density of the fire.
+
+The system should exploit:
+
+- container-level AABB culling
+- depth culling
+- spatial grid culling
+- flame bounding volumes
+- empty-space skipping
+- SDF-guided adaptive stepping
+- early ray termination
+- instancing
+- procedural GPU animation
+
+The result should be a scalable Vulkan volumetric fire renderer designed for GPU performance rather than a simple visual prototype.
+```
