@@ -345,7 +345,7 @@ public:
     std::string pendingLoadPath;
 
     // Camera and input
-    Camera camera = Camera(glm::vec3(-512.0f, 1400.0f, 0.0f), Math::eulerToQuat(-90.0f, 0.0f, 0.0f));
+    Camera camera = Camera(glm::vec3(-512.0f, 2048.0f, 0.0f), Math::eulerToQuat(-90.0f, 0.0f, 0.0f));
     Light light = Light(glm::vec3(-1.0f, -1.0f, -1.0f));
     EventManager eventManager;
     KeyboardPublisher keyboardPublisher;
@@ -3201,6 +3201,11 @@ public:
     }
 
     void clean() override {
+    // Exit viewpoint, logged next to the saved exit screenshot so a report
+    // of "X is not visible" can be reproduced pixel-exact in the CPU probe
+    // (same format as the startup [Camera Setup] line).
+    printf("[Camera Exit] Position: (%.1f, %.1f, %.1f)\n", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
+    printf("[Camera Exit] Forward: (%.3f, %.3f, %.3f)\n", camera.getForward().x, camera.getForward().y, camera.getForward().z);
     // Ensure all GPU work is finished before tearing down any Vulkan resources.
     // Belt-and-suspenders: VulkanApp::cleanup() already calls deviceWaitIdle()
     // before clean(), but draining the upload queues and stopping thread pools
