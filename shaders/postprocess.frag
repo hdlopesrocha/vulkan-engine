@@ -3,6 +3,13 @@
 #include "ubo/WaterFrameNamed.glsl"
 
 #include "includes/locations.glsl"
+#include "includes/perlin.glsl"
+#include "includes/wind_field.glsl"
+
+// Wind debug clock (mainTime, seconds). Push: no UBO churn for a debug flag.
+layout(push_constant) uniform WindDebugPush {
+    float windTime;
+} windPush;
 
 // Final compositing pass: Sky + Solid + Water + Brush
 // Background pixels are filled with sky.
@@ -286,6 +293,96 @@ void main() {
         vec4 bboxColor = textureLod(bboxColorTex, uv, 0.0);
         if (bboxColor.a > 0.0) {
             finalColor = mix(finalColor, bboxColor.rgb, bboxColor.a);
+        }
+    }
+
+    // 7. Wind debug raymarch overlay (ray marching widget, Wind Debug).
+    // Mode 1 marches the FINAL wind (ambient + tornadoes) along the view
+    // ray and shows air-pressure-as-heat blended with normalized wind
+    // direction. Mode 2 root-finds the velocity isosurface |wind| = iso and
+    // renders that surface by pressure/direction. Fully gated: identical
+    // output when the mode is 0 (off).
+    if (windField.counts.y > 0.5 && windField.counts.y < 1.5) {
+        // Fixed 28-step march over 400 m. No derivatives used (pure math
+        // field), so divergent flow is safe without explicit LOD.
+        vec3 wdir = (dot(viewDir, viewDir) > 1e-12) ? normalize(viewDir) : vec3(0.0, 0.0, 1.0);
+        vec3 wpos0 = ubo.viewPosition;
+        float meanSpeed = 0.0;
+        vec3 meanDir = vec3(0.0);
+        for (int wi = 0; wi < 28; ++wi) {
+            vec3 sp = wpos0 + wdir * (400.0 * (float(wi) + 0.5) / 28.0);
+            vec3 wv = windSVF(sp, windPush.windTime);
+            float ws = length(wv);
+            meanSpeed += ws;
+            meanDir += (ws > 1e-4) ? (wv / max(ws, 1e-4)) : vec3(0.0);
+        }
+        meanSpeed /= 28.0;
+        meanDir /= 28.0;
+        // Pressure proxy = mean speed; heat ramp 0..40 m/s blue->red.
+        // isnan guard: a poisoned sample must not blank the overlay.
+        float heat = clamp(isnan(meanSpeed) ? 0.0 : meanSpeed / 40.0, 0.0, 1.0);
+        vec3 heatCol = mix(vec3(0.1, 0.2, 0.9),
+                        mix(vec3(0.0, 0.9, 0.9),
+                        mix(vec3(0.1, 0.8, 0.2),
+                        mix(vec3(0.95, 0.85, 0.1), vec3(0.9, 0.1, 0.1),
+                            smoothstep(0.75, 1.0, heat)),
+                            smoothstep(0.5, 0.75, heat)),
+                            smoothstep(0.25, 0.5, heat)),
+                            smoothstep(0.0, 0.25, heat));
+        vec3 dirCol = meanDir * 0.5 + 0.5;
+        vec3 overlay = mix(heatCol, dirCol, 0.5);
+        finalColor = mix(finalColor, overlay, 0.65);
+    } else if (windField.counts.y >= 1.5) {
+        // Velocity isosurface: SDF d(p) = iso - |wind|, rooted by fixed
+        // march + bisection. Renders the surface where the wind is fastest
+        // by air pressure (heat) and direction, like the heat map above.
+        float iso = max(windField.counts.z, 0.0);
+        vec3 wdir = (dot(viewDir, viewDir) > 1e-12) ? normalize(viewDir) : vec3(0.0, 0.0, 1.0);
+        vec3 wpos0 = ubo.viewPosition;
+        float prevT = 0.0;
+        float prevD = iso - length(windSVF(wpos0, windPush.windTime));
+        bool hitS = false;
+        vec3 hitP = wpos0;
+        for (int wi = 1; wi <= 48; ++wi) {
+            float tS = 400.0 * float(wi) / 48.0;
+            vec3 sp = wpos0 + wdir * tS;
+            vec3 wv = windSVF(sp, windPush.windTime);
+            float dS = iso - (isnan(length(wv)) ? 1e5 : length(wv));
+            if (prevD > 0.0 && dS <= 0.0) {
+                // Bisection refine: 6 halvings on the bracket.
+                float ta = prevT;
+                float tb = tS;
+                for (int bi = 0; bi < 6; ++bi) {
+                    float tm = 0.5 * (ta + tb);
+                    vec3 pm = wpos0 + wdir * tm;
+                    float dm = iso - length(windSVF(pm, windPush.windTime));
+                    if (dm > 0.0) {
+                        ta = tm;
+                    } else {
+                        tb = tm;
+                    }
+                }
+                hitP = wpos0 + wdir * (0.5 * (ta + tb));
+                hitS = true;
+                break;
+            }
+            prevT = tS;
+            prevD = dS;
+        }
+        if (hitS) {
+            vec3 hv = windSVF(hitP, windPush.windTime);
+            float hs = length(hv);
+            float heat = clamp(hs / 40.0, 0.0, 1.0);
+            vec3 heatCol = mix(vec3(0.1, 0.2, 0.9),
+                            mix(vec3(0.0, 0.9, 0.9),
+                            mix(vec3(0.1, 0.8, 0.2),
+                            mix(vec3(0.95, 0.85, 0.1), vec3(0.9, 0.1, 0.1),
+                                smoothstep(0.75, 1.0, heat)),
+                                smoothstep(0.5, 0.75, heat)),
+                                smoothstep(0.25, 0.5, heat)),
+                                smoothstep(0.0, 0.25, heat));
+            vec3 dirCol = (hs > 1e-4) ? (hv / max(hs, 1e-4)) * 0.5 + 0.5 : vec3(0.5);
+            finalColor = mix(finalColor, mix(heatCol, dirCol, 0.5), 0.8);
         }
     }
 

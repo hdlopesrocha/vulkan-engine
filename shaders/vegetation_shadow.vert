@@ -76,6 +76,11 @@ UniformObjectNamed uniformObjectNamed() {
 UniformObjectNamed ubo = uniformObjectNamed();
 
 #include "includes/perlin2d.glsl"
+// Shared wind field (set 0, binding 27), same as vegetation.vert. This
+// shader is never built with VEG_CAPTURE and its pipeline uses the global
+// set 0 (which provides binding 27), so no capture guard is needed.
+#include "includes/perlin.glsl"
+#include "includes/wind_field.glsl"
 #include "includes/vegetation_common.glsl"
 
 void main() {
@@ -133,7 +138,15 @@ void main() {
     vec3 horizontal = vec3((windDirXZ + turbulentDir) * sway, 0.0);
     vec3 skewOffset = tangent * (skew * bendWeight);
     vec3 vertical = vec3(0.0, abs(nSkew * verticalFlutter * amplitude) * bendWeight, 0.0);
-    vec3 windOffset = (horizontal + skewOffset + vertical) * bendWeight;
+    // Shared-field supplement, same gate/scale as vegetation.vert: horizontal
+    // (XZ) windSVF on the push-constant clock, gain 0.2, cores clamped to
+    // +/-15 m/s. Unlike the main shader this copy has no windEnabled
+    // early-out (its sway always applies), so the gate is an explicit
+    // ternary: windEnabled < 0.5 adds exactly 0.
+    vec3 svfSh = (windEnabled >= 0.5) ? windSVF(worldPos, windTime) : vec3(0.0);
+    vec2 svfShXZ = clamp(svfSh.xz, vec2(-15.0), vec2(15.0));
+    vec3 sharedWind = vec3(svfShXZ.x, 0.0, svfShXZ.y) * 0.2;
+    vec3 windOffset = (horizontal + sharedWind + skewOffset + vertical) * bendWeight;
 
     // Normal-aligned frame (same as vegetation.vert): tilt the corner offsets
     // onto the surface normal; the wind offset stays a world-space delta.

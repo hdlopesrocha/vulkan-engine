@@ -4,6 +4,7 @@
 #include "DescriptorWriter.hpp"
 #include "RendererUtils.hpp"
 #include "WaterRenderer.hpp"   // WaterParams, WaterUBO
+#include "../ubo/WindFieldUBO.hpp" // sizeof(WindFieldUBO) for binding-27 range
 #include "../../utils/FileReader.hpp"
 #include <cassert>
 #include <stdexcept>
@@ -58,8 +59,9 @@ void PostProcessRenderer::createSampler(VulkanApp* app) {
 void PostProcessRenderer::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    // Descriptor set layout – 19 bindings (18 image samplers + 1 UBO)
-    std::array<VkDescriptorSetLayoutBinding, 19> bindings{};
+    // Descriptor set layout – 20 bindings (18 image samplers + 2 UBOs:
+    // binding 5 is the frame UBO, binding 27 the shared wind field)
+    std::array<VkDescriptorSetLayoutBinding, 20> bindings{};
 
     for (int i = 0; i < 6; ++i) {
         bindings[i].binding = i;
@@ -146,6 +148,14 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     bindings[18].descriptorCount = 1;
     bindings[18].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    // Shared wind field (ambient + tornadoes) for the wind debug raymarch
+    // overlay. Same block as the scene main set binding 27; owned and
+    // streamed by VegetationRenderer, only the descriptor lives here.
+    bindings[19].binding = 27;
+    bindings[19].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[19].descriptorCount = 1;
+    bindings[19].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     DescriptorAllocator descAlloc{device, app};
     // Descriptor-buffer path: the layout must carry DESCRIPTOR_BUFFER_BIT_EXT
     // (VUID-requires it for vkGetDescriptorSetLayoutSizeEXT /
@@ -167,11 +177,17 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
         nullptr,
         "PostProcessRenderer: descriptorSetLayout");
 
-    // Pipeline layout
+    // Pipeline layout (+ fragment push range carrying the wind debug clock)
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+    VkPushConstantRange windPushRange{};
+    windPushRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    windPushRange.offset = 0;
+    windPushRange.size = sizeof(float);
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &windPushRange;
 
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create post-process pipeline layout!");
@@ -210,7 +226,7 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
 
     VkDescriptorPoolSize poolSizesDesc[] = {
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18 * FRAMES_IN_FLIGHT},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * FRAMES_IN_FLIGHT}
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2 * FRAMES_IN_FLIGHT}
     };
     descriptorPool = descAlloc.createPool(
         poolSizesDesc, 2, FRAMES_IN_FLIGHT,
@@ -269,6 +285,12 @@ void PostProcessRenderer::createDescriptorBuffers(VulkanApp* app) {
         app->fpGetDescriptorSetLayoutBindingOffsetEXT(device, descriptorSetLayout, binding, &off);
         descBindingOffsets_[binding] = off;
     }
+    // Binding 27 lives past the dense range; query it explicitly.
+    {
+        VkDeviceSize off = 0;
+        app->fpGetDescriptorSetLayoutBindingOffsetEXT(device, descriptorSetLayout, 27, &off);
+        descBindingOffsets_[27] = off;
+    }
     descSetSize_ = setSize;
     descReady_ = true;
     printf("[PostProcessRenderer] descriptor buffers: %u frames x %llu bytes\n",
@@ -304,7 +326,8 @@ void PostProcessRenderer::destroyDescriptorBuffers(VulkanApp* app) {
 bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t slot,
                                     const std::array<VkDescriptorImageInfo, 19>& imageInfos,
                                     const VkDescriptorImageInfo& skyImageInfo,
-                                    const VkDescriptorBufferInfo& bufferInfo) {
+                                    const VkDescriptorBufferInfo& bufferInfo,
+                                    const VkDescriptorBufferInfo& windBufferInfo) {
     if (!app || !descReady_ || slot >= FRAMES_IN_FLIGHT) return false;
     if (!app->fpGetDescriptorEXT) return false;
     Buffer& dst = descBuffers_[slot];
@@ -348,6 +371,14 @@ bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t s
                               bufferInfo.buffer, bufferInfo.offset, bufferInfo.range))
             ok = false;
     }
+    // Wind field UBO (binding 27): owned + streamed by VegetationRenderer;
+    // only the descriptor address is written here, same exact-range rule.
+    if (windBufferInfo.buffer != VK_NULL_HANDLE && windBufferInfo.range != VK_WHOLE_SIZE && windBufferInfo.range != 0) {
+        if (!view.writeBuffer(static_cast<size_t>(descBindingOffsets_[27]),
+                              uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                              windBufferInfo.buffer, windBufferInfo.offset, windBufferInfo.range))
+            ok = false;
+    }
     return ok;
 }
 
@@ -370,7 +401,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                    uint32_t frameIdx,
                                    VkImageView skyView,
                                    bool waterBlurEnabled,
-                                   bool vegetationScaled) {
+                                   bool vegetationScaled,
+                                   VkBuffer windFieldBuffer,
+                                   float windTime) {
     assert(skyView != VK_NULL_HANDLE);
     if (pipeline == VK_NULL_HANDLE) {
         std::cerr << "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping." << std::endl;
@@ -455,6 +488,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     imageInfos[18] = {linearSampler, fireDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
+    // Wind field UBO (binding 27): owned + streamed by VegetationRenderer;
+    // exact range (vkGetDescriptorEXT forbids WHOLE_SIZE), like binding 5.
+    VkDescriptorBufferInfo windBufferInfo{windFieldBuffer, 0, sizeof(WindFieldUBO)};
 
     // Sky color image info (binding 6) — sky offscreen targets are always
     // available (SceneRenderer::init creates them before PostProcess init).
@@ -483,6 +519,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     sig.uboBuffer = bufferInfo.buffer;
     sig.uboOffset = bufferInfo.offset;
     sig.uboRange = bufferInfo.range;
+    sig.windBuffer = windFieldBuffer;
 
     FrameDescriptorSignature& cached = descriptorWriteCache[slot];
     // Descriptor-buffer path: cache miss = host vkGetDescriptorEXT writes into
@@ -493,7 +530,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
         if (!cached.valid || !cached.matches(sig)) {
             cached = sig;
             cached.valid = true;
-            if (!writeSlotToDescriptorBuffer(app, slot, imageInfos, skyImageInfo, bufferInfo)) {
+            if (!writeSlotToDescriptorBuffer(app, slot, imageInfos, skyImageInfo, bufferInfo, windBufferInfo)) {
                 std::cerr << "[PostProcessRenderer] descriptor-buffer write failed for slot "
                           << slot << std::endl;
             }
@@ -598,6 +635,11 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                               imageInfos[18].sampler, imageInfos[18].imageView,
                               imageInfos[18].imageLayout);
         }
+        // Shared wind field (binding 27) for the wind debug raymarch overlay.
+        if (windFieldBuffer != VK_NULL_HANDLE) {
+            writer.writeBuffer(currentDs, 27, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                               windFieldBuffer, 0, sizeof(WindFieldUBO));
+        }
 
         writer.flush();
     }
@@ -645,6 +687,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
         else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
                                 0, 1, &currentDs, 0, nullptr);
     }
+
+    // Wind debug clock for the raymarch overlay (no-op otherwise).
+    vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &windTime);
 
     // Draw fullscreen triangle (3 vertices, no vertex buffer needed)
     vkCmdDraw(cmd, 3, 1, 0, 0);

@@ -3173,7 +3173,12 @@ public:
                 // M12 (perf report 22): the vegetation offscreen targets are
                 // downscaled -> composite takes the closest of the 2x2
                 // veg-depth taps instead of one bilinear sample.
-                settings.vegetationRenderScale < 0.999f);
+                settings.vegetationRenderScale < 0.999f,
+                // Shared wind field (binding 27) + clock for the wind debug
+                // raymarch overlay. Buffer owned/streamed by
+                // VegetationRenderer; mainTime matches the vegetation clock.
+                sceneRenderer->vegetationRenderer->getWindFieldBuffer().buffer,
+                mainTime);
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 17);
         }

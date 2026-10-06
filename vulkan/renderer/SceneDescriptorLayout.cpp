@@ -238,16 +238,32 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     rtProfileBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
         | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
+    // binding 27: shared wind-field UBO (ambient + up to 4 tornadoes, packed
+    // by VegetationRenderer). Read via shaders/includes/wind_field.glsl by
+    // every consumer (vegetation vertex, fire, SDF) so all sample the
+    // identical field. Appended after 26: binding 11 stays intentionally
+    // absent (legacy 360 cubemap; load-bearing hole — descriptor-buffer
+    // offsets, shadow-set comments and the RT-compaction note below assume
+    // it), and appending keeps the TLAS-compaction index below valid.
+    VkDescriptorSetLayoutBinding windFieldBinding{};
+    windFieldBinding.binding = 27;
+    windFieldBinding.descriptorCount = 1;
+    windFieldBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    windFieldBinding.pImmutableSamplers = nullptr;
+    windFieldBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+        | VK_SHADER_STAGE_COMPUTE_BIT;
+
     // Binding numbers are sparse by design: 11 (legacy 360 cubemap) is
     // intentionally absent.
-    std::array<VkDescriptorSetLayoutBinding, 26> bindings = {
+    std::array<VkDescriptorSetLayoutBinding, 27> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
         shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
         waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
         roughnessSamplerBinding, aoSamplerBinding,
         tlasBinding, rtReflectBinding, rtRefractBinding, rtParamsBinding, rtMetaBinding,
         ssrColorBinding, ssrDepthBinding, scenePrimBaseBinding, sceneMetaBinding,
-        sceneGeomInfoBinding, sceneVertsBinding, sceneIndicesBinding, rtProfileBinding
+        sceneGeomInfoBinding, sceneVertsBinding, sceneIndicesBinding, rtProfileBinding,
+        windFieldBinding
     };
     // Fill the material binding at position 5
     bindings[5].binding = 5;
@@ -272,7 +288,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     // (the only UPDATE_AFTER_BIND binding, for swapchain-resize view churn)
     // is gone. RT views/TLAS are stable between resizes (rewritten only on
     // resize/recreate events, never while in flight).
-    std::array<VkDescriptorBindingFlags, 26> bindingFlags{};
+    std::array<VkDescriptorBindingFlags, 27> bindingFlags{};
     bindingFlags.fill(0);
 
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};

@@ -441,7 +441,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     std::vector<VkDescriptorImageInfo> writesImg;
     std::vector<VkDescriptorBufferInfo> writesBuf;
     writesImg.reserve(12);  // max image descriptors: 5 texture arrays + 3 shadow maps + 2 RT outputs (+1 spare; MUST exceed the emplace count — writes[] stores raw pImageInfo pointers into this vector, so any reallocation dangles them)
-    writesBuf.reserve(8);  // materials SSBO + water params + water render UBO + RT params + RT meta + scene prim bases + scene albedo (+1 spare; same no-realloc requirement as writesImg)
+    writesBuf.reserve(10);  // materials SSBO + water params + water render UBO + wind-field UBO + RT params + RT meta + scene prim bases + scene albedo (+2 spare; same no-realloc requirement as writesImg)
 
     // Helper to add image write if valid. dstSet is set to the static descriptor set
     // so the accumulated writes serve as a template for the static set.
@@ -558,6 +558,24 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     waterRenderUBOWrite.descriptorCount = 1;
     waterRenderUBOWrite.pBufferInfo = &waterRenderUBOInfo;
     writes.push_back(waterRenderUBOWrite);
+
+    // Bind shared wind-field UBO to binding 27 of the main descriptor set
+    // (binding-10 precedent: the buffer is owned + packed by
+    // VegetationRenderer, bound here once into the static set; the per-frame
+    // copy loop below propagates it, and contents stream via memcpy with
+    // write-on-change — never via descriptor updates).
+    if (vegetationRenderer && vegetationRenderer->getWindFieldBuffer().buffer != VK_NULL_HANDLE) {
+        VkDescriptorBufferInfo& windFieldInfo = writesBuf.emplace_back(
+            vegetationRenderer->getWindFieldBuffer().buffer, 0, sizeof(WindFieldUBO));
+        VkWriteDescriptorSet windFieldWrite{};
+        windFieldWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        windFieldWrite.dstSet = staticDs;
+        windFieldWrite.dstBinding = kWindFieldBinding;
+        windFieldWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        windFieldWrite.descriptorCount = 1;
+        windFieldWrite.pBufferInfo = &windFieldInfo;
+        writes.push_back(windFieldWrite);
+    }
 
     // ── Hybrid RT set-0 bindings (written once; handles stable) ──────────
     // 14 = TLAS (valid object from init; contents built on first
@@ -976,7 +994,7 @@ void SceneRenderer::initDescriptorBuffers(VulkanApp* app) {
         descBuffers_.buffers.push_back(b);
         descBuffers_.addresses.push_back(addr);
     }
-    for (uint32_t binding = 0; binding < 27; ++binding) {
+    for (uint32_t binding = 0; binding < 28; ++binding) {
         // Binding 11 was removed (legacy cubemap); the query layout carries no
         // entry for it — skip so the offset query never touches a missing
         // binding (VUID-vkGetDescriptorSetLayoutBindingOffsetEXT-binding-08021).
@@ -1092,6 +1110,14 @@ void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArray
         // legacy cubemap — reflections are hardware ray tracing now.)
         wBuf(6, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, skyUBO.buffer, sizeof(SkyUniform));
         wBuf(10, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, waterRenderUBO.buffer, sizeof(WaterRenderUBO));
+        // Binding 27: shared wind-field UBO (packed by VegetationRenderer;
+        // contents stream via memcpy — the mirror only carries the address).
+        if (vegetationRenderer) {
+            Buffer windFieldUBO = vegetationRenderer->getWindFieldBuffer();
+            if (windFieldUBO.buffer != VK_NULL_HANDLE)
+                wBuf(kWindFieldBinding, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                     windFieldUBO.buffer, sizeof(WindFieldUBO));
+        }
         // Hybrid RT mirrors (classic sets stay authoritative while the
         // descriptor-buffer bind path is inactive). Binding 14 (TLAS) has no
         // mirror (acceleration structures stay on the classic write path).

@@ -690,7 +690,7 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
 
         // Descriptor pool for the per-cascade shadow sets (copies of the shared set
         // with binding 0 redirected at the per-cascade UBO slot). Per set the main
-        // layout has: UBO bindings 0, 6, 10, 17 (4); combined-image-sampler
+        // layout has: UBO bindings 0, 6, 10, 17, 27 (5); combined-image-sampler
         // bindings 1,2,3,4,8,9,12,13,15,16,19,20 (12); storage-buffer bindings
         // 5, 7, 18, 21, 22, 23, 24, 25, 26 (9); acceleration-structure binding 14
         // (1, RT builds only — the pool size is omitted when RT is disabled
@@ -701,7 +701,7 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
         if (cascadeDescPool_ == VK_NULL_HANDLE) {
             const uint32_t setCount = frameCount * SHADOW_CASCADE_COUNT;
             VkDescriptorPoolSize ps[4]{};
-            ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;          ps[0].descriptorCount = 4 * setCount;
+            ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;          ps[0].descriptorCount = 5 * setCount;
             ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[1].descriptorCount = 12 * setCount;
             ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;         ps[2].descriptorCount = 9 * setCount;
             uint32_t poolSizeCount = 3;
@@ -721,7 +721,7 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
     }
 
     if (shadowCascadeSets_.empty()) {
-        // Batch ALL cascade copies (every frame x every cascade x bindings 0-13)
+        // Batch ALL cascade copies (every frame x every cascade x copied bindings)
         // into a single vkUpdateDescriptorSets call instead of one call per
         // binding (14 driver round-trips per set before). Init-time only — this
         // function returns early via cascadeSetsBuilt_ afterwards, so the render
@@ -749,13 +749,14 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
                 app->resources.addDescriptorSet(shadowCascadeSets_[f][c], "ShadowRenderer: cascade shadow DS");
 
                 // Copy the shared shadow set (textures, dummy depth, storage buffers,
-                // RT bindings, …) then redirect binding 0 at this cascade's UBO slot
+                // RT bindings, wind field, …) then redirect binding 0 at this cascade's UBO slot
                 // so the cascade draws read only their own light-space matrix.
                 // (Binding 0 is overwritten by the DescriptorWriter below, so it is
                 // excluded from the copy list. Binding 11 skipped: removed with
-                // the legacy cubemap.)
+                // the legacy cubemap. Binding 27 (wind field) must be copied:
+                // vegetation_shadow.vert samples it.)
                 static const uint32_t kCopyBindings[] = {
-                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18};
+                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 27};
                 for (uint32_t b : kCopyBindings) {
                     // Binding 14 (TLAS) only exists in the layout when RT is enabled.
                     if (b == 14 && !app->rayTracingEnabled()) continue;
@@ -809,9 +810,10 @@ void ShadowRenderer::refreshCascadeTextureBindings(VulkanApp* app) {
     // Same binding list ensureShadowParallelResources copies the cascade sets
     // with: everything except binding 0 (the per-cascade UBO, which never
     // changes on a texture realloc) and the removed binding 11. Binding 14
-    // (TLAS) only exists when ray tracing is enabled.
+    // (TLAS) only exists when ray tracing is enabled. Binding 27 (wind
+    // field) is included for the same reason as above.
     static const uint32_t kCopyBindings[] = {
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18};
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 27};
     constexpr size_t kBindingCount = sizeof(kCopyBindings) / sizeof(kCopyBindings[0]);
     const size_t frames = std::min<size_t>(shadowDescriptorSets_.size(), shadowCascadeSets_.size());
     std::vector<VkCopyDescriptorSet> copies;

@@ -93,6 +93,16 @@ layout(push_constant) uniform PushConstants {
 };
 
 #include "includes/perlin2d.glsl"
+#ifndef VEG_CAPTURE
+// Shared wind field (set 0, binding 27): ambient + tornadoes sampled with
+// the push-constant clock. Requires perlin.glsl (perlinNoise3D) before
+// wind_field.glsl. Excluded from VEG_CAPTURE: the capture pipeline binds
+// its own set 0 (camera UBO, binding 0 only, no binding 27), so declaring
+// the block there would break pipeline creation; capture is static by
+// design (windEnabled=0) so nothing is lost.
+#include "includes/perlin.glsl"
+#include "includes/wind_field.glsl"
+#endif
 #include "includes/vegetation_common.glsl"
 
 // Pre-computed per-plane data for the 6 billboard planes (θ=0 frame).
@@ -163,7 +173,22 @@ vec3 applyWindSkew(vec3 basePos, vec3 right, float heightFactor) {
     vec3 horizontal = vec3((windDirXZ + turbulentDir) * sway, 0.0);
     vec3 skewOffset = right * (skew * bendWeight);
     vec3 vertical = vec3(0.0, abs(flutter) * bendWeight, 0.0);
-    return (horizontal + skewOffset + vertical) * bendWeight;
+    // Shared-field supplement: horizontal (XZ) windSVF at the instance
+    // position on the push-constant clock. Under the same windEnabled gate
+    // (the early-out at the top returns 0 when disabled, so this adds
+    // exactly 0 then; VEG_CAPTURE excludes the block entirely and keeps 0).
+    // Gain 0.2: the shared ambient mirrors these same wind sliders, so 0.2
+    // keeps it a modest ~20% supplement to the existing sway; tornado cores
+    // are clamped to +/-15 m/s so funnels bend blades without flinging them.
+    vec3 sharedWind = vec3(0.0);
+#ifndef VEG_CAPTURE
+    {
+        vec3 svfVeg = windSVF(basePos, windTime);
+        vec2 svfVegXZ = clamp(svfVeg.xz, vec2(-15.0), vec2(15.0));
+        sharedWind = vec3(svfVegXZ.x, 0.0, svfVegXZ.y) * 0.2;
+    }
+#endif
+    return (horizontal + sharedWind + skewOffset + vertical) * bendWeight;
 }
 
 void main() {

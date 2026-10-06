@@ -10,4 +10,7 @@ public:
 
 private:
     VegetationRenderer* vegetationRenderer;
+    // Index of the tornado slot selected in the "Tornadoes" section. Drives
+    // which slot's sliders are drawn; clamped every frame to [0, 4).
+    int selectedTornado = 0;
 };

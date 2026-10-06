@@ -53,7 +53,9 @@ public:
                 uint32_t frameIdx,
                 VkImageView skyView = VK_NULL_HANDLE,
                 bool waterBlurEnabled = true,
-                bool vegetationScaled = false);
+                bool vegetationScaled = false,
+                VkBuffer windFieldBuffer = VK_NULL_HANDLE,
+                float windTime = 0.0f);
 
     VkSampler getLinearSampler() const { return linearSampler; }
 
@@ -67,12 +69,13 @@ private:
     // buffers (one per frame slot). No-op when !app->useDescriptorBuffer().
     void createDescriptorBuffers(VulkanApp* app);
     void destroyDescriptorBuffers(VulkanApp* app);
-    // Write one frame slot's descriptor-buffer memory (bindings 0-18).
+    // Write one frame slot's descriptor-buffer memory (bindings 0-18 + 27).
     // Returns false when the DB path cannot be used (caller falls back).
     bool writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t slot,
                                      const std::array<VkDescriptorImageInfo, 19>& imageInfos,
                                      const VkDescriptorImageInfo& skyImageInfo,
-                                     const VkDescriptorBufferInfo& bufferInfo);
+                                     const VkDescriptorBufferInfo& bufferInfo,
+                                     const VkDescriptorBufferInfo& windBufferInfo);
 
     TrackedHandle<VkPipeline> pipeline;
     TrackedHandle<VkPipelineLayout> pipelineLayout;
@@ -86,7 +89,7 @@ private:
     std::array<Buffer, FRAMES_IN_FLIGHT> descBuffers_{};
     std::array<VkDeviceAddress, FRAMES_IN_FLIGHT> descAddresses_{};
     VkDeviceSize descSetSize_ = 0;
-    std::array<VkDeviceSize, 19> descBindingOffsets_{};
+    std::array<VkDeviceSize, 28> descBindingOffsets_{};
     bool descReady_ = false;
 
     // Per-frame-slot cache of the last descriptor contents written by render().
@@ -108,10 +111,12 @@ private:
         VkBuffer uboBuffer = VK_NULL_HANDLE;
         VkDeviceSize uboOffset = 0;
         VkDeviceSize uboRange = 0;
+        VkBuffer windBuffer = VK_NULL_HANDLE;
         bool valid = false; // true once this slot has been written at least once
         bool matches(const FrameDescriptorSignature& o) const {
             return samplers == o.samplers && views == o.views && layouts == o.layouts &&
-                   uboBuffer == o.uboBuffer && uboOffset == o.uboOffset && uboRange == o.uboRange;
+                   uboBuffer == o.uboBuffer && uboOffset == o.uboOffset && uboRange == o.uboRange &&
+                   windBuffer == o.windBuffer;
         }
     };
     std::array<FrameDescriptorSignature, FRAMES_IN_FLIGHT> descriptorWriteCache;

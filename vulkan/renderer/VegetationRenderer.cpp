@@ -28,7 +28,22 @@ VegetationRenderer::VegetationRenderer() {}
 VegetationRenderer::~VegetationRenderer() { /* caller must call cleanup(app) */ }
 
 void VegetationRenderer::init() {
-
+    // Default funnel so the shared wind field visibly drives vegetation and
+    // fire out of the box (terrain near origin sits ~20-90 m; height 700
+    // spans slopes, flames and low sky). User-editable/deletable in the
+    // wind widget; TornadoSettings defaults stay inert for slots 1-3.
+    {
+        TornadoSettings& t0 = windFieldSettings.tornadoes[0];
+        t0.baseXZ = glm::vec2(0.0f, 0.0f);
+        t0.groundY = 70.0f;
+        t0.radius = 60.0f;
+        t0.height = 700.0f;
+        t0.strength = 35.0f;
+        t0.direction = 1.0f;
+        t0.deltaTime = 1.0f;
+        t0.driftVelocity = glm::vec2(1.0f, 0.0f);
+        t0.active = true;
+    }
 }
 
 
@@ -62,6 +77,12 @@ void VegetationRenderer::cleanup(VulkanApp* app) {
         appPtr->destroyBuffer(windParamsBuffer);
         windParamsBuffer = {};
         windParamsMapped = nullptr;
+    }
+    if (appPtr && windFieldBuffer.buffer != VK_NULL_HANDLE) {
+        appPtr->destroyBuffer(windFieldBuffer);
+        windFieldBuffer = {};
+        windFieldMapped = nullptr;
+        windFieldCacheValid = false;
     }
     destroyCulling();
     appPtr = nullptr;
@@ -893,6 +914,24 @@ void VegetationRenderer::init(VulkanApp* app) {
         app->registerDescriptorSet(windParamsDescSet);
     }
 
+    // ── Shared wind-field UBO (set=0, binding=27) ──────────────────────────
+    // Owned + packed here (wind home); SceneRenderer::init binds it into the
+    // static/per-frame main sets. Persistently mapped host-visible, contents
+    // stream via updateWindFieldUBO() with write-on-change memcmp.
+    {
+        VkBufferUsageFlags wfUsage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        if (app->useDescriptorBuffer())
+            wfUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        windFieldBuffer = app->createBuffer(sizeof(WindFieldUBO), wfUsage,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        windFieldMapped = windFieldBuffer.map(0);
+        WindFieldUBO zero{};
+        if (windFieldMapped) std::memcpy(windFieldMapped, &zero, sizeof(zero));
+        // Fresh buffer invalidates the change-detection cache (same M11
+        // reasoning as windParamsCacheValid above).
+        windFieldCacheValid = false;
+    }
+
     std::vector<VkDescriptorSetLayout> setLayouts;
     setLayouts.push_back(app->getDescriptorSetLayout());
     setLayouts.push_back(descriptorSetLayout);
@@ -1489,6 +1528,61 @@ VegetationRenderer::WindPushConstants VegetationRenderer::buildWindPushConstants
     pc.windTime           = windTimeSeconds;
     pc.impostorDistance   = impostorDistance;
     return pc;
+}
+
+void VegetationRenderer::setWindTime(float timeSeconds) {
+    windTimeSeconds = timeSeconds;
+    // Per-frame shared-field upload (same cadence as the adjacent
+    // SkyRenderer::update call in MyApp; write-on-change inside
+    // updateWindFieldUBO keeps static scenes memcpy-free).
+    updateWindFieldUBO();
+}
+
+void VegetationRenderer::updateWindFieldUBO() {
+    if (!windFieldMapped) return;
+
+    WindFieldUBO packed{};
+    // Ambient mirrors the vegetation wind sliders at pack time (no duplicate
+    // sliders; same clamps as updateWindParamsUBO).
+    glm::vec2 windDir = windSettings.direction;
+    const float len2 = windDir.x * windDir.x + windDir.y * windDir.y;
+    if (len2 > 1e-8f) {
+        const float invLen = 1.0f / std::sqrt(len2);
+        windDir *= invLen;
+    }
+    packed.ambientA = glm::vec4(windDir.x, windDir.y,
+        std::max(0.0f, windSettings.strength), std::max(0.0f, windSettings.speed));
+    packed.ambientB = glm::vec4(std::max(0.00001f, windSettings.baseFrequency),
+        std::max(0.00001f, windSettings.gustFrequency),
+        std::max(0.0f, windSettings.gustStrength), 0.0f);
+    // Tornado list: groundY is a per-tornado parameter (default sea level).
+    // No runtime CPU heightfield is reachable from this updater (all
+    // HeightFunction::getHeightAt implementations are build-time terrain
+    // data), so GPU heightfield grounding is future work — see the header.
+    uint32_t activeCount = 0;
+    for (uint32_t i = 0; i < kWindFieldMaxTornadoes; ++i) {
+        const TornadoSettings& s = windFieldSettings.tornadoes[i];
+        WindTornadoGPU& t = packed.tornadoes[i];
+        t.a = glm::vec4(s.baseXZ.x, s.baseXZ.y, s.groundY, std::max(0.0f, s.radius));
+        t.b = glm::vec4(std::max(0.0f, s.height), std::max(0.0f, s.strength),
+            std::clamp(s.direction, -1.0f, 1.0f), s.phase);
+        t.c = glm::vec4(std::max(0.0f, s.deltaTime), s.active ? 1.0f : 0.0f,
+            std::max(0.0f, s.wanderRadius), s.wanderSpeed);
+        t.d = glm::vec4(s.driftVelocity.x, s.driftVelocity.y,
+            std::clamp(s.swingAmplitude, 0.0f, 1.0f), s.swingFrequency);
+        if (s.active) ++activeCount;
+    }
+    packed.counts = glm::vec4(static_cast<float>(activeCount),
+        static_cast<float>(windFieldSettings.windDebugMode),
+        windFieldSettings.windDebugIso, 0.0f);
+
+    // Write-on-change (M11 pattern): bitwise compare is exact — packed is a
+    // plain float vec4 aggregate with no padding (static_asserted 304 bytes).
+    if (windFieldCacheValid && std::memcmp(&windFieldCache, &packed, sizeof(packed)) == 0)
+        return;
+    std::memcpy(windFieldMapped, &packed, sizeof(packed));
+    windFieldCache = packed;
+    windFieldCacheValid = true;
 }
 
 void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {

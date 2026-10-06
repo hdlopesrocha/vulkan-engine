@@ -11,6 +11,7 @@
 #include "../VertexBufferObject.hpp"
 #include "../../utils/Scene.hpp" // for NodeID
 #include "../ubo/WindParamsUBO.hpp"
+#include "../ubo/WindFieldUBO.hpp"
 #include <vector>
 #include <deque>
 #include <unordered_map>
@@ -141,9 +142,18 @@ public:
 
     WindSettings& getWindSettings() { return windSettings; }
     const WindSettings& getWindSettings() const { return windSettings; }
+    // Shared wind-field settings (wind home). Owned here so the widget agent
+    // has one getter; packed to the set=0/binding=27 UBO by
+    // updateWindFieldUBO().
+    WindFieldSettings& getWindFieldSettings() { return windFieldSettings; }
+    const WindFieldSettings& getWindFieldSettings() const { return windFieldSettings; }
     DistanceDensitySettings& getDistanceDensitySettings() { return distanceDensitySettings; }
     const DistanceDensitySettings& getDistanceDensitySettings() const { return distanceDensitySettings; }
-    void setWindTime(float timeSeconds) { windTimeSeconds = timeSeconds; }
+    // Per-frame clock (seconds). Runs updateWindFieldUBO() so the shared
+    // field tracks the same cadence as SkySphere::update (called from the
+    // adjacent MyApp lines) with no MyApp edit; write-on-change inside keeps
+    // static scenes free of per-frame memcpys.
+    void setWindTime(float timeSeconds);
 
     // Impostor rendering.  Call after init() once impostor views have been captured.
     // albedoArray60 and normalArray60 must be VkImageView covering 80 layers
@@ -208,6 +218,15 @@ public:
     // Must be called before any draw that uses wind.  Updates per-frame values
     // (camera position, falloff) so windParams on the GPU stays in sync.
     void updateWindParamsUBO(const glm::vec3& cameraPos);
+
+    // Pack + upload the shared wind-field UBO (set=0, binding=27) from
+    // WindSettings (ambient mirror) + WindFieldSettings (tornado list).
+    // Write-on-change via memcmp (mirrors updateWindParamsUBO): static scenes
+    // issue zero per-frame writes. Called per frame from setWindTime().
+    void updateWindFieldUBO();
+    // Scene-owned shared buffer for SceneRenderer::init to bind once into the
+    // static/per-frame main sets (contents stream via memcpy afterwards).
+    Buffer getWindFieldBuffer() const { return windFieldBuffer; }
 
     // Shared set=2 wind params resources. Other consumers of the vegetation
     // shader family (e.g. ImpostorCapture) bind the same layout + descriptor
@@ -287,6 +306,7 @@ private:
     VertexBufferObject impostorVBO;
 
     WindSettings windSettings;
+    WindFieldSettings windFieldSettings;
     DistanceDensitySettings distanceDensitySettings;
     float windTimeSeconds = 0.0f;
 
@@ -320,6 +340,13 @@ private:
     TrackedHandle<VkDescriptorSetLayout> windParamsDescSetLayout;
     TrackedHandle<VkDescriptorSet> windParamsDescSet;
     void*                 windParamsMapped       = nullptr;
+
+    // Shared wind-field UBO (set=0, binding=27) — persistently mapped,
+    // packed by updateWindFieldUBO(). Same write-on-change caching as above.
+    Buffer                windFieldBuffer;
+    WindFieldUBO          windFieldCache{};
+    bool                  windFieldCacheValid = false;
+    void*                 windFieldMapped      = nullptr;
 
     // ── CPU frustum culling (indirection via concatenated instance buffer) ────
     Buffer concatenatedInstanceBuffer;  // all instances concatenated (kInstanceStride per element)

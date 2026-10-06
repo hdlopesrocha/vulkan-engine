@@ -27,6 +27,12 @@ layout(location = VARY_BRUSHPATCH) flat in int fragContainerIndex;
 #include "includes/sdf_ops.glsl"
 #include "includes/sdf_noise.glsl"
 #include "includes/sdf_smoke.glsl"
+// Shared wind field (set 0, binding 27) for the flame lean below. Requires
+// perlin.glsl (perlinNoise3D) before wind_field.glsl. Set 0 is the global
+// scene set, already first in this pipeline's layout (SdfRenderer), whose
+// binding 27 carries VERTEX|FRAGMENT|COMPUTE stage flags — no C++ change.
+#include "includes/perlin.glsl"
+#include "includes/wind_field.glsl"
 
 layout(std430, set = 1, binding = 0) readonly buffer SdfInstanceBuffer {
     SdfInstanceGPU sdfInstances[];
@@ -119,6 +125,25 @@ float sdfEvalInstance(vec3 wpos, SdfInstanceGPU inst, SdfDefinitionGPU def,
     if (def.meta.x == SDF_PRIM_FLAME) {
         float hh = max(def.params0.y, 1e-3);
         qn = q * (3.2 / hh);
+        // Shared-field flame lean: displace the canonical flame domain by
+        // the world-space field (XZ) at the instance position on the SDF
+        // clock, so both sdfFlameDeform and sdfFlameSpikes below sample
+        // wind-bent input and flames lean downwind. Gain 0.05 canonical
+        // units per (m/s), scaled by (0.25 + turbulence) so the response
+        // tracks the existing turbulence setting (rise is a scroll rate, not
+        // a displacement gain, and is left untouched); clamped to +/-0.5 so
+        // tornado cores cannot throw samples out of the grid. Evaluated only
+        // when a consumer below is active (deform bit or spikes), mirroring
+        // their exact conditions, so undeformed flames pay zero extra ALU.
+        // NaN-safe: windSVF is NaN-safe and the clamp bounds the shift.
+        float spkAmp = max(def.params1.y, 0.0);
+        if (((deform & 1u) != 0u) || (spkAmp > 0.001)) {
+            float turbResp = 0.25 + clamp(mat.extra.z, 0.0, 2.0);
+            vec3 wfFire = windSVF(wpos, time);
+            vec2 fireLean = clamp(wfFire.xz * (0.05 * turbResp), vec2(-0.5), vec2(0.5));
+            qn.x += fireLean.x;
+            qn.z += fireLean.y;
+        }
     }
     // Procedural deformation offsets (noise + spikes) are not metric: adding
     // them can push |grad d| above 1 by roughly (deform amplitude / feature
