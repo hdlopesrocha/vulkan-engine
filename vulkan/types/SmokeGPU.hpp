@@ -1,10 +1,10 @@
 #pragma once
 
-// Smoke-bomb runtime tuning (std430, 176 bytes). Lives in the smoke state
+// Smoke-bomb runtime tuning (std430, 208 bytes). Lives in the smoke state
 // buffer (set=1 binding 8); streamed on demand, never rebuilt with geometry.
 // Layout: 8 core vec4 (smoke + bullet simulation) followed by 3 gold vec4
 // for the bullet tracer shading (moved here from shader constants so the
-// widget can edit the gold look).
+// widget can edit the gold look), the smoke tint, and the shape rig.
 #include <glm/glm.hpp>
 #include <cstdint>
 
@@ -26,5 +26,8 @@ struct SmokeGPU {
     glm::vec4 gold1;    // rgb = bright/champagne gold, w = pattern scale
     glm::vec4 gold2;    // x = specular strength, y = fresnel boost,
                         // z = warm floor, w = normal distortion
+    glm::vec4 smokeColor; // rgb = smoke tint, w = unused
+    glm::vec4 shapeParams; // x = shape (0 cloud, 1 sphere, 2 cube),
+                           // yzw = yaw/pitch/roll radians (object rotation)
 };
-static_assert(sizeof(SmokeGPU) == 176, "SmokeGPU must be 176 bytes");
+static_assert(sizeof(SmokeGPU) == 208, "SmokeGPU must be 208 bytes");

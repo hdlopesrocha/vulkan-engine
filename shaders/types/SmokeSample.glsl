@@ -16,6 +16,7 @@ struct SmokeSample {
     float turb;
     float wake;
     float finalD;   // post-tunnel/wave/fade density (debug view 9)
+    float heat;     // hot-air mask 0..1 (tunnel core): thins smoke, glows
 };
 
 #endif // SMOKE_SAMPLE_GLSL

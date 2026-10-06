@@ -121,4 +121,72 @@ float sdfFlameSpikes(vec3 q, float h, float seed, float freq, float amp) {
     return -amp * ridge * w;
 }
 
+// 4D value noise in [0, 1] (x, y, z + time): 16 corner hashes with a
+// quintic fade. Used for time-evolving smoke bands — true temporal
+// evolution, not just a drifting 3D domain. ~2x the hash cost of 3D, so it
+// is reserved for the large/medium bands; fine detail stays 3D-advected.
+uint sdfHashU4(uvec4 u) {
+    uint h = u.x * 374761393u + u.y * 668265263u + u.z * 1440662683u + u.w * 2246822519u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    return h ^ (h >> 16u);
+}
+
+float sdfHash4(vec4 p) {
+    uvec4 u = floatBitsToUint(p);
+    return float(sdfHashU4(u)) * (1.0 / 4294967295.0);
+}
+
+float sdfNoise4(vec4 p) {
+    vec4 i = floor(p);
+    vec4 f = fract(p);
+    vec4 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float c0000 = sdfHash4(i + vec4(0.0, 0.0, 0.0, 0.0));
+    float c1000 = sdfHash4(i + vec4(1.0, 0.0, 0.0, 0.0));
+    float c0100 = sdfHash4(i + vec4(0.0, 1.0, 0.0, 0.0));
+    float c1100 = sdfHash4(i + vec4(1.0, 1.0, 0.0, 0.0));
+    float c0010 = sdfHash4(i + vec4(0.0, 0.0, 1.0, 0.0));
+    float c1010 = sdfHash4(i + vec4(1.0, 0.0, 1.0, 0.0));
+    float c0110 = sdfHash4(i + vec4(0.0, 1.0, 1.0, 0.0));
+    float c1110 = sdfHash4(i + vec4(1.0, 1.0, 1.0, 0.0));
+    float c0001 = sdfHash4(i + vec4(0.0, 0.0, 0.0, 1.0));
+    float c1001 = sdfHash4(i + vec4(1.0, 0.0, 0.0, 1.0));
+    float c0101 = sdfHash4(i + vec4(0.0, 1.0, 0.0, 1.0));
+    float c1101 = sdfHash4(i + vec4(1.0, 1.0, 0.0, 1.0));
+    float c0011 = sdfHash4(i + vec4(0.0, 0.0, 1.0, 1.0));
+    float c1011 = sdfHash4(i + vec4(1.0, 0.0, 1.0, 1.0));
+    float c0111 = sdfHash4(i + vec4(0.0, 1.0, 1.0, 1.0));
+    float c1111 = sdfHash4(i + vec4(1.0, 1.0, 1.0, 1.0));
+    float nx000 = mix(c0000, c1000, u.x);
+    float nx100 = mix(c0100, c1100, u.x);
+    float nx010 = mix(c0010, c1010, u.x);
+    float nx110 = mix(c0110, c1110, u.x);
+    float nx001 = mix(c0001, c1001, u.x);
+    float nx101 = mix(c0101, c1101, u.x);
+    float nx011 = mix(c0011, c1011, u.x);
+    float nx111 = mix(c0111, c1111, u.x);
+    float nxy00 = mix(nx000, nx100, u.y);
+    float nxy10 = mix(nx010, nx110, u.y);
+    float nxy01 = mix(nx001, nx101, u.y);
+    float nxy11 = mix(nx011, nx111, u.y);
+    float nxyz0 = mix(nxy00, nxy10, u.z);
+    float nxyz1 = mix(nxy01, nxy11, u.z);
+    return mix(nxyz0, nxyz1, u.w);
+}
+
+// N-octave 4D fBm in [0, 1] (normalized). Frequency scales all four axes.
+float sdfFbmOct4(vec4 p, int octaves) {
+    float total = 0.0;
+    float amplitude = 0.5;
+    float frequency = 1.0;
+    float norm = 0.0;
+    for (int i = 0; i < 6; ++i) {
+        if (i >= octaves) break;
+        total += sdfNoise4(p * frequency) * amplitude;
+        norm += amplitude;
+        amplitude *= 0.5;
+        frequency *= 2.0;
+    }
+    return total / max(norm, 1e-6);
+}
+
 #endif // SDF_NOISE_GLSL

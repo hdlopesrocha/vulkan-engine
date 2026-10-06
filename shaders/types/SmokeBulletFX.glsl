@@ -14,6 +14,7 @@ struct SmokeBulletFX {
     float wave;      // shock-wave modulation value
     float wake;      // wake influence (debug + thinning)
     float turb;      // turbulence magnitude (debug)
+    float compress;  // air compression [0,~1]: precursor crush + rim pile
 };
 
 #endif // SMOKE_BULLET_F_X_GLSL

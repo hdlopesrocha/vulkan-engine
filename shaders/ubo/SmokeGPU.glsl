@@ -24,6 +24,9 @@ struct SmokeGPU {
     vec4 gold1;     // rgb = bright/champagne gold, w = pattern scale
     vec4 gold2;     // x = specular strength, y = fresnel boost,
                     // z = warm floor, w = normal distortion
+    vec4 smokeColor; // rgb = smoke tint, w = unused (widget "Smoke color")
+    vec4 shapeParams; // x = shape (0 cloud, 1 sphere, 2 cube),
+                      // yzw = yaw/pitch/roll radians (object rotation)
 };
 
 #endif // SMOKE_G_P_U_GLSL

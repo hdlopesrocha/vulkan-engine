@@ -230,6 +230,16 @@ void main() {
     }
     if (tEnter >= tExit) discard;
 
+    // Dithered march start (up to an eighth of a noise wavelength): breaks
+    // the coherent per-pixel step phase that drew dashed rings along cloud
+    // silhouettes (each ray entered the volume at the same step offset).
+    // Scaled by the noise wavelength so small/flame scenes stay unaffected.
+    {
+        float wlJ = 1.0 / clamp(smokeTuning.noise.x, 0.001, 0.5);
+        float jU = float(sdfHashU(uvec3(uvec2(gl_FragCoord.xy), 7u))) * (1.0 / 4294967295.0);
+        tEnter += jU * 0.125 * wlJ;
+    }
+
     // March params from SdfParamsUBO (CPU layout): timeDebug=(t,packed,maxSteps,safety),
     // marchParams=(minStep,maxStep,epsilon,earlyTerm). Zero-filled UBO -> safe defaults.
     int maxSteps = int(sdfParams.timeDebug.z + 0.5);
@@ -281,18 +291,27 @@ void main() {
     float dbgSmokeWake = 0.0;
     float dbgSmokeFinal = 0.0;
     float dbgSmokeLight = 0.0;
+    float dbgSmokeHeat = 0.0;
+    // Peak-density tracker: field debug views (2,4-9,11) report the sample
+    // that contributed most, NOT the last sub-loop sample (which sits at
+    // the far exit in thin air and would read ~0 for every ray). SDF views
+    // (1,3) instead track closest approach (min over samples).
+    float dbgPeakD = -1e30;
     bool hit = false;
     float hitT = tEnter;
     vec3 hitColor = vec3(0.0);
+    // Two-phase smoke resolve: set once the volume's thickness has been
+    // measured and shaded, so later contacts march through without
+    // double-counting while fire ahead still accumulates.
+    bool smokeResolved = false;
 
-    // Visible tracer round: analytic gold capsule proxy, evaluated ONCE
-    // before the march (the old per-sample sphere test aliased into stacked
-    // horizontal discs). Each live in-flight bullet is approximated by K=8
-    // overlapping spheres tapering from tail to nose; exact ray/sphere
-    // roots give a banding-free hit distance. The tail is floored at 40% of
-    // the nose so a widening cone still reads as ONE continuous slug
-    // instead of two detached balls. The smoke container expands over the
-    // flight path, so the proxy is covered even outside the smoke ball.
+    // Visible tracer round: ONE analytic gold sphere of the bullet's own
+    // radius at the head, evaluated ONCE before the march (the old
+    // per-sample sphere test aliased into stacked horizontal discs, and the
+    // multi-sphere chain shaded every sub-sphere with its own highlight, so
+    // it read as several smaller balls). Exact ray/sphere root gives a
+    // banding-free hit distance. The smoke container expands over the flight
+    // path, so the proxy is covered even outside the smoke ball.
     float bestT = 1e5;
     vec3 bestC = vec3(0.0);
     float bestR = 0.0;
@@ -303,28 +322,18 @@ void main() {
         if (!bst.live || !bst.headOnPath) continue;
         vec3 bD = bbl.b.xyz / max(length(bbl.b.xyz), 1e-6);
         vec3 head = bbl.a.xyz + bD * bst.traveled;
-        float noseR = max(bbl.c.x * 0.30, 0.3);
-        float tailR = max(max(bbl.a.w * 0.30, noseR * 0.4), 0.5);
-        // Round length follows the bigger end so a widening cone (small
-        // launch bore, huge head bore) renders as one growing round.
-        float L = max(max(bbl.a.w, bbl.c.x), 1.0);
-        vec3 tail = head - bD * (L * 0.7);
-        vec3 nose = head + bD * (L * 0.3);
-        for (int k = 0; k < 8; ++k) {
-            float fk = float(k) / 7.0;
-            vec3 center = mix(tail, nose, fk);
-            float radius = mix(tailR, noseR, fk);
-            vec3 oc = ro - center;
-            float bq = dot(oc, rd);
-            float cq = dot(oc, oc) - radius * radius;
-            float disc = bq * bq - cq;
-            if (disc > 0.0) {
-                float tHit = -bq - sqrt(disc);
-                if (tHit > 0.0 && tHit < bestT) {
-                    bestT = tHit;
-                    bestC = center;
-                    bestR = radius;
-                }
+        // One sphere, bullet's own radius (max of both ends, guard floor).
+        float radius = max(max(bbl.a.w, bbl.c.x), 0.3);
+        vec3 oc = ro - head;
+        float bq = dot(oc, rd);
+        float cq = dot(oc, oc) - radius * radius;
+        float disc = bq * bq - cq;
+        if (disc > 0.0) {
+            float tHit = -bq - sqrt(disc);
+            if (tHit > 0.0 && tHit < bestT) {
+                bestT = tHit;
+                bestC = head;
+                bestR = radius;
             }
         }
     }
@@ -491,45 +500,114 @@ void main() {
         float densV = 0.0;
         vec3 emisV = vec3(0.0);
         bool isSmoke = (bestDef.meta.x == SDF_PRIM_SMOKE);
-        if (isSmoke) {
+        // ---- two-phase smoke resolve (volume/emissive modes) ----
+        // Phase A measures the smoke depth analytically (exact ray/sphere
+        // roots = what a depth march converges to); phase B shades the
+        // measured thickness with a fixed-count uniform march. Constant cost
+        // per ray: no step-budget exhaustion, no view-dependent landing, so
+        // the look no longer tracks the camera. Surface/transparent modes
+        // keep the old zero-crossing hit above and never enter here.
+        if (isSmoke && !smokeResolved && renderMode != 0u && renderMode != 3u) {
             float loopDurS = max(smokeTuning.timing.y, 1.0);
             float loopTS = smokeLoopT(time, loopDurS);
             vec3 scS = bestInst.posScale.xyz;
-            float maxRS = max(bestDef.params0.x, 1.0);
+            float shapeScaleS = max(bestDef.params0.x, 1.0);
             float seedS = bestInst.rotSeed.w;
             float densMulS = max(bestMat.volumeParams.x, 0.0) * max(smokeTuning.wind.z, 0.0);
-            float rNowS = smokeGrowthRadius(maxRS, loopTS, max(smokeTuning.timing.x, 0.5));
-            // Smoke step law: exact sphere tracing OUTSIDE the volume;
-            // INSIDE, a uniform step tied to the noise wavelength so the
-            // layered features are sampled finely enough to avoid marched
-            // plane banding across a huge (256 m) ball. Dense smoke
-            // terminates early, so the finer steps stay cheap.
-            float wl = 1.0 / clamp(smokeTuning.noise.x, 0.001, 0.5);
-            float interiorStep = clamp(wl * 0.6, 0.4, max(rNowS * 0.04, 1.0));
-            dt = (dBest >= 0.0) ? clamp(dBest * safety, minStep, maxStep) : interiorStep;
-            SmokeSample ssm = smokeSampleDensity(p, scS, rNowS, maxRS, smokeTuning, time,
-                                                 seedS, densMulS);
-            dbgSmokeSDF = ssm.sdf;
-            dbgSmokeDens = ssm.density;
-            dbgSmokeBullet = ssm.bullet;
-            dbgSmokeTunnel = ssm.tunnel;
-            dbgSmokePress = ssm.pressure;
-            dbgSmokeWave = ssm.wave;
-            dbgSmokeTurb = ssm.turb;
-            dbgSmokeWake = ssm.wake;
-            dbgSmokeFinal = ssm.finalD;
-            // Accumulate the FINAL density (post tunnel-thinning, wave and
-            // loop-end fade), so the render matches debug view 9 and the
-            // bullet visibly carves the cloud instead of ghosting through it.
-            densV = ssm.finalD;
-            if (densV > 0.001) {
-                vec3 sunDirW = -normalize(ubo.lightDirection);
-                float ltSm = 1.0;
-                emisV = smokeShade(p, rd, scS, rNowS, maxRS, smokeTuning, bestMat, time,
-                                   seedS, densMulS,
-                                   sunDirW, ubo.lightColor, ltSm);
-                dbgSmokeLight = ltSm;
+            float rNowS = smokeGrowthRadius(shapeScaleS, loopTS, max(smokeTuning.timing.x, 0.5));
+            // Trigger on analytic containment (not the carved SDF), so the
+            // bullet bore can never hide the volume from the resolver.
+            float contS = length(p - scS) - rNowS;
+            if (contS < eps) {
+                vec3 ocS = ro - scS;
+                float tcaS = -dot(ocS, rd);
+                float ddS = dot(ocS, ocS) - tcaS * tcaS;
+                float rrS = rNowS * rNowS;
+                float tA0 = tEnter, tA1 = tEnter - 1.0;
+                if (ddS < rrS) {
+                    float thcS = sqrt(max(rrS - ddS, 0.0));
+                    tA0 = max(tcaS - thcS, tEnter);
+                    tA1 = min(tcaS + thcS, tExit);
+                }
+                float loS = max(t, tA0);
+                if (tA1 > loS) {
+                    // Phase B: fixed-count uniform march across the measured
+                    // thickness. Jittered start; each sample shaded with its
+                    // marched-in depth (deep mass reads darker, stably).
+                    float thickS = max(tA1 - loS, 1e-3);
+                    float dtS = thickS / 12.0;
+                    float jS = float(sdfHashU(uvec3(uvec2(gl_FragCoord.xy), 19u))) * (1.0 / 4294967295.0);
+                    float ts = loS + jS * dtS;
+                    for (int j = 0; j < 12; ++j) {
+                        if (ts > tA1) break;
+                        vec3 ps = ro + rd * ts;
+                        SmokeSample ssm = smokeSampleDensity(ps, scS, rNowS, shapeScaleS, smokeTuning, time,
+                                                             seedS, densMulS);
+                        // Closest-approach views (SDF sign, bullet distance):
+                        // min over every sub-sample, ungated.
+                        dbgSmokeSDF = min(dbgSmokeSDF, ssm.sdf);
+                        dbgSmokeBullet = min(dbgSmokeBullet, ssm.bullet);
+                        float densS = ssm.finalD;
+                        if (densS > 0.001) {
+                            vec3 sunDirW = -normalize(ubo.lightDirection);
+                            float ltSm = 1.0;
+                            vec3 emisS = smokeShade(ps, rd, scS, rNowS, shapeScaleS, smokeTuning, bestMat, time,
+                                                   seedS, densMulS,
+                                                   sunDirW, ubo.lightColor, densS, ssm.heat, ltSm);
+                            // Depth shading: brightness falls gently with
+                            // marched-in depth, so the lit face reads
+                            // against the mass without hollowing the core.
+                            float depthInS = max(ts - loS, 0.0);
+                            emisS *= 0.55 + 0.45 * exp(-depthInS * 0.002);
+                            // Peak-density sample owns the field debug views.
+                            if (densS > dbgPeakD) {
+                                dbgPeakD = densS;
+                                dbgSmokeDens = ssm.density;
+                                dbgSmokeTunnel = ssm.tunnel;
+                                dbgSmokePress = ssm.pressure;
+                                dbgSmokeWave = ssm.wave;
+                                dbgSmokeTurb = ssm.turb;
+                                dbgSmokeWake = ssm.wake;
+                                dbgSmokeFinal = ssm.finalD;
+                                dbgSmokeHeat = ssm.heat;
+                                dbgSmokeLight = ltSm;
+                            }
+                            float extinctS = clamp(densS * (0.5 + bestMat.volumeParams.y) * 0.08, 0.0, 4.0);
+                            float aStepS = clamp(1.0 - exp(-extinctS * dtS * 2.0), 0.0, 1.0);
+                            if (tFirst < 0.0 && (1.0 - trans) + aStepS * trans > 0.03) tFirst = ts;
+                            float wgtS = trans * aStepS;
+                            accum += wgtS * emisS;
+                            tDepthAccum += wgtS * ts;
+                            trans *= (1.0 - aStepS);
+                            if ((1.0 - trans) >= opacityThresh) break;
+                        }
+                        // Hot bore glow: heat emits even where the smoke ran
+                        // thin, so the tunnel reads instead of vanishing.
+                        // Additive only (never occludes).
+                        if (ssm.heat > 0.01) {
+                            vec3 heatWarm = mix(vec3(smokeTuning.smokeColor.rgb),
+                                               vec3(1.0, 0.48, 0.15), 0.75);
+                            accum += trans * heatWarm * (ssm.heat * 0.5) * dtS;
+                        }
+                        ts += dtS;
+                    }
+                    smokeResolved = true;
+                    t = tA1 + 1e-4;
+                    if ((1.0 - trans) >= opacityThresh) break;
+                    continue;
+                }
+                // Analytic miss (grazing resolved by the SDF): sphere-trace
+                // through without accumulating.
+                dt = clamp(dBest * safety, minStep, maxStep);
+            } else {
+                // Approaching the ball: exact sphere tracing to its surface.
+                dt = clamp(dBest * safety, minStep, maxStep);
             }
+        } else if (isSmoke) {
+            // Volume already resolved behind us (or a surface mode, handled
+            // by the zero-crossing hit above): sphere-trace through without
+            // accumulating so fire ahead still marches normally.
+            dt = clamp(dBest * safety, minStep, maxStep);
         } else {
         if (dBest < eps) {
             // Volume/emissive modes treat the interior as dense (no hard surface).
@@ -576,7 +654,14 @@ void main() {
         } // end else (non-smoke path)
         // Shared front-to-back accumulation for fire and smoke volumes.
         if (densV > 0.001) {
-            float extinct = clamp(densV * (0.5 + bestMat.volumeParams.y), 0.0, 4.0);
+            // Smoke-only extinction scale 0.08: the material values are
+            // tuned for dense little flames; a cloud hundreds of meters
+            // across needs a per-meter coefficient an order of magnitude
+            // smaller or one step goes opaque (which is what made the look
+            // track the camera). ~e-fold per 90 m at typical density.
+            // Flames keep their original coefficient.
+            float extinctScale = isSmoke ? 0.08 : 1.0;
+            float extinct = clamp(densV * (0.5 + bestMat.volumeParams.y) * extinctScale, 0.0, 4.0);
             float aStep = clamp(1.0 - exp(-extinct * dt * 2.0), 0.0, 1.0);
             if (tFirst < 0.0 && (1.0 - trans) + aStep * trans > 0.03) tFirst = t;
             float wgt = trans * aStep;
@@ -592,7 +677,7 @@ void main() {
     // Stored in debugFlags bits 4-7 so the fire debug views (bits 0-2) are
     // unaffected.
     uint smokeDbg = (debugFlags >> 4u) & 15u;
-    if (smokeDbg >= 1u && smokeDbg <= 10u) {
+    if (smokeDbg >= 1u && smokeDbg <= 11u) {
         vec3 sd = vec3(0.0);
         if (smokeDbg == 1u) {
             // Base smoke SDF sign: blue = inside, white = boundary, red = outside.
@@ -613,11 +698,17 @@ void main() {
             float w = clamp(dbgSmokeWave * 0.5 + 0.5, 0.0, 1.0);
             sd = vec3(w, w * 0.6, w * 0.3);
         } else if (smokeDbg == 7u) {
-            sd = vec3(clamp(dbgSmokeTurb, 0.0, 1.0));
+            // Signed velocity field magnitude (m/s): white = full
+            // entrainment speed (wakeExpansion * bullet speed, ~77 m/s).
+            sd = vec3(clamp(dbgSmokeTurb / 80.0, 0.0, 1.0));
         } else if (smokeDbg == 8u) {
             sd = vec3(clamp(dbgSmokeWake, 0.0, 1.0));
         } else if (smokeDbg == 9u) {
             sd = vec3(clamp(dbgSmokeFinal, 0.0, 1.0));
+        } else if (smokeDbg == 11u) {
+            // Hot-air mask: warm ramp, black = ambient.
+            float h = clamp(dbgSmokeHeat, 0.0, 1.0);
+            sd = vec3(h, h * 0.45, h * 0.15);
         } else {
             float h = maxSteps > 0 ? clamp(float(steps) / float(maxSteps), 0.0, 1.0) : 0.0;
             sd = mix(vec3(0.0, 0.1, 0.0), vec3(0.0, 1.0, 0.3), h);
