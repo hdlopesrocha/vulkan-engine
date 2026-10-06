@@ -7,6 +7,7 @@
 #include <glm/glm.hpp>
 #include <array>
 #include "CommandBufferState.hpp"
+#include "../ubo/CaptureUBO.hpp"
 
 class VulkanApp;
 class VegetationRenderer;
@@ -109,13 +110,8 @@ private:
     TrackedHandle<VkDescriptorSetLayout> uboDescSetLayout;
     TrackedHandle<VkDescriptorSetLayout> texDescSetLayout;
 
-    // Per-view camera UBO (dynamic-offset uniform buffer, NUM_VIEWS slots).
-    struct alignas(16) CaptureUBO {
-        glm::mat4 viewProjection;
-        glm::vec4 viewPos;
-        glm::vec4 lightDir;
-        glm::vec4 lightColor;
-    };
+    // Per-view camera UBO (dynamic-offset uniform buffer, NUM_VIEWS slots);
+    // canonical layout in vulkan/ubo/CaptureUBO.hpp.
     VkBuffer       uboBuffer = VK_NULL_HANDLE;
     void*          uboMapped = nullptr;
     VkDeviceSize   uboStride = 256;  // aligned to minUniformBufferOffsetAlignment

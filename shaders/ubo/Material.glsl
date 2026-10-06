@@ -1,11 +1,11 @@
-#ifndef MATERIAL_G_P_U_GLSL
-#define MATERIAL_G_P_U_GLSL
+#ifndef MATERIAL_GLSL
+#define MATERIAL_GLSL
 
 // Extracted from shaders/includes/ubo.glsl (single-struct GLSL type).
 
-// Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (6 vec4s).
-// Access this as `materials[brushIndex]` from shaders. Uses std430 for tightly-packed vec4 alignment.
-struct MaterialGPU {
+// Packed material data uploaded once to GPU. Matches the CPU-side Material
+// (vulkan/ubo/Material.hpp) — canonical shared layout, std430 vec4 stride.
+struct Material {
     vec4 materialFlags;    // .x = skipEnvMap (set during cubemap capture), .z = ambientFactor
     vec4 mappingParams;    // x = mappingEnabled (0/1), y = tessLevel, z = invertHeight (0/1), w = tessHeightScale
     vec4 specularParams;   // x = specularStrength, y = shininess
@@ -15,4 +15,4 @@ struct MaterialGPU {
     vec4 roughnessAOParams; // x = roughnessFactor, y = aoFactor, z = useAO (1.0/0.0)
 };
 
-#endif // MATERIAL_G_P_U_GLSL
+#endif // MATERIAL_GLSL

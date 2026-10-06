@@ -1,6 +1,5 @@
 
-#include "../ubo/RayTracingParamsGLSL.glsl"
-#include "../ubo/RayTracingParamsNamed.glsl"
+#include "../ubo/RayTracingParams.glsl"
 #include "../ubo/WaterParamsNamed.glsl"
 #include "../types/WaterVertexWave.glsl"
 #include "../types/WaterWaveField.glsl"
@@ -67,8 +66,7 @@ layout(set = 2, binding = 0) uniform sampler2D waterBackDepthTex;
 // region zones are identical between modes.
 #include "rt_params.glsl"
 layout(set = 0, binding = 14) uniform accelerationStructureEXT rtTlas;
-layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rtPacked; };
-RayTracingParamsNamed rt = rayTracingParamsNamed(rtPacked);
+layout(std140, set = 0, binding = 17) uniform RTBlock { RayTracingParams rt; };
 // Per-op RT profiling (RT_PROFILE variants only): set 0 binding 26 + macros.
 #include "rt_profile.glsl"
 #endif
@@ -190,7 +188,7 @@ void main() {
     // fragment debug view can show the true id distribution)
     fragBrushIndex = chosenIdx;
 
-    // Load selected WaterParams from SSBO, falling back to layer 0 for
+    // Load selected WaterSettings from SSBO, falling back to layer 0 for
     // out-of-range terrain paint ids (see water.frag).
     int nWL = max(waterParams.length(), 1);
     WaterParamsNamed wp = waterParamsNamed(waterParams[(chosenIdx >= 0 && chosenIdx < nWL) ? chosenIdx : 0]);
@@ -202,7 +200,7 @@ void main() {
     // refinement and the full wave field. The fragment stage derives its own
     // analytic wave normal from fragBasePos/fragWaterDepth/fragShoreDir, so
     // the base normal below is only a fallback.
-    if (!ubo.tessellationEnabled) {
+    if (ubo.tessellationEnabled == 0u) {
         fragBaseNormal = normal;                      // undisplaced base normal
         fragBasePos = vec4(pos, wp.bumpAmplitude);     // base pos + raw bump amplitude
         // Safe fallback depth (the TES-only depth textures are not sampled
@@ -294,7 +292,7 @@ void main() {
     float waterDepth = max(solidDrop, backDrop);
     bool waterDepthFromRt = false;
 #ifdef RT_ENABLED
-    if (rt.rayTracedWaterDepth && rt.tlasReady) {
+    if ((rt.rayTracedWaterDepth != 0u) && (rt.tlasReady != 0u)) {
         // Exact solid bottom along the same view ray the raster sample uses.
         vec3 rayD = normalize(pos - ubo.viewPosition);
         RT_PROF_BEGIN(rtProfDepth, RT_PROFILE_OP_WATER_DEPTH);

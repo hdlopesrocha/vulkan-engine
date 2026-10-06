@@ -3,7 +3,7 @@
 
 // Extracted from shaders/includes/ubo.glsl (single-struct GLSL type).
 
-// ── Named view over the packed WaterParamsGPU. ───────────────────────────
+// ── Named view over the packed WaterParams. ───────────────────────────
 // Same data, descriptive names: the packed wave-mask threshold reads as
 // `wp.waveMaskThreshold`, the foam-noise period scale as
 // `wp.foamNoisePeriodScale`, and so on for every component. Built once where the params are obtained (the

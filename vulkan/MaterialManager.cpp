@@ -3,8 +3,8 @@
 #include <stdexcept>
 #include <cstring>
 
-static MaterialGPU toGPU(const MaterialProperties &m) {
-    MaterialGPU out;
+static Material toGPU(const MaterialProperties &m) {
+    Material out;
     out.materialFlags = glm::vec4(0.0f, 0.0f, m.ambientFactor, 0.0f);
     out.mappingParams = glm::vec4(m.mappingMode ? 1.0f : 0.0f, m.tessLevel, m.invertHeight ? 1.0f : 0.0f, m.tessHeightScale);
     out.specularParams = glm::vec4(m.specularStrength, m.shininess, 0.0f, 0.0f);
@@ -19,7 +19,7 @@ void MaterialManager::allocate(size_t count, VulkanApp* app) {
     if (!app) throw std::runtime_error("MaterialManager::allocate: app is null");
     if (count == 0) return;
 
-    size_t newSize = sizeof(MaterialGPU) * count;
+    size_t newSize = sizeof(Material) * count;
 
     // Destroy previous buffer if size differs
     if (materialBuffer.buffer != VK_NULL_HANDLE && materialBufferSize != newSize) {
@@ -43,7 +43,7 @@ void MaterialManager::allocate(size_t count, VulkanApp* app) {
     }
 
     materialCount = count;
-    cpuCache.assign(materialCount, MaterialGPU{});
+    cpuCache.assign(materialCount, Material{});
 
     // Initialize to zeros on GPU
     memset(materialBuffer.mappedData, 0, materialBufferSize);
@@ -52,11 +52,11 @@ void MaterialManager::allocate(size_t count, VulkanApp* app) {
 void MaterialManager::update(size_t index, const MaterialProperties& mat, VulkanApp* app) {
     if (!app) throw std::runtime_error("MaterialManager::update: app is null");
     if (index >= materialCount) throw std::out_of_range("MaterialManager::update: index out of range");
-    MaterialGPU gpu = toGPU(mat);
+    Material gpu = toGPU(mat);
     cpuCache[index] = gpu;
 
-    VkDeviceSize offset = static_cast<VkDeviceSize>(index) * sizeof(MaterialGPU);
-    memcpy(materialBuffer.map(offset), &gpu, sizeof(MaterialGPU));
+    VkDeviceSize offset = static_cast<VkDeviceSize>(index) * sizeof(Material);
+    memcpy(materialBuffer.map(offset), &gpu, sizeof(Material));
 }
 
 void MaterialManager::destroy(VulkanApp* app) {

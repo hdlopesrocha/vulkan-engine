@@ -14,7 +14,7 @@
 // Global-only and renderer-agnostic: the preset edits Settings fields that
 // gate the per-material water features (blurEnabled, rtWaterReflections,
 // rtRefractions) without holding renderer types, so the headless server can
-// still include it. The per-layer WaterParams are authored values and are
+// still include it. The per-layer WaterSettings are authored values and are
 // never touched.
 //
 // The presets never touch Settings::textureArraySize: changing it is a full
@@ -27,7 +27,7 @@ public:
 
     GraphicsQuality quality() const { return quality_; }
 
-    // Global Settings only; the authored per-layer WaterParams stay untouched.
+    // Global Settings only; the authored per-layer WaterSettings stay untouched.
     void execute(Settings& settings) const {
         switch (quality_) {
         case GraphicsQuality::Maximum:

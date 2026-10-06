@@ -54,12 +54,16 @@ void SkySphere::init(VulkanApp* app, SkySettings& settings,
 void SkySphere::fillSkyUniform(SkyUniform& out) const {
     memset(&out, 0, sizeof(out));
     if (skySettings) {
-        out.skyHorizon = glm::vec4(skySettings->horizonColor, 1.0f);
-        out.skyZenith = glm::vec4(skySettings->zenithColor, 1.0f);
-        out.skyParams = glm::vec4(skySettings->warmth, skySettings->exponent, skySettings->sunFlare, static_cast<float>(skySettings->mode));
-        out.nightHorizon = glm::vec4(skySettings->nightHorizon, 1.0f);
-        out.nightZenith = glm::vec4(skySettings->nightZenith, 1.0f);
-        out.nightParams = glm::vec4(skySettings->nightIntensity, skySettings->starIntensity, 0.0f, 0.0f);
+        out.horizonColor = skySettings->horizonColor;
+        out.zenithColor = skySettings->zenithColor;
+        out.warmth = skySettings->warmth;
+        out.exponent = skySettings->exponent;
+        out.sunFlare = skySettings->sunFlare;
+        out.skyMode = static_cast<uint32_t>(skySettings->mode);
+        out.nightHorizonColor = skySettings->nightHorizon;
+        out.nightZenithColor = skySettings->nightZenith;
+        out.nightIntensity = skySettings->nightIntensity;
+        out.starIntensity = skySettings->starIntensity;
     }
     // Clouds share the same UBO. When no CloudSettings are attached the
     // toggles stay zero (= disabled), keeping old sky-only behavior.
@@ -68,30 +72,43 @@ void SkySphere::fillSkyUniform(SkyUniform& out) const {
         masterOn = cloudSettings->enabled;
         if (hasCloudsOverride) masterOn = masterOn && cloudsEnabledOverride;
         const float windRad = glm::radians(cloudSettings->windAngleDeg);
-        out.cloudToggles = glm::vec4(masterOn ? 1.0f : 0.0f,
-            cloudSettings->lowEnabled ? 1.0f : 0.0f,
-            cloudSettings->midEnabled ? 1.0f : 0.0f,
-            cloudSettings->highEnabled ? 1.0f : 0.0f);
-        out.cloudGlobal = glm::vec4(cloudSettings->densityScale, cloudSettings->windSpeed,
-            windRad, cloudSettings->detailStrength);
-        out.cloudTime = glm::vec4(cloudTime * std::max(cloudSettings->timeScale, 0.0f),
-            cloudSettings->shadowStrength,
-            static_cast<float>(cloudSettings->raymarchSteps),
-            static_cast<float>(cloudSettings->lightSteps));
-        out.cloudLow = glm::vec4(cloudSettings->lowCoverage, cloudSettings->lowDensity,
-            cloudSettings->lowScale, cloudSettings->lowWindSpeedMul);
-        out.cloudLowGeom = glm::vec4(cloudSettings->lowBaseHeight, cloudSettings->lowThickness, 0.0f, 0.0f);
-        out.cloudMid = glm::vec4(cloudSettings->midCoverage, cloudSettings->midDensity,
-            cloudSettings->midScale, cloudSettings->midWindSpeedMul);
-        out.cloudMidGeom = glm::vec4(cloudSettings->midBaseHeight, cloudSettings->midThickness, 0.0f, 0.0f);
-        out.cloudHigh = glm::vec4(cloudSettings->highCoverage, cloudSettings->highDensity,
-            cloudSettings->highScale, cloudSettings->highWindSpeedMul);
-        out.cloudHighGeom = glm::vec4(cloudSettings->highBaseHeight, cloudSettings->highThickness, 0.0f, 0.0f);
-        out.cloudLight = glm::vec4(cloudSettings->silverLining, cloudSettings->ambientBoost,
-            cloudSettings->sunForwardG, cloudSettings->exposure);
-        out.cloudAnim = glm::vec4(cloudSettings->timeScale, 0.0f, 0.0f, 0.0f);
+        out.cloudsEnabled = masterOn ? 1u : 0u;
+        out.lowEnabled = cloudSettings->lowEnabled ? 1u : 0u;
+        out.midEnabled = cloudSettings->midEnabled ? 1u : 0u;
+        out.highEnabled = cloudSettings->highEnabled ? 1u : 0u;
+        out.densityScale = cloudSettings->densityScale;
+        out.windSpeed = cloudSettings->windSpeed;
+        out.windAngleRad = windRad;
+        out.detailStrength = cloudSettings->detailStrength;
+        out.cloudTime = cloudTime * std::max(cloudSettings->timeScale, 0.0f);
+        out.shadowStrength = cloudSettings->shadowStrength;
+        out.raymarchSteps = static_cast<float>(cloudSettings->raymarchSteps);
+        out.lightSteps = static_cast<float>(cloudSettings->lightSteps);
+        out.lowCoverage = cloudSettings->lowCoverage;
+        out.lowDensity = cloudSettings->lowDensity;
+        out.lowScale = cloudSettings->lowScale;
+        out.lowWindSpeedMul = cloudSettings->lowWindSpeedMul;
+        out.lowBaseHeight = cloudSettings->lowBaseHeight;
+        out.lowThickness = cloudSettings->lowThickness;
+        out.midCoverage = cloudSettings->midCoverage;
+        out.midDensity = cloudSettings->midDensity;
+        out.midScale = cloudSettings->midScale;
+        out.midWindSpeedMul = cloudSettings->midWindSpeedMul;
+        out.midBaseHeight = cloudSettings->midBaseHeight;
+        out.midThickness = cloudSettings->midThickness;
+        out.highCoverage = cloudSettings->highCoverage;
+        out.highDensity = cloudSettings->highDensity;
+        out.highScale = cloudSettings->highScale;
+        out.highWindSpeedMul = cloudSettings->highWindSpeedMul;
+        out.highBaseHeight = cloudSettings->highBaseHeight;
+        out.highThickness = cloudSettings->highThickness;
+        out.silverLining = cloudSettings->silverLining;
+        out.ambientBoost = cloudSettings->ambientBoost;
+        out.sunForwardG = cloudSettings->sunForwardG;
+        out.exposure = cloudSettings->exposure;
+        out.timeScale = cloudSettings->timeScale;
     } else {
-        out.cloudToggles = glm::vec4(hasCloudsOverride && !cloudsEnabledOverride ? 0.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+        out.cloudsEnabled = 0u;
     }
 }
 

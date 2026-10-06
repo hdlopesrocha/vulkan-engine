@@ -1448,9 +1448,9 @@ void RayTracingResources::dispatchWaterRT(VulkanApp* app, VkCommandBuffer cmd, u
     if (paramSlot.mappedData) {
         auto* p = static_cast<RayTracingParams*>(paramSlot.mappedData);
         p->invViewProj = invViewProj;
-        p->viewPos = glm::vec4(viewPos, 1.0f);
-        p->rtResolution = glm::vec4(float(outWidth_), float(outHeight_),
-            1.0f / float(outWidth_), 1.0f / float(outHeight_));
+        p->viewPosition = viewPos;
+        p->rtResolution = glm::vec2(float(outWidth_), float(outHeight_));
+        p->invRtResolution = glm::vec2(1.0f / float(outWidth_), 1.0f / float(outHeight_));
     }
     // Outputs GENERAL -> GENERAL no-op barrier with execution dependency:
     // the water geometry pass sampled them as SHADER_READ (previous frame's

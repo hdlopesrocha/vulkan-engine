@@ -267,7 +267,10 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 
     // Update UBO so sky reads current lightDir, skyParams, etc.
     UniformObject skyUbo = ubo;
-    skyUbo.passParams = glm::vec4(0.0f);
+    skyUbo.isShadowPass = 0u;
+    skyUbo.tessellationEnabled = 0u;
+    skyUbo.nearPlane = 0.0f;
+    skyUbo.farPlane = 0.0f;
     app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
 
     // Guard against invalid image handles (pre-existing RADV issue)

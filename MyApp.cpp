@@ -67,7 +67,7 @@
 #include "utils/MainSceneLoader.hpp"
 #include "space/UniqueChangeCollector.hpp"
 #include "types/Settings.hpp"
-#include "types/WaterParams.hpp"
+#include "types/WaterSettings.hpp"
 #include "utils/GraphicsSettingsCommand.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "widgets/RadialMenu.hpp"
@@ -329,7 +329,7 @@ public:
     std::vector<MixerParameters> mixerParams;
     std::vector<MaterialProperties> materials;
     // Application-owned per-layer water parameters (initialized in setup)
-    std::vector<WaterParams> waterParams;
+    std::vector<WaterSettings> waterParams;
     float mainTime = 0.0f;
     // Last frame delta, forwarded to postSubmit for the per-frame brush rebuild
     float lastFrameDelta = 0.0f;
@@ -584,12 +584,12 @@ public:
         {
             // First (default) water material: shore waves enabled. All other
             // layers keep the struct default (enableWaves = false), i.e. calm.
-            WaterParams wp0 = WaterParams();
+            WaterSettings wp0 = WaterSettings();
             wp0.enableWaves = true;
             waterParams.push_back(wp0);
         }
         {
-            WaterParams wp = WaterParams();
+            WaterSettings wp = WaterSettings();
             wp.noiseOctaves = 1;
             wp.causticColor = glm::vec3(1.0f, 0.98f, 0.9f); // sunlight tint
             // One water region: a single green tint for this demo layer.
@@ -608,7 +608,7 @@ public:
             waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
         }
         {
-            WaterParams wp = WaterParams();
+            WaterSettings wp = WaterSettings();
             wp.enableRefraction = false;
             wp.noiseOctaves = 0;
             wp.noisePeriod = 0.0f;
@@ -1349,42 +1349,44 @@ public:
         glm::mat4 viewProj = camera.getViewProjectionMatrix();
         uboStatic.viewProjection = viewProj;
         uboStatic.invViewProjection = glm::inverse(viewProj);
-        uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
-        uboStatic.lightDir = glm::vec4(light.getDirection(), 0.0f);
-        uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 0.9f, 1.0f);
+        uboStatic.viewPosition = camera.getPosition();
+        uboStatic.lightDirection = glm::vec3(light.getDirection());
+        uboStatic.lightElevation = uboStatic.lightDirection.y;
+        uboStatic.lightColor = glm::vec3(1.0f, 1.0f, 0.9f);
         uboStatic.lightSpaceMatrix  = shadowParams.lightSpaceMatrix[0];
         uboStatic.lightSpaceMatrix1 = shadowParams.lightSpaceMatrix[1];
         uboStatic.lightSpaceMatrix2 = shadowParams.lightSpaceMatrix[2];
-        // Encode debug/triplanar/tess parameters into the shared UBO
-        uboStatic.debugParams = glm::vec4(static_cast<float>(settings.debugMode), settings.roughnessEnabled ? 1.0f : 0.0f, settings.aoEnabled ? 1.0f : 0.0f, 0.0f);
-        uboStatic.triplanarSettings = glm::vec4(settings.triplanarThreshold, settings.triplanarExponent, 0.0f, 0.0f);
-        uboStatic.tessParams = glm::vec4(
-            settings.tessMinDistance,
-            settings.tessMaxDistance,
-            settings.tessellationFactor,
-            0.0f
-        );
-        // passParams: x = isShadowPass, y = tessEnabled, z = nearPlane, w = farPlane
-        uboStatic.passParams = glm::vec4(0.0f, settings.tessellationEnabled ? 1.0f : 0.0f, settings.nearPlane, settings.farPlane);
-        // materialFlags.w = global normal-mapping toggle (shader checks ubo.materialFlags.w > 0.5)
-        uboStatic.materialFlags.w = settings.normalMappingEnabled ? 1.0f : 0.0f;
-        // shadowEffects.w = global shadow toggle (shader checks ubo.shadowEffects.w > 0.5)
-        uboStatic.shadowEffects.w = settings.enableShadows ? 1.0f : 0.0f;
+        // Canonical scene UBO fields (see vulkan/ubo/UniformObject.hpp)
+        uboStatic.debugMode = settings.debugMode;
+        uboStatic.roughnessEnabled = settings.roughnessEnabled ? 1u : 0u;
+        uboStatic.ambientOcclusionEnabled = settings.aoEnabled ? 1u : 0u;
+        uboStatic.triplanarThreshold = settings.triplanarThreshold;
+        uboStatic.triplanarExponent = settings.triplanarExponent;
+        uboStatic.tessNearDist = settings.tessMinDistance;
+        uboStatic.tessFarDist = settings.tessMaxDistance;
+        uboStatic.tessellationFactor = settings.tessellationFactor;
+        uboStatic.isShadowPass = 0u;
+        uboStatic.tessellationEnabled = settings.tessellationEnabled ? 1u : 0u;
+        uboStatic.nearPlane = settings.nearPlane;
+        uboStatic.farPlane = settings.farPlane;
+        uboStatic.normalMappingEnabled = settings.normalMappingEnabled ? 1u : 0u;
+        uboStatic.shadowsEnabled = settings.enableShadows ? 1u : 0u;
 
         // Brush params: brushTextureIndex, brushMode, brushHSV
         {
-            float brushTexIdx = 0.0f;
-            float brushMode = 0.0f;
+            uint32_t brushTexIdx = 0u;
+            uint32_t brushMode = 0u;
             glm::vec3 brushHSV(0.0f, 0.5f, 0.5f);
             const BrushEntry* brushEntry = brushManager.getSelectedEntry();
             if (brushEntry) {
-                brushTexIdx = static_cast<float>(brushEntry->materialIndex);
-                brushMode = static_cast<float>(brushEntry->brushMode);
+                brushTexIdx = static_cast<uint32_t>(brushEntry->materialIndex);
+                brushMode = static_cast<uint32_t>(brushEntry->brushMode);
                 brushHSV = brushEntry->hsv;
             }
-            float brushTime = static_cast<float>(glfwGetTime());
-            uboStatic.brushParams = glm::vec4(brushTexIdx, brushMode, 0.0f, brushTime);
-            uboStatic.brushHSV = glm::vec4(brushHSV, 0.0f);
+            uboStatic.brushTextureIndex = brushTexIdx;
+            uboStatic.brushMode = brushMode;
+            uboStatic.brushPhase = static_cast<float>(glfwGetTime());
+            uboStatic.brushHsv = brushHSV;
         }
 
         // Hybrid RT per-frame params (contents stream; handles stable). The
@@ -1394,11 +1396,11 @@ public:
         if (sceneRenderer && sceneRenderer->rayTracing) {
             // Pipeline-path water look mirrors water layer 0 (rgen has no
             // layer id); the sampled inline path reads per-fragment layers.
-            static const WaterParams kDefaultWaterLook{};
-            const WaterParams& waterLook = waterParams.empty() ? kDefaultWaterLook : waterParams[0];
+            static const WaterSettings kDefaultWaterLook{};
+            const WaterSettings& waterLook = waterParams.empty() ? kDefaultWaterLook : waterParams[0];
             sceneRenderer->updateRTParams(this, settings, waterLook, uboStatic.invViewProjection,
-                glm::vec3(uboStatic.viewPos), -glm::vec3(uboStatic.lightDir),
-                glm::vec3(uboStatic.lightColor), settings.nearPlane, settings.farPlane);
+                uboStatic.viewPosition, -uboStatic.lightDirection,
+                uboStatic.lightColor, settings.nearPlane, settings.farPlane);
         }
 
         // Reset command buffer state tracker and wire it to all sub-renderers.
@@ -2376,7 +2378,7 @@ public:
                 // water set binds the 1x1 dummy depth (clear depth ->
                 // hasValidBackFace=false, waterThickness=0).
                 bool waterVolumeNeeded = false;
-                for (const WaterParams& wp : waterParams) {
+                for (const WaterSettings& wp : waterParams) {
                     waterVolumeNeeded = waterVolumeNeeded || wp.enableWaves || wp.enableFoam
                         || wp.enableVolumetric || wp.causticIntensity > 0.001f || wp.enableRefraction;
                 }
@@ -2551,7 +2553,7 @@ public:
                     // cheaper non-RT shader) and the async RT dispatch below.
                     bool anyLayerRefl = false;
                     bool anyLayerRefr = false;
-                    for (const WaterParams& wp : waterParams) {
+                    for (const WaterSettings& wp : waterParams) {
                         anyLayerRefl = anyLayerRefl || wp.enableReflection;
                         anyLayerRefr = anyLayerRefr || wp.enableRefraction;
                     }
@@ -2670,7 +2672,7 @@ public:
                                 vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 20);
                             }
                             this->sceneRenderer->rayTracing->dispatchWaterRT(this, cmd, frameIdx,
-                                uboStatic.invViewProjection, glm::vec3(uboStatic.viewPos));
+                                uboStatic.invViewProjection, uboStatic.viewPosition);
                             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                                 vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 21);
                         }
@@ -3158,7 +3160,7 @@ public:
                 brushMode,
                 viewProj,
                 invViewProj,
-                glm::vec3(uboStatic.viewPos),
+                uboStatic.viewPosition,
                 frameIdx,
                 skyViewPP,
                 // Body/column blur gate (perf_report_19 H4): when no layer
@@ -3337,7 +3339,7 @@ public:
         if (auto qualityEvent = std::dynamic_pointer_cast<SetGraphicsQualityEvent>(event)) {
             // Runs on the queued-event drain (main thread, before frame
             // recording). The preset edits the global Settings gates only;
-            // the authored per-layer WaterParams are left untouched, so
+            // the authored per-layer WaterSettings are left untouched, so
             // nothing has to be re-uploaded to the water GPU params.
             GraphicsSettingsCommand command(qualityEvent->quality);
             command.execute(settings);

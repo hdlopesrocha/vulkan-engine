@@ -202,8 +202,8 @@ void ImpostorCapture::capture(VulkanApp* app,
     const float captureDist = billboardScale * 2.5f;
     const float nearP       = 0.5f;
     const float farP        = captureDist * 2.0f + billboardScale;
-    const glm::vec4 lightDir   = glm::vec4(glm::normalize(glm::vec3(0.6f, -1.0f, 0.5f)), 0.0f);
-    const glm::vec4 lightColor = glm::vec4(1.0f, 0.97f, 0.88f, 1.0f);
+    const glm::vec3 lightDir   = glm::normalize(glm::vec3(0.6f, -1.0f, 0.5f));
+    const glm::vec3 lightColor = glm::vec3(1.0f, 0.97f, 0.88f);
 
     for (uint32_t i = 0; i < NUM_VIEWS; ++i) {
         const glm::vec3 dir = viewDirs[i];
@@ -218,8 +218,8 @@ void ImpostorCapture::capture(VulkanApp* app,
 
         CaptureUBO ubo{};
         ubo.viewProjection = proj * view;
-        ubo.viewPos        = glm::vec4(eye, 1.0f);
-        ubo.lightDir       = lightDir;
+        ubo.viewPosition   = eye;
+        ubo.lightDirection = lightDir;
         ubo.lightColor     = lightColor;
         std::memcpy(static_cast<uint8_t*>(uboMapped) + i * uboStride, &ubo, sizeof(CaptureUBO));
 

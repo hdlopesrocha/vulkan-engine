@@ -1,5 +1,5 @@
 // Shared water noise + wave helpers.
-// Requires `includes/perlin.glsl` and `includes/ubo.glsl` (WaterParamsGPU)
+// Requires `includes/perlin.glsl` and `includes/ubo.glsl` (WaterParams)
 // to be included first.
 //
 // The water surface is built from ONE wave height field, waterWaveField(),

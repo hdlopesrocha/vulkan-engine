@@ -1,7 +1,7 @@
 #version 450
 
-#include "ubo/UniformObjectNamed.glsl"
-#include "ubo/WindParamsNamed.glsl"
+#include "ubo/UniformObject.glsl"
+#include "ubo/WindParamsUBO.glsl"
 
 #include "includes/locations.glsl"
 
@@ -17,54 +17,17 @@ layout(location = VARY_FACE_NORMAL) flat out vec3 outFaceNormal;
 layout(location = VARY_ROTFRAC) flat out float outRotFrac;
 layout(location = VARY_POSLIGHT) flat out vec3 outInstanceOffset;
 
-layout(set = 0, binding = 0) uniform SolidParamsUBO {
-    mat4 viewProjection;
-    vec4 viewPos;
-} uboPacked;
+// Canonical scene UBO (set=0 binding=0): the shared struct IS the block
+// layout — no packed/named-view split.
+layout(std140, set = 0, binding = 0) uniform SolidParamsBlock {
+    UniformObject ubo;
+};
 
-
-UniformObjectNamed uniformObjectNamed() {
-    UniformObjectNamed n;
-    n.viewProjection = uboPacked.viewProjection;
-    n.viewPosition = uboPacked.viewPos.xyz;
-    return n;
-}
-
-UniformObjectNamed ubo = uniformObjectNamed();
-
-layout(set = 2, binding = 0) uniform WindParamsUBO {
-    vec4 windDirAndStrength;
-    vec4 windNoise;
-    vec4 windShape;
-    vec4 windTurbulence;
-    vec4 densityParams;
-    vec4 cameraPosAndFalloff;
-} windParamsPacked;
-
-
-WindParamsNamed windParamsNamed() {
-    WindParamsNamed n;
-    n.windDirection = windParamsPacked.windDirAndStrength.xz;
-    n.windStrength = windParamsPacked.windDirAndStrength.w;
-    n.windBaseFrequency = windParamsPacked.windNoise.x;
-    n.windSpeed = windParamsPacked.windNoise.y;
-    n.gustFrequency = windParamsPacked.windNoise.z;
-    n.gustStrength = windParamsPacked.windNoise.w;
-    n.skewAmount = windParamsPacked.windShape.x;
-    n.trunkStiffness = windParamsPacked.windShape.y;
-    n.noiseScale = windParamsPacked.windShape.z;
-    n.verticalFlutter = windParamsPacked.windShape.w;
-    n.turbulence = windParamsPacked.windTurbulence.x;
-    n.densityEnabled = windParamsPacked.densityParams.x > 0.5;
-    n.nearDistance = windParamsPacked.densityParams.y;
-    n.farDistance = windParamsPacked.densityParams.z;
-    n.minFactor = windParamsPacked.densityParams.w;
-    n.cameraPosition = windParamsPacked.cameraPosAndFalloff.xyz;
-    n.densityFalloff = windParamsPacked.cameraPosAndFalloff.w;
-    return n;
-}
-
-WindParamsNamed windParams = windParamsNamed();
+// Canonical wind params block (set=2 binding=0): the shared struct IS the
+// block layout — no packed/named-view split.
+layout(std140, set = 2, binding = 0) uniform WindParamsBlock {
+    WindParamsUBO windParams;
+};
 
 layout(push_constant) uniform PushConstants {
     float billboardScale;

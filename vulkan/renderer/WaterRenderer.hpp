@@ -17,8 +17,8 @@
 #include "../ubo/UniformObject.hpp"
 #include "../../widgets/SkySettings.hpp"
 #include "../../space/Model3DVersion.hpp"
-#include "types/WaterParams.hpp"
-#include "../ubo/WaterParamsGPU.hpp"
+#include "types/WaterSettings.hpp"
+#include "../ubo/WaterParams.hpp"
 #include "../ubo/WaterRenderUBO.hpp"
 #include "../ubo/WaterUBO.hpp"
 #include "CommandBufferState.hpp"
@@ -32,7 +32,7 @@ public:
     WaterRenderer();
     ~WaterRenderer();
 
-    void init(VulkanApp* app, Buffer& waterParamsBuffer_, const std::vector<WaterParams>& waterParams, uint32_t layerCount);
+    void init(VulkanApp* app, Buffer& waterParamsBuffer_, const std::vector<WaterSettings>& waterParams, uint32_t layerCount);
     void cleanup(VulkanApp* app) override;
 
     // Inject the scene sub-renderers the water pass samples from or draws
@@ -143,7 +143,7 @@ public:
     // Accessors for renderer-tracked layouts (used by widgets to record correct barriers)
     VkImageLayout getWaterGeomDepthLayout(uint32_t frameIndex) const;
     void setWaterGeomDepthLayout(uint32_t frameIndex, VkImageLayout layout);
-    void updateGPUParamsForLayer(uint32_t layer, const WaterParams& params);
+    void updateGPUParamsForLayer(uint32_t layer, const WaterSettings& params);
 
     // Initialize the per-frame water geometry depth image from the scene
     // depth image by copying depth values. This allows the water geometry
@@ -427,8 +427,8 @@ private:
     // the depth variant reserve room for its extra depth entry up front.
     std::vector<VulkanApp::BatchTransition> buildWaterEndTransitions(uint32_t frameIndex, size_t reserveCount);
 
-    void createWaterPipelines(VulkanApp* app, const std::vector<WaterParams>& waterParams);
-    void initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams);
+    void createWaterPipelines(VulkanApp* app, const std::vector<WaterSettings>& waterParams);
+    void initializeWaterParamsBuffer(const std::vector<WaterSettings>& waterParams);
     void createSamplers(VulkanApp* app);
 
     
@@ -551,7 +551,7 @@ private:
     // NOTE (hybrid RT §12): the cubemap water pass (dedicated pipeline +
     // set-2 dummy set for solid-360 faces) was deleted with Solid360Renderer.
 
-    // Storage buffer (SSBO) for per-layer WaterParamsGPU entries
+    // Storage buffer (SSBO) for per-layer WaterParams entries
     Buffer waterParamsBuffer;
     // Number of entries allocated in `waterParamsBuffer`
     uint32_t waterParamsCount = 0;

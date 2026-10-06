@@ -23,9 +23,9 @@ inline constexpr uint32_t kWindFieldMaxTornadoes = 4;
 inline constexpr uint32_t kWindFieldBinding = 27;
 
 // One tornado on the wire: 4 x vec4 = 64 bytes (std140-safe, no padding).
-// EVERY component letter is documented here; shaders/ubo/WindFieldGPU.glsl
+// EVERY component letter is documented here; shaders/ubo/WindField.glsl
 // and shaders/includes/wind_field.glsl must read the same letters.
-struct WindTornadoGPU {
+struct WindTornado {
     glm::vec4 a; // x = baseX (world XZ origin of the funnel), y = baseZ,
                  // z = groundY (world Y of the funnel base; see grounding note
                  //     above), w = radius (Rankine core radius, metres)
@@ -47,26 +47,34 @@ struct WindTornadoGPU {
                  //     blend from the base sign toward a cos oscillation),
                  // w = swing frequency (radians/second of the swing)
 };
-static_assert(sizeof(WindTornadoGPU) == 64, "WindTornadoGPU must be 64 bytes");
-static_assert(sizeof(WindTornadoGPU) % 16 == 0, "WindTornadoGPU must be a multiple of 16");
+static_assert(sizeof(WindTornado) == 64, "WindTornado must be 64 bytes");
+static_assert(sizeof(WindTornado) % 16 == 0, "WindTornado must be a multiple of 16");
+static_assert(offsetof(WindTornado, a) == 0, "WindTornado.a offset");
+static_assert(offsetof(WindTornado, b) == 16, "WindTornado.b offset");
+static_assert(offsetof(WindTornado, c) == 32, "WindTornado.c offset");
+static_assert(offsetof(WindTornado, d) == 48, "WindTornado.d offset");
 
 // Whole shared field: 19 x vec4 = 304 bytes.
-struct WindFieldUBO {
+struct WindField {
     glm::vec4 ambientA; // x = windDirX, y = windDirZ (normalized at pack time;
                         //     mirrored from VegetationRenderer::WindSettings,
                         //     never duplicated as sliders), z = strength
                         //     (m/s), w = advection speed (gust time multiplier)
     glm::vec4 ambientB; // x = baseFrequency, y = gustFrequency,
                         // z = gustStrength (0 = laminar), w = unused (0)
-    WindTornadoGPU tornadoes[kWindFieldMaxTornadoes];
+    WindTornado tornadoes[kWindFieldMaxTornadoes];
     glm::vec4 counts;   // x = activeCount (derived at pack time by counting
                         //     active flags — no stale widget counter),
                         // y = wind debug mode (0 off, 1 heat map,
                         //     2 velocity isosurface),
                         // z = isosurface speed in m/s, w = unused (0)
 };
-static_assert(sizeof(WindFieldUBO) == 304, "WindFieldUBO must be 304 bytes");
-static_assert(sizeof(WindFieldUBO) % 16 == 0, "WindFieldUBO must be a multiple of 16");
+static_assert(sizeof(WindField) == 304, "WindField must be 304 bytes");
+static_assert(sizeof(WindField) % 16 == 0, "WindField must be a multiple of 16");
+static_assert(offsetof(WindField, ambientA) == 0, "WindField.ambientA offset");
+static_assert(offsetof(WindField, ambientB) == 16, "WindField.ambientB offset");
+static_assert(offsetof(WindField, tornadoes) == 32, "WindField.tornadoes offset");
+static_assert(offsetof(WindField, counts) == 288, "WindField.counts offset");
 
 // Widget-facing settings (edited by the wind widget; packed to the wire
 // struct by VegetationRenderer::updateWindFieldUBO). Ambient sliders are NOT

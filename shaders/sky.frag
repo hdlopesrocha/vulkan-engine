@@ -82,7 +82,7 @@ void main() {
     // camera position. Slab intersection decides visibility, so this covers
     // every direction: from below, from above (cloud tops), from inside, and
     // at the horizon.
-    if (sky.cloudsEnabled) {
+    if (sky.cloudsEnabled != 0u) {
         vec4 clouds = raymarchClouds(ubo.viewPosition, normalize(viewDir),
                                      normalize(sunDir), sunColor * dayFactor
                                      + vec3(0.02) * (1.0 - dayFactor),

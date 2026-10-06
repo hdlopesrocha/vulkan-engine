@@ -36,7 +36,7 @@ WaterRenderer::WaterRenderer() {}
 
 WaterRenderer::~WaterRenderer() {}
 
-void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer_, const std::vector<WaterParams>& waterParams, uint32_t layerCount) {
+void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer_, const std::vector<WaterSettings>& waterParams, uint32_t layerCount) {
     this->waterParamsBuffer = waterParamsBuffer_;
     this->appPtr = app;
     waterParamsCount = layerCount;
@@ -72,7 +72,7 @@ void WaterRenderer::setSceneRenderers(SolidRenderer* solid, BrushRenderer* brush
 namespace {
 
 // CPU/UI stores feature PERIODS (world units); the shader consumes spatial
-// scales (features per world unit). The C++ WaterParamsGPU values therefore
+// scales (features per world unit). The C++ WaterParams values therefore
 // stay in PERIODS too and are converted exactly once, at the buffer upload
 // boundary, by waterGpuPeriodsToScales() below.
 float waterPeriodToScale(float period) {
@@ -93,10 +93,10 @@ float waterPeriodToScale(float period) {
 // component grows and stretches together, keeping its slope, which is both
 // what the widget says and the physically realistic behaviour.
 //
-// The reference periods are the WaterParams defaults, so the shipped look is
+// The reference periods are the WaterSettings defaults, so the shipped look is
 // unchanged at the default settings.
-void waterGpuPeriodsToScales(WaterParamsGPU& gpu) {
-    static const WaterParams kRef{};
+void waterGpuPeriodsToScales(WaterParams& gpu) {
+    static const WaterSettings kRef{};
     // Amplitude first: it reads the period that is overwritten below.
     if (kRef.wavePeriod > 0.0f)
         gpu.waveComponent1.z *= gpu.waveComponent1.x / kRef.wavePeriod; // swell height
@@ -111,13 +111,13 @@ void waterGpuPeriodsToScales(WaterParamsGPU& gpu) {
 // Single source of truth for CPU -> GPU water parameter packing. Shared by
 // the one-time buffer initialization and the runtime widget updates so both
 // paths can never drift apart. Field meanings are documented in
-// vulkan/ubo/WaterParamsGPU.hpp and mirrored by the GLSL struct.
-WaterParamsGPU makeWaterParamsGPU(const WaterParams& p) {
+// vulkan/ubo/WaterParams.hpp and mirrored by the GLSL struct.
+WaterParams makeWaterParams(const WaterSettings& p) {
     // Shore direction: 0 deg = +Z, 90 deg = +X (right-handed XZ plane).
     const float shoreAngle = glm::radians(p.shoreWaveAngle);
     const glm::vec2 shoreDir(std::sin(shoreAngle), std::cos(shoreAngle));
 
-    WaterParamsGPU gpu{};
+    WaterParams gpu{};
     gpu.params1 = glm::vec4(p.refractionStrength, p.fresnelPower, p.transparency, p.reflectionStrength);
     gpu.params2 = glm::vec4(p.waterTint, p.noisePeriod, static_cast<float>(p.noiseOctaves), p.noisePersistence);
     gpu.params3 = glm::vec4(p.noiseTimeSpeed, p.noiseLacunarity, p.specularIntensity, p.specularPower);
@@ -197,7 +197,7 @@ void WaterRenderer::refreshWaterBlurNeeded() {
     }
 }
 
-void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p) {
+void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterSettings& p) {
     if (!appPtr) return;
     if (layer >= waterParamsCount) return;
 
@@ -209,13 +209,13 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
     layerBlurNeeded_[layer] = p.enableBlur && p.blurRadius > 0.0f;
     refreshWaterBlurNeeded();
 
-    WaterParamsGPU gpu = makeWaterParamsGPU(p);
+    WaterParams gpu = makeWaterParams(p);
     waterGpuPeriodsToScales(gpu); // periods -> shader scales, at the upload boundary
 
-    size_t offset = static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
+    size_t offset = static_cast<size_t>(layer) * sizeof(WaterParams);
     void* data = nullptr;
     data = waterParamsBuffer.map(offset);
-    memcpy(data, &gpu, sizeof(WaterParamsGPU));
+    memcpy(data, &gpu, sizeof(WaterParams));
     waterParamsBuffer.unmap(); // VMA persistent mapping
 }
 
@@ -238,11 +238,11 @@ void WaterRenderer::updateMusicAudio(float amplitude, float bass, float mid, flo
     // offsetof, so layout edits stay correct). Small (32 B/layer), coherent
     // host-visible writes — no barrier needed on the upload path, same as
     // updateGPUParamsForLayer().
-    const size_t off1 = offsetof(WaterParamsGPU, musicAudio1);
-    const size_t off2 = offsetof(WaterParamsGPU, musicAudio2);
+    const size_t off1 = offsetof(WaterParams, musicAudio1);
+    const size_t off2 = offsetof(WaterParams, musicAudio2);
     for (uint32_t layer = 0; layer < waterParamsCount; ++layer) {
         char* base = static_cast<char*>(waterParamsBuffer.mappedData) +
-                     static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
+                     static_cast<size_t>(layer) * sizeof(WaterParams);
         memcpy(base + off1, &audio1, sizeof(audio1));
         memcpy(base + off2, &audio2, sizeof(audio2));
     }
@@ -614,7 +614,7 @@ void WaterRenderer::setWaterGeomDepthLayout(uint32_t frameIndex, VkImageLayout l
     if (frameIndex < 3) waterGeomDepthImageLayouts[frameIndex] = layout;
 }
 
-void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<WaterParams>& waterParams) {
+void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<WaterSettings>& waterParams) {
     VkDevice device = app->getDevice();
 
     // Idempotent: this can be (re)entered if WaterRenderer::init runs more than once
@@ -1298,7 +1298,7 @@ bool WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     // (self-occlusion only). This target holds the WATER geometry depth the
     // composite samples; occlusion against solid geometry is resolved by the
     // fragment stage's eye-space rejection against solidSceneDepthTex (perf
-    // report 20 C5, gated by WaterRenderUBO::depthParams.x) and, as a
+    // report 20 C5, gated by WaterRenderUBO::solidDepthIsCurrent) and, as a
     // backstop, by the composite's own depth test. No scene-depth copy is
     // needed. When LOADing, the main water geom depth is preserved so the
     // brush overlay depth-tests against it (storeOp STORE keeps the overlay
@@ -1594,7 +1594,7 @@ VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint
     return waterDepthDescriptorSets[frameIndex];
 }
 
-void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams) {
+void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterSettings>& waterParams) {
     // H4: track the per-layer blur gate from the full layer vector. The SSBO may
     // hold more entries than the CPU vector (waterParamsCount); entries beyond
     // the uploaded vector are never written and can never request blur, so they
@@ -1610,9 +1610,9 @@ void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& 
     if (waterParamsBuffer.buffer == VK_NULL_HANDLE) return;
 
     for (uint32_t i = 0; i < waterParams.size(); ++i) {
-        WaterParamsGPU gpu = makeWaterParamsGPU(waterParams[i]);
+        WaterParams gpu = makeWaterParams(waterParams[i]);
         waterGpuPeriodsToScales(gpu); // periods -> shader scales, at the upload boundary
-        memcpy(static_cast<char*>(waterParamsBuffer.mappedData) + i * sizeof(WaterParamsGPU), &gpu, sizeof(WaterParamsGPU));
+        memcpy(static_cast<char*>(waterParamsBuffer.mappedData) + i * sizeof(WaterParams), &gpu, sizeof(WaterParams));
     }
 }
 
@@ -1714,7 +1714,7 @@ void WaterRenderer::renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint3
 
     // Water-in-main path (M7): it never calls renderPass(), so it owns the
     // flush of the feature gates stored by setRtFeatureFlags(). Only when a
-    // gate changed; timeParams.x is preserved (no per-frame time source here).
+    // gate changed; waterTime is preserved (no per-frame time source here).
     if (waterRenderUboDirty_) {
         flushWaterRenderUBO(0.0f, /*preserveTime=*/true);
     }
@@ -1864,24 +1864,23 @@ void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint3
 
 // Single writer of waterRenderUBO_ (M7). Builds the full WaterRenderUBO and
 // memcpys it in one map/unmap, then clears the dirty bit. `preserveTime` keeps
-// the existing timeParams.x for the water-in-main flush, which has no
+// the existing waterTime for the water-in-main flush, which has no
 // per-frame time argument and must not zero the wave clock.
 void WaterRenderer::flushWaterRenderUBO(float waterTime, bool preserveTime) {
     if (waterRenderUBO_.buffer == VK_NULL_HANDLE) return;
     void* data = waterRenderUBO_.map(0);
     if (!data) return;
     const float time = preserveTime
-        ? static_cast<WaterRenderUBO*>(data)->timeParams.x
+        ? static_cast<WaterRenderUBO*>(data)->waterTime
         : waterTime;
     WaterRenderUBO renderUbo{};
-    renderUbo.timeParams = glm::vec4(time,
-                                     rtRefractionsEnabled_ ? 1.0f : 0.0f,
-                                     rtReflectionsEnabled_ ? 1.0f : 0.0f,
-                                     blurEnabled_ ? 1.0f : 0.0f);
-    // C5: gates the shader-side solid-occlusion rejection. False while the
+    renderUbo.waterTime = time;
+    renderUbo.refractionAllowed = rtRefractionsEnabled_ ? 1u : 0u;
+    renderUbo.reflectionAllowed = rtReflectionsEnabled_ ? 1u : 0u;
+    renderUbo.blurAllowed = blurEnabled_ ? 1u : 0u;
+    // C5: gates the shader-side solid-occlusion rejection. 0 while the
     // water-in-main variant binds the previous frame's solid depth.
-    renderUbo.depthParams = glm::vec4(solidDepthCurrentFrame_ ? 1.0f : 0.0f,
-                                      0.0f, 0.0f, 0.0f);
+    renderUbo.solidDepthIsCurrent = solidDepthCurrentFrame_ ? 1u : 0u;
     memcpy(data, &renderUbo, sizeof(WaterRenderUBO));
     waterRenderUBO_.unmap(); // VMA persistent mapping
     waterRenderUboDirty_ = false;

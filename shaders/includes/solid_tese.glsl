@@ -55,7 +55,7 @@ layout(location = VARY_DEBUG) out vec3 fragTessLevel;
 
 
 void main() {
-    bool isDepthPass = ubo.isShadowPass;
+    bool isDepthPass = (ubo.isShadowPass != 0u);
 
     // barycentric coordinates
     vec3 bc = gl_TessCoord;

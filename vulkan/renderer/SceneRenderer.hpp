@@ -185,7 +185,7 @@ public:
     // load/generation; steady-state cost is zero (console output only).
     void logMemoryUtilization();
 
-    void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams);
+    void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams);
     // Re-update main descriptor set when texture arrays are (re)allocated
     void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);
 
@@ -296,10 +296,10 @@ public:
     // raster sampling each frame (main thread, any time before submit).
     // waterLook feeds the layer-unaware async pipeline path (rgen IOR + hit
     // cap, miss absorption): pass water layer 0 — the inline path already
-    // reads each fragment's own layer directly, so WaterParams stays the
+    // reads each fragment's own layer directly, so WaterSettings stays the
     // single source of truth for water look.
     void updateRTParams(VulkanApp* app, const class Settings& settings,
-                        const struct WaterParams& waterLook,
+                        const struct WaterSettings& waterLook,
                         const glm::mat4& invViewProj, const glm::vec3& viewPos,
                         const glm::vec3& sunDirTo, const glm::vec3& sunColor,
                         float nearPlane, float farPlane);

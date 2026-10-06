@@ -3,7 +3,7 @@
 #include "vulkan.hpp"
 #include "Buffer.hpp"
 #include "types/MaterialProperties.hpp"
-#include "ubo/MaterialGPU.hpp"
+#include "ubo/Material.hpp"
 #include <vector>
 
 class VulkanApp;
@@ -39,5 +39,5 @@ private:
     Buffer materialBuffer{};
     size_t materialCount = 0;
     size_t materialBufferSize = 0;
-    std::vector<MaterialGPU> cpuCache;
+    std::vector<Material> cpuCache;
 };

@@ -1,75 +1,26 @@
 
-#include "../ubo/MaterialGPU.glsl"
+#include "../ubo/Material.glsl"
 #include "../ubo/MaterialNamed.glsl"
-#include "../ubo/SkyParamsNamed.glsl"
-#include "../ubo/UniformObjectNamed.glsl"
-#include "../ubo/WaterParamsGPU.glsl"
+#include "../ubo/SkyUniform.glsl"
+#include "../ubo/UniformObject.glsl"
+#include "../ubo/WaterParams.glsl"
 #include "../ubo/WaterParamsNamed.glsl"
-#include "../ubo/WaterRenderParamsNamed.glsl"
+#include "../ubo/WaterRenderUBO.glsl"
 // UBO layout must match the CPU-side UniformObject (std140-like):
 // mat4 viewProjection; vec4 viewPos; vec4 lightDir; vec4 lightColor;
-layout(set = 0, binding = 0) uniform SolidParamsUBO {
-    mat4 viewProjection;
-    vec4 viewPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 materialFlags;
-    mat4 lightSpaceMatrix; // for shadow mapping
-    vec4 shadowEffects; // x/y/z = unused, w=global shadows enabled (1.0 = on)
-    vec4 debugParams; // x=DebugMode (see includes/debug_modes.glsl; 0=default render); y=roughnessEnabled, z=aoEnabled
-    vec4 triplanarSettings;
-    vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessellationFactor, w = reserved
-    vec4 passParams;   // x = isShadowPass, y = tessEnabled, z = nearPlane, w = farPlane
-    mat4 lightSpaceMatrix1; // cascade 1 (4x ortho0)
-    mat4 lightSpaceMatrix2; // cascade 2 (16x ortho0)
-    mat4 invViewProjection; // inverse of viewProjection (camera-constant)
-    vec4 brushParams;       // x=brushTextureIndex, y=brushMode (0=overlay, 2=PAINT)
-    vec4 brushHSV;          // x=H(0..360), y=S(0..1), z=V(0..1), w=unused
-} uboPacked;
-
-
-UniformObjectNamed uniformObjectNamed() {
-    UniformObjectNamed n;
-    n.viewProjection = uboPacked.viewProjection;
-    n.viewPosition = uboPacked.viewPos.xyz;
-    n.lightDirection = uboPacked.lightDir.xyz;
-    n.lightElevation = uboPacked.lightDir.y;
-    n.lightColor = uboPacked.lightColor.xyz;
-    n.cubemapCapture = uboPacked.materialFlags.x > 0.5;
-    n.normalMappingEnabled = uboPacked.materialFlags.w > 0.5;
-    n.shadowsEnabled = uboPacked.shadowEffects.w > 0.5;
-    n.debugMode = int(uboPacked.debugParams.x + 0.5);
-    n.roughnessEnabled = uboPacked.debugParams.y > 0.5;
-    n.ambientOcclusionEnabled = uboPacked.debugParams.z > 0.5;
-    n.triplanarThreshold = uboPacked.triplanarSettings.x;
-    n.triplanarExponent = uboPacked.triplanarSettings.y;
-    n.tessNearDist = uboPacked.tessParams.x;
-    n.tessFarDist = uboPacked.tessParams.y;
-    n.tessellationFactor = uboPacked.tessParams.z;
-    n.isShadowPass = uboPacked.passParams.x > 0.5;
-    n.tessellationEnabled = uboPacked.passParams.y > 0.5;
-    n.nearPlane = uboPacked.passParams.z;
-    n.farPlane = uboPacked.passParams.w;
-    n.lightSpaceMatrix = uboPacked.lightSpaceMatrix;
-    n.lightSpaceMatrix1 = uboPacked.lightSpaceMatrix1;
-    n.lightSpaceMatrix2 = uboPacked.lightSpaceMatrix2;
-    n.invViewProjection = uboPacked.invViewProjection;
-    n.brushTextureIndex = uboPacked.brushParams.x;
-    n.brushMode = uboPacked.brushParams.y;
-    n.brushPhase = uboPacked.brushParams.w;
-    n.brushHsv = uboPacked.brushHSV.xyz;
-    return n;
-}
-
-UniformObjectNamed ubo = uniformObjectNamed();
-
-
-layout(std430, set = 0, binding = 5) readonly buffer Materials {
-    MaterialGPU materials[];
+// Canonical scene UBO (set=0 binding=0): the shared struct IS the block
+// layout — no packed/named-view split.
+layout(std140, set = 0, binding = 0) uniform SolidParamsBlock {
+    UniformObject ubo;
 };
 
 
-MaterialNamed materialNamed(MaterialGPU m) {
+layout(std430, set = 0, binding = 5) readonly buffer Materials {
+    Material materials[];
+};
+
+
+MaterialNamed materialNamed(Material m) {
     MaterialNamed n;
     n.skipEnvMap = m.materialFlags.x > 0.5;
     n.ambientFactor = m.materialFlags.z;
@@ -100,86 +51,25 @@ MaterialNamed materialNamed(MaterialGPU m) {
 // Dedicated UBO for skysphere parameters. Bound separately so sky shaders
 // can read a small, focused uniform block instead of the large scene UBO.
 // The cloud block extends the same UBO (no new descriptor binding).
-layout(set = 0, binding = 6) uniform SkyUBO {
-    vec4 skyHorizon; // rgb = horizon color, a = unused
-    vec4 skyZenith;  // rgb = zenith color, a = unused
-    vec4 skyParams;  // x = warmth, y = exponent, z = sunFlare, w = skyMode (0=gradient, 1=grid)
-    vec4 nightHorizon; // rgb = night horizon color
-    vec4 nightZenith;  // rgb = night zenith color
-    vec4 nightParams;  // x = night intensity (0..1), y = starIntensity, z/w unused
-    vec4 cloudToggles; // x = enabled, y = lowOn, z = midOn, w = highOn
-    vec4 cloudGlobal;  // x = densityScale, y = windSpeed, z = windAngleRad, w = detailStrength
-    vec4 cloudTime;    // x = time, y = shadowStrength, z = raymarchSteps, w = lightSteps
-    vec4 cloudLow;     // x = coverage, y = density, z = scale, w = windSpeedMul
-    vec4 cloudLowGeom; // x = baseHeight, y = thickness, zw unused
-    vec4 cloudMid;     // x = coverage, y = density, z = scale, w = windSpeedMul
-    vec4 cloudMidGeom; // x = baseHeight, y = thickness, zw unused
-    vec4 cloudHigh;    // x = coverage, y = density, z = scale, w = windSpeedMul
-    vec4 cloudHighGeom;// x = baseHeight, y = thickness, zw unused
-    vec4 cloudLight;   // x = silverLining, y = ambientBoost, z = sunForwardG, w = exposure
-    vec4 cloudAnim;    // x = timeScale, yzw unused
-} skyPacked;
+// Canonical sky/cloud block (set=0 binding=6): the shared struct IS the
+// block layout — no packed/named-view split.
+layout(std140, set = 0, binding = 6) uniform SkyUBOBlock {
+    SkyUniform sky;
+};
 
-
-SkyParamsNamed skyParamsNamed() {
-    SkyParamsNamed n;
-    n.horizonColor = skyPacked.skyHorizon.rgb;
-    n.zenithColor = skyPacked.skyZenith.rgb;
-    n.warmth = skyPacked.skyParams.x;
-    n.exponent = skyPacked.skyParams.y;
-    n.sunFlare = skyPacked.skyParams.z;
-    n.nightHorizonColor = skyPacked.nightHorizon.rgb;
-    n.nightZenithColor = skyPacked.nightZenith.rgb;
-    n.nightIntensity = skyPacked.nightParams.x;
-    n.starIntensity = skyPacked.nightParams.y;
-    n.cloudsEnabled = skyPacked.cloudToggles.x > 0.5;
-    n.lowEnabled = skyPacked.cloudToggles.y > 0.5;
-    n.midEnabled = skyPacked.cloudToggles.z > 0.5;
-    n.highEnabled = skyPacked.cloudToggles.w > 0.5;
-    n.densityScale = skyPacked.cloudGlobal.x;
-    n.windSpeed = skyPacked.cloudGlobal.y;
-    n.windAngleRad = skyPacked.cloudGlobal.z;
-    n.detailStrength = skyPacked.cloudGlobal.w;
-    n.cloudTime = skyPacked.cloudTime.x;
-    n.shadowStrength = skyPacked.cloudTime.y;
-    n.raymarchSteps = skyPacked.cloudTime.z;
-    n.lightSteps = skyPacked.cloudTime.w;
-    n.lowTier = skyPacked.cloudLow;
-    n.lowGeom = skyPacked.cloudLowGeom.xy;
-    n.midTier = skyPacked.cloudMid;
-    n.midGeom = skyPacked.cloudMidGeom.xy;
-    n.highTier = skyPacked.cloudHigh;
-    n.highGeom = skyPacked.cloudHighGeom.xy;
-    n.silverLining = skyPacked.cloudLight.x;
-    n.ambientBoost = skyPacked.cloudLight.y;
-    n.sunForwardG = skyPacked.cloudLight.z;
-    n.exposure = skyPacked.cloudLight.w;
-    return n;
-}
-
-layout(set = 0, binding = 10) uniform WaterRenderUBO {
-    vec4 timeParams; // x=waterTime, y=water refraction allowed, z=water reflection allowed, w=water blur allowed
-    vec4 depthParams; // x = solidSceneDepthTex is THIS frame's solid depth (1/0); yzw unused
-} waterRenderUBOPacked;
-
-
-WaterRenderParamsNamed waterRenderParamsNamed() {
-    WaterRenderParamsNamed n;
-    n.waterTime = waterRenderUBOPacked.timeParams.x;
-    n.refractionAllowed = waterRenderUBOPacked.timeParams.y > 0.5;
-    n.reflectionAllowed = waterRenderUBOPacked.timeParams.z > 0.5;
-    n.blurAllowed = waterRenderUBOPacked.timeParams.w > 0.5;
-    n.solidDepthIsCurrent = waterRenderUBOPacked.depthParams.x > 0.5;
-    return n;
-}
+// Canonical water render block (set=0 binding=10): the shared struct IS the
+// block layout — no packed/named-view split.
+layout(std140, set = 0, binding = 10) uniform WaterRenderBlock {
+    WaterRenderUBO waterRenderUBO;
+};
 
 
 
 layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {
-    WaterParamsGPU waterParams[];
+    WaterParams waterParams[];
 };
 
-WaterParamsNamed waterParamsNamed(WaterParamsGPU p) {
+WaterParamsNamed waterParamsNamed(WaterParams p) {
     WaterParamsNamed n;
     n.enableReflection = p.reserved1.x > 0.5;
     n.enableRefraction = p.reserved1.y > 0.5;

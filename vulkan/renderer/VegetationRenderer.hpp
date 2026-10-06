@@ -11,7 +11,7 @@
 #include "../VertexBufferObject.hpp"
 #include "../../utils/Scene.hpp" // for NodeID
 #include "../ubo/WindParamsUBO.hpp"
-#include "../ubo/WindFieldUBO.hpp"
+#include "../ubo/WindField.hpp"
 #include <vector>
 #include <deque>
 #include <unordered_map>
@@ -344,7 +344,7 @@ private:
     // Shared wind-field UBO (set=0, binding=27) — persistently mapped,
     // packed by updateWindFieldUBO(). Same write-on-change caching as above.
     Buffer                windFieldBuffer;
-    WindFieldUBO          windFieldCache{};
+    WindField          windFieldCache{};
     bool                  windFieldCacheValid = false;
     void*                 windFieldMapped      = nullptr;
 

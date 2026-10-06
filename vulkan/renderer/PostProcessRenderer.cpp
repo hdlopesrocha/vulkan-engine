@@ -3,8 +3,8 @@
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
 #include "RendererUtils.hpp"
-#include "WaterRenderer.hpp"   // WaterParams, WaterUBO
-#include "../ubo/WindFieldUBO.hpp" // sizeof(WindFieldUBO) for binding-27 range
+#include "WaterRenderer.hpp"   // WaterSettings, WaterUBO
+#include "../ubo/WindField.hpp" // sizeof(WindField) for binding-27 range
 #include "../../utils/FileReader.hpp"
 #include <cassert>
 #include <stdexcept>
@@ -419,8 +419,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     WaterUBO ubo{};
     ubo.viewProjection = viewProj;
     ubo.invViewProjection = invViewProj;
-    ubo.viewPos = glm::vec4(viewPos, 1.0f);
-    ubo.screenSize = glm::vec4(renderWidth, renderHeight, 1.0f / renderWidth, 1.0f / renderHeight);
+    ubo.viewPosition = viewPos;
+    ubo.screenSize = glm::vec2(renderWidth, renderHeight);
+    ubo.invScreenSize = glm::vec2(1.0f / renderWidth, 1.0f / renderHeight);
     ubo.brushAlpha = brushAlpha;
     ubo.brushMode = brushMode;
     // H4: 0 when no water layer needs the final-pass blur; the composite then
@@ -490,7 +491,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
     // Wind field UBO (binding 27): owned + streamed by VegetationRenderer;
     // exact range (vkGetDescriptorEXT forbids WHOLE_SIZE), like binding 5.
-    VkDescriptorBufferInfo windBufferInfo{windFieldBuffer, 0, sizeof(WindFieldUBO)};
+    VkDescriptorBufferInfo windBufferInfo{windFieldBuffer, 0, sizeof(WindField)};
 
     // Sky color image info (binding 6) — sky offscreen targets are always
     // available (SceneRenderer::init creates them before PostProcess init).
@@ -638,7 +639,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
         // Shared wind field (binding 27) for the wind debug raymarch overlay.
         if (windFieldBuffer != VK_NULL_HANDLE) {
             writer.writeBuffer(currentDs, 27, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                               windFieldBuffer, 0, sizeof(WindFieldUBO));
+                               windFieldBuffer, 0, sizeof(WindField));
         }
 
         writer.flush();

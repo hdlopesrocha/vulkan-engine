@@ -46,7 +46,7 @@ float computeEdgeTess(vec3 a, vec3 b, int brushA, int brushB) {
     // Per-edge tessellation enable: if globally off or this edge's material
     // does not request tessellation, return 1.0.  Both adjacent patches
     // compute the same edgeBrush so they reach the same decision.
-    if (!ubo.tessellationEnabled || !materialNamed(materials[edgeBrush]).mappingEnabled)
+    if (ubo.tessellationEnabled == 0u || !materialNamed(materials[edgeBrush]).mappingEnabled)
         return 1.0;
 
     float minLevel = materialNamed(materials[edgeBrush]).minLevel * factor_g;

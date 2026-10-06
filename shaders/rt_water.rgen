@@ -21,8 +21,7 @@
 
 #include "types/RTPayload.glsl"
 #include "ubo/RTProxyMetaGLSL.glsl"
-#include "ubo/RayTracingParamsGLSL.glsl"
-#include "ubo/RayTracingParamsNamed.glsl"
+#include "ubo/RayTracingParams.glsl"
 
 #include "includes/rt_params.glsl"
 
@@ -30,8 +29,7 @@
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 1, rgba16f) uniform image2D reflectOut;
 layout(set = 0, binding = 2, rgba16f) uniform image2D refractOut;
-layout(set = 0, binding = 3) uniform RTBlock { RayTracingParamsGLSL rtPacked; };
-RayTracingParamsNamed rt = rayTracingParamsNamed(rtPacked);
+layout(std140, set = 0, binding = 3) uniform RTBlock { RayTracingParams rt; };
 layout(set = 0, binding = 4) readonly buffer ProxyMeta { RTProxyMetaGLSL metas[]; };
 layout(set = 0, binding = 5) uniform sampler2D waterDepthTex;
 layout(set = 0, binding = 6) uniform sampler2D skyEquirectTex;
@@ -55,7 +53,7 @@ void main() {
     vec2 uv = (vec2(coord) + 0.5) / outSize;
 
     float depth = texture(waterDepthTex, uv).r;
-    if (depth >= 1.0 || !rt.tlasReady) {
+    if (depth >= 1.0 || (rt.tlasReady == 0u)) {
         // No water here (or TLAS not built yet): invalid markers. The water
         // shader checks reflect.a > 0.5 before sampling reflection and
         // refract.a >= 0.0 before sampling refraction/thickness.
@@ -96,7 +94,7 @@ void main() {
     // imposed a ~10 cm minimum depth and every shoreline shallow missed to
     // deep/sky color unrelated to the lake bottom underneath.
     vec4 refractValue = vec4(0.0, 0.0, 0.0, -1.0);
-    if (rt.refractionsEnabled) {
+    if ((rt.refractionsEnabled != 0u)) {
         vec3 T = refract(-V, N, 1.0 / ior);
         if (dot(T, T) < 1e-8) T = reflect(-V, N); // TIR fallback
         T = normalize(T);

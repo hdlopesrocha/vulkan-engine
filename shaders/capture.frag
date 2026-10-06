@@ -15,12 +15,13 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 layout(location = FRAG_OUT_NORMAL) out vec4 outNormal; // world-space normal, encoded to [0,1]
 layout(location = FRAG_OUT_DEPTH) out float outDepth;  // device Z for shadow-map reprojection
 
-layout(set = 0, binding = 0) uniform SolidParamsUBO {
-    mat4 viewProjection;
-    vec4 viewPos;
-    vec4 lightDir;
-    vec4 lightColor;
-} ubo;
+// Canonical capture camera UBO (set=0 binding=0): the shared struct IS the
+// block layout.
+#include "ubo/CaptureUBO.glsl"
+
+layout(std140, set = 0, binding = 0) uniform CaptureUBOBlock {
+    CaptureUBO ubo;
+};
 
 
 layout(set = 1, binding = 0) uniform sampler2DArray albedoArray;

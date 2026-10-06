@@ -8,7 +8,7 @@
 #include "CommandBufferState.hpp"
 
 // Forward-declare shared water types (defined in WaterRenderer.hpp)
-struct WaterParams;
+struct WaterSettings;
 struct WaterUBO;
 
 class PostProcessRenderer : public Renderer {

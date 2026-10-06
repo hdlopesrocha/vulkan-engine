@@ -1,6 +1,6 @@
 #version 450
 
-#include "ubo/WaterFrameNamed.glsl"
+#include "ubo/WaterUBO.glsl"
 
 #include "includes/locations.glsl"
 #include "includes/perlin.glsl"
@@ -23,37 +23,11 @@ layout(set = 0, binding = 2) uniform sampler2D waterColorTex;
 layout(set = 0, binding = 3) uniform sampler2D brushColorTex;
 layout(set = 0, binding = 4) uniform sampler2D brushDepthTex;
 
-layout(set = 0, binding = 5) uniform WaterUBO {
-    mat4 viewProjection;
-    mat4 invViewProjection;
-    vec4 viewPos;
-    vec4 screenSize;
-    float brushAlpha;
-    float brushMode;         // 0=overlay, 2=PAINT (replace solid texture)
-    float waterBlurEnabled;  // 1 = body/column written this frame, fetch/blur allowed
-    // M12 (perf report 22): 1 when the vegetation offscreen targets are
-    // downscaled; the composite then takes the closest of the 2x2 depth taps
-    // instead of one bilinear sample (which averages in the sky at
-    // silhouettes and erodes thin grass edges). Was std140 padding.
-    float vegetationScaled;
-} uboPacked;
-
-
-WaterFrameNamed waterFrameNamed() {
-    WaterFrameNamed n;
-    n.viewProjection = uboPacked.viewProjection;
-    n.invViewProjection = uboPacked.invViewProjection;
-    n.viewPosition = uboPacked.viewPos.xyz;
-    n.screenSize = uboPacked.screenSize.xy;
-    n.invScreenSize = uboPacked.screenSize.zw;
-    n.brushAlpha = uboPacked.brushAlpha;
-    n.brushMode = uboPacked.brushMode;
-    n.waterBlurEnabled = uboPacked.waterBlurEnabled;
-    n.vegetationScaled = uboPacked.vegetationScaled;
-    return n;
-}
-
-WaterFrameNamed ubo = waterFrameNamed();
+// Canonical water frame block (set=0 binding=5): the shared struct IS the
+// block layout — no packed/named-view split.
+layout(std140, set = 0, binding = 5) uniform WaterFrameBlock {
+    WaterUBO ubo;
+};
 
 layout(set = 0, binding = 6) uniform sampler2D sceneSkyTex;
 layout(set = 0, binding = 7) uniform sampler2D waterGeomDepthTex;

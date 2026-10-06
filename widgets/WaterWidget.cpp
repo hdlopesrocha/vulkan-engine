@@ -5,7 +5,7 @@
 #include "components/ColumnLayout.hpp"
 #include "components/ImGuiHelpers.hpp"
 
-WaterWidget::WaterWidget(WaterRenderer* renderer_, std::vector<WaterParams>* params_)
+WaterWidget::WaterWidget(WaterRenderer* renderer_, std::vector<WaterSettings>* params_)
     : Widget("Water Settings", u8"\uf043"), renderer(renderer_), params(params_) {
     isOpen = false;
 }
@@ -20,7 +20,7 @@ void WaterWidget::render() {
     if (currentLayer < 0) currentLayer = 0;
     if ((uint32_t)currentLayer >= count) currentLayer = static_cast<int>(count - 1);
 
-    WaterParams &layerParams = (*params)[currentLayer];
+    WaterSettings &layerParams = (*params)[currentLayer];
 
     ImGui::SetNextWindowPos(ImVec2(0, 24), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(1280, 680), ImGuiCond_FirstUseEver);

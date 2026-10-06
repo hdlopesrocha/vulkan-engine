@@ -138,7 +138,7 @@ void main() {
     vec3 specular = pow(NdotH, kShine) * kSpecular * ubo.lightColor;
 
     float shadow = 0.0;
-    if (!shadowPass && ubo.shadowsEnabled) {
+    if (!shadowPass && (ubo.shadowsEnabled != 0u)) {
         if (NdotL > 0.01) {
             float bias = max(0.0005 * (1.0 - NdotL), 0.00005);
             vec4 fragPosLightSpace = ubo.lightSpaceMatrix * vec4(inWorldPos, 1.0);
@@ -148,7 +148,7 @@ void main() {
         }
     }
     // Volumetric cloud shadows on vegetation (same projection as terrain).
-    if (!shadowPass && sky.cloudsEnabled && NdotL > 0.01) {
+    if (!shadowPass && (sky.cloudsEnabled != 0u) && NdotL > 0.01) {
         float cloudShadow = cloudShadowAt(inWorldPos);
         shadow = 1.0 - (1.0 - shadow) * (1.0 - cloudShadow);
     }

@@ -2,7 +2,7 @@
 //
 // Every consumer (vegetation vertex, fire, SDF) includes this file to sample
 // the IDENTICAL field: ambient base flow + Perlin gusts + up to 4 Rankine
-// tornadoes, all GPU-side functions of the consumer's own clock (BulletGPU
+// tornadoes, all GPU-side functions of the consumer's own clock (Bullet
 // pattern: zero per-frame CPU beyond the packed UBO).
 //
 // Requires perlin.glsl (perlinNoise3D) to be included BEFORE this file.
@@ -10,17 +10,17 @@
 //
 // Consumer API:
 //   vec3 windAmbient(vec3 p, float time)              — base flow + gusts
-//   vec3 tornadoVelocity(TornadoGPU t, vec3 p, float time) — one funnel
+//   vec3 tornadoVelocity(WindTornado t, vec3 p, float time) — one funnel
 //   vec3 windSVF(vec3 p, float time)                   — ambient + all active
-// UBO field semantics: see shaders/ubo/WindFieldGPU.glsl (component letters)
-//   and vulkan/ubo/WindFieldUBO.hpp. The block mirror is exact (std140).
+// UBO field semantics: see shaders/ubo/WindField.glsl (component letters)
+//   and vulkan/ubo/WindField.hpp. The block mirror is exact (std140).
 #ifndef WIND_FIELD_GLSL
 #define WIND_FIELD_GLSL
 
-#include "../ubo/WindFieldGPU.glsl"
+#include "../ubo/WindField.glsl"
 
 layout(set = 0, binding = 27) uniform WindFieldBlock {
-    WindFieldGPU windField;
+    WindField windField;
 };
 
 // Ambient base flow + Perlin gusts. NaN-safe: direction re-normalized with a
@@ -48,7 +48,7 @@ vec3 windAmbient(vec3 p, float time) {
 
 // Funnel centre, fully GPU-side: base + drift * scaled time + wander orbit.
 // Inactive tornadoes (c.y < 0.5) never reach here — callers skip them.
-vec2 windTornadoCenter(TornadoGPU t, float time) {
+vec2 windTornadoCenter(WindTornado t, float time) {
     float tc = clamp(time, 0.0, 86400.0);
     float st = tc * clamp(t.c.x, 0.0, 8.0); // scaled time (delta_time)
     float lt = st + t.b.w;                  // + phase staggers cycles
@@ -61,7 +61,7 @@ vec2 windTornadoCenter(TornadoGPU t, float time) {
 // sign swings dynamically unless amplitude is 0 (static direction).
 // NaN-safe: radial normalize guarded, core radius floored, height floored,
 // exp argument is a non-positive square (never overflows).
-vec3 tornadoVelocity(TornadoGPU t, vec3 p, float time) {
+vec3 tornadoVelocity(WindTornado t, vec3 p, float time) {
     if (t.c.y < 0.5) return vec3(0.0);
     float R = max(t.a.w, 0.5);
     float H = max(t.b.x, 1.0);

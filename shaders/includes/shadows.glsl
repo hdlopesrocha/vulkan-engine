@@ -55,7 +55,7 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias, out i
     // whose hint would otherwise be undefined). Overwritten below wherever
     // the selection lands in cascade 1 or 2.
     cascadeHint = 0;
-    if (!ubo.shadowsEnabled) return 0.0;
+    if (ubo.shadowsEnabled == 0u) return 0.0;
 
     const float BLEND_MARGIN = 0.04;
 

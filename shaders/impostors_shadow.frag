@@ -1,6 +1,6 @@
 #version 450
 
-#include "ubo/UniformObjectNamed.glsl"
+#include "ubo/UniformObject.glsl"
 
 // Impostor EVSM2 shadow pass: uses vertex position from vertex shader
 // to write EVSM moments.
@@ -11,20 +11,11 @@
 layout(location = VARY_POSWORLD) in vec3 inWorldPos;
 layout(location = VARY_TANGENTWS) flat in vec3 inInstanceOffset;
 
-layout(set = 0, binding = 0) uniform SolidParamsUBO {
-    mat4 viewProjection;
-    vec4 viewPos;
-} uboPacked;
-
-
-UniformObjectNamed uniformObjectNamed() {
-    UniformObjectNamed n;
-    n.viewProjection = uboPacked.viewProjection;
-    n.viewPosition = uboPacked.viewPos.xyz;
-    return n;
-}
-
-UniformObjectNamed ubo = uniformObjectNamed();
+// Canonical scene UBO (set=0 binding=0): the shared struct IS the block
+// layout — no packed/named-view split.
+layout(std140, set = 0, binding = 0) uniform SolidParamsBlock {
+    UniformObject ubo;
+};
 
 layout(location = FRAG_OUT_COLOR) out vec2 outEVSM;
 

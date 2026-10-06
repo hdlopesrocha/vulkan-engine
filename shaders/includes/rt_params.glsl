@@ -1,48 +1,13 @@
 
 #include "../ubo/RTProxyMetaGLSL.glsl"
 #include "../ubo/RTProxyMetaNamed.glsl"
-#include "../ubo/RayTracingParamsGLSL.glsl"
-#include "../ubo/RayTracingParamsNamed.glsl"
+#include "../ubo/RayTracingParams.glsl"
 // Hybrid RT shared declarations (raster ray queries + RT pipeline).
 // The struct layout must match RayTracingParams (C++). Each shader declares
 // its own uniform BLOCK with the set/binding of its pipeline; this file only
 // defines the struct + helpers so raster (set 0) and RT-pipeline sets agree.
 
 
-// Named view over the packed RayTracingParamsGLSL - same data, descriptive names. The builder below is the
-// only place the packed component letters are read; every other access uses the
-// named attributes.
-
-
-
-RayTracingParamsNamed rayTracingParamsNamed(RayTracingParamsGLSL p) {
-    RayTracingParamsNamed n;
-    n.reflectionsEnabled = p.toggles.x > 0.5;
-    n.refractionsEnabled = p.toggles.y > 0.5;
-    n.thicknessEnabled = p.toggles.z > 0.5;
-    n.localShadowsEnabled = p.toggles.w > 0.5;
-    n.maxRefractDistance = p.distances.y;
-    n.maxShadowDistance = p.distances.z;
-    n.roughnessThreshold = p.distances.w;
-    n.waterIor = p.water.x;
-    n.maxWaterThickness = p.water.y;
-    n.coarseBoxSize = p.water.z;
-    n.maxReflectionBounces = int(p.water.w + 0.5);
-    n.debugMode = int(p.debug.x + 0.5);
-    n.tlasReady = p.debug.y > 0.5;
-    n.selfSkipDist = p.debug.z;
-    n.useWaterPipeline = p.debug.w > 0.5;
-    n.checkerboardReflections = p.rayParams.x > 0.5;
-    n.reflectionContribMin = p.rayParams.y;
-    n.singleRay = p.rayParams.z > 0.5;
-    n.waterReflections = p.rayParams.w > 0.5;
-    n.rayTracedWaterDepth = p.waterDepth.x > 0.5;
-    n.viewPosition = p.viewPos.xyz;
-    n.sunDirection = p.sunDir.xyz;
-    n.sunColor = p.sunColor.rgb;
-    n.invViewProj = p.invViewProj;
-    return n;
-}
 
 
 
@@ -94,7 +59,7 @@ const float RT_NO_LIMIT = 10000.0;
 // has still travelled through the water volume (unresolved exit); encoding it
 // as an in-band path length (maxRefract) over-attenuates Beer-Lambert to
 // black. This marker lets water.frag substitute the deep-water tint instead
-// (see water.frag Beer-Lambert: per-layer WaterParams absorption).
+// (see water.frag Beer-Lambert: per-layer WaterSettings absorption).
 const float RT_DEEP_WATER = 1e30;
 
 // Reference thickness used when a coarse proxy hit is feathered toward deep:

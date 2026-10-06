@@ -855,8 +855,8 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
     // 0 so the TES emits fragPosWorld (required by the EVSM fragment shader).
     UniformObject shadowUBO = uboStatic;
     shadowUBO.viewProjection = lsMatrix;
-    shadowUBO.passParams.x = 0.0f;
-    shadowUBO.passParams.y = shadowTessellationEnabled ? 1.0f : 0.0f;
+    shadowUBO.isShadowPass = 0u;
+    shadowUBO.tessellationEnabled = shadowTessellationEnabled ? 1u : 0u;
 
     VkDeviceSize slot = static_cast<VkDeviceSize>(cascadeIndex) * sizeof(UniformObject);
     if (frameIdx < uboStagingBuffers_.size()) {
@@ -910,7 +910,7 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
     // the water itself. (Its cascade cull above is kept: the same indirect
     // buffers are re-prepared for the main view in the blur step.)
     if (vegetationEnabled && vegetationRenderer_) {
-        const glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
+        const glm::vec3 camPos = uboStatic.viewPosition;
         vegetationRenderer_->drawShadowCascade(app, cmd, ds, camPos, cascadeIndex);
     }
 

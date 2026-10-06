@@ -290,7 +290,7 @@ SceneRenderer::~SceneRenderer() {
     // VulkanApp instance.
 }
 
-void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams) {
+void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams) {
     if (!app) {
         std::cerr << "[SceneRenderer::init] app is nullptr!" << std::endl;
         return;
@@ -303,7 +303,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // using the exact water shader ramp, so reflected water carries the real
     // water color — no hardcoded values.
     {
-        const WaterParams& wp = waterParams.empty() ? WaterParams{} : waterParams[0];
+        const WaterSettings& wp = waterParams.empty() ? WaterSettings{} : waterParams[0];
         const float thickness = std::max(wp.maxThickness, 0.0f);
         const glm::vec3 waterTintColor = waterRegionTint(wp, thickness);
         // Beer-Lambert absorption (water.frag): the tint seen through the
@@ -500,14 +500,14 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     writes.push_back(materialsWrite);
 
     // Initialize WaterRenderer early and allocate a params SSBO sized to texture layers.
-    // Use the passed vector of WaterParams as the source of truth for layer count.
+    // Use the passed vector of WaterSettings as the source of truth for layer count.
     // Do not fall back to texture-array sizes; require explicit water parameters.
     uint32_t layerCount = waterParams.size();
     if (layerCount == 0) {
-        throw std::runtime_error("SceneRenderer::init requires at least one WaterParams entry (no fallback allowed)");
+        throw std::runtime_error("SceneRenderer::init requires at least one WaterSettings entry (no fallback allowed)");
     }
     
-    size_t paramsBufferSize = sizeof(WaterParamsGPU) * static_cast<size_t>(layerCount);
+    size_t paramsBufferSize = sizeof(WaterParams) * static_cast<size_t>(layerCount);
     VkBufferUsageFlags waterParamsUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     if (app->useDescriptorBuffer())
         waterParamsUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
@@ -566,7 +566,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // write-on-change — never via descriptor updates).
     if (vegetationRenderer && vegetationRenderer->getWindFieldBuffer().buffer != VK_NULL_HANDLE) {
         VkDescriptorBufferInfo& windFieldInfo = writesBuf.emplace_back(
-            vegetationRenderer->getWindFieldBuffer().buffer, 0, sizeof(WindFieldUBO));
+            vegetationRenderer->getWindFieldBuffer().buffer, 0, sizeof(WindField));
         VkWriteDescriptorSet windFieldWrite{};
         windFieldWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         windFieldWrite.dstSet = staticDs;
@@ -1116,7 +1116,7 @@ void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArray
             Buffer windFieldUBO = vegetationRenderer->getWindFieldBuffer();
             if (windFieldUBO.buffer != VK_NULL_HANDLE)
                 wBuf(kWindFieldBinding, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                     windFieldUBO.buffer, sizeof(WindFieldUBO));
+                     windFieldUBO.buffer, sizeof(WindField));
         }
         // Hybrid RT mirrors (classic sets stay authoritative while the
         // descriptor-buffer bind path is inactive). Binding 14 (TLAS) has no
@@ -1695,7 +1695,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     lastTransparentVisible_ = mainLiquidRenderer->getIndirectRenderer().readVisibleCount(app);
 
     // Coalesced SDF fire rebuild: chunk ingests above only flag dirty; the
-    // scene flatten (grids) runs at most once per frame here.
+    // scene rebuild (bounds + grids) runs at most once per frame here.
     if (sdfRenderer) sdfRenderer->rebuildLavaIfDirty();
 
     if (batch.empty()) {
@@ -2509,7 +2509,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
 }
 
 void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
-                                   const WaterParams& waterLook,
+                                   const WaterSettings& waterLook,
                                    const glm::mat4& invViewProj, const glm::vec3& viewPos,
                                    const glm::vec3& sunDirTo, const glm::vec3& sunColor,
                                    float nearPlane, float farPlane) {
@@ -2531,23 +2531,26 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     // and the per-frame memcpy into the mapped slot (H5).
     if (!rtRuntimeEnabled) return;
     RayTracingParams p{};
-    p.toggles = glm::vec4(settings.rtReflections ? 1.0f : 0.0f,
-                           settings.rtRefractions ? 1.0f : 0.0f,
-                           settings.rtThickness ? 1.0f : 0.0f,
-                           settings.rtLocalShadows ? 1.0f : 0.0f);
-    p.distances = glm::vec4(settings.rtMaxReflectDist, settings.rtMaxRefractDist,
-                             settings.rtMaxShadowDist, settings.rtRoughnessThreshold);
+    p.reflectionsEnabled = settings.rtReflections ? 1u : 0u;
+    p.refractionsEnabled = settings.rtRefractions ? 1u : 0u;
+    p.thicknessEnabled = settings.rtThickness ? 1u : 0u;
+    p.localShadowsEnabled = settings.rtLocalShadows ? 1u : 0u;
+    p.maxReflectDistance = settings.rtMaxReflectDist;
+    p.maxRefractDistance = settings.rtMaxRefractDist;
+    p.maxShadowDistance = settings.rtMaxShadowDist;
+    p.roughnessThreshold = settings.rtRoughnessThreshold;
     // Pipeline-path water look mirrors water layer 0 (rgen has no layer id).
-    // The sampled inline path reads each fragment's own WaterParams instead.
-    p.water = glm::vec4(waterLook.ior, waterLook.maxThickness,
-                        settings.rtCoarseBoxSize,
-                        static_cast<float>(std::clamp(settings.rtReflectionBounces, 0, 3)));
-    p.absorption = glm::vec4(waterLook.absorption[0], waterLook.absorption[1],
-                             waterLook.absorption[2], waterLook.absorptionScale);
-    p.debug = glm::vec4(static_cast<float>(settings.debugMode),
-                        rayTracing->tlasBuilt() ? 1.0f : 0.0f,
-                        settings.rtSelfSkipDist,
-                        settings.rtWaterPipeline ? 1.0f : 0.0f);
+    // The sampled inline path reads each fragment's own WaterSettings instead.
+    p.waterIor = waterLook.ior;
+    p.maxWaterThickness = waterLook.maxThickness;
+    p.coarseBoxSize = settings.rtCoarseBoxSize;
+    p.maxReflectionBounces = std::clamp(settings.rtReflectionBounces, 0, 3);
+    p.absorptionColor = waterLook.absorption;
+    p.absorptionScale = waterLook.absorptionScale;
+    p.debugMode = settings.debugMode;
+    p.tlasReady = rayTracing->tlasBuilt() ? 1u : 0u;
+    p.selfSkipDist = settings.rtSelfSkipDist;
+    p.useWaterPipeline = settings.rtWaterPipeline ? 1u : 0u;
     p.invViewProj = invViewProj;
     // Temporal SSR: expose the previous frame's view-projection so solid
     // reflections can reproject into the previous frame's color/depth instead
@@ -2559,24 +2562,26 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     lastBandCamPos_ = viewPos;
     lastBandLodBias_ = settings.lodBias;
     lastBandMaxLod_ = settings.maxTargetLod;
-    p.viewPos = glm::vec4(viewPos, 1.0f);
-    p.rtResolution = glm::vec4(0.0f);
-    p.clipPlanes = glm::vec4(nearPlane, farPlane, 0.0f, 0.0f);
-    p.sunDir = glm::vec4(sunDirTo, 0.0f);
-    p.sunColor = glm::vec4(sunColor, 1.0f);
+    p.viewPosition = viewPos;
+    p.rtResolution = glm::vec2(0.0f);
+    p.invRtResolution = glm::vec2(0.0f);
+    p.nearPlane = nearPlane;
+    p.farPlane = farPlane;
+    p.sunDirection = sunDirTo;
+    p.sunColor = sunColor;
     // Ray-budget A/B: traced-result debug views force the reference path
     // (full-rate + dual-trace) so diagnostics/screenshots show full quality;
     // otherwise honor the runtime toggles. Ray mask / depth source stay
     // budgeted (they visualize the live cuts). Keeps the null-TLAS skip path
     // (debug.y) unchanged.
     const bool refMode = debugModeForcesRtReference(debugModeFromInt(settings.debugMode));
-    p.rayParams = glm::vec4(refMode ? 0.0f : static_cast<float>(settings.rtRayScale),
-                            settings.rtRayContribMin,
-                            (settings.rtSingleRay && !refMode) ? 1.0f : 0.0f,
-                            settings.rtWaterReflections ? 1.0f : 0.0f);
+    p.checkerboardReflections = (!refMode && settings.rtRayScale > 0.5f) ? 1u : 0u;
+    p.reflectionContribMin = settings.rtRayContribMin;
+    p.singleRay = (settings.rtSingleRay && !refMode) ? 1u : 0u;
+    p.waterReflections = settings.rtWaterReflections ? 1u : 0u;
     // Water-region depth source: ray-traced bottom in the water TES vs the
     // raster path (solid depth + water volume back face). Both return a
     // world-space vertical drop.
-    p.waterDepth = glm::vec4(settings.rtWaterDepth ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+    p.rayTracedWaterDepth = settings.rtWaterDepth ? 1u : 0u;
     rayTracing->updateParams(p, app->getCurrentFrame());
 }

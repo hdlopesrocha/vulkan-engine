@@ -39,8 +39,8 @@
 //   (lighting formulas and loop budgets are unchanged).
 //
 // Requires: ubo.glsl + sky_view.glsl + perlin.glsl + sdf_primitives.glsl +
-// sdf_ops.glsl + sdf_noise.glsl included first (SkyParamsNamed `sky`,
-// UniformObjectNamed `ubo`, PCG helpers, generic SDF evaluation).
+// sdf_ops.glsl + sdf_noise.glsl included first (SkyUniform `sky`,
+// UniformObject `ubo`, PCG helpers, generic SDF evaluation).
 //
 // Entry points (signatures unchanged):
 //   raymarchClouds(camPos, viewDir, sunDir, sunColor, skyCol, dayFactor, steps)
@@ -68,9 +68,19 @@ vec2 cloudWindVec(float speedMul) {
 // Per-tier parameter fetch (keeps the march/shadow code tier-agnostic).
 // t = (coverage, density, scale, windMul), geom = (baseHeight, thickness).
 void cloudTierParams(int tier, out vec4 t, out vec2 geom, out bool enabled) {
-    if (tier == 0) { t = sky.lowTier; geom = sky.lowGeom; enabled = sky.lowEnabled; }
-    else if (tier == 1) { t = sky.midTier; geom = sky.midGeom; enabled = sky.midEnabled; }
-    else { t = sky.highTier; geom = sky.highGeom; enabled = sky.highEnabled; }
+    if (tier == 0) {
+        t = vec4(sky.lowCoverage, sky.lowDensity, sky.lowScale, sky.lowWindSpeedMul);
+        geom = vec2(sky.lowBaseHeight, sky.lowThickness);
+        enabled = (sky.lowEnabled != 0u);
+    } else if (tier == 1) {
+        t = vec4(sky.midCoverage, sky.midDensity, sky.midScale, sky.midWindSpeedMul);
+        geom = vec2(sky.midBaseHeight, sky.midThickness);
+        enabled = (sky.midEnabled != 0u);
+    } else {
+        t = vec4(sky.highCoverage, sky.highDensity, sky.highScale, sky.highWindSpeedMul);
+        geom = vec2(sky.highBaseHeight, sky.highThickness);
+        enabled = (sky.highEnabled != 0u);
+    }
 }
 
 // Scaled cloud domain for one tier: horizontal coords in feature units
@@ -230,7 +240,7 @@ float cloudSlabDensity(vec3 pos, int tier, bool cheap) {
 
 // Full density at a world-space point (0 outside every enabled slab).
 float cloudDensityAt(vec3 pos) {
-    if (!sky.cloudsEnabled) return 0.0;
+    if (sky.cloudsEnabled == 0u) return 0.0;
     float d = cloudSlabDensity(pos, 0, false)
             + cloudSlabDensity(pos, 1, false)
             + cloudSlabDensity(pos, 2, false);
@@ -240,7 +250,7 @@ float cloudDensityAt(vec3 pos) {
 // Cheap density (puff SDF + reduced base noise, no warp/detail/erosion) for
 // the light march and other multi-sample queries (§19/§25: cheap first).
 float cloudDensityCheapAt(vec3 pos) {
-    if (!sky.cloudsEnabled) return 0.0;
+    if (sky.cloudsEnabled == 0u) return 0.0;
     float d = cloudSlabDensity(pos, 0, true)
             + cloudSlabDensity(pos, 1, true)
             + cloudSlabDensity(pos, 2, true);
@@ -280,7 +290,7 @@ bool cloudSlabIntersect(vec3 origin, vec3 dir, float base, float thickness,
 // step (small near boundaries/dense cores, large in voids).
 vec4 raymarchClouds(vec3 camPos, vec3 viewDir, vec3 sunDir, vec3 sunColor,
                     vec3 skyBackground, float dayFactor, int maxSteps) {
-    if (!sky.cloudsEnabled) return vec4(vec3(0.0), 1.0);
+    if (sky.cloudsEnabled == 0u) return vec4(vec3(0.0), 1.0);
     // No horizon early-out: visibility is decided purely by slab
     // intersection, so clouds render from every side — from below (looking
     // up), from above (looking down at cloud tops), from inside the slab,
@@ -404,31 +414,31 @@ float cloudShadowField(vec2 xz, int tier) {
 // Returns 0 (lit) .. 1 (fully shadowed); the caller scales by
 // sky.shadowStrength. (Structure, weights and mapping unchanged.)
 float cloudShadowAt(vec3 worldPos) {
-    if (!sky.cloudsEnabled) return 0.0;
+    if (sky.cloudsEnabled == 0u) return 0.0;
     if (sky.shadowStrength <= 0.001) return 0.0;
     vec3 sunDirTo = -normalize(ubo.lightDirection);
     if (sunDirTo.y < 0.03) return 0.0;
     float shadow = 0.0;
-    if (sky.lowEnabled) {
-        float h = sky.lowGeom.x - worldPos.y;
+    if (sky.lowEnabled != 0u) {
+        float h = sky.lowBaseHeight - worldPos.y;
         if (h > 0.0) {
             vec2 hitXZ = worldPos.xz + sunDirTo.xz / sunDirTo.y * h;
-            shadow += cloudShadowField(hitXZ, 0) * max(sky.lowTier.y, 0.0) * 0.55;
+            shadow += cloudShadowField(hitXZ, 0) * max(sky.lowDensity, 0.0) * 0.55;
         }
     }
-    if (sky.midEnabled) {
-        float h = sky.midGeom.x - worldPos.y;
+    if (sky.midEnabled != 0u) {
+        float h = sky.midBaseHeight - worldPos.y;
         if (h > 0.0) {
             vec2 hitXZ = worldPos.xz + sunDirTo.xz / sunDirTo.y * h;
-            shadow += cloudShadowField(hitXZ, 1) * max(sky.midTier.y, 0.0) * 0.40;
+            shadow += cloudShadowField(hitXZ, 1) * max(sky.midDensity, 0.0) * 0.40;
         }
     }
-    if (sky.highEnabled) {
-        float h = sky.highGeom.x - worldPos.y;
+    if (sky.highEnabled != 0u) {
+        float h = sky.highBaseHeight - worldPos.y;
         if (h > 0.0) {
             vec2 hitXZ = worldPos.xz + sunDirTo.xz / sunDirTo.y * h;
             // Cirrus barely shadows (ice crystals, optically thin).
-            shadow += cloudShadowField(hitXZ, 2) * max(sky.highTier.y, 0.0) * 0.18;
+            shadow += cloudShadowField(hitXZ, 2) * max(sky.highDensity, 0.0) * 0.18;
         }
     }
     shadow *= max(sky.densityScale, 0.0) * clamp(sky.shadowStrength, 0.0, 1.0);
@@ -439,13 +449,13 @@ float cloudShadowAt(vec3 worldPos) {
 // returns the cloud albedo to add over the gradient sky for a reflect ray.
 // (Planar factors, weights and colors unchanged.)
 vec3 cloudApproxForReflection(vec3 reflDir, vec3 sunDir, float dayFactor) {
-    if (!sky.cloudsEnabled) return vec3(0.0);
+    if (sky.cloudsEnabled == 0u) return vec3(0.0);
     if (reflDir.y < 0.02 || dayFactor <= 0.01) return vec3(0.0);
     float cov = 0.0;
     float wsum = 0.0;
-    if (sky.lowEnabled) { cov += cloudShadowField(reflDir.xz / max(reflDir.y, 0.05) * 2000.0, 0) * 0.5; wsum += 0.5; }
-    if (sky.midEnabled) { cov += cloudShadowField(reflDir.xz / max(reflDir.y, 0.05) * 4500.0, 1) * 0.35; wsum += 0.35; }
-    if (sky.highEnabled) { cov += cloudShadowField(reflDir.xz / max(reflDir.y, 0.05) * 9000.0, 2) * 0.25; wsum += 0.25; }
+    if (sky.lowEnabled != 0u) { cov += cloudShadowField(reflDir.xz / max(reflDir.y, 0.05) * 2000.0, 0) * 0.5; wsum += 0.5; }
+    if (sky.midEnabled != 0u) { cov += cloudShadowField(reflDir.xz / max(reflDir.y, 0.05) * 4500.0, 1) * 0.35; wsum += 0.35; }
+    if (sky.highEnabled != 0u) { cov += cloudShadowField(reflDir.xz / max(reflDir.y, 0.05) * 9000.0, 2) * 0.25; wsum += 0.25; }
     if (wsum <= 0.0) return vec3(0.0);
     cov /= wsum;
     float sunAmt = max(dot(reflDir, sunDir), 0.0);
@@ -463,7 +473,7 @@ vec3 cloudApproxForReflection(vec3 reflDir, vec3 sunDir, float dayFactor) {
 // modes return black. Called from sky.frag only (the equirect probe always
 // renders the final image so reflections stay clean).
 vec3 cloudDebugView(vec3 camPos, vec3 viewDir, vec3 sunDir, int mode) {
-    if (!sky.cloudsEnabled) return vec3(0.0);
+    if (sky.cloudsEnabled == 0u) return vec3(0.0);
     int tier = -1;
     float t0 = 0.0, t1 = -1.0;
     vec4 tt;

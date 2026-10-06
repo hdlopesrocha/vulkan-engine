@@ -1,9 +1,9 @@
-#ifndef WATER_PARAMS_G_P_U_GLSL
-#define WATER_PARAMS_G_P_U_GLSL
+#ifndef WATER_PARAMS_GLSL
+#define WATER_PARAMS_GLSL
 
 // Extracted from shaders/includes/ubo.glsl (single-struct GLSL type).
 
-struct WaterParamsGPU {
+struct WaterParams {
     vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
     vec4 params3;  // x=noiseTimeSpeed, y=noiseLacunarity, z=specularIntensity, w=specularPower
@@ -20,7 +20,7 @@ struct WaterParamsGPU {
     vec4 absorptionParams; // xyz = Beer-Lambert coeff, w = absorption scale
     vec4 refractionParams; // x = IOR, y = max thickness cap, z = shore fade depth, w = unused
 
-    // Shore-wave system (mirrors vulkan/ubo/WaterParamsGPU.hpp).
+    // Shore-wave system (mirrors vulkan/ubo/WaterParams.hpp).
     vec4 waveToggles;      // x=enableWaves, y=enableFoam, z=enableVolumetric, w=unused
     vec4 waveZones;        // x=deep depth(>=), y=break depth, z=shallow depth, w=unused
     vec4 waveDirection;    // xy=shore direction (unit, world XZ), zw=unused
@@ -41,7 +41,7 @@ struct WaterParamsGPU {
     vec4 volumetricParams; // x=strength, y=density, z=Henyey-Greenstein g, w=unused
     vec4 volumetricColor;  // rgb=volumetric scatter tint, a=unused
 
-    // Depth-region tint (mirrors vulkan/ubo/WaterParamsGPU.hpp)   // rgb = tint at the waterline (d < zoneShallow) // rgb = foam-decay-band tint (zoneShallow..zoneBreak) // rgb = breaker-line tint (around zoneBreak)   // rgb = shoaling-band tint (zoneBreak..zoneDeep)    // rgb = open-ocean tint (d >= zoneDeep)
+    // Depth-region tint (mirrors vulkan/ubo/WaterParams.hpp)   // rgb = tint at the waterline (d < zoneShallow) // rgb = foam-decay-band tint (zoneShallow..zoneBreak) // rgb = breaker-line tint (around zoneBreak)   // rgb = shoaling-band tint (zoneBreak..zoneDeep)    // rgb = open-ocean tint (d >= zoneDeep)
     vec4 regionShoreColor;   // rgb = the single water colour (one region)
     vec4 regionShallowColor; // reserved
     vec4 regionBreakerColor; // reserved
@@ -49,10 +49,10 @@ struct WaterParamsGPU {
     vec4 regionDeepColor;    // reserved
     vec4 regionTintParams;   // x=unused, y=tint shore fade depth (m), zw=unused   // x=blend softness, y=tint shore fade depth (m), zw=unused
 
-    // Music-reactive audio input (mirrors vulkan/ubo/WaterParamsGPU.hpp):
+    // Music-reactive audio input (mirrors vulkan/ubo/WaterParams.hpp):
     // written per frame by the MusicWidget analysis pipeline.
     vec4 musicAudio1; // x=smoothed audioAmplitude 0..1, y=bassEnergy, z=midEnergy, w=highEnergy
     vec4 musicAudio2; // x=beatIntensity 0..1, y=reactive input enabled 1/0, zw=reserved
 };
 
-#endif // WATER_PARAMS_G_P_U_GLSL
+#endif // WATER_PARAMS_GLSL

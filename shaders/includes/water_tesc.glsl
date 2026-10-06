@@ -54,7 +54,7 @@ void main() {
 
     if (gl_InvocationID == 0) {
         // Respect the global tessellation toggle from settings.
-        if (!ubo.tessellationEnabled) {
+        if (ubo.tessellationEnabled == 0u) {
             gl_TessLevelOuter[0] = 1.0;
             gl_TessLevelOuter[1] = 1.0;
             gl_TessLevelOuter[2] = 1.0;

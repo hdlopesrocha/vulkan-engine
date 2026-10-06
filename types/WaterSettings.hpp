@@ -2,7 +2,7 @@
 #include <glm/glm.hpp>
 
 // Water rendering parameters (CPU-side)
-struct WaterParams {
+struct WaterSettings {
 
     float refractionStrength = 1.0f;   // amount of Snell bending (0 = straight through)
     float fresnelPower = 5.0f;
@@ -185,7 +185,7 @@ struct WaterParams {
 // CPU mirror of shaders/includes/water_tint.glsl: ONE water region, so this is
 // a single colour. `depth` is kept in the signature because the callers pass
 // their depth signal in, but there is no depth-band palette any more.
-inline glm::vec3 waterRegionTint(const WaterParams& p, float depth) {
+inline glm::vec3 waterRegionTint(const WaterSettings& p, float depth) {
     (void)depth;
     return p.waterColor;
 }

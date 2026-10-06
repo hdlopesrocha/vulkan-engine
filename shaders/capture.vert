@@ -1,6 +1,6 @@
 #version 450
 
-#include "ubo/UniformObjectNamed.glsl"
+#include "ubo/CaptureUBO.glsl"
 
 // Pass-through vertex shader for impostor capture.
 // Reads instance data and forwards to the geometry shader (vegetation.geom)
@@ -19,20 +19,11 @@ layout(location = VARY_UV) out vec3 fragTexCoord;
 layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
 layout(location = VARY_POSWORLD) out vec3 fragWorldPos;
 
-layout(set = 0, binding = 0) uniform SolidParamsUBO {
-    mat4 viewProjection;
-    vec4 viewPos;
-} uboPacked;
-
-
-UniformObjectNamed uniformObjectNamed() {
-    UniformObjectNamed n;
-    n.viewProjection = uboPacked.viewProjection;
-    n.viewPosition = uboPacked.viewPos.xyz;
-    return n;
-}
-
-UniformObjectNamed ubo = uniformObjectNamed();
+// Canonical capture camera UBO (set=0 binding=0): the shared struct IS the
+// block layout.
+layout(std140, set = 0, binding = 0) uniform CaptureUBOBlock {
+    CaptureUBO ubo;
+};
 
 void main() {
     vec3 worldPos = instanceData.xyz;

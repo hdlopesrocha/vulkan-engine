@@ -96,7 +96,7 @@ void main() {
     // re-renders every frame while clouds are active). No direction guard:
     // slab intersection handles every direction, including downward views of
     // cloud tops when the camera flies above the slabs.
-    if (sky.cloudsEnabled) {
+    if (sky.cloudsEnabled != 0u) {
         int halfSteps = int(clamp(sky.raymarchSteps * 0.5, 4.0, 12.0));
         vec4 clouds = raymarchClouds(ubo.viewPosition, normalize(viewDir),
                                      normalize(sunDir), sunColor * dayFactor

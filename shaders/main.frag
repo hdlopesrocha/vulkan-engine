@@ -12,8 +12,7 @@
 #extension GL_EXT_shader_realtime_clock : require
 
 #include "ubo/RTProxyMetaGLSL.glsl"
-#include "ubo/RayTracingParamsGLSL.glsl"
-#include "ubo/RayTracingParamsNamed.glsl"
+#include "ubo/RayTracingParams.glsl"
 #endif
 #include "includes/locations.glsl"
 
@@ -95,8 +94,7 @@ layout(location = FRAG_OUT_WATER_COLUMN) out vec4 outWaterColumn;
 #include "includes/rt_params.glsl"
 #ifdef RT_ENABLED
 layout(set = 0, binding = 14) uniform accelerationStructureEXT rtTlas;
-layout(set = 0, binding = 17) uniform RTBlock { RayTracingParamsGLSL rtPacked; };
-RayTracingParamsNamed rt = rayTracingParamsNamed(rtPacked);
+layout(std140, set = 0, binding = 17) uniform RTBlock { RayTracingParams rt; };
 layout(set = 0, binding = 18) readonly buffer RTMeta { RTProxyMetaGLSL rtMetas[]; };
 // Real scene-geometry lookups. The scene is split across two TLAS instances
 // by content — solids (instance RT_SCENE_INSTANCE) and the real water mesh
@@ -147,8 +145,8 @@ layout(set = 0, binding = 20) uniform sampler2D ssrDepthTex;
 
 
 // Global toggles
-bool roughnessEnabled = ubo.roughnessEnabled;
-bool aoEnabled = ubo.ambientOcclusionEnabled;
+bool roughnessEnabled = (ubo.roughnessEnabled != 0u);
+bool aoEnabled = (ubo.ambientOcclusionEnabled != 0u);
 
 #if WATER_MODE
 // Water fragment stage (varyings + set-2 scene textures + shadeWaterSurface
@@ -168,7 +166,7 @@ void main() {
     // water pipeline (alpha-blended into the main color target).
     shadeWaterSurface();
 #else
-    bool isShadowPass = ubo.isShadowPass;
+    bool isShadowPass = (ubo.isShadowPass != 0u);
     // Provide a default color so early debug/special-case returns still
     // produce a valid output for downstream passes.
     outColor = vec4(0.0);

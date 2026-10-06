@@ -644,7 +644,7 @@ void shadeWaterSurface() {
     // (blurParams.x) AND the global Settings toggle (waterRenderUBO.blurAllowed)
     // must both be on, so the Minimal preset can disable blur without
     // overwriting the authored per-layer params.
-    bool enableBlur = wp.enableBlur && waterRenderUBO.blurAllowed;
+    bool enableBlur = wp.enableBlur && (waterRenderUBO.blurAllowed != 0u);
     // Global ray-path gates from Settings, delivered via the water render UBO
     // so they apply in BOTH fragment variants (the non-RT variant has no `rt`
     // block). Refraction folds the settings gate in: Minimal ships
@@ -654,12 +654,12 @@ void shadeWaterSurface() {
     // with the ray off it falls back to the sky equirect, which is exactly the
     // sky-only mirror Minimal wants. The surface shading (Gerstner swell + FBM
     // ripples) is preset-independent and identical in both modes.
-    enableRefraction = enableRefraction && waterRenderUBO.refractionAllowed;
+    enableRefraction = enableRefraction && (waterRenderUBO.refractionAllowed != 0u);
     // Reflection stays ON with the RT ray off: the mirror falls back to the
     // sky equirect (sky-only reflection), which is the requested raster
     // behavior. The ray itself is gated at the trace site (`rt.waterReflections`).
     // During 360 cubemap capture, skip reflection/refraction to avoid feedback.
-    const bool captureMode = ubo.cubemapCapture;
+    const bool captureMode = (ubo.cubemapCapture != 0u);
     if (captureMode) { enableReflection = false; enableRefraction = false; }
 
     // animTime is the RAW water time. Wave Speed alone drives the swell (the
@@ -703,7 +703,7 @@ void shadeWaterSurface() {
     // Debug views must see the water: the rejection below discards fragments,
     // and a discard returns before the debug dispatch, so a mis-firing test
     // showed up as black water in every view (Reflection Vector first).
-    if (ubo.debugMode == 0 && waterRenderUBO.solidDepthIsCurrent) {
+    if (ubo.debugMode == 0 && (waterRenderUBO.solidDepthIsCurrent != 0u)) {
         float solidDepthRaw = textureLod(solidSceneDepthTex, screenUV, 0.0).r;
         if (solidDepthRaw < 1.0) {
             float solidEye = linearizeDepth(solidDepthRaw);
@@ -878,8 +878,8 @@ void shadeWaterSurface() {
     bool rtReady = false;
     bool usePipe = false;
 #ifdef RT_ENABLED
-    rtReady = rt.tlasReady;
-    usePipe = rt.useWaterPipeline;
+    rtReady = (rt.tlasReady != 0u);
+    usePipe = (rt.useWaterPipeline != 0u);
 #endif
 
     // === NOISE-BASED REFRACTION (perf report 20 C2) ===
@@ -951,7 +951,7 @@ void shadeWaterSurface() {
     // Ray mask / depth source visualize the budgeted behavior itself, so they
     // must not force reference (otherwise they could never show the live cut).
     waterRefMode = debugModeForcesRtReference(rt.debugMode);
-    waterSingleRay = rt.singleRay && !waterRefMode;
+    waterSingleRay = (rt.singleRay != 0u) && !waterRefMode;
     waterContribMin = clamp(rt.reflectionContribMin, 0.0, 1.0);
     // Single-ray ray budget (rt.singleRay): traces the reflection XOR
     // refraction stochastically with probability = reflMixEst (Schlick-weight)
@@ -1050,7 +1050,7 @@ void shadeWaterSurface() {
         haveRefrRayW = true;
         bool refrResolved = false;
 #ifdef RT_ENABLED
-        if (usePipe && rt.refractionsEnabled) {
+        if (usePipe && (rt.refractionsEnabled != 0u)) {
             // Half-res single-mip pipeline output: explicit LOD 0 (also safe
             // under the per-fragment pipe-validity branch).
             vec4 pipeRefr = textureLod(rtRefractTex, screenUV, 0.0);
@@ -1059,7 +1059,7 @@ void shadeWaterSurface() {
                 // Thickness only when the RT-thickness toggle is on: the
                 // ray still runs for the refracted color, but its path
                 // length is not consumed as a water column when disabled.
-                rtThickness = rt.thicknessEnabled ? pipeRefr.a : -1.0;
+                rtThickness = (rt.thicknessEnabled != 0u) ? pipeRefr.a : -1.0;
                 refrResolved = true;
                 refrMask = 2.0;
                 depthSource = 5.0;
@@ -1073,7 +1073,7 @@ void shadeWaterSurface() {
         // bottom is never replaced with black.
         bool refrBudgetSkip = (refrContribEst < waterContribMin) || !wantRefrInline;
         if (waterRefMode) refrBudgetSkip = false;
-        if (!refrResolved && rtReady && rt.refractionsEnabled && !refrBudgetSkip) {
+        if (!refrResolved && rtReady && (rt.refractionsEnabled != 0u) && !refrBudgetSkip) {
             float refrSceneTMax = hasValidBackFace
                 ? (backFaceThickness * 1.5 + 2.0)
                 : min(maxRefr, max(refrThickCap * 3.0, 8.0));
@@ -1086,13 +1086,13 @@ void shadeWaterSurface() {
             // a >= 0 always from rtTraceWater: capped path length on hit, or
             // RT_DEEP_WATER marker on miss (deep, unresolved water). Only a
             // real triangle hit counts as bottom content for miss-recovery.
-            rtThickness = rt.thicknessEnabled ? hit.a : -1.0;
+            rtThickness = (rt.thicknessEnabled != 0u) ? hit.a : -1.0;
             rtThickFromScene = true;
             refrResolved = true;
             refrMask = 3.0;
             depthSource = 1.0;
             refrInlineHitReal = (hit.a < RT_DEEP_WATER);
-        } else if (!refrResolved && rtReady && rt.refractionsEnabled && refrBudgetSkip) {
+        } else if (!refrResolved && rtReady && (rt.refractionsEnabled != 0u) && refrBudgetSkip) {
             refrMask = 4.0;
         }
 #endif
@@ -1131,7 +1131,7 @@ void shadeWaterSurface() {
             // stands (non-RT build, RT off, negligible lobe).
             bool refrRecovered = false;
 #ifdef RT_ENABLED
-            if (rtReady && rt.refractionsEnabled && haveRefrRayW
+            if (rtReady && (rt.refractionsEnabled != 0u) && haveRefrRayW
                 && refrContribEst >= waterContribMin) {
                 vec4 rb = rtRasterBottom(fragPosWorld, refrRayW, screenUV);
                 if (rb.a >= 0.0) {
@@ -1157,7 +1157,7 @@ void shadeWaterSurface() {
                 //    was intentionally not cast).
                 bool rtRefrAvailable = false;
 #ifdef RT_ENABLED
-                rtRefrAvailable = rtReady && rt.refractionsEnabled;
+                rtRefrAvailable = rtReady && (rt.refractionsEnabled != 0u);
 #endif
                 bool refrServed = false;
                 if (!rtRefrAvailable) {
@@ -1238,11 +1238,11 @@ void shadeWaterSurface() {
     // noise. Miss marker and "no RT" (-1) are never touched. Skipped for
     // exact scene-triangle hits (rtThickFromScene): dithering those would
     // reintroduce the noise the exact geometry just removed.
-    if (rtReady && rt.thicknessEnabled && !rtThickFromScene && rtThickness >= 0.0 && rtThickness < RT_DEEP_WATER) {
+    if (rtReady && (rt.thicknessEnabled != 0u) && !rtThickFromScene && rtThickness >= 0.0 && rtThickness < RT_DEEP_WATER) {
         float h = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
         rtThickness = max(rtThickness + (h - 0.5) * 0.6, 0.0);
     }
-    if (rtReady && rt.thicknessEnabled && rtThickness >= 0.0) {
+    if (rtReady && (rt.thicknessEnabled != 0u) && rtThickness >= 0.0) {
         rtDeepMiss = (rtThickness >= RT_DEEP_WATER);
         if (rtDeepMiss) {
             // Miss continuity (no thresholds, hence no seams): a refraction
@@ -1486,7 +1486,7 @@ void shadeWaterSurface() {
     bool reflDidTrace = false;
     vec4 reflHit = vec4(0.0);
     vec3 reflOrigin = vec3(0.0);
-    if (enableReflection && !reflBudgetSkip && rtReady && rt.waterReflections) {
+    if (enableReflection && !reflBudgetSkip && rtReady && (rt.waterReflections != 0u)) {
         // Origin on the UNDISPLACED base surface, biased along the base
         // normal (mirrors main.frag): the BLAS holds the undisplaced CPU
         // mesh, so tracing from the displaced (tessellated wave) surface
@@ -1564,7 +1564,7 @@ void shadeWaterSurface() {
         }
         reflMaskDbg = 3.0;
         reflResolved = true;
-    } else if (!reflResolved && rtReady && rt.waterReflections && reflBudgetSkip) {
+    } else if (!reflResolved && rtReady && (rt.waterReflections != 0u) && reflBudgetSkip) {
         reflMaskDbg = 4.0;
     }
 #endif
@@ -1611,7 +1611,7 @@ void shadeWaterSurface() {
     // sceneColorTex; this term adds the surface-level shadow the refraction
     // path cannot carry (grazing/mirror pixels sampling sky, not bottom).
     float shadow = 0.0;
-    if (ubo.shadowsEnabled) {
+    if (ubo.shadowsEnabled != 0u) {
         float NdotL = max(dot(normal, lightDir), 0.0);
         if (NdotL > 0.01) {
             float bias = max(0.002 * (1.0 - NdotL), 0.0005);
@@ -1622,7 +1622,7 @@ void shadeWaterSurface() {
         }
     }
     // Volumetric cloud shadows on water (same projection as terrain).
-    if (sky.cloudsEnabled) {
+    if (sky.cloudsEnabled != 0u) {
         float cloudShadow = cloudShadowAt(fragPosWorld);
         shadow = 1.0 - (1.0 - shadow) * (1.0 - cloudShadow);
     }
@@ -1682,7 +1682,7 @@ void shadeWaterSurface() {
         // Only when the bound solid depth/colour are THIS frame's (the
         // offscreen path): the water-in-main variant binds the previous
         // frame's and must not smear them under camera motion.
-        if (waterRenderUBO.solidDepthIsCurrent) {
+        if (waterRenderUBO.solidDepthIsCurrent != 0u) {
             vec2 refrUV = clamp(screenUV, 0.001, 0.999);
             if (textureLod(solidSceneDepthTex, refrUV, 0.0).r < 1.0) {
                 sceneColor = textureLod(solidSceneColorTex, refrUV, 0.0).rgb * transmittance;
@@ -1872,7 +1872,7 @@ void shadeWaterSurface() {
     // skims), so authored waterlines are untouched. Gated on
     // solidDepthIsCurrent like the C5 rejection above: the water-in-main
     // variant binds the previous frame's depth, which must not drive alpha.
-    if (alpha < mirrorPresence && waterRenderUBO.solidDepthIsCurrent) {
+    if (alpha < mirrorPresence && (waterRenderUBO.solidDepthIsCurrent != 0u)) {
         float solidRaw = textureLod(solidSceneDepthTex, screenUV, 0.0).r;
         if (solidRaw >= 1.0) alpha = mirrorPresence;
     }

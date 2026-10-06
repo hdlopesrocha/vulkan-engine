@@ -76,15 +76,15 @@ void shadeSolidSurface() {
     vec3 hsvColor = fragHSV;
     float brushRedFade = 0.0;
 #ifndef BRUSH_PASS
-    bool isPaintMode = ubo.brushMode > 1.5;
-    bool isRemoveMode = ubo.brushMode > 0.5 && ubo.brushMode < 1.5;
+    bool isPaintMode = ubo.brushMode > 1u;
+    bool isRemoveMode = ubo.brushMode == 1u;
     if (isPaintMode || isRemoveMode) {
         vec2 brushUV = gl_FragCoord.xy / vec2(textureSize(brushDepthTex, 0));
         float brushFront = texture(brushDepthTex, brushUV).r;
         float brushBack = texture(brushBackFaceDepthTex, brushUV).r;
         float fragDepth = gl_FragCoord.z;
         if (fragDepth >= brushFront && fragDepth <= brushBack) {
-            int brushTexIndex = int(ubo.brushTextureIndex + 0.5);
+            int brushTexIndex = int(ubo.brushTextureIndex);
             texIndices = ivec3(brushTexIndex);
             // Override vertex HSV with the brush's HSV so painted areas get the brush tint
             hsvColor = ubo.brushHsv;
@@ -150,7 +150,7 @@ void shadeSolidSurface() {
         float mapFlag0 = float(materialNamed(materials[texIndices.x]).mappingEnabled);
         float mapFlag1 = float(materialNamed(materials[texIndices.y]).mappingEnabled);
         float mapFlag2 = float(materialNamed(materials[texIndices.z]).mappingEnabled);
-        if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || ubo.normalMappingEnabled) {
+        if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || (ubo.normalMappingEnabled != 0u)) {
             // C3: blend texels first, transform once (same weights/texels).
             tripNormal0 = w.x > 0.0 ? computeTriplanarNormalBlended(triW, texIndices.x, N, uv0X, uv0Y, uv0Z) : vec3(0.0);
             tripNormal1 = w.y > 0.0 ? computeTriplanarNormalBlended(triW, texIndices.y, N, uv1X, uv1Y, uv1Z) : vec3(0.0);
@@ -180,7 +180,7 @@ void shadeSolidSurface() {
     }
 
     // Compute normal mapping if enabled (per-material or global toggle)
-    if (!usedTriplanar && ((float(materialNamed(materials[texIndices.x]).mappingEnabled) * w.x + float(materialNamed(materials[texIndices.y]).mappingEnabled) * w.y + float(materialNamed(materials[texIndices.z]).mappingEnabled) * w.z) > 0.5 || ubo.normalMappingEnabled)) {
+    if (!usedTriplanar && ((float(materialNamed(materials[texIndices.x]).mappingEnabled) * w.x + float(materialNamed(materials[texIndices.y]).mappingEnabled) * w.y + float(materialNamed(materials[texIndices.z]).mappingEnabled) * w.z) > 0.5 || (ubo.normalMappingEnabled != 0u))) {
         // Sample normal map per-layer and blend in tangent space (C3: dead
         // slots skipped, same argument as albedo above).
         vec3 n0 = w.x > 0.0 ? texture(normalArray, vec3(uv, float(texIndices.x))).rgb * 2.0 - 1.0 : vec3(0.0);
@@ -244,7 +244,7 @@ void shadeSolidSurface() {
     int solidCascadeHint = 0;
 #ifndef BRUSH_PASS
     vec4 adjustedPosLightSpace = fragPosLightSpace;
-    if (ubo.shadowsEnabled) {
+    if (ubo.shadowsEnabled != 0u) {
         if (NdotL > 0.01) {
             float bias = max(0.002 * (1.0 - NdotL), 0.0005);
             shadow = ShadowCalculation(adjustedPosLightSpace, fragPosWorld, bias, solidCascadeHint);
@@ -260,8 +260,8 @@ void shadeSolidSurface() {
     // Compiled out without RT_ENABLED (rtLocalShadow stays 0 = CSM-only).
     float rtLocalShadow = 0.0;
 #if !defined(BRUSH_PASS) && defined(RT_ENABLED)
-    bool rtReady = rt.tlasReady;
-    if (rtReady && rt.localShadowsEnabled && shadow < 0.5 && NdotL > 0.01) {
+    bool rtReady = (rt.tlasReady != 0u);
+    if (rtReady && (rt.localShadowsEnabled != 0u) && shadow < 0.5 && NdotL > 0.01) {
         vec3 sunDir = -normalize(ubo.lightDirection);
         float shadowDist = max(rt.maxShadowDistance, 0.5);
         RT_PROF_BEGIN(rtProfShadow, RT_PROFILE_OP_CONTACT_SHADOW);
@@ -291,7 +291,7 @@ void shadeSolidSurface() {
     // when the surface faces away (NdotL == 0 keeps full shadow = 1.0).
     float cloudShadow = 0.0;
 #ifndef BRUSH_PASS
-    if (sky.cloudsEnabled && NdotL > 0.01) {
+    if ((sky.cloudsEnabled != 0u) && NdotL > 0.01) {
         cloudShadow = cloudShadowAt(fragPosWorld);
         totalShadow = 1.0 - (1.0 - totalShadow) * (1.0 - cloudShadow);
     }
@@ -350,7 +350,7 @@ void shadeSolidSurface() {
     // reflective surface, 1 = skipped by roughness/contrib gate, 2 = skipped
     // by checkerboard half-rate, 3 = inline ray traced.
     float rtTraceMask = 0.0;
-    if (!ubo.cubemapCapture) {
+    if (ubo.cubemapCapture == 0u) {
         float refStrength0 = materialNamed(materials[texIndices.x]).reflectionStrength;
         float refStrength1 = materialNamed(materials[texIndices.y]).reflectionStrength;
         float refStrength2 = materialNamed(materials[texIndices.z]).reflectionStrength;
@@ -381,7 +381,7 @@ void shadeSolidSurface() {
             // (which already contains the raymarched clouds). The inline
             // procedural fallback above does not, so add the cheap single-sample
             // cloud approximation here — both reflection paths then show clouds.
-            if (sky.cloudsEnabled) {
+            if (sky.cloudsEnabled != 0u) {
                 float reflDay = smoothstep(-0.2, 0.2, -ubo.lightElevation);
                 skyApprox += cloudApproxForReflection(normalize(reflDir),
                     normalize(-ubo.lightDirection), reflDay) * aoBlend;
@@ -415,10 +415,10 @@ void shadeSolidSurface() {
             // so they must not force reference (otherwise the counters could
             // never show the live behavior).
             bool refMode = debugModeForcesRtReference(rt.debugMode);
-            bool checkerOn = rt.checkerboardReflections && !refMode;
+            bool checkerOn = (rt.checkerboardReflections != 0u) && !refMode;
             // Checkerboard only claims pixels that survived every other gate
             // (else gated pixels would misreport as half-rate in the mask).
-            bool gatedOut = !((rt.tlasReady) && rt.reflectionsEnabled
+            bool gatedOut = !(((rt.tlasReady != 0u)) && (rt.reflectionsEnabled != 0u)
                 && rough <= roughThreshold && contrib >= contribMin);
             bool checkerSkip = checkerOn && !gatedOut
                 && ((int(gl_FragCoord.x) + int(gl_FragCoord.y)) & 1) == 1

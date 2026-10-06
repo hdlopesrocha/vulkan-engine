@@ -1,13 +1,13 @@
-#ifndef WIND_FIELD_GPU_GLSL
-#define WIND_FIELD_GPU_GLSL
+#ifndef WIND_FIELD_BLOCK_GLSL
+#define WIND_FIELD_BLOCK_GLSL
 
-// Exact GLSL mirror of vulkan/ubo/WindFieldUBO.hpp (std140 uniform block
+// Exact GLSL mirror of vulkan/ubo/WindField.hpp (std140 uniform block
 // member). Offsets must match the C++ side 1:1:
 //   ambientA @ 0, ambientB @ 16, tornadoes[i] @ 32 + i*64, counts @ 288,
 //   total size 304 bytes. EVERY component letter is documented here; keep in
-//   sync with WindFieldUBO.hpp.
+//   sync with WindField.hpp.
 
-struct TornadoGPU {
+struct WindTornado {
     vec4 a; // x = baseX (world XZ origin), y = baseZ, z = groundY (world Y of
             //     funnel base), w = radius (Rankine core radius, m)
     vec4 b; // x = height (funnel height, m), y = strength (max tangential m/s
@@ -19,16 +19,16 @@ struct TornadoGPU {
             //     (0 = static direction), w = swing frequency (rad/s)
 };
 
-struct WindFieldGPU {
+struct WindField {
     vec4 ambientA; // xy = wind dir XZ (normalized), z = strength (m/s),
                    // w = advection speed (gust time multiplier)
     vec4 ambientB; // x = baseFrequency, y = gustFrequency, z = gustStrength,
                    // w = unused
-    TornadoGPU tornadoes[4]; // WIND_FIELD_MAX_TORNADOES entries, 64 bytes each
+    WindTornado tornadoes[4]; // WIND_FIELD_MAX_TORNADOES entries, 64 bytes each
     vec4 counts; // x = activeCount, y = wind debug mode (0 off, 1 heat map,
                    //     2 velocity isosurface), z = isosurface speed (m/s), w = unused
 };
 
 #define WIND_FIELD_MAX_TORNADOES 4
 
-#endif // WIND_FIELD_GPU_GLSL
+#endif // WIND_FIELD_BLOCK_GLSL

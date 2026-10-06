@@ -922,10 +922,10 @@ void VegetationRenderer::init(VulkanApp* app) {
         VkBufferUsageFlags wfUsage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         if (app->useDescriptorBuffer())
             wfUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-        windFieldBuffer = app->createBuffer(sizeof(WindFieldUBO), wfUsage,
+        windFieldBuffer = app->createBuffer(sizeof(WindField), wfUsage,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         windFieldMapped = windFieldBuffer.map(0);
-        WindFieldUBO zero{};
+        WindField zero{};
         if (windFieldMapped) std::memcpy(windFieldMapped, &zero, sizeof(zero));
         // Fresh buffer invalidates the change-detection cache (same M11
         // reasoning as windParamsCacheValid above).
@@ -1541,7 +1541,7 @@ void VegetationRenderer::setWindTime(float timeSeconds) {
 void VegetationRenderer::updateWindFieldUBO() {
     if (!windFieldMapped) return;
 
-    WindFieldUBO packed{};
+    WindField packed{};
     // Ambient mirrors the vegetation wind sliders at pack time (no duplicate
     // sliders; same clamps as updateWindParamsUBO).
     glm::vec2 windDir = windSettings.direction;
@@ -1562,7 +1562,7 @@ void VegetationRenderer::updateWindFieldUBO() {
     uint32_t activeCount = 0;
     for (uint32_t i = 0; i < kWindFieldMaxTornadoes; ++i) {
         const TornadoSettings& s = windFieldSettings.tornadoes[i];
-        WindTornadoGPU& t = packed.tornadoes[i];
+        WindTornado& t = packed.tornadoes[i];
         t.a = glm::vec4(s.baseXZ.x, s.baseXZ.y, s.groundY, std::max(0.0f, s.radius));
         t.b = glm::vec4(std::max(0.0f, s.height), std::max(0.0f, s.strength),
             std::clamp(s.direction, -1.0f, 1.0f), s.phase);
@@ -1596,18 +1596,17 @@ void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
         const float invLen = 1.0f / std::sqrt(len2);
         windDir *= invLen;
     }
-    params.windDirAndStrength = glm::vec4(windDir.x, 0.0f, windDir.y, std::max(0.0f, windSettings.strength));
-    params.windNoise = glm::vec4(
-        std::max(0.00001f, windSettings.baseFrequency),
-        std::max(0.0f, windSettings.speed),
-        std::max(0.00001f, windSettings.gustFrequency),
-        std::max(0.0f, windSettings.gustStrength));
-    params.windShape = glm::vec4(
-        std::max(0.0f, windSettings.skewAmount),
-        std::clamp(windSettings.trunkStiffness, 0.0f, 1.0f),
-        std::max(0.001f, windSettings.noiseScale),
-        std::max(0.0f, windSettings.verticalFlutter));
-    params.windTurbulence = glm::vec4(std::max(0.0f, windSettings.turbulence), 0.0f, 0.0f, 0.0f);
+    params.windDirection = windDir;
+    params.windStrength = std::max(0.0f, windSettings.strength);
+    params.windBaseFrequency = std::max(0.00001f, windSettings.baseFrequency);
+    params.windSpeed = std::max(0.0f, windSettings.speed);
+    params.gustFrequency = std::max(0.00001f, windSettings.gustFrequency);
+    params.gustStrength = std::max(0.0f, windSettings.gustStrength);
+    params.skewAmount = std::max(0.0f, windSettings.skewAmount);
+    params.trunkStiffness = std::clamp(windSettings.trunkStiffness, 0.0f, 1.0f);
+    params.noiseScale = std::max(0.001f, windSettings.noiseScale);
+    params.verticalFlutter = std::max(0.0f, windSettings.verticalFlutter);
+    params.turbulence = std::max(0.0f, windSettings.turbulence);
     // Distance-density thinning starts AT the billboard->impostor hand-off,
     // never before it. Starting at fullDensityDistance (default 512 m) while
     // impostorDistance is larger thinned the billboards below the hand-off
@@ -1620,14 +1619,18 @@ void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
     const float safeMinFactor = std::max(minFactor, 0.0001f);
     const float falloff = (distanceDensitySettings.enabled && minFactor < 1.0f)
         ? (-std::log(safeMinFactor) / (farDistance - nearDistance)) : 0.0f;
-    params.densityParams = glm::vec4(distanceDensitySettings.enabled ? 1.0f : 0.0f, nearDistance, farDistance, minFactor);
-    params.cameraPosAndFalloff = glm::vec4(cameraPos, falloff);
+    params.densityEnabled = distanceDensitySettings.enabled ? 1u : 0u;
+    params.nearDistance = nearDistance;
+    params.farDistance = farDistance;
+    params.minFactor = minFactor;
+    params.cameraPosition = cameraPos;
+    params.densityFalloff = falloff;
 
     // M11 (perf report 22): skip the write when the payload is unchanged
     // (write-on-change). A frame's depth pass, color pass and up to three
     // cascade draws all provide the same camera/wind state, so 4--5 mapped
-    // memcpys collapse to one. Bitwise comparison is exact here: all fields
-    // are float vec4s with no padding, and the inputs are float settings.
+    // memcpys collapse to one. Bitwise comparison is exact here: the struct
+    // is a plain aggregate with no implicit padding (static_asserted).
     if (windParamsCacheValid && std::memcmp(&windParamsCache, &params, sizeof(params)) == 0)
         return;
     std::memcpy(windParamsMapped, &params, sizeof(params));

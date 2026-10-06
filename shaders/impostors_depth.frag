@@ -1,26 +1,17 @@
 #version 450
 
-#include "ubo/UniformObjectNamed.glsl"
+#include "ubo/UniformObject.glsl"
 
 #include "includes/locations.glsl"
 
 layout(location = VARY_UV) in vec3 inTexCoord;  // xy=UV, z=float(layerIdx)
 layout(location = VARY_TANGENTWS) flat in vec3 inInstanceOffset;
 
-layout(set = 0, binding = 0) uniform SolidParamsUBO {
-    mat4 viewProjection; // light VP
-    vec4 viewPos;
-} uboPacked;
-
-
-UniformObjectNamed uniformObjectNamed() {
-    UniformObjectNamed n;
-    n.viewProjection = uboPacked.viewProjection;
-    n.viewPosition = uboPacked.viewPos.xyz;
-    return n;
-}
-
-UniformObjectNamed ubo = uniformObjectNamed();
+// Canonical scene UBO (set=0 binding=0): the shared struct IS the block
+// layout — no packed/named-view split.
+layout(std140, set = 0, binding = 0) uniform SolidParamsBlock {
+    UniformObject ubo;
+};
 
 layout(set = 1, binding = 0) uniform sampler2DArray depthArray;
 

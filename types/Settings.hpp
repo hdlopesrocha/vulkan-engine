@@ -14,7 +14,7 @@ public:
     // Toggle rendering of the main solid scene (terrain/meshes)
     bool renderSolid = true;
     bool waterEnabled = true;
-    // Global gate for the per-material refraction/tint blur (WaterParams::
+    // Global gate for the per-material refraction/tint blur (WaterSettings::
     // enableBlur): the final-pass blur runs only when BOTH this and the
     // layer's own flag are on (same two-way pattern as rtRefractions /
     // rtWaterReflections with the per-layer reflection/refraction toggles).
@@ -102,7 +102,7 @@ public:
     float rtMaxShadowDist = 12.0f;    // local shadow ray Tmax (contact range only)
     float rtRoughnessThreshold = 0.6f;// roughness above this skips RT reflections (env approx)
     // NOTE: water look (IOR, Beer-Lambert absorption, thickness cap) lives in
-    // WaterParams per water layer (Water Settings widget). The RT params UBO
+    // WaterSettings per water layer (Water Settings widget). The RT params UBO
     // still carries copies for the layer-unaware async pipeline path, synced
     // from water layer 0 in SceneRenderer::updateRTParams — there is only one
     // place to tweak them.
