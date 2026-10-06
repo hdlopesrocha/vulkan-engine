@@ -476,12 +476,12 @@ sdf_gpu::SdfScene sdf_gpu::SdfScene::merge(const SdfScene& a, const SdfScene& b)
     return out;
 }
 
-sdf_gpu::SdfScene sdf_gpu::SdfScene::createSmokeBomb(const glm::vec3& center, float maxRadius, float seed) {
+sdf_gpu::SdfScene sdf_gpu::SdfScene::createSmokeBomb(const glm::vec3& center, float scale, float seed) {
     SdfScene scene;
     Definition d;
     d.prim = SdfPrimitiveType::Smoke;
     d.op = SdfOpType::Union;
-    d.params0 = glm::vec4(std::max(maxRadius, 1.0f), seed, 0.0f, 0.0f);
+    d.params0 = glm::vec4(std::max(scale, 1.0f), seed, 0.0f, 0.0f);
     d.params1 = glm::vec4(0.0f);
     d.deformFlags = 0u; // smoke warps its own noise domain; no flame deform
     d.smoothK = 0.5f;
@@ -503,9 +503,9 @@ sdf_gpu::SdfScene sdf_gpu::SdfScene::createSmokeBomb(const glm::vec3& center, fl
     m.riseSpeed = 1.5f;
     scene.addMaterial(m);
 
-    const float pad = std::max(maxRadius * 0.25f, 4.0f);
-    scene.addContainer(center - glm::vec3(pad + maxRadius),
-                       center + glm::vec3(pad + maxRadius),
+    const float pad = std::max(scale * 0.25f, 4.0f);
+    scene.addContainer(center - glm::vec3(pad + scale),
+                       center + glm::vec3(pad + scale),
                        glm::uvec3(4u, 4u, 4u));
     Instance in;
     in.defIdx = 0;

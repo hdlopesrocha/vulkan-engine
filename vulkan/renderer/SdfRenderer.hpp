@@ -130,7 +130,7 @@ public:
     void ensureSmokeScene(); // (re)build smokeScene_ from smoke params; caller holds sceneMutex, then refreshMerged()
     void setSmokeEnabled(bool e);
     void setSmokePosition(const glm::vec3& p);
-    void setSmokeRadius(float r);
+    void setSmokeScale(float r);
     void setSmokeGrowthDuration(float s);
     void setSmokeLoopDuration(float s);
     void setSmokeDissipation(float d);
@@ -147,6 +147,15 @@ public:
     void setSmokePressure(float radius, float strength, float waveSpeed, float waveFreq, float waveFalloff);
     void setSmokeTurbulence(float scale, float strength, float speed);
     void setSmokeShadow(int samples, float strength);
+    // Smoke tint (smoke SSBO smokeColor; streams, no scene rebuild).
+    void setSmokeColor(const glm::vec3& rgb);
+    // Shape rig (reference port): 0 = cloud (billowy sphere), 1 = sphere,
+    // 2 = cube. The cube's bounding sphere equals the smoke scale, so the
+    // CPU AABB and container stay valid for every shape and orientation.
+    // All three stream through the smoke SSBO; rotation is yaw/pitch/roll
+    // degrees applied about the smoke center in object space.
+    void setSmokeShape(int shape);
+    void setSmokeRotation(float yawDeg, float pitchDeg, float rollDeg);
     // Bullet defaults (stamped into slots on fire; slot 0 = auto-loop template).
     // radiusStart = launch radius, radiusEnd = radius at the head; loopDuration
     // is the per-bullet cycle (s). Matches the BulletGPU ABI.

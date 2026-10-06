@@ -72,7 +72,7 @@ public:
     // volumetric material, 1 static container, 1 instance. Growth, noise,
     // bullets and render tuning live in the smoke state buffer, so this
     // topology never needs rebuilding for widget tweaks.
-    static SdfScene createSmokeBomb(const glm::vec3& center, float maxRadius,
+    static SdfScene createSmokeBomb(const glm::vec3& center, float scale,
                                      float seed = 0.0f);
 
     // Default fire demo: 1 capsule flame definition, 1 volumetric fire

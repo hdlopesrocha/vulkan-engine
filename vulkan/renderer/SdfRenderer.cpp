@@ -70,6 +70,10 @@ void SdfRenderer::init(VulkanApp* app) {
         config_.bullet.turbScale, config_.bullet.turbStrength, config_.bullet.turbSpeed);
     smokeState_.tuning.render = glm::vec4(static_cast<float>(config_.smoke.shadowSamples),
         config_.smoke.shadowStrength, 0.0f, 0.0f);
+    smokeState_.tuning.smokeColor = glm::vec4(config_.smoke.smokeColor, 0.0f);
+    smokeState_.tuning.shapeParams = glm::vec4(static_cast<float>(config_.smoke.shape),
+        glm::radians(config_.smoke.yawDeg), glm::radians(config_.smoke.pitchDeg),
+        glm::radians(config_.smoke.rollDeg));
     smokeState_.tuning.gold0 = glm::vec4(config_.bullet.goldDeep, config_.bullet.goldSpecPower);
     smokeState_.tuning.gold1 = glm::vec4(config_.bullet.goldBright, config_.bullet.goldPatternScale);
     smokeState_.tuning.gold2 = glm::vec4(config_.bullet.goldSpecStrength,
@@ -288,7 +292,7 @@ void SdfRenderer::ensureSmokeScene() {
     // through the smoke SSBO, so widget tweaks below never come here —
     // only position/radius/base material reshape the scene.
     if (config_.smoke.enabled) {
-        smokeScene_ = sdf_gpu::SdfScene::createSmokeBomb(config_.smoke.pos, config_.smoke.radius, config_.smoke.seed);
+        smokeScene_ = sdf_gpu::SdfScene::createSmokeBomb(config_.smoke.pos, config_.smoke.scale, config_.smoke.seed);
         // Cover bullet flight paths: bullets fly horizontally (XZ) from
         // auto-crossing starts through and past the smoke. The static margin
         // fits the longest paths; cells outside the smoke AABB stay empty
@@ -654,11 +658,12 @@ void SdfRenderer::markSmokeSSBO() {
 void SdfRenderer::refreshAutoBulletLocked() {
     const float rad = glm::radians(config_.bullet.angleDeg);
     const glm::vec3 dir(std::cos(rad), 0.0f, std::sin(rad));
-    const glm::vec3 start = config_.smoke.pos - dir * (config_.smoke.radius + 60.0f);
+    const glm::vec3 start = config_.smoke.pos - dir * config_.smoke.scale;
     // BulletGPU ABI: a = (start, radiusStart), b = (velocity m/s, length),
-    // c = (radiusEnd, loopDuration, intensity, phase). Auto bullet: phase =
-    // growthDuration so it waits out the smoke bloom inside each loop; the
-    // auto-fire flag lives in c.z (0 = empty slot).
+    // c = (radiusEnd, loopDuration, intensity, phase). The round starts on
+    // the smoke surface (one radius out) and is PARKED there for the whole
+    // expansion; c.w = growth duration is the movement start within each
+    // loop. The auto-fire flag lives in c.z (0 = empty slot).
     BulletGPU& b = smokeState_.bullets[0];
     b.a = glm::vec4(start, config_.bullet.radius);
     b.b = glm::vec4(dir * config_.bullet.speed, config_.bullet.length);
@@ -713,11 +718,11 @@ void SdfRenderer::setSmokePosition(const glm::vec3& p) {
 }
 
 
-void SdfRenderer::setSmokeRadius(float r) {
+void SdfRenderer::setSmokeScale(float r) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     const float v = std::clamp(r, 8.0f, 1024.0f);
-    if (v == config_.smoke.radius) return;
-    config_.smoke.radius = v;
+    if (v == config_.smoke.scale) return;
+    config_.smoke.scale = v;
     ensureSmokeScene();
     refreshAutoBulletLocked();
     refreshMergedLocked();
@@ -726,8 +731,14 @@ void SdfRenderer::setSmokeRadius(float r) {
 
 void SdfRenderer::setSmokeGrowthDuration(float s) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    config_.smoke.growthDuration = std::clamp(s, 0.5f, 60.0f);
+    // Growth must fit inside the loop, or expansion never completes and the
+    // bullet-start invariant below cannot hold.
+    config_.smoke.growthDuration = std::clamp(std::min(s, config_.smoke.loopDuration), 0.5f, 60.0f);
     smokeState_.tuning.timing.x = config_.smoke.growthDuration;
+    // The auto round starts only after expansion: its phase IS the growth
+    // duration, so re-stamp it whenever growth changes (otherwise a tuned
+    // growth leaves the bullet crossing an unformed cloud).
+    refreshAutoBulletLocked();
     markSmokeSSBO();
 }
 
@@ -736,6 +747,12 @@ void SdfRenderer::setSmokeLoopDuration(float s) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     config_.smoke.loopDuration = std::clamp(s, 2.0f, 120.0f);
     smokeState_.tuning.timing.y = config_.smoke.loopDuration;
+    // Keep growth inside the shortened loop for the same invariant.
+    if (config_.smoke.growthDuration > config_.smoke.loopDuration) {
+        config_.smoke.growthDuration = config_.smoke.loopDuration;
+        smokeState_.tuning.timing.x = config_.smoke.growthDuration;
+        refreshAutoBulletLocked();
+    }
     markSmokeSSBO();
 }
 
@@ -814,7 +831,7 @@ void SdfRenderer::setSmokeAbsorption(float a) {
 
 void SdfRenderer::setSmokeScattering(float s) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    const float v = std::clamp(s, 0.0f, 2.0f);
+    const float v = std::clamp(s, 0.0f, 8.0f);
     if (v == config_.smoke.scattering) return;
     config_.smoke.scattering = v;
     ensureSmokeScene();
@@ -905,6 +922,38 @@ void SdfRenderer::setBulletGold(const glm::vec3& deep, const glm::vec3& bright,
 }
 
 
+void SdfRenderer::setSmokeColor(const glm::vec3& rgb) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.smokeColor = glm::clamp(rgb, glm::vec3(0.0f), glm::vec3(4.0f));
+    smokeState_.tuning.smokeColor = glm::vec4(config_.smoke.smokeColor, 0.0f);
+    markSmokeSSBO();
+}
+
+
+void SdfRenderer::setSmokeShape(int shape) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const int v = std::clamp(shape, 0, 2);
+    if (v == config_.smoke.shape) return;
+    config_.smoke.shape = v;
+    smokeState_.tuning.shapeParams.x = static_cast<float>(v);
+    // Shape only changes the shader-side envelope/density; the marched bounds
+    // (sphere of `radius`) and the container already cover sphere and cube.
+    markSmokeSSBO();
+}
+
+
+void SdfRenderer::setSmokeRotation(float yawDeg, float pitchDeg, float rollDeg) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.smoke.yawDeg = yawDeg;
+    config_.smoke.pitchDeg = pitchDeg;
+    config_.smoke.rollDeg = rollDeg;
+    smokeState_.tuning.shapeParams.y = glm::radians(yawDeg);
+    smokeState_.tuning.shapeParams.z = glm::radians(pitchDeg);
+    smokeState_.tuning.shapeParams.w = glm::radians(rollDeg);
+    markSmokeSSBO();
+}
+
+
 
 
 void SdfRenderer::setSmokeShadow(int samples, float strength) {
@@ -921,8 +970,8 @@ void SdfRenderer::setSmokeShadow(int samples, float strength) {
 void SdfRenderer::setBulletDefaults(float radiusStart, float radiusEnd, float speed,
                                     float length, float angleDeg, float loopDuration) {
     std::lock_guard<std::mutex> lock(sceneMutex);
-    config_.bullet.radius = std::clamp(radiusStart, 0.5f, 256.0f);
-    config_.bullet.finalRadius = std::clamp(radiusEnd, 0.5f, 256.0f);
+    config_.bullet.radius = std::clamp(radiusStart, 0.5f, 100.0f);
+    config_.bullet.finalRadius = std::clamp(radiusEnd, 0.5f, 100.0f);
     config_.bullet.speed = std::clamp(speed, 1.0f, 1000.0f);
     config_.bullet.length = std::clamp(length, 10.0f, 2000.0f);
     config_.bullet.angleDeg = angleDeg;
@@ -945,7 +994,7 @@ void SdfRenderer::fireBullet(float angleDeg) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     const float rad = glm::radians(angleDeg);
     const glm::vec3 dir(std::cos(rad), 0.0f, std::sin(rad));
-    const glm::vec3 start = config_.smoke.pos - dir * (config_.smoke.radius + 60.0f);
+    const glm::vec3 start = config_.smoke.pos - dir * config_.smoke.scale;
     // Single-flight: exactly one bullet at a time. Clear any previous manual
     // round (rapid firing can't stack tunnels) and stamp the single manual
     // slot; slot 0 stays the auto-loop template, suppressed below while the

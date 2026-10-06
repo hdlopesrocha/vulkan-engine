@@ -54,8 +54,7 @@
 #include "widgets/QueueTimelineWidget.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/WindWidget.hpp"
-#include "widgets/SdfWidget.hpp"
-#include "widgets/SmokeBulletWidget.hpp"
+#include "widgets/RaymarchWidget.hpp"
 #include "sdf/types/SdfScene.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
 #include "widgets/Brush3dWidget.hpp"
@@ -301,10 +300,10 @@ public:
     std::shared_ptr<VegetationAtlasEditor> vegetationAtlasEditor;
     std::shared_ptr<WindWidget> windWidget;
     // Generic SDF volumes UI (SDF fire is always on; anchors stream in
-    // from lava chunks, so no CPU scene mirror lives here).
-    std::shared_ptr<SdfWidget> sdfWidget;
-    // Procedural smoke bomb + bullets (second SDF volume consumer).
-    std::shared_ptr<SmokeBulletWidget> smokeBulletWidget;
+    // from lava chunks, so no CPU scene mirror lives here). The ray
+    // marching widget covers the generic traversal plus the fire and
+    // smoke shapes, which are just SDF primitives inside the renderer.
+    std::shared_ptr<RaymarchWidget> raymarchWidget;
     std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     std::shared_ptr<RadialMenu> radialMenu;
@@ -820,10 +819,9 @@ public:
         queueTimelineWidget = std::make_shared<QueueTimelineWidget>(this);
         queueTimelineWidget->updateWithApp(this);
         windWidget = std::make_shared<WindWidget>(sceneRenderer->vegetationRenderer.get());
-        sdfWidget = std::make_shared<SdfWidget>(
-            sceneRenderer->sdfRenderer.get());
-        smokeBulletWidget = std::make_shared<SmokeBulletWidget>(
-            sceneRenderer->sdfRenderer.get(), &camera);
+        raymarchWidget = std::make_shared<RaymarchWidget>(
+            sceneRenderer->sdfRenderer.get(), &camera,
+            sceneRenderer->vegetationRenderer.get());
         // Generic SDF fire volume (spec §19) is the fire path; flame
         // anchors stream in from brush-4 lava chunks as they publish (see
         // SceneRenderer::processPendingMeshes ingest hook).
@@ -857,8 +855,7 @@ public:
         widgetManager.addWidget(queueTimelineWidget);
         widgetManager.addWidget(vegetationAtlasEditor);
         widgetManager.addWidget(windWidget);
-        widgetManager.addWidget(sdfWidget);
-        widgetManager.addWidget(smokeBulletWidget);
+        widgetManager.addWidget(raymarchWidget);
         widgetManager.addWidget(mp3Widget);
         widgetManager.addWidget(billboardCreator);
         widgetManager.addWidget(impostorWidget);
@@ -2247,7 +2244,7 @@ public:
                 // the water pass uses) after the solid pass transitioned it
                 // to SHADER_READ_ONLY.
                 if (this->sceneRenderer->sdfRenderer) {
-                    float t = this->mainTime * (this->sdfWidget ? this->sdfWidget->timeScale : 1.0f);
+                    float t = this->mainTime * (this->raymarchWidget ? this->raymarchWidget->timeScale : 1.0f);
                     this->sceneRenderer->sdfRenderer->setFrame(frameIdx);
                     this->sceneRenderer->sdfRenderer->updateParams(t, frameIdx);
                     if (this->sceneRenderer->mainSolidRenderer) {
