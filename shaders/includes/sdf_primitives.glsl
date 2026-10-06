@@ -2,7 +2,7 @@
 // All primitives share one signature so the dispatcher can evaluate any
 // definition: float sdfX(vec3 p, vec4 p0, vec4 p1).
 //
-// Parameter packing (matches vulkan/types/Sdf*GPU.hpp + sdf/gpu/SdfScene.cpp):
+// Parameter packing (matches sdf/types/SdfDefinition.hpp + sdf/types/SdfScene.cpp):
 //   sphere:      p0.x = radius
 //   box:         p0.xyz = half extents
 //   rounded box: p0.xyz = half extents (outer), p1.x = corner radius
@@ -18,16 +18,9 @@
 #ifndef SDF_PRIMITIVES_GLSL
 #define SDF_PRIMITIVES_GLSL
 
-#define SDF_PRIM_SPHERE 0u
-#define SDF_PRIM_BOX 1u
-#define SDF_PRIM_ROUNDED_BOX 2u
-#define SDF_PRIM_CAPSULE 3u
-#define SDF_PRIM_CYLINDER 4u
-#define SDF_PRIM_CONE 5u
-#define SDF_PRIM_TORUS 6u
-#define SDF_PRIM_PLANE 7u
-#define SDF_PRIM_FLAME 8u
-#define SDF_PRIM_SMOKE 9u
+// Primitive ids live in types/SdfPrimitiveType.glsl (CPU twin
+// sdf/types/SdfPrimitiveType.hpp).
+#include "../types/SdfPrimitiveType.glsl"
 
 float sdSphere(vec3 p, vec4 p0, vec4 p1) {
     return length(p) - max(p0.x, 0.0);

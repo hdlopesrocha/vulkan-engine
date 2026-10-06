@@ -3,6 +3,7 @@
 // One flame anchor: world position + per-instance variation. Produced by
 // the lava collector (brush-4 triangles) or any other emitter; the SDF
 // scene itself stays independent of terrain/octree representations.
+// CPU-only input to createFireFromAnchors (becomes a Flame Instance).
 #include <glm/glm.hpp>
 
 namespace sdf_gpu {

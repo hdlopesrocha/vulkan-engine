@@ -1,13 +1,23 @@
 #ifndef SDF_PARAMS_U_B_O_GLSL
 #define SDF_PARAMS_U_B_O_GLSL
 
-// Extracted from shaders/includes/sdf_material.glsl (single-struct GLSL type).
-
+// Global raymarch / debug parameters (std140, 48 B). Canonical definition
+// shared with the CPU: vulkan/ubo/SdfParamsUBO.hpp — same names, fields and
+// offsets.
+// Offset table (verified against the C++ static_asserts):
+//   time 0, maxSteps 4, safety 8, minStep 12, maxStep 16, epsilon 20,
+//   earlyTerm 24, renderMode 28, debugFlags 32.
+// 36..48 is std140 padding (block size is a multiple of 16).
 struct SdfParamsUBO {
-    vec4 timeDebug;   // x=time, y=packedModeDebug(float bits of (mode<<16|flags)), z=maxSteps, w=safety
-    vec4 marchParams; // x=minStep, y=maxStep, z=epsilon, w=earlyTerm opacity threshold
-    vec4 fireColors0; // reserved gradient low (generic)
-    vec4 fireColors1; // reserved gradient high (generic)
+    float time;        // offset  0  global SDF time (s)
+    float maxSteps;    // offset  4  march step budget
+    float safety;      // offset  8  sphere-trace step safety
+    float minStep;     // offset 12
+    float maxStep;     // offset 16
+    float epsilon;     // offset 20  hit epsilon
+    float earlyTerm;   // offset 24  opacity early-out threshold
+    uint renderMode;   // offset 28  SdfRenderer::RenderMode
+    uint debugFlags;   // offset 32  debug bitfield
 };
 
 #endif // SDF_PARAMS_U_B_O_GLSL

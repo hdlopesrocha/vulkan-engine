@@ -1,7 +1,8 @@
 #pragma once
 
-// Deform flag bits encoded in SdfDefinitionGPU::meta.z
-// bit0=noise, bit1=twist, bit2=bend, bit3=taper, bit4=repeat
+// Deform flag bits encoded in SdfDefinition::meta.z
+// bit0=noise, bit1=twist, bit2=bend, bit3=taper, bit4=repeat.
+// GLSL twin: shaders/types/SdfDeformFlags.glsl (SDF_DEFORM_*).
 #include <cstdint>
 
 enum class SdfDeformFlags : uint32_t {

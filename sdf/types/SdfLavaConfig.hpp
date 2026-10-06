@@ -1,6 +1,8 @@
 #pragma once
 
 // Lava-anchored flame tuning (volumetric fire from brush-4 chunks).
+// CPU-only (no direct GPU twin): density/scale shape ingested anchors, the
+// flame-shape fields pack into the flame Definition and the Fire shape.
 struct SdfLavaConfig {
     float density = 1.0f;      // flames per m^2 of lava surface at ingest
     float scale = 32.0f;       // anchor scale multiplier

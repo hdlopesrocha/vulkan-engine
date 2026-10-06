@@ -1,7 +1,7 @@
 #ifndef SMOKE_SAMPLE_GLSL
 #define SMOKE_SAMPLE_GLSL
 
-// Extracted from shaders/includes/sdf_smoke.glsl (single-struct GLSL type).
+// Shader-internal value type (no CPU mirror; sdf_smoke.glsl output).
 
 // Full per-sample smoke evaluation (march path): base density at the
 // bullet-displaced position, tunnel/wake thinning, wave modulation,

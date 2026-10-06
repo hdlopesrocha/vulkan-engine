@@ -1,6 +1,6 @@
 #pragma once
 
-// CPU-side SDF renderer diagnostics (no Vulkan dependency).
+// CPU-side SDF renderer diagnostics (CPU-only, no GPU twin).
 #include <cstdint>
 
 struct SdfStats {

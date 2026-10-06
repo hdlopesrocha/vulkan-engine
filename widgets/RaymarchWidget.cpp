@@ -9,7 +9,7 @@
 #include "components/ColumnLayout.hpp"
 
 RaymarchWidget::RaymarchWidget(SdfRenderer* sdf, Camera* cam, VegetationRenderer* veg)
-    : Widget("Ray Marching"), sdfRenderer(sdf), camera(cam), vegetationRenderer(veg) {
+    : Widget("Ray Marching", u8"\uf124"), sdfRenderer(sdf), camera(cam), vegetationRenderer(veg) {
     isOpen = false;
 }
 
@@ -33,12 +33,89 @@ void RaymarchWidget::render() {
 
     // ---- Sections: each is self-contained (header + controls) so the
     // ---- column packer below can move it as a whole, exactly like the
-    // ---- Settings menu.
+    // ---- Settings menu. The estimated height seeds the packer's column
+    // ---- assignment on the first frame (the measured height replaces it).
+    // ---- The shape picked in the first section drives which sections are
+    // ---- built at all: Cloud shows the volumetric controls, Sphere/Cube are
+    // ---- opaque bodies so only their rig + generic/rendering sections apply.
     std::vector<std::function<void()>> sections;
-    sections.reserve(10);
+    std::vector<float> sectionEstH;
+    sections.reserve(12);
+    sectionEstH.reserve(12);
+    auto addSection = [&](float estH, std::function<void()> draw) {
+        sections.emplace_back(std::move(draw));
+        sectionEstH.push_back(estH);
+    };
+    const int shapeSel = sdfRenderer->config().smoke.shape;
+    const bool cloudShape = (shapeSel == 0);
+    const bool fireShape = (shapeSel == 3);
 
-    // 0: Raymarcher (generic traversal + shading controls).
-    sections.emplace_back([this]() {
+    // 0: Shape (generic SDF rig: cloud / sphere / cube + translation,
+    // scale, rotation). First section: it picks which SDF is rendered, so
+    // the sections below only build the inputs for that selection.
+    addSection(420.0f, [this]() {
+        ImGui::Text("Shape");
+        ImGuiComponents::ColSeparator();
+        ImGui::TextWrapped("Generic SDF shape (SdfModel: translation, scale, "
+                           "rotation). Cloud is a billowy volumetric body; "
+                           "Sphere/Cube are opaque solid bodies; Fire is one "
+                           "procedural flame rendered by the generic volume "
+                           "path.");
+        SdfEffectConfig& cfg = sdfRenderer->config();
+        {
+            int shape = cfg.smoke.shape;
+            const char* shapeItems[] = {"Cloud", "Sphere", "Cube", "Fire"};
+            ImGuiComponents::FieldLabel("Shape", "Cloud/Sphere/Cube/Fire - the generic SDF object this rig places.");
+            ImGui::SetNextItemWidth(kRaymarchColWidth);
+            ImGui::PushID("Shape##smoke");
+            if (ImGui::Combo("##v", &shape, shapeItems, 4)) {
+                sdfRenderer->setSmokeShape(shape);
+            }
+            ImGui::PopID();
+        }
+        ImGui::Spacing();
+        ImGuiComponents::FieldLabel("Translation", "Shape center in world units (rebuilds the scene).");
+        {
+            glm::vec3 pos = cfg.smoke.pos;
+            ImGui::SetNextItemWidth(kRaymarchColWidth);
+            ImGui::PushID("Translation##smoke");
+            if (ImGui::DragFloat3("##v", &pos[0], 1.0f)) {
+                sdfRenderer->setSmokePosition(pos);
+            }
+            ImGui::PopID();
+            ImGuiComponents::TooltipOnHover("Shape center in world units (rebuilds the scene).");
+        }
+        if (camera && ImGui::Button("Go to shape (center camera)")) {
+            camera->translate(cfg.smoke.pos - camera->getPosition());
+        }
+        ImGuiComponents::TooltipOnHover("Teleport the camera to the shape center.");
+        ImGui::Spacing();
+        float v = cfg.smoke.scale;
+        if (ImGuiComponents::SliderFloatField("Scale", &v, 8.0f, 1024.0f, "%.0f",
+                "Master scale in meters: cloud growth, sphere radius, cube bounding radius, fire instance scale (rebuilds the scene).",
+                ImGuiSliderFlags_Logarithmic)) {
+            sdfRenderer->setSmokeScale(v);
+        }
+        ImGui::Spacing();
+        {
+            float yaw = cfg.smoke.yawDeg;
+            float pitch = cfg.smoke.pitchDeg;
+            float roll = cfg.smoke.rollDeg;
+            bool rotChanged = false;
+            rotChanged |= ImGuiComponents::SliderFloatField("Yaw", &yaw, -180.0f, 180.0f, "%.0f",
+                "Rotation about Y, degrees.");
+            rotChanged |= ImGuiComponents::SliderFloatField("Pitch", &pitch, -180.0f, 180.0f, "%.0f",
+                "Rotation about X, degrees.");
+            rotChanged |= ImGuiComponents::SliderFloatField("Roll", &roll, -180.0f, 180.0f, "%.0f",
+                "Rotation about Z, degrees.");
+            if (rotChanged) {
+                sdfRenderer->setSmokeRotation(yaw, pitch, roll);
+            }
+        }
+    });
+
+    // 1: Raymarcher (generic traversal + shading controls).
+    addSection(300.0f, [this]() {
         ImGui::Text("Raymarcher");
         ImGuiComponents::ColSeparator();
         ImGui::TextWrapped("Generic GPU SDF raymarcher (surface/volume/emissive/transparent). "
@@ -70,11 +147,13 @@ void RaymarchWidget::render() {
         sdfRenderer->setDebugFlags(flags);
     });
 
-    // 1: Fire shape (lava-anchored volumetric flames).
-    sections.emplace_back([this]() {
+    // 2: Fire shape (lava-anchored volumetric flames).
+    addSection(480.0f, [this]() {
         ImGui::Text("Fire");
         ImGuiComponents::ColSeparator();
-        ImGui::TextWrapped("Volumetric flames anchored to brush-4 lava terrain as chunks stream in.");
+        ImGui::TextWrapped("Volumetric flames: the generic Fire shape (one "
+                           "flame on the volume path) and the lava-anchored "
+                           "flames streamed from brush-4 terrain.");
         SdfEffectConfig& cfg = sdfRenderer->config();
         float v = 0.0f;
         // Display-only conversion: the shared value is flames/m².
@@ -128,70 +207,9 @@ void RaymarchWidget::render() {
             st.containerCount, st.gridCellCount, st.lastDrawInstances);
     });
 
-    // 1: Shape (generic rig: cloud / sphere / cube + translation, scale,
-    // rotation).
-    sections.emplace_back([this]() {
-        ImGui::Text("Shape");
-        ImGuiComponents::ColSeparator();
-        ImGui::TextWrapped("Master shape of the smoke volume: Cloud billows, "
-                           "Sphere/Cube are dense bodies. The cube's bounding "
-                           "sphere equals the scale, and rotation turns the "
-                           "envelope and the billow domain together.");
-        SdfEffectConfig& cfg = sdfRenderer->config();
-        {
-            int shape = cfg.smoke.shape;
-            const char* shapeItems[] = {"Cloud", "Sphere", "Cube"};
-            ImGuiComponents::FieldLabel("Shape", "Cloud = billowy volume; Sphere/Cube = dense bodies.");
-            ImGui::SetNextItemWidth(kRaymarchColWidth);
-            ImGui::PushID("Shape##smoke");
-            if (ImGui::Combo("##v", &shape, shapeItems, 3)) {
-                sdfRenderer->setSmokeShape(shape);
-            }
-            ImGui::PopID();
-        }
-        ImGui::Spacing();
-        ImGuiComponents::FieldLabel("Translation", "Shape center in world units (rebuilds the scene).");
-        {
-            glm::vec3 pos = cfg.smoke.pos;
-            ImGui::SetNextItemWidth(kRaymarchColWidth);
-            ImGui::PushID("Translation##smoke");
-            if (ImGui::DragFloat3("##v", &pos[0], 1.0f)) {
-                sdfRenderer->setSmokePosition(pos);
-            }
-            ImGui::PopID();
-            ImGuiComponents::TooltipOnHover("Shape center in world units (rebuilds the scene).");
-        }
-        if (camera && ImGui::Button("Go to shape (center camera)")) {
-            camera->translate(cfg.smoke.pos - camera->getPosition());
-        }
-        ImGuiComponents::TooltipOnHover("Teleport the camera to the shape center.");
-        ImGui::Spacing();
-        float v = cfg.smoke.scale;
-        if (ImGuiComponents::SliderFloatField("Scale", &v, 8.0f, 1024.0f, "%.0f",
-                "Master scale in meters: smoke growth size, sphere radius, cube bounding radius (rebuilds the scene).",
-                ImGuiSliderFlags_Logarithmic)) {
-            sdfRenderer->setSmokeScale(v);
-        }
-        ImGui::Spacing();
-        {
-            float yaw = cfg.smoke.yawDeg;
-            float pitch = cfg.smoke.pitchDeg;
-            float roll = cfg.smoke.rollDeg;
-            bool rotChanged = false;
-            rotChanged |= ImGuiComponents::SliderFloatField("Yaw", &yaw, -180.0f, 180.0f, "%.0f",
-                "Rotation about Y, degrees.");
-            rotChanged |= ImGuiComponents::SliderFloatField("Pitch", &pitch, -180.0f, 180.0f, "%.0f",
-                "Rotation about X, degrees.");
-            rotChanged |= ImGuiComponents::SliderFloatField("Roll", &roll, -180.0f, 180.0f, "%.0f",
-                "Rotation about Z, degrees.");
-            if (rotChanged) {
-                sdfRenderer->setSmokeRotation(yaw, pitch, roll);
-            }
-        }
-    });
-
-    // 2: Smoke shape (procedural smoke-grenade sphere + bullet interaction).
-    sections.emplace_back([this]() {
+    // 3: Smoke shape (cloud only: procedural smoke-grenade billow + bullet
+    // interaction; Sphere/Cube use the opaque surface path instead).
+    if (cloudShape) addSection(520.0f, [this]() {
         ImGui::Text("Smoke");
         ImGuiComponents::ColSeparator();
         ImGui::TextWrapped("Procedural smoke grenade: growing sphere, layered "
@@ -263,8 +281,9 @@ void RaymarchWidget::render() {
         }
     });
 
-    // 3: Bullet.
-    sections.emplace_back([this]() {
+    // 4: Bullet (the projectile itself; its tunnel carve only feeds the
+    // cloud volume, so a solid/fire shape hides it).
+    if (!fireShape) addSection(430.0f, [this]() {
         ImGui::Text("Bullet");
         ImGuiComponents::ColSeparator();
         SdfEffectConfig& cfg = sdfRenderer->config();
@@ -325,44 +344,45 @@ void RaymarchWidget::render() {
         ImGui::Text("bullets in flight: %u", sdfRenderer->bulletSlotsUsed());
     });
 
-    // 4: Pressure.
-    sections.emplace_back([this]() {
-        ImGui::Text("Pressure");
+    // 5: Shockwave (cloud only: reference air compression + compression
+    // turbulence; the density responses live in the smoke shader).
+    if (cloudShape) addSection(280.0f, [this]() {
+        ImGui::Text("Shockwave");
         ImGuiComponents::ColSeparator();
+        ImGui::TextWrapped("Air compression around the bullet: a denser shell on "
+                           "the tunnel wall, crushed air ahead of the nose and a "
+                           "rarefied core, plus loop-locked ripple turbulence.");
         SdfEffectConfig& cfg = sdfRenderer->config();
         float a = cfg.bullet.pressureRadius;
         float b = cfg.bullet.pressureStrength;
-        float c = cfg.bullet.pressureWaveSpeed;
-        float d = cfg.bullet.pressureWaveFreq;
-        float e = cfg.bullet.pressureWaveFalloff;
+        float rAmp = cfg.bullet.rippleAmp;
+        float rFreq = cfg.bullet.rippleFreq;
         bool changed = false;
         {
-            ImGuiComponents::FieldLabel("Radius", "Pressure field radius (m).");
+            ImGuiComponents::FieldLabel("Radius", "Forward push radius (m).");
             ImGui::SetNextItemWidth(kRaymarchColWidth);
             ImGui::PushID("Radius##pressure");
             if (ImGui::SliderFloat("##v", &a, 0.5f, 150.0f, "%.1f")) changed = true;
             ImGui::PopID();
         }
         {
-            ImGuiComponents::FieldLabel("Strength", "Pressure displacement strength.");
+            ImGuiComponents::FieldLabel("Strength", "Shock push (value / 4 = reference uPush, default 6 -> 1.5).");
             ImGui::SetNextItemWidth(kRaymarchColWidth);
             ImGui::PushID("Strength##pressure");
             if (ImGui::SliderFloat("##v", &b, 0.0f, 30.0f, "%.1f")) changed = true;
             ImGui::PopID();
         }
-        changed |= ImGuiComponents::SliderFloatField("Wave speed", &c, 0.0f, 300.0f, "%.0f",
-            "Shock wave speed (m/s).");
-        changed |= ImGuiComponents::SliderFloatField("Wave freq", &d, 0.01f, 3.0f, "%.2f",
-            "Shock wave frequency (1/m).");
-        changed |= ImGuiComponents::SliderFloatField("Wave falloff", &e, 0.001f, 1.0f, "%.3f",
-            "Shock wave falloff (1/m).");
+        changed |= ImGuiComponents::SliderFloatField("Ripple amp", &rAmp, 0.0f, 0.15f, "%.3f",
+            "Compression-turbulence ripple amplitude on the tunnel wall (reference 0.05).");
+        changed |= ImGuiComponents::SliderFloatField("Ripple freq", &rFreq, 2.0f, 20.0f, "%.1f",
+            "Ripple bands per local bore radius (reference 9).");
         if (changed) {
-            sdfRenderer->setSmokePressure(a, b, c, d, e);
+            sdfRenderer->setSmokeShock(a, b, rAmp, rFreq);
         }
     });
 
-    // 5: Wake.
-    sections.emplace_back([this]() {
+    // 6: Wake (cloud only: bullet wake metric + tunnel refill).
+    if (cloudShape) addSection(300.0f, [this]() {
         ImGui::Text("Wake");
         ImGuiComponents::ColSeparator();
         SdfEffectConfig& cfg = sdfRenderer->config();
@@ -403,8 +423,8 @@ void RaymarchWidget::render() {
         }
     });
 
-    // 6: Turbulence.
-    sections.emplace_back([this]() {
+    // 7: Turbulence (cloud only: cone-wall instability + SVF).
+    if (cloudShape) addSection(200.0f, [this]() {
         ImGui::Text("Turbulence");
         ImGuiComponents::ColSeparator();
         SdfEffectConfig& cfg = sdfRenderer->config();
@@ -428,8 +448,8 @@ void RaymarchWidget::render() {
         }
     });
 
-    // 7: Gold tracer.
-    sections.emplace_back([this]() {
+    // 8: Gold tracer (bullet material; bullets feed the cloud only).
+    if (!fireShape) addSection(430.0f, [this]() {
         ImGui::Text("Gold");
         ImGuiComponents::ColSeparator();
         SdfEffectConfig& cfg = sdfRenderer->config();
@@ -463,8 +483,8 @@ void RaymarchWidget::render() {
         }
     });
 
-    // 8: Rendering.
-    sections.emplace_back([this]() {
+    // 9: Rendering (cloud only: volumetric shading + smoke debug views).
+    if (cloudShape) addSection(330.0f, [this]() {
         ImGui::Text("Rendering");
         ImGuiComponents::ColSeparator();
         SdfEffectConfig& cfg = sdfRenderer->config();
@@ -493,6 +513,11 @@ void RaymarchWidget::render() {
                 "Sun scatter brightness (default 4 = reference).")) {
             sdfRenderer->setSmokeScattering(sc);
         }
+        float hs = cfg.smoke.heatStrength;
+        if (ImGuiComponents::SliderFloatField("Heat strength", &hs, 0.0f, 3.0f, "%.2f",
+                "Hot-air emission multiplier (reference uHeatStrength; 0 = no glow, density churn remains).")) {
+            sdfRenderer->setSmokeHeatStrength(hs);
+        }
         glm::vec3 scc = cfg.smoke.smokeColor;
         if (ImGuiComponents::ColorEdit3Field("Smoke color", &scc[0],
                 "Lit albedo tint of the smoke (shadowed end scales with it).")) {
@@ -513,9 +538,9 @@ void RaymarchWidget::render() {
         }
     });
 
-    // 9: Wind debug (visualizes the shared wind field; simulated in the
+    // 10: Wind debug (visualizes the shared wind field; simulated in the
     // wind widget, rendered here).
-    sections.emplace_back([this]() {
+    addSection(200.0f, [this]() {
         ImGui::Text("Wind Debug");
         ImGuiComponents::ColSeparator();
         if (!vegetationRenderer) {
@@ -548,18 +573,13 @@ void RaymarchWidget::render() {
     const int n = static_cast<int>(sections.size());
     static std::vector<float> cachedH;
     if (static_cast<int>(cachedH.size()) != n) {
+        // The visible section set changes with the selected shape: reseed from
+        // the per-section estimates so the first frame of a new set packs
+        // well; the measured heights refine it from there.
         cachedH.assign(n, 170.0f);
-        cachedH[0] = 300.0f; // Raymarcher
-        cachedH[1] = 480.0f; // Fire
-        cachedH[2] = 420.0f; // Shape (translation, scale, rotation)
-        cachedH[3] = 520.0f; // Smoke
-        cachedH[4] = 430.0f; // Bullet
-        cachedH[5] = 280.0f; // Pressure
-        cachedH[6] = 300.0f; // Wake
-        cachedH[7] = 200.0f; // Turbulence
-        cachedH[8] = 430.0f; // Gold
-        cachedH[9] = 330.0f; // Rendering
-        cachedH[10] = 200.0f; // Wind Debug
+        for (int i = 0; i < n && i < static_cast<int>(sectionEstH.size()); ++i) {
+            cachedH[i] = sectionEstH[i];
+        }
     }
 
     float availW = ImGui::GetContentRegionAvail().x;

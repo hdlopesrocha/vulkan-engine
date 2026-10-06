@@ -18,14 +18,14 @@
 // 3 frames are in flight (frame N+1 rewrite vs frame N draw), which is why
 // triple-buffering is used instead.
 struct SdfFrameSlot {
-    Buffer instance;    // SdfGpuInstance per container (set=1 binding 0)
-    Buffer definition;  // SdfGpuDefinition (binding 1)
-    Buffer material;    // SdfGpuMaterial (binding 2)
-    Buffer container;   // SdfGpuContainer (binding 3)
-    Buffer gridCell;    // SdfGpuGridCell (binding 4)
+    Buffer instance;    // SdfInstance per container (set=1 binding 0)
+    Buffer definition;  // SdfDefinition (binding 1)
+    Buffer material;    // SdfMaterial (binding 2)
+    Buffer container;   // SdfContainer (binding 3)
+    Buffer gridCell;    // SdfGridCell (binding 4)
     Buffer gridIndex;   // uint32_t (binding 5)
     Buffer params;      // SdfParamsUBO uniform (binding 6)
-    Buffer smoke;       // SmokeFragBulletGPU: tuning + bullets (binding 8)
+    Buffer smoke;       // SmokeFragBullet: tuning + bullets (binding 8)
     uint32_t instanceCap = 0;
     uint32_t definitionCap = 0;
     uint32_t materialCap = 0;

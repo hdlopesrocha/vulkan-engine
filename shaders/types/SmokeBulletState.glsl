@@ -1,7 +1,7 @@
 #ifndef SMOKE_BULLET_STATE_GLSL
 #define SMOKE_BULLET_STATE_GLSL
 
-// Extracted from shaders/includes/sdf_smoke.glsl (single-struct GLSL type).
+// Shader-internal value type (no CPU mirror; sdf_smoke.glsl output).
 
 // Per-bullet runtime state. Motion is a pure GPU function of global time:
 // every bullet loops with period c.y, offset by phase c.w, so several

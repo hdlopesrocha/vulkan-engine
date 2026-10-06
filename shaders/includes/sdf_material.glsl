@@ -1,24 +1,16 @@
-// Generic SDF GPU layouts — MUST match vulkan/types/Sdf*GPU.hpp field order.
-// std430, all vec4/uvec4 aligned. CPU structs:
-//   SdfDefinitionGPU { vec4 params0; vec4 params1; uvec4 meta; } // 48B, meta=(prim,op,deformFlags,bitcast(smoothK))
-//   SdfInstanceGPU { vec4 posScale; vec4 rotSeed; vec4 sizeParams; uvec4 indices; vec4 boundsMin; vec4 boundsMax; } // 96B
-//   SdfMaterialGPU { vec4 baseColor; vec4 surfaceParams; vec4 emission; vec4 volumeParams; vec4 extra; } // 80B
-//     surfaceParams=(roughness,metallic,opacity,modeFloat), emission=(rgb,intensity),
-//     volumeParams=(density,absorption,scattering,tempScale), extra=(smoothK,noiseScale,turbulence,riseSpeed)
-//   SdfContainerGPU { vec4 boundsMin; vec4 boundsMax; uvec4 gridInfo; uvec4 gridOffset; } // 64B
-//     gridInfo=(resX,resY,resZ,indexStart), gridOffset=(cellStart,indexStart,instanceCount,flags)
-//   SdfGridCellGPU { uint offset; uint count; uint pad0; uint pad1; } // 16B
-//   SdfParamsUBO { vec4 timeDebug; vec4 marchParams; vec4 fireColors0; vec4 fireColors1; } // 64B
-//     timeDebug=(time,packedModeDebug,maxSteps,safety), marchParams=(minStep,maxStep,epsilon,earlyTerm)
-//
-// Descriptor layout (declared in sdf.vert/sdf.frag, NOT here):
-//   set=0 binding=0 SolidParamsUBO (camera), set=1 bindings 0..7 as in SdfRenderer.
+// Generic SDF material + volume shading functions. Type definitions live in
+// shaders/types/*.glsl (CPU twins in vulkan/types/*GPU.hpp); descriptor
+// layout is declared by the shaders themselves (sdf.vert/sdf.frag):
+//   set=0 binding=0 SolidParamsBlock (UniformObject/camera), set=1 bindings 0..8 as in
+//   SdfRenderer (0..5 scene SSBOs, 6 params UBO, 7 scene depth, 8 smoke
+//   state block).
 
-#ifndef SDF_MATERIAL_GLSL
-#define SDF_MATERIAL_GLSL
+#ifndef SDF_MATERIAL_INCLUDE_GLSL
+#define SDF_MATERIAL_INCLUDE_GLSL
 
-#include "../ubo/SdfDefinitionGPU.glsl"
-#include "../ubo/SdfMaterialGPU.glsl"
+#include "../types/SdfDefinition.glsl"
+#include "../types/SdfMaterial.glsl"
+#include "../types/SdfMaterialType.glsl"
 
 
 
@@ -26,8 +18,8 @@
 
 
 
-float sdfUnpackSmoothK(SdfDefinitionGPU def) {
-    return uintBitsToFloat(def.meta.w);
+float sdfUnpackSmoothK(SdfDefinition def) {
+    return def.smoothK; // canonical float field (no bit-cast packing)
 }
 
 // Black-body-ish gradient: dark red -> red -> orange -> yellow -> white.
@@ -49,17 +41,17 @@ vec3 sdfTemperatureColor(float t) {
 // the field (smoothstep falloff of -sdfDist), modulated by noise and height;
 // emission follows the temperature gradient scaled by material emission.
 vec4 sdfEvaluateVolume(float sdfDist, float height01, float noiseVal,
-                       SdfMaterialGPU mat, float temperature) {
+                       SdfMaterial mat, float temperature) {
     float h = clamp(height01, 0.0, 1.0);
     float n = clamp(noiseVal, 0.0, 1.0);
-    float t = clamp(temperature * max(mat.volumeParams.w, 0.0), 0.0, 1.0);
+    float t = clamp(temperature * max(mat.tempScale, 0.0), 0.0, 1.0);
     float soft = 0.15;
     float body = 1.0 - smoothstep(-soft, soft, sdfDist);
     float topFade = 1.0 - smoothstep(0.7, 1.0, h);
-    float density = body * max(mat.volumeParams.x, 0.0) * (0.45 + 0.55 * n) * topFade;
-    vec3 emission = sdfTemperatureColor(t) * mat.emission.rgb
-                  * max(mat.emission.a, 0.0) * body * (0.5 + 0.5 * n);
+    float density = body * max(mat.density, 0.0) * (0.45 + 0.55 * n) * topFade;
+    vec3 emission = sdfTemperatureColor(t) * mat.emission
+                  * max(mat.emissionIntensity, 0.0) * body * (0.5 + 0.5 * n);
     return vec4(emission, density);
 }
 
-#endif // SDF_MATERIAL_GLSL
+#endif // SDF_MATERIAL_INCLUDE_GLSL

@@ -1,7 +1,7 @@
 #ifndef SMOKE_BULLET_F_X_GLSL
 #define SMOKE_BULLET_F_X_GLSL
 
-// Extracted from shaders/includes/sdf_smoke.glsl (single-struct GLSL type).
+// Shader-internal value type (no CPU mirror; sdf_smoke.glsl output).
 
 // Bullet interaction field at p (geometry only, no noise — cheap): tunnel
 // thinning [0,1], domain displacement, shock-wave value, wake and
@@ -11,10 +11,12 @@
 struct SmokeBulletFX {
     float thin;      // multiplicative density removal (tunnel core)
     vec3 displace;   // noise-domain displacement (pressure + wake + swirl)
-    float wave;      // shock-wave modulation value
+    float wave;      // signed compression ripple (reference cnoise field)
     float wake;      // wake influence (debug + thinning)
     float turb;      // turbulence magnitude (debug)
-    float compress;  // air compression [0,~1]: precursor crush + rim pile
+    float compress;  // signed air compression (reference): shell + stagnation
+                     // - core rarefaction, +1.2/-0.9 peak range
+    float heat;      // reference heat: wall band + lingering wake trail [0,1]
 };
 
 #endif // SMOKE_BULLET_F_X_GLSL

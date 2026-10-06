@@ -4,12 +4,8 @@
 #ifndef SDF_OPS_GLSL
 #define SDF_OPS_GLSL
 
-#define SDF_OP_UNION 0u
-#define SDF_OP_INTERSECTION 1u
-#define SDF_OP_SUBTRACTION 2u
-#define SDF_OP_SMOOTH_UNION 3u
-#define SDF_OP_SMOOTH_INTERSECTION 4u
-#define SDF_OP_SMOOTH_SUBTRACTION 5u
+// Operator ids live in types/SdfOpType.glsl (CPU twin sdf/types/SdfOpType.hpp).
+#include "../types/SdfOpType.glsl"
 
 float opUnion(float d1, float d2) {
     return min(d1, d2);
@@ -26,7 +22,7 @@ float opSubtraction(float d1, float d2) {
 
 // Polynomial smooth-min family (IQ). k is clamped to [0, 2]; k <= 0 falls
 // back to the hard op. Callers pass the material smooth factor
-// (SdfMaterialGPU.extra.x, clamped here again for safety).
+// (SdfDefinition.smoothK, clamped here again for safety).
 float opSmoothUnion(float d1, float d2, float k) {
     float kk = clamp(k, 0.0, 2.0);
     if (kk <= 1e-6) {
@@ -54,7 +50,7 @@ float opSmoothSubtraction(float d1, float d2, float k) {
     return mix(d2, -d1, h) + kk * h * (1.0 - h);
 }
 
-// Combines two fields with the op selector from SdfDefinitionGPU.op.
+// Combines two fields with the op selector from SdfDefinition.op.
 float sdfCombine(float a, float b, uint op, float k) {
     if (op == SDF_OP_INTERSECTION) {
         return opIntersection(a, b);
@@ -100,7 +96,8 @@ vec3 opMirror(vec3 p, vec3 n, float offset) {
 }
 
 // Rotation from XYZ euler angles (radians). Order: R = Rx * Ry * Rz, i.e.
-// intrinsic XYZ. Shared by the forward and inverse point transforms.
+// intrinsic XYZ. Shared by the generic SdfModel (sdf_model.glsl) so every
+// GPU SDF uses one rotation convention.
 mat3 sdfEulerMat(vec3 euler) {
     float cx = cos(euler.x);
     float sx = sin(euler.x);
@@ -118,20 +115,6 @@ mat3 sdfEulerMat(vec3 euler) {
                   -sz, cz, 0.0,
                   0.0, 0.0, 1.0);
     return rx * ry * rz;
-}
-
-// Forward rigid transform: local -> world (scale, then rotate, then offset).
-vec3 sdfTransformPoint(vec3 p, vec3 pos, vec3 euler, float scale) {
-    return sdfEulerMat(euler) * (p * scale) + pos;
-}
-
-// Inverse rigid transform: world -> primitive-local space. Inverts
-// translate/rotate-euler-XYZ/uniform-scale, i.e. q = R^T * (p - pos) / scale.
-// Near-zero scales are clamped to keep the reciprocal finite.
-vec3 sdfTransformInverse(vec3 p, vec3 pos, vec3 euler, float scale) {
-    float s = max(abs(scale), 1e-6);
-    mat3 r = sdfEulerMat(euler);
-    return transpose(r) * ((p - pos) / s);
 }
 
 #endif // SDF_OPS_GLSL

@@ -3,7 +3,8 @@
 // Bullet defaults stamped into SSBO slots on fire (slot 0 = auto-loop
 // template rebuilt live from these every loop).
 //
-// ABI matches vulkan/types/BulletGPU.hpp: one BulletGPU slot carries
+// ABI matches sdf/types/Bullet.hpp (GLSL twin:
+// shaders/types/Bullet.glsl): one Bullet slot carries
 //   a = (path start xyz, radiusStart)
 //   b = (velocity xyz m/s, path length)
 //   c = (radiusEnd, loopDuration s, intensity 0=empty, phase s)
@@ -38,11 +39,12 @@ struct SdfBulletConfig {
     float wakeExpansion = 0.15f; // wake entrainment coeff: radial outflow = coeff * bullet speed
     float wakeLength = 120.0f;    // m (widget range 1-500; 1024 m churned the whole sky)
     float wakeDissipation = 1.5f; // 1/s, doubles as tunnel refill rate
-    float pressureRadius = 64.0f; // m
-    float pressureStrength = 6.0f;
-    float pressureWaveSpeed = 60.0f;  // m/s
-    float pressureWaveFreq = 0.35f;   // 1/m
-    float pressureWaveFalloff = 0.05f;// 1/m
+    float pressureRadius = 64.0f; // m (forward push gaussian width)
+    float pressureStrength = 6.0f; // /4 = reference shock push (default 1.5)
+    // Compression turbulence (reference ripple/"wave"): loop-locked Perlin
+    // ripple on the tunnel wall, in units of the local bore radius.
+    float rippleAmp = 0.05f;
+    float rippleFreq = 9.0f;
     float turbScale = 0.08f;         // 1/m
     float turbStrength = 2.5f;
     float turbSpeed = 1.5f;          // 1/s

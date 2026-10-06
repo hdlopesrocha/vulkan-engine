@@ -19,22 +19,23 @@ class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 
 // ─── Required scene / GPU types ────────────────────────────────────────────
 // -I. (repo root) is on the build include path, so the root-relative forms
-// below resolve. GPU-wire structs live in vulkan/types/ (one file per struct).
+// below resolve. The canonical GPU-layout structs live in sdf/types/ (one
+// file per struct); each has a GLSL twin in shaders/types/ (same base name,
+// identical layout). No CPU->GPU conversion step exists: the scene stores
+// these structs directly and the upload memcpys them verbatim.
 #include "sdf/types/SdfScene.hpp"
-#include "vulkan/types/SdfDefinitionGPU.hpp"
-#include "vulkan/types/SdfInstanceGPU.hpp"
-#include "vulkan/types/SdfMaterialGPU.hpp"
-#include "vulkan/types/SdfContainerGPU.hpp"
-#include "vulkan/types/SdfGridCellGPU.hpp"
+#include "sdf/types/SdfDefinition.hpp"
+#include "sdf/types/SdfInstance.hpp"
+#include "sdf/types/SdfMaterial.hpp"
+#include "sdf/types/SdfContainer.hpp"
+#include "sdf/types/SdfGridCell.hpp"
 #include "vulkan/ubo/SdfParamsUBO.hpp"
-#include "vulkan/types/SmokeFragBulletGPU.hpp"
+#include "sdf/types/SmokeFragBullet.hpp"
 
-// ─── GPU types (canonical std430 contract, one file per struct in types/) ──
-// SdfDefinitionGPU / SdfInstanceGPU / SdfMaterialGPU / SdfContainerGPU /
-// SdfGridCellGPU / SdfParamsUBO / SmokeFragBulletGPU define the contract consumed by
-// shaders/sdf.vert(.frag) at set=1 bindings 0..8.
-// The CPU scene (sdf_gpu::SdfScene) flattens into exactly these vectors via
-// FlattenSdfScene (see vulkan/renderer/SdfSceneFlatten.hpp).
+// ─── GPU types (canonical std430 contract, one file per struct) ────────────
+// SdfDefinition / SdfInstance / SdfMaterial / SdfContainer /
+// SdfGridCell / SdfParamsUBO / SmokeFragBullet define the contract
+// consumed by shaders/sdf.vert(.frag) at set=1 bindings 0..8.
 
 // Generic GPU-driven SDF renderer: one instanced proxy-cube draw per SDF
 // container; the fragment shader traverses definitions/materials/grid for the
@@ -144,9 +145,10 @@ public:
     void setSmokeScattering(float s);
     void setSmokeTunnel(float strength, float falloff);
     void setSmokeWake(float strength, float radius, float expansion, float length, float dissipation);
-    void setSmokePressure(float radius, float strength, float waveSpeed, float waveFreq, float waveFalloff);
+    void setSmokeShock(float radius, float strength, float rippleAmp, float rippleFreq);
     void setSmokeTurbulence(float scale, float strength, float speed);
     void setSmokeShadow(int samples, float strength);
+    void setSmokeHeatStrength(float strength);
     // Smoke tint (smoke SSBO smokeColor; streams, no scene rebuild).
     void setSmokeColor(const glm::vec3& rgb);
     // Shape rig (reference port): 0 = cloud (billowy sphere), 1 = sphere,
@@ -158,7 +160,7 @@ public:
     void setSmokeRotation(float yawDeg, float pitchDeg, float rollDeg);
     // Bullet defaults (stamped into slots on fire; slot 0 = auto-loop template).
     // radiusStart = launch radius, radiusEnd = radius at the head; loopDuration
-    // is the per-bullet cycle (s). Matches the BulletGPU ABI.
+    // is the per-bullet cycle (s). Matches the Bullet ABI.
     void setBulletDefaults(float radiusStart, float radiusEnd, float speed, float length,
                            float angleDeg, float loopDuration);
     void setAutoFire(bool on);
@@ -176,9 +178,8 @@ public:
     void setSmokeDebug(uint32_t v);
 
     // ── Per-frame parameters (packed into SdfParamsUBO) ──
-    // SdfParamsUBO carries no renderer-mode field, so timeDebug.y packs two
-    // uint16s as an exact float (< 2^24): high = RenderMode, low = debugFlags.
-    // Shaders decode with uint(timeDebug.y): mode = v >> 16, flags = v & 0xFFFF.
+    // SdfParamsUBO carries renderMode and debugFlags as separate integers
+    // (no bit packing).
     void updateParams(float timeSec, uint32_t frameIndex);
     void setFrame(uint32_t frame) { currentFrame_ = frame % SDF_FRAMES; }
     void setRenderMode(RenderMode mode);
@@ -228,19 +229,13 @@ private:
 
     uint32_t currentFrame_ = 0;
 
-    // CPU mirrors (canonical GPU types) + dirty flags (guarded; setScene may
-    // come from the load path). params_ mirrors SdfParamsUBO with the
-    // timeDebug.y packing documented on updateParams.
+    // CPU scene state + dirty flags (guarded; setScene may come from the
+    // load path). The merged scene stores the canonical GPU-layout structs,
+    // so the upload memcpys its vectors verbatim (no CPU->GPU conversion).
     mutable std::mutex sceneMutex;
-    sdf_gpu::SdfScene pendingScene_; // merged lava + smoke; flattened on rebuild
+    sdf_gpu::SdfScene pendingScene_; // merged lava + smoke (uploaded directly)
     sdf_gpu::SdfScene lavaScene_;    // fire scene from lava anchors
-    sdf_gpu::SdfScene smokeScene_;   // static-topology smoke bomb scene
-    std::vector<SdfInstanceGPU> instances_;
-    std::vector<SdfDefinitionGPU> definitions_;
-    std::vector<SdfMaterialGPU> materials_;
-    std::vector<SdfContainerGPU> containers_;
-    std::vector<SdfGridCellGPU> gridCells_;
-    std::vector<uint32_t> gridIndices_;
+    sdf_gpu::SdfScene smokeScene_;   // static-topology smoke/flame shape scene
     SdfParamsUBO params_ = {};
     RenderMode renderMode_ = RenderMode::Surface;
     uint32_t debugFlags_ = 0;
@@ -266,7 +261,7 @@ private:
     // (1 def/mat/container/instance); all behavior below streams through
     // the smoke SSBO without scene rebuilds, except position/radius/base
     // material which reshape the scene.
-    SmokeFragBulletGPU smokeState_ = {}; // SSBO mirror: tuning + bullets
+    SmokeFragBullet smokeState_ = {}; // SSBO mirror: tuning + bullets
     // Manual rounds always use slot 1 (slot 0 is the auto-loop template);
     // firing clears any previous manual round: single-flight, one at a time.
 
@@ -294,21 +289,24 @@ private:
     void createCubeBuffers(VulkanApp* app);
     void createDescriptorSet(VulkanApp* app);
     void createPipeline(VulkanApp* app);
-    // Flatten pendingScene_ into the gpu mirror vectors (CPU only).
-    void extractFlattened();
-    // Re-merge lava + smoke scenes into pendingScene_ and flatten (caller
-    // holds sceneMutex). Marks all scene slots dirty.
+    // Re-merge lava + smoke scenes into pendingScene_, rebuild its bounds and
+    // grids (caller holds sceneMutex). Marks all scene slots dirty.
     void refreshMergedLocked();
-    // Re-pack timeDebug.y from renderMode_ + debugFlags_ (see updateParams).
+    // ── SdfModel helpers (one transform convention for every effect) ─────
+    // Euler XYZ radians, R = Rx * Ry * Rz (mirrors sdfEulerMat in sdf_ops).
+    // Caller holds sceneMutex.
+    glm::mat3 smokeRotLocked() const;
+
+    // Refresh params_.renderMode/debugFlags from the renderer state.
     void repackDebugMode();
     void ensureSlotCapacity(uint32_t slot); // grow slot buffers with headroom; rewrites slot set bindings
-    void flushSlotUploads(uint32_t slot);   // memcpy dirty mirrors/params into slot buffers
+    void flushSlotUploads(uint32_t slot);   // memcpy dirty scene vectors/params into slot buffers
     void flushSmokeUpload(uint32_t slot);   // memcpy dirty smoke state into the slot buffer
     void writeSlotBinding(uint32_t slot, uint32_t binding, const Buffer& buf, VkDescriptorType type);
     void refreshDepthBinding(uint32_t slot); // rewrite binding 7 iff the view changed for this slot
     // Auto-loop bullet template (slot 0) from widget defaults (caller holds sceneMutex).
     void refreshAutoBulletLocked();
-    void markSmokeSSBO(); // flag all smoke slots dirty (tuning/bullet change, no re-flatten)
+    void markSmokeSSBO(); // flag all smoke slots dirty (tuning/bullet change, no scene rebuild)
     // Single-flight policy: at most one bullet at a time. A live manual
     // round suppresses the auto bullet until it dies (wake grace included).
     bool anyManualBulletLiveLocked() const;

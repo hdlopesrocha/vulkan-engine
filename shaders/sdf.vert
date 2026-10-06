@@ -1,6 +1,6 @@
 #version 450
 
-#include "ubo/SdfContainerGPU.glsl"
+#include "types/SdfContainer.glsl"
 
 // Generic SDF proxy vertex shader: one unit-cube instance per CONTAINER.
 // The proxy bounds per-pixel work to visible containers; the fragment shader
@@ -18,7 +18,7 @@ layout(location = VARY_BRUSHPATCH) flat out int fragContainerIndex;
 #include "includes/sdf_material.glsl"
 
 layout(std430, set = 1, binding = 3) readonly buffer SdfContainerBuffer {
-    SdfContainerGPU sdfContainers[];
+    SdfContainer sdfContainers[];
 };
 
 void main() {
@@ -26,8 +26,8 @@ void main() {
     vec3 bMin = vec3(0.0);
     vec3 bMax = vec3(1.0);
     if (idx < uint(sdfContainers.length())) {
-        bMin = sdfContainers[idx].boundsMin.xyz;
-        bMax = sdfContainers[idx].boundsMax.xyz;
+        bMin = sdfContainers[idx].boundsMin;
+        bMax = sdfContainers[idx].boundsMax;
     }
     vec3 f = clamp(inPosition, vec3(0.0), vec3(1.0));
     vec3 worldPos = mix(bMin, bMax, f);

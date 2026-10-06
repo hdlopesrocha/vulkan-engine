@@ -1,6 +1,9 @@
 #pragma once
 
 // Tapered base-anchored flame definition parameters.
+// CPU-only build input: packed into the flame SdfDefinition (sdf/types/
+// SdfDefinition.hpp params0/params1 + shaders/types/SdfPrimitiveType.glsl
+// SDF_PRIM_FLAME).
 namespace sdf_gpu {
 
 struct FlameShape {

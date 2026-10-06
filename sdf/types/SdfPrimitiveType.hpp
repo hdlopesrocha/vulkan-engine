@@ -1,6 +1,7 @@
 #pragma once
 
-// Primitive type encoded in SdfDefinitionGPU::meta.x
+// Primitive type encoded in SdfDefinition::meta.x.
+// GLSL twin: shaders/types/SdfPrimitiveType.glsl (SDF_PRIM_*).
 #include <cstdint>
 
 enum class SdfPrimitiveType : uint32_t {
