@@ -1,6 +1,6 @@
 #include "ImpostorService.hpp"
-#include "../vulkan/VulkanApp.hpp"
-#include "../vulkan/renderer/VegetationRenderer.hpp"
+#include "../vulkan/core/VulkanApp.hpp"
+#include "../vulkan/renderer/vegetation/VegetationRenderer.hpp"
 
 ImpostorService::ImpostorService() {}
 

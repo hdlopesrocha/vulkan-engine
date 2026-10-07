@@ -1,5 +1,5 @@
 #include "QueueTimelineWidget.hpp"
-#include "../vulkan/VulkanApp.hpp"
+#include "../vulkan/core/VulkanApp.hpp"
 #include "components/QueueNames.hpp"
 #include <unordered_map>
 #include <algorithm>

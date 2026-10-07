@@ -2,7 +2,7 @@
 #include "Widget.hpp"
 #include "../vulkan/ubo/UniformObject.hpp"
 #include <vulkan/vulkan.h>
-#include "../vulkan/Buffer.hpp"
+#include "../vulkan/resources/Buffer.hpp"
 #include <unordered_map>
 
 class VulkanApp;

@@ -112,7 +112,7 @@ private:
         // larger impostor quads stayed solid - a fake gap in the middle of
         // the billboard->impostor transition that persisted through the
         // cross-fade removal. The composite now also reconstructs coverage
-        // from the closest depth tap (postprocess.frag), so a manual scale
+        // from the closest depth tap (PostProcessRenderer.frag), so a manual scale
         // reduction is safe, but the default Minimal look keeps full detail.
         settings.vegetationRenderScale = 1.0f;
         // Settings::textureArraySize intentionally untouched: see applyMaximum.

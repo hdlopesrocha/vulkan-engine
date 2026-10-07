@@ -1,5 +1,5 @@
 #include "Brush3dWidget.hpp"
-#include "../vulkan/TextureArrayManager.hpp"
+#include "../vulkan/resources/TextureArrayManager.hpp"
 #include "../events/EventManager.hpp"
 #include "../events/RebuildBrushEvent.hpp"
 #include "../events/SetBrushControlEvent.hpp"

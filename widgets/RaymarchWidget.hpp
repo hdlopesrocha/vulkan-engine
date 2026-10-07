@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/renderer/SdfRenderer.hpp"
-#include "../vulkan/renderer/VegetationRenderer.hpp"
+#include "../vulkan/renderer/sdf/SdfRenderer.hpp"
+#include "../vulkan/renderer/vegetation/VegetationRenderer.hpp"
 
 class Camera;
 

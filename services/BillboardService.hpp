@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../vulkan/EditableTexture.hpp"
+#include "../vulkan/resources/EditableTexture.hpp"
 #include <vulkan/vulkan.h>
 #include <array>
 

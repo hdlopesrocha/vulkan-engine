@@ -2,8 +2,8 @@
 
 #include <imgui.h>
 #include <functional>
-#include "../vulkan/TextureArrayManager.hpp"
-#include "../vulkan/MaterialManager.hpp"
+#include "../vulkan/resources/TextureArrayManager.hpp"
+#include "../vulkan/resources/MaterialManager.hpp"
 #include "types/MaterialProperties.hpp"
 #include "Widget.hpp"
 

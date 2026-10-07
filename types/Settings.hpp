@@ -30,7 +30,7 @@ public:
     bool showBoundingBoxes = false;
     bool showSDFDebug = false;
 
-    // Debug: canonical view IDs in vulkan/includes/DebugModes.hpp (0 = normal
+    // Debug: canonical view IDs in vulkan/includes/debug/DebugModes.hpp (0 = normal
     // render). Drives the raster solid/water shaders and the RT reference-path
     // forcing; both surfaces dispatch on the same IDs.
     int debugMode = 0;
@@ -124,13 +124,13 @@ public:
     //   (probability = Fresnel mix). Only the REFRACTION lobe honors the cut
     //   (it recovers from the raster bottom/sky); reflection always traces.
     //   off = dual-trace reference. debugModeForcesRtReference (see
-    //   vulkan/includes/DebugModes.hpp) forces reference (dual + full-rate)
+    //   vulkan/includes/debug/DebugModes.hpp) forces reference (dual + full-rate)
     //   for traced-result debug views so diagnostics show full quality.
     int rtRayScale = 1;
     float rtRayContribMin = 0.02f;
     bool rtSingleRay = true;
     // ── Water-in-main migration (Phase 1): draw water chunks in the main
-    // pass with the WATER_MODE=1 water-blend pipeline (see main.frag)
+    // pass with the water-blend pipeline (see WaterRenderer.frag)
     // instead of the separate liquid pass. Default off (old path); consumed
     // by Phase-1b (draw routing + blend pipeline). No effect yet.
     bool waterInMainPass = false;

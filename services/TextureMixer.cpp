@@ -1,9 +1,9 @@
 #include "TextureMixer.hpp"
 
-#include "../vulkan/VulkanApp.hpp"
+#include "../vulkan/core/VulkanApp.hpp"
 #include "../utils/FileReader.hpp"
-#include "../vulkan/PerlinPushConstants.hpp"
-#include "../vulkan/TextureArrayManager.hpp"
+#include "../vulkan/pipeline/PerlinPushConstants.hpp"
+#include "../vulkan/resources/TextureArrayManager.hpp"
 #include <algorithm>
 #include <stdexcept>
 #include <mutex>
@@ -252,7 +252,7 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 	}
 	app->resources.addPipelineLayout(computePipelineLayout, "TextureMixer: computePipelineLayout");
 
-	VkShaderModule computeShaderModule = app->getOrCreateShaderModule("shaders/perlin_noise.comp.spv");
+	VkShaderModule computeShaderModule = app->getOrCreateShaderModule("shaders/TextureMixer.comp.spv");
 
 	VkPipelineShaderStageCreateInfo computeShaderStageInfo{};
 	computeShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

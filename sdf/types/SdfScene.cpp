@@ -25,7 +25,7 @@ constexpr uint32_t kDeformTaper = static_cast<uint32_t>(SdfDeformFlags::Taper);
 constexpr uint32_t kDeformRepeat = static_cast<uint32_t>(SdfDeformFlags::Repeat);
 
 glm::mat3 rotationFromEuler(const glm::vec3& e) {
-    // MUST match sdfEulerMat() in shaders/includes/sdf_ops.glsl exactly:
+    // MUST match sdfEulerMat() in shaders/includes/sdf/SdfOps.glsl exactly:
     // R = Rx * Ry * Rz (same matrix entries and product order). The GPU
     // inverts this to reach primitive-local space, and the bounds below must
     // enclose the same oriented shape, so any divergence here breaks both

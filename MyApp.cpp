@@ -25,8 +25,8 @@
 
 #include "vulkan/ubo/UniformObject.hpp"
 #include "vulkan/ubo/SkyUniform.hpp"
-#include "vulkan/VulkanApp.hpp"
-#include "vulkan/PublishTarget.hpp"
+#include "vulkan/core/VulkanApp.hpp"
+#include "vulkan/streaming/PublishTarget.hpp"
 #include "vulkan/renderer/SceneRenderer.hpp"
 #include "vulkan/renderer/SceneDescriptorLayout.hpp"
 #include "vulkan/renderer/SceneQueues.hpp"
@@ -92,8 +92,8 @@
 #include "events/SetPageEvent.hpp"
 #include "events/SetGraphicsQualityEvent.hpp"
 #include "events/RadialMenuHandler.hpp"
-#include "vulkan/TextureArrayManager.hpp"
-#include "vulkan/MaterialManager.hpp"
+#include "vulkan/resources/TextureArrayManager.hpp"
+#include "vulkan/resources/MaterialManager.hpp"
 #include "world/World.hpp"
 #include "vulkan/renderer/DescriptorWriter.hpp"
 #include "utils/BillboardManager.hpp"
@@ -269,7 +269,7 @@ public:
 #endif
     UniformObject uboStatic = {};
     // H8 (perf report 22): equirect sky cache. The offscreen sky is
-    // view-independent (sky_equirect.frag reads only SkyUniform + light
+    // view-independent (SkyRendererEquirect.frag reads only SkyUniform + light
     // direction/elevation), so it is re-rendered only when those inputs
     // change; otherwise the previous frame's image stays valid and the task
     // submits nothing, advancing tlSky with a host signal instead. Force the
@@ -366,16 +366,16 @@ public:
 
     Octree::OctreeNodeDataHandler brushSolidAddHandler;
     Octree::OctreeNodeDataHandler brushLiquidAddHandler;
-    Octree::OctreeNodeDataHandler mainSolidAddHandler;
-    Octree::OctreeNodeDataHandler mainLiquidAddHandler;
+    Octree::OctreeNodeDataHandler solidAddHandler;
+    Octree::OctreeNodeDataHandler waterAddHandler;
     
     Octree::OctreeNodeDataHandler brushSolidRemoveHandler;
     Octree::OctreeNodeDataHandler brushLiquidRemoveHandler;
-    Octree::OctreeNodeDataHandler mainSolidRemoveHandler;
-    Octree::OctreeNodeDataHandler mainLiquidRemoveHandler;
+    Octree::OctreeNodeDataHandler solidRemoveHandler;
+    Octree::OctreeNodeDataHandler waterRemoveHandler;
 
-    UniqueChangeCollector mainSolidCollector;
-    UniqueChangeCollector mainLiquidCollector;
+    UniqueChangeCollector solidCollector;
+    UniqueChangeCollector waterCollector;
     UniqueChangeCollector brushSolidCollector;
     UniqueChangeCollector brushLiquidCollector;
     // Per-slot resources for the async back-face task, reused in a ring of
@@ -677,20 +677,20 @@ public:
             sceneForChanges, 
             LAYER_OPAQUE, 
             minSize, 
-            &sceneRenderer->mainSolidGenPool,
+            &sceneRenderer->solidGenPool,
             
             {
                 sceneRenderer->pendingMeshQueue,
                 sceneRenderer->pendingMeshMutex,
-                sceneRenderer->mainSolidChunks,
-                sceneRenderer->mainSolidChunksMutex,
-                sceneRenderer->mainSolidRenderer->getIndirectRenderer(), 
+                sceneRenderer->solidChunks,
+                sceneRenderer->solidChunksMutex,
+                sceneRenderer->solidRenderer->getIndirectRenderer(), 
                 sceneRenderer->pendingDeleteSolidSlots, 
                 true
             }
         );
-        mainSolidAddHandler = mainOpaqueHandlers.first;
-        mainSolidRemoveHandler = mainOpaqueHandlers.second;
+        solidAddHandler = mainOpaqueHandlers.first;
+        solidRemoveHandler = mainOpaqueHandlers.second;
 
         std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> mainTransparentHandlers = build(
             sceneRenderer, 
@@ -698,19 +698,19 @@ public:
             sceneForChanges, 
             LAYER_TRANSPARENT, 
             minSize, 
-            &sceneRenderer->mainWaterGenPool,
+            &sceneRenderer->waterGenPool,
             {
                 sceneRenderer->pendingMeshQueue,
                 sceneRenderer->pendingMeshMutex,
-                sceneRenderer->mainLiquidChunks,
-                sceneRenderer->mainLiquidChunksMutex,
-                sceneRenderer->mainLiquidRenderer->getIndirectRenderer(), 
+                sceneRenderer->waterChunks,
+                sceneRenderer->waterChunksMutex,
+                sceneRenderer->waterRenderer->getIndirectRenderer(), 
                 sceneRenderer->pendingDeleteWaterSlots, 
                 true
             }
         );
-        mainLiquidAddHandler = mainTransparentHandlers.first;
-        mainLiquidRemoveHandler = mainTransparentHandlers.second;
+        waterAddHandler = mainTransparentHandlers.first;
+        waterRemoveHandler = mainTransparentHandlers.second;
 
         std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> brushOpaqueHandlers = build(
             sceneRenderer,
@@ -797,14 +797,14 @@ public:
         // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings, &shadowParams);
         // Water UI uses the application-owned water params vector and updates GPU state explicitly.
-        waterWidget = std::make_shared<WaterWidget>(sceneRenderer->mainLiquidRenderer.get(), &waterParams);
+        waterWidget = std::make_shared<WaterWidget>(sceneRenderer->waterRenderer.get(), &waterParams);
 
         // Right-aligned main-UI preset buttons (publishes SetGraphicsQualityEvent).
         graphicsQualityWidget = std::make_shared<GraphicsQualityWidget>(&eventManager);
 
         renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
             this,
-            sceneRenderer, sceneRenderer->mainSolidRenderer.get(), sceneRenderer->skyRenderer.get(),
+            sceneRenderer, sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get(),
             sceneRenderer->shadowMapper.get(), &shadowParams);
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
@@ -1168,15 +1168,15 @@ public:
     void updateWaterSceneTextures(VkDescriptorSet ds, VkImageView backFaceDepth,
                                   VkImageView rtReflect, VkImageView rtRefract,
                                   VkImageView skyView, uint32_t sceneFrameIdx) {
-        VkImageView solidColor = sceneRenderer->mainSolidRenderer
-            ? sceneRenderer->mainSolidRenderer->getColorView(sceneFrameIdx) : VK_NULL_HANDLE;
-        VkImageView solidDepth = sceneRenderer->mainSolidRenderer
-            ? sceneRenderer->mainSolidRenderer->getDepthView(sceneFrameIdx) : VK_NULL_HANDLE;
+        VkImageView solidColor = sceneRenderer->solidRenderer
+            ? sceneRenderer->solidRenderer->getColorView(sceneFrameIdx) : VK_NULL_HANDLE;
+        VkImageView solidDepth = sceneRenderer->solidRenderer
+            ? sceneRenderer->solidRenderer->getDepthView(sceneFrameIdx) : VK_NULL_HANDLE;
         VkImageView vegColor = sceneRenderer->vegetationRenderer
             ? sceneRenderer->vegetationRenderer->getVegColorView(sceneFrameIdx) : VK_NULL_HANDLE;
         VkImageView vegDepth = sceneRenderer->vegetationRenderer
             ? sceneRenderer->vegetationRenderer->getVegDepthView(sceneFrameIdx) : VK_NULL_HANDLE;
-        sceneRenderer->mainLiquidRenderer->updateSceneTexturesBinding(this, ds,
+        sceneRenderer->waterRenderer->updateSceneTexturesBinding(this, ds,
             backFaceDepth, rtReflect, rtRefract, skyView, solidColor, solidDepth, vegColor, vegDepth);
     }
 
@@ -1193,7 +1193,7 @@ public:
         // the blur/pipeline selection flipped since creation (layer edits,
         // preset switches). waterBodyTargetsStale() compares live need
         // against allocation; creation itself is a no-op when nothing changed.
-        auto* liquidRenderer = sceneRenderer ? sceneRenderer->mainLiquidRenderer.get() : nullptr;
+        auto* liquidRenderer = sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr;
         if (sceneRenderer && (sceneRenderer->waterRenderScale() != settings.waterRenderScale ||
                               (liquidRenderer && liquidRenderer->waterBodyTargetsStale()))) {
             vkDeviceWaitIdle(getDevice());
@@ -1227,21 +1227,21 @@ public:
         // Must be set BEFORE prepareCull below so culls and drawPrepared use
         // the same per-frame compact/visibleCount slots (setCullFrame in
         // draw() would make every draw read a stale, never-culled slot).
-        sceneRenderer->mainSolidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
+        sceneRenderer->solidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
         sceneRenderer->brushRenderer->getSolidIR().setCullFrame(frameIdx);
-        sceneRenderer->mainLiquidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
+        sceneRenderer->waterRenderer->getIndirectRenderer().setCullFrame(frameIdx);
         if (sceneRenderer->debugSDFRenderer) {
             sceneRenderer->debugSDFRenderer->setCullFrame(frameIdx);
             // The solid IndirectRenderer performs the SDF cube cull + compaction in
-            // its OWN indirect.comp dispatch (folded into the terrain cull), so point
+            // its OWN IndirectRenderer.comp dispatch (folded into the terrain cull), so point
             // the SDF debug renderer at it to draw from its SDF output buffers.
-            sceneRenderer->debugSDFRenderer->setIndirectRenderer(&sceneRenderer->mainSolidRenderer->getIndirectRenderer());
+            sceneRenderer->debugSDFRenderer->setIndirectRenderer(&sceneRenderer->solidRenderer->getIndirectRenderer());
         }
         if (sceneRenderer->boundingBoxRenderer) {
             sceneRenderer->boundingBoxRenderer->setCullFrame(frameIdx);
             // Bounding-box frustum cull is folded into the solid IndirectRenderer's
-            // indirect.comp dispatch, so draw from its bbox output buffers.
-            sceneRenderer->boundingBoxRenderer->setIndirectRenderer(&sceneRenderer->mainSolidRenderer->getIndirectRenderer());
+            // IndirectRenderer.comp dispatch, so draw from its bbox output buffers.
+            sceneRenderer->boundingBoxRenderer->setIndirectRenderer(&sceneRenderer->solidRenderer->getIndirectRenderer());
         }
 
         // Profiling: read previous frame's query results (with availability flag to
@@ -1325,10 +1325,10 @@ public:
         if (sceneRenderer && sceneRenderer->rayTracing) {
             const bool rtProf = rtProfilingEnabled_ && rtProfilingSupported
                 && sceneRenderer->rayTracing->isSupported();
-            if (sceneRenderer->mainSolidRenderer)
-                sceneRenderer->mainSolidRenderer->setRtProfilingEnabled(rtProf);
-            if (sceneRenderer->mainLiquidRenderer)
-                sceneRenderer->mainLiquidRenderer->setRtProfilingEnabled(rtProf);
+            if (sceneRenderer->solidRenderer)
+                sceneRenderer->solidRenderer->setRtProfilingEnabled(rtProf);
+            if (sceneRenderer->waterRenderer)
+                sceneRenderer->waterRenderer->setRtProfilingEnabled(rtProf);
             if (rtProf) {
                 sceneRenderer->rayTracing->readProfile(frameIdx, rtProfileStats_);
                 sceneRenderer->rayTracing->resetProfile(frameIdx);
@@ -1465,8 +1465,8 @@ public:
         // If water is disabled, clear its offscreen targets here (outside any active
         // dynamic rendering instance) so the post-process compositor won't sample
         // stale content.
-        if (!waterEnabled && sceneRenderer && sceneRenderer->mainLiquidRenderer) {
-            sceneRenderer->mainLiquidRenderer->clearRenderTargets(this, commandBuffer, frameIdx);
+        if (!waterEnabled && sceneRenderer && sceneRenderer->waterRenderer) {
+            sceneRenderer->waterRenderer->clearRenderTargets(this, commandBuffer, frameIdx);
         }
 
         // Launch asynchronous recording+submit for independent offscreen passes
@@ -1541,7 +1541,7 @@ public:
                 // vkCmdBindPipeline before a dispatch (the validation error we hit).
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
-                this->sceneRenderer->mainSolidRenderer->getIndirectRenderer().acquireBuffers(cullCmd);
+                this->sceneRenderer->solidRenderer->getIndirectRenderer().acquireBuffers(cullCmd);
                 if (this->sceneRenderer->vegetationRenderer && settings.vegetationEnabled)
                     this->sceneRenderer->vegetationRenderer->prepareCull(cullCmd, viewProj);
                 if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
@@ -1550,15 +1550,15 @@ public:
                     this->sceneRenderer->boundingBoxRenderer->registerBoundingBoxesToIndirect();
                 else if (this->sceneRenderer && this->sceneRenderer->boundingBoxRenderer)
                     this->sceneRenderer->boundingBoxRenderer->clearBoundingBoxesToIndirect();
-                this->sceneRenderer->mainSolidRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
+                this->sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
                 this->sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(cullCmd);
                 this->sceneRenderer->brushRenderer->getSolidIR().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
-                if (settings.waterEnabled && this->sceneRenderer->mainLiquidRenderer) {
+                if (settings.waterEnabled && this->sceneRenderer->waterRenderer) {
                     // Ensure water's pending uploads (vertex/index) have completed and their
                     // deferred meta (indirect/bounds) is visible before we cull.
-                    this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer().pollPendingTransfers(this);
-                    this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer().syncHostBuffersToGPU();
-                    this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod, nullptr, false, true, false, 0, 1);
+                    this->sceneRenderer->waterRenderer->getIndirectRenderer().pollPendingTransfers(this);
+                    this->sceneRenderer->waterRenderer->getIndirectRenderer().syncHostBuffersToGPU();
+                    this->sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod, nullptr, false, true, false, 0, 1);
                 }
                 if (this->sceneRenderer->brushRenderer) {
                     this->sceneRenderer->brushRenderer->getLiquidIR().pollPendingTransfers(this);
@@ -1622,7 +1622,7 @@ public:
                 if (brushSolidCmd != VK_NULL_HANDLE) {
                     CommandBufferState brushState;
                     this->sceneRenderer->setCmdState(&brushState);
-                    this->sceneRenderer->brushRenderer->recordEarlyPass(this, brushSolidCmd, frameIdx, *this->sceneRenderer->mainSolidRenderer, getMainDescriptorSet());
+                    this->sceneRenderer->brushRenderer->recordEarlyPass(this, brushSolidCmd, frameIdx, *this->sceneRenderer->solidRenderer, getMainDescriptorSet());
                     this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
                     // BrushSolid's signal is not registered for the composite: tlBrushSolid
                     // is transitively implied by tlBrushLiquid (Water->BrushLiquid).
@@ -1701,11 +1701,11 @@ public:
         //     explicitly. The fullscreen sky draw stays in the solid color pass.
         //
         // H8 (perf report 22): the cloudless equirect is view-independent —
-        // sky_equirect.frag reads only the SkyUniform block and the light
+        // SkyRendererEquirect.frag reads only the SkyUniform block and the light
         // direction/elevation, never the camera — so it is cached and
         // re-rendered only when those inputs change.
         // With clouds ON the equirect is camera- AND time-dependent by design:
-        // sky_equirect.frag marches from ubo.viewPosition with the continuous
+        // SkyRendererEquirect.frag marches from ubo.viewPosition with the continuous
         // sky.cloudTime, exactly like the on-screen sky. Caching it (even at
         // the old 2 Hz quantization) freezes reflections in 0.5 s steps while
         // the sky moves smoothly, and a fixed origin would shift the
@@ -1795,7 +1795,7 @@ public:
             }
         }
 
-        if (sceneRenderer && sceneRenderer->mainSolidRenderer) {
+        if (sceneRenderer && sceneRenderer->solidRenderer) {
             asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
                 MyApp* app = this;
                 VkCommandBuffer solidCmd = app->beginAsyncTask("solid");
@@ -1829,12 +1829,12 @@ public:
                 // it when Instance 1 is skipped).
                 const bool skipSolidPrepass = !settings.solidDepthPrepass
                     && !settings.rtReflections && !settings.rtLocalShadows;
-                if (settings.renderSolid && this->sceneRenderer->mainSolidRenderer)
-                    this->sceneRenderer->mainSolidRenderer->setDeferredColorDepthWrite(skipSolidPrepass);
+                if (settings.renderSolid && this->sceneRenderer->solidRenderer)
+                    this->sceneRenderer->solidRenderer->setDeferredColorDepthWrite(skipSolidPrepass);
 
                 // Transition solid depth to DEPTH_STENCIL_ATTACHMENT_OPTIMAL for the pre-pass.
                 {
-                    VkImage solidDepthImg = this->sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx);
+                    VkImage solidDepthImg = this->sceneRenderer->solidRenderer->getDepthImage(frameIdx);
                     if (solidDepthImg != VK_NULL_HANDLE) {
                         RendererUtils::transitionImageLayout(
                             solidCmd, solidDepthImg,
@@ -1852,7 +1852,7 @@ public:
                 if (!skipSolidPrepass) {
                     VkRenderingAttachmentInfo depthAtt{};
                     depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                    depthAtt.imageView = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
+                    depthAtt.imageView = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
                     depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                     depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
                     depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1861,7 +1861,7 @@ public:
                     VkRenderingInfo ri{};
                     ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
                     ri.renderArea.offset = {0, 0};
-                    ri.renderArea.extent = {this->sceneRenderer->mainSolidRenderer->getRenderWidth(), this->sceneRenderer->mainSolidRenderer->getRenderHeight()};
+                    ri.renderArea.extent = {this->sceneRenderer->solidRenderer->getRenderWidth(), this->sceneRenderer->solidRenderer->getRenderHeight()};
                     ri.layerCount = 1;
                     ri.colorAttachmentCount = 0;
                     ri.pColorAttachments = nullptr;
@@ -1870,16 +1870,16 @@ public:
                     vkCmdBeginRendering(solidCmd, &ri);
 
                     {
-                        VkViewport vp{0.0f, 0.0f, (float)this->sceneRenderer->mainSolidRenderer->getRenderWidth(), (float)this->sceneRenderer->mainSolidRenderer->getRenderHeight(), 0.0f, 1.0f};
+                        VkViewport vp{0.0f, 0.0f, (float)this->sceneRenderer->solidRenderer->getRenderWidth(), (float)this->sceneRenderer->solidRenderer->getRenderHeight(), 0.0f, 1.0f};
                         vkCmdSetViewport(solidCmd, 0, 1, &vp);
-                        VkRect2D sc{{0, 0}, {this->sceneRenderer->mainSolidRenderer->getRenderWidth(), this->sceneRenderer->mainSolidRenderer->getRenderHeight()}};
+                        VkRect2D sc{{0, 0}, {this->sceneRenderer->solidRenderer->getRenderWidth(), this->sceneRenderer->solidRenderer->getRenderHeight()}};
                         vkCmdSetScissor(solidCmd, 0, 1, &sc);
                     }
 
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                         vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
                     if (settings.renderSolid) {
-                        this->sceneRenderer->mainSolidRenderer->drawDepth(solidCmd, this, getMainDescriptorSet());
+                        this->sceneRenderer->solidRenderer->drawDepth(solidCmd, this, getMainDescriptorSet());
                     }
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                         vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
@@ -1889,7 +1889,7 @@ public:
 
                 // Transition solid color to COLOR_ATTACHMENT_OPTIMAL for the color pass.
                 {
-                    VkImage solidColorImg = this->sceneRenderer->mainSolidRenderer->getColorImage(frameIdx);
+                    VkImage solidColorImg = this->sceneRenderer->solidRenderer->getColorImage(frameIdx);
                     if (solidColorImg != VK_NULL_HANDLE) {
                         RendererUtils::transitionImageLayout(
                             solidCmd, solidColorImg,
@@ -1904,7 +1904,7 @@ public:
                 {
                     VkRenderingAttachmentInfo colorAtt{};
                     colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                    colorAtt.imageView = this->sceneRenderer->mainSolidRenderer->getColorView(frameIdx);
+                    colorAtt.imageView = this->sceneRenderer->solidRenderer->getColorView(frameIdx);
                     colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
                     colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
                     colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1912,7 +1912,7 @@ public:
 
                     VkRenderingAttachmentInfo depthAtt{};
                     depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                    depthAtt.imageView = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
+                    depthAtt.imageView = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
                     depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                     // C2 gate: CLEAR when the prepass was skipped (single
                     // forward pass, color writes depth), LOAD otherwise.
@@ -1932,7 +1932,7 @@ public:
                     VkRenderingInfo ri{};
                     ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
                     ri.renderArea.offset = {0, 0};
-                    ri.renderArea.extent = {this->sceneRenderer->mainSolidRenderer->getRenderWidth(), this->sceneRenderer->mainSolidRenderer->getRenderHeight()};
+                    ri.renderArea.extent = {this->sceneRenderer->solidRenderer->getRenderWidth(), this->sceneRenderer->solidRenderer->getRenderHeight()};
                     ri.layerCount = 1;
                     ri.colorAttachmentCount = 1;
                     ri.pColorAttachments = &colorAtt;
@@ -1941,9 +1941,9 @@ public:
                     vkCmdBeginRendering(solidCmd, &ri);
 
                     {
-                        VkViewport vp{0.0f, 0.0f, (float)this->sceneRenderer->mainSolidRenderer->getRenderWidth(), (float)this->sceneRenderer->mainSolidRenderer->getRenderHeight(), 0.0f, 1.0f};
+                        VkViewport vp{0.0f, 0.0f, (float)this->sceneRenderer->solidRenderer->getRenderWidth(), (float)this->sceneRenderer->solidRenderer->getRenderHeight(), 0.0f, 1.0f};
                         vkCmdSetViewport(solidCmd, 0, 1, &vp);
-                        VkRect2D sc{{0, 0}, {this->sceneRenderer->mainSolidRenderer->getRenderWidth(), this->sceneRenderer->mainSolidRenderer->getRenderHeight()}};
+                        VkRect2D sc{{0, 0}, {this->sceneRenderer->solidRenderer->getRenderWidth(), this->sceneRenderer->solidRenderer->getRenderHeight()}};
                         vkCmdSetScissor(solidCmd, 0, 1, &sc);
                     }
 
@@ -1962,11 +1962,11 @@ public:
 
                     if (settings.renderSolid) {
                         VkDescriptorSet brushDepthSet = this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx);
-                        this->sceneRenderer->mainSolidRenderer->drawColor(solidCmd, this, getMainDescriptorSet(), brushDepthSet);
+                        this->sceneRenderer->solidRenderer->drawColor(solidCmd, this, getMainDescriptorSet(), brushDepthSet);
                         // C2: release the single-pass selector so later
                         // external draws (brush) never inherit the depth-write
                         // twin. Scoped to this draw; the default stays off.
-                        this->sceneRenderer->mainSolidRenderer->setDeferredColorDepthWrite(false);
+                        this->sceneRenderer->solidRenderer->setDeferredColorDepthWrite(false);
                     }
 
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -1991,7 +1991,7 @@ public:
                     }
 
                     if (settings.renderSolid && settings.wireframeMode && this->sceneRenderer) {
-                        this->sceneRenderer->mainSolidRenderer->drawWireframeOverlay(solidCmd, this, getMainDescriptorSet());
+                        this->sceneRenderer->solidRenderer->drawWireframeOverlay(solidCmd, this, getMainDescriptorSet());
                     }
 
                     vkCmdEndRendering(solidCmd);
@@ -2001,8 +2001,8 @@ public:
                 // composite (main CB) and the water pass can sample them after
                 // tlSolid is signaled.
                 {
-                    VkImage solidColorImg = this->sceneRenderer->mainSolidRenderer->getColorImage(frameIdx);
-                    VkImage solidDepthImg = this->sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx);
+                    VkImage solidColorImg = this->sceneRenderer->solidRenderer->getColorImage(frameIdx);
+                    VkImage solidDepthImg = this->sceneRenderer->solidRenderer->getDepthImage(frameIdx);
                     uint32_t bc = 0;
                     VkImageMemoryBarrier2 barriers[2]{};
 
@@ -2054,7 +2054,7 @@ public:
                 // (cull buffers + restored UBO). tlSolid is not registered for the
                 // composite (implied by tlBrushLiquid via Water).
                 //
-                // Solid SSR: main.frag samples the *previous* frame's solid
+                // Solid SSR: SolidRenderer.frag samples the *previous* frame's solid
                 // color/depth (bindings 19/20), so the solid CB additionally
                 // waits on tlSolid@(v-1) — the previous frame's solid pass must
                 // have completed before its images are marched.
@@ -2090,7 +2090,7 @@ public:
         // Rendered to its own offscreen color+depth framebuffer (decoupled from
         // the solid pass). Runs after the shadow task on the worker, so the shadow
         // map it samples is current. Occlusion against solid geometry is resolved
-        // at composite time (postprocess.frag). Like the other async passes, it
+        // at composite time (PostProcessRenderer.frag). Like the other async passes, it
         // uses a dedicated CommandBufferState and signals semVeg (registered so the
         // composite waits on it).
         {
@@ -2249,8 +2249,8 @@ public:
                     float t = this->mainTime * (this->raymarchWidget ? this->raymarchWidget->timeScale : 1.0f);
                     this->sceneRenderer->sdfRenderer->setFrame(frameIdx);
                     this->sceneRenderer->sdfRenderer->updateParams(t, frameIdx);
-                    if (this->sceneRenderer->mainSolidRenderer) {
-                        VkImageView dv = this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx);
+                    if (this->sceneRenderer->solidRenderer) {
+                        VkImageView dv = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
                         if (dv != VK_NULL_HANDLE)
                             this->sceneRenderer->sdfRenderer->setSceneDepth(dv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                     }
@@ -2268,7 +2268,7 @@ public:
         // Renders to its own offscreen color+depth framebuffer (decoupled from the
         // solid pass) so it runs in parallel with the solid/vegetation shading on the
         // dedicated bboxQueue. Depends on the cull task's bbox compact/count buffers
-        // (written by the terrain IR's indirect.comp), so it waits on its own
+        // (written by the terrain IR's IndirectRenderer.comp), so it waits on its own
         // cull-result semaphore (semCullBbox). When the overlay is disabled it only
         // clears the offscreen so the composite shows no bounding boxes.
         {
@@ -2327,8 +2327,8 @@ public:
                 // not draw anything anyway, so the clear-only path is
                 // unconditionally safe. Water-in-main writes the MAIN targets,
                 // so it must never take this path.
-                const size_t waterMeshCount = this->sceneRenderer->mainLiquidRenderer
-                    ? this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer().getMeshCount()
+                const size_t waterMeshCount = this->sceneRenderer->waterRenderer
+                    ? this->sceneRenderer->waterRenderer->getIndirectRenderer().getMeshCount()
                     : 0;
                 const bool waterPassEmpty = waterMeshCount == 0 && !brushLiquidPresent;
                 if (waterPassEmpty && !settings.waterInMainPass) {
@@ -2337,7 +2337,7 @@ public:
                     // transitions. Skip the task-local cull, the back-face
                     // set/render, the water descriptor updates, the water
                     // geometry pass, the RT dispatch and timestamps 14/15.
-                    this->sceneRenderer->mainLiquidRenderer->clearRenderTargets(this, cmd, frameIdx);
+                    this->sceneRenderer->waterRenderer->clearRenderTargets(this, cmd, frameIdx);
                     // The brush-liquid overlay (normally the composite's
                     // transitive waiter for tlWater) does not run on this path,
                     // so register tlWater for the composite directly. Submit with
@@ -2358,7 +2358,7 @@ public:
                 // previous submission using this slot (task N) has completed
                 // before task N+ASYNC_RING_SIZE runs, so reusing the slot
                 // cannot race with the GPU.
-                IndirectRenderer &ind = this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
+                IndirectRenderer &ind = this->sceneRenderer->waterRenderer->getIndirectRenderer();
                 BackfaceSlot& slot = cachedBackfaceRing[ringBackface++ % ASYNC_RING_SIZE];
 
                 VkDevice dev = app->getDevice();
@@ -2420,7 +2420,7 @@ public:
                     }
                     if (this->sceneRenderer->skyRenderer)
                         bfSky = this->sceneRenderer->skyRenderer->getSkyView(frameIdx);
-                    VkDescriptorSetLayout wdsLayout = this->sceneRenderer->mainLiquidRenderer->getWaterDepthDescriptorSetLayout();
+                    VkDescriptorSetLayout wdsLayout = this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSetLayout();
                     if (wdsLayout != VK_NULL_HANDLE) {
                         if (slot.pool == VK_NULL_HANDLE) {
                             // Per-slot pool (maxSets=1) so the set is allocated once and
@@ -2484,7 +2484,7 @@ public:
                     VkBuffer bfVisible = ind.getCurrentVisibleCountBuffer();
                     this->sceneRenderer->backFaceRenderer->render(app, cmd, frameIdx,
                                                 ind,
-                                                this->sceneRenderer->mainLiquidRenderer->getWaterGeometryPipelineLayout(),
+                                                this->sceneRenderer->waterRenderer->getWaterGeometryPipelineLayout(),
                                                 app->getMainDescriptorSet(),
                                                 asyncWaterDs,
                                                 bfCompact,
@@ -2499,8 +2499,8 @@ public:
                 // in THIS command buffer and is already in SHADER_READ_ONLY_OPTIMAL (the
                 // back-face pass transitions it after writing). The RT reflection /
                 // refraction outputs + sky ride along in the same set (bindings 1-3).
-                if (this->sceneRenderer->mainLiquidRenderer) {
-                    auto& waterIR = this->sceneRenderer->mainLiquidRenderer->getIndirectRenderer();
+                if (this->sceneRenderer->waterRenderer) {
+                    auto& waterIR = this->sceneRenderer->waterRenderer->getIndirectRenderer();
                     waterIR.acquireBuffers(cmd);
                     // Demand gate: when no layer consumes the volume the back-face
                     // pass did not run this frame, so its depth image holds stale
@@ -2536,7 +2536,7 @@ public:
                         pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
                         if (vkCreateDescriptorPool(dev, &pci, nullptr, &slot.poolW) == VK_SUCCESS) {
                             app->resources.addDescriptorPool(slot.poolW, "cachedBackfaceWaterGeom pool");
-                            VkDescriptorSetLayout wdsLayout = this->sceneRenderer->mainLiquidRenderer->getWaterDepthDescriptorSetLayout();
+                            VkDescriptorSetLayout wdsLayout = this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSetLayout();
                             if (wdsLayout != VK_NULL_HANDLE) {
                                 VkDescriptorSetAllocateInfo ai{};
                                 ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -2566,13 +2566,13 @@ public:
                     // only when a refraction path can consume it.
                     const bool waterPipeNeeded =
                         settings.rtWaterPipeline && settings.rtRefractions && anyLayerRefr;
-                    if (this->sceneRenderer->mainLiquidRenderer) {
-                        this->sceneRenderer->mainLiquidRenderer->setRtShadingEnabled(waterRtNeeded);
+                    if (this->sceneRenderer->waterRenderer) {
+                        this->sceneRenderer->waterRenderer->setRtShadingEnabled(waterRtNeeded);
                         // Global tessellation gate (perf_report_19 C1): when the
                         // preset disables tessellation the water passes must use
                         // the non-tessellated pipeline; delivered per frame so a
                         // preset switch takes effect immediately.
-                        this->sceneRenderer->mainLiquidRenderer->setTessellationEnabled(settings.tessellationEnabled);
+                        this->sceneRenderer->waterRenderer->setTessellationEnabled(settings.tessellationEnabled);
                         if (this->sceneRenderer->backFaceRenderer) {
                             this->sceneRenderer->backFaceRenderer->setTessellationEnabled(settings.tessellationEnabled);
                         }
@@ -2581,7 +2581,7 @@ public:
                         // "refraction off" really disables the sky fallback
                         // too, and blur requires the global toggle plus the
                         // per-material flag.
-                        this->sceneRenderer->mainLiquidRenderer->setRtFeatureFlags(
+                        this->sceneRenderer->waterRenderer->setRtFeatureFlags(
                             settings.rtWaterReflections, settings.rtRefractions,
                             settings.blurEnabled);
                     }
@@ -2591,8 +2591,8 @@ public:
                     // the selectors fall back to the tessellated pipelines
                     // wherever no no-tess twin exists (RT/profiling/brush),
                     // which is always correct.
-                    if (this->sceneRenderer->mainSolidRenderer) {
-                        this->sceneRenderer->mainSolidRenderer->setTessellationEnabled(settings.tessellationEnabled);
+                    if (this->sceneRenderer->solidRenderer) {
+                        this->sceneRenderer->solidRenderer->setTessellationEnabled(settings.tessellationEnabled);
                     }
 
                     if (slot.waterDs2 != VK_NULL_HANDLE) {
@@ -2604,8 +2604,8 @@ public:
                         updateWaterSceneTextures(slot.waterDs2, wBack, wRefl, wRefr, wsky, frameIdx);
                         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                             vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
-                        if (settings.waterInMainPass && this->sceneRenderer->mainSolidRenderer
-                            && this->sceneRenderer->mainLiquidRenderer->getWaterMainPipeline() != VK_NULL_HANDLE) {
+                        if (settings.waterInMainPass && this->sceneRenderer->solidRenderer
+                            && this->sceneRenderer->waterRenderer->getWaterMainPipeline() != VK_NULL_HANDLE) {
                             // Phase-1 water-in-main: blend water directly into the
                             // main solid color/depth targets (LOAD-preserved) with
                             // the alpha-blended water pipeline instead of the
@@ -2624,19 +2624,19 @@ public:
                             // the shader-side occlusion rejection (C5) must stay
                             // off here; the main targets' hardware depth test
                             // already rejects occluded water.
-                            this->sceneRenderer->mainLiquidRenderer->setSolidDepthCurrentFrame(false);
-                            this->sceneRenderer->mainLiquidRenderer->renderMainTargets(this, cmd, frameIdx,
-                                this->sceneRenderer->mainSolidRenderer->getColorImage(frameIdx),
-                                this->sceneRenderer->mainSolidRenderer->getColorView(frameIdx),
-                                this->sceneRenderer->mainSolidRenderer->getDepthImage(frameIdx),
-                                this->sceneRenderer->mainSolidRenderer->getDepthView(frameIdx),
+                            this->sceneRenderer->waterRenderer->setSolidDepthCurrentFrame(false);
+                            this->sceneRenderer->waterRenderer->renderMainTargets(this, cmd, frameIdx,
+                                this->sceneRenderer->solidRenderer->getColorImage(frameIdx),
+                                this->sceneRenderer->solidRenderer->getColorView(frameIdx),
+                                this->sceneRenderer->solidRenderer->getDepthImage(frameIdx),
+                                this->sceneRenderer->solidRenderer->getDepthView(frameIdx),
                                 slot.waterDs2);
                         } else {
                             // Offscreen path: the water task waits tlSolid, so the
                             // bound solid depth is this frame's and the shader may
                             // reject terrain-occluded fragments (C5).
-                            this->sceneRenderer->mainLiquidRenderer->setSolidDepthCurrentFrame(true);
-                            this->sceneRenderer->mainLiquidRenderer->renderPass(this, cmd, frameIdx,
+                            this->sceneRenderer->waterRenderer->setSolidDepthCurrentFrame(true);
+                            this->sceneRenderer->waterRenderer->renderPass(this, cmd, frameIdx,
                                 settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2, /*drawBrushLiquid=*/false);
                         }
                         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -2644,12 +2644,12 @@ public:
                         // Transition water geometry depth to SRO for the compositor.
                         // (Water-in-main never writes it: skipped there.)
                         VkImage wgdImg = settings.waterInMainPass ? VK_NULL_HANDLE
-                                                                  : this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(frameIdx);
+                                                                  : this->sceneRenderer->waterRenderer->getWaterGeomDepthImage(frameIdx);
                         if (wgdImg != VK_NULL_HANDLE) {
                             app->recordTransitionImageLayoutLayer(cmd, wgdImg, VK_FORMAT_D32_SFLOAT,
-                                this->sceneRenderer->mainLiquidRenderer->getWaterGeomDepthLayout(frameIdx),
+                                this->sceneRenderer->waterRenderer->getWaterGeomDepthLayout(frameIdx),
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-                            this->sceneRenderer->mainLiquidRenderer->setWaterGeomDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                            this->sceneRenderer->waterRenderer->setWaterGeomDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                         }
                         // Hybrid RT water dispatch (same CB, AFTER the geometry
                         // depth reached SHADER_READ_ONLY above — the rgen samples
@@ -2694,7 +2694,7 @@ public:
                 // persistent composite timeline wait to keep the water targets
                 // synchronized with the composite. Water-in-main never samples the
                 // water targets in the composite and keeps its previous behavior.
-                // Wait on the vegetation pass too: water.frag's reflection
+                // Wait on the vegetation pass too: WaterRenderer.frag's reflection
                 // lookup samples the vegetation color/depth targets, which are
                 // written on the vegetation queue and signaled by tlVeg@v.
                 // Record the value so a later RT AS build waits for this
@@ -2719,7 +2719,7 @@ public:
                     if (brushLiquidCmd != VK_NULL_HANDLE) {
                         CommandBufferState lblState;
                         this->sceneRenderer->setCmdState(&lblState);
-                        this->sceneRenderer->mainLiquidRenderer->renderBrushLiquid(app, brushLiquidCmd, frameIdx, blsky, slot.waterDs2);
+                        this->sceneRenderer->waterRenderer->renderBrushLiquid(app, brushLiquidCmd, frameIdx, blsky, slot.waterDs2);
                         this->sceneRenderer->setCmdState(&taskState);
                         app->submitCommandBufferAsyncToQueue(brushLiquidCmd, app->getBrushLiquidQueue(), &tlBrushLiquid, {tlWater}, true, {}, {v}, v, {}, true);
                     } else {
@@ -2854,14 +2854,14 @@ public:
 
                 // Opaque (solid) — async snapshot taken in processPendingMeshes
                 // (1-frame latency, never touches GPU memory on the UI path).
-                size_t opaqueLoaded = sceneRenderer->mainSolidRenderer->getIndirectRenderer().getMeshCount();
+                size_t opaqueLoaded = sceneRenderer->solidRenderer->getIndirectRenderer().getMeshCount();
                 uint32_t opaqueVisible = sceneRenderer ? sceneRenderer->getLastOpaqueVisible() : 0;
                 ImGui::Text("Opaque - Loaded (GPU): %zu  Visible (GPU cull): %u", opaqueLoaded, opaqueVisible);
                 size_t opaqueTracked = sceneRenderer ? sceneRenderer->getRegisteredModelCount() : 0;
                 ImGui::Text("Opaque Models Tracked: %zu", opaqueTracked);
 
                 // Transparent / water
-                size_t transparentLoaded = sceneRenderer && sceneRenderer->mainLiquidRenderer ? sceneRenderer->mainLiquidRenderer->getIndirectRenderer().getMeshCount() : 0;
+                size_t transparentLoaded = sceneRenderer && sceneRenderer->waterRenderer ? sceneRenderer->waterRenderer->getIndirectRenderer().getMeshCount() : 0;
                 uint32_t transparentVisible = sceneRenderer ? sceneRenderer->getLastTransparentVisible() : 0;
                 ImGui::Text("Transparent - Loaded (GPU): %zu  Visible (GPU cull): %u", transparentLoaded, transparentVisible);
                 size_t transparentTracked = sceneRenderer ? sceneRenderer->getTransparentModelCount() : 0;
@@ -3046,10 +3046,10 @@ public:
         // the FFT; the shader only reads these uploaded values.
         if (mp3Widget) {
             mp3Widget->tick();
-            if (sceneRenderer && sceneRenderer->mainLiquidRenderer) {
+            if (sceneRenderer && sceneRenderer->waterRenderer) {
                 const AudioFeatures& af = mp3Widget->audioFeatures();
                 const bool active = mp3Widget->musicReactiveActive() && af.valid;
-                sceneRenderer->mainLiquidRenderer->updateMusicAudio(
+                sceneRenderer->waterRenderer->updateMusicAudio(
                     af.amplitude, af.bassEnergy, af.midEnergy, af.highEnergy,
                     af.beatIntensity, active);
             }
@@ -3085,8 +3085,8 @@ public:
             VkImageView brushDepthView = sceneRenderer->brushRenderer ? sceneRenderer->brushRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE;
             VkImageView brushBackFaceDepthView = sceneRenderer->brushRenderer ? sceneRenderer->brushRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
             VkImageView waterGeomDepthView = VK_NULL_HANDLE;
-            if (sceneRenderer->mainLiquidRenderer) {
-                waterGeomDepthView = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthView(frameIdx);
+            if (sceneRenderer->waterRenderer) {
+                waterGeomDepthView = sceneRenderer->waterRenderer->getWaterGeomDepthView(frameIdx);
             }
             VkImageView vegColorView = VK_NULL_HANDLE;
             VkImageView vegDepthView = VK_NULL_HANDLE;
@@ -3124,26 +3124,26 @@ public:
             sceneRenderer->postProcessRenderer->render(
                 this,
                 commandBuffer,
-                sceneRenderer->mainSolidRenderer->getColorView(frameIdx),
-                sceneRenderer->mainSolidRenderer->getDepthView(frameIdx),
+                sceneRenderer->solidRenderer->getColorView(frameIdx),
+                sceneRenderer->solidRenderer->getDepthView(frameIdx),
                 settings.waterInMainPass
-                    ? sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()
-                    : sceneRenderer->mainLiquidRenderer->getWaterDepthView(frameIdx),
+                    ? sceneRenderer->waterRenderer->getDummyWaterColorView()
+                    : sceneRenderer->waterRenderer->getWaterDepthView(frameIdx),
                 // Water refraction+tint body (RGB+weight) and measured depth
                 // for the final-pass depth-guided water blur (water-in-main
                 // has no aux targets). L15: lazily unallocated body/column
                 // targets bind the 1x1 dummy (descriptors must stay valid
                 // even though the blur-gated composite never samples them).
                 settings.waterInMainPass
-                    ? sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()
-                    : (sceneRenderer->mainLiquidRenderer->getWaterBodyView(frameIdx) != VK_NULL_HANDLE
-                       ? sceneRenderer->mainLiquidRenderer->getWaterBodyView(frameIdx)
-                       : sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()),
+                    ? sceneRenderer->waterRenderer->getDummyWaterColorView()
+                    : (sceneRenderer->waterRenderer->getWaterBodyView(frameIdx) != VK_NULL_HANDLE
+                       ? sceneRenderer->waterRenderer->getWaterBodyView(frameIdx)
+                       : sceneRenderer->waterRenderer->getDummyWaterColorView()),
                 settings.waterInMainPass
-                    ? sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()
-                    : (sceneRenderer->mainLiquidRenderer->getWaterColumnView(frameIdx) != VK_NULL_HANDLE
-                       ? sceneRenderer->mainLiquidRenderer->getWaterColumnView(frameIdx)
-                       : sceneRenderer->mainLiquidRenderer->getDummyWaterColorView()),
+                    ? sceneRenderer->waterRenderer->getDummyWaterColorView()
+                    : (sceneRenderer->waterRenderer->getWaterColumnView(frameIdx) != VK_NULL_HANDLE
+                       ? sceneRenderer->waterRenderer->getWaterColumnView(frameIdx)
+                       : sceneRenderer->waterRenderer->getDummyWaterColorView()),
                 brushColorView,
                 brushDepthView,
                 brushBackFaceDepthView,
@@ -3168,7 +3168,7 @@ public:
                 // targets and the composite must not fetch them. water-in-main
                 // has no aux targets at all.
                 !settings.waterInMainPass
-                    && sceneRenderer->mainLiquidRenderer->waterBlurNeeded(),
+                    && sceneRenderer->waterRenderer->waterBlurNeeded(),
                 // M12 (perf report 22): the vegetation offscreen targets are
                 // downscaled -> composite takes the closest of the 2x2
                 // veg-depth taps instead of one bilinear sample.
@@ -3878,11 +3878,11 @@ void MyApp::applyBrushToScene() {
         : world->scene().transparentOctree;
 
     Octree::OctreeNodeDataHandler& updateHandler = (entry.targetLayer == 0)
-        ? mainSolidCollector.updateHandler
-        : mainLiquidCollector.updateHandler;
+        ? solidCollector.updateHandler
+        : waterCollector.updateHandler;
     Octree::OctreeNodeDataHandler& deleteHandler = (entry.targetLayer == 0)
-        ? mainSolidCollector.deleteHandler
-        : mainLiquidCollector.deleteHandler;
+        ? solidCollector.deleteHandler
+        : waterCollector.deleteHandler;
 
     // cachedSweepStart was already set by rebuildBrushScene — use the same pair
     Transformation model(entry.scale, entry.translate, entry.rot);
@@ -3898,8 +3898,8 @@ void MyApp::applyBrushToScene() {
 
     // Flush queued change events to trigger mesh creation. Chunk uploads are
     // incremental (addMeshSlotted() + uploadSlot()) — no global rebuild required.
-    mainSolidCollector.dispatch(mainSolidAddHandler, mainSolidRemoveHandler);
-    mainLiquidCollector.dispatch(mainLiquidAddHandler, mainLiquidRemoveHandler);
+    solidCollector.dispatch(solidAddHandler, solidRemoveHandler);
+    waterCollector.dispatch(waterAddHandler, waterRemoveHandler);
 
     // Update previousTranslate for the next sweep apply
     if (entry.sweepMode) {
@@ -3949,16 +3949,16 @@ void MyApp::resetSceneState() {
     world->scene().opaqueOctree.reset();
     world->scene().transparentOctree.reset();
 
-    mainSolidCollector.clear();
-    mainLiquidCollector.clear();
+    solidCollector.clear();
+    waterCollector.clear();
 }
 
 void MyApp::dispatchSolidEvents() {
-    mainSolidCollector.dispatch(mainSolidAddHandler, mainSolidRemoveHandler);
+    solidCollector.dispatch(solidAddHandler, solidRemoveHandler);
 }
 
 void MyApp::dispatchLiquidEvents() {
-    mainLiquidCollector.dispatch(mainLiquidAddHandler, mainLiquidRemoveHandler);
+    waterCollector.dispatch(waterAddHandler, waterRemoveHandler);
 }
 
 void MyApp::generateMap() {
@@ -3967,8 +3967,8 @@ void MyApp::generateMap() {
     // Build the octree (CPU only, no tessellation)
     MainSceneLoader loader;
     world->scene().loadScene(loader,
-        mainSolidCollector.updateHandler, mainSolidCollector.deleteHandler,
-        mainLiquidCollector.updateHandler, mainLiquidCollector.deleteHandler
+        solidCollector.updateHandler, solidCollector.deleteHandler,
+        waterCollector.updateHandler, waterCollector.deleteHandler
     );
     std::cout << "[MyApp::generateMap] Octree construction complete\n";
 
@@ -3982,8 +3982,8 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     resetSceneState();
 
     world->scene().load(path,
-        mainSolidCollector.updateHandler, mainSolidCollector.deleteHandler,
-        mainLiquidCollector.updateHandler, mainLiquidCollector.deleteHandler,
+        solidCollector.updateHandler, solidCollector.deleteHandler,
+        waterCollector.updateHandler, waterCollector.deleteHandler,
         &settings);
     std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '" << path << "'\n";
 

@@ -3,8 +3,8 @@
 #include "Widget.hpp"
 #include "../utils/BillboardManager.hpp"
 #include "../utils/AtlasManager.hpp"
-#include "../vulkan/TextureArrayManager.hpp"
-#include "../vulkan/EditableTexture.hpp"
+#include "../vulkan/resources/TextureArrayManager.hpp"
+#include "../vulkan/resources/EditableTexture.hpp"
 #include "types/AtlasTextureData.hpp"
 #include "../services/BillboardService.hpp"
 #include <imgui.h>

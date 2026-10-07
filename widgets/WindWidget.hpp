@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/renderer/VegetationRenderer.hpp"
+#include "../vulkan/renderer/vegetation/VegetationRenderer.hpp"
 
 class WindWidget : public Widget {
 public:

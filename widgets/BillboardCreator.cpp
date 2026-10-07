@@ -2,7 +2,7 @@
 #include "BillboardCreator.hpp"
 #include <cmath>
 #include <cstring>
-#include "../vulkan/VulkanApp.hpp"
+#include "../vulkan/core/VulkanApp.hpp"
 #include <map>
 #include <vector>
 #include <cstdio>

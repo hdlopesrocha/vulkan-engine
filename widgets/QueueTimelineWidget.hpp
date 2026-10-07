@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vulkan/vulkan.h>
 #include "imgui.h"
-#include "../vulkan/VulkanApp.hpp"
+#include "../vulkan/core/VulkanApp.hpp"
 
 class QueueTimelineWidget : public Widget {
 public:

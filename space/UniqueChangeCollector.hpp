@@ -2,9 +2,9 @@
 #include <unordered_map>
 #include <mutex>
 #include <utility>
-#include "../space/OctreeNodeData.hpp"
-#include "../space/OctreeNode.hpp"
-#include "../space/Octree.hpp"
+#include "OctreeNodeData.hpp"
+#include "OctreeNode.hpp"
+#include "Octree.hpp"
 
 // Replacement for the removed UniqueOctreeChangeHandler: the same per-node
 // event deduplication, exposed as Octree's two handler lambdas

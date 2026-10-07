@@ -1,5 +1,5 @@
 #include "BillboardService.hpp"
-#include "../vulkan/VulkanApp.hpp"
+#include "../vulkan/core/VulkanApp.hpp"
 #include <cstdio>
 #include <iostream>
 #include <stdexcept>

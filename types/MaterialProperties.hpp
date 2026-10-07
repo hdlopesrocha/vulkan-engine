@@ -40,7 +40,7 @@ struct MaterialProperties {
     // 1.0 (full texture range): lower values compress every material toward a
     // mirror finish (at 0.5 even a fully rough texture can only reach 50%
     // matte), for both the RT mirror mix and the specular exponent in
-    // main.frag. Tune per material in the texture viewer.
+    // SolidRenderer.frag. Tune per material in the texture viewer.
     float roughnessFactor = 1.0f;
     float aoFactor = 1.0f;
     bool useAO = true;

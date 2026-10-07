@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Service.hpp"
-#include "../vulkan/renderer/ImpostorCapture.hpp"
+#include "../vulkan/renderer/vegetation/ImpostorCapture.hpp"
 #include <vulkan/vulkan.h>
 #include <cstdint>
 

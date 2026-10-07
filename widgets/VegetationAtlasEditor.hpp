@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/TextureArrayManager.hpp"
+#include "../vulkan/resources/TextureArrayManager.hpp"
 #include "../utils/AtlasManager.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>

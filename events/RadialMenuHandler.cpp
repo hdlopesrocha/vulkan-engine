@@ -8,7 +8,7 @@
 #include "GamepadPublisher.hpp"
 #include "../utils/Brush3dManager.hpp"
 #include "types/BrushEntry.hpp"
-#include "../vulkan/TextureArrayManager.hpp"
+#include "../vulkan/resources/TextureArrayManager.hpp"
 #include "../math/Light.hpp"
 #include "SetBrushTextureEvent.hpp"
 #include "SetBrushControlEvent.hpp"

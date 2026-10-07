@@ -182,7 +182,7 @@ struct WaterSettings {
     glm::vec3 volumetricColor = glm::vec3(0.10f, 0.35f, 0.40f); // scatter tint
 };
 
-// CPU mirror of shaders/includes/water_tint.glsl: ONE water region, so this is
+// CPU mirror of shaders/includes/water/WaterTint.glsl: ONE water region, so this is
 // a single colour. `depth` is kept in the signature because the callers pass
 // their depth signal in, but there is no depth-band palette any more.
 inline glm::vec3 waterRegionTint(const WaterSettings& p, float depth) {

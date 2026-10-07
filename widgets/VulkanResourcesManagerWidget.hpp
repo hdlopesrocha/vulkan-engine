@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/VulkanResourceManager.hpp"
+#include "../vulkan/core/VulkanResourceManager.hpp"
 #include <memory>
 #include <array>
 #include <cstdint>

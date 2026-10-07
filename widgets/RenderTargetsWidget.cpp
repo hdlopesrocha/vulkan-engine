@@ -1,10 +1,10 @@
 #include "RenderTargetsWidget.hpp"
 
-#include "../vulkan/VulkanApp.hpp"
+#include "../vulkan/core/VulkanApp.hpp"
 #include "../vulkan/renderer/SceneRenderer.hpp"
-#include "../vulkan/renderer/SolidRenderer.hpp"
-#include "../vulkan/renderer/SkyRenderer.hpp"
-#include "../vulkan/renderer/ShadowRenderer.hpp"
+#include "../vulkan/renderer/solid/SolidRenderer.hpp"
+#include "../vulkan/renderer/sky/SkyRenderer.hpp"
+#include "../vulkan/renderer/shadow/ShadowRenderer.hpp"
 #include "../utils/ShadowParams.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
@@ -79,8 +79,8 @@ void RenderTargetsWidget::init(VulkanApp* app_, int width, int height) {
         std::vector<char> vertCode, fragCode;
         VkShaderModule vert = VK_NULL_HANDLE;
         VkShaderModule frag = VK_NULL_HANDLE;
-        try { vert = app->getOrCreateShaderModule("shaders/depth_linearize.vert.spv"); } catch (...) { }
-        try { frag = app->getOrCreateShaderModule("shaders/depth_linearize.frag.spv"); } catch (...) { }
+        try { vert = app->getOrCreateShaderModule("shaders/RenderTargetsWidget.vert.spv"); } catch (...) { }
+        try { frag = app->getOrCreateShaderModule("shaders/RenderTargetsWidget.frag.spv"); } catch (...) { }
         if (vert != VK_NULL_HANDLE && frag != VK_NULL_HANDLE) {
 
             VkPipelineShaderStageCreateInfo stages[2]{};
@@ -362,10 +362,10 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
                 }
             }
             // Water renderer (water geometry depth, per-frame)
-            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer && sceneRenderer->mainLiquidRenderer) {
+            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer && sceneRenderer->waterRenderer) {
                 for (uint32_t f = 0; f < 2; ++f) {
-                    if (srcImage == sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(f)) {
-                        trackedOld = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthLayout(f);
+                    if (srcImage == sceneRenderer->waterRenderer->getWaterGeomDepthImage(f)) {
+                        trackedOld = sceneRenderer->waterRenderer->getWaterGeomDepthLayout(f);
                         break;
                     }
                 }
@@ -533,10 +533,10 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
                 }
             }
         }
-        if (sceneRenderer && sceneRenderer->mainLiquidRenderer) {
+        if (sceneRenderer && sceneRenderer->waterRenderer) {
             for (uint32_t f = 0; f < 2; ++f) {
-                if (srcImage == sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(f)) {
-                    sceneRenderer->mainLiquidRenderer->setWaterGeomDepthLayout(f, finalTrackedLayout);
+                if (srcImage == sceneRenderer->waterRenderer->getWaterGeomDepthImage(f)) {
+                    sceneRenderer->waterRenderer->setWaterGeomDepthLayout(f, finalTrackedLayout);
                     break;
                 }
             }
@@ -838,7 +838,7 @@ void RenderTargetsWidget::invalidateImGuiDescriptors() {
 }
 
 void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
-    if (!sceneRenderer || !sceneRenderer->mainLiquidRenderer) return;
+    if (!sceneRenderer || !sceneRenderer->waterRenderer) return;
 
     // Debug: print resource counts before cleanup (helps track leaks)
     if (app) {
@@ -894,7 +894,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         } break;
 
         case PreviewTarget::WaterColor: {
-            VkImageView waterView = (sceneRenderer && sceneRenderer->mainLiquidRenderer) ? sceneRenderer->mainLiquidRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
+            VkImageView waterView = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
             if (waterView != VK_NULL_HANDLE && waterColorDescriptor == VK_NULL_HANDLE) {
                 waterColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 waterColorDescriptorOwned = true;
@@ -997,7 +997,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         // Back-face depth pass
         // Back-face depth pass (use perspective linearization)
-        if (sceneRenderer && sceneRenderer->mainLiquidRenderer && linearizePipeline != VK_NULL_HANDLE) {
+        if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE) {
             // Use the current frame slot's depth image — its in-flight fence
             // was already waited on by drawFrame(). Any other slot may still
             // be executing on the GPU, causing a sync hazard.
@@ -1012,15 +1012,15 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         }
 
         // Water front-face depth pass (linearize the water geometry depth buffer)
-        if (sceneRenderer && sceneRenderer->mainLiquidRenderer && linearizePipeline != VK_NULL_HANDLE && waterDepthLinearView != VK_NULL_HANDLE) {
+        if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE && waterDepthLinearView != VK_NULL_HANDLE) {
             // Use the current frame slot's depth image — its in-flight fence
             // was already waited on by drawFrame(). Any other slot may still
             // be executing on the GPU, causing a sync hazard.
             uint32_t producerFrame = frameIndex;
-            VkImageView src = sceneRenderer->mainLiquidRenderer->getWaterGeomDepthView(producerFrame);
+            VkImageView src = sceneRenderer->waterRenderer->getWaterGeomDepthView(producerFrame);
             if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
-                runLinearizePass(app, sceneRenderer->mainLiquidRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler, waterDepthLinearView,
+                runLinearizePass(app, sceneRenderer->waterRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler, waterDepthLinearView,
                                  waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 1.0f);
             }
@@ -1176,7 +1176,7 @@ void RenderTargetsWidget::render() {
     ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen, ImGuiWindowFlags_AlwaysAutoResize);
     if (!wg.visible()) return;
 
-    if (!sceneRenderer || !sceneRenderer->mainLiquidRenderer || !solidRenderer) {
+    if (!sceneRenderer || !sceneRenderer->waterRenderer || !solidRenderer) {
         ImGui::TextUnformatted("Renderers not available.");
         return;
     }

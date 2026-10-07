@@ -1,7 +1,7 @@
 #include "SettingsWidget.hpp"
 #include "components/ImGuiHelpers.hpp"
 #include "components/ColumnLayout.hpp"
-#include "vulkan/includes/DebugModes.hpp"
+#include "vulkan/includes/debug/DebugModes.hpp"
 #include <vector>
 #include <functional>
 
@@ -349,8 +349,8 @@ void SettingsWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Debug Visualisation");
         ImGuiComponents::ColSeparator();
-        // Canonical IDs/names live in vulkan/includes/DebugModes.hpp; the
-        // shaders mirror them in includes/debug_modes.glsl. Both surfaces
+        // Canonical IDs/names live in vulkan/includes/debug/DebugModes.hpp; the
+        // shaders mirror them in includes/DebugModes.glsl. Both surfaces
         // dispatch on the same IDs, so a view only ever affects the surface
         // it applies to and the rest keeps rendering normally.
         constexpr int modeCount = static_cast<int>(DebugMode::Count);
@@ -371,7 +371,7 @@ void SettingsWidget::render() {
         if (ImGui::Checkbox("Show SDF Cubes (indirect cull)", &settings.showSDFDebug)) {
             // toggled SDF leaf cube overlay
         }
-        ImGuiComponents::TooltipOnHover("Render leaf-node cube faces colored by SDF sign; frustum-culled on the GPU via indirect.comp (only visible cubes are drawn)");
+        ImGuiComponents::TooltipOnHover("Render leaf-node cube faces colored by SDF sign; frustum-culled on the GPU via IndirectRenderer.comp (only visible cubes are drawn)");
     });
 
     // ---- Packing: best-fit over the last frame's measured section heights.
