@@ -1,0 +1,650 @@
+#version 450
+
+#include "../../ssbo/DrawCmd.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+
+// Solid input draw commands (one per terrain chunk entry, indexed 0..numCmds-1).
+layout(std430, binding = 0) readonly buffer InCmds {
+    DrawCmd cmds[];
+} inCmds;
+
+// Compacted SOLID output draw commands (frustum + LoD culled).
+layout(std430, binding = 1) writeonly buffer OutCmds {
+    DrawCmd cmds[];
+} outCmds;
+
+// Solid per-entry bounds + LoD meta (4 vec4 per entry, indexed 0..numCmds-1):
+//   min, max, lodMeta{cellSize, level, maxLevel, unused}, base (unused by the
+//   gate: the parent cell is derived from the tree root lattice).
+// cellSize <= 0 marks an entry with no LoD data (always kept).
+layout(std430, binding = 2) readonly buffer Bounds {
+    vec4 data[];
+} boundsBuf;
+
+// Solid visible (compacted) count.
+layout(std430, binding = 3) buffer VisibleCount {
+    uint count;
+};
+
+// Chosen-LoD output, one uvec2 per SOLID draw entry: {drawIndex, stamp} where
+// stamp == entryLevel when the entry is the selected rung, 0xFFFFFFFE when the
+// hierarchical gate rejected it, and 0xFFFFFFFF for entries with no LoD data.
+// Read-write: the cascade branch reads the stamp the main branch wrote (single
+// source of truth for the shadow cull) instead of re-deriving the selection.
+layout(std430, binding = 4) buffer VisibleLods {
+    uvec2 data[];
+} visibleLods;
+
+// ── Vegetation outputs ───────────────────────────────────────────────────────
+// Emitted by processVegetation() for every VISIBLE solid chunk that carries
+// vegetation. We reuse the solid chunk's AABB (boundsBuf[s]), so vegetation is
+// implicitly culled by the same frustum test as its terrain chunk (step 4: the
+// vegetation bounding box IS the solid terrain chunk AABB). Billboards use
+// indexCount=36, impostors indexCount=6 — each into its own compact stream.
+layout(std430, binding = 5) writeonly buffer OutVegImpCmds {
+    DrawCmd cmds[];
+} outVegImp;
+layout(std430, binding = 6) buffer VegImpCount {
+    uint count;
+} vegImpCount;
+
+// Vegetation billboard output stream (indexCount=36) + its count.
+layout(std430, binding = 7) writeonly buffer OutVegBbCmds {
+    DrawCmd cmds[];
+} outVegBb;
+layout(std430, binding = 8) buffer VegBbCount {
+    uint count;
+} vegBbCount;
+
+// Per-solid-chunk vegetation table (indexed by the SAME draw index s as the
+// solid entry): {instanceCount, firstInstance, pad, pad}. instanceCount < 1
+// means the chunk has no vegetation. Binding 9.
+layout(std430, binding = 9) readonly buffer VegChunkInfo {
+    vec4 data[];
+} vegChunkInfo;
+
+// ── SDF debug-cube culling (folded into the SAME solid dispatch) ──────────────
+// SDF cubes are appended AFTER the solid/veg entries in the dispatch (input index
+// s in [terrainCount, terrainCount+sdfCount)). They carry no LoD data, so they are
+// frustum-culled only and written to a dedicated SDF output stream so the solid
+// indirect draw (which uses a different vertex buffer) is never polluted by them.
+layout(std430, binding = 12) readonly buffer InSdfCmds {
+    DrawCmd cmds[];
+} inSdfCmds;
+layout(std430, binding = 13) readonly buffer BoundsSdf {
+    vec4 data[];
+} boundsSdf;
+layout(std430, binding = 10) writeonly buffer OutSdfCmds {
+    DrawCmd cmds[];
+} outSdfCmds;
+layout(std430, binding = 11) buffer OutSdfCount {
+    uint count;
+} sdfCount;
+
+// ── Mesh bounding-box culling (folded into the SAME solid dispatch) ──────────
+// Bounding boxes are appended AFTER the solid + SDF entries (input index s in
+// [terrainCount + sdfCount, terrainCount + sdfCount + bboxCount)). They carry no
+// LoD data, so they are frustum-culled only and written to a dedicated stream so
+// the solid indirect draw (different vertex buffer + line topology) is never
+// polluted by them.
+layout(std430, binding = 14) readonly buffer BoundsBbox {
+    vec4 data[];
+} boundsBbox;
+layout(std430, binding = 15) writeonly buffer OutBboxCmds {
+    DrawCmd cmds[];
+} outBboxCmds;
+layout(std430, binding = 16) buffer OutBboxCount {
+    uint count;
+} bboxCount;
+
+// ── Cascade (shadow) culling outputs ──────────────────────────────────────────
+// Folded into the SAME dispatch as the main-view cull when pc.doCascade == 1.
+// Each entry is independently tested against the 3 cascade view-projection
+// matrices and appended to the cascade stream(s) it is visible in. firstInstance
+// is the draw entry index, so the shadow draw reconstructs the mesh via the same
+// InstanceBuffer lookup as the main pass.
+layout(std430, binding = 17) readonly buffer CascadeMatrices {
+    mat4 viewProj[3];
+} cascades;
+
+layout(std430, binding = 18) writeonly buffer OutCascade0 {
+    DrawCmd cmds[];
+} outCasc0;
+layout(std430, binding = 19) buffer CascadeCount0 {
+    uint count;
+} cc0;
+layout(std430, binding = 20) writeonly buffer OutCascade1 {
+    DrawCmd cmds[];
+} outCasc1;
+layout(std430, binding = 21) buffer CascadeCount1 {
+    uint count;
+} cc1;
+layout(std430, binding = 22) writeonly buffer OutCascade2 {
+    DrawCmd cmds[];
+} outCasc2;
+layout(std430, binding = 23) buffer CascadeCount2 {
+    uint count;
+} cc2;
+
+// ── Vegetation cascade (shadow) outputs ────────────────────────────────────────
+// Folded into the SAME dispatch as the main-view cull when pc.doVegCascade == 1.
+// Each vegetation chunk (not solid draw entry) is frustum-culled against the 3
+// cascade frustums and two command streams are emitted per cascade: billboards
+// (indexCount=36) and impostors (indexCount=6), each with the chunk's instance
+// count + firstInstance so the shadow billboard/impostor draws reconstruct the
+// instance range. Mirrors the retired veg_cascade_cull.comp.
+layout(std430, binding = 24) readonly buffer VegCascadeChunkInfo {
+    vec4 data[];
+} vegCascadeInfo;
+
+layout(std430, binding = 25) writeonly buffer VegBbCascade0 { DrawCmd cmds[]; } vegBbCasc0;
+layout(std430, binding = 26) buffer VegBbCascadeCount0 { uint count; } vegBbCascCnt0;
+layout(std430, binding = 27) writeonly buffer VegBbCascade1 { DrawCmd cmds[]; } vegBbCasc1;
+layout(std430, binding = 28) buffer VegBbCascadeCount1 { uint count; } vegBbCascCnt1;
+layout(std430, binding = 29) writeonly buffer VegBbCascade2 { DrawCmd cmds[]; } vegBbCasc2;
+layout(std430, binding = 30) buffer VegBbCascadeCount2 { uint count; } vegBbCascCnt2;
+
+layout(std430, binding = 31) writeonly buffer VegImpCascade0 { DrawCmd cmds[]; } vegImpCasc0;
+layout(std430, binding = 32) buffer VegImpCascadeCount0 { uint count; } vegImpCascCnt0;
+layout(std430, binding = 33) writeonly buffer VegImpCascade1 { DrawCmd cmds[]; } vegImpCasc1;
+layout(std430, binding = 34) buffer VegImpCascadeCount1 { uint count; } vegImpCascCnt1;
+layout(std430, binding = 35) writeonly buffer VegImpCascade2 { DrawCmd cmds[]; } vegImpCasc2;
+layout(std430, binding = 36) buffer VegImpCascadeCount2 { uint count; } vegImpCascCnt2;
+
+layout(push_constant) uniform PC {
+    layout(offset = 0)   mat4 viewProj;
+    layout(offset = 64)  uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now)
+    layout(offset = 68)  uint numCmds;     // number of TOTAL draw commands (solid + sdf)
+    layout(offset = 80)  vec3 camPos;      // camera position driving the hierarchical LoD rung selection
+    layout(offset = 96)  float lodBias;    // world distance per LoD rung: larger = coarser levels kick in farther away
+    layout(offset = 100) uint maxTargetLod; // clamp: never select a coarser LoD level than this
+    layout(offset = 104) uint numCmdsVeg;   // legacy/unused in the merged dispatch (kept for layout compatibility)
+    layout(offset = 108) uint terrainCount; // number of SOLID draw commands (s < terrainCount)
+    layout(offset = 112) uint sdfCount;     // number of SDF cube entries (appended after solid)
+    layout(offset = 116) uint bboxCount;    // number of mesh bounding-box entries (appended after solid + sdf)
+    layout(offset = 120) uint doCascade;         // emit cascade (shadow) streams when 1
+    layout(offset = 124) uint cascadeEntryCount; // number of entries to cascade-cull
+    layout(offset = 128) uint doMain;           // emit main-view streams when 1
+    layout(offset = 132) uint doVegCascade;      // emit vegetation cascade (shadow) streams when 1
+    layout(offset = 136) uint vegChunkCount;     // number of veg chunks to cascade-cull
+    layout(offset = 144) vec3 lodRootMin;        // tree root min corner: the dyadic lattice origin for parent-cell derivation
+} pc;
+
+// Shared, per-workgroup cache of the six frustum planes. The viewProj matrix is
+// a push constant identical for every invocation of a dispatch, so extracting and
+// normalizing the planes once per workgroup (instead of once per invocation) avoids
+// thousands of redundant length()/divide ALU ops per frame.
+shared vec4 gPlanes[6];
+
+// Normalize a frustum plane (n, d) by its normal length so the distance test is
+// stable. Length is never zero for a valid view-projection matrix.
+vec4 normalizePlane(vec4 pl) {
+    float len = length(pl.xyz);
+    return pl / max(len, 1e-8);
+}
+
+// Robust AABB vs frustum test. `planes` already holds the normalized clip-space
+// planes (left, right, bottom, top, near, far). Normalization keeps the distance
+// test stable and avoids false negatives when the camera is inside the AABB.
+bool aabbVisible(vec4 planes[6], vec3 minp, vec3 maxp) {
+    // For each plane, test the AABB's most positive (closest) vertex
+    for (int i = 0; i < 6; ++i) {
+        vec3 n = planes[i].xyz;
+        float d = planes[i].w;
+
+        vec3 p;
+        p.x = (n.x >= 0.0) ? maxp.x : minp.x;
+        p.y = (n.y >= 0.0) ? maxp.y : minp.y;
+        p.z = (n.z >= 0.0) ? maxp.z : minp.z;
+        float dist = dot(n, p) + d;
+        if (dist < 0.0) {
+            // AABB is completely outside this plane
+            return false;
+        }
+    }
+
+    // Passed all plane tests => box intersects or is inside frustum
+    return true;
+}
+
+// Shortest distance from point `p` to the AABB [bmin, bmax] (0 when inside).
+// Used by the hierarchical LoD gate: unlike a distance to the chunk centre,
+// this is monotone along a chunk's ancestor chain (a child box is inside its
+// parent box, so going finer can only increase the distance, never decrease
+// it), which is what makes the rung resolution below single-valued.
+float aabbDistance(vec3 p, vec3 bmin, vec3 bmax) {
+    vec3 d = max(max(bmin - p, p - bmax), vec3(0.0));
+    return length(d);
+}
+
+// ── Hierarchical LoD rung selection (one rung per region, no holes) ──────────
+// Decides whether the draw entry at `entryLevel` is THE rung to draw for its
+// region. Flattened per-entry form of the classic CDLOD recursion over the
+// chunk ladder:
+//
+//   start at the coarsest drawn rung (maxLevel);
+//   descend into a cell's children while the camera is closer to the cell's
+//   AABB than the cell's range (baseCell * lodBias * level);
+//   the first cell that does NOT recurse is the one drawn.
+//
+// Per entry that is: `recurse(parent) && !recurse(self)`, with the coarsest
+// rung drawing when `!recurse(self)` and the finest rung drawing whenever its
+// parent recursed (there is nothing finer to clamp to). `recurse(level)` uses
+// the entry's own AABB distance and its parent cell's AABB. Both the distance
+// (non-increasing with coarseness) and the range (non-decreasing) are monotone
+// along the chain, so exactly one level satisfies the transition for every
+// camera position — a region can never end up with no selected rung (the old
+// camera-to-centre band compared distances at different, non-nested centres
+// and could reject every rung of a column: complete chunk holes) and never
+// with two (overlapping rungs z-fight at LoD borders).
+//
+// The parent cell is the aligned double-size cube containing this cell: the
+// low bit of the cell's index (in cell-size units from the tree root min,
+// `pc.lodRootMin`) selects which half of the parent the cell occupies.
+bool lodRungIsSelected(uint entryLevel, int maxLevel, int maxTargetLod,
+                       float cellSize, vec3 cellMin) {
+    // baseCell == the frontier cell size: cellSize doubles per rung, so the
+    // ratio is invariant and the range schedule matches the documented
+    // "transition at distance = level * chunkBase * bias" setting.
+    float baseCell = cellSize / exp2(float(max(entryLevel, 0)));
+    float rangeSelf = baseCell * pc.lodBias * float(entryLevel);
+    bool recurseSelf = (entryLevel > 0u)
+        && (aabbDistance(pc.camPos, cellMin, cellMin + vec3(cellSize)) < rangeSelf);
+
+    // Above the drawn ladder: never draw. Above the detail clamp: never draw —
+    // and because the parent chain is only consulted below the clamp, the
+    // transition is forced at (or under) maxTargetLod.
+    if (entryLevel > uint(maxLevel)) return false;
+    if (entryLevel > uint(maxTargetLod)) return false;
+
+    // Recursion start for the coarsest drawn rung / the clamp level: no parent
+    // condition to satisfy, so it draws exactly when it does not recurse.
+    if (entryLevel == uint(maxLevel) || entryLevel == uint(maxTargetLod)) {
+        return !recurseSelf;
+    }
+
+    // Parent cell AABB: double size, aligned to the dyadic lattice. The index
+    // is an exact integer (entries are root subdivisions); +0.5 makes the
+    // float round-trip of the division exact up to a tiny epsilon.
+    vec3 idx = floor((cellMin - pc.lodRootMin) / cellSize + 0.5);
+    vec3 parentMin = cellMin - mod(idx, 2.0) * cellSize;
+    float parentRange = baseCell * pc.lodBias * float(entryLevel + 1u);
+    bool recurseParent = aabbDistance(pc.camPos, parentMin, parentMin + vec3(2.0 * cellSize)) < parentRange;
+    return recurseParent && !recurseSelf;
+}
+
+// Emit the billboard (indexCount=36) and impostor (indexCount=6) draw commands
+// for a solid chunk that survived culling. Called from processChunk once the
+// chunk is known visible, so no extra AABB test is needed — vegetation shares
+// the terrain chunk's bounding box.
+void processVegetation(uint s) {
+    if (s >= vegChunkInfo.data.length()) return;
+    vec4 meta = vegChunkInfo.data[s];
+    if (meta.x < 1.0) return; // no vegetation in this chunk
+
+    uint instanceCount = uint(meta.x);
+    uint firstInstance  = uint(meta.y);
+
+    DrawCmd bbCmd;
+    bbCmd.indexCount    = 36u;
+    bbCmd.instanceCount = instanceCount;
+    bbCmd.firstIndex    = 0u;
+    bbCmd.vertexOffset  = 0;
+    bbCmd.firstInstance = firstInstance;
+    uint dstB = atomicAdd(vegBbCount.count, 1u);
+    if (dstB < outVegBb.cmds.length()) outVegBb.cmds[dstB] = bbCmd;
+
+    DrawCmd impCmd = bbCmd;
+    impCmd.indexCount = 6u;
+    uint dstI = atomicAdd(vegImpCount.count, 1u);
+    if (dstI < outVegImp.cmds.length()) outVegImp.cmds[dstI] = impCmd;
+}
+
+// Cull one solid terrain chunk (frustum + hierarchical LoD rung) and emit its
+// compacted solid command. If the chunk is kept, its vegetation is emitted too
+// via processVegetation (so vegetation is drawn exactly for the visible chunks).
+void processChunk(uint s) {
+    if (s >= pc.numCmds) return;
+
+    // ── SDF debug cubes (appended after the solid entries) ───────────────────
+    // SDF debug cubes: one dispatch entry per collected cube. requestSDFCubes only
+    // emits lod==1 surface nodes, so every entry here already satisfies the
+    // chunkLod == 1 gate. Emit a frustum-culled draw command PER cube, with
+    // firstInstance = the cube's SDF-local index so the SDF vertex shader reads
+    // instances[gl_InstanceIndex] for exactly the right AABB. Written to a dedicated
+    // SDF output stream so the solid indirect draw (different vertex buffer) is never
+    // polluted by SDF draw commands.
+    // ── Mesh bounding boxes (appended after solid + SDF) ──
+    // One dispatch entry per collected AABB. They carry the LoD meta (cellSize, level)
+    // so the same hierarchical rung gate as the solid terrain keeps exactly one rung
+    // per region. They are written to a dedicated bbox output stream so the solid
+    // indirect draw (different vertex buffer + line topology) is never polluted by
+    // them. firstInstance = the bbox-local index so the bounding-box vertex shader
+    // reads instances[gl_InstanceIndex] for exactly the right AABB.
+    if (s >= pc.terrainCount + pc.sdfCount) {
+        uint local = s - (pc.terrainCount + pc.sdfCount);
+        if (local >= pc.bboxCount) return;
+
+        // boundsBbox stride is 4 vec4 per box: {min, max, lodMeta, base}.
+        vec3 bmin = boundsBbox.data[local * 4u + 0u].xyz;
+        vec3 bmax = boundsBbox.data[local * 4u + 1u].xyz;
+        vec4 lodMeta = boundsBbox.data[local * 4u + 2u];
+
+        // ── Hierarchical LoD rung gate (mirrors the solid chunk gate) ──
+        // Draw a chunk box only if its rung is THE one resolved by the
+        // hole-free clipmap selection (lodRungIsSelected). Entries with no LoD
+        // data (cellSize <= 0) fall through and are kept (frustum-only,
+        // legacy).
+        float cellSize = lodMeta.x;
+        int entryLevel = int(lodMeta.y + 0.5);
+        int maxLevel   = int(lodMeta.z + 0.5);
+        if (cellSize > 0.0) {
+            if (!lodRungIsSelected(uint(entryLevel), maxLevel, int(pc.maxTargetLod),
+                                   cellSize, bmin)) return;
+        }
+
+        if (!aabbVisible(gPlanes, bmin, bmax)) return;
+
+        uint dst = atomicAdd(bboxCount.count, 1u);
+        if (dst < outBboxCmds.cmds.length()) {
+            DrawCmd cmd;
+            cmd.indexCount    = 24u; // line-cube (12 edges)
+            cmd.instanceCount = 1u;
+            cmd.firstIndex    = 0u;
+            cmd.vertexOffset  = 0;
+            cmd.firstInstance = local;
+            outBboxCmds.cmds[dst] = cmd;
+        }
+        return;
+    }
+
+    if (s >= pc.terrainCount) {
+        uint local = s - pc.terrainCount;
+        if (local >= pc.sdfCount) return;
+
+        // chunkLod == 1 gate (restated in-shader for clarity): all collected cubes
+        // carry chunkLod == 1, so this is always satisfied here.
+        if (inSdfCmds.cmds[local].instanceCount == 0u) return; // not a valid cube slot
+
+        // boundsSdf stride is 4 vec4 per cube: {min, max, lodMeta, base}.
+        // SDF debug cubes are a frustum-only overlay: they mark where SDF faces
+        // exist at every resolution, so we intentionally do NOT apply the clipmap
+        // rung gate (unlike the solid/bbox streams). Only the frustum test
+        // below can drop them, which is what lets all in-view SDF cubes render.
+        vec3 bmin = boundsSdf.data[local * 4u + 0u].xyz;
+        vec3 bmax = boundsSdf.data[local * 4u + 1u].xyz;
+
+        // frustum visibility
+        if (!aabbVisible(gPlanes, bmin, bmax)) return;
+
+        uint dst = atomicAdd(sdfCount.count, 1u);
+        if (dst < outSdfCmds.cmds.length()) {
+            DrawCmd cmd;
+            cmd.indexCount    = 36u;
+            cmd.instanceCount = 1u;
+            cmd.firstIndex    = 0u;
+            cmd.vertexOffset  = 0;
+            cmd.firstInstance = local;
+            outSdfCmds.cmds[dst] = cmd;
+        }
+        return;
+    }
+
+    if (s >= inCmds.cmds.length()) return;
+
+    // Empty entries (no mesh data) never draw, never count, and carry no vegetation.
+    if (inCmds.cmds[s].indexCount == 0u) return;
+
+    // bounds stored as min, max, meta triples in `boundsBuf.data`
+    // meta = {cellSize, level, maxLevel, unused}: level is the 0-based rung
+    // (0 = finest published rung), maxLevel is the tree's real ladder depth
+    // (0-based, from maxChunkLod).
+    uint bIndex = s * 4u;
+    bool hasBounds = (bIndex + 3u) < boundsBuf.data.length();
+    vec3 minp = vec3(0.0);
+    vec3 maxp = vec3(0.0);
+    vec4 lodMeta = vec4(0.0);
+    if (hasBounds) {
+        minp = boundsBuf.data[bIndex].xyz;
+        maxp = boundsBuf.data[bIndex + 1u].xyz;
+        lodMeta = boundsBuf.data[bIndex + 2u];
+    }
+
+    // ── Hierarchical LoD rung selection (frustum-independent) ────────────────
+    // Each published entry is one chunk (node) at a single rung. The rung to
+    // draw for a region is resolved by the hole-free clipmap recursion in
+    // lodRungIsSelected: distance to the entry's own AABB, then to its parent
+    // cell, so exactly one rung survives per region (no holes, no overlap).
+    // The decision is computed for EVERY non-empty entry — even ones outside
+    // the camera frustum — and stamped into visibleLods, so the shadow cascade
+    // cull reads the exact same keep/reject decision instead of re-deriving it
+    // with a stale camera position. (The gate depends only on the camera, not
+    // on the frustum.)
+    float cellSize = lodMeta.x;
+    int entryLevel = int(lodMeta.y + 0.5);
+    int maxLevel   = int(lodMeta.z + 0.5);
+
+    bool keep = true;
+    if (cellSize > 0.0) {
+        keep = lodRungIsSelected(uint(entryLevel), maxLevel, int(pc.maxTargetLod),
+                                 cellSize, minp);
+        // Water pin (pc.targetLayer == 1, the transparent/liquid stream): keep
+        // the finest rung (entryLevel 0) at every distance instead of the
+        // clipmap pick. Small floating volumes (the mirror spheres) are
+        // sub-cell features past rung 2-3, so their coarse rungs mesh to
+        // nothing: the gate would draw an empty rung over a gated-out fine one
+        // and the volume reads as a clean background-colored hole — close up
+        // the mirror works, a bit farther the sky reflection is gone and the
+        // surface "lets through" with no distortion (there is no surface left
+        // to distort). Water draws are few (lake surface + volumes, ~10^5 tris
+        // at rung 0) versus terrain millions, so finest-always is affordable;
+        // tessellation still collapses with distance, and shadow/backface/RT
+        // follow this same stamp via visibleLods.
+        if (pc.targetLayer == 1u) keep = (entryLevel == 0);
+    }
+
+    // Publish the keep/reject decision for this draw entry so external
+    // consumers (shadow cascade cull, cubemap capture, backface pass) mirror
+    // the exact same selection. 0xFFFFFFFE marks a rejected LoD entry the
+    // cascade must not draw; 0xFFFFFFFF marks an entry with no LoD data
+    // (legacy: always kept). A rejected level-0 entry can never be mistaken
+    // for a kept one — the old band gate stamped the *selected* level and the
+    // per-frame fill 0, so far chunks cast finest-mesh shadows the main pass
+    // never drew.
+    uint stamp = keep ? uint(entryLevel) : 0xFFFFFFFEu;
+    if (cellSize <= 0.0) stamp = 0xFFFFFFFFu;
+    if (s < visibleLods.data.length()) {
+        visibleLods.data[s] = uvec2(inCmds.cmds[s].firstInstance, stamp);
+    }
+
+    // Entries with no LoD data (cellSize <= 0) fall through and are kept
+    // (legacy behavior). The water stream instead keeps rung 0 (pin above).
+    if (!keep) return;
+
+    // Models are identity now; frustum planes already extracted into gPlanes.
+    if (!aabbVisible(gPlanes, minp, maxp)) return;
+
+    uint dst = atomicAdd(count, 1);
+    // Keep the original solid draw index (s) for identification (models are identity)
+    if (dst < outCmds.cmds.length()) {
+        DrawCmd cmd = inCmds.cmds[s];
+        cmd.firstInstance = s;
+        outCmds.cmds[dst] = cmd;
+    }
+
+    // Chunk is visible — also emit its vegetation (same AABB, step 4).
+    processVegetation(s);
+}
+
+// ── Cascade (shadow) culling ───────────────────────────────────────────────────
+void writeCascade(uint c, DrawCmd cmd) {
+    uint dst;
+    if (c == 0u) {
+        dst = atomicAdd(cc0.count, 1u);
+        if (dst < outCasc0.cmds.length()) outCasc0.cmds[dst] = cmd;
+    } else if (c == 1u) {
+        dst = atomicAdd(cc1.count, 1u);
+        if (dst < outCasc1.cmds.length()) outCasc1.cmds[dst] = cmd;
+    } else {
+        dst = atomicAdd(cc2.count, 1u);
+        if (dst < outCasc2.cmds.length()) outCasc2.cmds[dst] = cmd;
+    }
+}
+
+bool aabbVisibleCascade(uint c, vec3 minp, vec3 maxp) {
+    mat4 mvp = cascades.viewProj[c];
+    vec4 row0 = vec4(mvp[0][0], mvp[1][0], mvp[2][0], mvp[3][0]);
+    vec4 row1 = vec4(mvp[0][1], mvp[1][1], mvp[2][1], mvp[3][1]);
+    vec4 row2 = vec4(mvp[0][2], mvp[1][2], mvp[2][2], mvp[3][2]);
+    vec4 row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3]);
+    vec4 p0 = normalizePlane(row3 + row0);
+    vec4 p1 = normalizePlane(row3 - row0);
+    vec4 p2 = normalizePlane(row3 + row1);
+    vec4 p3 = normalizePlane(row3 - row1);
+    vec4 p4 = normalizePlane(row2);
+    vec4 p5 = normalizePlane(row3 - row2);
+    vec4 planes[6] = vec4[6](p0, p1, p2, p3, p4, p5);
+    for (int i = 0; i < 6; ++i) {
+        vec3 n = planes[i].xyz;
+        float d = planes[i].w;
+        vec3 p;
+        p.x = (n.x >= 0.0) ? maxp.x : minp.x;
+        p.y = (n.y >= 0.0) ? maxp.y : minp.y;
+        p.z = (n.z >= 0.0) ? maxp.z : minp.z;
+        if (dot(n, p) + d < 0.0) return false;
+    }
+    return true;
+}
+
+// Cull one draw entry against the 3 cascade frustums and append it to the
+// cascade stream(s) it is visible in. Mirrors cascade_cull.comp: the LoD guard
+// reuses the exact keep/reject decision the main pass stamped into visibleLods
+// (single source of truth), so shadows render at the same LoD as the main pass.
+// Entries without LoD meta (cellSize <= 0, e.g. water/vegetation) are always
+// kept.
+void processChunkCascade(uint s) {
+    if (s >= inCmds.cmds.length()) return;
+    if (inCmds.cmds[s].indexCount == 0u) return;
+
+    uint bIndex = s * 4u;
+    vec3 minp = vec3(0.0);
+    vec3 maxp = vec3(0.0);
+    if ((bIndex + 2u) >= boundsBuf.data.length()) {
+        // No bounds: write to every cascade (legacy behavior).
+        DrawCmd cmd = inCmds.cmds[s];
+        cmd.firstInstance = s;
+        writeCascade(0u, cmd);
+        writeCascade(1u, cmd);
+        writeCascade(2u, cmd);
+        return;
+    }
+    minp = boundsBuf.data[bIndex].xyz;
+    maxp = boundsBuf.data[bIndex + 1u].xyz;
+
+    vec4 lodMeta = boundsBuf.data[bIndex + 2u];
+    float cellSize = lodMeta.x;
+    uint entryLevel = uint(lodMeta.y + 0.5);
+    if (cellSize > 0.0) {
+        // stamp semantics (see processChunk): entryLevel == kept,
+        // 0xFFFFFFFE == rejected, 0xFFFFFFFF == no LoD data (kept).
+        uint stamp = (s < visibleLods.data.length()) ? visibleLods.data[s].y : 0xFFFFFFFEu;
+        bool keep = (stamp != 0xFFFFFFFEu) && (stamp == 0xFFFFFFFFu || stamp == entryLevel);
+        if (!keep) return;
+    }
+
+    DrawCmd cmd = inCmds.cmds[s];
+    cmd.firstInstance = s;
+    if (aabbVisibleCascade(0u, minp, maxp)) writeCascade(0u, cmd);
+    if (aabbVisibleCascade(1u, minp, maxp)) writeCascade(1u, cmd);
+    if (aabbVisibleCascade(2u, minp, maxp)) writeCascade(2u, cmd);
+}
+
+// Vegetation cascade cull: one invocation per veg CHUNK (not per solid draw
+// entry). Mirrors the retired veg_cascade_cull.comp — emits two command streams
+// per cascade (billboards indexCount=36, impostors indexCount=6) keyed by the
+// chunk's instance count + firstInstance.
+void processVegCascade(uint idx) {
+    if (idx >= pc.vegChunkCount) return;
+    uint bIndex = idx * 3u;
+    if ((bIndex + 2u) >= vegCascadeInfo.data.length()) return;
+    vec3 minp = vegCascadeInfo.data[bIndex].xyz;
+    vec3 maxp = vegCascadeInfo.data[bIndex + 1u].xyz;
+    vec4 meta = vegCascadeInfo.data[bIndex + 2u];
+    if (meta.x < 1.0) return; // empty chunk never draws
+
+    DrawCmd bbCmd;
+    bbCmd.indexCount    = 36u;
+    bbCmd.instanceCount = uint(meta.x);
+    bbCmd.firstIndex    = 0u;
+    bbCmd.vertexOffset  = 0;
+    bbCmd.firstInstance = uint(meta.y);
+
+    DrawCmd impCmd = bbCmd;
+    impCmd.indexCount = 6u;
+
+    if (aabbVisibleCascade(0u, minp, maxp)) {
+        uint dst = atomicAdd(vegBbCascCnt0.count, 1u);
+        if (dst < vegBbCasc0.cmds.length()) vegBbCasc0.cmds[dst] = bbCmd;
+        dst = atomicAdd(vegImpCascCnt0.count, 1u);
+        if (dst < vegImpCasc0.cmds.length()) vegImpCasc0.cmds[dst] = impCmd;
+    }
+    if (aabbVisibleCascade(1u, minp, maxp)) {
+        uint dst = atomicAdd(vegBbCascCnt1.count, 1u);
+        if (dst < vegBbCasc1.cmds.length()) vegBbCasc1.cmds[dst] = bbCmd;
+        dst = atomicAdd(vegImpCascCnt1.count, 1u);
+        if (dst < vegImpCasc1.cmds.length()) vegImpCasc1.cmds[dst] = impCmd;
+    }
+    if (aabbVisibleCascade(2u, minp, maxp)) {
+        uint dst = atomicAdd(vegBbCascCnt2.count, 1u);
+        if (dst < vegBbCasc2.cmds.length()) vegBbCasc2.cmds[dst] = bbCmd;
+        dst = atomicAdd(vegImpCascCnt2.count, 1u);
+        if (dst < vegImpCasc2.cmds.length()) vegImpCasc2.cmds[dst] = impCmd;
+    }
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+
+    // Extract and normalize the frustum planes once per workgroup from the
+    // viewProj push constant. All threads must reach the barrier, so this runs
+    // before any early return below.
+    if (gl_LocalInvocationIndex < 6u) {
+        mat4 mvp = pc.viewProj; // models are identity in this pipeline
+        // Extract rows: GLSL `mat4` is column-major, so mvp[i] returns a column.
+        vec4 row0 = vec4(mvp[0][0], mvp[1][0], mvp[2][0], mvp[3][0]);
+        vec4 row1 = vec4(mvp[0][1], mvp[1][1], mvp[2][1], mvp[3][1]);
+        vec4 row2 = vec4(mvp[0][2], mvp[1][2], mvp[2][2], mvp[3][2]);
+        vec4 row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3]);
+
+        // Planes: left, right, bottom, top, near, far
+        vec4 p;
+        if (gl_LocalInvocationIndex == 0u)      
+            p = normalizePlane(row3 + row0); // left
+        else if (gl_LocalInvocationIndex == 1u) 
+            p = normalizePlane(row3 - row0); // right
+        else if (gl_LocalInvocationIndex == 2u) 
+            p = normalizePlane(row3 + row1); // bottom
+        else if (gl_LocalInvocationIndex == 3u) 
+            p = normalizePlane(row3 - row1); // top
+        else if (gl_LocalInvocationIndex == 4u) 
+            p = normalizePlane(row2);        // near (Vulkan NDC z in [0,w])
+        else                                   
+            p = normalizePlane(row3 - row2);  // far
+        gPlanes[gl_LocalInvocationIndex] = p;
+    }
+    barrier();
+
+    // One invocation per draw entry.
+    uint s = idx;
+    if (pc.doMain == 1u && s < pc.numCmds) {
+        processChunk(s);
+    }
+    if (pc.doCascade == 1u && s < pc.cascadeEntryCount) {
+        processChunkCascade(s);
+    }
+    if (pc.doVegCascade == 1u && s < pc.vegChunkCount) {
+        processVegCascade(s);
+    }
+}

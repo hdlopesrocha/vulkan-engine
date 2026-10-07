@@ -1,7 +1,7 @@
 #ifndef DEBUG_SDF_INSTANCE_DATA_GLSL
 #define DEBUG_SDF_INSTANCE_DATA_GLSL
 
-// Extracted from shaders/debug_sdf.vert (single-struct GLSL type).
+// Extracted from shaders/DebugSDFRenderer.vert (single-struct GLSL type).
 
 struct DebugSdfInstanceData {
     mat4 model;

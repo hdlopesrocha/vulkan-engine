@@ -1,7 +1,7 @@
 #ifndef WATER_VERTEX_WAVE_GLSL
 #define WATER_VERTEX_WAVE_GLSL
 
-// Extracted from shaders/includes/water_tese.glsl (single-struct GLSL type).
+// Extracted from shaders/includes/water/WaterTese.glsl (single-struct GLSL type).
 
 // ── Shared per-vertex wave core ─────────────────────────────────────────
 // Displaces `pos` along its base normal by the thickness-zoned wave field and

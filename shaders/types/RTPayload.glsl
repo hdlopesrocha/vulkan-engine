@@ -1,7 +1,7 @@
 #ifndef R_T_PAYLOAD_GLSL
 #define R_T_PAYLOAD_GLSL
 
-// Extracted from shaders/includes/rt_params.glsl (single-struct GLSL type).
+// Extracted from shaders/includes/rt/RtParams.glsl (single-struct GLSL type).
 
 // Shared ray payload (rgen + rmiss + rchit). MUST stay a single variable:
 // SPIR-V allows at most one IncomingRayPayloadKHR per entry point

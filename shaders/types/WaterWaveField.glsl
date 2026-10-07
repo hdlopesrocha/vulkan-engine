@@ -1,7 +1,7 @@
 #ifndef WATER_WAVE_FIELD_GLSL
 #define WATER_WAVE_FIELD_GLSL
 
-// Extracted from shaders/includes/gerstner.glsl (single-struct GLSL type).
+// Extracted from shaders/includes/water/Gerstner.glsl (single-struct GLSL type).
 
 struct WaterWaveField {
     float height;     // vertical displacement along the base normal

@@ -1,7 +1,7 @@
 #ifndef DEBUG_CUBE_INSTANCE_DATA_GLSL
 #define DEBUG_CUBE_INSTANCE_DATA_GLSL
 
-// Extracted from shaders/debug_cube.vert (single-struct GLSL type).
+// Extracted from shaders/DebugCubeRenderer.vert (single-struct GLSL type).
 
 struct DebugCubeInstanceData {
     mat4 model;

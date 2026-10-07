@@ -1,0 +1,127 @@
+// Hybrid RT water pipeline: ray generation.
+// Half-res dispatch producing the water refraction/thickness output sampled by
+// the NEXT frame's water shading (1-frame latency, same-queue ordered — see
+// RayTracingResources::dispatchWaterRT).
+//
+// Per pixel: reconstruct the water surface from the full-res water depth,
+// estimate the shading normal via depth neighbors (screen-space; the inline
+// ray-query path in WaterRenderer.frag keeps full analytic normals), then trace one
+// refraction ray (Snell, IOR 1.333) through the TLAS. Refraction thickness =
+// analytic underwater path to the hit (entry=water surface, exit=underwater
+// hit) or maxDist on miss (deep water).
+//
+// The reflection output is RETIRED: the raster water fragment stage resolves
+// reflections exclusively with its own inline exact-triangle ray (the proxy
+// pipeline's flat output was unused for color and only fed the ray-mask debug
+// view), so no reflection ray is traced here. The reflectOut image is still
+// written with the invalid marker so the bound sampler keeps a defined value.
+
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+#include "../../types/RTPayload.glsl"
+#include "../../ssbo/RTProxyMetaGLSL.glsl"
+#include "../../ubo/RayTracingParams.glsl"
+
+#include "../../includes/rt/RtParams.glsl"
+
+// RT set (dedicated, per frame slot):
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
+layout(set = 0, binding = 1, rgba16f) uniform image2D reflectOut;
+layout(set = 0, binding = 2, rgba16f) uniform image2D refractOut;
+layout(std140, set = 0, binding = 3) uniform RTBlock { RayTracingParams rt; };
+layout(set = 0, binding = 4) readonly buffer ProxyMeta { RTProxyMetaGLSL metas[]; };
+layout(set = 0, binding = 5) uniform sampler2D waterDepthTex;
+layout(set = 0, binding = 6) uniform sampler2D skyEquirectTex;
+
+// Shared payload (single struct: SPIR-V allows only one incoming payload
+// variable per entry point). data.rgb=hit color (or sky on miss),
+// data.a=hitT (or -1 on miss); coarseF feathers coarse-box hits toward
+// sky/deep in rgen. The refraction trace reinterprets a miss (a<0) as
+// full-path deep water.
+layout(location = 0) rayPayloadEXT RTPayload rtPayload;
+
+vec3 reconstructWorld(vec2 uv, float depth) {
+    vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 w = rt.invViewProj * clip;
+    return w.xyz / max(w.w, 1e-8);
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_LaunchIDEXT.xy);
+    vec2 outSize = vec2(gl_LaunchSizeEXT.xy);
+    vec2 uv = (vec2(coord) + 0.5) / outSize;
+
+    float depth = texture(waterDepthTex, uv).r;
+    if (depth >= 1.0 || (rt.tlasReady == 0u)) {
+        // No water here (or TLAS not built yet): invalid markers. The water
+        // shader checks reflect.a > 0.5 before sampling reflection and
+        // refract.a >= 0.0 before sampling refraction/thickness.
+        imageStore(reflectOut, coord, vec4(0.0, 0.0, 0.0, 0.0));
+        imageStore(refractOut, coord, vec4(0.0, 0.0, 0.0, -1.0));
+        return;
+    }
+
+    vec3 pos = reconstructWorld(uv, depth);
+    // Screen-space normal from depth neighbors (finite differences on the
+    // full-res depth). Ripple detail lives in the inline path; the pipeline
+    // path trades it for async half-res tracing (perf §16).
+    vec2 texel = 1.0 / vec2(textureSize(waterDepthTex, 0));
+    float dL = texture(waterDepthTex, uv - vec2(texel.x, 0.0)).r;
+    float dR = texture(waterDepthTex, uv + vec2(texel.x, 0.0)).r;
+    float dD = texture(waterDepthTex, uv - vec2(0.0, texel.y)).r;
+    float dU = texture(waterDepthTex, uv + vec2(0.0, texel.y)).r;
+    vec3 pL = reconstructWorld(uv - vec2(texel.x, 0.0), dL);
+    vec3 pR = reconstructWorld(uv + vec2(texel.x, 0.0), dR);
+    vec3 pD = reconstructWorld(uv - vec2(0.0, texel.y), dD);
+    vec3 pU = reconstructWorld(uv + vec2(0.0, texel.y), dU);
+    vec3 N = normalize(cross(pR - pL, pU - pD));
+    vec3 V = normalize(rt.viewPosition - pos);
+    if (dot(N, V) < 0.0) N = -N;
+
+    float maxRefract = max(rt.maxRefractDistance, 1.0);
+    float ior = clamp(rt.waterIor, 1.0, 2.5);
+
+    // Reflection: retired (see header). The raster fragment stage resolves
+    // reflections with its inline exact-triangle ray; the proxy pipeline's
+    // reflection output was never used as color. Write the invalid marker so
+    // the bound sampler and the ray-mask debug view stay well-defined.
+    vec4 reflectValue = vec4(0.0, 0.0, 0.0, 0.0);
+
+    // Refraction (Snell air->water). Miss = deep water: full-path thickness.
+    // Origin AT the surface with a 1 cm tMin (not 5 cm below with 5 cm tMin):
+    // the tight solid slabs sit just below the surface, so the old bias + tMin
+    // imposed a ~10 cm minimum depth and every shoreline shallow missed to
+    // deep/sky color unrelated to the lake bottom underneath.
+    vec4 refractValue = vec4(0.0, 0.0, 0.0, -1.0);
+    if ((rt.refractionsEnabled != 0u)) {
+        vec3 T = refract(-V, N, 1.0 / ior);
+        if (dot(T, T) < 1e-8) T = reflect(-V, N); // TIR fallback
+        T = normalize(T);
+        rtPayload.color = vec3(0.0); rtPayload.hitDistance = 0.0;
+        rtPayload.coarseF = 0.0;
+        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_SOLID, 0, 0, 0,
+            pos, 0.01, T, maxRefract, 0);
+        if (rtPayload.hitDistance >= 0.0) {
+            // Hit: payload.a is the underwater path length (water surface ->
+            // underwater hit). Cap it at rt.maxWaterThickness so Beer-Lambert in
+            // WaterRenderer.frag never computes a transmittance < ~e^-3 for a resolved
+            // hit (far underwater pixels would otherwise black out), then
+            // feather coarse hits toward deep thickness so box-size contours
+            // never print as terrace bands.
+            float cap = max(rt.maxWaterThickness, 0.0);
+            float t = min(rtPayload.hitDistance, cap);
+            t = mix(t, RT_DEEP_THICKNESS, clamp(rtPayload.coarseF, 0.0, 1.0));
+            refractValue = vec4(rtPayload.color, t);
+        } else {
+            // Miss = ray exited the TLAS unresolved (deep water beyond the
+            // proxies). Carry the sky + the deep-water marker; WaterRenderer.frag
+            // replaces the far path with the deep tint instead of attenuating
+            // the sky to black.
+            refractValue = vec4(rtPayload.color, RT_DEEP_WATER);
+        }
+    }
+
+    imageStore(reflectOut, coord, reflectValue);
+    imageStore(refractOut, coord, refractValue);
+}
