@@ -1,0 +1,415 @@
+#include "WaterBackFaceRenderer.hpp"
+#include "../RendererUtils.hpp"
+#include "../../../utils/FileReader.hpp"
+#include "../DescriptorWriter.hpp"
+#include <stdexcept>
+#include <iostream>
+#include <cstdlib>
+#include "../../includes/shader/locations.hpp"
+#include "../../includes/shader/vertex_layouts.hpp"
+
+WaterBackFaceRenderer::WaterBackFaceRenderer() {}
+WaterBackFaceRenderer::~WaterBackFaceRenderer() {}
+
+void WaterBackFaceRenderer::init(VulkanApp* app) {
+    appPtr = app;
+}
+
+void WaterBackFaceRenderer::createDummyDepthView(VulkanApp* app) {
+    if (!app) { return; }
+    if (dummyDepthView != VK_NULL_HANDLE) { return; }
+
+    if (nearestSampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter = VK_FILTER_NEAREST;
+        si.minFilter = VK_FILTER_NEAREST;
+        si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.maxAnisotropy = 1.0f;
+        si.minLod = 0.0f;
+        si.maxLod = 1.0f;
+        si.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+        if (vkCreateSampler(app->getDevice(), &si, nullptr, &nearestSampler) == VK_SUCCESS) {
+            app->resources.addSampler(nearestSampler, "WaterBackFaceRenderer: nearestSampler");
+        }
+    }
+
+    RendererUtils::createImage2DWithVma(app->getDevice(), app, 1, 1, VK_FORMAT_D32_SFLOAT,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_DEPTH_BIT,
+        "WaterBackFaceRenderer: dummyDepthImage",
+        dummyDepthImage, dummyDepthAllocation, dummyDepthMemory, dummyDepthView);
+
+    if (dummyDepthView == VK_NULL_HANDLE) {
+        std::cerr << "[WaterBackFaceRenderer] Failed to create dummy depth image" << std::endl;
+        return;
+    }
+
+    // Transition to DEPTH_STENCIL_ATTACHMENT → SHADER_READ_ONLY and clear to 1.0
+    VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) {
+        std::cerr << "[WaterBackFaceRenderer] Failed to begin command buffer for dummy depth setup" << std::endl;
+        app->freeCommandBuffer(cmd);
+        return;
+    }
+
+    // UNDEFINED → TRANSFER_DST
+    app->recordTransitionImageLayoutLayer(cmd, dummyDepthImage, VK_FORMAT_D32_SFLOAT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
+
+    VkClearDepthStencilValue clearVal{};
+    clearVal.depth = 1.0f;
+    VkImageSubresourceRange range{};
+    range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    range.levelCount = 1;
+    range.layerCount = 1;
+    vkCmdClearDepthStencilImage(cmd, dummyDepthImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                &clearVal, 1, &range);
+
+    // TRANSFER_DST → SHADER_READ_ONLY
+    app->recordTransitionImageLayoutLayer(cmd, dummyDepthImage, VK_FORMAT_D32_SFLOAT,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+    app->setImageLayoutTracked(dummyDepthImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+
+    vkEndCommandBuffer(cmd);
+    app->submitCommandBufferAndWait(cmd);
+    app->freeCommandBuffer(cmd);
+}
+
+void WaterBackFaceRenderer::destroyDummyDepthView(VulkanApp* app) {
+    (void)app;
+    dummyDepthView = VK_NULL_HANDLE;
+    dummyDepthImage = VK_NULL_HANDLE;
+    dummyDepthAllocation = VK_NULL_HANDLE;
+    dummyDepthMemory = VK_NULL_HANDLE;
+    // M7: cached patch views may reference the destroyed dummy; drop them.
+    {
+        std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+        patchedBinding0Views_.clear();
+    }
+}
+
+void WaterBackFaceRenderer::patchBinding0(VkDescriptorSet ds, VkImageView newView) {
+    if (!appPtr || ds == VK_NULL_HANDLE || newView == VK_NULL_HANDLE || nearestSampler == VK_NULL_HANDLE) {
+        return;
+    }
+    // M7: the async sets are patched with the same dummy view every frame;
+    // skip the vkUpdateDescriptorSets while the last patched view is
+    // unchanged. WaterRenderer::updateSceneTexturesBinding() invalidates this
+    // entry when it rewrites binding 0 of the same set, so a real->dummy
+    // rewrite can never be skipped.
+    const uint64_t dsKey = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ds));
+    {
+        std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+        auto it = patchedBinding0Views_.find(dsKey);
+        if (it != patchedBinding0Views_.end() && it->second == newView) {
+            return;
+        }
+    }
+    DescriptorWriter(appPtr->getDevice())
+        .writeImage(ds, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    nearestSampler, newView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        .flush();
+    {
+        std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+        patchedBinding0Views_[dsKey] = newView;
+    }
+}
+
+void WaterBackFaceRenderer::invalidatePatchedBinding0(VkDescriptorSet ds) {
+    if (ds == VK_NULL_HANDLE) return;
+    std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+    patchedBinding0Views_.erase(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ds)));
+}
+
+void WaterBackFaceRenderer::cleanup(VulkanApp* app) {
+    destroyDummyDepthView(app);
+    {
+        std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+        patchedBinding0Views_.clear();
+    }
+    nearestSampler = VK_NULL_HANDLE;
+    appPtr = nullptr;
+}
+
+void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pipelineLayout) {
+    if (!app || pipelineLayout == VK_NULL_HANDLE) return;
+
+    // C1 (perf report 19): build BOTH pipeline variants up front with the
+    // caller's layout — the historical PATCH_LIST + TCS/TES one and a
+    // TRIANGLE_LIST one with the WATER_NO_TESS vertex module and no
+    // tessellation stages. The runtime selector (setTessellationEnabled) binds
+    // whichever matches Settings::tessellationEnabled.
+    createBackFacePipeline(app, pipelineLayout, /*tess=*/true,
+                           "shaders/renderer/water/WaterRenderer.vert.spv",
+                           "WaterBackFaceRenderer: backFacePipeline",
+                           backFacePipeline);
+    createBackFacePipeline(app, pipelineLayout, /*tess=*/false,
+                           "shaders/renderer/water/WaterRendererNoTess.vert.spv",
+                           "WaterBackFaceRenderer: backFacePipeline (no tess)",
+                           backFacePipelineNoTess);
+}
+
+void WaterBackFaceRenderer::createBackFacePipeline(VulkanApp* app, VkPipelineLayout pipelineLayout,
+                                                   bool tess, const char* vertPath,
+                                                   const char* debugName,
+                                                   TrackedHandle<VkPipeline>& pipelineOut) {
+    if (!app || pipelineLayout == VK_NULL_HANDLE) return;
+    VkDevice device = app->getDevice();
+
+    VkShaderModule bfVert = app->getOrCreateShaderModule(vertPath);
+    VkShaderModule bfFrag = app->getOrCreateShaderModule("shaders/renderer/water/WaterBackFaceRenderer.frag.spv");
+
+    std::vector<VkPipelineShaderStageCreateInfo> bfStages;
+    VkPipelineShaderStageCreateInfo vs{};
+    vs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vs.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vs.module = bfVert;
+    vs.pName = "main";
+    bfStages.push_back(vs);
+
+    if (tess) { // tessellation stages (always available — getOrCreateShaderModule would throw if missing)
+        VkShaderModule bfTesc = app->getOrCreateShaderModule("shaders/renderer/water/WaterRenderer.tesc.spv");
+        VkShaderModule bfTese = app->getOrCreateShaderModule("shaders/renderer/water/WaterRenderer.tese.spv");
+
+        VkPipelineShaderStageCreateInfo tc{};
+        tc.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        tc.stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+        tc.module = bfTesc;
+        tc.pName = "main";
+        bfStages.push_back(tc);
+
+        VkPipelineShaderStageCreateInfo te{};
+        te.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        te.stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+        te.module = bfTese;
+        te.pName = "main";
+        bfStages.push_back(te);
+    }
+
+    VkPipelineShaderStageCreateInfo fs{};
+    fs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fs.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fs.module = bfFrag;
+    fs.pName = "main";
+    bfStages.push_back(fs);
+
+    // Vertex input. The non-tessellated WATER_NO_TESS vertex shader consumes
+    // only POS/NORMAL/BRUSH_INDEX/HSV, so its pipeline must not declare the
+    // pruned COLOR/UV attributes (VVL performance warning otherwise).
+    VkVertexInputBindingDescription bindingDesc{};
+    bindingDesc.binding = 0;
+    bindingDesc.stride = sizeof(Vertex);
+    bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    auto attrDescs = tess
+        ? vk_layouts::defaultAttributes()
+        : vk_layouts::defaultAttributesFiltered({ ATTR_POS, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV });
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDesc;
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrDescs.size());
+    vertexInputInfo.pVertexAttributeDescriptions = attrDescs.data();
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = tess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST
+                                  : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = 2;
+    dynamicState.pDynamicStates = dynamicStates;
+
+    VkPipelineRasterizationStateCreateInfo bfRasterizer{};
+    bfRasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    bfRasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    bfRasterizer.lineWidth = 1.0f;
+    bfRasterizer.cullMode = VK_CULL_MODE_FRONT_BIT; // cull front faces → render back faces
+    bfRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo bfBlend{};
+    bfBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    bfBlend.attachmentCount = 0;
+    bfBlend.pAttachments = nullptr;
+
+    VkPipelineTessellationStateCreateInfo tessState{};
+    tessState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+    tessState.patchControlPoints = 3;
+
+    VkPipelineRenderingCreateInfo pipelineRenderingInfo{};
+    pipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    pipelineRenderingInfo.colorAttachmentCount = 0;
+    pipelineRenderingInfo.pColorAttachmentFormats = nullptr;
+    pipelineRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+
+    VkGraphicsPipelineCreateInfo bfPipeInfo{};
+    bfPipeInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    bfPipeInfo.pNext = &pipelineRenderingInfo;
+    bfPipeInfo.stageCount = static_cast<uint32_t>(bfStages.size());
+    bfPipeInfo.pStages = bfStages.data();
+    bfPipeInfo.pVertexInputState = &vertexInputInfo;
+    bfPipeInfo.pInputAssemblyState = &inputAssembly;
+    bfPipeInfo.pViewportState = &viewportState;
+    bfPipeInfo.pDynamicState = &dynamicState;
+    bfPipeInfo.pRasterizationState = &bfRasterizer;
+    bfPipeInfo.pMultisampleState = &multisampling;
+    bfPipeInfo.pDepthStencilState = &depthStencil;
+    bfPipeInfo.pColorBlendState = &bfBlend;
+    bfPipeInfo.layout = pipelineLayout;
+    bfPipeInfo.renderPass = VK_NULL_HANDLE;
+    bfPipeInfo.subpass = 0;
+    // No tessellation state without TCS/TES: pTessellationState must be null
+    // whenever the topology is not PATCH_LIST.
+    if (tess) bfPipeInfo.pTessellationState = &tessState;
+
+    if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &bfPipeInfo, nullptr, &pipelineOut) != VK_SUCCESS) {
+        std::cerr << "[WaterBackFaceRenderer] Warning: Failed to create back-face depth pipeline (" << debugName << ")" << std::endl;
+        pipelineOut = VK_NULL_HANDLE;
+    } else {
+        app->resources.addPipeline(pipelineOut, debugName);
+        std::cout << "[WaterBackFaceRenderer] Created back-face depth pipeline (" << debugName << ")" << std::endl;
+    }
+}
+
+void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
+    if (!app) return;
+    appPtr = app;
+    if (renderWidth == width && renderHeight == height && backFaceDepthImages[0] != VK_NULL_HANDLE) return;
+    createDummyDepthView(app);
+    destroyRenderTargets(app);
+    renderWidth = width;
+    renderHeight = height;
+    VkDevice device = app->getDevice();
+
+    auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                           VkImage& image, VmaAllocation& allocation, VkDeviceMemory& memory, VkImageView& view) {
+        RendererUtils::createImage2DWithVma(device, app, width, height, format, usage, aspect,
+                                            "WaterBackFaceRenderer: image", image, allocation, memory, view);
+    };
+
+    for (int i = 0; i < 3; ++i) {
+        createImage(VK_FORMAT_D32_SFLOAT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT,
+                    backFaceDepthImages[i], backFaceDepthAllocations[i], backFaceDepthMemories[i], backFaceDepthImageViews[i]);
+        backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        // Ensure authoritative/tracked layout matches the render-pass initial layout
+        if (backFaceDepthImages[i] != VK_NULL_HANDLE && app) {
+            app->transitionImageLayoutLayer(backFaceDepthImages[i], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(backFaceDepthImages[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+            backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        }
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        // Keep the layout we recorded above (do not reset to UNDEFINED).
+        // Resetting here caused later callers to emit fallback transitions
+        // that disagreed with the app-tracked authoritative layout.
+    }
+
+    // Create framebuffers removed - using dynamic rendering
+}
+
+void WaterBackFaceRenderer::destroyRenderTargets(VulkanApp* app) {
+    (void)app;
+    for (int i = 0; i < 3; ++i) {
+        backFaceDepthImages[i] = VK_NULL_HANDLE;
+        backFaceDepthAllocations[i] = VK_NULL_HANDLE;
+        backFaceDepthMemories[i] = VK_NULL_HANDLE;
+        backFaceDepthImageViews[i] = VK_NULL_HANDLE;
+        backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+    // M7: cached patch views may reference the destroyed depth views.
+    {
+        std::lock_guard<std::mutex> lock(patchedBinding0Mutex_);
+        patchedBinding0Views_.clear();
+    }
+}
+
+void WaterBackFaceRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
+                                              IndirectRenderer& indirect, VkPipelineLayout pipelineLayout,
+                                              VkDescriptorSet mainDs, VkDescriptorSet sceneDs,
+                                              VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer) {
+    if (!app || cmd == VK_NULL_HANDLE) return;
+    // Select the variant matching the global tessellation toggle (falls back
+    // to the tessellated pipeline when the no-tess variant was not built).
+    VkPipeline activePipelineHandle = activePipeline();
+    if (activePipelineHandle == VK_NULL_HANDLE) return;
+    if (frameIndex >= backFaceDepthImages.size()) return;
+    if (backFaceDepthImages[frameIndex] == VK_NULL_HANDLE) return;
+
+    // No depth copy needed — the back-face shader samples the scene depth
+    // texture (in SHADER_READ_ONLY_OPTIMAL) and clips fragments behind the
+    // scene. The back-face depth attachment uses LOAD_OP_CLEAR (1.0).
+    if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+        if (!app) {
+            throw std::runtime_error("WaterBackFaceRenderer::renderBackFacePass requires VulkanApp (no fallback allowed)");
+        }
+        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
+                             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                             1, 0, 1);
+        backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
+
+    // Depth attachment uses LOAD_OP_CLEAR (1.0).
+    RendererUtils::beginDepthOnlyPass(cmd, backFaceDepthImageViews[frameIndex], renderWidth, renderHeight, 1.0f);
+
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, activePipelineHandle);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipelineHandle);
+
+    if (mainDs != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 1, &mainDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &mainDs, 0, nullptr);
+    }
+    if (sceneDs != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 2, 1, &sceneDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &sceneDs, 0, nullptr);
+    }
+
+    if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
+        indirect.drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
+    } else {
+        indirect.drawPrepared(cmd);
+    }
+
+    RendererUtils::endDepthOnlyPass(cmd);
+
+    // Transition depth: DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    if (app) {
+        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            1, 0, 1);
+    }
+    backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
+// getBackFaceDepthLayout is defined inline in the header (maps indices via modulo).

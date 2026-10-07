@@ -1,0 +1,128 @@
+#pragma once
+
+#include <vulkan/vulkan.h>
+#include "../../third_party/VulkanMemoryAllocator/include/vk_mem_alloc.h"
+#include <vector>
+#include <string>
+#include <mutex>
+#include <unordered_map>
+#include <optional>
+
+class VulkanResourceManager {
+public:
+    VulkanResourceManager() {
+        // some std::unordered_map implementations start with zero buckets
+        // which can trigger modulo-by-zero or free-of-sentinel bugs when the
+        // first insertion occurs.  Pre-reserve a small number of buckets to
+        // avoid these pitfalls and ensure safe use of operator[]/reserve/rehash.
+        deviceMemories.reserve(1);
+        images.reserve(1);
+        imageViews.reserve(1);
+        samplers.reserve(1);
+        framebuffers.reserve(1);
+        buffers.reserve(1);
+        pipelines.reserve(1);
+        pipelineLayouts.reserve(1);
+        shaderModules.reserve(1);
+        descriptorPools.reserve(1);
+        descriptorSets.reserve(1);
+        descriptorSetLayouts.reserve(1);
+        semaphores.reserve(1);
+        fences.reserve(1);
+        commandPools.reserve(1);
+    }
+    ~VulkanResourceManager() = default;
+
+    // All add/remove methods accept an optional description string identifying where the object was created.
+    // Record the array-layer count for an image (useful for runtime validation).
+    void setImageArrayLayers(VkImage img, uint32_t arrayLayers);
+    // Query recorded array-layer count for an image.
+    std::optional<uint32_t> getImageArrayLayers(VkImage img) const;
+    void addImageView(VkImageView iv, const char* desc = nullptr);
+    void addSampler(VkSampler s, const char* desc = nullptr);
+    void addSemaphore(VkSemaphore s, const char* desc = nullptr);
+    void addFence(VkFence f, const char* desc = nullptr);
+    void addCommandPool(VkCommandPool cp, const char* desc = nullptr);
+    void addPipeline(VkPipeline p, const char* desc = nullptr);
+    void addPipelineLayout(VkPipelineLayout pl, const char* desc = nullptr);
+    void addShaderModule(VkShaderModule m, const char* desc = nullptr);
+    void addDescriptorPool(VkDescriptorPool dp, const char* desc = nullptr);
+    void addDescriptorSet(VkDescriptorSet ds, const char* desc = nullptr);
+    void addDescriptorSetLayout(VkDescriptorSetLayout dsl, const char* desc = nullptr);
+
+    // Query a stored resource by handle
+    struct Entry { VkObjectType type; std::string desc; };
+    std::optional<Entry> find(uintptr_t handle) const;
+
+    // Per-type map accessors (templated alias: handle type + object type)
+    template<typename HandleT>
+    using ResourceMap = std::unordered_map<uintptr_t, std::pair<HandleT, std::string>>;
+
+    const ResourceMap<VkImage> &getImageMap() const;
+    const ResourceMap<VkImageView> &getImageViewMap() const;
+    const ResourceMap<VkSampler> &getSamplerMap() const;
+    const ResourceMap<VkFramebuffer> &getFramebufferMap() const;
+    const ResourceMap<VkBuffer> &getBufferMap() const;
+    const ResourceMap<VkPipeline> &getPipelineMap() const;
+    const ResourceMap<VkPipelineLayout> &getPipelineLayoutMap() const;
+    const ResourceMap<VkShaderModule> &getShaderModuleMap() const;
+    const ResourceMap<VkDescriptorPool> &getDescriptorPoolMap() const;
+    const ResourceMap<VkDescriptorSet> &getDescriptorSetMap() const;
+    const ResourceMap<VkDescriptorSetLayout> &getDescriptorSetLayoutMap() const;
+    const ResourceMap<VkSemaphore> &getSemaphoreMap() const;
+    std::vector<std::pair<uintptr_t, std::pair<VkDeviceMemory, std::string>>> getDeviceMemorySnapshot() const;
+
+    // Cleanup all resources in a safe deterministic order. The device must be valid.
+    void cleanup(VkDevice device);
+
+    // Remove methods (called when an owner explicitly destroys a handle)
+    // Remove methods return true if the resource was tracked and erased.
+    bool removeDeviceMemory(VkDeviceMemory mem);
+    bool removeImage(VkImage img);
+    bool removeImageView(VkImageView iv);
+    bool removeSampler(VkSampler s);
+    bool removeFramebuffer(VkFramebuffer fb);
+    bool removeBuffer(VkBuffer b);
+    // VMA-aware tracking
+    void setAllocator(VmaAllocator alloc) { vmaAlloc = alloc; }
+    void addBufferVma(VkBuffer buf, VmaAllocation alloc, const char* desc = nullptr);
+    bool removeBufferVma(VkBuffer buf, VmaAllocation alloc = VK_NULL_HANDLE);
+    bool removePipeline(VkPipeline p);
+    bool removePipelineLayout(VkPipelineLayout pl);
+    bool removeDescriptorPool(VkDescriptorPool dp);
+    bool removeDescriptorSet(VkDescriptorSet ds);
+    bool removeDescriptorSetLayout(VkDescriptorSetLayout dsl);
+    // VMA-aware image tracking
+    void addImageVma(VkImage img, VmaAllocation alloc, const char* desc = nullptr);
+    bool removeSemaphore(VkSemaphore s);
+    bool removeFence(VkFence f);
+    bool removeCommandPool(VkCommandPool cp);
+
+private:
+    mutable std::mutex mtx;
+    // Per-type maps: handle -> (VkObjectType, description)
+    ResourceMap<VkDeviceMemory> deviceMemories;
+    ResourceMap<VkImage> images;
+    ResourceMap<VkImageView> imageViews;
+    ResourceMap<VkSampler> samplers;
+    ResourceMap<VkFramebuffer> framebuffers;
+    ResourceMap<VkBuffer> buffers;
+    ResourceMap<VkPipeline> pipelines;
+    ResourceMap<VkPipelineLayout> pipelineLayouts;
+    ResourceMap<VkShaderModule> shaderModules;
+    ResourceMap<VkDescriptorPool> descriptorPools;
+    ResourceMap<VkDescriptorSet> descriptorSets;
+    ResourceMap<VkDescriptorSetLayout> descriptorSetLayouts;
+    ResourceMap<VkSemaphore> semaphores;
+    ResourceMap<VkFence> fences;
+    ResourceMap<VkCommandPool> commandPools;
+        // Optional metadata: record array layer counts for images created as 2D arrays or cubemaps
+        std::unordered_map<uintptr_t, uint32_t> imageArrayLayers;
+    // VMA allocation tracking: buffer handle -> VmaAllocation
+    std::unordered_map<uintptr_t, VmaAllocation> vmaAllocations;
+    // VMA allocation tracking: image handle -> VmaAllocation
+    std::unordered_map<uintptr_t, VmaAllocation> vmaImageAllocations;
+    VmaAllocator vmaAlloc = VK_NULL_HANDLE;
+
+public:
+};

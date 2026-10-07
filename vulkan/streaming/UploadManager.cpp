@@ -1,6 +1,6 @@
 #include "UploadManager.hpp"
-#include "../VulkanApp.hpp"
-#include "../SubmissionTracker.hpp"
+#include "../core/VulkanApp.hpp"
+#include "../sync/SubmissionTracker.hpp"
 #include "../../space/ThreadPool.hpp"
 
 #include <stdexcept>

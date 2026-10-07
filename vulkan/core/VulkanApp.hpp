@@ -1,0 +1,866 @@
+#pragma once
+
+#include "../resources/Buffer.hpp"
+#include "../resources/StagingRingBuffer.hpp"
+
+// Standard library includes first
+#include <iostream>
+#include <vector>
+#include <list>
+#include <string>
+#include <stdexcept>
+#include <memory>
+#include <chrono>
+#include <cstring>
+
+#include <vulkan/vulkan.h>
+#include <mutex>
+#include <cstdint>
+#include <unordered_map>
+#include <unordered_set>
+#include <atomic>
+#include <functional>
+
+#include "vulkan.hpp"
+#include "VulkanResourceManager.hpp"
+#include "VmaContext.hpp"
+
+// Forward declaration of ImGui's Vulkan backend init struct. Only VulkanApp.cpp
+// includes the backend header; the class exposes helpers that fill it.
+struct ImGui_ImplVulkan_InitInfo;
+
+struct GraphicsPipelineConfig {
+    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
+    VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT;
+    VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE;
+    bool depthTestEnable = true;
+    bool depthWriteEnable = true;
+    bool colorWrite = true;
+    VkCompareOp depthCompareOp = VK_COMPARE_OP_LESS;
+    VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    bool depthClampEnable = false;
+    std::vector<VkFormat> colorFormats = {};
+    VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
+    bool noColorAttachment = false;
+    bool depthBiasEnable = false;
+    bool blendEnable = false;
+    // Blend factors applied when blendEnable is true. Defaults preserve the
+    // legacy constant-alpha behavior (brush ghosting); pipelines needing
+    // per-pixel alpha (e.g. translucent fire) override these.
+    VkBlendFactor blendSrcColorFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;
+    VkBlendFactor blendDstColorFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+    VkBlendFactor blendSrcAlphaFactor = VK_BLEND_FACTOR_ONE;
+    VkBlendFactor blendDstAlphaFactor = VK_BLEND_FACTOR_ZERO;
+};
+
+class SceneDescriptorLayout;
+class SceneQueues;
+
+class VulkanApp {
+    public:
+        // Scene descriptor layouts/sets are owned by the application via
+        // SceneDescriptorLayout. VulkanApp only forwards to them so it stays
+        // agnostic about *what* is rendered. The derived app creates it in setup().
+        // Declared as a forward reference here (defined in vulkan/renderer/) so this
+        // header carries no compile-time dependency on renderer code.
+        std::unique_ptr<SceneDescriptorLayout> sceneDescriptorLayout;
+        // Scene render queues (vegetation, sdf, bbox, solid, water, sky, brush,
+        // geometry compute) are owned via this forward-declared handle and only
+        // forwarded to, so VulkanApp stays agnostic about *how* the scene is
+        // staged across queues. The application creates and configures it in
+        // setup() from the generic parallel graphics-queue pool.
+        std::unique_ptr<SceneQueues> sceneQueues;
+        // Scene descriptor-set accessors. Their bodies live in VulkanApp.cpp (which
+        // includes the full SceneDescriptorLayout definition) so this header stays
+        // renderer-agnostic and the delegation is written only once.
+        VkDescriptorSet getMainDescriptorSet() const;
+        // Accessor for descriptor set by frame index (used during init)
+        VkDescriptorSet getMainDescriptorSetForFrame(uint32_t idx) const;
+        size_t getMainDescriptorSetCount() const;
+
+        void initWindow(); // Only one declaration, public
+    GLFWwindow* window = nullptr;
+
+    VkInstance instance = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+    // Pipeline cache for reducing shader compilation time across runs.
+    // Created after device creation, serialized to disk on shutdown.
+    VkPipelineCache pipelineCache = VK_NULL_HANDLE;
+    // Whether VK_KHR_pipeline_binary (Vulkan 1.4) is supported by the physical device.
+    // When true, per-pipeline binary keys can be used for granular cache invalidation.
+    bool pipelineBinarySupported = false;
+    // Whether VK_EXT_descriptor_buffer is supported AND enabled on this device.
+    // When true, renderers may write descriptors directly into host-visible
+    // descriptor-buffer memory (vkGetDescriptorEXT) and bind them with
+    // vkCmdBindDescriptorBuffersEXT / vkCmdSetDescriptorBufferOffsetsEXT
+    // instead of calling vkUpdateDescriptorSets in the render loop.
+    // When false, all renderers must use the classic vkUpdateDescriptorSets
+    // fallback path (init-time / on-change writes only, never per-frame).
+    bool descriptorBufferSupported = false;
+    // Whether the physical device supports sparse buffer binding
+    // (sparseBinding + sparseResidencyBuffer). Queried once in
+    // createLogicalDevice via feature detection (never version checks).
+    // When true, renderers MAY use VK_BUFFER_CREATE_SPARSE_BINDING_BIT +
+    // vkBindBufferMemory2 for virtual memory aliasing to grow a buffer's
+    // logical size without reallocation. When false (most iGPUs), renderers
+    // must fall back to a single pre-allocated buffer + offset management
+    // (the merged packed-pool model already used by IndirectRenderer).
+    bool sparseBufferSupported = false;
+    // Whether buffer device address (Vulkan 1.2 core) is available on this
+    // device. Queried via VkPhysicalDeviceVulkan12Features. Renderers use
+    // this to decide whether the single-large-buffer + BDA offset path is
+    // viable; the flag is informational — BDA is only ENABLED on the device
+    // when actually needed (GPU-assisted validation, descriptor buffers).
+    bool bufferDeviceAddressSupported = false;
+    bool supportsSparseBinding() const { return sparseBufferSupported; }
+    bool supportsBufferDeviceAddress() const { return bufferDeviceAddressSupported; }
+    // ── Hybrid ray tracing (raster + RT) ──────────────────────────────────
+    // Feature-detected, never version-checked. When all of
+    // VK_KHR_acceleration_structure + VK_KHR_ray_query are supported AND their
+    // features enabled, ray queries may be used inline in raster shaders
+    // (solid reflections, water RT, selective local shadows). When
+    // VK_KHR_ray_tracing_pipeline is additionally supported, the dedicated RT
+    // pipeline (water reflection/refraction/thickness) is available. When any
+    // piece is missing the renderer falls back to sky/environment sampling —
+    // rasterization, tessellation, displacement, LOD and CSM keep working.
+    bool accelStructSupported = false;
+    bool rayQuerySupported = false;
+    bool rayPipelineSupported = false;
+    // VK_KHR_shader_clock / shaderDeviceClock: enables the device-scope
+    // realtime clock used by the opt-in per-op RT profiling shader variants
+    // (shaders/includes/rt/RtProfile.glsl). Independent of RT support; when
+    // false the profile variants are never created and RT profiling stays off.
+    bool shaderClockSupported = false;
+    // Full per-op RT profiling gate: the RT_PROFILE variants atomically write
+    // a storage buffer from the fragment (fragmentStoresAndAtomics) and the
+    // water TES (vertexPipelineStoresAndAtomics). Creating those pipelines
+    // without the features is invalid (VUID-RuntimeSpirv-NonWritable-06340/41),
+    // so the profile variants are only built when both are supported/enabled.
+    bool rtProfilingSupported = false;
+    bool rayTracingEnabled() const { return accelStructSupported && rayQuerySupported; }
+    bool rayPipelineEnabled() const { return rayTracingEnabled() && rayPipelineSupported; }
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProps{};
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR accelProps{};
+    // RT extension entry points, resolved after vkCreateDevice when supported.
+    // Null when the corresponding extension was not enabled — callers must
+    // branch on rayTracingEnabled()/rayPipelineEnabled() first.
+    PFN_vkCreateAccelerationStructureKHR fpCreateAccelerationStructureKHR = nullptr;
+    PFN_vkDestroyAccelerationStructureKHR fpDestroyAccelerationStructureKHR = nullptr;
+    PFN_vkGetAccelerationStructureBuildSizesKHR fpGetAccelerationStructureBuildSizesKHR = nullptr;
+    PFN_vkGetAccelerationStructureDeviceAddressKHR fpGetAccelerationStructureDeviceAddressKHR = nullptr;
+    PFN_vkCmdBuildAccelerationStructuresKHR fpCmdBuildAccelerationStructuresKHR = nullptr;
+    PFN_vkCreateRayTracingPipelinesKHR fpCreateRayTracingPipelinesKHR = nullptr;
+    PFN_vkGetRayTracingShaderGroupHandlesKHR fpGetRayTracingShaderGroupHandlesKHR = nullptr;
+    PFN_vkCmdTraceRaysKHR fpCmdTraceRaysKHR = nullptr;
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptorBufferProps{};
+    // Extension entry points, resolved after vkCreateDevice when supported.
+    PFN_vkGetDescriptorEXT fpGetDescriptorEXT = nullptr;
+    PFN_vkCmdBindDescriptorBuffersEXT fpCmdBindDescriptorBuffersEXT = nullptr;
+    PFN_vkCmdSetDescriptorBufferOffsetsEXT fpCmdSetDescriptorBufferOffsetsEXT = nullptr;
+    PFN_vkGetDescriptorSetLayoutSizeEXT fpGetDescriptorSetLayoutSizeEXT = nullptr;
+    PFN_vkGetDescriptorSetLayoutBindingOffsetEXT fpGetDescriptorSetLayoutBindingOffsetEXT = nullptr;
+    bool useDescriptorBuffer() const { return descriptorBufferSupported; }
+    VkQueue graphicsQueue = VK_NULL_HANDLE;
+    VkQueue presentQueue = VK_NULL_HANDLE;
+    // Scene-specific render queues (vegetation, sdf, bbox, solid, water, sky,
+    // brush, geometry compute) are owned by the application via the SceneQueues
+    // member and accessed through the getXxxQueue() forwarders below. VulkanApp
+    // itself only owns the generic graphics/present/transfer queues.
+    // Distinct graphics-family queue handles available for parallel work. Built in
+    // createLogicalDevice from all acquired graphics-family queues (deduplicated so
+    // aliased queues are not listed twice). Parallel passes submit to different
+    // entries of this vector (round-robin) for parallel graphics work.
+    // Its size is 1 when the device exposes only a single graphics queue (no HW
+    // parallelism — the faces then run serially on the one queue, still correct).
+    std::vector<VkQueue> parallelGraphicsQueues;
+    // Optional dedicated transfer queue (if available)
+    VkQueue transferQueue = VK_NULL_HANDLE;
+
+    // A dedicated graphics-family queue for geometry-buffer uploads, when one was
+    // acquired (the 5th graphics queue, index 4). VK_NULL_HANDLE otherwise, so
+    // callers fall back to the main graphics queue. Feature-detected to preserve
+    // the single-queue (and RADV) safety net.
+    VkQueue geometryTransferQueue_ = VK_NULL_HANDLE;
+    VkQueue geometryTransferQueue() const { return geometryTransferQueue_; }
+
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    std::vector<VkImage> swapchainImages;
+    VkFormat swapchainImageFormat;
+    VkExtent2D swapchainExtent;
+    std::vector<VkImageView> swapchainImageViews;
+
+    VkCommandPool commandPool = VK_NULL_HANDLE;            // primary pool for framebuffers and main-thread work
+    std::vector<VkCommandPool> frameCommandPools;          // per-swapchain-image pools (no RESET_COMMAND_BUFFER_BIT)
+    VkCommandPool transientCommandPool = VK_NULL_HANDLE;   // separate pool for asynchronous / short-lived operations
+    // NOTE: scene/renderer-specific command pools (vegetation, geometry, transfer)
+    // were removed as dead code — they were created but never allocated from.
+    // Renderers that need a dedicated pool should own it themselves.
+
+    std::vector<VkSemaphore> imageAvailableSemaphores;
+    std::vector<VkSemaphore> renderFinishedSemaphores;
+    std::vector<VkFence> inFlightFences;
+    // track which fence is using each swapchain image (to avoid writing to an image in use)
+    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
+
+    VmaContext vma;
+    bool vmaReady = false;
+
+    std::vector<uint64_t> imagesInFlight; // stores frameTimeline value when image was last acquired
+    // frame index for round-robin CPU frames-in-flight
+    uint32_t currentFrame = 0;
+
+    // Timeline semaphore for frame pacing. Replaces per-frame binary fences.
+    // Each frame's queue submit signals a strictly increasing value. The CPU
+    // waits on this at the start of drawFrame for the oldest in-flight frame.
+    // Enables finer CPU↔GPU overlap — intermediate signal points can be added
+    // (e.g., after shadow pass) to reduce stalls on queue bubbles.
+    VkSemaphore frameTimeline = VK_NULL_HANDLE;
+    std::atomic<uint64_t> frameTimelineValue{0};
+
+public:
+    uint32_t getCurrentFrame() const { return currentFrame; }
+    VkFence getCurrentFrameFence() const {
+        if (inFlightFences.empty()) return VK_NULL_HANDLE;
+        return inFlightFences[currentFrame % inFlightFences.size()];
+    }
+
+    // texture and descriptor
+    // Scene descriptor set layouts/sets live in SceneDescriptorLayout (owned by
+    // the app). The getters below forward to it; VulkanApp itself carries no
+    // scene-binding knowledge.
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    // Registered descriptor sets for runtime inspection (widgets can read these)
+    std::vector<VkDescriptorSet> registeredDescriptorSets;
+    // Registered graphics pipelines for runtime inspection
+    std::vector<VkPipeline> registeredPipelines;
+    // depth resources
+    VkImage depthImage = VK_NULL_HANDLE;
+    VkDeviceMemory depthImageMemory = VK_NULL_HANDLE;
+    VmaAllocation depthImageAllocation = VK_NULL_HANDLE;
+    VkImageView depthImageView = VK_NULL_HANDLE;
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    std::vector<VkCommandBuffer> commandBuffers;
+
+    // Central resource manager for automatic cleanup
+    VulkanResourceManager resources;
+    // Persistent staging ring buffer for async uploads (eliminates per-upload allocations)
+    StagingRingBuffer stagingRing;
+    // Track per-image per-layer last-known layouts to avoid callers supplying
+    // stale oldLayout values that trigger validation errors. Key is a 64-bit
+    // composed from (image_ptr << 32) | baseArrayLayer.
+    mutable std::mutex imageLayoutMutex;
+    std::unordered_map<uint64_t, VkImageLayout> imageLayerLayouts;
+    // Pending per-command-buffer layout updates recorded at record-time.
+    // These are applied to `imageLayerLayouts` only when the command buffer
+    // has actually executed (synchronously or when its fence signals) to
+    // avoid marking layouts as changed before the GPU performs the barrier.
+    struct PendingLayoutUpdate { VkImage image; VkImageLayout newLayout; uint32_t baseArrayLayer; uint32_t layerCount; bool isBarrier; };
+    std::unordered_map<VkCommandBuffer, std::vector<PendingLayoutUpdate>> commandBufferPendingLayouts;
+    std::mutex pendingLayoutMutex;
+    
+    // mutex used by runSingleTimeCommands and other transient-pool users
+    std::mutex transientPoolMutex;
+    
+protected:
+    // set when the framebuffer (GLFW window) is resized so we can recreate swapchain
+    bool framebufferResized = false;
+    // fullscreen handling
+    bool isFullscreen = false;
+    int windowedPosX = 100;
+    int windowedPosY = 100;
+    int windowedWidth = WIDTH;
+    int windowedHeight = HEIGHT;
+    // ImGui integration state
+    VkDescriptorPool imguiDescriptorPool = VK_NULL_HANDLE;
+    bool imguiShowDemo = false;
+    // frame timing for update delta calculation
+    double lastFrameTime = 0.0;
+    // V-Sync preference (affects present mode selection)
+    bool vsyncEnabled = true;
+
+    // True between initVulkan() and the end of setup() — used to show loading screen
+    bool isLoading = false;
+
+    // Set when a device-lost is detected to allow graceful shutdown handling
+    std::atomic<bool> deviceLost{false};
+
+    // Allow derived classes to build ImGui UI per-frame
+    virtual void renderImGui();
+
+    // expose the GLFW window to derived classes for input polling
+    GLFWwindow* getWindow();
+
+public:
+    // Per-queue submission serialization is handled by the handle-keyed
+    // getQueueSubmitMutex(VkQueue) map (see its definition): it covers every
+    // VkQueue handle, aliased or not. The previous per-role named mutexes
+    // (graphics/transfer/vegetation/sdf/bbox/geometry/solid/water) were removed
+    // as dead code. commandPoolMutex / descriptorAllocMutex below serialize
+    // shared allocator access across threads.
+
+    // Mutex used to serialize command pool operations (alloc/free/reset) across threads
+    std::mutex commandPoolMutex;
+    // Mutex used to serialize vkAllocateDescriptorSets calls across threads
+    std::mutex descriptorAllocMutex;
+
+    protected:
+        void toggleFullscreen();
+
+        VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
+        VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
+        VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
+        void createSwapchain();
+        void createImageViews();
+        void createCommandPool();
+        void createDepthResources();
+
+    public:
+        // Generate mipmaps for an image. Works on array textures by specifying
+        // layerCount and baseArrayLayer to affect a subset of layers.
+        void generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount = 1, uint32_t baseArrayLayer = 0);
+
+        // Record mipmap generation commands into an existing command buffer (no begin/end or wait)
+        void recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount = 1, uint32_t baseArrayLayer = 0);
+
+        // Submit a pre-recorded command buffer asynchronously to a specific queue (e.g., vegetation/geometry) and return a fence.
+        VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore = nullptr, const std::vector<VkSemaphore>& waitSemaphores = {}, bool registerSignal = true, const std::vector<VkSemaphore>& extraSignalSemaphores = {}, const std::vector<uint64_t>& waitSemaphoreValues = {}, uint64_t signalValue = 0, const std::vector<uint64_t>& extraSignalValues = {}, bool persistentSignal = false);
+        // Create a timeline semaphore (frame-graph cross-pass sync). initialValue is
+        // the starting counter (0 for the per-frame monotonic counters).
+        VkSemaphore createTimelineSemaphore(uint64_t initialValue = 0);
+        // Per-queue submit mutex (keyed by VkQueue handle). Aliased queues share a
+        // mutex because they share a handle, so submissions to one physical queue
+        // still serialize while distinct queues run concurrently. Exposed so external
+        // submitters (e.g. UploadManager) serialize with the app's own submissions.
+        std::mutex& getQueueSubmitMutex(VkQueue q);
+        // Submit a pre-recorded command buffer and block until it completes.
+        void submitCommandBufferAndWait(VkCommandBuffer commandBuffer);
+        // Wait for the graphics queue to become idle (vkQueueWaitIdle) while holding
+        // `graphicsSubmitMutex` to avoid races with concurrent submissions.  This is
+        // usually sufficient for synchronizing most operations and avoids the
+        // cost of a full device-level idle.  Use `runSingleTimeCommands` for
+        // small transient waits that also need pipeline barriers.
+        VkResult queueWaitIdle();
+        // Call `vkDeviceWaitIdle` while holding `graphicsSubmitMutex` to avoid races
+        // with concurrent queue submissions.  This method is retained for
+        // compatibility but should be avoided in new code; prefer
+        // `queueWaitIdle` or `runSingleTimeCommands` instead.
+        VkResult deviceWaitIdle();
+        // Wait for all per-frame in-flight fences to signal (blocks).
+        void waitForFrameFences();
+        // Wait for a single fence to become signaled by polling vkGetFenceStatus.
+        // Preferred over vkWaitForFences: the validation layer's vkWaitForFences
+        // performs an internal state-tracking wait with a finite timeout that
+        // spuriously reports INTERNAL-ERROR-VkFence-state-timeout on slow / first
+        // submissions (same family as KhronosGroup/Vulkan-ValidationLayers#4968 /
+        // #8461), which aborts the app. vkGetFenceStatus is non-blocking and has no
+        // such internal wait, so polling it is spec-valid and validation-clean while
+        // still waiting for the same GPU completion. timeoutNs == UINT64_MAX polls
+        // indefinitely; any other value returns VK_TIMEOUT if not signaled in time
+        // (used by the async ring watchdog).
+        static VkResult waitFence(VkDevice device, VkFence fence, uint64_t timeoutNs = UINT64_MAX);
+        void processPendingCommandBuffers();
+        // Apply any pending layout updates recorded for a command buffer
+        // (transfers per-CB pending updates into the authoritative map).
+        void applyPendingLayoutUpdatesForCommandBuffer(VkCommandBuffer cmd);
+        // Promote pending layout updates into the authoritative map before
+        // calling vkQueueSubmit. This makes validation-layer checks more
+        // robust by ensuring unknown/undefined entries are populated from
+        // recorded pending updates (prefers this command buffer's own
+        // pending updates, then fills gaps from other pending entries).
+        void preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer);
+        // Wait for all tracked pending command buffers to finish (blocks).
+        void waitForAllPendingCommandBuffers();
+        // Throttle helper: block if too many pending command buffers exist.
+        void throttleIfTooManyPending();
+        // Record and submit a short-lived command buffer asynchronously.
+        // Returns a fence that will be signaled when the submission completes.
+        VkFence runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore = nullptr);
+        // Overload that submits to a specific queue (e.g. the graphics-family
+        // geometry queue for uploads). targetQueue==VK_NULL_HANDLE falls back to
+        // the main graphics queue and is equivalent to the 2-arg overload.
+        VkFence runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore, VkQueue targetQueue);
+        // Record and submit a short-lived command buffer asynchronously to the transfer queue.
+        // Returns a fence that will be signaled when the submission completes.
+        // If `outSemaphore` is non-null the submission will signal that semaphore
+        // when finished and it will be added to `m_extraWaitSemaphores` so frame
+        // submission can wait on it.
+        VkFence runSingleTimeCommandsAsyncOnTransfer(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore = nullptr);
+        // Synchronous variant: record, submit to the transfer queue and wait for completion.
+        void runSingleTimeCommandsOnTransfer(const std::function<void(VkCommandBuffer)>& fn);
+        // Query whether a given fence is still tracked as pending by VulkanApp
+        bool isFencePending(VkFence fence);
+        // Deferred destruction helpers
+        void deferDestroyUntilAllPending(std::function<void()> destroyFn);
+        void deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn);
+        // Add a semaphore that the next frame submission must wait on (for async uploads)
+        void addExtraWaitSemaphore(VkSemaphore sem, VkPipelineStageFlags2 stage);
+        ~VulkanApp();
+
+    // ImGui integration glue: backend can call these to route submits through the
+    // application's synchronized submission helpers. `g_imguiVulkanApp` is defined
+    // in VulkanApp.cpp and set during `initImGui()`.
+    void cleanupSwapchain();
+    void recreateSwapchain();
+    static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+
+
+
+        void drawFrame();
+        // Exit screenshot: called from drawFrame once the window-close request is
+        // observed, so the final frame records a swapchain→host-buffer copy.
+        // No-op when the surface does not support TRANSFER_SRC on swapchain images.
+        void requestExitScreenshot();
+        // Write the buffer recorded by requestExitScreenshot() to
+        // screenshot.png (CWD-relative, i.e. bin/). Called from cleanup() after
+        // deviceWaitIdle() guarantees the copy completed.
+        void writeExitScreenshot();
+        // Diagnostic hook invoked when a frame-slot fence wait or the frame
+        // timeline wait exceeds a stall threshold (GPU ring hang signature).
+        // MyApp uses it to dump partial per-pass query timestamps. Set before
+        // mainLoop() starts.
+        std::function<void(uint32_t frameSlot)> onFrameStall;
+        void createInstance();
+        bool checkValidationLayerSupport();
+        void setupDebugMessenger();
+        void createSurface() ;
+        QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);        
+        void pickPhysicalDevice();
+        bool isDeviceSuitable(VkPhysicalDevice device);
+        void createLogicalDevice() ;
+        void createSyncObjects();
+
+    public:
+        void initVulkan();
+    // Create (or load from disk) the pipeline cache. Called after device creation.
+    void createPipelineCache();
+    // Serialize the pipeline cache to disk. Called during cleanup.
+    void savePipelineCache();
+    void initImGui();
+    void cleanupImGui();
+        void mainLoop();
+        void cleanup();
+
+
+
+
+    public:
+        Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, bool zeroInit = true);
+        void destroyBuffer(Buffer& buf);
+        VkSampler createTextureSampler(uint32_t mipLevels);
+        VkSampler createSampler(const VkSamplerCreateInfo& info, const char* name);
+        VkSampler createSamplerLinearClamp(const char* name);
+        VkSampler createSamplerNearestClamp(const char* name);
+        void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
+    void createDescriptorPool(uint32_t uboCount, uint32_t samplerCount);
+        VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout);
+    // Thread-safe wrapper for vkAllocateDescriptorSets that serializes
+    // allocations using `descriptorAllocMutex`. Use this to allocate from
+    // shared descriptor pools across multiple threads.
+    VkResult allocateDescriptorSetsThreadSafe(const VkDescriptorSetAllocateInfo* pAllocInfo, VkDescriptorSet* pDescriptorSets);
+        void updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> descriptors);
+        void updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &descriptors);
+        void registerDescriptorSet(VkDescriptorSet ds) { if (ds != VK_NULL_HANDLE) registeredDescriptorSets.push_back(ds); }
+        const std::vector<VkDescriptorSet>& getRegisteredDescriptorSets() const { return registeredDescriptorSets; }
+        VkDescriptorSetLayout getDescriptorSetLayout() const;
+        VkDescriptorSet getStaticDescriptorSet() const;
+        VkDescriptorSetLayout getMaterialDescriptorSetLayout() const;
+        VkDescriptorSetLayout getBrushDepthDescriptorSetLayout() const;
+        // Register a descriptor set layout with the resource manager (used by
+        // SceneDescriptorLayout for cleanup tracking). Kept on VulkanApp so the
+        // renderer-owned layout class does not reach into private state.
+        void registerDescriptorSetLayout(VkDescriptorSetLayout layout, const char* name);
+
+        const std::vector<VkPipeline>& getRegisteredPipelines() const { return registeredPipelines; }
+
+        Buffer createVertexBuffer(const std::vector<Vertex> &vertices);
+        Buffer createIndexBuffer(const std::vector<uint> &indices);
+        // Create a device-local storage buffer and upload data via staging transfer
+        // Async device-local buffer upload: returns a fence, defers publication until ready
+        Buffer createDeviceLocalBufferAsync(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkFence* outFence);
+        // Synchronous variant: Create a device-local storage buffer and upload data via staging transfer
+        Buffer createDeviceLocalBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
+        VkShaderModule createShaderModule(const std::vector<char>& code);
+        // Load SPIR-V from path once and cache the VkShaderModule for reuse.
+        // Subsequent calls with the same path return the cached module.
+        VkShaderModule getOrCreateShaderModule(const std::string& path);
+    // Refactored: Accepts set layouts and optional push constant range, returns pipeline and layout
+    // Main implementation accepts a vector of attribute descriptions so callers
+    // that already have std::vector (e.g. vk_layouts::defaultAttributes()) can pass it directly.
+    std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
+        std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+        const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+        const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions,
+        const std::vector<VkDescriptorSetLayout>& setLayouts = {},
+        const VkPushConstantRange* pushConstantRange = nullptr,
+        VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL,
+        VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT,
+        bool depthWrite = true,
+        bool colorWrite = true,
+        VkCompareOp depthCompare = VK_COMPARE_OP_LESS,
+        VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        bool depthClampEnable = false,
+        const std::vector<VkFormat>& colorFormats = {},
+        VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
+        bool noColorAttachment = false,
+        bool depthBiasEnable = false,
+        VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE,
+        bool depthTestEnable = true,
+        bool blendEnable = false,
+        // When non-null, reuse this layout instead of creating (and leaking
+        // into the registry) an identical one. Ownership stays with the caller.
+        VkPipelineLayout existingLayout = VK_NULL_HANDLE,
+        VkBlendFactor blendSrcColorFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA,
+        VkBlendFactor blendDstColorFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA,
+        VkBlendFactor blendSrcAlphaFactor = VK_BLEND_FACTOR_ONE,
+        VkBlendFactor blendDstAlphaFactor = VK_BLEND_FACTOR_ZERO);
+
+    // Config-based overload — callers override only what differs from defaults
+    std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
+        std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+        const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+        const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions,
+        const std::vector<VkDescriptorSetLayout>& setLayouts,
+        const VkPushConstantRange* pushConstantRange,
+        const GraphicsPipelineConfig& config);
+
+    // Config-based overload that reuses an existing VkPipelineLayout (e.g. a
+    // sibling pipeline variant with identical set layouts) instead of creating
+    // a duplicate layout that would be discarded immediately. The layout is
+    // not registered again; its original creator keeps ownership.
+    VkPipeline createGraphicsPipelineWithLayout(
+        std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+        const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+        const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions,
+        const std::vector<VkDescriptorSetLayout>& setLayouts,
+        const VkPushConstantRange* pushConstantRange,
+        const GraphicsPipelineConfig& config,
+        VkPipelineLayout layout);
+
+    // Backwards-compatible wrapper for callers that pass an initializer_list
+    inline std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
+        std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+        const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+        std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions,
+        const std::vector<VkDescriptorSetLayout>& setLayouts = {},
+        const VkPushConstantRange* pushConstantRange = nullptr,
+        VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL,
+        VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT,
+        bool depthWrite = true,
+        bool colorWrite = true,
+        VkCompareOp depthCompare = VK_COMPARE_OP_LESS,
+        VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        bool depthClampEnable = false,
+        const std::vector<VkFormat>& colorFormats = {},
+        VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
+        bool noColorAttachment = false,
+        bool depthBiasEnable = false,
+        VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE,
+        bool depthTestEnable = true,
+        bool blendEnable = false) {
+        std::vector<VkVertexInputAttributeDescription> vec(attributeDescriptions);
+        return createGraphicsPipeline(stages, bindingDescriptions, vec, setLayouts, pushConstantRange,
+            polygonMode, cullMode, depthWrite, colorWrite, depthCompare, topology, depthClampEnable,
+            colorFormats, depthFormat, noColorAttachment, depthBiasEnable, frontFace, depthTestEnable,
+            blendEnable);
+    }
+
+    // Config-based wrapper for initializer_list attribute descriptions
+    inline std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
+        std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+        const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+        std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions,
+        const std::vector<VkDescriptorSetLayout>& setLayouts,
+        const VkPushConstantRange* pushConstantRange,
+        const GraphicsPipelineConfig& config) {
+        std::vector<VkVertexInputAttributeDescription> vec(attributeDescriptions);
+        return createGraphicsPipeline(stages, bindingDescriptions, vec, setLayouts, pushConstantRange, config);
+    }
+        std::vector<VkCommandBuffer> createCommandBuffers();
+
+        VkDevice getDevice() const;
+        VkPipelineCache getPipelineCache() const { return pipelineCache; }
+
+        // Public getters for runtime inspection (used by widgets)
+        VkInstance getInstance() const { return instance; }
+        VkPhysicalDevice getPhysicalDevice() const { return physicalDevice; }
+        // Storage buffers bound with VK_WHOLE_SIZE must not exceed this limit; query
+        // the active physical device's properties (cheap struct copy).
+        VkDeviceSize getMaxStorageBufferRange() const {
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(physicalDevice, &props);
+            return props.limits.maxStorageBufferRange;
+        }
+        VmaAllocator getVmaAllocator() const { return vma.allocator; }
+        VkQueue getGraphicsQueue() const { return graphicsQueue; }
+        VkQueue getVegetationQueue() const;
+        VkQueue getSdfQueue() const;
+        VkQueue getBoundingBoxQueue() const;
+        VkQueue getSolidQueue() const;
+        VkQueue getWaterQueue() const;
+        VkQueue getSkyQueue() const;
+        // Return a graphics-family queue for parallel face work (round-robin index).
+        // When only one graphics queue exists (all dedicated queues aliased), every
+        // index maps to that same queue — the caller's submissions are simply
+        // serialized by the single queue, which is still correct.
+        VkQueue getCubeQueue(uint32_t index) const {
+            if (parallelGraphicsQueues.empty()) return graphicsQueue;
+            return parallelGraphicsQueues[index % parallelGraphicsQueues.size()];
+        }
+        // Number of distinct graphics-family queues available for parallel work
+        // (1 == no HW parallelism available).
+        size_t getCubeQueueCount() const { return parallelGraphicsQueues.empty() ? 1 : parallelGraphicsQueues.size(); }
+        VkQueue getPresentQueue() const { return presentQueue; }
+        VkQueue getTransferQueue() const { return transferQueue; }
+        VkQueue getBrushSolidQueue() const;
+        VkQueue getBrushLiquidQueue() const;
+        const std::vector<VkQueue>& getParallelGraphicsQueues() const { return parallelGraphicsQueues; }
+        // Per-queue activity snapshots for the Vulkan Resources "Queue Activity" chart.
+        // Safe to call from the UI thread; reads are guarded by m_submissionMutex.
+        int      getQueuePending(VkQueue q) const;
+        uint64_t getQueueSubmitted(VkQueue q) const;
+        uint64_t getQueueCompleted(VkQueue q) const;
+        // All-queues cumulative submits (perf report 22 C3 overlay counter).
+        uint64_t getTotalSubmitted() const;
+
+        // ---- Queue timeline -------------------------------------------------
+        // Per-submit busy intervals used by the queue-usage slotted view. Every
+        // submit (graphics, present, compute, transfer, parallel cube queues)
+        // records a segment {queue, startNs, endNs, frame}. The segment end is
+        // resolved when its fence signals inside processPendingCommandBuffers,
+        // so the UI can draw exactly when each queue is processing.
+        struct QueueSegment {
+            VkQueue  queue    = VK_NULL_HANDLE;
+            VkFence  fence    = VK_NULL_HANDLE;
+            uint64_t frame    = 0;   // drawFrame index at submit time
+            uint64_t submitId = 0;
+            uint64_t startNs  = 0;   // steady_clock at submit
+            uint64_t endNs    = 0;   // steady_clock when fence signaled (0 = ongoing)
+        };
+        // Snapshot of recent segments (oldest first). Copy-based: no VulkanApp*
+        // is retained by the caller. Thread-safe.
+        void getQueueTimeline(std::vector<QueueSegment>& out) const;
+        VkSwapchainKHR getSwapchain() const { return swapchain; }
+        VkFormat getSwapchainImageFormat() const { return swapchainImageFormat; }
+        VkExtent2D getSwapchainExtent() const { return swapchainExtent; }
+        VkDescriptorPool getDescriptorPool() const { return descriptorPool; }
+        VkDescriptorPool getImGuiDescriptorPool() const { return imguiDescriptorPool; }
+
+        int getWidth();
+        int getHeight();
+        
+        enum class ResourceType { Buffer, DeviceMemory, Image, ImageView, Sampler, Framebuffer, ShaderModule, PipelineLayout, Pipeline, DescriptorPool, DescriptorSetLayout, DescriptorSet };
+
+        // GPU memory budget information (VK_EXT_memory_budget)
+        struct MemoryHeapBudget {
+            VkMemoryHeapFlags flags;
+            VkDeviceSize      usage;   // bytes currently allocated (estimated by driver)
+            VkDeviceSize      budget;  // bytes available before paging/system memory (0 = unknown)
+            VkDeviceSize      size;    // total heap size
+        };
+        std::vector<MemoryHeapBudget> getMemoryBudgets() const;
+        
+        // Public utility methods for texture manipulation
+        // Allocate, begin, call `fn` to record commands, end, submit and free the command buffer
+        // This function serializes the entire lifecycle so callers do not need to manage command-pool/thread-safety.
+        void runSingleTimeCommands(const std::function<void(VkCommandBuffer)>& fn);
+
+        // Image helpers (moved from protected so external helpers can use them)
+        void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VmaAllocation& allocation, VkDeviceMemory& imageMemory, const char* debugName = nullptr);
+        // Generic VMA-based image creation from a fully-specified VkImageCreateInfo.
+        // Registers the image+allocation with VulkanResourceManager and sets up layout tracking.
+        void createImageWithVma(const VkImageCreateInfo& imageInfo, VkMemoryPropertyFlags properties, VkImage& image, VmaAllocation& allocation, VkDeviceMemory& imageMemory, const char* debugName = nullptr);
+        // Destroy an image allocated via VMA (or legacy). Cleans up both image + memory.
+        void destroyImageWithVma(VkImage image, VmaAllocation allocation, VkDeviceMemory imageMemory);
+        void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels = 1, uint32_t arrayLayers = 1);
+        // Transition a specific array layer range (baseArrayLayer, layerCount) synchronously.
+        void transitionImageLayoutLayer(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
+        // Force a transition on the GPU for the specified layers regardless of the
+        // app-authoritative tracked layout. Useful during initialization when we
+        // must ensure the GPU's layout matches expectations immediately.
+        void transitionImageLayoutLayerForce(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
+        // Update the authoritative tracked layout for an image (no barrier emitted).
+        void setImageLayoutTracked(VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1);
+        VkImageLayout getImageLayoutTracked(VkImage image, uint32_t baseArrayLayer = 0) const;
+        // Record a tracked layout change associated with a specific command buffer.
+        // If `commandBuffer` is VK_NULL_HANDLE the authoritative map is updated
+        // immediately; otherwise the change is queued and applied when the
+        // command buffer completes (avoids premature updates during recording).
+        void recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1);
+        void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+
+        // Allocate a primary command buffer from the app command pool for asynchronous submissions.
+        // Caller is responsible for recording commands (vkBeginCommandBuffer) and passing
+        // the command buffer to `submitCommandBufferAsyncToQueue` (which will call vkEndCommandBuffer).
+        VkCommandBuffer allocatePrimaryCommandBuffer();
+        // Free a command buffer previously allocated via `allocatePrimaryCommandBuffer`.
+        // The underlying command pool is reused from the internal ring — not destroyed.
+        void freeCommandBuffer(VkCommandBuffer cmd);
+
+        // Record an image layout transition into an existing command buffer (non-blocking).
+        void recordTransitionImageLayoutLayer(VkCommandBuffer commandBuffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
+
+        // One batched transition request for recordTransitionBatch().
+        struct BatchTransition {
+            VkImage       image          = VK_NULL_HANDLE;
+            VkFormat      format         = VK_FORMAT_UNDEFINED;
+            VkImageLayout oldLayout      = VK_IMAGE_LAYOUT_UNDEFINED;
+            VkImageLayout newLayout      = VK_IMAGE_LAYOUT_UNDEFINED;
+            uint32_t      mipLevels      = 1;
+            uint32_t      baseArrayLayer = 0;
+            uint32_t      layerCount     = 1;
+            // When true and oldLayout == newLayout, the entry is emitted as a
+            // VK_ACCESS_2_NONE / VK_PIPELINE_STAGE_2_NONE no-op barrier inside
+            // the same vkCmdPipelineBarrier2 call (documents the frame-graph
+            // edge without stalling). Entries without isNoOp whose resolved
+            // layouts are equal are skipped entirely (same as the single
+            // transition early-out).
+            bool          isNoOp         = false;
+        };
+        // Record N image layout transitions in a SINGLE vkCmdPipelineBarrier2
+        // call. Applies the exact same stage/access mapping and layout
+        // tracking as recordTransitionImageLayoutLayer per image, so semantics
+        // are unchanged — only the barrier call count drops. Items must refer
+        // to distinct (image, layer-range) subresources. Swapchain images are
+        // skipped as in the single path. Returns the number of
+        // vkCmdPipelineBarrier2 calls emitted (0 if every item was a no-op).
+        // Throws std::runtime_error on an unhandled layout pair (before
+        // emitting anything) or an out-of-bounds layer range.
+        uint32_t recordTransitionBatch(VkCommandBuffer commandBuffer,
+                                       const std::vector<BatchTransition>& transitions);
+
+        void run();
+    // request the app to close the main window
+    void requestClose();
+        virtual void setup() = 0;
+        virtual void update(float deltaTime) = 0;
+        virtual void preRenderPass(VkCommandBuffer &commandBuffer) {} // Called after vkBeginCommandBuffer but before rendering begins
+        virtual void draw(VkCommandBuffer &commandBuffer) = 0;
+        virtual void clean() = 0;
+        // Called on the device-lost teardown path (cleanup() degraded branch)
+        // instead of clean(): the derived app must join/stop its CPU threads
+        // here WITHOUT touching Vulkan (any destroy would be validation-illegal
+        // while objects are still tracked in use). Default no-op.
+        virtual void stopBackgroundThreads() {}
+        // Called after swapchain recreation so derived apps can resize their offscreen resources
+        virtual void onSwapchainResized(uint32_t /*width*/, uint32_t /*height*/) {}
+        // Called after ImGui is re-initialized (new DSL) during swapchain recreate.
+        // Override to re-create any ImGui AddTexture DS that used the old DSL.
+        virtual void onImGuiRecreated() {}
+        // Called before ImGui backend shutdown during swapchain recreate.
+        // Override to free any ImGui AddTexture DS while the backend is still alive.
+        virtual void preImGuiShutdown() {}
+        // Called after a frame has been submitted/presented. Derived apps may override.
+        virtual void postSubmit();
+
+    public:
+        // Size of the async command-buffer / fence ring. constexpr static, so it
+        // does not affect the VulkanApp instance layout.
+        static constexpr uint32_t ASYNC_CMD_POOL_RING_SIZE = 64;
+    private:
+        VkCommandPool asyncCmdPoolRing[ASYNC_CMD_POOL_RING_SIZE]{};
+        VkCommandBuffer asyncCmdBufferRing[ASYNC_CMD_POOL_RING_SIZE]{};
+        VkFence asyncCmdFenceRing[ASYNC_CMD_POOL_RING_SIZE]{};
+        std::atomic<uint32_t> asyncCmdPoolNext{0};
+        std::unordered_map<VkCommandBuffer, uint32_t> m_cmdToRingSlot;
+        std::mutex m_cmdToRingSlotMtx;
+        void createAsyncCmdPoolRing();
+        void signalRingSlotFence(VkCommandBuffer cmd, VkQueue queue);
+
+        // Shared ImGui backend setup used by initImGui() and the
+        // swapchain-recreation path: creates the descriptor pool (returns
+        // VK_NULL_HANDLE on failure so each caller throws its own message) and
+        // fills an ImGui_ImplVulkan_InitInfo with the app's device/queue state.
+        VkDescriptorPool createImGuiDescriptorPool();
+        void fillImGuiInitInfo(ImGui_ImplVulkan_InitInfo& init_info);
+
+        static constexpr uint32_t SINGLE_TIME_CMD_RING_SIZE = 4;
+        VkCommandPool singleTimeCmdPools[SINGLE_TIME_CMD_RING_SIZE]{};
+        VkCommandBuffer singleTimeCmdBuffers[SINGLE_TIME_CMD_RING_SIZE]{};
+        VkFence singleTimeCmdFences[SINGLE_TIME_CMD_RING_SIZE]{};
+        std::atomic<uint32_t> singleTimeCmdNext{0};
+        void createSingleTimeCmdRing();
+
+        // Cache: shader file path → VkShaderModule, created on first use and kept for app lifetime.
+        // Destruction is handled by VulkanResourceManager at shutdown (createShaderModule registers
+        // each module with resources).
+        std::unordered_map<std::string, VkShaderModule> m_shaderModuleCache;
+
+        // Single mutex guarding all submission/tracking state below.
+        // Replaces per-object mutexes to eliminate lock-ordering deadlocks.
+        mutable std::recursive_mutex m_submissionMutex;
+
+        // Async submission bookkeeping (moved from file-scope globals)
+        std::vector<std::pair<VkCommandBuffer,VkFence>> m_pendingCommandBuffers;
+        std::atomic<uint64_t> m_submitCounter{1};
+        std::unordered_map<VkCommandBuffer, uint64_t> m_cmdSubmitMap;
+        std::unordered_map<VkCommandBuffer, VkCommandPool> m_commandBufferPoolMap;
+        std::unordered_map<VkCommandBuffer, std::string> m_cmdBacktraces;
+        std::vector<std::pair<VkSemaphore, VkPipelineStageFlags2>> m_extraWaitSemaphores;
+        std::list<std::pair<VkFence, std::function<void()>>> m_deferredDestroys;
+
+        // O(1) membership mirror of m_pendingCommandBuffers (command-buffer
+        // handles) for the double-submission check in the async submit paths.
+        // Kept in lockstep with m_pendingCommandBuffers under m_submissionMutex.
+        std::unordered_set<VkCommandBuffer> m_pendingCommandBuffersSet;
+
+        // Per-queue activity tracking (drives the Vulkan Resources "Queue Activity"
+        // chart). Keyed by VkQueue handle, so aliased queues (e.g. vegetationQueue
+        // == graphicsQueue when only one graphics queue exists) collapse to one
+        // counter — which is exactly the real hardware queue.
+        std::unordered_map<VkQueue, int>      m_queuePending;   // in-flight command buffers
+        std::unordered_map<VkQueue, uint64_t> m_queueSubmitted; // cumulative submissions
+        // All-queues cumulative submit count (perf report 22 C3): bumped next
+        // to m_queueSubmitted on every submit path; the stats overlay diffs it
+        // per frame. Same lock domain as the maps below.
+        uint64_t m_totalSubmitted = 0;
+        std::unordered_map<VkQueue, uint64_t> m_queueCompleted; // cumulative completions
+        std::unordered_map<VkCommandBuffer, VkQueue> m_cmdQueueMap; // cmd -> owning queue
+        // Persistent frame-graph timeline semaphores (producer signaled with the
+        // current frame value). Consumed by drawFrame, which waits on each with
+        // that value so the main CB gated on the producer's completion.
+        std::vector<std::pair<VkSemaphore, uint64_t>> m_compositeTimelineWaits;
+
+        // Queue timeline: per-submit busy intervals for the queue-usage slotted
+        // view. Guarded by queueTimelineMtx_. A std::list keeps segment
+        // iterators stable while we erase the oldest entries on cap.
+        mutable std::mutex queueTimelineMtx_;
+        std::list<QueueSegment> queueSegments_;
+        // fence -> iterator into queueSegments_ for not-yet-completed segments.
+        std::unordered_map<VkFence, std::list<QueueSegment>::iterator> queueTimelineLive_;
+        std::atomic<uint64_t> frameCounter_{0};
+        void recordQueueSegment(VkQueue queue, VkFence fence, uint64_t submitId);
+        void markQueueSegmentDone(VkFence fence, uint64_t endNs);
+        static uint64_t nowNs();
+
+        mutable std::vector<MemoryHeapBudget> m_memoryBudgetScratch;
+
+        // ── Exit screenshot ───────────────────────────────────────────────────
+        // requestExitScreenshot() sets screenshotRequested when the close request
+        // is observed, so the final frame records a swapchain→screenshotBuffer
+        // copy. cleanup() then reads the host-visible buffer back and writes it
+        // as screenshot.png. screenshotSupportsTransferSrc is queried from the
+        // surface capabilities in createSwapchain().
+        bool screenshotRequested = false;
+        bool screenshotSupportsTransferSrc = false;
+        // Set once the capture frame's submission succeeded, so cleanup() never
+        // reads an unfilled buffer from an aborted frame.
+        bool screenshotCopySubmitted = false;
+        VkDeviceSize screenshotBufferSize = 0;
+        Buffer screenshotBuffer;
+        // Extent/format of the captured swapchain image. Stored so a swapchain
+        // recreate between capture and cleanup cannot make the readback use a
+        // different size than the buffer was allocated for.
+        VkExtent2D screenshotExtent{};
+        VkFormat screenshotFormat = VK_FORMAT_UNDEFINED;
+
+};
+
+// ImGui integration glue: backend can call these to route submits through the
+// application's synchronized submission helpers. `g_imguiVulkanApp` is defined
+// in VulkanApp.cpp and set during `initImGui()`.
+extern VulkanApp* g_imguiVulkanApp;
+void setImGuiVulkanApp(VulkanApp* app);
+VulkanApp* getImGuiVulkanApp();
+

@@ -3,7 +3,7 @@
 #include <array>
 #include <stdexcept>
 
-#include "../VulkanApp.hpp"
+#include "../core/VulkanApp.hpp"
 
 void SceneDescriptorLayout::create(VulkanApp& app) {
     // binding 0 : uniform buffer (vertex shader)
@@ -120,7 +120,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
 
     // ── Hybrid RT bindings (fragment stage: inline ray queries; TES also
     // queries the TLAS for the RT water-region depth) ──────────
-    // binding 14: TLAS (stable proxy BLAS; ray queries in main.frag/water.frag)
+    // binding 14: TLAS (stable proxy BLAS; ray queries in SolidRenderer.frag/WaterRenderer.frag)
     VkDescriptorSetLayoutBinding tlasBinding{};
     tlasBinding.binding = 14;
     tlasBinding.descriptorCount = 1;
@@ -129,7 +129,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     tlasBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
         | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
-    // binding 15: RT water reflection output (half-res, sampled by water.frag)
+    // binding 15: RT water reflection output (half-res, sampled by WaterRenderer.frag)
     VkDescriptorSetLayoutBinding rtReflectBinding{};
     rtReflectBinding.binding = 15;
     rtReflectBinding.descriptorCount = 1;
@@ -155,7 +155,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
         | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     // binding 18: RT proxy metadata (per-box albedo/flags for ray-query hit
-    // shading in main.frag). Same buffer the RT pipeline samples at its set 0/4.
+    // shading in SolidRenderer.frag). Same buffer the RT pipeline samples at its set 0/4.
     VkDescriptorSetLayoutBinding rtMetaBinding{};
     rtMetaBinding.binding = 18;
     rtMetaBinding.descriptorCount = 1;
@@ -164,7 +164,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     rtMetaBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     // binding 19: previous-frame solid HDR color (screen-space reflection
-    // refinement in main.frag — precise mirror samples of the real scene).
+    // refinement in SolidRenderer.frag — precise mirror samples of the real scene).
     VkDescriptorSetLayoutBinding ssrColorBinding{};
     ssrColorBinding.binding = 19;
     ssrColorBinding.descriptorCount = 1;
@@ -239,7 +239,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
         | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     // binding 27: shared wind-field UBO (ambient + up to 4 tornadoes, packed
-    // by VegetationRenderer). Read via shaders/includes/wind_field.glsl by
+    // by VegetationRenderer). Read via shaders/includes/vegetation/WindField.glsl by
     // every consumer (vegetation vertex, fire, SDF) so all sample the
     // identical field. Appended after 26: binding 11 stays intentionally
     // absent (legacy 360 cubemap; load-bearing hole — descriptor-buffer
@@ -342,7 +342,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
 
     // ── Brush depth descriptor set layout (set=1, binding 0/1) ──
     // Separate from the main set so the shadow pass (which uses set=0 only)
-    // doesn't need to reference these bindings. Only pipelines using main.frag
+    // doesn't need to reference these bindings. Only pipelines using SolidRenderer.frag
     // (graphicsPipeline, depthPrePassPipeline, deferredColorPipeline) include
     // this layout.
     std::array<VkDescriptorSetLayoutBinding, 2> brushDepthBindings{};

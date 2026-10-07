@@ -6,12 +6,12 @@ class World;
 
 #include <vulkan/vulkan.h>
 #include "Renderer.hpp"
-#include "../VulkanApp.hpp"
+#include "../core/VulkanApp.hpp"
 #include <glm/gtc/type_ptr.hpp>
 #include <cmath>
-#include "../TextureArrayManager.hpp"
-#include "../MaterialManager.hpp"
-#include "../ShaderStage.hpp"
+#include "../resources/TextureArrayManager.hpp"
+#include "../resources/MaterialManager.hpp"
+#include "../pipeline/ShaderStage.hpp"
 #include "../../utils/FileReader.hpp"
 #include "../../math/Vertex.hpp"
 #include "../../math/BoundingCubeHasher.hpp"
@@ -25,20 +25,20 @@ class World;
 #include <vector>
 #include "../../space/Model3DVersion.hpp"
 #include "../../space/ThreadPool.hpp"
-#include "SolidRenderer.hpp"
-#include "VegetationRenderer.hpp"
-#include "WaterRenderer.hpp"
-#include "PostProcessRenderer.hpp"
-#include "SkyRenderer.hpp"
-#include "ShadowRenderer.hpp"
-#include "DebugCubeRenderer.hpp"
-#include "DebugSDFRenderer.hpp"
-#include "SdfRenderer.hpp"
-#include "WireframeRenderer.hpp"
-#include "WaterBackFaceRenderer.hpp"
-#include "BrushRenderer.hpp"
-#include "IndirectRenderer.hpp"
-#include "RayTracingResources.hpp"
+#include "solid/SolidRenderer.hpp"
+#include "vegetation/VegetationRenderer.hpp"
+#include "water/WaterRenderer.hpp"
+#include "post/PostProcessRenderer.hpp"
+#include "sky/SkyRenderer.hpp"
+#include "shadow/ShadowRenderer.hpp"
+#include "debug/DebugCubeRenderer.hpp"
+#include "debug/DebugSDFRenderer.hpp"
+#include "sdf/SdfRenderer.hpp"
+#include "debug/WireframeRenderer.hpp"
+#include "water/WaterBackFaceRenderer.hpp"
+#include "brush/BrushRenderer.hpp"
+#include "indirect/IndirectRenderer.hpp"
+#include "rt/RayTracingResources.hpp"
 #include "../../widgets/CloudSettings.hpp"
 #include "../streaming/UploadManager.hpp"   // TerrainStreamer: async streaming orchestration
 #include "../../world/World.hpp"
@@ -67,8 +67,8 @@ public:
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<ShadowRenderer> shadowMapper;
     std::unique_ptr<PostProcessRenderer> postProcessRenderer;
-    std::unique_ptr<SolidRenderer> mainSolidRenderer;
-    std::unique_ptr<WaterRenderer> mainLiquidRenderer;
+    std::unique_ptr<SolidRenderer> solidRenderer;
+    std::unique_ptr<WaterRenderer> waterRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     std::unique_ptr<BrushRenderer> brushRenderer;
     std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
@@ -123,8 +123,8 @@ public:
     };
 
     // Mutex protecting all chunk maps (solid, transparent, brush) and mesh operations
-    std::recursive_mutex mainSolidChunksMutex;
-    std::recursive_mutex mainLiquidChunksMutex;
+    std::recursive_mutex solidChunksMutex;
+    std::recursive_mutex waterChunksMutex;
 
     // Texture arrays (owned by main): per-layer albedo averages feed the RT
     // proxy albedo. Set once in init(); read on the render thread.
@@ -138,8 +138,8 @@ public:
 
     // ── Chunk tracking ──
     // Track model ids for transparent/water meshes so we can remove them if erased/updated
-    std::unordered_map<NodeID, Model3DVersion> mainLiquidChunks;
-    std::unordered_map<NodeID, Model3DVersion> mainSolidChunks;
+    std::unordered_map<NodeID, Model3DVersion> waterChunks;
+    std::unordered_map<NodeID, Model3DVersion> solidChunks;
 
     // Slots whose chunks were erased but may be replaced (same NodeID, new
     // version). For solid/water the octree node is reused on edit, so NodeID
@@ -164,20 +164,20 @@ public:
     const World* world() const { return world_; }
 
     // Register/inspect opaque model versions (moved from SolidRenderer)
-    size_t getRegisteredModelCount() const { return mainSolidChunks.size(); }
+    size_t getRegisteredModelCount() const { return solidChunks.size(); }
 
     // Remove all registered opaque meshes via IndirectRenderer and clear the map
     void removeAllRegisteredMeshes() {
-        if (!mainSolidRenderer) return;
-        mainSolidRenderer->getIndirectRenderer().removeAllMeshes();
-        mainSolidChunks.clear();
+        if (!solidRenderer) return;
+        solidRenderer->getIndirectRenderer().removeAllMeshes();
+        solidChunks.clear();
     }
 
     // Remove all registered transparent/water meshes and clear the map
     void removeAllTransparentMeshes() {
-        if (!mainLiquidRenderer) return;
-        mainLiquidRenderer->getIndirectRenderer().removeAllMeshes();
-        mainLiquidChunks.clear();
+        if (!waterRenderer) return;
+        waterRenderer->getIndirectRenderer().removeAllMeshes();
+        waterChunks.clear();
     }
 
     // Pool utilization telemetry (perf report 22 C1): logs used vs committed
@@ -264,7 +264,7 @@ public:
     // ── Hybrid RT proxy bookkeeping ──────────────────────────────────────
     // Stable proxy source per main-scene chunk, recorded at publish time from
     // the chunk geometry (world bounds + dominant material). Guarded by
-    // mainSolidChunksMutex. Opaque chunks feed the solid BLAS; transparent
+    // solidChunksMutex. Opaque chunks feed the solid BLAS; transparent
     // (water) chunks feed the water BLAS so solid reflections see water.
     // Brush chunks excluded (preview overlay, not scene).
     struct SolidProxyData {
@@ -282,8 +282,8 @@ public:
         // hits (terraces + giant rectangles) in the far field.
         uint32_t rung = 0;
     };
-    std::unordered_map<NodeID, SolidProxyData> mainSolidProxyData;
-    std::unordered_map<NodeID, SolidProxyData> mainWaterProxyData;
+    std::unordered_map<NodeID, SolidProxyData> solidProxyData;
+    std::unordered_map<NodeID, SolidProxyData> waterProxyData;
     // When false, water chunks are excluded from the proxy (e.g. water hidden).
     // Set from the frame settings before processPendingMeshes runs.
     bool rtWaterProxyEnabled = true;
@@ -308,7 +308,7 @@ public:
     void refreshRTSceneViews(VulkanApp* app);
 
     // ── Hybrid solid SSR (bindings 19/20) ─────────────────────────────────
-    // main.frag resolves solid reflections against the real rendered scene by
+    // SolidRenderer.frag resolves solid reflections against the real rendered scene by
     // marching the *previous* frame's solid color/depth. Each per-frame main
     // descriptor set is bound once to the solid views of the slot it does NOT
     // render into, so the feedback loop (sampling the color attachment being
@@ -524,8 +524,8 @@ public:
     // truly in parallel: neither waits for the other to finish, and neither
     // competes for the shared scene pool. Public so the app can hand them to
     // processNodeLayer when building its own solid/water space-change lambdas.
-    ThreadPool mainSolidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
-    ThreadPool mainWaterGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
+    ThreadPool solidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
+    ThreadPool waterGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
 
     CommandBufferState frameCmdState;
 };

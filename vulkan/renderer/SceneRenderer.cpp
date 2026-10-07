@@ -9,8 +9,8 @@
 
 #include <stdexcept>
 #include "../../utils/LocalScene.hpp"
-#include "../includes/locations.hpp"
-#include "../includes/DebugModes.hpp"
+#include "../includes/shader/locations.hpp"
+#include "../includes/debug/DebugModes.hpp"
 #include "../../math/ContainmentType.hpp"
 #include <algorithm>
 #include <array>
@@ -99,8 +99,8 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (postProcessRenderer && app) {
         postProcessRenderer->cleanup(app);
     }
-    if (mainLiquidRenderer && app) {
-        mainLiquidRenderer->cleanup(app);
+    if (waterRenderer && app) {
+        waterRenderer->cleanup(app);
     }
     // Cleanup scene-owned water sub-renderers
     if (backFaceRenderer && app) {
@@ -109,8 +109,8 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (brushRenderer && app) {
         brushRenderer->cleanup(app);
     }
-    if (mainSolidRenderer && app) {
-        mainSolidRenderer->cleanup(app);
+    if (solidRenderer && app) {
+        solidRenderer->cleanup(app);
     }
     if (shadowMapper && app) {
         shadowMapper->cleanup(app);
@@ -152,7 +152,7 @@ void SceneRenderer::cleanup(VulkanApp* app) {
 // cmdState=nullptr avoids a data race on frameCmdState.
 void SceneRenderer::setCmdState(CommandBufferState* state) {
     if (shadowMapper) shadowMapper->setCmdState(state);
-    if (mainSolidRenderer) mainSolidRenderer->setCmdState(state);
+    if (solidRenderer) solidRenderer->setCmdState(state);
     if (skyRenderer) skyRenderer->setCmdState(state);
     if (vegetationRenderer) vegetationRenderer->setCmdState(state);
     if (postProcessRenderer) postProcessRenderer->setCmdState(state);
@@ -161,18 +161,18 @@ void SceneRenderer::setCmdState(CommandBufferState* state) {
     if (debugSDFRenderer) debugSDFRenderer->setCmdState(state);
     if (sdfRenderer) sdfRenderer->setCmdState(state);
     if (waterWireframe) waterWireframe->setCmdState(state);
-    if (mainLiquidRenderer) mainLiquidRenderer->setCmdState(state);
+    if (waterRenderer) waterRenderer->setCmdState(state);
     if (brushRenderer) brushRenderer->setCmdState(state);
 }
 
 void SceneRenderer::stopGenPools() {
     if (brushRenderer) brushRenderer->stopGenPools();
-    mainSolidGenPool.stop();
-    mainWaterGenPool.stop();
+    solidGenPool.stop();
+    waterGenPool.stop();
 }
 
 void SceneRenderer::recreateWaterTargets(VulkanApp* app, uint32_t width, uint32_t height) {
-    if (!app || !mainLiquidRenderer) return;
+    if (!app || !waterRenderer) return;
     // Settings::waterRenderScale: the water offscreen pair (color + body +
     // column, the geometry depth) and the back-face depth render at a fraction
     // of the swapchain size. The pass viewport/scissor derive from the renderer's
@@ -181,7 +181,7 @@ void SceneRenderer::recreateWaterTargets(VulkanApp* app, uint32_t width, uint32_
     const float scale = std::min(std::max(waterRenderScale_, 0.25f), 1.0f);
     const uint32_t w = std::max(1u, static_cast<uint32_t>(width * scale + 0.5f));
     const uint32_t h = std::max(1u, static_cast<uint32_t>(height * scale + 0.5f));
-    mainLiquidRenderer->createRenderTargets(app, w, h);
+    waterRenderer->createRenderTargets(app, w, h);
     // Back-face targets owned by SceneRenderer (the 360 cubemap path is removed
     // — reflections are hardware ray tracing now). Scaled too: the water
     // fragment stage samples them at screen UV, so only their filtering
@@ -196,7 +196,7 @@ void SceneRenderer::recreateVegetationTargets(VulkanApp* app, uint32_t width, ui
     // vegetation task's viewport/scissor and render area derive from the
     // renderer's own vegRenderWidth/Height, so they follow automatically; the
     // composite samples at screen UV (color bilinear, depth closest-of-2x2
-    // when scaled — see the ubo flag in postprocess.frag).
+    // when scaled — see the ubo flag in PostProcessRenderer.frag).
     const float scale = std::min(std::max(vegetationRenderScale_, 0.25f), 1.0f);
     const uint32_t w = std::max(1u, static_cast<uint32_t>(width * scale + 0.5f));
     const uint32_t h = std::max(1u, static_cast<uint32_t>(height * scale + 0.5f));
@@ -205,8 +205,8 @@ void SceneRenderer::recreateVegetationTargets(VulkanApp* app, uint32_t width, ui
 
 void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height) {
     // Recreate offscreen targets that depend on swapchain size
-    if (mainSolidRenderer) {
-        mainSolidRenderer->createRenderTargets(app, width, height);
+    if (solidRenderer) {
+        solidRenderer->createRenderTargets(app, width, height);
     }
     if (vegetationRenderer) {
         recreateVegetationTargets(app, width, height);
@@ -214,7 +214,7 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     if (brushRenderer) {
         brushRenderer->onSwapchainResized(app, width, height);
     }
-    if (mainLiquidRenderer) {
+    if (waterRenderer) {
         // Water + back-face targets render at Settings::waterRenderScale.
         recreateWaterTargets(app, width, height);
         if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, width, height);
@@ -267,8 +267,8 @@ SceneRenderer::SceneRenderer() :
     skyRenderer(std::make_unique<SkyRenderer>()),
     shadowMapper(std::make_unique<ShadowRenderer>(2048)),
     postProcessRenderer(std::make_unique<PostProcessRenderer>()),
-    mainSolidRenderer(std::make_unique<SolidRenderer>()),
-    mainLiquidRenderer(std::make_unique<WaterRenderer>()),
+    solidRenderer(std::make_unique<SolidRenderer>()),
+    waterRenderer(std::make_unique<WaterRenderer>()),
     vegetationRenderer(std::make_unique<VegetationRenderer>()),
     brushRenderer(std::make_unique<BrushRenderer>()),
     debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
@@ -279,9 +279,9 @@ SceneRenderer::SceneRenderer() :
     cloudSettings(std::make_unique<CloudSettings>())
 {
     // Vegetation cull is MERGED into the solid IndirectRenderer's single
-    // indirect.comp dispatch, so the vegetation renderer must share the solid
+    // IndirectRenderer.comp dispatch, so the vegetation renderer must share the solid
     // IndirectRenderer (it supplies the per-frame veg output buffers + metadata).
-    vegetationRenderer->setSolidIndirectRenderer(&mainSolidRenderer->getIndirectRenderer());
+    vegetationRenderer->setSolidIndirectRenderer(&solidRenderer->getIndirectRenderer());
 }
 
 SceneRenderer::~SceneRenderer() {
@@ -306,7 +306,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         const WaterSettings& wp = waterParams.empty() ? WaterSettings{} : waterParams[0];
         const float thickness = std::max(wp.maxThickness, 0.0f);
         const glm::vec3 waterTintColor = waterRegionTint(wp, thickness);
-        // Beer-Lambert absorption (water.frag): the tint seen through the
+        // Beer-Lambert absorption (WaterRenderer.frag): the tint seen through the
         // water column is attenuated.
         const glm::vec3 transmittance = glm::exp(-glm::min(
             wp.absorption * std::max(thickness * wp.absorptionScale, 0.0f),
@@ -328,9 +328,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
                   /*workersPerCategory*/ 2);
 
     // Route solid/water IndirectRenderer incremental copies through the manager.
-    mainSolidRenderer->getIndirectRenderer().setUploadManager(
+    solidRenderer->getIndirectRenderer().setUploadManager(
         &streamer.uploadManager(), streaming::StreamCategory::Solid);
-    mainLiquidRenderer->getIndirectRenderer().setUploadManager(
+    waterRenderer->getIndirectRenderer().setUploadManager(
         &streamer.uploadManager(), streaming::StreamCategory::Water);
     if (brushRenderer) {
         brushRenderer->getSolidIR().setUploadManager(
@@ -352,10 +352,10 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         }
     }
     
-    mainSolidRenderer->init();
-    mainSolidRenderer->destroyRenderTargets(app);
-    mainSolidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    mainSolidRenderer->createPipelines(app);
+    solidRenderer->init();
+    solidRenderer->destroyRenderTargets(app);
+    solidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    solidRenderer->createPipelines(app);
 
     // Create pipelines for all renderers (solid renderer now has its render pass ready)
     skyRenderer->init(app);
@@ -389,7 +389,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // Own offscreen framebuffers for the debug SDF cubes and mesh bounding boxes so
     // they can be rendered on their own parallel async command buffers (composited
-    // by postprocess.frag against the solid scene depth).
+    // by PostProcessRenderer.frag against the solid scene depth).
     if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (sdfRenderer) sdfRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
@@ -519,11 +519,11 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     backFaceRenderer = std::make_unique<WaterBackFaceRenderer>();
 
     // Initialize WaterRenderer (creates its pipeline layout and initializes the param SSBO)
-    mainLiquidRenderer->init(app, waterParamsBuffer_, waterParams, layerCount);
+    waterRenderer->init(app, waterParamsBuffer_, waterParams, layerCount);
 
     // Now that WaterRenderer has created its pipeline layout, allow the
     // back-face renderer to create pipelines that depend on it.
-    if (backFaceRenderer) backFaceRenderer->createPipelines(app, mainLiquidRenderer->getWaterGeometryPipelineLayout());
+    if (backFaceRenderer) backFaceRenderer->createPipelines(app, waterRenderer->getWaterGeometryPipelineLayout());
     // (Water + back-face render targets are created later, by
     // recreateWaterTargets(), once the water pipelines exist.)
 
@@ -549,7 +549,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // Bind water render UBO to binding 10 of main descriptor set (the buffer
     // itself is created and updated by WaterRenderer).
-    VkDescriptorBufferInfo& waterRenderUBOInfo = writesBuf.emplace_back(mainLiquidRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
+    VkDescriptorBufferInfo& waterRenderUBOInfo = writesBuf.emplace_back(waterRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
     VkWriteDescriptorSet waterRenderUBOWrite{};
     waterRenderUBOWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     waterRenderUBOWrite.dstSet = staticDs;
@@ -581,7 +581,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // 14 = TLAS (valid object from init; contents built on first
     //      buildIfNeeded — shaders gate sampling on rt.debug.y == tlasReady).
     // 15/16 = water RT reflection / refraction+thickness outputs (sampled by
-    //      water.frag; GENERAL layout shared with the RT pipeline's writes —
+    //      WaterRenderer.frag; GENERAL layout shared with the RT pipeline's writes —
     //      sampled descriptors use GENERAL to match, avoiding layout churn).
     // 17 = RT params UBO (contents stream per frame via updateRTParams).
     // 18 = RT proxy metadata (hit shading for inline ray queries).
@@ -789,7 +789,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // IndirectRenderers.
     if (brushRenderer) {
         brushRenderer->setDepthSamplers(
-            mainLiquidRenderer ? mainLiquidRenderer->getLinearSampler() : VK_NULL_HANDLE,
+            waterRenderer ? waterRenderer->getLinearSampler() : VK_NULL_HANDLE,
             shadowMapper ? shadowMapper->getShadowMapSampler() : VK_NULL_HANDLE);
         brushRenderer->init(app, app->getWidth(), app->getHeight());
     }
@@ -799,11 +799,11 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // water pass samples solid offscreen targets + brush liquid geometry,
     // so each orchestrator caches the pointers it needs.
     if (shadowMapper) {
-        shadowMapper->setSceneRenderers(mainSolidRenderer.get(), mainLiquidRenderer.get(),
+        shadowMapper->setSceneRenderers(solidRenderer.get(), waterRenderer.get(),
                                         vegetationRenderer.get(), brushRenderer.get());
     }
-    if (mainLiquidRenderer) {
-        mainLiquidRenderer->setSceneRenderers(mainSolidRenderer.get(), brushRenderer.get(),
+    if (waterRenderer) {
+        waterRenderer->setSceneRenderers(solidRenderer.get(), brushRenderer.get(),
                                               backFaceRenderer.get(), waterWireframe.get());
     }
 
@@ -838,7 +838,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         addImg(9, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         // Hybrid RT mirror (shadow pass declares the same set-0 RT bindings via
-        // main.frag; the shadow fast-path early-outs before sampling, but the
+        // SolidRenderer.frag; the shadow fast-path early-outs before sampling, but the
         // descriptors must still be valid). No cubemap binding 11 (removed).
         if (rayTracing && rayTracing->isSupported()) {
             if (rayTracing->getLinearSampler() != VK_NULL_HANDLE) {
@@ -858,7 +858,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         wr.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                        waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
         wr.writeBuffer(ds, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                       mainLiquidRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
+                       waterRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
         wr.flush();
         // TLAS binding 14 (pNext chain — outside DescriptorWriter).
         if (tlasMirror_ != VK_NULL_HANDLE) writeTlasBinding(app, ds);
@@ -893,20 +893,20 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // Create the solid wireframe pipeline (owned by SolidRenderer) and the
     // water wireframe pipeline
-    mainSolidRenderer->createWireframe(app);
+    solidRenderer->createWireframe(app);
     if (waterWireframe) {
         std::vector<VkDescriptorSetLayout> waterSetLayouts = {
             app->getDescriptorSetLayout(),
             app->getMaterialDescriptorSetLayout(),
-            mainLiquidRenderer->getWaterDepthDescriptorSetLayout()
+            waterRenderer->getWaterDepthDescriptorSetLayout()
         };
         // Single colour attachment: the overlay is drawn in its own
         // single-attachment rendering scope (see WaterRenderer::renderPass),
         // never inside the blur-capable 3-attachment water pass.
         waterWireframe->createPipeline(app, {VK_FORMAT_R32G32B32A32_SFLOAT},
             waterSetLayouts,
-            "shaders/main_water.vert.spv", "shaders/water_wireframe.frag.spv",
-            "shaders/main_water.tesc.spv", "shaders/main_water.tese.spv",
+            "shaders/renderer/water/WaterRenderer.vert.spv", "shaders/renderer/water/WaterRendererWireframe.frag.spv",
+            "shaders/renderer/water/WaterRenderer.tesc.spv", "shaders/renderer/water/WaterRenderer.tese.spv",
             "water wireframe");
     }
 
@@ -945,7 +945,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Hybrid RT final wiring: water's non-async prepare path needs the RT
     // outputs, and the RT pipeline's per-slot sets need the water-depth + sky
     // views created above (water render targets + sky offscreen targets).
-    if (mainLiquidRenderer) mainLiquidRenderer->setRTResources(rayTracing.get());
+    if (waterRenderer) waterRenderer->setRTResources(rayTracing.get());
     refreshRTSceneViews(app);
 }
 
@@ -1046,7 +1046,7 @@ void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArray
     Buffer skyUBO{};
     if (skyRenderer) skyUBO = skyRenderer->getSkyUniformBuffer();
     Buffer waterRenderUBO{};
-    if (mainLiquidRenderer) waterRenderUBO = mainLiquidRenderer->getWaterRenderUBO();
+    if (waterRenderer) waterRenderUBO = waterRenderer->getWaterRenderUBO();
     VkSampler shadowSampler = VK_NULL_HANDLE;
     VkImageView shadowViews[3] = {};
     if (shadowMapper) {
@@ -1525,7 +1525,7 @@ size_t SceneRenderer::publishPendingMeshes(
         // around the true surface, so the refracted ray hits the top face at
         // the real underwater point with ground-related color/thickness.
         if (!isBrush && !lod.geom.vertices.empty()) {
-            std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
+            std::lock_guard<std::recursive_mutex> lock(solidChunksMutex);
             SolidProxyData pd;
             {
                 glm::vec3 tmin = lod.geom.vertices[0].position;
@@ -1585,7 +1585,7 @@ size_t SceneRenderer::publishPendingMeshes(
                     // Extend well ABOVE the surface so the reflection rays
                     // that pass over the lake (rising only a few degrees per
                     // chunk) still catch the water slab instead of flying
-                    // past to the far shore / sky. The water.frag own-cell
+                    // past to the far shore / sky. The WaterRenderer.frag own-cell
                     // rejection keeps the fragment's own cell from
                     // self-hitting; the rchit own-body guard does the same
                     // for the pipeline path.
@@ -1609,15 +1609,15 @@ size_t SceneRenderer::publishPendingMeshes(
             }
             pd.rung = static_cast<uint32_t>(lod.lod);
             if (layer == LAYER_OPAQUE)
-                mainSolidProxyData[nid] = pd;
+                solidProxyData[nid] = pd;
             else
-                mainWaterProxyData[nid] = pd;
+                waterProxyData[nid] = pd;
         }
 
         // Generate vegetation for every published grass chunk (lod.lod is the
         // 0-based band rung, so every rung carries its own grass for full
         // terrain coverage). The LoD band gate in
-        // indirect.comp keeps exactly one rung per region visible, so only the
+        // IndirectRenderer.comp keeps exactly one rung per region visible, so only the
         // selected rung's grass is drawn — generating per rung (not just the
         // finest) lets grass appear across the whole visible terrain instead of
         // only in the thinnest high-detail disc around the camera, with no
@@ -1652,15 +1652,15 @@ void SceneRenderer::drainPendingMeshes(std::deque<PendingMeshData>& out, size_t 
 }
 
 void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, std::deque<PendingMeshData>& batch) {
-    if (!mainLiquidRenderer) {
+    if (!waterRenderer) {
         std::cerr << "[processPendingMeshes] FATAL: waterRenderer is null!" << std::endl;
         return;
     }
     // Cache the camera position for the shadow pass (which culls with the
     // same camPos/lodBias so shadow draws match the main pass LoD selection).
     lastCameraPos_ = cameraPos;
-    mainSolidRenderer->getIndirectRenderer().pollPendingTransfers(app);
-    mainLiquidRenderer->getIndirectRenderer().pollPendingTransfers(app);
+    solidRenderer->getIndirectRenderer().pollPendingTransfers(app);
+    waterRenderer->getIndirectRenderer().pollPendingTransfers(app);
     if (brushRenderer) brushRenderer->pollPendingTransfers(app);
 
     // Keep the GPU LoD gate meta in sync with the tree (self-correcting once
@@ -1672,10 +1672,10 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     if (world_) {
         const float ms = 30.0f;
         LocalScene& mainScene = world_->scene();
-        mainSolidRenderer->getIndirectRenderer().setMaxLodLevel(mainScene.maxChunkLod(LAYER_OPAQUE, ms));
-        mainSolidRenderer->getIndirectRenderer().setLodRootMin(mainScene.opaqueOctree.getMin());
-        mainLiquidRenderer->getIndirectRenderer().setMaxLodLevel(mainScene.maxChunkLod(LAYER_TRANSPARENT, ms));
-        mainLiquidRenderer->getIndirectRenderer().setLodRootMin(mainScene.transparentOctree.getMin());
+        solidRenderer->getIndirectRenderer().setMaxLodLevel(mainScene.maxChunkLod(LAYER_OPAQUE, ms));
+        solidRenderer->getIndirectRenderer().setLodRootMin(mainScene.opaqueOctree.getMin());
+        waterRenderer->getIndirectRenderer().setMaxLodLevel(mainScene.maxChunkLod(LAYER_TRANSPARENT, ms));
+        waterRenderer->getIndirectRenderer().setLodRootMin(mainScene.transparentOctree.getMin());
         if (brushRenderer) {
             if (LocalScene* brushScene = world_->brushScene()) {
                 brushRenderer->getSolidIR().setMaxLodLevel(brushScene->maxChunkLod(LAYER_OPAQUE, ms));
@@ -1691,8 +1691,8 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // them into small host-visible readback slots. Snapshot both layers here
     // once per frame (1-frame latency) so the stats overlay never touches GPU
     // memory on the ImGui path.
-    lastOpaqueVisible_ = mainSolidRenderer->getIndirectRenderer().readVisibleCount(app);
-    lastTransparentVisible_ = mainLiquidRenderer->getIndirectRenderer().readVisibleCount(app);
+    lastOpaqueVisible_ = solidRenderer->getIndirectRenderer().readVisibleCount(app);
+    lastTransparentVisible_ = waterRenderer->getIndirectRenderer().readVisibleCount(app);
 
     // Coalesced SDF fire rebuild: chunk ingests above only flag dirty; the
     // scene rebuild (bounds + grids) runs at most once per frame here.
@@ -1705,7 +1705,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         // main stream's orphaned pending-delete entries (genuine deletions with
         // no replacement) so a mid-stream erase never leaks a slot.
         uint32_t curFrame = app ? app->getCurrentFrame() : 0;
-        ageOutPendingDeletes(curFrame, mainSolidRenderer->getIndirectRenderer(), mainLiquidRenderer->getIndirectRenderer());
+        ageOutPendingDeletes(curFrame, solidRenderer->getIndirectRenderer(), waterRenderer->getIndirectRenderer());
         processChunkSwapQueue(app);
         // Hybrid RT: deletions without publishes still change the proxy set
         // (fingerprint check inside is O(N) and early-outs when idle).
@@ -1738,7 +1738,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // right IndirectRenderer, ChunkManager tracking and deferred-slot source:
     // solid/water geometry is processed exactly the same way as brush geometry.
     std::unordered_set<NodeID> matchedNids;
-    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch, mainSolidRenderer->getIndirectRenderer(), brushRenderer->getSolidIR(), mainLiquidRenderer->getIndirectRenderer(), brushRenderer->getLiquidIR(),
+    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch, solidRenderer->getIndirectRenderer(), brushRenderer->getSolidIR(), waterRenderer->getIndirectRenderer(), brushRenderer->getLiquidIR(),
         // takeOldSlot: resolve+consume the old slot for a chunk (one slot per
         // chunk — its LoD rows share it), or UINT32_MAX when none. The main
         // stream reads its pending-delete entry (one-frame grace); the brush
@@ -1773,7 +1773,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
                 chunkMap[nid] = Model3DVersion{slotIdx, version};
             } else {
                 auto& chunkMap = (layer == LAYER_OPAQUE)
-                    ? this->mainSolidChunks : this->mainLiquidChunks;
+                    ? this->solidChunks : this->waterChunks;
                 chunkMap[nid] = Model3DVersion{slotIdx, version};
             }
         },
@@ -1806,7 +1806,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // the same NodeID, so a matching entry is normally consumed within 1 frame.
     // Entries that age out are genuine deletions (no replacement).
     uint32_t curFrame = app ? app->getCurrentFrame() : 0;
-    ageOutPendingDeletes(curFrame, mainSolidRenderer->getIndirectRenderer(), mainLiquidRenderer->getIndirectRenderer());
+    ageOutPendingDeletes(curFrame, solidRenderer->getIndirectRenderer(), waterRenderer->getIndirectRenderer());
     
     // Every frame, process the chunk swap queue (slotted mode).
     // This swaps in newly-built RenderProxies and retires old ones.
@@ -1856,8 +1856,8 @@ void SceneRenderer::ageOutPendingDeletes(uint32_t curFrame, IndirectRenderer& so
 // load/generation; steady-state cost is zero (console output only).
 void SceneRenderer::logMemoryUtilization() {
     std::printf("[memutil] ---- pool utilization (report 22 C1) ----\n");
-    if (mainSolidRenderer) mainSolidRenderer->getIndirectRenderer().logUtilization("solid");
-    if (mainLiquidRenderer) mainLiquidRenderer->getIndirectRenderer().logUtilization("water");
+    if (solidRenderer) solidRenderer->getIndirectRenderer().logUtilization("solid");
+    if (waterRenderer) waterRenderer->getIndirectRenderer().logUtilization("water");
     if (brushRenderer) {
         brushRenderer->getSolidIR().logUtilization("brush-solid");
         brushRenderer->getLiquidIR().logUtilization("brush-liquid");
@@ -1906,10 +1906,10 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
     const uint64_t waterVertBytes = static_cast<uint64_t>(maxWaterChunks) * vertexBytesPerChunk;
     const uint64_t waterIdxBytes  = static_cast<uint64_t>(maxWaterChunks) * indexBytesPerChunk;
 
-    mainSolidRenderer->getIndirectRenderer().initSlots(app, maxSolidChunks,
+    solidRenderer->getIndirectRenderer().initSlots(app, maxSolidChunks,
                                                        static_cast<uint32_t>(solidVertBytes),
                                                        static_cast<uint32_t>(solidIdxBytes));
-    mainLiquidRenderer->getIndirectRenderer().initSlots(app, maxWaterChunks,
+    waterRenderer->getIndirectRenderer().initSlots(app, maxWaterChunks,
                                                         static_cast<uint32_t>(waterVertBytes),
                                                         static_cast<uint32_t>(waterIdxBytes));
     // Bind the merged pools for real-triangle hit shading (bindings 24/25).
@@ -1921,11 +1921,11 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
     {
         const size_t solidVerts = solidVertBytes / sizeof(Vertex);
         const size_t solidIdx = solidIdxBytes / sizeof(uint32_t);
-        const bool okSolid = mainSolidRenderer->getIndirectRenderer().ensureCapacity(
+        const bool okSolid = solidRenderer->getIndirectRenderer().ensureCapacity(
             solidVerts, solidIdx, maxSolidChunks);
         const size_t waterVerts = waterVertBytes / sizeof(Vertex);
         const size_t waterIdx = waterIdxBytes / sizeof(uint32_t);
-        const bool okWater = mainLiquidRenderer->getIndirectRenderer().ensureCapacity(
+        const bool okWater = waterRenderer->getIndirectRenderer().ensureCapacity(
             waterVerts, waterIdx, maxWaterChunks);
         if (!okSolid || !okWater) {
             std::cerr << "[SceneRenderer] initSlottedMode: worst-case ensureCapacity FAILED\n";
@@ -2047,7 +2047,7 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
 }
 
 size_t SceneRenderer::getTransparentModelCount() {
-    return mainLiquidChunks.size();
+    return waterChunks.size();
 }
 
 void SceneRenderer::writeTlasBinding(VulkanApp* app, VkDescriptorSet dstSet) {
@@ -2069,11 +2069,11 @@ void SceneRenderer::writeTlasBinding(VulkanApp* app, VkDescriptorSet dstSet) {
 
 void SceneRenderer::refreshRTSceneViews(VulkanApp* app) {
     if (!app || !rayTracing || !rayTracing->isSupported()) return;
-    if (!mainLiquidRenderer || !skyRenderer) return;
+    if (!waterRenderer || !skyRenderer) return;
     VkImageView waterDepths[3] = {};
     VkImageView skyViews[3] = {};
     for (int i = 0; i < 3; ++i) {
-        waterDepths[i] = mainLiquidRenderer->getWaterGeomDepthView(static_cast<uint32_t>(i));
+        waterDepths[i] = waterRenderer->getWaterGeomDepthView(static_cast<uint32_t>(i));
         skyViews[i] = skyRenderer->getSkyView(static_cast<uint32_t>(i));
     }
     rayTracing->setSceneViews(app, waterDepths, skyViews);
@@ -2131,9 +2131,9 @@ void SceneRenderer::destroySSRSamplers(VulkanApp* app) {
 }
 
 void SceneRenderer::writeSceneVertexBindings(VulkanApp* app) {
-    if (!app || !mainSolidRenderer) return;
-    VkBuffer vb = mainSolidRenderer->getIndirectRenderer().getVertexBufferHandle();
-    VkBuffer ib = mainSolidRenderer->getIndirectRenderer().getIndexBufferHandle();
+    if (!app || !solidRenderer) return;
+    VkBuffer vb = solidRenderer->getIndirectRenderer().getVertexBufferHandle();
+    VkBuffer ib = solidRenderer->getIndirectRenderer().getIndexBufferHandle();
     if (vb == VK_NULL_HANDLE || ib == VK_NULL_HANDLE) return;
     // Write the full merged vertex/index buffers so the ray-hit shader can read
     // any vertex (including brush index, uv, normal) regardless of position in
@@ -2154,7 +2154,7 @@ void SceneRenderer::writeSceneVertexBindings(VulkanApp* app) {
 }
 
 void SceneRenderer::writeSSRBindings(VulkanApp* app) {
-    if (!app || !mainSolidRenderer) return;
+    if (!app || !solidRenderer) return;
     if (ssrColorSampler == VK_NULL_HANDLE || ssrDepthSampler == VK_NULL_HANDLE) return;
     const uint32_t nsrc = VulkanApp::MAX_FRAMES_IN_FLIGHT;
     if (nsrc == 0) return;
@@ -2164,8 +2164,8 @@ void SceneRenderer::writeSSRBindings(VulkanApp* app) {
         // Set `slot` renders into slot `slot`'s solid images; sample the
         // previous frame's images, which live in (slot - 1) mod nsrc.
         const uint32_t src = (slot + nsrc - 1u) % nsrc;
-        VkImageView c = mainSolidRenderer->getColorView(src);
-        VkImageView d = mainSolidRenderer->getDepthView(src);
+        VkImageView c = solidRenderer->getColorView(src);
+        VkImageView d = solidRenderer->getDepthView(src);
         if (c == VK_NULL_HANDLE || d == VK_NULL_HANDLE) return;
         writer.writeImage(ds, 19, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                           ssrColorSampler, c, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -2217,7 +2217,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
     size_t count = 0;
     const bool wantWater = rtWaterProxyEnabled;
     {
-        std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
+        std::lock_guard<std::recursive_mutex> lock(solidChunksMutex);
         auto hashMap = [&](const std::unordered_map<NodeID, SolidProxyData>& m) {
             for (const auto& kv : m) {
                 const SolidProxyData& d = kv.second;
@@ -2235,9 +2235,9 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     + uint64_t(d.rung) * 59ull;
             }
         };
-        hashMap(mainSolidProxyData);
-        if (wantWater) hashMap(mainWaterProxyData);
-        count = mainSolidProxyData.size() + (wantWater ? mainWaterProxyData.size() : 0);
+        hashMap(solidProxyData);
+        if (wantWater) hashMap(waterProxyData);
+        count = solidProxyData.size() + (wantWater ? waterProxyData.size() : 0);
         fp ^= uint64_t(count) * 0x9e3779b97f4a7c15ull;
         fp ^= wantWater ? 0x12345678ull : 0u;
     }
@@ -2250,23 +2250,23 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
         // BLAS inputs whenever the span set actually differs, so reflections
         // never trace spans that newer chunks reclaimed (stale geometry =
         // wrong positions AND wrong per-vertex brushIndex textures).
-        if (mainSolidRenderer && textureArrays_) {
-            VkBuffer vb = mainSolidRenderer->getIndirectRenderer().getVertexBufferHandle();
-            VkBuffer ib = mainSolidRenderer->getIndirectRenderer().getIndexBufferHandle();
+        if (solidRenderer && textureArrays_) {
+            VkBuffer vb = solidRenderer->getIndirectRenderer().getVertexBufferHandle();
+            VkBuffer ib = solidRenderer->getIndirectRenderer().getIndexBufferHandle();
             std::vector<IndirectRenderer::RTGeometrySpan> spans;
             // Camera-independent raw snapshot (all resident rungs): the BLAS
             // is rebuilt only when the chunk set changes (never on camera
             // moves). The O(n^2) overlap filter below runs only when this
             // raw set actually differs.
-            mainSolidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(spans);
+            solidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(spans);
             // Water snapshot up front so either layer can trigger the joint
             // refresh below (the scene BLAS holds both in one geometry list).
             VkBuffer wvb = VK_NULL_HANDLE, wib = VK_NULL_HANDLE;
             std::vector<IndirectRenderer::RTGeometrySpan> wspan;
-            if (mainLiquidRenderer) {
-                wvb = mainLiquidRenderer->getIndirectRenderer().getVertexBufferHandle();
-                wib = mainLiquidRenderer->getIndirectRenderer().getIndexBufferHandle();
-                mainLiquidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(wspan);
+            if (waterRenderer) {
+                wvb = waterRenderer->getIndirectRenderer().getVertexBufferHandle();
+                wib = waterRenderer->getIndirectRenderer().getIndexBufferHandle();
+                waterRenderer->getIndirectRenderer().copyAllRTGeometrySpans(wspan);
             }
             const bool solidok = vb != VK_NULL_HANDLE && ib != VK_NULL_HANDLE;
             const bool waterok = wvb != VK_NULL_HANDLE && wib != VK_NULL_HANDLE;
@@ -2293,7 +2293,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                 for (const auto& s : filtered) keptSolidProxyIds_.insert(s.chunkId);
                 keptWaterProxyIds_.clear();
                 for (const auto& s : wfiltered) keptWaterProxyIds_.insert(s.chunkId);
-                std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
+                std::lock_guard<std::recursive_mutex> lock(solidChunksMutex);
                 VkBufferDeviceAddressInfo q{};
                 q.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
                 VkDeviceAddress vaddr = 0, iaddr = 0, wvaddr = 0, wiaddr = 0;
@@ -2323,8 +2323,8 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     g.indexCount = s.indexCount;
                     g.baseVertex = s.baseVertex;
                     g.firstIndex = s.firstIndex;
-                    auto it = mainSolidProxyData.find(s.chunkId);
-                    const uint32_t mat = (it != mainSolidProxyData.end()) ? it->second.materialId : 0u;
+                    auto it = solidProxyData.find(s.chunkId);
+                    const uint32_t mat = (it != solidProxyData.end()) ? it->second.materialId : 0u;
                     const auto avg = textureArrays_->albedoAverage(mat);
                     // albedo.w = the chunk's mirror strength (NOT the material
                     // id): reflection rays read it to decide whether a hit
@@ -2356,8 +2356,8 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     // a consistent layer — per-vertex brushIndex can
                     // vary within a triangle and would flicker the
                     // water color.
-                    auto wit = mainWaterProxyData.find(s.chunkId);
-                    const float wLayer = (wit != mainWaterProxyData.end())
+                    auto wit = waterProxyData.find(s.chunkId);
+                    const float wLayer = (wit != waterProxyData.end())
                         ? static_cast<float>(wit->second.materialId) : 0.0f;
                     g.albedo = glm::vec4(waterReflectionTint_, wLayer);
                     waterGeoms.push_back(g);
@@ -2376,16 +2376,16 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
     std::vector<RTProxyBox> solids;
     std::vector<RTProxyBox> waters;
     {
-        std::lock_guard<std::recursive_mutex> lock(mainSolidChunksMutex);
+        std::lock_guard<std::recursive_mutex> lock(solidChunksMutex);
         // GC entries for erased chunks (publish maps are authoritative).
-        for (auto it = mainSolidProxyData.begin(); it != mainSolidProxyData.end(); ) {
-            if (mainSolidChunks.find(it->first) == mainSolidChunks.end())
-                it = mainSolidProxyData.erase(it);
+        for (auto it = solidProxyData.begin(); it != solidProxyData.end(); ) {
+            if (solidChunks.find(it->first) == solidChunks.end())
+                it = solidProxyData.erase(it);
             else ++it;
         }
-        for (auto it = mainWaterProxyData.begin(); it != mainWaterProxyData.end(); ) {
-            if (mainLiquidChunks.find(it->first) == mainLiquidChunks.end())
-                it = mainWaterProxyData.erase(it);
+        for (auto it = waterProxyData.begin(); it != waterProxyData.end(); ) {
+            if (waterChunks.find(it->first) == waterChunks.end())
+                it = waterProxyData.erase(it);
             else ++it;
         }
         auto pack = [&](const std::unordered_map<NodeID, SolidProxyData>& m,
@@ -2486,11 +2486,11 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                 }
             }
         };
-        solids.reserve(mainSolidProxyData.size());
-        pack(mainSolidProxyData, solids, false, keptSolidProxyIds_);
+        solids.reserve(solidProxyData.size());
+        pack(solidProxyData, solids, false, keptSolidProxyIds_);
         if (wantWater) {
-            waters.reserve(mainWaterProxyData.size());
-            pack(mainWaterProxyData, waters, true, keptWaterProxyIds_);
+            waters.reserve(waterProxyData.size());
+            pack(waterProxyData, waters, true, keptWaterProxyIds_);
         }
         { // Rare (repacks only): pack composition. Only surviving (finest per
             // nested region) rungs are packed now, so this also fingerprints
@@ -2524,8 +2524,8 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     // Solid color pass: bind the non-RT fragment variant while neither solid
     // RT path (reflections / local shadows) is enabled. Runs every frame,
     // including the disabled early-out below (pipeline variant selection).
-    if (mainSolidRenderer)
-        mainSolidRenderer->setRtShadingEnabled(settings.rtReflections || settings.rtLocalShadows);
+    if (solidRenderer)
+        solidRenderer->setRtShadingEnabled(settings.rtReflections || settings.rtLocalShadows);
     // No ray path enabled: the bound fragment variants compile the RT block
     // out, so nothing samples the params UBO. Skip building RayTracingParams
     // and the per-frame memcpy into the mapped slot (H5).

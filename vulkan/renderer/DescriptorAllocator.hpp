@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../VulkanApp.hpp"
+#include "../core/VulkanApp.hpp"
 #include <vulkan/vulkan.h>
 #include <vector>
 #include <cstdint>

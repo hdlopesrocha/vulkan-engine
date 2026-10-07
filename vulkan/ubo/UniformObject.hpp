@@ -30,7 +30,7 @@ struct alignas(16) UniformObject {
     float triplanarExponent = 0.0f;      // offset 368
     uint32_t normalMappingEnabled = 0u;  // offset 372
     uint32_t shadowsEnabled = 0u;        // offset 376  global shadow toggle
-    int32_t debugMode = 0;               // offset 380  see includes/debug_modes.glsl
+    int32_t debugMode = 0;               // offset 380  see includes/DebugModes.glsl
     uint32_t roughnessEnabled = 0u;      // offset 384
     uint32_t ambientOcclusionEnabled = 0u; // offset 388
     float tessNearDist = 0.0f;           // offset 392

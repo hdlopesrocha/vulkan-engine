@@ -1,7 +1,7 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
-#include "../Buffer.hpp"
+#include "../resources/Buffer.hpp"
 
 #include <cstddef>
 #include <cstdint>

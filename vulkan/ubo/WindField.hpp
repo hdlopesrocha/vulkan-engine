@@ -24,7 +24,7 @@ inline constexpr uint32_t kWindFieldBinding = 27;
 
 // One tornado on the wire: 4 x vec4 = 64 bytes (std140-safe, no padding).
 // EVERY component letter is documented here; shaders/ubo/WindField.glsl
-// and shaders/includes/wind_field.glsl must read the same letters.
+// and shaders/includes/vegetation/WindField.glsl must read the same letters.
 struct WindTornado {
     glm::vec4 a; // x = baseX (world XZ origin of the funnel), y = baseZ,
                  // z = groundY (world Y of the funnel base; see grounding note

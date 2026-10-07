@@ -1,7 +1,7 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
-#include "../VmaContext.hpp"
+#include "../core/VmaContext.hpp"
 #include <vector>
 #include <functional>
 #include <cstddef>
