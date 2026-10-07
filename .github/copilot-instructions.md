@@ -23,7 +23,7 @@ The codebase is written in modern C++ (C++20 or newer) and prioritizes:
 | `make debug` | Debug build (`-O0 -g -DDEBUG`, no ImGui) |
 | `make run` | Release build + run `bin/app` (CWD is `bin/`, never close the app or use timeouts, the program is always closed by the user) |
 | `make run-debug` | Debug build + run | (Never close the app or use timeouts, the program is always closed by the user)
-| `make shaders` | Compile `shaders/*.{vert,frag,geom,comp,tesc,tese}` → `bin/shaders/*.spv` via `glslc` (fallback `glslangValidator`) |
+| `make shaders` | Compile `shaders/**/*.{vert,frag,geom,comp,tesc,tese}` → `bin/shaders/**/*.spv` via `glslc` (fallback `glslangValidator`) |
 | `make server` | Build headless `bin/server` (no Vulkan/UI linkage, no widgets) |
 | `make clean` | Remove `bin/` and generated SPIR-V |
 | `make valgrind` | Debug build + valgrind with `valgrind.supp` |
@@ -39,8 +39,8 @@ Compiler is `g++` (`-std=c++23 -pthread`). Dependencies via `pkg-config`: glfw3,
 Two entry points: `MyApp.cpp` (class `MyApp` extends `VulkanApp`) and `server.cpp` (headless).
 
 - `vulkan/` — Vulkan setup, resource management, renderers (`vulkan/renderer/`)
-- `vulkan/renderer/` — SceneRenderer (orchestrator), SolidRenderer, SkyRenderer, WaterRenderer (tessellation), ShadowRenderer (cascaded shadow maps), VegetationRenderer (GPU), IndirectRenderer (GPU frustum culling), PostProcessRenderer, ImpostorCapture, DebugCubeRenderer, DebugSDFRenderer, WireframeRenderer, WaterBackFaceRenderer, Solid360Renderer, CubeToEquirectRenderer
-- `vulkan/ubo/` — GPU uniform buffer structs; `vulkan/includes/` — shared C++ headers (locations.hpp, vertex_layouts.hpp)
+- `vulkan/renderer/` — renderers grouped by subsystem (`water/`, `solid/`, `sdf/`, `rt/`, `sky/`, `vegetation/`, `shadow/`, `debug/`, `post/`, `indirect/`, `brush/`); scene infrastructure (SceneRenderer, SceneDescriptorLayout, descriptors/allocators/queues) stays at the root
+- `vulkan/ubo/` — GPU uniform buffer structs; `vulkan/ssbo/` — GPU storage-buffer element structs; `vulkan/includes/` — shared shader-interface headers (`shader/` locations + vertex layouts, `debug/` DebugModes)
 - `space/` — Octree, Tesselator (Surface Nets meshing), ThreadPool, ConcurrentQueue, Processor, Simplifier, OctreeVisibilityChecker
 - `sdf/` — SDF primitives (Box, Sphere, Capsule, Cylinder, Cone, Torus, HeightMap via GDAL, RoadDistanceFunction, TriangleStrip, OctreeDifferenceFunction, Wrapped* variants for composition)
 - `events/` — Input system (keyboard, gamepad, nunchuk), EventManager, IEventHandler

@@ -230,9 +230,11 @@ The octree in `space/` is the central data structure for scene management. Each 
 | `MyApp.cpp` | Entry point (`MyApp` extends `VulkanApp`) |
 | `server.cpp` | Headless server entry point |
 | `vulkan/` | Vulkan setup, resource management, renderers |
-| `vulkan/renderer/` | SceneRenderer, SolidRenderer, SkyRenderer, WaterRenderer, WaterBackFaceRenderer, ShadowRenderer, VegetationRenderer, IndirectRenderer, PostProcessRenderer, RayTracingResources, ImpostorCapture, WireframeRenderer, BrushRenderer and debug renderers |
+| `vulkan/renderer/` | Renderers grouped by subsystem (`water/`, `solid/`, `sdf/`, `rt/`, `sky/`, `vegetation/`, `shadow/`, `debug/`, `post/`, `indirect/`, `brush/`) plus scene infrastructure (SceneRenderer, descriptors, allocators, queues) at the root |
+| `vulkan/{core,resources,pipeline,sync,streaming}/` | Device/app core, GPU resources (buffers/textures/materials), pipeline helpers, submission tracking, streaming/uploads |
 | `vulkan/ubo/` | GPU uniform buffer structs |
-| `vulkan/includes/` | Shared C++ headers (locations, vertex layouts, debug modes) |
+| `vulkan/ssbo/` | GPU storage-buffer element structs (Material, WaterParams, RTProxyMeta) |
+| `vulkan/includes/` | Shared shader-interface headers (`shader/` locations + vertex layouts, `debug/` DebugModes) |
 | `space/` | Octree, Tesselator (Surface Nets), Simplifier, MeshSimplifier, ThreadPool, ConcurrentQueue, OctreeVisibilityChecker, OctreeFile |
 | `sdf/` | SDF primitives, CSG operations and distortion effects (HeightMap, RoadSpline, OctreeDifference, Wrapped* variants) |
 | `events/` | Input system (keyboard, gamepad, nunchuk), EventManager |
@@ -241,7 +243,7 @@ The octree in `space/` is the central data structure for scene management. Each 
 | `widgets/` | ImGui debug/editor UI (release builds only): settings, water, texture mixer/viewer, render targets, queue timeline |
 | `tree/` | AttractorField, TreeGenerator, TreeHandler |
 | `utils/` | LocalScene, MainSceneLoader, FileReader, SettingsFile, AtlasManager, brush system, parameter structs |
-| `shaders/` | GLSL shader sources compiled to SPIR-V |
+| `shaders/` | GLSL sources: per-renderer shaders under `shaders/renderer/<subsystem>/` (mirrors `vulkan/renderer/`), shared code in `shaders/{includes,ubo,ssbo,types}/` |
 | `textures/` | Texture assets |
 | `docs/` | Documentation |
 | `third_party/` | Vendored libraries (ImGui, miniaudio, wiiuse, Vulkan headers) |
