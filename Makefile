@@ -72,7 +72,7 @@ IMGUI_CORE_OBJS := $(patsubst third_party/imgui/%.cpp,$(OBJ_DIR)/imgui/%.o,$(IMG
 IMGUI_BACKEND_OBJS := $(patsubst third_party/imgui/backends/%.cpp,$(OBJ_DIR)/imgui/backends/%.o,$(IMGUI_BACKEND_SRCS))
 IMGUI_OBJS := $(IMGUI_CORE_OBJS) $(IMGUI_BACKEND_OBJS)
 # shader sources and generated SPIR-V
-SRCS := $(wildcard MyApp.cpp world/*.cpp utils/*.cpp vulkan/*.cpp vulkan/renderer/*.cpp vulkan/streaming/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp sdf/gpu/*.cpp sdf/types/*.cpp space/*.cpp services/*.cpp) third_party/miniaudio/miniaudio_impl.cpp
+SRCS := $(wildcard MyApp.cpp world/*.cpp utils/*.cpp vulkan/*.cpp vulkan/core/*.cpp vulkan/resources/*.cpp vulkan/pipeline/*.cpp vulkan/renderer/*.cpp vulkan/renderer/*/*.cpp vulkan/streaming/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp sdf/gpu/*.cpp sdf/types/*.cpp space/*.cpp services/*.cpp) third_party/miniaudio/miniaudio_impl.cpp
 OBJ_DIR := $(OUT_DIR)/obj
 
 # Compose object lists, then forcibly filter out any absolute /imgui/*.o
@@ -95,14 +95,19 @@ DEPS := $(OBJS:.o=.d)
 -include $(DEPS)
 
 
-# Automatically find all shader source files in shaders/ with known extensions
-# rgen/rmiss/rchit/rint/rahit/rcallable are the KHR ray-tracing stages used by
-# the hybrid-RT water pipeline (compiled with the same vulkan1.3 target; glslc
-# enables GL_EXT_ray_tracing / GL_EXT_ray_query per-shader via #extension).
+# Automatically find all shader source files under shaders/ (any depth) with
+# known extensions. rgen/rmiss/rchit/rint/rahit/rcallable are the KHR
+# ray-tracing stages used by the hybrid-RT water pipeline (compiled with the
+# same vulkan1.3 target; glslc enables GL_EXT_ray_tracing / GL_EXT_ray_query
+# per-shader via #extension). The layout mirrors vulkan/: per-renderer sources
+# live under shaders/renderer/<subsystem>/.
 SHADER_EXTS = vert frag geom comp tesc tese
 RT_SHADER_EXTS = rgen rmiss rchit rint rahit rcallable
-SHADERS = $(foreach ext,$(SHADER_EXTS),$(wildcard shaders/*.$(ext)))
-SHADER_INCLUDES = $(wildcard shaders/includes/*.glsl)
+SHADER_FILES := $(shell find shaders -type f \( \
+	-name '*.vert' -o -name '*.frag' -o -name '*.geom' -o -name '*.comp' \
+	-o -name '*.tesc' -o -name '*.tese' -o -name '*.rgen' -o -name '*.rmiss' \
+	-o -name '*.rchit' -o -name '*.rint' -o -name '*.rahit' -o -name '*.rcallable' \))
+SHADER_INCLUDES = $(wildcard shaders/includes/*.glsl shaders/includes/*/*.glsl shaders/ubo/*.glsl shaders/ssbo/*.glsl shaders/types/*.glsl)
 # glslc optimization flag for the WATER shader modules: -O runs the SPIR-V
 # optimizer (DCE, constant folding, register-friendly codegen) on the modules
 # whose per-pixel cost matters most. It is deliberately NOT applied to the
@@ -112,212 +117,113 @@ SHADER_INCLUDES = $(wildcard shaders/includes/*.glsl)
 # location N but is not an Input" warnings. glslangValidator has no equivalent
 # flag, so its fallback command lines stay unoptimized.
 GLSL_OPT = -O
-# Map each shader to its corresponding .spv output in bin/shaders, preserving extension
+# Map each shader to its .spv output in bin/shaders, preserving the
+# renderer/<subsystem>/ path so bin/shaders mirrors the source tree. Shader
+# base names match the owning C++ class (PascalCase); the explicit entries are
+# compile-time variants (a per-renderer define) that discovery cannot find.
 OUT_SPVS = \
-	$(patsubst shaders/%.vert, $(OUT_DIR)/shaders/%.vert.spv, $(wildcard shaders/*.vert)) \
-	$(patsubst shaders/%.frag, $(OUT_DIR)/shaders/%.frag.spv, $(wildcard shaders/*.frag)) \
-	$(patsubst shaders/%.geom, $(OUT_DIR)/shaders/%.geom.spv, $(wildcard shaders/*.geom)) \
-	$(patsubst shaders/%.comp, $(OUT_DIR)/shaders/%.comp.spv, $(wildcard shaders/*.comp)) \
-	$(patsubst shaders/%.tesc, $(OUT_DIR)/shaders/%.tesc.spv, $(wildcard shaders/*.tesc)) \
-	$(patsubst shaders/%.tese, $(OUT_DIR)/shaders/%.tese.spv, $(wildcard shaders/*.tese)) \
-	$(foreach ext,$(RT_SHADER_EXTS),$(patsubst shaders/%.$(ext), $(OUT_DIR)/shaders/%.$(ext).spv, $(wildcard shaders/*.$(ext)))) \
-	$(OUT_DIR)/shaders/main_brush.frag.spv \
-	$(OUT_DIR)/shaders/main_rt.frag.spv \
-	$(OUT_DIR)/shaders/main_water.frag.spv \
-	$(OUT_DIR)/shaders/main_water_rt.frag.spv \
-	$(OUT_DIR)/shaders/main_water_nobody.frag.spv \
-	$(OUT_DIR)/shaders/main_water_rt_nobody.frag.spv \
-	$(OUT_DIR)/shaders/main_water.vert.spv \
-	$(OUT_DIR)/shaders/main_water_no_tess.vert.spv \
-	$(OUT_DIR)/shaders/main_solid_no_tess.vert.spv \
-	$(OUT_DIR)/shaders/vegetation_capture.vert.spv \
-	$(OUT_DIR)/shaders/main_shadow.tese.spv \
-	$(OUT_DIR)/shaders/evsm_blur5.frag.spv \
-	$(OUT_DIR)/shaders/main_water.tesc.spv \
-	$(OUT_DIR)/shaders/main_water.tese.spv \
-	$(OUT_DIR)/shaders/main_water_rt.tese.spv \
-	$(OUT_DIR)/shaders/main_rt_prof.frag.spv \
-	$(OUT_DIR)/shaders/main_water_rt_prof.frag.spv \
-	$(OUT_DIR)/shaders/main_water_rt_prof.tese.spv
+	$(patsubst shaders/%,$(OUT_DIR)/shaders/%.spv,$(SHADER_FILES)) \
+	$(OUT_DIR)/shaders/renderer/solid/SolidRendererNoTess.vert.spv \
+	$(OUT_DIR)/shaders/renderer/solid/SolidRendererBrush.frag.spv \
+	$(OUT_DIR)/shaders/renderer/solid/SolidRendererRT.frag.spv \
+	$(OUT_DIR)/shaders/renderer/solid/SolidRendererRTProf.frag.spv \
+	$(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv \
+	$(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv \
+	$(OUT_DIR)/shaders/renderer/vegetation/ImpostorCapture.vert.spv \
+	$(OUT_DIR)/shaders/renderer/water/WaterRendererNoTess.vert.spv \
+	$(OUT_DIR)/shaders/renderer/water/WaterRendererRT.frag.spv \
+	$(OUT_DIR)/shaders/renderer/water/WaterRendererNoBody.frag.spv \
+	$(OUT_DIR)/shaders/renderer/water/WaterRendererRTNoBody.frag.spv \
+	$(OUT_DIR)/shaders/renderer/water/WaterRendererRT.tese.spv \
+	$(OUT_DIR)/shaders/renderer/water/WaterRendererRTProf.frag.spv \
+	$(OUT_DIR)/shaders/renderer/water/WaterRendererRTProf.tese.spv
 
-# Compile main.frag with -DBRUSH_PASS for brush rendering (no PAINT mode, no set=1)
-$(OUT_DIR)/shaders/main_brush.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (BRUSH_PASS)"
-	@mkdir -p $(dir $@)
+# ── Compile-time shader variants ──────────────────────────────────────────
+# Each variant reuses a base source plus a define that selects an alternate
+# stage interface or feature set. Shader base names match the owning renderer
+# class; in-class pass qualifiers are concatenated PascalCase:
+#   SolidRenderer*      -> SolidRenderer (also bound by Shadow/BrushBackFace)
+#   WaterRenderer*      -> WaterRenderer (also bound by WaterBackFaceRenderer)
+#   ShadowRenderer*     -> ShadowRenderer
+#   VegetationRenderer* -> VegetationRenderer
+#   shared/no-owner     -> Fullscreen.vert, DepthOnly.frag
+# compile_shader <source> <output> <glslc defines> <glslang defines> <opt>
+#   <glslc defines>   e.g. "-DRT_ENABLED -DWATER_NO_BODY=1"    (empty if none)
+#   <glslang defines> e.g. "--D RT_ENABLED --D WATER_NO_BODY=1" (empty if none)
+#   <opt>             $(GLSL_OPT) for optimized modules, empty otherwise
+define compile_shader
+	@echo "Compiling shader: $(1) -> $(2)"
+	@mkdir -p $(dir $(2))
 	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes -DBRUSH_PASS $< -o $@; \
+		glslc --target-env=vulkan1.3 -Ishaders/includes $(5) $(3) $(1) -o $(2); \
 	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D BRUSH_PASS $< -o $@; \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 $(4) $(1) -o $(2); \
 	fi
+endef
 
-# Hybrid RT variants (hardware ray tracing: ray queries + TLAS). Selected at
-# runtime by rayTracingEnabled(); the non-RT variants above stay the fallback
-# for hardware without VK_KHR_ray_query (validation-clean, sky approx).
-$(OUT_DIR)/shaders/main_rt.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (RT_ENABLED)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes -DRT_ENABLED $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D RT_ENABLED $< -o $@; \
-	fi
-# Phase-1 merged water stages: same main.* sources compiled with
-# -DWATER_MODE=1 (water varyings/bindings/geometry paths). The fragment gets
-# an RT and a non-RT variant, mirroring main_rt/main.
-$(OUT_DIR)/shaders/main_water.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (WATER_MODE=1)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 $< -o $@; \
-	fi
-$(OUT_DIR)/shaders/main_water_rt.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (WATER_MODE=1 RT_ENABLED)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 -DRT_ENABLED $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 --D RT_ENABLED $< -o $@; \
-	fi
-# H4 (perf report 19): single-color-attachment water fragment variants. The
-# WATER_NO_BODY define compiles out the body/column aux outputs so the
-# geometry pass can bind a one-attachment pipeline (and skip the aux clears/
-# transitions) whenever no layer needs the final-pass blur.
-$(OUT_DIR)/shaders/main_water_nobody.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (WATER_MODE=1 WATER_NO_BODY=1)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 -DWATER_NO_BODY=1 $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 --D WATER_NO_BODY=1 $< -o $@; \
-	fi
-$(OUT_DIR)/shaders/main_water_rt_nobody.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (WATER_MODE=1 RT_ENABLED WATER_NO_BODY=1)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 -DRT_ENABLED -DWATER_NO_BODY=1 $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 --D RT_ENABLED --D WATER_NO_BODY=1 $< -o $@; \
-	fi
-$(OUT_DIR)/shaders/main_water.vert.spv: shaders/main.vert $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (WATER_MODE=1)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 $< -o $@; \
-	fi
-# C1: non-tessellation water vertex path (TRIANGLE_LIST, no TCS/TES), selected
-# by WaterRenderer/WaterBackFaceRenderer when settings.tessellationEnabled is
-# false. Same varyings as the TES so the water fragment stage is unchanged.
-$(OUT_DIR)/shaders/main_water_no_tess.vert.spv: shaders/main.vert $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (WATER_MODE=1 WATER_NO_TESS=1)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 -DWATER_NO_TESS=1 $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 --D WATER_NO_TESS=1 $< -o $@; \
-	fi
-# C1 (perf report 21): non-tessellation solid vertex path (TRIANGLE_LIST, no
-# TCS/TES), selected by SolidRenderer/ShadowRenderer when tessellation is off.
-# Same FS interface as the TES so no fragment shader changes. Material blend
-# is approach A (provoking-vertex flat material): exact for single-material
-# triangles; multi-material boundary triangles render flat instead of blended.
-$(OUT_DIR)/shaders/main_solid_no_tess.vert.spv: shaders/main.vert $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (SOLID_NO_TESS=1)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DSOLID_NO_TESS=1 $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D SOLID_NO_TESS=1 $< -o $@; \
-	fi
+# WaterRenderer base stages go through the SPIR-V optimizer because their
+# per-pixel cost matters most. Explicit rules override the generic
+# WaterRenderer.{vert,frag,tesc,tese} pattern rules below.
+$(OUT_DIR)/shaders/renderer/water/WaterRenderer.vert.spv: shaders/renderer/water/WaterRenderer.vert $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/water/WaterRenderer.vert,$@,,,$(GLSL_OPT))
+$(OUT_DIR)/shaders/renderer/water/WaterRenderer.frag.spv: shaders/renderer/water/WaterRenderer.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/water/WaterRenderer.frag,$@,,,$(GLSL_OPT))
+$(OUT_DIR)/shaders/renderer/water/WaterRenderer.tesc.spv: shaders/renderer/water/WaterRenderer.tesc $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/water/WaterRenderer.tesc,$@,,,$(GLSL_OPT))
+$(OUT_DIR)/shaders/renderer/water/WaterRenderer.tese.spv: shaders/renderer/water/WaterRenderer.tese $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/water/WaterRenderer.tese,$@,,,$(GLSL_OPT))
+
+# C1 (perf report 19/21): non-tessellation geometry paths (TRIANGLE_LIST, no
+# TCS/TES). They write the fragment interface directly; selected at runtime
+# when settings.tessellationEnabled is false.
+$(OUT_DIR)/shaders/renderer/solid/SolidRendererNoTess.vert.spv: shaders/renderer/solid/SolidRenderer.vert $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/solid/SolidRenderer.vert,$@,-DSOLID_NO_TESS=1,--D SOLID_NO_TESS=1,$(GLSL_OPT))
+$(OUT_DIR)/shaders/renderer/water/WaterRendererNoTess.vert.spv: shaders/renderer/water/WaterRenderer.vert $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/water/WaterRenderer.vert,$@,-DWATER_NO_TESS=1,--D WATER_NO_TESS=1,$(GLSL_OPT))
+
+# SolidRenderer fragment variants: BRUSH_PASS (no PAINT mode, no set=1) and the
+# hybrid RT variants (ray queries + TLAS). Non-RT hardware uses plain
+# SolidRenderer.frag.
+$(OUT_DIR)/shaders/renderer/solid/SolidRendererBrush.frag.spv: shaders/renderer/solid/SolidRenderer.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/solid/SolidRenderer.frag,$@,-DBRUSH_PASS,--D BRUSH_PASS,)
+$(OUT_DIR)/shaders/renderer/solid/SolidRendererRT.frag.spv: shaders/renderer/solid/SolidRenderer.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/solid/SolidRenderer.frag,$@,-DRT_ENABLED,--D RT_ENABLED,)
+$(OUT_DIR)/shaders/renderer/solid/SolidRendererRTProf.frag.spv: shaders/renderer/solid/SolidRenderer.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/solid/SolidRenderer.frag,$@,-DRT_ENABLED -DRT_PROFILE,--D RT_ENABLED --D RT_PROFILE,)
+
+# WaterRenderer fragment variants: RT (hardware ray tracing) and WATER_NO_BODY
+# (single color attachment, no blur aux outputs). Per-op RT profiling needs the
+# shader clock capability and is only created at runtime when supported.
+$(OUT_DIR)/shaders/renderer/water/WaterRendererRT.frag.spv: shaders/renderer/water/WaterRenderer.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/water/WaterRenderer.frag,$@,-DRT_ENABLED,--D RT_ENABLED,$(GLSL_OPT))
+$(OUT_DIR)/shaders/renderer/water/WaterRendererNoBody.frag.spv: shaders/renderer/water/WaterRenderer.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/water/WaterRenderer.frag,$@,-DWATER_NO_BODY=1,--D WATER_NO_BODY=1,$(GLSL_OPT))
+$(OUT_DIR)/shaders/renderer/water/WaterRendererRTNoBody.frag.spv: shaders/renderer/water/WaterRenderer.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/water/WaterRenderer.frag,$@,-DRT_ENABLED -DWATER_NO_BODY=1,--D RT_ENABLED --D WATER_NO_BODY=1,$(GLSL_OPT))
+$(OUT_DIR)/shaders/renderer/water/WaterRendererRTProf.frag.spv: shaders/renderer/water/WaterRenderer.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/water/WaterRenderer.frag,$@,-DRT_ENABLED -DRT_PROFILE,--D RT_ENABLED --D RT_PROFILE,$(GLSL_OPT))
+
+# RT water TES: adds the optional inline ray-query water-region depth
+# (rt.waterDepth). The prof variant also instruments the TES ray-query site.
+$(OUT_DIR)/shaders/renderer/water/WaterRendererRT.tese.spv: shaders/renderer/water/WaterRenderer.tese $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/water/WaterRenderer.tese,$@,-DRT_ENABLED,--D RT_ENABLED,$(GLSL_OPT))
+$(OUT_DIR)/shaders/renderer/water/WaterRendererRTProf.tese.spv: shaders/renderer/water/WaterRenderer.tese $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/water/WaterRenderer.tese,$@,-DRT_ENABLED -DRT_PROFILE -DRT_PROFILE_TES,--D RT_ENABLED --D RT_PROFILE --D RT_PROFILE_TES,$(GLSL_OPT))
+
 # H4 (perf report 21): shadow-only solid TES (position-varying outputs only,
-# displacement preserved). Bound by the tessellated shadow pipeline.
-$(OUT_DIR)/shaders/main_shadow.tese.spv: shaders/main.tese $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (SHADOW_PASS=1)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DSHADOW_PASS=1 $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D SHADOW_PASS=1 $< -o $@; \
-	fi
-# H4 (perf report 21): narrower 5-tap EVSM blur for the outer cascades.
-$(OUT_DIR)/shaders/evsm_blur5.frag.spv: shaders/evsm_blur.frag $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (BLUR5=1)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DBLUR5=1 $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D BLUR5=1 $< -o $@; \
-	fi
-# H4/C2: ImpostorCapture variant of vegetation.vert (VEG_CAPTURE=1): evaluates
-# the height scale locally exactly as before the bake (canonical single
-# instance, no aux buffer bound). Built WITHOUT -O like its generic sibling
-# so capture output is maximally unchanged.
-$(OUT_DIR)/shaders/vegetation_capture.vert.spv: shaders/vegetation.vert $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (VEG_CAPTURE=1)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes -DVEG_CAPTURE=1 $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D VEG_CAPTURE=1 $< -o $@; \
-	fi
-$(OUT_DIR)/shaders/main_water.tesc.spv: shaders/main.tesc $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (WATER_MODE=1)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 $< -o $@; \
-	fi
-$(OUT_DIR)/shaders/main_water.tese.spv: shaders/main.tese $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (WATER_MODE=1)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 $< -o $@; \
-	fi
-# RT water TES: same water TES with the optional inline ray-query region depth
-# (rt.waterDepth). Used only by the RT water pipeline variant.
-$(OUT_DIR)/shaders/main_water_rt.tese.spv: shaders/main.tese $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (WATER_MODE=1 RT_ENABLED)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 -DRT_ENABLED $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 --D RT_ENABLED $< -o $@; \
-	fi
+# displacement preserved) bound by the tessellated shadow pipeline; and the
+# narrower 5-tap EVSM blur for the outer cascades.
+$(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv: shaders/renderer/solid/SolidRenderer.tese $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/solid/SolidRenderer.tese,$@,-DSHADOW_PASS=1,--D SHADOW_PASS=1,$(GLSL_OPT))
+$(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv: shaders/renderer/shadow/ShadowRendererBlur.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/shadow/ShadowRendererBlur.frag,$@,-DBLUR5=1,--D BLUR5=1,$(GLSL_OPT))
 
-# Per-op RT profiling variants (RT_PROFILE): instrument every inline
-# ray-query site with counters + device-clock thread-time. Requires
-# VK_KHR_shader_clock (shaderDeviceClock); only created at runtime when
-# supported. Production variants stay free of the clock capability.
-$(OUT_DIR)/shaders/main_rt_prof.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (RT_ENABLED RT_PROFILE)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes -DRT_ENABLED -DRT_PROFILE $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D RT_ENABLED --D RT_PROFILE $< -o $@; \
-	fi
-$(OUT_DIR)/shaders/main_water_rt_prof.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (WATER_MODE=1 RT_ENABLED RT_PROFILE)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 -DRT_ENABLED -DRT_PROFILE $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 --D RT_ENABLED --D RT_PROFILE $< -o $@; \
-	fi
-$(OUT_DIR)/shaders/main_water_rt_prof.tese.spv: shaders/main.tese $(SHADER_INCLUDES)
-	@echo "Compiling shader: $< -> $@ (WATER_MODE=1 RT_ENABLED RT_PROFILE)"
-	@mkdir -p $(dir $@)
-	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.3 -Ishaders/includes $(GLSL_OPT) -DWATER_MODE=1 -DRT_ENABLED -DRT_PROFILE -DRT_PROFILE_TES $< -o $@; \
-	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D WATER_MODE=1 --D RT_ENABLED --D RT_PROFILE --D RT_PROFILE_TES $< -o $@; \
-	fi
+# H4/C2: ImpostorCapture variant of VegetationRenderer.vert (VEG_CAPTURE=1):
+# evaluates the height scale locally exactly as before the bake (canonical
+# single instance, no aux buffer bound). Built WITHOUT -O like its generic
+# sibling so capture output is maximally unchanged.
+$(OUT_DIR)/shaders/renderer/vegetation/ImpostorCapture.vert.spv: shaders/renderer/vegetation/VegetationRenderer.vert $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/vegetation/VegetationRenderer.vert,$@,-DVEG_CAPTURE=1,--D VEG_CAPTURE=1,)
 
 
 # Recursively create all object directories needed for all sources
@@ -394,10 +300,6 @@ $(OBJ_DIR)/wiiuse/%.o: third_party/wiiuse/src/%.c
 
 
 shaders: $(OUT_SPVS)
-	@# Copy compiled SPIR-V back to the source shaders/ folder so FileReader can load shaders/*.spv at runtime
-	@mkdir -p shaders
-	@cp -u $(OUT_DIR)/shaders/*.spv shaders/ 2>/dev/null || true
-	@rm shaders/*.spv 2>/dev/null || true
 
 
 # Generic pattern rule for all shader extensions in $(SHADER_EXTS)
