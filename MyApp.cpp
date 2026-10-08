@@ -2638,8 +2638,17 @@ public:
                     this->sceneRenderer->sdfRenderer->updateParams(t, frameIdx);
                     if (this->sceneRenderer->solidRenderer) {
                         VkImageView dv = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
-                        if (dv != VK_NULL_HANDLE)
-                            this->sceneRenderer->sdfRenderer->setSceneDepth(dv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                        if (dv != VK_NULL_HANDLE) {
+                            // Image + extent too: render() pre-loads the SDF
+                            // depth attachment with this solid depth so the
+                            // hardware depth test rejects occluded SDF
+                            // fragments at raster time.
+                            this->sceneRenderer->sdfRenderer->setSceneDepth(dv,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                this->sceneRenderer->solidRenderer->getDepthImage(frameIdx),
+                                this->sceneRenderer->solidRenderer->getRenderWidth(),
+                                this->sceneRenderer->solidRenderer->getRenderHeight());
+                        }
                     }
                     // Water-surface occluder: the geometry depth target is
                     // valid only when the water pass wrote its aux attachments

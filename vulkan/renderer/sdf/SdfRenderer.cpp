@@ -506,10 +506,14 @@ void SdfRenderer::setMarchRange(float minStep, float maxStep, float earlyTermThr
     paramsDirtySlots_.fill(true);
 }
 
-void SdfRenderer::setSceneDepth(VkImageView view, VkImageLayout layout) {
+void SdfRenderer::setSceneDepth(VkImageView view, VkImageLayout layout,
+                                VkImage image, uint32_t width, uint32_t height) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     pendingDepthView_ = view;
     pendingDepthLayout_ = layout;
+    pendingDepthImage_ = image;
+    pendingDepthWidth_ = width;
+    pendingDepthHeight_ = height;
 }
 
 void SdfRenderer::setWaterDepth(VkImageView view, VkImageLayout layout, bool enabled) {
@@ -1989,13 +1993,61 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
     VkImageLayout colorOld = getSdfColorLayout(frameIdx);
     VkImageLayout depthOld = getSdfDepthLayout(frameIdx);
     app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), colorOld, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
-    app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, depthOld, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
     setSdfColorLayout(frameIdx, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    // ── Solid depth pre-load (hardware depth test against rasterized solid) ──
+    // Copy this frame's rasterized solid depth into the SDF depth attachment
+    // before the pass. The SDF pipeline keeps depth test/write on with
+    // LESS_OR_EQUAL, so any SDF fragment whose marched hit (gl_FragDepth) is
+    // behind the solid surface is rejected at raster time: grass/fire/smoke
+    // cannot draw through terrain even if the in-shader tExit clamp or the
+    // composite depth test were bypassed. The same solid depth is sampled
+    // (set=1 binding 7) by the shader afterwards, so it is transitioned back
+    // to SHADER_READ_ONLY before the draws. Fallback (no solid depth image):
+    // clear the SDF depth exactly as before.
+    VkImage solidDepthImage = VK_NULL_HANDLE;
+    uint32_t solidDepthW = 0, solidDepthH = 0;
+    {
+        std::lock_guard<std::mutex> lock(sceneMutex);
+        solidDepthImage = pendingDepthImage_;
+        solidDepthW = pendingDepthWidth_;
+        solidDepthH = pendingDepthHeight_;
+    }
+    const bool depthPreloaded = (solidDepthImage != VK_NULL_HANDLE && solidDepthW > 0 && solidDepthH > 0);
+    if (depthPreloaded) {
+        // solid: SHADER_READ_ONLY -> TRANSFER_SRC
+        app->recordTransitionImageLayoutLayer(cmd, solidDepthImage, VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1);
+        // sdf: previous layout -> TRANSFER_DST
+        app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT,
+            depthOld, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
+        VkImageCopy region{};
+        region.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+        region.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+        region.extent = {std::min(sdfRenderWidth, solidDepthW), std::min(sdfRenderHeight, solidDepthH), 1};
+        vkCmdCopyImage(cmd, solidDepthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       depthImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        // solid: back to SHADER_READ_ONLY for the binding-7 sampling below.
+        app->recordTransitionImageLayoutLayer(cmd, solidDepthImage, VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        // sdf: TRANSFER_DST -> depth attachment (loaded, not cleared).
+        app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+    } else {
+        app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT,
+            depthOld, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+    }
     setSdfDepthLayout(frameIdx, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
     VkClearValue colorClear{}; colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-    VkClearValue depthClear{}; depthClear.depthStencil = {1.0f, 0};
-    RendererUtils::beginColorDepthPass(cmd, colorView, depthView, sdfRenderWidth, sdfRenderHeight, colorClear, depthClear);
+    if (depthPreloaded) {
+        RendererUtils::beginColorDepthPassLoadDepth(cmd, colorView, depthView,
+            sdfRenderWidth, sdfRenderHeight, colorClear);
+    } else {
+        VkClearValue depthClear{}; depthClear.depthStencil = {1.0f, 0};
+        RendererUtils::beginColorDepthPass(cmd, colorView, depthView,
+            sdfRenderWidth, sdfRenderHeight, colorClear, depthClear);
+    }
 
     // Nothing to draw (disabled, no pipeline yet, empty scene): clear only, then SRO.
     const uint32_t instanceCount = stats_.containerCount;

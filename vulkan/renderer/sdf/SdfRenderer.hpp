@@ -277,7 +277,13 @@ public:
     // External scene depth (main depth buffer view) used for occlusion.
     // May be called every frame; the descriptor is rewritten only when the
     // view handle actually changes (per frame slot), never blindly per frame.
-    void setSceneDepth(VkImageView view, VkImageLayout layout);
+    // `image`/`width`/`height` let render() pre-load the SDF depth attachment
+    // with a copy of the solid depth, so the hardware depth test rejects SDF
+    // fragments behind rasterized solid geometry at raster time (the in-shader
+    // tExit clamp and the composite test stay as extra layers).
+    void setSceneDepth(VkImageView view, VkImageLayout layout,
+                       VkImage image = VK_NULL_HANDLE,
+                       uint32_t width = 0, uint32_t height = 0);
     // Rasterized water-surface geometry depth (WaterRenderer::
     // getWaterGeomDepthView) used to clamp the march exit against water.
     // `enabled` gates the shader side (SdfParamsUBO::waterDepthEnabled) and
@@ -415,6 +421,11 @@ private:
 
     VkImageView pendingDepthView_ = VK_NULL_HANDLE;
     VkImageLayout pendingDepthLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // Solid depth image + extent for the SDF-depth pre-load copy (the same
+    // depth whose view is bound at binding 7).
+    VkImage pendingDepthImage_ = VK_NULL_HANDLE;
+    uint32_t pendingDepthWidth_ = 0;
+    uint32_t pendingDepthHeight_ = 0;
     std::array<VkImageView, SDF_FRAMES> boundDepthViews_{};
     // Water-surface depth binding (set=1 binding 9): same per-slot dedupe.
     // The shader only samples it while params_.waterDepthEnabled > 0.5.

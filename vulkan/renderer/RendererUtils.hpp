@@ -361,6 +361,60 @@ inline void beginColorDepthPass(
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 }
 
+// Variant of beginColorDepthPass that KEEPS the existing depth attachment
+// contents (loadOp = LOAD) instead of clearing them. Used by passes that
+// pre-load the depth attachment with a copy of another pass's depth (e.g. the
+// SDF renderer sharing the rasterized solid depth so the hardware depth test
+// rejects SDF fragments behind solid geometry). The color attachment is still
+// cleared with colorClear.
+inline void beginColorDepthPassLoadDepth(
+    VkCommandBuffer cmd,
+    VkImageView     colorImageView,
+    VkImageView     depthImageView,
+    uint32_t        width,
+    uint32_t        height,
+    const VkClearValue& colorClear)
+{
+    VkRenderingAttachmentInfo colorAtt{};
+    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAtt.imageView = colorImageView;
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.clearValue = colorClear;
+
+    VkRenderingAttachmentInfo depthAtt{};
+    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAtt.imageView = depthImageView;
+    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAtt.clearValue.depthStencil = {1.0f, 0}; // unused with LOAD
+
+    VkRenderingInfo ri{};
+    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    ri.renderArea.offset = {0, 0};
+    ri.renderArea.extent = {width, height};
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &colorAtt;
+    ri.pDepthAttachment = &depthAtt;
+    vkCmdBeginRendering(cmd, &ri);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(width);
+    viewport.height = static_cast<float>(height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {width, height};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+}
+
 // Fill the standard dynamic viewport/scissor pipeline state used by the
 // water and wireframe pipelines: one viewport/scissor, VIEWPORT + SCISSOR
 // dynamic. pDynamicStates points at a function-local constexpr table that
