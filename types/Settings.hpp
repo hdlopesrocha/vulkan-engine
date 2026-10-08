@@ -19,7 +19,11 @@ public:
     // layer's own flag are on (same two-way pattern as rtRefractions /
     // rtWaterReflections with the per-layer reflection/refraction toggles).
     bool blurEnabled = true;
-    bool vegetationEnabled = true;
+    // Legacy billboard/impostor vegetation. Off by default: grass is rendered
+    // by the generic SDF renderer (Grass widget), and its clumps stream from
+    // the same vegetation generation regardless of this gate. Turn on to
+    // bring back the textured billboard draws alongside the SDF grass.
+    bool vegetationEnabled = false;
     bool wireframeMode = false;
     bool waterWireframeMode = false;
     bool normalMappingEnabled = true;
@@ -76,9 +80,11 @@ public:
     float nearPlane = 0.1f;
     float farPlane = 8092.0f;
 
-    // Impostor rendering: vegetation beyond this distance is drawn as a pre-captured
-    // camera-facing quad.  Set to 0 to disable (default: disabled).
-    float impostorDistance = 512.0f;
+    // Impostor rendering: legacy billboard vegetation beyond this distance is
+    // drawn as a pre-captured camera-facing quad. 0 = disabled (default; the
+    // SDF grass impostor LOD replaces it). Only relevant while
+    // vegetationEnabled is on.
+    float impostorDistance = 0.0f;
 
     // ── Hybrid RT (raster owns primary, CSM owns macro shadows, RT owns
     // secondary visibility: solid/water reflections, water refraction/

@@ -59,7 +59,10 @@ void SettingsWidget::render() {
         if (ImGui::Checkbox("Render Vegetation", &settings.vegetationEnabled)) {
             // toggled
         }
-        ImGuiComponents::TooltipOnHover("Toggle billboarding vegetation draws");
+        ImGuiComponents::TooltipOnHover("Legacy textured billboard vegetation (off by default).\n"
+                       "Grass is rendered by the generic SDF renderer; its clumps stream\n"
+                       "from the same vegetation generation, so the SDF grass keeps working\n"
+                       "while this is off. Controls for it live in the Grass widget.");
         if (ImGui::Checkbox("Volumetric Clouds", &settings.cloudsEnabled)) {
             // toggled
         }
