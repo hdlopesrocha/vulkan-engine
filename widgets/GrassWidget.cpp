@@ -25,7 +25,10 @@ void GrassWidget::render() {
                        "normal). Each instance becomes one grouped clump that "
                        "the SDF raymarcher expands into many procedural blades; "
                        "the aggregate envelope skips empty space by SDF "
-                       "distance.");
+                       "distance. At distance the clump fades into a dedicated "
+                       "SDF impostor (a base-bulged round cone with a "
+                       "low-frequency ripple), so far clumps never evaluate "
+                       "individual blades.");
     ImGui::Spacing();
     ImGui::Text("clumps: %u   vegetation chunks: %u   SDF containers: %u",
                 stats.grassAnchors, stats.grassChunks, stats.containerCount);
@@ -67,7 +70,7 @@ void GrassWidget::render() {
         int count = grass.bladeCount;
         if (ImGuiComponents::SliderIntField("Blades / clump", &count, 1, 64, "%d",
                 "Blades evaluated per clump; the shader reduces this with "
-                "distance while the aggregate envelope takes over.")) {
+                "distance and hands the far LOD over to the SDF impostor.")) {
             sdfRenderer->setGrassBladeCount(count);
         }
         float curve = grass.curvature;
@@ -115,8 +118,9 @@ void GrassWidget::render() {
         float lod = grass.shadowLodScale;
         if (ImGuiComponents::SliderFloatField("Shadow LOD", &lod, 4.0f, 120.0f, "%.0f",
                 "Camera-scale value used by the grass shadow march: 4-16 keeps "
-                "full blades, ~32 uses the reduced blade set, >=60 uses the "
-                "aggregate envelope only (cheapest).")) {
+                "full blades, ~32 uses the reduced blade set, 48-80 fades the "
+                "impostor in over the reduced blades, >=80 uses the SDF "
+                "impostor only (zero blades, cheapest).")) {
             sdfRenderer->setGrassShadowLodScale(lod);
         }
     }

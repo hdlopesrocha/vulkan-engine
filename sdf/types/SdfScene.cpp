@@ -128,9 +128,25 @@ glm::vec3 localHalfExtents(SdfPrimitiveType prim, const glm::vec4& p0, const glm
             // within the 2 x width margin below, so using the unclamped p0.z
             // here keeps the AABB/grid cull conservative.
             const float curve = std::max(p1.x, 0.0f) * 1.4f;
-            const float extXZ = rad + 2.0f * wid + hgt * (std::sin(lean) + curve);
+            // Far-LOD impostor (sdGrassImpostor in SdfGrass.glsl): the base
+            // bulge (fraction of the envelope's base->top radius growth) and
+            // the one-signed ripple (fraction of max(radius, height/2)) push
+            // the mass past the blade envelope. Mirror the shader constants
+            // (MUST match GRASS_IMPOSTOR_BASE_BULGE / _RIPPLE) so the
+            // instance AABB, container fit and grid membership cover the
+            // impostor surface the far march renders.
+            constexpr float kImpostorBaseBulge = 0.5f;
+            constexpr float kImpostorRipple = 0.30f;
+            const float envR1 = rad + 2.0f * wid + hgt * curve;
+            const float impRip = kImpostorRipple * std::max(rad, 0.5f * hgt);
+            const float impBulge = kImpostorBaseBulge * hgt * curve;
+            // XZ reach: leaned cone + envelope top radius + impostor extras.
+            // Y reach: the far-LOD surface's top cap (envelope + ripple); the
+            // centered box also covers the base cap below the anchor.
+            const float extXZ = hgt * std::sin(lean) + envR1 + impBulge + impRip;
+            const float extY = hgt + envR1 + impRip;
             return glm::vec3(std::max(extXZ, 0.001f),
-                             std::max(hgt + 2.0f * wid, 0.001f),
+                             std::max(extY, 0.001f),
                              std::max(extXZ, 0.001f));
         }
     }
