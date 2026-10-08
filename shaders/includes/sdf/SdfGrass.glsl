@@ -247,6 +247,11 @@ float sdGrassClump(vec3 p, vec4 p0, vec4 p1, float seed, float camScale,
     float impFreq = GRASS_IMPOSTOR_RIPPLE_FREQ / max(impScale, 1e-3);
     float impR0 = envR0 + GRASS_IMPOSTOR_BASE_BULGE * (envR1 - envR0);
     float impR1 = envR1;
+    // Lipschitz constant of the rippled cone (sdGrassImpostor divides by it):
+    // every impostor-side lower bound below must divide by it too, otherwise
+    // the skip value would overestimate the distance to the rippled surface
+    // by up to impLip and the march could overstep it.
+    float impLip = sdGrassImpostorLip(height, impAmp, impFreq);
 
     // Hard far LOD (at FULL and beyond): impostor only, no blade is ever
     // evaluated. The impostor contains the blade envelope (see
@@ -255,10 +260,10 @@ float sdGrassClump(vec3 p, vec4 p0, vec4 p1, float seed, float camScale,
     if (camScale >= GRASS_IMPOSTOR_FULL) {
         float icd = sdGrassRoundCone(p, vec3(0.0), up * height, impR0, impR1);
         // Empty-space skip: the one-signed ripple extends the mass outward by
-        // at most impAmp, so icd - impAmp stays below the true distance to
-        // the impostor zero set. (No Lipschitz division needed here: the skip
-        // value only has to bound the true distance.)
-        if (icd > max(detail, impAmp * 1.5)) return icd - impAmp;
+        // at most impAmp, so (icd - impAmp) / impLip is a valid lower bound of
+        // the distance to the rippled zero set (a field with Lipschitz L is at
+        // least |f|/L from its zero set).
+        if (icd > max(detail, impAmp * 1.5)) return (icd - impAmp) / impLip;
         return sdGrassImpostor(p, up, height, icd, seed, impAmp, impFreq);
     }
 
@@ -285,14 +290,17 @@ float sdGrassClump(vec3 p, vec4 p0, vec4 p1, float seed, float camScale,
         // offset surface of d, so the union stays conservative at every t.
         float t = clamp((camScale - GRASS_IMPOSTOR_START) /
                         (GRASS_IMPOSTOR_FULL - GRASS_IMPOSTOR_START), 0.0, 1.0);
-        float impK = (max(impR0, impR1) + impAmp) /
-                     sdGrassImpostorLip(height, impAmp, impFreq) + 1e-3;
+        float impK = (max(impR0, impR1) + impAmp) / impLip + 1e-3;
         impOff = (1.0 - t) * impK;
         icd = sdGrassRoundCone(p, vec3(0.0), up * height, impR0, impR1);
     }
     if (agg > detail) {
         if (!impostorActive) return agg;
-        float bound = min(agg, icd - impAmp + impOff);
+        // Both union terms need their own conservative bound: agg bounds the
+        // blade set (blades live inside the envelope) and
+        // (icd - impAmp) / impLip + impOff bounds the faded impostor surface
+        // (1-Lipschitz field offset inward by impOff).
+        float bound = min(agg, (icd - impAmp) / impLip + impOff);
         if (bound > 0.0) return bound;
     }
 
