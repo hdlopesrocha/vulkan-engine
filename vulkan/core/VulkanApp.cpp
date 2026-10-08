@@ -3587,10 +3587,10 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     viewportState.scissorCount = 1;
     viewportState.pScissors = &scissor;
 
-    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS };
+    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS };
     VkPipelineDynamicStateCreateInfo dynamicState{};
     dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = blendEnable ? 4 : 3;
+    dynamicState.dynamicStateCount = 3;
     dynamicState.pDynamicStates = dynamicStates;
 
     VkPipelineRasterizationStateCreateInfo rasterizer{};
@@ -5187,12 +5187,12 @@ void VulkanApp::createLogicalDevice() {
         queueCreateInfo.queueFamilyIndex = queueFamily;
         // determine desired queue count: try to allocate up to 9 from graphics family
         // (graphics + vegetation + sdf + bbox + geometry + solid + water + sky +
-        // brushSolid + brushLiquid; see the queue-acquire block below). Clamped to
+        // brush preview; see the queue-acquire block below). Clamped to
         // the family's reported queueCount, so on HW that exposes fewer (e.g.
         // integrated GPUs) the extra handles alias the main graphics queue and the
         // passes still run (no HW parallelism).
         uint32_t want = 1;
-        if (queueFamily == indices.graphicsFamily.value()) want = 10; // graphics + veg + sdf + bbox + geo + solid + water + sky + brushSolid + brushLiquid
+        if (queueFamily == indices.graphicsFamily.value()) want = 9; // graphics + veg + sdf + bbox + geo + solid + water + sky + brush preview
         uint32_t available = 1;
         if (queueFamily < familyProps.size()) available = familyProps[queueFamily].queueCount;
         uint32_t take = std::min(available, want);
@@ -5749,7 +5749,7 @@ void VulkanApp::createLogicalDevice() {
     // graphics family, obtain them; otherwise fall back to the main
     // graphics queue for vegetation/geometry work. Also obtain transferQueue if available.
     // Materialize the graphics-family queue handles. The 6 logical scene queues
-    // (vegetation/sdf/bbox/solid/water/sky) plus the two brush queues alias
+    // (vegetation/sdf/bbox/solid/water/sky) plus the brush preview queue alias
     // graphicsQueue when the device exposes fewer physical graphics queues.
     auto acquireGfx = [&](uint32_t index) -> VkQueue {
         VkQueue h = VK_NULL_HANDLE;
@@ -5971,5 +5971,4 @@ VkQueue VulkanApp::getBoundingBoxQueue() const { return sceneQueues ? sceneQueue
 VkQueue VulkanApp::getSolidQueue() const { return sceneQueues ? sceneQueues->getSolidQueue() : VK_NULL_HANDLE; }
 VkQueue VulkanApp::getWaterQueue() const { return sceneQueues ? sceneQueues->getWaterQueue() : VK_NULL_HANDLE; }
 VkQueue VulkanApp::getSkyQueue() const { return sceneQueues ? sceneQueues->getSkyQueue() : VK_NULL_HANDLE; }
-VkQueue VulkanApp::getBrushSolidQueue() const { return sceneQueues ? sceneQueues->getBrushSolidQueue() : VK_NULL_HANDLE; }
-VkQueue VulkanApp::getBrushLiquidQueue() const { return sceneQueues ? sceneQueues->getBrushLiquidQueue() : VK_NULL_HANDLE; }
+VkQueue VulkanApp::getBrushQueue() const { return sceneQueues ? sceneQueues->getBrushQueue() : VK_NULL_HANDLE; }

@@ -23,11 +23,15 @@ layout(location = VARY_POSWORLD) in vec3 fragWorldPos;
 layout(location = VARY_BRUSHPATCH) flat in int fragContainerIndex;
 
 #include "../../includes/SceneBindings.glsl"
+// Scene texture arrays (set 0 bindings 1/2/3/12/13) for the textured rock
+// surface path; the main scene set is already first in the pipeline layout.
+#include "../../includes/Textures.glsl"
 #include "../../includes/sdf/SdfMaterial.glsl"
 #include "../../includes/sdf/SdfPrimitives.glsl"
 #include "../../includes/sdf/SdfOps.glsl"
 #include "../../includes/sdf/SdfModel.glsl"
 #include "../../includes/sdf/SdfNoise.glsl"
+#include "../../includes/sdf/SdfRock.glsl"
 #include "../../includes/sdf/SdfSmoke.glsl"
 // Shared wind field (set 0, binding 27) for the flame lean below. Requires
 // perlin.glsl (perlinNoise3D) before wind_field.glsl. Set 0 is the global
@@ -111,7 +115,14 @@ float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
     if ((deform & SDF_DEFORM_REPEAT) != 0u) {
         q = opRepeat(q, abs(def.params1.xyz));
     }
-    float d = sdfPrimitive(q, def.prim, def.params0, def.params1);
+    float d;
+    if (def.prim == SDF_PRIM_ROCK) {
+        // Static Perlin-displaced sphere (no flame deformer): sdRock carries
+        // its own conservative Lipschitz bound, so no halving below.
+        d = sdRock(q, def.params0, inst.seed);
+    } else {
+        d = sdfPrimitive(q, def.prim, def.params0, def.params1);
+    }
     // Deformation runs in canonical flame space (flame ~3.2 units tall) so
     // waviness/spike SIZE stays constant under instance scaling; in raw
     // local units an x32 flame would get x32-stretched blobby features.
@@ -192,6 +203,99 @@ float sdfProjDepth(vec3 ro, vec3 rd, float t) {
     vec4 c = ubo.viewProjection * vec4(ro + rd * t, 1.0);
     if (c.w <= 1e-6) return 0.0;
     return clamp(c.z / c.w, 0.0, 1.0);
+}
+
+// ── Textured rock surface ────────────────────────────────────────────────
+// Triplanar blend weights from a world normal (sharpened so one projection
+// dominates on flat faces).
+vec3 sdfTriplanarWeights(vec3 n) {
+    vec3 w = pow(abs(n), vec3(4.0));
+    return w / max(w.x + w.y + w.z, 1e-5);
+}
+
+// Triplanar albedo from the scene texture array (`layer` = material
+// textureLayer, `tiling` = world metres per texture repeat).
+vec3 sdfRockAlbedo(vec3 wp, vec3 n, int layer, float tiling) {
+    float inv = 1.0 / max(tiling, 1e-3);
+    vec3 w = sdfTriplanarWeights(n);
+    vec3 cx = texture(albedoArray, vec3(wp.zy * inv, float(layer))).rgb;
+    vec3 cy = texture(albedoArray, vec3(wp.xz * inv, float(layer))).rgb;
+    vec3 cz = texture(albedoArray, vec3(wp.xy * inv, float(layer))).rgb;
+    return cx * w.x + cy * w.y + cz * w.z;
+}
+
+// Triplanar normal (whiteout blend) from the scene normal array.
+vec3 sdfRockNormal(vec3 wp, vec3 n, int layer, float tiling) {
+    float inv = 1.0 / max(tiling, 1e-3);
+    vec3 w = sdfTriplanarWeights(n);
+    vec3 nx = texture(normalArray, vec3(wp.zy * inv, float(layer))).xyz * 2.0 - 1.0;
+    vec3 ny = texture(normalArray, vec3(wp.xz * inv, float(layer))).xyz * 2.0 - 1.0;
+    vec3 nz = texture(normalArray, vec3(wp.xy * inv, float(layer))).xyz * 2.0 - 1.0;
+    // Whiteout blend: fold the tangential components into each projection,
+    // then weight and swizzle each back into world space.
+    nx = vec3(nx.xy + n.zy, abs(nx.z) * n.x);
+    ny = vec3(ny.xy + n.xz, abs(ny.z) * n.y);
+    nz = vec3(nz.xy + n.xy, abs(nz.z) * n.z);
+    return normalize(nx.zyx * w.x + ny.xzy * w.y + nz.xyz * w.z);
+}
+
+// Lit textured rock color: triplanar albedo + normal, one directional light
+// with a hemisphere ambient. Runs only for surface hits (the rock zero
+// crossing shades opaque in every render mode).
+vec3 sdfRockShade(vec3 wp, vec3 n, vec3 L, SdfMaterial mat) {
+    // Guard the layer against the live array size (widget values may exceed
+    // the loaded layer count; out-of-range array layers are invalid reads).
+    int layer = clamp(int(mat.textureLayer + 0.5), 0,
+                      max(int(textureSize(albedoArray, 0).z) - 1, 0));
+    vec3 albedo = mat.baseColor.rgb * sdfRockAlbedo(wp, n, layer, mat.textureTiling);
+    vec3 nrm = sdfRockNormal(wp, n, layer, mat.textureTiling);
+    float rough = clamp(mat.roughness, 0.05, 1.0);
+    float ndl = max(dot(nrm, L), 0.0);
+    vec3 V = normalize(ubo.viewPosition - wp);
+    vec3 H = normalize(L + V);
+    float specPower = mix(8.0, 256.0, 1.0 - rough);
+    float spec = pow(max(dot(nrm, H), 0.0), specPower);
+    float specStrength = (1.0 - rough) * 0.5 + clamp(mat.metallic, 0.0, 1.0) * 0.3;
+    float up = clamp(0.5 + 0.5 * nrm.y, 0.0, 1.0);
+    vec3 ambient = mix(vec3(0.10), vec3(0.32), up);
+    return albedo * (ambient + 0.85 * ndl * ubo.lightColor)
+         + ubo.lightColor * spec * specStrength;
+}
+
+// Gold tracer shading for one analytic bullet sphere. All inputs are in the
+// smoke's LOCAL frame (the hit comes from the local-frame ray test above), so
+// the directional light converts through the same packed rotation. Returns
+// the lit gold color; the caller composites it with the front-to-back
+// accumulation at the exact hit depth.
+vec3 smokeTracerColor(vec3 hp, vec3 rdL, vec3 centerL, float radius) {
+    vec3 bN = (hp - centerL) / max(radius, 1e-4);
+    vec3 tang = normalize(abs(bN.y) < 0.99 ? cross(bN, vec3(0.0, 1.0, 0.0)) : cross(bN, vec3(1.0, 0.0, 0.0)));
+    float e0 = sdfNoise(hp * 2.0 + centerL);
+    float e1 = sdfNoise(hp * 2.0 + centerL + vec3(4.7));
+    // Normal distortion gain is widget-controlled: guard the normalize
+    // so a cancelling perturbation can never divide by zero.
+    vec3 bNp = bN + (tang * (e0 - 0.5) + cross(bN, tang) * (e1 - 0.5))
+                    * max(smokeGpu.tuning.goldNormalDistort, 0.0);
+    vec3 bNt = (dot(bNp, bNp) > 1e-12) ? normalize(bNp) : bN;
+    float pat = sdfNoise(hp * max(smokeGpu.tuning.goldPatternScale, 0.0) + centerL);
+    vec3 V = -normalize(rdL);
+    vec3 L = normalize(smokeDirToLocal(-normalize(ubo.lightDirection)));
+    float dif = max(dot(bNt, L), 0.0);
+    // Guarded half-vector: L + V degenerates when the view direction
+    // is (anti)parallel to the light. The base is clamped to [0,1]
+    // so the power argument can never go negative; a non-positive
+    // specular power disables the lobe instead of hitting pow(0, 0).
+    vec3 H = L + V;
+    float hl = length(H);
+    float specDot = (hl > 1e-4) ? clamp(dot(bNt, H / hl), 0.0, 1.0) : 0.0;
+    float specPower = smokeGpu.tuning.goldSpecPower;
+    float spec = (specPower > 1e-3) ? pow(specDot, specPower) : 0.0;
+    float fres = pow(clamp(1.0 - max(dot(bNt, V), 0.0), 0.0, 1.0), 3.0);
+    vec3 gold = mix(smokeGpu.tuning.goldDeep, smokeGpu.tuning.goldBright,
+                    clamp(pat * 0.65 + fres * smokeGpu.tuning.goldFresnelBoost, 0.0, 1.0));
+    return gold * (ubo.lightColor * (0.25 + 0.9 * dif)
+                   + vec3(1.0, 0.72, 0.25) * smokeGpu.tuning.goldWarmFloor)
+         + ubo.lightColor * spec * smokeGpu.tuning.goldSpecStrength;
 }
 
 void main() {
@@ -308,28 +412,39 @@ void main() {
     // it read as several smaller balls). Exact ray/sphere root gives a
     // banding-free hit distance. The smoke container expands over the flight
     // path, so the proxy is covered even outside the smoke ball.
+    //
+    // The round is packed in the smoke instance's LOCAL frame, so the test
+    // runs there through the transform packed in the smoke SSBO — world
+    // camera coordinates and local bullet coordinates must never meet (that
+    // mismatch put the tracer at the world origin offset, not at the smoke).
+    // Shading converts the local normal/view/sun through the same rotation.
+    vec3 roL = smokeWorldToLocal(ro);
+    vec3 rdL = smokeDirToLocal(rd);
+    float aL = max(dot(rdL, rdL), 1e-12); // 1 for the unit-scale smoke bomb
     float bestT = 1e5;
     vec3 bestC = vec3(0.0);
     float bestR = 0.0;
-    for (int bi = 0; bi < 8; ++bi) {
-        Bullet bbl = smokeGpu.bullets[bi];
-        if (bbl.intensity <= 0.0) continue;
-        SmokeBulletState bst = smokeBulletState(bbl, time);
-        if (!bst.live || !bst.headOnPath) continue;
-        vec3 bD = bbl.velocity / max(length(bbl.velocity), 1e-6);
-        vec3 head = bbl.start + bD * bst.traveled;
-        // One sphere, bullet's own radius (max of both ends, guard floor).
-        float radius = max(max(bbl.radiusStart, bbl.radiusEnd), 0.3);
-        vec3 oc = ro - head;
-        float bq = dot(oc, rd);
-        float cq = dot(oc, oc) - radius * radius;
-        float disc = bq * bq - cq;
-        if (disc > 0.0) {
-            float tHit = -bq - sqrt(disc);
-            if (tHit > 0.0 && tHit < bestT) {
-                bestT = tHit;
-                bestC = head;
-                bestR = radius;
+    if (smokeGpu.tracerActive > 0.5) {
+        for (int bi = 0; bi < 8; ++bi) {
+            Bullet bbl = smokeGpu.bullets[bi];
+            if (bbl.intensity <= 0.0) continue;
+            SmokeBulletState bst = smokeBulletState(bbl, time);
+            if (!bst.live || !bst.headOnPath) continue;
+            vec3 bD = bbl.velocity / max(length(bbl.velocity), 1e-6);
+            vec3 head = bbl.start + bD * bst.traveled;
+            // One sphere, bullet's own radius (max of both ends, guard floor).
+            float radius = max(max(bbl.radiusStart, bbl.radiusEnd), 0.3);
+            vec3 oc = roL - head;
+            float bq = dot(oc, rdL);
+            float cq = dot(oc, oc) - radius * radius;
+            float disc = bq * bq - aL * cq;
+            if (disc > 0.0) {
+                float tHit = (-bq - sqrt(disc)) / aL;
+                if (tHit > 0.0 && tHit < bestT) {
+                    bestT = tHit;
+                    bestC = head;
+                    bestR = radius;
+                }
             }
         }
     }
@@ -339,40 +454,13 @@ void main() {
         steps = i + 1;
         vec3 p = ro + rd * t;
 
-        // Analytic tracer hit (proxy computed before the loop): stop at the
-        // exact ray/sphere entry and shade the gold round attenuated by the
-        // smoke accumulated so far (front-to-back correct via trans).
+        // Analytic tracer hit (sphere test above): stop at the exact
+        // ray/sphere entry and shade the gold round attenuated by the smoke
+        // accumulated so far (front-to-back correct via trans). The in-volume
+        // resolve checks below catch the cases where a march step jumps over
+        // bestT in one iteration.
         if (bestT < 1e4 && t >= bestT) {
-            vec3 hp = ro + rd * bestT;
-            vec3 bN = (hp - bestC) / max(bestR, 1e-4);
-            vec3 tang = normalize(abs(bN.y) < 0.99 ? cross(bN, vec3(0.0, 1.0, 0.0)) : cross(bN, vec3(1.0, 0.0, 0.0)));
-            float e0 = sdfNoise(hp * 2.0 + bestC);
-            float e1 = sdfNoise(hp * 2.0 + bestC + vec3(4.7));
-            // Normal distortion gain is widget-controlled: guard the normalize
-            // so a cancelling perturbation can never divide by zero.
-            vec3 bNp = bN + (tang * (e0 - 0.5) + cross(bN, tang) * (e1 - 0.5))
-                            * max(smokeGpu.tuning.goldNormalDistort, 0.0);
-            vec3 bNt = (dot(bNp, bNp) > 1e-12) ? normalize(bNp) : bN;
-            float pat = sdfNoise(hp * max(smokeGpu.tuning.goldPatternScale, 0.0) + bestC);
-            vec3 V = -rd;
-            vec3 L = -normalize(ubo.lightDirection);
-            float dif = max(dot(bNt, L), 0.0);
-            // Guarded half-vector: L + V degenerates when the view direction
-            // is (anti)parallel to the light. The base is clamped to [0,1]
-            // so the power argument can never go negative; a non-positive
-            // specular power disables the lobe instead of hitting pow(0, 0).
-            vec3 H = L + V;
-            float hl = length(H);
-            float specDot = (hl > 1e-4) ? clamp(dot(bNt, H / hl), 0.0, 1.0) : 0.0;
-            float specPower = smokeGpu.tuning.goldSpecPower;
-            float spec = (specPower > 1e-3) ? pow(specDot, specPower) : 0.0;
-            float fres = pow(clamp(1.0 - max(dot(bNt, V), 0.0), 0.0, 1.0), 3.0);
-            vec3 gold = mix(smokeGpu.tuning.goldDeep, smokeGpu.tuning.goldBright,
-                            clamp(pat * 0.65 + fres * smokeGpu.tuning.goldFresnelBoost, 0.0, 1.0));
-            vec3 goldCol = gold * (ubo.lightColor * (0.25 + 0.9 * dif)
-                                   + vec3(1.0, 0.72, 0.25) * smokeGpu.tuning.goldWarmFloor)
-                         + ubo.lightColor * spec * smokeGpu.tuning.goldSpecStrength;
-            outColor = vec4(accum + trans * goldCol, 1.0);
+            outColor = vec4(accum + trans * smokeTracerColor(roL + rdL * bestT, rdL, bestC, bestR), 1.0);
             gl_FragDepth = sdfProjDepth(ro, rd, bestT);
             return;
         }
@@ -460,17 +548,24 @@ void main() {
         minAbsD = min(minAbsD, abs(dBest));
 
         // Surface mode (or any mode hitting the zero crossing): shade opaque
-        // hit. Solid smoke shapes (Sphere/Cube) are opaque bodies in every
-        // render mode, matching the reference plastic sphere/cube.
+        // hit. Solid smoke shapes (Sphere/Cube) and rock boulders are opaque
+        // bodies in every render mode.
         bool smokeSolid = (bestDef.prim == SDF_PRIM_SMOKE) &&
                           (smokeGpu.tuning.shape > 0.5);
-        if (dBest < eps && (renderMode == 0u || renderMode == 3u || smokeSolid)) {
+        bool rockSolid = (bestDef.prim == SDF_PRIM_ROCK);
+        if (dBest < eps && (renderMode == 0u || renderMode == 3u || smokeSolid || rockSolid)) {
             float e = max(eps * 2.0, 0.004);
             vec3 nn = sdfSurfaceNormal(p, bestInst, bestDef, bestMat, time, e);
             vec3 L = -normalize(ubo.lightDirection);
             float ndl = max(dot(nn, L), 0.0);
             float alpha = clamp(bestMat.opacity, 0.0, 1.0);
-            hitColor = bestMat.baseColor.rgb * (0.2 + ndl) * ubo.lightColor + bestMat.emission * 0.2;
+            if (rockSolid && bestMat.textureLayer >= 0.0) {
+                // Textured boulder: triplanar scene-array albedo + normal
+                // (the flat material color stays the fallback).
+                hitColor = sdfRockShade(p, nn, L, bestMat);
+            } else {
+                hitColor = bestMat.baseColor.rgb * (0.2 + ndl) * ubo.lightColor + bestMat.emission * 0.2;
+            }
             if (renderMode == 3u) {
                 outColor = vec4(hitColor, alpha);
             } else {
@@ -537,6 +632,14 @@ void main() {
                 }
                 float loS = max(t, tA0);
                 if (tA1 > loS) {
+                    // Tracer in front of the first volume sample: shade it
+                    // now with the smoke accumulated so far (the uniform
+                    // resolve must never step past the round unseen).
+                    if (bestT < 1e4 && bestT <= loS) {
+                        outColor = vec4(accum + trans * smokeTracerColor(roL + rdL * bestT, rdL, bestC, bestR), 1.0);
+                        gl_FragDepth = sdfProjDepth(ro, rd, bestT);
+                        return;
+                    }
                     // Phase B: fixed-count uniform march across the measured
                     // thickness. Jittered start; each sample shaded with its
                     // marched-in depth (deep mass reads darker, stably).
@@ -546,6 +649,16 @@ void main() {
                     float ts = loS + jS * dtS;
                     for (int j = 0; j < 12; ++j) {
                         if (ts > tA1) break;
+                        // Tracer inside the volume: shade at its exact depth
+                        // with only the smoke ahead of it accumulated.
+                        // Without this check the resolve (or its early-out)
+                        // consumed the whole cloud before the round could be
+                        // drawn, hiding the tracer behind its own smoke.
+                        if (bestT < 1e4 && ts >= bestT) {
+                            outColor = vec4(accum + trans * smokeTracerColor(roL + rdL * bestT, rdL, bestC, bestR), 1.0);
+                            gl_FragDepth = sdfProjDepth(ro, rd, bestT);
+                            return;
+                        }
                         vec3 ps = ro + rd * ts; // world sample along the ray
                         // Local sample in the shape's frame: the evaluator
                         // owns the transform, the smoke module never sees it.

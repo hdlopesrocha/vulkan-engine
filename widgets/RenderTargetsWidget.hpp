@@ -32,7 +32,6 @@ private:
     VkDescriptorSet solidDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet backFaceDepthDescriptor = VK_NULL_HANDLE;
-    VkDescriptorSet brushBackFaceDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterDepthLinearDescriptor = VK_NULL_HANDLE;
 
 

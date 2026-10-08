@@ -2,7 +2,7 @@
 // CPU-side SDF scene builder. It stores the CANONICAL GPU-layout structs
 // (sdf/types/*GPU.hpp, GLSL twins in shaders/types/*GPU.glsl) directly, so
 // the renderer uploads the vectors verbatim with no conversion step.
-// CPU-only helpers (flame anchors/shapes, stats, config) stay separate; the
+// CPU-only helpers (flame/rock anchors/shapes, stats, config) stay separate; the
 // per-container instance membership is derived from Instance::containerIdx.
 // Independent from space/Octree, from sdf/*DistanceFunction, and from
 // vulkan/ (no Vulkan headers here).
@@ -18,6 +18,8 @@
 #include "sdf/types/SdfGridCell.hpp"
 #include "sdf/types/SdfInstance.hpp"
 #include "sdf/types/SdfMaterial.hpp"
+#include "sdf/types/SdfRockAnchor.hpp"
+#include "sdf/types/SdfRockShape.hpp"
 #include "math/BoundingBox.hpp"
 
 namespace sdf_gpu {
@@ -27,6 +29,8 @@ public:
     // CPU-only scene inputs stay aliased for readability.
     using FlameAnchor = sdf_gpu::FlameAnchor;
     using FlameShape = sdf_gpu::FlameShape;
+    using RockAnchor = sdf_gpu::RockAnchor;
+    using RockShape = sdf_gpu::RockShape;
 
     uint32_t addDefinition(const SdfDefinition& d);
     uint32_t addMaterial(const SdfMaterial& m);
@@ -83,6 +87,12 @@ public:
     // anchors -> scene with no containers (renders nothing).
     static SdfScene createFireFromAnchors(const std::vector<FlameAnchor>& anchors,
                                           const FlameShape& shape);
+
+    // Rock scene from explicit anchors (Perlin-displaced spheres, container
+    // auto-fit targeting ~32 m cells). Empty anchors -> definition+material
+    // only, no containers (renders nothing).
+    static SdfScene createRocksFromAnchors(const std::vector<RockAnchor>& anchors,
+                                           const RockShape& shape);
 
     // Orientation for Y-up SDF instances (flames grow along local +Y):
     // shortest-arc rotation taking +Y to the surface normal `n`, expressed

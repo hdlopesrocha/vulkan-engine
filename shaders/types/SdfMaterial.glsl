@@ -1,14 +1,15 @@
 #ifndef SDF_MATERIAL_GLSL
 #define SDF_MATERIAL_GLSL
 
-// Canonical SDF material (std430, 80 B). Single definition shared with the
+// Canonical SDF material (std430, 96 B). Single definition shared with the
 // CPU scene builder: sdf/types/SdfMaterial.hpp — identical layout, names
 // and offsets.
 // Offset table (verified against the C++ static_asserts):
 //   baseColor 0, roughness 16, metallic 20, opacity 24, mode 28,
 //   emission 32, emissionIntensity 44, density 48, absorption 52,
-//   scattering 56, tempScale 60, noiseScale 64, turbulence 68, riseSpeed 72.
-// 76..80 is std430 padding (struct size multiple of 16).
+//   scattering 56, tempScale 60, noiseScale 64, turbulence 68, riseSpeed 72,
+//   textureLayer 76, textureTiling 80.
+// 84..96 is std430 padding (struct size multiple of 16).
 // mode ids: shaders/types/SdfMaterialType.glsl (SDF_MAT_*).
 struct SdfMaterial {
     vec4 baseColor;        // offset  0  rgb + alpha
@@ -25,6 +26,8 @@ struct SdfMaterial {
     float noiseScale;      // offset 64
     float turbulence;      // offset 68
     float riseSpeed;       // offset 72
+    float textureLayer;    // offset 76  scene texture-array layer (-1 = flat)
+    float textureTiling;   // offset 80  world metres per texture repeat
 };
 
 #endif // SDF_MATERIAL_GLSL

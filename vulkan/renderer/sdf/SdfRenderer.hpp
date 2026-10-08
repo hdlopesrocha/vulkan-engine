@@ -121,6 +121,43 @@ public:
     // flames). Applied at scene rebuild; marks lava dirty.
     void setLavaFlameDensity(float d);
 
+    // ── Rock boulders (brushIndex 7) ─────────────────────────────────────
+    // Rock anchors are derived from the SOLID shape of brush-7 terrain
+    // chunks, keyed by chunk so edits replace and deletions remove their
+    // boulders (same collector contract as lava). One rock per
+    // config().rocks.spacing x spacing m of rock surface by default
+    // (512 x 512 m); the rock scene merges with lava + smoke on every
+    // rebuild.
+    static constexpr int kRockBrushIndex = 7;
+    void ingestRockChunk(uintptr_t nid, const Geometry& geom);
+    void removeRockChunk(uintptr_t nid);
+    void clearRocks();
+    // Rebuild the rock scene from collected anchors when dirty (coalesces
+    // per-chunk ingests into at most one flatten per frame). Returns true
+    // when a rebuild was staged.
+    bool rebuildRocksIfDirty();
+    // Placement: one rock per `spacing` x `spacing` m of rock surface
+    // (0 / disabled hides the boulders; candidates are retained at
+    // minSpacing and decimated per rebuild, so slider edits are instant).
+    void setRocksEnabled(bool on);
+    void setRockSpacing(float m);
+    void setRockMaxPerChunk(int n);
+    // Force a rock-scene rebuild from the retained candidates (e.g. after
+    // external state changes).
+    void markRocksDirty();
+    // Size / shape (applied at scene rebuild).
+    void setRockScale(float m);
+    void setRockScaleVariation(float f);
+    void setRockEmbed(float f);
+    void setRockNoiseScale(float s);
+    void setRockNoiseAmplitude(float a);
+    // Surface (applied at scene rebuild).
+    void setRockTextureLayer(float layer);
+    void setRockTextureTiling(float m);
+    void setRockRoughness(float r);
+    void setRockMetallic(float m);
+    void setRockTint(const glm::vec3& rgb);
+
     // ── Smoke bomb + bullets (second generic consumer) ──────────────────
     // A static-topology smoke scene (1 Smoke-sphere def/mat/container/
     // instance) merged with the lava scene on every rebuild. Growth, noise,
@@ -236,6 +273,7 @@ private:
     sdf_gpu::SdfScene pendingScene_; // merged lava + smoke (uploaded directly)
     sdf_gpu::SdfScene lavaScene_;    // fire scene from lava anchors
     sdf_gpu::SdfScene smokeScene_;   // static-topology smoke/flame shape scene
+    sdf_gpu::SdfScene rocksScene_;   // rock scene from brush-7 anchors
     SdfParamsUBO params_ = {};
     RenderMode renderMode_ = RenderMode::Surface;
     uint32_t debugFlags_ = 0;
@@ -253,9 +291,24 @@ private:
     // stored as scene FlameAnchors so chunk edits replace and deletions
     // remove their flames with no conversion step).
     std::unordered_map<uintptr_t, std::vector<sdf_gpu::SdfScene::FlameAnchor>> lavaByChunk_;
+    // Rock-candidate collection (brush-7 chunk geometry). Candidates are
+    // ingested at config().rocks.minSpacing (the densest retained set) with
+    // per-candidate variation keys; rebuildRocksIfDirty decimates them to
+    // the live spacing and applies the live shape/material, so widget edits
+    // never need the chunk geometry again.
+    struct RockCandidate {
+        glm::vec3 pos{0.0f};              // surface point (world)
+        glm::vec3 normal{0.0f, 1.0f, 0.0f}; // smooth surface normal
+        glm::vec3 euler{0.0f};            // random tumble (R = Rx*Ry*Rz)
+        float scaleVar = 0.0f;            // [0,1) size variation key
+        float seed = 0.0f;                // per-rock noise seed
+        float decim = 0.0f;               // [0,1) density key (keep while < ratio)
+    };
+    std::unordered_map<uintptr_t, std::vector<RockCandidate>> rocksByChunk_;
     // Shared tuning (single source of truth for renderer + widgets).
     SdfEffectConfig config_;
     bool lavaDirty_ = false;    // anchors changed -> rebuild staged
+    bool rocksDirty_ = false;   // anchors/shape changed -> rebuild staged
 
     // Smoke bomb state (second generic consumer). Scene topology is static
     // (1 def/mat/container/instance); all behavior below streams through
@@ -289,8 +342,8 @@ private:
     void createCubeBuffers(VulkanApp* app);
     void createDescriptorSet(VulkanApp* app);
     void createPipeline(VulkanApp* app);
-    // Re-merge lava + smoke scenes into pendingScene_, rebuild its bounds and
-    // grids (caller holds sceneMutex). Marks all scene slots dirty.
+    // Re-merge lava + rock + smoke scenes into pendingScene_, rebuild its
+    // bounds and grids (caller holds sceneMutex). Marks all scene slots dirty.
     void refreshMergedLocked();
     // ── SdfModel helpers (one transform convention for every effect) ─────
     // Euler XYZ radians, R = Rx * Ry * Rz (mirrors sdfEulerMat in sdf_ops).

@@ -33,9 +33,14 @@ struct SdfMaterial {
     float noiseScale = 2.5f;                          // offset 64
     float turbulence = 0.6f;                          // offset 68
     float riseSpeed = 1.5f;                           // offset 72
-    // offset 76..80 is padding: the struct size must be a multiple of 16.
+    // Textured surface path (surface-mode hits, e.g. rocks): array layer in
+    // the scene albedo/normal/roughness/AO arrays and world metres per
+    // texture repeat. Layer < 0 keeps the flat baseColor/roughness shading.
+    float textureLayer = -1.0f;                       // offset 76
+    float textureTiling = 64.0f;                      // offset 80  m per repeat
+    // offset 84..96 is padding: the struct size must be a multiple of 16.
 };
-static_assert(sizeof(SdfMaterial) == 80, "SdfMaterial must be 80 bytes");
+static_assert(sizeof(SdfMaterial) == 96, "SdfMaterial must be 96 bytes");
 static_assert(offsetof(SdfMaterial, baseColor) == 0, "baseColor offset");
 static_assert(offsetof(SdfMaterial, roughness) == 16, "roughness offset");
 static_assert(offsetof(SdfMaterial, metallic) == 20, "metallic offset");
@@ -50,3 +55,5 @@ static_assert(offsetof(SdfMaterial, tempScale) == 60, "tempScale offset");
 static_assert(offsetof(SdfMaterial, noiseScale) == 64, "noiseScale offset");
 static_assert(offsetof(SdfMaterial, turbulence) == 68, "turbulence offset");
 static_assert(offsetof(SdfMaterial, riseSpeed) == 72, "riseSpeed offset");
+static_assert(offsetof(SdfMaterial, textureLayer) == 76, "textureLayer offset");
+static_assert(offsetof(SdfMaterial, textureTiling) == 80, "textureTiling offset");

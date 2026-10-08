@@ -83,10 +83,6 @@ public:
     bool beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex, bool loadExisting = false,
                                 BodyAttachments bodyAttachments = BodyAttachments::Auto);
     void endWaterGeometryPass(VkCommandBuffer cmd);
-    // Merged end for the brush-liquid overlay path: water color + water
-    // geometry depth → SHADER_READ_ONLY_OPTIMAL in a single barrier call
-    // (was: endWaterGeometryPass plus a lone depth transition).
-    void endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t frameIndex);
 
     // Back-face depth pre-pass (reversed winding for water volume thickness)
     // NOTE: back-face depth pre-pass is now owned by SceneRenderer. SceneRenderer
@@ -404,12 +400,12 @@ private:
             ? waterMainPipelineRt.handle : waterMainPipeline.handle;
     }
 
-    // vkCmdEndRendering without barriers (shared by endWaterGeometryPass and
-    // endWaterGeometryPassWithDepth, which emit their own batched barriers).
+    // vkCmdEndRendering without barriers (endWaterGeometryPass emits its own
+    // batched barriers).
     void endWaterRendering(VkCommandBuffer cmd);
 
     // Shared color+body+column end-of-pass transitions. `reserveCount` lets
-    // the depth variant reserve room for its extra depth entry up front.
+    // the caller reserve room up front (avoids reallocation mid-build).
     std::vector<VulkanApp::BatchTransition> buildWaterEndTransitions(uint32_t frameIndex, size_t reserveCount);
 
     void createWaterPipelines(VulkanApp* app, const std::vector<WaterSettings>& waterParams);

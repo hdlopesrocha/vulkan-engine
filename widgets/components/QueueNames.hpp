@@ -14,7 +14,6 @@ inline constexpr const char* SDF          = "SDF";
 inline constexpr const char* BoundingBox  = "BoundingBox";
 inline constexpr const char* Geometry     = "Geometry";
 inline constexpr const char* Transfer     = "Transfer";
-inline constexpr const char* BrushSolid   = "BrushSolid";
-inline constexpr const char* BrushLiquid  = "BrushLiquid";
+inline constexpr const char* Brush        = "Brush";
 
 } // namespace QueueNames

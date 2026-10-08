@@ -76,8 +76,7 @@ void BrushSdfRenderer::init(VulkanApp* app, uint32_t width, uint32_t height) {
 void BrushSdfRenderer::cleanup(VulkanApp* app) {
     // Pipelines, layouts and buffers are registered with the app resource
     // manager at creation and destroyed by it at shutdown (same contract as
-    // the other renderers). Only release the offscreen targets here, like the
-    // old brush renderer did.
+    // the other renderers). Only the offscreen targets are released here.
     destroyRenderTargets(app);
 }
 

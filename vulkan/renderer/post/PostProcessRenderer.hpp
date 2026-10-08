@@ -69,7 +69,7 @@ private:
     // buffers (one per frame slot). No-op when !app->useDescriptorBuffer().
     void createDescriptorBuffers(VulkanApp* app);
     void destroyDescriptorBuffers(VulkanApp* app);
-    // Write one frame slot's descriptor-buffer memory (bindings 0-18 + 27).
+    // Write one frame slot's descriptor-buffer memory (bindings 0-7, 9-18 + 27).
     // Returns false when the DB path cannot be used (caller falls back).
     bool writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t slot,
                                      const std::array<VkDescriptorImageInfo, 19>& imageInfos,
@@ -85,7 +85,7 @@ private:
     std::array<TrackedHandle<VkDescriptorSet>, FRAMES_IN_FLIGHT> descriptorSets;
 
     // Descriptor-buffer state (live only when useDescriptorBuffer()).
-    // Layout = descriptorSetLayout (19 bindings: 18 images + 1 UBO).
+    // Layout = descriptorSetLayout (18 bindings: 17 images + 1 UBO).
     std::array<Buffer, FRAMES_IN_FLIGHT> descBuffers_{};
     std::array<VkDeviceAddress, FRAMES_IN_FLIGHT> descAddresses_{};
     VkDeviceSize descSetSize_ = 0;

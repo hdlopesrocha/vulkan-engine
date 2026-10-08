@@ -13,5 +13,6 @@
 #define SDF_PRIM_PLANE 7u
 #define SDF_PRIM_FLAME 8u
 #define SDF_PRIM_SMOKE 9u
+#define SDF_PRIM_ROCK 10u
 
 #endif // SDF_PRIMITIVE_TYPE_GLSL

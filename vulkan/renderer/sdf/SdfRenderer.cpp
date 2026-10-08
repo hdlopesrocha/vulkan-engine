@@ -241,10 +241,11 @@ void SdfRenderer::setScene(const sdf_gpu::SdfScene& scene) {
 
 void SdfRenderer::refreshMergedLocked() {
     // pendingScene_ is always the merge: independent emitters (lava fire,
-    // smoke shapes, future effects) share one GPU upload and one march. It
-    // stores the canonical GPU-layout structs, so rebuild() only refreshes
-    // AABBs/grids and the upload memcpys the vectors verbatim.
-    pendingScene_ = sdf_gpu::SdfScene::merge(lavaScene_, smokeScene_);
+    // rock boulders, smoke shapes, future effects) share one GPU upload and
+    // one march. It stores the canonical GPU-layout structs, so rebuild()
+    // only refreshes AABBs/grids and the upload memcpys the vectors verbatim.
+    pendingScene_ = sdf_gpu::SdfScene::merge(
+        sdf_gpu::SdfScene::merge(lavaScene_, rocksScene_), smokeScene_);
     pendingScene_.rebuild();
     stats_.containerCount = static_cast<uint32_t>(pendingScene_.containers().size());
     stats_.definitionCount = static_cast<uint32_t>(pendingScene_.definitions().size());
@@ -339,13 +340,16 @@ void SdfRenderer::ensureSmokeScene() {
             if (!smokeScene_.instances().empty()) {
                 smokeScene_.instances()[0].rotation = euler;
             }
-            // Cover bullet flight paths: bullets fly horizontally (XZ) from
-            // auto-crossing starts through and past the smoke. The static margin
-            // fits the longest paths; cells outside the smoke AABB stay empty
-            // and march at DDA-skip cost only.
+            // Cover the full tracer flight path for any launch angle: the
+            // round starts one smoke radius out and flies bullet.length meters,
+            // plus its own radius. Sized for the maxima (scale 1024 + path
+            // 2560 + radius 100) so slider edits never rebuild the scene; cells
+            // outside the smoke AABB stay empty and march at DDA-skip cost
+            // only. XZ only: bullets fly in the shape's local XZ plane, and a
+            // Y margin would overlap the terrain/lava containers below.
             if (!smokeScene_.containers().empty()) {
                 auto& c = smokeScene_.containers()[0];
-                const float ext = 1200.0f;
+                const float ext = 3700.0f;
                 c.boundsMin -= glm::vec3(ext, 0.0f, ext);
                 c.boundsMax += glm::vec3(ext, 0.0f, ext);
             }
@@ -698,6 +702,327 @@ void SdfRenderer::setLavaFlameDensity(float d) {
     lavaDirty_ = true;
 }
 
+// ─── Rock boulders (brush-7 chunks) ───────────────────────────────────────
+// Mirrors the lava collector: area-weighted stochastic slots over brush-7
+// triangles, deterministic per chunk, stored as per-chunk CANDIDATES at
+// config().rocks.minSpacing. rebuildRocksIfDirty() decimates the candidate
+// set to the live spacing and applies the live shape/material, so widget
+// edits (including density) rebuild at most once per frame with no chunk
+// geometry retained.
+
+void SdfRenderer::ingestRockChunk(uintptr_t nid, const Geometry& geom) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    auto it = rocksByChunk_.find(nid);
+    const bool had = (it != rocksByChunk_.end());
+    rocksByChunk_.erase(nid);
+    const float minSpacing = std::max(config_.rocks.minSpacing, 1.0f);
+    const float perM2 = 1.0f / (minSpacing * minSpacing);
+    if (geom.indices.size() < 3 || geom.vertices.empty() ||
+        config_.rocks.maxAnchors == 0u) {
+        if (had) rocksDirty_ = true;
+        return;
+    }
+
+    // Chunk-seeded RNG: the same chunk always samples the same candidates
+    // (edits re-publish the chunk, so their rocks are recreated with it).
+    const uint32_t chunkSeed =
+        static_cast<uint32_t>(nid ^ (nid >> 32)) ^ 0x7f4a7c15u;
+    std::mt19937 rng(chunkSeed);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+
+    // Area-weighted virtual slots over brush-7 (rock) triangles. Only the
+    // rock fraction of a triangle earns candidates (boundary triangles get
+    // proportionally fewer slots), and candidates are sampled onto the rock
+    // side so no boulder is born on neighboring grass/sand.
+    struct RockSlot { uint32_t i0, i1, i2; int rockVerts; };
+    std::vector<RockSlot> triSlots;
+    for (size_t i = 0; i + 2 < geom.indices.size(); i += 3) {
+        const uint32_t i0 = geom.indices[i + 0];
+        const uint32_t i1 = geom.indices[i + 1];
+        const uint32_t i2 = geom.indices[i + 2];
+        if (i0 >= geom.vertices.size() || i1 >= geom.vertices.size() ||
+            i2 >= geom.vertices.size())
+            continue;
+        const int r0 = (geom.vertices[i0].brushIndex == kRockBrushIndex) ? 1 : 0;
+        const int r1 = (geom.vertices[i1].brushIndex == kRockBrushIndex) ? 1 : 0;
+        const int r2 = (geom.vertices[i2].brushIndex == kRockBrushIndex) ? 1 : 0;
+        const int rockVerts = r0 + r1 + r2;
+        if (rockVerts == 0) continue;
+        const glm::vec3& v0 = geom.vertices[i0].position;
+        const glm::vec3& v1 = geom.vertices[i1].position;
+        const glm::vec3& v2 = geom.vertices[i2].position;
+        const float area = 0.5f * glm::length(glm::cross(v1 - v0, v2 - v0));
+        const float rockFrac = static_cast<float>(rockVerts) / 3.0f;
+        const float expected = std::max(0.0f, area * rockFrac * perM2);
+        uint32_t n = static_cast<uint32_t>(std::floor(expected));
+        if (unit(rng) < expected - static_cast<float>(n)) ++n;
+        for (uint32_t s = 0; s < n; ++s) triSlots.push_back({i0, i1, i2, rockVerts});
+    }
+    if (triSlots.empty()) {
+        if (had) rocksDirty_ = true;
+        return; // no rock in this chunk: keep no entry
+    }
+
+    // Shuffle so the per-chunk cap keeps a random spatial subset.
+    {
+        std::mt19937 srng(chunkSeed ^ 0x27d4eb2du);
+        for (size_t s = triSlots.size() - 1; s > 0; --s) {
+            std::uniform_int_distribution<size_t> dist(0, s);
+            std::swap(triSlots[s], triSlots[dist(srng)]);
+        }
+    }
+
+    // Global cap: stop adding once the retained set is full (grid + SSBO
+    // stay bounded; the count is visible in the rocks widget).
+    size_t total = 0;
+    for (const auto& kv : rocksByChunk_) total += kv.second.size();
+
+    std::vector<RockCandidate> candidates;
+    const size_t perChunkCap = static_cast<size_t>(std::max(config_.rocks.maxPerChunk, 0));
+    candidates.reserve(std::min(triSlots.size(), perChunkCap));
+    for (const auto& sl : triSlots) {
+        if (candidates.size() >= perChunkCap) break;
+        if (total + candidates.size() >= config_.rocks.maxAnchors) break;
+        const Vertex& A = geom.vertices[sl.i0];
+        const Vertex& B = geom.vertices[sl.i1];
+        const Vertex& C = geom.vertices[sl.i2];
+        // Scatter inside the triangle but keep the candidate on rock:
+        // full-rock triangles sample uniformly; mixed (boundary) triangles
+        // rejection-sample until the rock-vertex weight exceeds 0.5 (the
+        // rock-side half/third), dropping the slot when the rock sliver is
+        // too thin to hit.
+        glm::vec3 p(0.0f);
+        glm::vec3 bw(0.0f);
+        bool placed = false;
+        for (int t = 0; t < 6 && !placed; ++t) {
+            float u = unit(rng), v = unit(rng);
+            if (u + v > 1.0f) { u = 1.0f - u; v = 1.0f - v; }
+            const float w = 1.0f - u - v;
+            if (sl.rockVerts < 3) {
+                const float lw =
+                    u * ((A.brushIndex == kRockBrushIndex) ? 1.0f : 0.0f) +
+                    v * ((B.brushIndex == kRockBrushIndex) ? 1.0f : 0.0f) +
+                    w * ((C.brushIndex == kRockBrushIndex) ? 1.0f : 0.0f);
+                if (lw <= 0.5f) continue;
+            }
+            p = u * A.position + v * B.position + w * C.position;
+            // Smooth surface normal (barycentric interpolation): the boulder
+            // sits along this normal so it stands perpendicular to the rock
+            // face (overhangs included).
+            bw = u * A.normal + v * B.normal + w * C.normal;
+            placed = true;
+        }
+        if (!placed) continue;
+        RockCandidate c;
+        c.pos = p;
+        {
+            const float n2 = glm::dot(bw, bw);
+            if (n2 > 1e-8f) c.normal = bw * (1.0f / std::sqrt(n2));
+        }
+        // Per-candidate variation keys: sampled once here, consumed at every
+        // rebuild so size/rotation/density edits keep each rock's identity.
+        c.euler = glm::vec3(unit(rng) * 6.2831853f,
+                            unit(rng) * 6.2831853f,
+                            unit(rng) * 6.2831853f);
+        c.scaleVar = unit(rng);
+        c.seed = unit(rng) * 100.0f;
+        c.decim = unit(rng);
+        candidates.push_back(c);
+    }
+    if (candidates.empty()) {
+        if (had) rocksDirty_ = true;
+        return;
+    }
+    rocksByChunk_[nid] = std::move(candidates);
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::removeRockChunk(uintptr_t nid) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    if (rocksByChunk_.erase(nid) > 0) rocksDirty_ = true;
+}
+
+void SdfRenderer::clearRocks() {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    if (!rocksByChunk_.empty()) {
+        rocksByChunk_.clear();
+        rocksDirty_ = true;
+    }
+}
+
+void SdfRenderer::markRocksDirty() {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    rocksDirty_ = true;
+}
+
+bool SdfRenderer::rebuildRocksIfDirty() {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    if (!rocksDirty_) return false;
+    rocksDirty_ = false;
+
+    // Density decimation: candidates were ingested at minSpacing; keep the
+    // fraction (minSpacing / spacing)^2 so the expected count is one rock
+    // per spacing x spacing m of rock surface. The per-candidate key makes
+    // the kept set stable while the spacing slider moves.
+    const float minSpacing = std::max(config_.rocks.minSpacing, 1.0f);
+    const float spacing = std::max(config_.rocks.spacing, minSpacing);
+    float keepRatio = (minSpacing * minSpacing) / (spacing * spacing);
+    if (!config_.rocks.enabled) keepRatio = 0.0f;
+    keepRatio = std::clamp(keepRatio, 0.0f, 1.0f);
+
+    const float var = std::clamp(config_.rocks.scaleVariation, 0.0f, 1.0f);
+    const float embed = std::clamp(config_.rocks.embed, 0.0f, 0.95f);
+    const float baseScale = std::max(config_.rocks.scale, 0.1f);
+
+    std::vector<sdf_gpu::SdfScene::RockAnchor> all;
+    size_t candidateCount = 0;
+    for (const auto& kv : rocksByChunk_) candidateCount += kv.second.size();
+    all.reserve(static_cast<size_t>(candidateCount * keepRatio) + rocksByChunk_.size());
+    for (const auto& kv : rocksByChunk_) {
+        for (const RockCandidate& c : kv.second) {
+            if (c.decim >= keepRatio) continue;
+            const float scale = baseScale * (1.0f - var + 2.0f * var * c.scaleVar);
+            sdf_gpu::SdfScene::RockAnchor a;
+            // Sink the sphere by `embed` of its radius so a boulder sits in
+            // the ground instead of floating tangent to it.
+            a.pos = c.pos + c.normal * (scale * (1.0f - embed));
+            a.euler = c.euler;
+            a.scale = scale;
+            a.seed = c.seed;
+            a.intensity = 1.0f;
+            all.push_back(a);
+        }
+    }
+
+    rocksScene_ = [&] {
+        sdf_gpu::SdfScene::RockShape shape;
+        shape.noiseScale = config_.rocks.noiseScale;
+        shape.noiseAmplitude = config_.rocks.noiseAmplitude;
+        shape.textureLayer = config_.rocks.textureLayer;
+        shape.textureTiling = config_.rocks.textureTiling;
+        shape.roughness = config_.rocks.roughness;
+        shape.metallic = config_.rocks.metallic;
+        shape.tint = config_.rocks.tint;
+        return sdf_gpu::SdfScene::createRocksFromAnchors(all, shape);
+    }();
+    refreshMergedLocked();
+    stats_.rockAnchors = static_cast<uint32_t>(all.size());
+    stats_.rockChunks = static_cast<uint32_t>(rocksByChunk_.size());
+    if (!all.empty()) {
+        const auto& cs = rocksScene_.containers();
+        if (!cs.empty()) {
+            const glm::vec3 mn = cs.front().boundsMin;
+            const glm::vec3 mx = cs.front().boundsMax;
+            fprintf(stderr, "[SdfRenderer] rock rebuild: rocks=%zu candidates=%zu "
+                "chunks=%zu spacing=%.0f container=[(%.1f,%.1f,%.1f)-(%.1f,%.1f,%.1f)] grid=%ux%ux%u\n",
+                all.size(), candidateCount, rocksByChunk_.size(), spacing,
+                mn.x, mn.y, mn.z, mx.x, mx.y, mx.z,
+                cs.front().resX, cs.front().resY, cs.front().resZ);
+        }
+    }
+    return true;
+}
+
+void SdfRenderer::setRocksEnabled(bool on) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    if (on == config_.rocks.enabled) return;
+    config_.rocks.enabled = on;
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::setRockSpacing(float m) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(m, config_.rocks.minSpacing, 4096.0f);
+    if (v == config_.rocks.spacing) return;
+    config_.rocks.spacing = v;
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::setRockMaxPerChunk(int n) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    config_.rocks.maxPerChunk = std::clamp(n, 0, 256);
+}
+
+void SdfRenderer::setRockScale(float m) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(m, 0.5f, 512.0f);
+    if (v == config_.rocks.scale) return;
+    config_.rocks.scale = v;
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::setRockScaleVariation(float f) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(f, 0.0f, 1.0f);
+    if (v == config_.rocks.scaleVariation) return;
+    config_.rocks.scaleVariation = v;
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::setRockEmbed(float f) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(f, 0.0f, 0.95f);
+    if (v == config_.rocks.embed) return;
+    config_.rocks.embed = v;
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::setRockNoiseScale(float s) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(s, 0.05f, 32.0f);
+    if (v == config_.rocks.noiseScale) return;
+    config_.rocks.noiseScale = v;
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::setRockNoiseAmplitude(float a) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(a, 0.0f, 1.0f);
+    if (v == config_.rocks.noiseAmplitude) return;
+    config_.rocks.noiseAmplitude = v;
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::setRockTextureLayer(float layer) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(layer, -1.0f, 255.0f);
+    if (v == config_.rocks.textureLayer) return;
+    config_.rocks.textureLayer = v;
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::setRockTextureTiling(float m) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(m, 1.0f, 1024.0f);
+    if (v == config_.rocks.textureTiling) return;
+    config_.rocks.textureTiling = v;
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::setRockRoughness(float r) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(r, 0.02f, 1.0f);
+    if (v == config_.rocks.roughness) return;
+    config_.rocks.roughness = v;
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::setRockMetallic(float m) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(m, 0.0f, 1.0f);
+    if (v == config_.rocks.metallic) return;
+    config_.rocks.metallic = v;
+    rocksDirty_ = true;
+}
+
+void SdfRenderer::setRockTint(const glm::vec3& rgb) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const glm::vec3 v = glm::clamp(rgb, glm::vec3(0.0f), glm::vec3(4.0f));
+    if (v == config_.rocks.tint) return;
+    config_.rocks.tint = v;
+    rocksDirty_ = true;
+}
+
 
 // ─── Smoke bomb + bullets ─────────────────────────────────────────────────
 // Scene-affecting setters rebuild the static smoke topology (cheap: 1 def /
@@ -717,9 +1042,22 @@ void SdfRenderer::refreshAutoBulletLocked() {
     // shader never transforms a bullet. World behavior is unchanged — the
     // stored local direction/start map back onto the world direction via the
     // instance rotation.
-    const glm::mat3 rInv = glm::transpose(smokeRotLocked());
+    const glm::mat3 rot = smokeRotLocked();
+    const glm::mat3 rInv = glm::transpose(rot);
     const glm::vec3 dir = rInv * dirW;
     const glm::vec3 start = rInv * (startW - config_.smoke.pos);
+    // Pack the same instance transform the bullets live in: the fragment
+    // shader's analytic gold-tracer test runs in this local frame (world
+    // camera and local bullet coordinates never meet).
+    smokeState_.worldPos = config_.smoke.pos;
+    smokeState_.worldScale = 1.0f; // createSmokeBomb bakes `scale` into params0
+    smokeState_.rotCol0 = rot[0];
+    smokeState_.rotCol1 = rot[1];
+    smokeState_.rotCol2 = rot[2];
+    // The analytic tracer only exists for the smoke-bomb shapes; Fire has no
+    // bullets and disabled smoke has no scene to composite against.
+    smokeState_.tracerActive =
+        (config_.smoke.enabled && config_.smoke.shape != kSmokeShapeFire) ? 1.0f : 0.0f;
     // Canonical Bullet: the round starts on the smoke surface (one radius
     // out) and is PARKED there for the whole expansion; phase = growth
     // duration is the movement start within each loop. intensity 0 = empty.
@@ -785,6 +1123,9 @@ void SdfRenderer::setSmokeEnabled(bool e) {
     if (e == config_.smoke.enabled) return;
     config_.smoke.enabled = e;
     ensureSmokeScene();
+    // Re-pack the tracer transform/gate: a disabled smoke has no scene to
+    // composite the gold round against, so tracerActive drops to 0.
+    refreshAutoBulletLocked();
     refreshMergedLocked();
 }
 
@@ -1035,6 +1376,8 @@ void SdfRenderer::setSmokeShape(int shape) {
         ensureSmokeScene();
         refreshMergedLocked();
     }
+    // The tracer gate follows the shape (Fire has no bullets).
+    refreshAutoBulletLocked();
     markSmokeSSBO();
 }
 

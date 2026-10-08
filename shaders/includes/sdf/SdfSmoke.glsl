@@ -44,6 +44,25 @@ layout(std430, set = 1, binding = 8) readonly buffer SmokeBlock {
     SmokeFragBullet smokeGpu;
 };
 
+// World -> local through the instance transform packed in the state block
+// (inverse TRS of the smoke bomb's SdfModel). Bullets, wind and every smoke
+// sample live in this frame; the analytic tracer's ray test must too (the
+// generic evaluator transform never reaches the smoke module otherwise).
+vec3 smokeWorldToLocal(vec3 w) {
+    vec3 d = (w - smokeGpu.worldPos) / max(smokeGpu.worldScale, 1e-4);
+    return vec3(dot(smokeGpu.rotCol0, d),
+                dot(smokeGpu.rotCol1, d),
+                dot(smokeGpu.rotCol2, d));
+}
+
+// Direction-only variant, scaled like the point transform so ray parameters
+// (t = distance along a unit world ray) stay world distances.
+vec3 smokeDirToLocal(vec3 v) {
+    return vec3(dot(smokeGpu.rotCol0, v),
+                dot(smokeGpu.rotCol1, v),
+                dot(smokeGpu.rotCol2, v)) / max(smokeGpu.worldScale, 1e-4);
+}
+
 // Loop-local time in [0, loopDur): the smoke animation repeats every loop.
 float smokeLoopT(float time, float loopDur) {
     return mod(time, max(loopDur, 1e-3));

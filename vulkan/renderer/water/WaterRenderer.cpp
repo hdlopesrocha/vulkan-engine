@@ -1206,7 +1206,7 @@ bool WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     // the composite blur), plus water geometry depth tracked →
     // DEPTH_STENCIL_ATTACHMENT_OPTIMAL (occlusion testing). Same stage/access
     // mapping as the single transitions; entries already in the target layout
-    // (e.g. depth re-entered with LOAD ops for the brush-liquid overlay)
+    // (e.g. targets re-entered with LOAD ops by the wireframe overlay scope)
     // resolve to no-ops inside the same call. H4: body/column entries are
     // omitted in no-body mode.
     {
@@ -1253,17 +1253,17 @@ bool WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colorAttachment.imageView = waterDepthImageViews[frameIndex];
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    // LOAD preserves the main water EVSM output when this pass overlays brush
-    // liquid on top; CLEAR (default) starts a fresh water target.
+    // LOAD preserves the water target when a second scope reuses it (the
+    // wireframe overlay); CLEAR (default) starts a fresh water target.
     colorAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
 
     // Attachment 1: water body (refraction+tint body RGB, weight A) for the
     // composite's depth-guided blur (blurred and re-inserted by weight, so the
-    // reflection stays sharp). Preserved alongside the color target when the
-    // brush-liquid overlay re-enters this pass with LOAD ops. Only present in
-    // the blur-capable variant (H4).
+    // reflection stays sharp). Preserved alongside the color target when a LOAD
+    // re-enters this pass (wireframe overlay). Only present in the
+    // blur-capable variant (H4).
     VkRenderingAttachmentInfo bodyAttachment{};
     bodyAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     bodyAttachment.imageView = useBody ? waterBodyImageViews[frameIndex] : VK_NULL_HANDLE;
@@ -1298,13 +1298,14 @@ bool WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     // fragment stage's eye-space rejection against solidSceneDepthTex (perf
     // report 20 C5, gated by WaterRenderUBO::solidDepthIsCurrent) and, as a
     // backstop, by the composite's own depth test. No scene-depth copy is
-    // needed. When LOADing, the main water geom depth is preserved so the
-    // brush overlay depth-tests against it (storeOp STORE keeps the overlay
-    // visible to the composite).
+    // needed. When LOADing, the water geom depth from the previous scope is
+    // preserved so the second scope depth-tests against it (storeOp STORE
+    // keeps it visible to the composite).
     depthAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
-    // STORE (not DONT_CARE) so the geom depth survives the pass: the composite samples
-    // it (PostProcessRenderer.frag binding 7) and the brush-liquid overlay re-enters this pass
-    // with LOAD ops, depth-testing against the main water geometry written here.
+    // STORE (not DONT_CARE) so the geom depth survives the pass: the composite
+    // samples it (PostProcessRenderer.frag binding 7) and a later scope may
+    // re-enter this pass with LOAD ops, depth-testing against the water
+    // geometry written here.
     depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depthAttachment.clearValue.depthStencil = {1.0f, 0};
 
@@ -1392,41 +1393,6 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
         waterBodyImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     if (activePassBodyAttachments_ && waterColumnImages[frameIndex] != VK_NULL_HANDLE)
         waterColumnImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-}
-
-void WaterRenderer::endWaterGeometryPassWithDepth(VkCommandBuffer cmd, uint32_t frameIndex) {
-    endWaterRendering(cmd);
-    if (!appPtr || waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
-
-    // Batched end barriers (single vkCmdPipelineBarrier2 for
-    // color+body+column+depth): water color COLOR_ATTACHMENT_OPTIMAL →
-    // SHADER_READ_ONLY_OPTIMAL (sampled by the composite), water body +
-    // column COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
-    // (depth-guided blur inputs) together with the water geometry depth
-    // DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL (sampled by
-    // the composite at postprocess binding 7). Was: endWaterGeometryPass plus
-    // a second lone depth transition (two calls). Same mapping as the single
-    // transitions; the geom depth shares the pass boundary, so one call covers
-    // all resources. H4: in no-body mode the aux attachments were never
-    // transitioned/attached, so only color + depth are restored.
-    auto batch = buildWaterEndTransitions(frameIndex, activePassBodyAttachments_ ? 4 : 2);
-    if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        VulkanApp::BatchTransition depthEnd{};
-        depthEnd.image     = waterGeomDepthImages[frameIndex];
-        depthEnd.format    = VK_FORMAT_D32_SFLOAT;
-        depthEnd.oldLayout = waterGeomDepthImageLayouts[frameIndex];
-        depthEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        depthEnd.mipLevels = 1;
-        batch.push_back(depthEnd);
-    }
-    appPtr->recordTransitionBatch(cmd, batch);
-    waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    if (activePassBodyAttachments_ && waterBodyImages[frameIndex] != VK_NULL_HANDLE)
-        waterBodyImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    if (activePassBodyAttachments_ && waterColumnImages[frameIndex] != VK_NULL_HANDLE)
-        waterColumnImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE)
-        waterGeomDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 // Back-face pass is owned and executed by SceneRenderer via its WaterBackFaceRenderer.

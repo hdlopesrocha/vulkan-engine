@@ -44,13 +44,13 @@ struct GraphicsPipelineConfig {
     bool noColorAttachment = false;
     bool depthBiasEnable = false;
     bool blendEnable = false;
-    // Blend factors applied when blendEnable is true. Defaults preserve the
-    // legacy constant-alpha behavior (brush ghosting); pipelines needing
-    // per-pixel alpha (e.g. translucent fire) override these.
-    VkBlendFactor blendSrcColorFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;
-    VkBlendFactor blendDstColorFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+    // Blend factors applied when blendEnable is true. Straight alpha by
+    // default; pipelines with a different accumulation model (e.g.
+    // premultiplied coverage) override these.
+    VkBlendFactor blendSrcColorFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    VkBlendFactor blendDstColorFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     VkBlendFactor blendSrcAlphaFactor = VK_BLEND_FACTOR_ONE;
-    VkBlendFactor blendDstAlphaFactor = VK_BLEND_FACTOR_ZERO;
+    VkBlendFactor blendDstAlphaFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
 };
 
 class SceneDescriptorLayout;
@@ -511,10 +511,10 @@ public:
         // When non-null, reuse this layout instead of creating (and leaking
         // into the registry) an identical one. Ownership stays with the caller.
         VkPipelineLayout existingLayout = VK_NULL_HANDLE,
-        VkBlendFactor blendSrcColorFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA,
-        VkBlendFactor blendDstColorFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA,
+        VkBlendFactor blendSrcColorFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        VkBlendFactor blendDstColorFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         VkBlendFactor blendSrcAlphaFactor = VK_BLEND_FACTOR_ONE,
-        VkBlendFactor blendDstAlphaFactor = VK_BLEND_FACTOR_ZERO);
+        VkBlendFactor blendDstAlphaFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
 
     // Config-based overload — callers override only what differs from defaults
     std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
@@ -613,8 +613,7 @@ public:
         size_t getCubeQueueCount() const { return parallelGraphicsQueues.empty() ? 1 : parallelGraphicsQueues.size(); }
         VkQueue getPresentQueue() const { return presentQueue; }
         VkQueue getTransferQueue() const { return transferQueue; }
-        VkQueue getBrushSolidQueue() const;
-        VkQueue getBrushLiquidQueue() const;
+        VkQueue getBrushQueue() const;
         const std::vector<VkQueue>& getParallelGraphicsQueues() const { return parallelGraphicsQueues; }
         // Per-queue activity snapshots for the Vulkan Resources "Queue Activity" chart.
         // Safe to call from the UI thread; reads are guarded by m_submissionMutex.

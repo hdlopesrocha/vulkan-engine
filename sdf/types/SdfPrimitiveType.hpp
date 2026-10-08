@@ -24,5 +24,10 @@ enum class SdfPrimitiveType : uint32_t {
     // and lighting are evaluated procedurally in-shader from the smoke
     // state buffer (set=1 binding 8). Marching uses the grown radius;
     // density handles growth envelope, tunnel, wake and refill.
-    Smoke = 9
+    Smoke = 9,
+    // Rock boulder: Perlin-displaced sphere (static). params0.x = base
+    // radius, .y = noise frequency (per local unit), .z = displacement
+    // amplitude as a fraction of the radius; the instance seed offsets the
+    // noise lattice so every rock is unique. Bounds add the displacement.
+    Rock = 10
 };

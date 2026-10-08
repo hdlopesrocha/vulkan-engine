@@ -37,25 +37,23 @@ namespace {
 // demand on the reference scene (full octree, works=658688):
 //   solid  ~1084 nodes (1024 pool was too small -> "no free slot" dropped chunks;
 //          raised to 1536 to fit the reference scene with headroom),
-//   water  ~132 nodes (sparse),
-//   brush  ~10  nodes.
+//   water  ~132 nodes (sparse).
 // The budget is therefore REDISTRIBUTED: solid (the dense, dominant layer)
-// gets generous headroom for future LoD depth / denser scenes, while water and
-// brush are sized to a few times their observed peak. Per-slot cost: the
+// gets generous headroom for future LoD depth / denser scenes, while water is
+// sized to a few times its observed peak. Per-slot cost: the
 // slot's budget splits into STATIC per-level rows — the level-0 (finest) row
 // keeps the full budget and each coarser level gets 1/4 of the previous
 // (IndirectRenderer::initSlots), so a slot costs ~1.33x its level-0 budget:
 //   solid slot: 1.332 MB vertex + 341 KB index ≈ 1.67 MB
 //   water slot: same ≈ 1.67 MB
-//   brush slot: 341 KB vertex + 85 KB index  ≈ 0.42 MB
 //
-// Measured post-trim peaks (full scene + brush rebuild, DEBUG logs):
-//   solid ~416 slots, water ~160 slots, brush ~10 slots. The pools below hold
+// Measured post-trim peaks (full scene rebuild, DEBUG logs):
+//   solid ~416 slots, water ~160 slots. The pools below hold
 //   ~2.5x the observed peak while keeping the pre-allocated reservation under
 //   1.6 GB — exceeding ~4 GB device-local caused radv to cancel the CS (device
 //   lost) during the bulk chunk-upload burst on the 680M iGPU.
-//   solid 1024 -> ~1.71 GB, water 192 -> ~320 MB, brush 64 -> ~27 MB
-//   (total ≈ 2.05 GB, down from the 7.6 GB the per-(chunk, level) slot pools
+//   solid 1024 -> ~1.71 GB, water 192 -> ~320 MB
+//   (down from the 7.6 GB the per-(chunk, level) slot pools
 //   reserved — that 5x oversize pool was the device-lost root cause)
 //
 // NOTE: slotted mode pre-allocates these buffers to capacity and never grows
@@ -1595,7 +1593,7 @@ size_t SceneRenderer::publishPendingMeshes(
 }
 
 void SceneRenderer::drainPendingMeshes(std::deque<PendingMeshData>& out, size_t maxCount) {
-    // Drain the shared queue (main scene + brush scene) at a CONTROLLED rate.
+    // Drain the shared pending-mesh queue at a CONTROLLED rate.
     // A full drain would burst hundreds of (chunk, level) uploads into one
     // frame when a large map finishes tessellating at once — saturating the
     // shared iGPU's command queue for seconds, tripping the amdgpu watchdog
@@ -1647,9 +1645,12 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     lastOpaqueVisible_ = solidRenderer->getIndirectRenderer().readVisibleCount(app);
     lastTransparentVisible_ = waterRenderer->getIndirectRenderer().readVisibleCount(app);
 
-    // Coalesced SDF fire rebuild: chunk ingests above only flag dirty; the
+    // Coalesced SDF scene rebuilds: chunk ingests above only flag dirty; the
     // scene rebuild (bounds + grids) runs at most once per frame here.
-    if (sdfRenderer) sdfRenderer->rebuildLavaIfDirty();
+    if (sdfRenderer) {
+        sdfRenderer->rebuildLavaIfDirty();
+        sdfRenderer->rebuildRocksIfDirty();
+    }
 
     if (batch.empty()) {
         // No new geometry yet (tessellation may still be running). Keep old
@@ -1692,12 +1693,15 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
             chunkMap[nid] = Model3DVersion{slotIdx, version};
         },
         // onFinestPublished: grass chunks drive vegetation from their finest
-        // geometry; lava chunks (finest rung only) drive the generic SDF fire.
-        // Ancestors nest over the same lava, so coarser rungs would stack
-        // duplicate flames floating off the true surface.
+        // geometry; lava/rock chunks (finest rung only) drive the generic SDF
+        // fire and boulders. Ancestors nest over the same surface, so coarser
+        // rungs would stack duplicate anchors floating off the true surface.
         [this, app](NodeID nid, const Geometry& geom, uint8_t lod) {
             if (this->vegetationRenderer) this->vegetationRenderer->generateForChunk(app, nid, geom);
-            if (lod == 0 && this->sdfRenderer) this->sdfRenderer->ingestLavaChunk(static_cast<uintptr_t>(nid), geom);
+            if (lod == 0 && this->sdfRenderer) {
+                this->sdfRenderer->ingestLavaChunk(static_cast<uintptr_t>(nid), geom);
+                this->sdfRenderer->ingestRockChunk(static_cast<uintptr_t>(nid), geom);
+            }
         });
 
     // Main stream: age out pending-delete entries that have been waiting longer

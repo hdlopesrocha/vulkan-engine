@@ -59,9 +59,12 @@ void PostProcessRenderer::createSampler(VulkanApp* app) {
 void PostProcessRenderer::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    // Descriptor set layout – 20 bindings (18 image samplers + 2 UBOs:
-    // binding 5 is the frame UBO, binding 27 the shared wind field)
-    std::array<VkDescriptorSetLayoutBinding, 20> bindings{};
+    // Descriptor set layout – 19 bindings (17 image samplers + 2 UBOs:
+    // binding 5 is the frame UBO, binding 27 the shared wind field). The old
+    // brush back-face depth slot (binding 8) was removed with the brush
+    // octree: the solid shader tests brushDistance() directly instead of
+    // sampling a rasterized front/back depth pair.
+    std::array<VkDescriptorSetLayoutBinding, 19> bindings{};
 
     for (int i = 0; i < 6; ++i) {
         bindings[i].binding = i;
@@ -85,76 +88,71 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     bindings[7].descriptorCount = 1;
     bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    bindings[8].binding = 8;
+    // Vegetation offscreen color + depth (decoupled from the solid pass)
+    bindings[8].binding = 9;
     bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[8].descriptorCount = 1;
     bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // Vegetation offscreen color + depth (decoupled from the solid pass)
-    bindings[9].binding = 9;
+    bindings[9].binding = 10;
     bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[9].descriptorCount = 1;
     bindings[9].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    bindings[10].binding = 10;
+    // SDF debug cubes offscreen color + depth (decoupled from the solid pass)
+    bindings[10].binding = 11;
     bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[10].descriptorCount = 1;
     bindings[10].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // SDF debug cubes offscreen color + depth (decoupled from the solid pass)
-    bindings[11].binding = 11;
+    bindings[11].binding = 12;
     bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[11].descriptorCount = 1;
     bindings[11].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    bindings[12].binding = 12;
+    // Mesh bounding boxes offscreen color + depth (decoupled from the solid pass)
+    bindings[12].binding = 13;
     bindings[12].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[12].descriptorCount = 1;
     bindings[12].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // Mesh bounding boxes offscreen color + depth (decoupled from the solid pass)
-    bindings[13].binding = 13;
+    bindings[13].binding = 14;
     bindings[13].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[13].descriptorCount = 1;
     bindings[13].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    bindings[14].binding = 14;
+    // Water refraction+tint body (RGB) + body weight (A) for the
+    // depth-guided water blur.
+    bindings[14].binding = 15;
     bindings[14].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[14].descriptorCount = 1;
     bindings[14].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // Water refraction+tint body (RGB) + body weight (A) for the
-    // depth-guided water blur.
-    bindings[15].binding = 15;
+    // Measured water depth (m, R16F): blur radius driver.
+    bindings[15].binding = 16;
     bindings[15].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[15].descriptorCount = 1;
     bindings[15].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // Measured water depth (m, R16F): blur radius driver.
-    bindings[16].binding = 16;
+    // Generic SDF volume (fire/smoke/clouds) offscreen color + depth.
+    // Owned by SdfRenderer; composited by depth like the debug SDF cubes.
+    bindings[16].binding = 17;
     bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[16].descriptorCount = 1;
     bindings[16].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // Generic SDF volume (fire/smoke/clouds) offscreen color + depth.
-    // Owned by SdfRenderer; composited by depth like the debug SDF cubes.
-    bindings[17].binding = 17;
+    bindings[17].binding = 18;
     bindings[17].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[17].descriptorCount = 1;
     bindings[17].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    bindings[18].binding = 18;
-    bindings[18].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[18].descriptorCount = 1;
-    bindings[18].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
     // Shared wind field (ambient + tornadoes) for the wind debug raymarch
     // overlay. Same block as the scene main set binding 27; owned and
     // streamed by VegetationRenderer, only the descriptor lives here.
-    bindings[19].binding = 27;
-    bindings[19].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    bindings[19].descriptorCount = 1;
-    bindings[19].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[18].binding = 27;
+    bindings[18].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[18].descriptorCount = 1;
+    bindings[18].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     DescriptorAllocator descAlloc{device, app};
     // Descriptor-buffer path: the layout must carry DESCRIPTOR_BUFFER_BIT_EXT
@@ -225,7 +223,7 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
     VkDescriptorPoolSize poolSizesDesc[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18 * FRAMES_IN_FLIGHT},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 17 * FRAMES_IN_FLIGHT},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2 * FRAMES_IN_FLIGHT}
     };
     descriptorPool = descAlloc.createPool(
@@ -239,9 +237,9 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
 }
 
 // ─── Descriptor Buffers (VK_EXT_descriptor_buffer, Phase 2) ────────────────
-// 3 buffers (one per frame slot). Layout = descriptorSetLayout (19 bindings:
-// 18 images + 1 UBO). Static bindings 0-4, 6-16 are stable per frame slot;
-// binding 5 holds the UBO device address (written once — per-frame UBO
+// 3 buffers (one per frame slot). Layout = descriptorSetLayout (18 bindings:
+// 17 images + 1 UBO). Static bindings 0-4, 6-7, 9-18 are stable per frame
+// slot; binding 5 holds the UBO device address (written once — per-frame UBO
 // contents stream via memcpy into uniformBuffer, no descriptor update).
 
 void PostProcessRenderer::createDescriptorBuffers(VulkanApp* app) {
@@ -281,6 +279,7 @@ void PostProcessRenderer::createDescriptorBuffers(VulkanApp* app) {
         descAddresses_[i] = addr;
     }
     for (uint32_t binding = 0; binding < 19; ++binding) {
+        if (binding == 8) continue; // removed brush back-face depth slot: no binding
         VkDeviceSize off = 0;
         app->fpGetDescriptorSetLayoutBindingOffsetEXT(device, descriptorSetLayout, binding, &off);
         descBindingOffsets_[binding] = off;
@@ -347,11 +346,10 @@ bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t s
                              info.sampler, info.imageView, info.imageLayout))
             ok = false;
     };
-    // Static image bindings 0-4, 6-16 (binding 6 = sky).
+    // Static image bindings 0-4, 6-7, 9-18 (binding 6 = sky).
     for (uint32_t i = 0; i <= 4; ++i) wImg(i, imageInfos[i]);
     wImg(6, skyImageInfo);
     wImg(7, imageInfos[7]);
-    wImg(8, imageInfos[8]);
     wImg(9, imageInfos[9]);
     wImg(10, imageInfos[10]);
     wImg(11, imageInfos[11]);
@@ -467,10 +465,6 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     imageInfos[4] = {linearSampler, brushDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     // Water geometry depth buffer for accurate brush-vs-water occlusion
     imageInfos[7] = {linearSampler, waterGeomDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    // Binding 8: kept for layout compatibility; the composite binds the brush
-    // front depth (the old back-face depth pass was removed with the brush
-    // octree — PAINT/REMOVE now evaluates the brush SDF directly instead).
-    imageInfos[8] = {linearSampler, brushDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     // Vegetation offscreen color + depth (decoupled from the solid pass)
     imageInfos[9] = {linearSampler, vegColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[10] = {linearSampler, vegDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -571,14 +565,6 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
             writer.writeImage(currentDs, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                               imageInfos[7].sampler, imageInfos[7].imageView,
                               imageInfos[7].imageLayout);
-        }
-
-        // Binding 8: layout-compatibility slot (composite binds the brush
-        // front depth here; the old back-face depth pass is gone).
-        if (imageInfos[8].imageView != VK_NULL_HANDLE && imageInfos[8].sampler != VK_NULL_HANDLE) {
-            writer.writeImage(currentDs, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                              imageInfos[8].sampler, imageInfos[8].imageView,
-                              imageInfos[8].imageLayout);
         }
 
         // Vegetation offscreen color (binding 9) + depth (binding 10)

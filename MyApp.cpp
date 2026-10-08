@@ -55,6 +55,7 @@
 #include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/WindWidget.hpp"
 #include "widgets/RaymarchWidget.hpp"
+#include "widgets/RocksWidget.hpp"
 #include "sdf/types/SdfScene.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
 #include "widgets/Brush3dWidget.hpp"
@@ -192,7 +193,10 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
             renderer->world()->chunkManager().removeChunk(base);
             if (renderer->debugCubeRenderer) renderer->debugCubeRenderer->removeCubeForNode(nid);
             if (renderer->debugSDFRenderer) renderer->debugSDFRenderer->removeCubesForNode(nid);
-            if (renderer->sdfRenderer) renderer->sdfRenderer->removeLavaChunk(static_cast<uintptr_t>(nid));
+            if (renderer->sdfRenderer) {
+                renderer->sdfRenderer->removeLavaChunk(static_cast<uintptr_t>(nid));
+                renderer->sdfRenderer->removeRockChunk(static_cast<uintptr_t>(nid));
+            }
             return;
         }
     };
@@ -277,6 +281,7 @@ public:
     // marching widget covers the generic traversal plus the fire and
     // smoke shapes, which are just SDF primitives inside the renderer.
     std::shared_ptr<RaymarchWidget> raymarchWidget;
+    std::shared_ptr<RocksWidget> rocksWidget;
     std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     std::shared_ptr<RadialMenu> radialMenu;
@@ -737,6 +742,9 @@ public:
         raymarchWidget = std::make_shared<RaymarchWidget>(
             sceneRenderer->sdfRenderer.get(), &camera,
             sceneRenderer->vegetationRenderer.get());
+        // Brush-7 boulder instances: same generic SDF scene as the fire
+        // volumes; the widget edits the renderer's shared rock config.
+        rocksWidget = std::make_shared<RocksWidget>(sceneRenderer->sdfRenderer.get());
         // Generic SDF fire volume (spec §19) is the fire path; flame
         // anchors stream in from brush-4 lava chunks as they publish (see
         // SceneRenderer::processPendingMeshes ingest hook).
@@ -771,6 +779,7 @@ public:
         widgetManager.addWidget(vegetationAtlasEditor);
         widgetManager.addWidget(windWidget);
         widgetManager.addWidget(raymarchWidget);
+        widgetManager.addWidget(rocksWidget);
         widgetManager.addWidget(mp3Widget);
         widgetManager.addWidget(billboardCreator);
         widgetManager.addWidget(impostorWidget);
@@ -942,8 +951,8 @@ public:
         // thread.  GPU uploads happen here on the main thread so newly generated
         // chunks become visible progressively without blocking the render loop.
         // Process pending meshes at a controlled rate (10 per frame).
-        // Chunks closest to the camera are uploaded first. Drains both the
-        // main scene and brush scene entries from the ONE shared queue.
+        // Chunks closest to the camera are uploaded first. Drains pending
+        // entries from the ONE shared queue.
         if (sceneRenderer && !isLoading) {
             // Hybrid RT: water volumes join the proxy only while water renders.
             sceneRenderer->rtWaterProxyEnabled = settings.waterEnabled;
@@ -979,14 +988,14 @@ public:
         // Drive the async streaming subsystem each frame. prepareFrameWaits()
         // registers upload completion semaphores with this frame's submit, and
         // processUploads() submits as many queued jobs as staging allows — no
-        // fixed per-frame cap. (Terrain/water/brush copies currently still go
+        // fixed per-frame cap. (Terrain/water copies currently still go
         // through IndirectRenderer; this is the integration point for migrating
         // them onto UploadManager.)
         if (sceneRenderer)
             sceneRenderer->streamer.update(this);
 
         // Synchronously complete the initial streaming uploads once so the base
-        // terrain/brush chunks are resident on the GPU before the first draw
+        // terrain/water chunks are resident on the GPU before the first draw
         // (otherwise the indirect buffers are empty for the first frame and the
         // user sees a black screen). Subsequent streaming stays asynchronous.
         if (sceneRenderer) {
@@ -1099,7 +1108,7 @@ public:
 
         // H9: a water render-scale change rebuilds the water-side offscreen
         // targets (color/body/column, geometry depth, back-face depth). They are
-        // written on the water and brush-liquid queues and read by the composite
+        // written on the water queue and read by the composite
         // on the graphics queue, so a graphics-queue-scoped wait would not cover
         // every consumer — this is the "major resource rebuild" case where
         // AGENTS.md allows a device idle. It runs once, on the frame the user
@@ -1166,7 +1175,7 @@ public:
                     return static_cast<float>(endTs - startTs) * timestampPeriod * 1e-6f;
                 };
                 // Group A: indices 6-9 (depth prepass, sky). Slots 0-5
-                // (shadow/cull/brush) are written by no pass.
+                // (legacy shadow/cull/brush slots) are written by no pass.
                 struct { uint64_t value; uint64_t availability; } tsA[4] = {};
                 if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 6, 4,
                         sizeof(tsA), tsA, sizeof(tsA[0]),
@@ -1411,7 +1420,7 @@ public:
         // monotonically increasing tlFrameValue. They are NOT destroyed per frame
         // (unlike the old binary semaphores) — ResourceManager owns them until teardown.
         static VkSemaphore tlCull = VK_NULL_HANDLE, tlShadow = VK_NULL_HANDLE, tlSky = VK_NULL_HANDLE;
-        static VkSemaphore tlSolid = VK_NULL_HANDLE, tlBrushSolid = VK_NULL_HANDLE;
+        static VkSemaphore tlSolid = VK_NULL_HANDLE, tlBrush = VK_NULL_HANDLE;
         static VkSemaphore tlVeg = VK_NULL_HANDLE, tlSdf = VK_NULL_HANDLE, tlBbox = VK_NULL_HANDLE;
         static VkSemaphore tlWater = VK_NULL_HANDLE;
         static uint64_t tlFrameValue = 0;
@@ -1425,7 +1434,7 @@ public:
             tlShadow    = createTimelineSemaphore();
             tlSky       = createTimelineSemaphore();
             tlSolid     = createTimelineSemaphore();
-            tlBrushSolid  = createTimelineSemaphore();
+            tlBrush     = createTimelineSemaphore();
             tlVeg       = createTimelineSemaphore();
             tlSdf       = createTimelineSemaphore();
             tlBbox      = createTimelineSemaphore();
@@ -1516,7 +1525,7 @@ public:
             // Restore the per-frame state for the main CB's continued recording.
             this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
 
-            // --- Brush preview offscreen on its own queue (signals tlBrushSolid) ---
+            // --- Brush preview offscreen on its own queue (signals tlBrush) ---
             // SDF-raymarched brush preview (color + front depth) into the brush
             // targets the composite overlays. No tessellated brush geometry and
             // no dependency on the solid pass: the solid shader evaluates the
@@ -1524,27 +1533,27 @@ public:
             // registered for the composite, which samples the brush targets.
             {
                 updateBrushPreview(frameIdx);
-                VkCommandBuffer brushSolidCmd = beginAsyncTask("brushSdf pass", "[MyApp]");
-                if (brushSolidCmd == VK_NULL_HANDLE) {
+                VkCommandBuffer brushCmd = beginAsyncTask("brush preview", "[MyApp]");
+                if (brushCmd == VK_NULL_HANDLE) {
                     // First begin failed (CB allocation hiccup): retry the
-                    // allocation so tlBrushSolid@v is still signaled — the
+                    // allocation so tlBrush@v is still signaled — the
                     // composite's registered timeline wait would otherwise
                     // deadlock.
-                    brushSolidCmd = allocatePrimaryCommandBuffer();
+                    brushCmd = allocatePrimaryCommandBuffer();
                     VkCommandBufferBeginInfo bi{};
                     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
                     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                    if (brushSolidCmd == VK_NULL_HANDLE || vkBeginCommandBuffer(brushSolidCmd, &bi) != VK_SUCCESS) {
-                        if (brushSolidCmd != VK_NULL_HANDLE) freeCommandBuffer(brushSolidCmd);
-                        brushSolidCmd = VK_NULL_HANDLE;
+                    if (brushCmd == VK_NULL_HANDLE || vkBeginCommandBuffer(brushCmd, &bi) != VK_SUCCESS) {
+                        if (brushCmd != VK_NULL_HANDLE) freeCommandBuffer(brushCmd);
+                        brushCmd = VK_NULL_HANDLE;
                     }
                 }
-                if (brushSolidCmd != VK_NULL_HANDLE) {
+                if (brushCmd != VK_NULL_HANDLE) {
                     CommandBufferState brushState;
                     this->sceneRenderer->setCmdState(&brushState);
-                    this->sceneRenderer->brushRenderer->recordPass(this, brushSolidCmd, frameIdx, getMainDescriptorSet());
+                    this->sceneRenderer->brushRenderer->recordPass(this, brushCmd, frameIdx, getMainDescriptorSet());
                     this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
-                    submitCommandBufferAsyncToQueue(brushSolidCmd, getBrushSolidQueue(), &tlBrushSolid, {tlCull}, true, {}, {v}, v, {}, true);
+                    submitCommandBufferAsyncToQueue(brushCmd, getBrushQueue(), &tlBrush, {tlCull}, true, {}, {v}, v, {}, true);
                 }
             }
         }
@@ -1969,7 +1978,7 @@ public:
                 // Shadows disabled: nothing signals tlShadow, so the solid pass
                 // waits tlCull@v directly instead (cull buffers + restored UBO).
                 // The brush preview is an independent offscreen pass; its signal
-                // (tlBrushSolid) goes straight to the composite, not through the
+                // (tlBrush) goes straight to the composite, not through the
                 // solid pass. tlSolid is not registered for the composite
                 // (implied by tlWater via Water).
                 //
@@ -2217,8 +2226,8 @@ public:
 
         // Back-face depth + water geometry pass on a shared command buffer.
         // (waits semMainCull + semSolid360; signals semWater at the end of the task)
-        // Frames whose previous cull produced zero visible water chunks and that
-        // have no brush-liquid geometry take a clear-only fast path instead (M8).
+        // Frames whose previous cull produced zero visible water chunks take a
+        // clear-only fast path instead (M8).
         if (waterEnabled && sceneRenderer) {
             asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
                 MyApp* app = this;
@@ -3806,6 +3815,7 @@ void MyApp::resetSceneState() {
         }
         if (sceneRenderer->sdfRenderer) {
             sceneRenderer->sdfRenderer->clearLava();
+            sceneRenderer->sdfRenderer->clearRocks();
         }
     }
 

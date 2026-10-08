@@ -1421,8 +1421,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // subsequent cull dispatch: the next prepareCull (rotated buffer reuse, or a
     // later shadow cascade) reads visibleCount via atomicAdd, which is a
     // COMPUTE_SHADER storage read. Without COMPUTE_SHADER in the destination
-    // scope this cross-dispatch compute-write -> compute-read is unsynchronized
-    // (was previously masked by the removed deviceWaitIdle() in rebuildBrushScene).
+    // scope this cross-dispatch compute-write -> compute-read is unsynchronized.
     barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     barriers[0].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
     barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -2392,10 +2391,10 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
     // NOTE: the packed span is freed immediately. When this is called from
     // an upload completion callback (the common chunk-replacement path) that
     // is safe: the transfer completed, so every prior frame has retired. When
-    // called outside a completion (brush rebuilds), an in-flight frame that
-    // already culled this chunk may still reference the span — but its entry
-    // is zeroed right after, so the window only exists for already-queued
-    // draws and is the same class of transient the pre-packed code accepted.
+    // called outside a completion, an in-flight frame that already culled
+    // this chunk may still reference the span — but its entry is zeroed right
+    // after, so the window only exists for already-queued draws and is the
+    // same class of transient the pre-packed code accepted.
     MeshInfo* info = nullptr;
     for (auto it = meshes.begin(); it != meshes.end(); ) {
         if (it->second.active && it->second.slotIndex == slotIndex) {

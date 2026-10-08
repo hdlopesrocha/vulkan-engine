@@ -99,6 +99,13 @@ glm::vec3 localHalfExtents(SdfPrimitiveType prim, const glm::vec4& p0,
             return glm::vec3(std::max(R, 0.001f), std::max(H + R, 0.001f),
                              std::max(R, 0.001f));
         }
+        case SdfPrimitiveType::Rock: {
+            // Static Perlin-displaced sphere: the noise reaches
+            // radius * (1 + amplitude) in every direction.
+            const float rr = std::max(r * radial, 0.001f);
+            const float amp = std::max(p0.z, 0.0f);
+            return glm::vec3(std::max(rr * (1.0f + amp), 0.001f));
+        }
     }
     return glm::vec3(0.5f * uni);
 }
@@ -478,6 +485,84 @@ SdfScene SdfScene::createFireFromAnchors(const std::vector<FlameAnchor>& anchors
         in.rotation = a.euler;
         in.scale = std::max(a.scale, 0.05f);
         in.heightScale = a.heightScale;
+        in.radiusScale = 1.0f;
+        in.intensity = a.intensity;
+        in.seed = a.seed;
+        in.containerIdx = 0;
+        scene.addInstance(in);
+    }
+    return scene;
+}
+
+SdfScene SdfScene::createRocksFromAnchors(const std::vector<RockAnchor>& anchors,
+                                          const RockShape& shape) {
+    SdfScene scene;
+    SdfDefinition rock;
+    rock.prim = SdfPrimitiveType::Rock;
+    rock.op = SdfOpType::Union;
+    // params0 = (base radius, noise frequency, displacement fraction, unused).
+    // The sphere radius is 1 local unit; the instance scale turns it into
+    // metres, so the noise features scale with the boulder (same look at any
+    // size) and the per-instance seed decorrelates the lattice.
+    rock.params0 = glm::vec4(1.0f, std::max(shape.noiseScale, 1e-4f),
+                             std::max(shape.noiseAmplitude, 0.0f), 0.0f);
+    rock.params1 = glm::vec4(0.0f);
+    rock.deformFlags = 0u; // static displacement lives in sdRock, not the flame deformer
+    rock.smoothK = 0.5f;
+    scene.addDefinition(rock);
+
+    SdfMaterial mat;
+    mat.mode = SdfMaterialType::Surface;
+    mat.baseColor = glm::vec4(shape.tint, 1.0f);
+    mat.roughness = shape.roughness;
+    mat.metallic = shape.metallic;
+    mat.opacity = 1.0f;
+    mat.emission = glm::vec3(0.0f);
+    mat.emissionIntensity = 0.0f;
+    // Opaque body: zero volumetric density so even an interior march sample
+    // can never add gray volume (the surface path is the only shading).
+    mat.density = 0.0f;
+    mat.absorption = 0.5f;
+    mat.scattering = 0.5f;
+    mat.tempScale = 0.0f;
+    mat.noiseScale = 2.5f;
+    mat.turbulence = 0.6f;
+    mat.riseSpeed = 0.0f;
+    mat.textureLayer = shape.textureLayer;
+    mat.textureTiling = std::max(shape.textureTiling, 1e-3f);
+    scene.addMaterial(mat);
+
+    if (anchors.empty()) return scene; // def+mat, no containers -> renders nothing
+
+    glm::vec3 mn(anchors[0].pos), mx(anchors[0].pos);
+    float maxScale = 1.0f;
+    for (const auto& a : anchors) {
+        mn = glm::min(mn, a.pos);
+        mx = glm::max(mx, a.pos);
+        maxScale = std::max(maxScale, a.scale);
+    }
+    // Pad by the largest boulder extent (radius + noise + safety lift) so
+    // no rock is clipped at the container walls.
+    const float pad = maxScale * (1.0f + shape.noiseAmplitude) + 2.0f;
+    mn -= glm::vec3(pad);
+    mx += glm::vec3(pad);
+    const glm::vec3 extent = mx - mn;
+    // Adaptive grid targeting ~32 m cells (clamped 1..24 per axis); sparse
+    // boulders only populate the cells their AABB overlaps.
+    auto axisRes = [](float e) {
+        return std::clamp(static_cast<uint32_t>(std::ceil(e / 32.0f)), 1u, 24u);
+    };
+    scene.addContainer(mn, mx,
+        glm::uvec3(axisRes(extent.x), axisRes(extent.y), axisRes(extent.z)));
+
+    for (const auto& a : anchors) {
+        SdfInstance in;
+        in.defIdx = 0;
+        in.matIdx = 0;
+        in.position = a.pos;
+        in.rotation = a.euler;
+        in.scale = std::max(a.scale, 0.05f);
+        in.heightScale = 1.0f;
         in.radiusScale = 1.0f;
         in.intensity = a.intensity;
         in.seed = a.seed;

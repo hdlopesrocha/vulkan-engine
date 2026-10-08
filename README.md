@@ -81,7 +81,7 @@ All image layout transitions and memory visibility use `vkCmdPipelineBarrier2` (
 | solid | Main terrain/mesh pass and GPU culling dispatch |
 | water | Water geometry, back-face and RT dispatch |
 | sky | Sky/environment equirect |
-| brush solid / brush liquid | Brush overlay passes |
+| brush | SDF brush preview (color + front depth offscreen) |
 
 Each renderer owns its command pool; short-lived work uses a shared `transientCommandPool`.
 
@@ -238,7 +238,7 @@ The octree in `space/` is the central data structure for scene management. Each 
 | `space/` | Octree, Tesselator (Surface Nets), Simplifier, MeshSimplifier, ThreadPool, ConcurrentQueue, OctreeVisibilityChecker, OctreeFile |
 | `sdf/` | SDF primitives, CSG operations and distortion effects (HeightMap, RoadSpline, OctreeDifference, Wrapped* variants) |
 | `events/` | Input system (keyboard, gamepad, nunchuk), EventManager |
-| `math/` | Camera, Light, BoundingBox, Frustum, Plane, Ray, HeightMap, PerlinSurface, Brush3d |
+| `math/` | Camera, Light, BoundingBox, Frustum, Plane, Ray, HeightMap, PerlinSurface |
 | `services/` | TextureMixer, BillboardService, ImpostorService |
 | `widgets/` | ImGui debug/editor UI (release builds only): settings, water, texture mixer/viewer, render targets, queue timeline |
 | `tree/` | AttractorField, TreeGenerator, TreeHandler |

@@ -31,7 +31,6 @@ layout(std140, set = 0, binding = 5) uniform WaterFrameBlock {
 
 layout(set = 0, binding = 6) uniform sampler2D sceneSkyTex;
 layout(set = 0, binding = 7) uniform sampler2D waterGeomDepthTex;
-layout(set = 0, binding = 8) uniform sampler2D brushBackFaceDepthTex;
 // Vegetation offscreen color + depth (decoupled from the solid pass so it can be
 // rendered on a parallel async command buffer). Occlusion against solid geometry
 // is resolved here by testing vegetation depth against the solid scene depth.

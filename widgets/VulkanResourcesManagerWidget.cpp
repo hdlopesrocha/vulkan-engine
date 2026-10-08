@@ -41,8 +41,7 @@ void VulkanResourcesManagerWidget::updateWithApp(VulkanApp* app) {
     cachedQueue[Q_BBOX]       = qat(3);
     cachedQueue[Q_GEOMETRY]   = app->geometryTransferQueue();
     cachedQueue[Q_TRANSFER]   = app->getTransferQueue();
-    cachedQueue[Q_BRUSH_SOLID]  = qat(8);
-    cachedQueue[Q_BRUSH_LIQUID] = qat(9);
+    cachedQueue[Q_BRUSH]       = qat(8);
 
     for (int i = 0; i < Q_COUNT; ++i) {
         VkQueue q = cachedQueue[i];
@@ -111,7 +110,7 @@ void VulkanResourcesManagerWidget::render() {
             static const char* qnames[Q_COUNT] = {
                 QueueNames::Graphics, QueueNames::Present, QueueNames::Vegetation, QueueNames::SDF,
                 QueueNames::BoundingBox, QueueNames::Geometry, QueueNames::Transfer,
-                QueueNames::BrushSolid, QueueNames::BrushLiquid
+                QueueNames::Brush
             };
             // Detect aliasing: group logical queues that share a VkQueue handle.
             for (int i = 0; i < Q_COUNT; ++i) {

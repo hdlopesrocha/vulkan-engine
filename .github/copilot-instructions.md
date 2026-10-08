@@ -44,11 +44,11 @@ Two entry points: `MyApp.cpp` (class `MyApp` extends `VulkanApp`) and `server.cp
 - `space/` — Octree, Tesselator (Surface Nets meshing), ThreadPool, ConcurrentQueue, Processor, Simplifier, OctreeVisibilityChecker
 - `sdf/` — SDF primitives (Box, Sphere, Capsule, Cylinder, Cone, Torus, HeightMap via GDAL, RoadDistanceFunction, TriangleStrip, OctreeDifferenceFunction, Wrapped* variants for composition)
 - `events/` — Input system (keyboard, gamepad, nunchuk), EventManager, IEventHandler
-- `math/` — Camera, Light, BoundingBox, Frustum, Plane, Ray, HeightMap, HeightMapTif, PerlinSurface, Transformation, Brush3d
+- `math/` — Camera, Light, BoundingBox, Frustum, Plane, Ray, HeightMap, HeightMapTif, PerlinSurface, Transformation
 - `services/` — TextureMixer (compute texture blending), BillboardService, ImpostorService
 - `widgets/` — ImGui debug/editor UI (compiled only with `-DUSE_IMGUI`, i.e. release builds)
 - `tree/` — AttractorField, TreeGenerator, TreeHandler
-- `utils/` — LocalScene, MainSceneLoader, FileReader, SettingsFile, brush system (LandBrush, WaterBrush, Brush3d)
+- `utils/` — LocalScene, MainSceneLoader, FileReader, SettingsFile, brush system (LandBrush, WaterBrush, Brush3dManager)
 
 Three async queues (graphics, vegetation compute, geometry compute) each with own `VkCommandPool`. Uses `deferDestroyUntilFence()` for GPU-safe object cleanup. Frames in flight: 3. StagingRingBuffer for uploads.
 
