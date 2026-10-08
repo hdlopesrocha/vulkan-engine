@@ -28,6 +28,7 @@ class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 #include "sdf/types/SdfInstance.hpp"
 #include "sdf/types/SdfMaterial.hpp"
 #include "sdf/types/SdfContainer.hpp"
+#include "sdf/types/SdfGrassAnchor.hpp"
 #include "sdf/types/SdfGridCell.hpp"
 #include "vulkan/ubo/SdfParamsUBO.hpp"
 #include "sdf/types/SmokeFragBullet.hpp"
@@ -158,6 +159,39 @@ public:
     void setRockMetallic(float m);
     void setRockTint(const glm::vec3& rgb);
 
+    // ── Grass clumps (existing vegetation instances) ─────────────────────
+    // Grass anchors are streamed 1:1 by VegetationRenderer as chunks publish
+    // (position + vegetation type/biome + smooth surface normal). Each
+    // retained anchor becomes ONE SdfInstance of the procedural Grass
+    // primitive, which expands into many blades in-shader — the existing
+    // vegetation data stays the single source of truth and no second grass
+    // placement pass exists. The scene merges with lava + rocks + smoke.
+    void ingestGrassChunk(uintptr_t nid, std::vector<sdf_gpu::GrassAnchor> anchors);
+    void removeGrassChunk(uintptr_t nid);
+    void clearGrass();
+    // Rebuild the grass scene from collected anchors when dirty (coalesces
+    // per-chunk ingests into at most one flatten per frame). Returns true
+    // when a rebuild was staged.
+    bool rebuildGrassIfDirty();
+    // Force a grass-scene rebuild from the retained anchors.
+    void markGrassDirty();
+    // Placement/collector controls.
+    void setGrassEnabled(bool on);
+    void setGrassMaxPerChunk(int n);
+    // Shape (applied at scene rebuild): clump radius/blade height/width in
+    // local units (1 = the per-instance vegetation scale), blade count,
+    // curvature, wind lean/gain, tip width, roughness and tint.
+    void setGrassClumpRadius(float r);
+    void setGrassBladeHeight(float h);
+    void setGrassBladeWidth(float w);
+    void setGrassBladeCount(int n);
+    void setGrassCurvature(float c);
+    void setGrassMaxLean(float rad);
+    void setGrassWindGain(float g);
+    void setGrassTipWidth(float f);
+    void setGrassRoughness(float r);
+    void setGrassTint(const glm::vec3& rgb);
+
     // ── Smoke bomb + bullets (second generic consumer) ──────────────────
     // A static-topology smoke scene (1 Smoke-sphere def/mat/container/
     // instance) merged with the lava scene on every rebuild. Growth, noise,
@@ -270,10 +304,11 @@ private:
     // load path). The merged scene stores the canonical GPU-layout structs,
     // so the upload memcpys its vectors verbatim (no CPU->GPU conversion).
     mutable std::mutex sceneMutex;
-    sdf_gpu::SdfScene pendingScene_; // merged lava + smoke (uploaded directly)
+    sdf_gpu::SdfScene pendingScene_; // merged lava + rocks + grass + smoke (uploaded directly)
     sdf_gpu::SdfScene lavaScene_;    // fire scene from lava anchors
     sdf_gpu::SdfScene smokeScene_;   // static-topology smoke/flame shape scene
     sdf_gpu::SdfScene rocksScene_;   // rock scene from brush-7 anchors
+    sdf_gpu::SdfScene grassScene_;   // grass scene from existing vegetation instances
     SdfParamsUBO params_ = {};
     RenderMode renderMode_ = RenderMode::Surface;
     uint32_t debugFlags_ = 0;
@@ -305,10 +340,16 @@ private:
         float decim = 0.0f;               // [0,1) density key (keep while < ratio)
     };
     std::unordered_map<uintptr_t, std::vector<RockCandidate>> rocksByChunk_;
+    // Grass-clump collection (existing vegetation instances, keyed by the
+    // vegetation chunk). Anchors are stored verbatim as the conversion
+    // boundary into the generic scene; the vegetation stream stays the
+    // source of truth and re-publishing a chunk replaces its clumps.
+    std::unordered_map<uintptr_t, std::vector<sdf_gpu::GrassAnchor>> grassByChunk_;
     // Shared tuning (single source of truth for renderer + widgets).
     SdfEffectConfig config_;
     bool lavaDirty_ = false;    // anchors changed -> rebuild staged
     bool rocksDirty_ = false;   // anchors/shape changed -> rebuild staged
+    bool grassDirty_ = false;   // vegetation clumps/shape changed -> rebuild staged
 
     // Smoke bomb state (second generic consumer). Scene topology is static
     // (1 def/mat/container/instance); all behavior below streams through

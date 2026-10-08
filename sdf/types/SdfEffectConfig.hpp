@@ -12,10 +12,12 @@
 #include "SdfSmokeConfig.hpp"
 #include "SdfBulletConfig.hpp"
 #include "SdfRockConfig.hpp"
+#include "SdfGrassConfig.hpp"
 
 struct SdfEffectConfig {
     SdfLavaConfig lava;
     SdfSmokeConfig smoke;
     SdfBulletConfig bullet;
     SdfRockConfig rocks;
+    SdfGrassConfig grass;
 };

@@ -56,6 +56,7 @@
 #include "widgets/WindWidget.hpp"
 #include "widgets/RaymarchWidget.hpp"
 #include "widgets/RocksWidget.hpp"
+#include "widgets/GrassWidget.hpp"
 #include "sdf/types/SdfScene.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
 #include "widgets/Brush3dWidget.hpp"
@@ -282,6 +283,7 @@ public:
     // smoke shapes, which are just SDF primitives inside the renderer.
     std::shared_ptr<RaymarchWidget> raymarchWidget;
     std::shared_ptr<RocksWidget> rocksWidget;
+    std::shared_ptr<GrassWidget> grassWidget;
     std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     std::shared_ptr<RadialMenu> radialMenu;
@@ -745,6 +747,9 @@ public:
         // Brush-7 boulder instances: same generic SDF scene as the fire
         // volumes; the widget edits the renderer's shared rock config.
         rocksWidget = std::make_shared<RocksWidget>(sceneRenderer->sdfRenderer.get());
+        // SDF grass: one procedural clump per existing vegetation instance,
+        // streamed from VegetationRenderer into the same generic SDF scene.
+        grassWidget = std::make_shared<GrassWidget>(sceneRenderer->sdfRenderer.get());
         // Generic SDF fire volume (spec §19) is the fire path; flame
         // anchors stream in from brush-4 lava chunks as they publish (see
         // SceneRenderer::processPendingMeshes ingest hook).
@@ -780,6 +785,7 @@ public:
         widgetManager.addWidget(windWidget);
         widgetManager.addWidget(raymarchWidget);
         widgetManager.addWidget(rocksWidget);
+        widgetManager.addWidget(grassWidget);
         widgetManager.addWidget(mp3Widget);
         widgetManager.addWidget(billboardCreator);
         widgetManager.addWidget(impostorWidget);
@@ -3816,6 +3822,7 @@ void MyApp::resetSceneState() {
         if (sceneRenderer->sdfRenderer) {
             sceneRenderer->sdfRenderer->clearLava();
             sceneRenderer->sdfRenderer->clearRocks();
+            sceneRenderer->sdfRenderer->clearGrass();
         }
     }
 

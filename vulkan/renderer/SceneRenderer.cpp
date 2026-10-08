@@ -375,6 +375,13 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     if (!sdfRenderer) sdfRenderer = std::make_unique<SdfRenderer>();
     if (sdfRenderer) {
         sdfRenderer->init(app);
+        // Grass: the generic SDF renderer consumes the per-chunk vegetation
+        // instances as Grass clumps (the vegetation side stays the source of
+        // truth; no second grass placement pass). Wired here, before scene
+        // streaming publishes the first vegetation chunk.
+        if (vegetationRenderer) {
+            vegetationRenderer->setSdfGrassConsumer(sdfRenderer.get());
+        }
     }
 
     // Own offscreen framebuffers for the debug SDF cubes and mesh bounding boxes so
@@ -1650,6 +1657,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     if (sdfRenderer) {
         sdfRenderer->rebuildLavaIfDirty();
         sdfRenderer->rebuildRocksIfDirty();
+        sdfRenderer->rebuildGrassIfDirty();
     }
 
     if (batch.empty()) {

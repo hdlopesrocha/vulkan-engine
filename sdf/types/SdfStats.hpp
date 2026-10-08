@@ -15,4 +15,6 @@ struct SdfStats {
     uint32_t lavaChunks = 0;     // lava-bearing chunks currently tracked
     uint32_t rockAnchors = 0;    // boulder anchors from brush-7 rock chunks
     uint32_t rockChunks = 0;     // rock-bearing chunks currently tracked
+    uint32_t grassAnchors = 0;   // grass clumps derived from vegetation instances
+    uint32_t grassChunks = 0;    // vegetation chunks currently tracked
 };

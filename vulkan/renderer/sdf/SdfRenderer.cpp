@@ -241,11 +241,14 @@ void SdfRenderer::setScene(const sdf_gpu::SdfScene& scene) {
 
 void SdfRenderer::refreshMergedLocked() {
     // pendingScene_ is always the merge: independent emitters (lava fire,
-    // rock boulders, smoke shapes, future effects) share one GPU upload and
-    // one march. It stores the canonical GPU-layout structs, so rebuild()
-    // only refreshes AABBs/grids and the upload memcpys the vectors verbatim.
+    // rock boulders, vegetation-derived grass clumps, smoke shapes, future
+    // effects) share one GPU upload and one march. It stores the canonical
+    // GPU-layout structs, so rebuild() only refreshes AABBs/grids and the
+    // upload memcpys the vectors verbatim.
     pendingScene_ = sdf_gpu::SdfScene::merge(
-        sdf_gpu::SdfScene::merge(lavaScene_, rocksScene_), smokeScene_);
+        sdf_gpu::SdfScene::merge(
+            sdf_gpu::SdfScene::merge(lavaScene_, rocksScene_), grassScene_),
+        smokeScene_);
     pendingScene_.rebuild();
     stats_.containerCount = static_cast<uint32_t>(pendingScene_.containers().size());
     stats_.definitionCount = static_cast<uint32_t>(pendingScene_.definitions().size());
@@ -1023,6 +1026,219 @@ void SdfRenderer::setRockTint(const glm::vec3& rgb) {
     rocksDirty_ = true;
 }
 
+// ─── Grass clumps (existing vegetation instances) ─────────────────────────
+// Grass anchors stream in 1:1 from VegetationRenderer as vegetation chunks
+// publish: the existing vegetation instance (position + billboard type/biome
+// + smooth surface normal) is the source of truth, so this collector never
+// places grass itself. The caps only bound the SDF-side set (SSBO + grid);
+// the shader expands each retained anchor into many procedural blades.
+
+void SdfRenderer::ingestGrassChunk(uintptr_t nid, std::vector<sdf_gpu::GrassAnchor> anchors) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    // Replace semantics: a re-published vegetation chunk (same NodeID, new
+    // version) drops its old clumps first, so re-streaming never stacks
+    // duplicates.
+    auto it = grassByChunk_.find(nid);
+    const bool had = (it != grassByChunk_.end());
+    grassByChunk_.erase(nid);
+    if (anchors.empty() || config_.grass.maxPerChunk <= 0 || config_.grass.maxAnchors == 0u) {
+        if (had) grassDirty_ = true;
+        return;
+    }
+
+    // Per-chunk cap: the vegetation generator already thins dense chunks
+    // with shuffled area-weighted slots, so a uniform stride over the
+    // streamed order keeps a deterministic, spatially even subset.
+    const size_t cap = std::min(anchors.size(),
+                                static_cast<size_t>(config_.grass.maxPerChunk));
+    std::vector<sdf_gpu::GrassAnchor> kept;
+    kept.reserve(cap);
+    if (anchors.size() > cap) {
+        const double stride = static_cast<double>(anchors.size()) / static_cast<double>(cap);
+        for (size_t i = 0; i < cap; ++i) {
+            kept.push_back(anchors[static_cast<size_t>(static_cast<double>(i) * stride)]);
+        }
+    } else {
+        kept = std::move(anchors);
+    }
+
+    // Global cap: stop adding once the retained set is full (mirrors the
+    // lava/rock collectors; the count is visible in the SDF widget).
+    size_t total = 0;
+    for (const auto& kv : grassByChunk_) total += kv.second.size();
+    if (total >= config_.grass.maxAnchors) {
+        if (had) grassDirty_ = true;
+        return;
+    }
+    if (total + kept.size() > config_.grass.maxAnchors) {
+        kept.resize(config_.grass.maxAnchors - total);
+    }
+    grassByChunk_[nid] = std::move(kept);
+    grassDirty_ = true;
+}
+
+void SdfRenderer::removeGrassChunk(uintptr_t nid) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    if (grassByChunk_.erase(nid) > 0) grassDirty_ = true;
+}
+
+void SdfRenderer::clearGrass() {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    if (!grassByChunk_.empty()) {
+        grassByChunk_.clear();
+        grassDirty_ = true;
+    }
+}
+
+void SdfRenderer::markGrassDirty() {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    grassDirty_ = true;
+}
+
+bool SdfRenderer::rebuildGrassIfDirty() {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    if (!grassDirty_) return false;
+    grassDirty_ = false;
+
+    // Flatten the retained per-chunk anchors (the scene rebuild shares the
+    // same coalesced path as lava/rocks: at most one flatten per frame).
+    std::vector<sdf_gpu::GrassAnchor> all;
+    size_t tracked = 0;
+    for (const auto& kv : grassByChunk_) tracked += kv.second.size();
+    all.reserve(tracked);
+    if (config_.grass.enabled) {
+        for (const auto& kv : grassByChunk_) {
+            all.insert(all.end(), kv.second.begin(), kv.second.end());
+        }
+        if (all.size() > config_.grass.maxAnchors) all.resize(config_.grass.maxAnchors);
+    }
+
+    grassScene_ = [&] {
+        sdf_gpu::GrassShape shape;
+        shape.clumpRadius = config_.grass.clumpRadius;
+        shape.bladeHeight = config_.grass.bladeHeight;
+        shape.bladeWidth = config_.grass.bladeWidth;
+        shape.bladeCount = config_.grass.bladeCount;
+        shape.curvature = config_.grass.curvature;
+        shape.maxLean = config_.grass.maxLean;
+        shape.windGain = config_.grass.windGain;
+        shape.tipWidth = config_.grass.tipWidth;
+        shape.regionSize = config_.grass.regionSize;
+        shape.cellSize = config_.grass.cellSize;
+        shape.roughness = config_.grass.roughness;
+        shape.tint = config_.grass.tint;
+        return sdf_gpu::SdfScene::createGrassFromAnchors(all, shape);
+    }();
+    refreshMergedLocked();
+    stats_.grassAnchors = static_cast<uint32_t>(all.size());
+    stats_.grassChunks = static_cast<uint32_t>(grassByChunk_.size());
+    if (!all.empty()) {
+        const auto& cs = grassScene_.containers();
+        if (!cs.empty()) {
+            fprintf(stderr, "[SdfRenderer] grass rebuild: clumps=%zu tracked=%zu "
+                "chunks=%zu regions=%zu grid=%ux%ux%u\n",
+                all.size(), tracked, grassByChunk_.size(), cs.size(),
+                cs.front().resX, cs.front().resY, cs.front().resZ);
+        }
+    } else if (tracked > 0) {
+        fprintf(stderr, "[SdfRenderer] grass DISABLED: clumps=%zu tracked (candidates retained)\n",
+            tracked);
+    }
+    return true;
+}
+
+void SdfRenderer::setGrassEnabled(bool on) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    if (on == config_.grass.enabled) return;
+    config_.grass.enabled = on;
+    grassDirty_ = true;
+}
+
+void SdfRenderer::setGrassMaxPerChunk(int n) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    // Applies to newly ingested chunks (retained sets keep their size).
+    config_.grass.maxPerChunk = std::clamp(n, 0, 1024);
+}
+
+void SdfRenderer::setGrassClumpRadius(float r) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(r, 0.05f, 2.0f);
+    if (v == config_.grass.clumpRadius) return;
+    config_.grass.clumpRadius = v;
+    grassDirty_ = true;
+}
+
+void SdfRenderer::setGrassBladeHeight(float h) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(h, 0.05f, 4.0f);
+    if (v == config_.grass.bladeHeight) return;
+    config_.grass.bladeHeight = v;
+    grassDirty_ = true;
+}
+
+void SdfRenderer::setGrassBladeWidth(float w) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(w, 0.001f, 0.5f);
+    if (v == config_.grass.bladeWidth) return;
+    config_.grass.bladeWidth = v;
+    grassDirty_ = true;
+}
+
+void SdfRenderer::setGrassBladeCount(int n) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const int v = std::clamp(n, 1, 64);
+    if (v == config_.grass.bladeCount) return;
+    config_.grass.bladeCount = v;
+    grassDirty_ = true;
+}
+
+void SdfRenderer::setGrassCurvature(float c) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(c, 0.0f, 1.5f);
+    if (v == config_.grass.curvature) return;
+    config_.grass.curvature = v;
+    grassDirty_ = true;
+}
+
+void SdfRenderer::setGrassMaxLean(float rad) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(rad, 0.0f, 1.4f);
+    if (v == config_.grass.maxLean) return;
+    config_.grass.maxLean = v;
+    grassDirty_ = true;
+}
+
+void SdfRenderer::setGrassWindGain(float g) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(g, 0.0f, 2.0f);
+    if (v == config_.grass.windGain) return;
+    config_.grass.windGain = v;
+    grassDirty_ = true;
+}
+
+void SdfRenderer::setGrassTipWidth(float f) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(f, 0.05f, 1.0f);
+    if (v == config_.grass.tipWidth) return;
+    config_.grass.tipWidth = v;
+    grassDirty_ = true;
+}
+
+void SdfRenderer::setGrassRoughness(float r) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(r, 0.02f, 1.0f);
+    if (v == config_.grass.roughness) return;
+    config_.grass.roughness = v;
+    grassDirty_ = true;
+}
+
+void SdfRenderer::setGrassTint(const glm::vec3& rgb) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const glm::vec3 v = glm::clamp(rgb, glm::vec3(0.0f), glm::vec3(4.0f));
+    if (v == config_.grass.tint) return;
+    config_.grass.tint = v;
+    grassDirty_ = true;
+}
 
 // ─── Smoke bomb + bullets ─────────────────────────────────────────────────
 // Scene-affecting setters rebuild the static smoke topology (cheap: 1 def /

@@ -32,6 +32,7 @@ layout(location = VARY_BRUSHPATCH) flat in int fragContainerIndex;
 #include "../../includes/sdf/SdfModel.glsl"
 #include "../../includes/sdf/SdfNoise.glsl"
 #include "../../includes/sdf/SdfRock.glsl"
+#include "../../includes/sdf/SdfGrass.glsl"
 #include "../../includes/sdf/SdfSmoke.glsl"
 // Shared wind field (set 0, binding 27) for the flame lean below. Requires
 // perlin.glsl (perlinNoise3D) before wind_field.glsl. Set 0 is the global
@@ -108,6 +109,31 @@ float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
     vec3 q = sdfWorldToLocal(wpos, inst, ds);
     if (def.prim == SDF_PRIM_SMOKE) {
         return smokeMarchSDF(q, def, time) * ds;
+    }
+    if (def.prim == SDF_PRIM_GRASS) {
+        // Grass clump: one grouped SDF per existing vegetation instance. The
+        // shared wind field is sampled once at the clump origin (the same
+        // field the vegetation billboard shader reads), converted into the
+        // clump's local XZ frame and applied as a RIGID lean inside
+        // sdGrassClump; rotation preserves distances, so the returned
+        // distance stays exact for sphere tracing (no Lipschitz halving).
+        vec3 windW = windSVF(inst.position, time);
+        vec2 wind2 = vec2(windW.x, windW.z);
+        float windAmp = min(length(wind2) * max(def.params1.z, 0.0),
+                            max(def.params1.y, 0.0));
+        vec2 windL = vec2(0.0);
+        if (dot(wind2, wind2) > 1e-8) {
+            // Rotation-only world -> local (the clump frame is rotated by the
+            // instance euler); scale must not skew a direction.
+            vec3 wl = transpose(sdfEulerMat(inst.rotation)) * vec3(wind2.x, 0.0, wind2.y);
+            float l2 = dot(wl.xz, wl.xz);
+            windL = (l2 > 1e-8) ? wl.xz * inversesqrt(l2) : vec2(0.0);
+        }
+        // Projected-size proxy: camera distance in clump scales. Drives the
+        // blade-count reduction and the aggregate-only far LOD.
+        float camScale = distance(ubo.viewPosition, inst.position) / max(inst.scale, 1e-3);
+        return sdGrassClump(q, def.params0, def.params1, inst.seed, camScale,
+                            windL, windAmp) * ds;
     }
     // Optional repeat before primitive eval (SDF_DEFORM_REPEAT): period from
     // params1.xyz.
@@ -553,7 +579,8 @@ void main() {
         bool smokeSolid = (bestDef.prim == SDF_PRIM_SMOKE) &&
                           (smokeGpu.tuning.shape > 0.5);
         bool rockSolid = (bestDef.prim == SDF_PRIM_ROCK);
-        if (dBest < eps && (renderMode == 0u || renderMode == 3u || smokeSolid || rockSolid)) {
+        bool grassSolid = (bestDef.prim == SDF_PRIM_GRASS);
+        if (dBest < eps && (renderMode == 0u || renderMode == 3u || smokeSolid || rockSolid || grassSolid)) {
             float e = max(eps * 2.0, 0.004);
             vec3 nn = sdfSurfaceNormal(p, bestInst, bestDef, bestMat, time, e);
             vec3 L = -normalize(ubo.lightDirection);
@@ -563,6 +590,12 @@ void main() {
                 // Textured boulder: triplanar scene-array albedo + normal
                 // (the flat material color stays the fallback).
                 hitColor = sdfRockShade(p, nn, L, bestMat);
+            } else if (grassSolid) {
+                // Grass blades: diffuse + a backlight/transmission term so
+                // the clump reads translucent instead of plastic (same cheap
+                // directional model as the other solids).
+                float back = pow(clamp(dot(-nn, L), 0.0, 1.0), 3.0) * 0.5;
+                hitColor = bestMat.baseColor.rgb * (0.25 + 0.85 * ndl + back) * ubo.lightColor;
             } else {
                 hitColor = bestMat.baseColor.rgb * (0.2 + ndl) * ubo.lightColor + bestMat.emission * 0.2;
             }
@@ -753,9 +786,17 @@ void main() {
         // undeformed primitives keep the original plain maxStep clamp.
         bool deformStep = ((bestDef.deformFlags & 1u) != 0u) || (bestDef.prim == SDF_PRIM_FLAME);
         float dtCap = dsBest;
+        // Grass blades are thin relative to the clump scale: the generic
+        // minStep * wScale floor can exceed a blade radius (0.5 m floor vs
+        // 0.4 m blade at the default 10 m clump scale) and tunnel straight
+        // through the blade between samples. Grass therefore keeps the pure
+        // sphere-tracing bound (step <= SDF distance) with no floor; the hit
+        // epsilon still terminates the march on contact.
+        bool grassStep = (bestDef.prim == SDF_PRIM_GRASS);
         dt = deformStep
              ? clamp(dBest * safety, minStep * wScale, min(maxStep, dtCap))
-             : clamp(dBest * safety, minStep * wScale, maxStep);
+             : (grassStep ? min(dBest * safety, maxStep)
+                          : clamp(dBest * safety, minStep * wScale, maxStep));
         // Interior of a deformed field: sample evenly at half the deform
         // feature scale even when dBest was clamped to eps above (the raw
         // sample said we are inside), instead of taking minStep-sized jumps.

@@ -12,6 +12,7 @@
 #include "../../../utils/Scene.hpp" // for NodeID
 #include "../../ubo/WindParamsUBO.hpp"
 #include "../../ubo/WindField.hpp"
+#include "sdf/types/SdfGrassAnchor.hpp"
 #include <vector>
 #include <deque>
 #include <unordered_map>
@@ -22,6 +23,7 @@
 #include "../CommandBufferState.hpp"
 
 class IndirectRenderer; // merged-cull integration (forward decl)
+class SdfRenderer;      // grass SDF consumer (forward decl)
 
 // Per-chunk vegetation instance buffer and renderer
 class VegetationRenderer : public Renderer {
@@ -67,6 +69,13 @@ public:
     // also emits the billboard/impostor commands. VegetationRenderer supplies its
     // per-frame output buffers + per-chunk veg metadata to that renderer.
     void setSolidIndirectRenderer(IndirectRenderer* ir) { solidIR = ir; }
+    // Register the generic SDF renderer as the consumer of the per-chunk
+    // grass clumps: every published vegetation chunk also ingests its
+    // instances as Grass SDF anchors (position + vegetation type/biome +
+    // smooth normal), and chunk replacement/removal drops them again. The
+    // vegetation instance remains the single source of truth — the SDF side
+    // only converts it to one procedural clump per instance.
+    void setSdfGrassConsumer(SdfRenderer* sdf) { sdfGrassConsumer = sdf; }
     void onTextureArraysReallocated(VulkanApp* app);
     void init();
     void cleanup(VulkanApp* app) override;
@@ -429,6 +438,9 @@ private:
     // the per-chunk veg metadata; it hands both to solidIR each frame and mirrors
     // its cull frame so the draw reads the slot the merged dispatch wrote.
     IndirectRenderer* solidIR = nullptr;
+    // SDF grass consumer (setSdfGrassConsumer): receives the per-chunk grass
+    // clumps so the generic SDF renderer can march them. Never owns it.
+    SdfRenderer* sdfGrassConsumer = nullptr;
     // Per-solid-mesh vegetation metadata, keyed by the solid mesh id
     // (static_cast<uint32_t>(chunk NodeID)). value = vec4(instanceCount,
     // firstInstance, 0, 0). Fed to solidIR via setVegetationChunkInfo().
@@ -455,6 +467,11 @@ private:
         NodeID chunkId;
         uint32_t instanceCount;
         glm::vec3 aabbMin, aabbMax, center;
+        // Grass SDF anchors derived from this chunk's vegetation instances
+        // (same generation pass, no second placement system). Published to
+        // the SDF consumer in the same fence callback that publishes the
+        // instance buffer, so both lifetimes stay in lockstep.
+        std::vector<sdf_gpu::GrassAnchor> grassAnchors;
     };
     std::vector<PendingBatchCopy> pendingBatch;
     // ── Persistent staging pool (perf report 22 M10) ──────────────────────

@@ -5,8 +5,11 @@
 #include "sdf/types/SdfScene.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <map>
 #include <random>
 #include <vector>
 
@@ -38,7 +41,7 @@ glm::mat3 rotationFromEuler(const glm::vec3& e) {
 
 // Local (pre-rotation, pre-translation) half extents for a definition.
 // radial = scale*radiusScale, height = scale*heightScale, uni = scale.
-glm::vec3 localHalfExtents(SdfPrimitiveType prim, const glm::vec4& p0,
+glm::vec3 localHalfExtents(SdfPrimitiveType prim, const glm::vec4& p0, const glm::vec4& p1,
                            float radial, float height, float uni) {
     const float r = std::max(p0.x, 0.0f);
     switch (prim) {
@@ -105,6 +108,26 @@ glm::vec3 localHalfExtents(SdfPrimitiveType prim, const glm::vec4& p0,
             const float rr = std::max(r * radial, 0.001f);
             const float amp = std::max(p0.z, 0.0f);
             return glm::vec3(std::max(rr * (1.0f + amp), 0.001f));
+        }
+        case SdfPrimitiveType::Grass: {
+            // Base-anchored blade sheaf: roots within params0.x, blades rise
+            // params0.y, tips bend by curvature * height and, under wind,
+            // lean up to maxLean off the local +Y axis (params1). Bounds are
+            // a centered box covering the leaned sheaf (the buried/behind
+            // half is a conservative superset; the composite depth test
+            // resolves the actual surfaces).
+            const float rad = std::max(p0.x, 0.0f) * radial;
+            const float hgt = std::max(p0.y, 0.0f) * height;
+            const float wid = std::max(p0.z, 0.0f) * std::max(radial, height);
+            const float lean = std::min(std::max(p1.y, 0.0f), 1.4f);
+            // Per-blade curvature reaches 1.4 x params1.x (SdfGrass.glsl), so
+            // the bound must use the same ceiling or the AABB/grid cull could
+            // clip bent blades.
+            const float curve = std::max(p1.x, 0.0f) * 1.4f;
+            const float extXZ = rad + 2.0f * wid + hgt * (std::sin(lean) + curve);
+            return glm::vec3(std::max(extXZ, 0.001f),
+                             std::max(hgt + 2.0f * wid, 0.001f),
+                             std::max(extXZ, 0.001f));
         }
     }
     return glm::vec3(0.5f * uni);
@@ -179,7 +202,7 @@ BoundingBox SdfScene::computeInstanceBounds(const SdfInstance& in) const {
         const float uni = std::max(in.scale, 0.0001f);
         const float radial = uni * std::max(in.radiusScale, 0.0001f);
         const float height = uni * std::max(in.heightScale, 0.0001f);
-        half = localHalfExtents(def.prim, def.params0, radial, height, uni);
+        half = localHalfExtents(def.prim, def.params0, def.params1, radial, height, uni);
         pad = deformationPadding(def, turbulence);
         if (def.prim == SdfPrimitiveType::Flame) {
             // Spike displacement is spikiness (local) * instance scale in
@@ -211,8 +234,16 @@ void SdfScene::rebuild() {
     //    arrays. Membership derives from Instance::containerIdx; an instance
     //    is inserted into every cell its AABB overlaps (clamped to the
     //    container). Cell index = x + resX * (y + resY * z).
+    //    Per-container membership is derived in ONE pass: the grass regions
+    //    make container counts large enough that a container x instances
+    //    scan per container would dominate the rebuild.
     cells_.clear();
     indices_.clear();
+    std::vector<std::vector<uint32_t>> members(containers_.size());
+    for (uint32_t gi = 0; gi < static_cast<uint32_t>(instances_.size()); ++gi) {
+        const uint32_t ci = instances_[gi].containerIdx;
+        if (ci < members.size()) members[ci].push_back(gi);
+    }
     for (uint32_t ci = 0; ci < static_cast<uint32_t>(containers_.size()); ++ci) {
         SdfContainer& c = containers_[ci];
         const uint32_t nx = std::max(c.resX, 1u);
@@ -229,9 +260,8 @@ void SdfScene::rebuild() {
         if (length.z > 1e-6f) cellSize.z = length.z / static_cast<float>(nz);
 
         std::vector<std::vector<uint32_t>> tmp(cellCount);
-        for (uint32_t gi = 0; gi < static_cast<uint32_t>(instances_.size()); ++gi) {
+        for (uint32_t gi : members[ci]) {
             const SdfInstance& inst = instances_[gi];
-            if (inst.containerIdx != ci) continue;
             const glm::vec3 bmin = inst.boundsMin;
             const glm::vec3 bmax = inst.boundsMax;
             // Skip instances fully outside the container.
@@ -568,6 +598,129 @@ SdfScene SdfScene::createRocksFromAnchors(const std::vector<RockAnchor>& anchors
         in.seed = a.seed;
         in.containerIdx = 0;
         scene.addInstance(in);
+    }
+    return scene;
+}
+
+SdfScene SdfScene::createGrassFromAnchors(const std::vector<GrassAnchor>& anchors,
+                                          const GrassShape& shape) {
+    SdfScene scene;
+
+    // Three species, one per existing vegetation type/biome (0=foliage,
+    // 1=grass, 2=wild — the VegetationRenderer billboard/biome order). One
+    // type feeds BOTH the definition and the material; the shared Grass
+    // primitive keeps the shader single-path, and the per-type multipliers
+    // only scale its parameters. This is the whole "three vegetation types
+    // remain the source of truth" contract: no new species are invented.
+    constexpr int kTypeCount = 3;
+    constexpr float kTypeRadiusMul[kTypeCount] = {1.15f, 1.00f, 0.90f};
+    constexpr float kTypeHeightMul[kTypeCount] = {1.10f, 1.00f, 0.80f};
+    constexpr float kTypeWidthMul[kTypeCount]  = {1.30f, 1.00f, 0.85f};
+    constexpr float kTypeCurveMul[kTypeCount]  = {0.70f, 1.00f, 1.25f};
+    const glm::vec3 kTypeColor[kTypeCount] = {
+        glm::vec3(0.22f, 0.38f, 0.16f), // foliage
+        glm::vec3(0.30f, 0.52f, 0.20f), // grass
+        glm::vec3(0.46f, 0.55f, 0.24f), // wild
+    };
+
+    const float baseRadius = std::max(shape.clumpRadius, 1e-3f);
+    const float baseHeight = std::max(shape.bladeHeight, 1e-3f);
+    const float baseWidth  = std::clamp(shape.bladeWidth, 1e-5f, baseRadius * 0.5f);
+    const float bladeCount = static_cast<float>(std::clamp(shape.bladeCount, 1, 64));
+    const float curvature  = std::clamp(shape.curvature, 0.0f, 1.5f);
+    const float maxLean    = std::clamp(shape.maxLean, 0.0f, 1.4f);
+    const float windGain   = std::max(shape.windGain, 0.0f);
+    const float tipWidth   = std::clamp(shape.tipWidth, 0.05f, 1.0f);
+
+    for (int t = 0; t < kTypeCount; ++t) {
+        SdfDefinition d;
+        d.prim = SdfPrimitiveType::Grass;
+        d.op = SdfOpType::Union;
+        d.params0 = glm::vec4(baseRadius * kTypeRadiusMul[t],
+                              baseHeight * kTypeHeightMul[t],
+                              baseWidth * kTypeWidthMul[t],
+                              bladeCount);
+        d.params1 = glm::vec4(curvature * kTypeCurveMul[t], maxLean, windGain, tipWidth);
+        d.deformFlags = 0u; // wind lean is a rigid in-shader rotation, not the flame deformer
+        d.smoothK = 0.5f;
+        scene.addDefinition(d);
+
+        SdfMaterial m;
+        m.mode = SdfMaterialType::Surface;
+        m.baseColor = glm::vec4(glm::clamp(kTypeColor[t] * shape.tint, glm::vec3(0.0f),
+                                           glm::vec3(4.0f)), 1.0f);
+        m.roughness = std::clamp(shape.roughness, 0.02f, 1.0f);
+        m.metallic = 0.0f;
+        m.opacity = 1.0f;
+        m.emission = glm::vec3(0.0f);
+        m.emissionIntensity = 0.0f;
+        // Opaque blades: zero volumetric density/temperature so even an
+        // interior march sample can never add gray volume (the solid hit
+        // path is the only shading, like rocks).
+        m.density = 0.0f;
+        m.absorption = 0.5f;
+        m.scattering = 0.5f;
+        m.tempScale = 0.0f;
+        m.noiseScale = 1.0f;
+        m.turbulence = 0.0f;
+        m.riseSpeed = 0.0f;
+        m.textureLayer = -1.0f; // flat blade color (no texture-array path)
+        scene.addMaterial(m);
+    }
+
+    if (anchors.empty()) return scene; // defs+mats, no containers -> renders nothing
+
+    // Region partition: one container per regionSize tile. The generic
+    // container grid is the coarse cull level (one proxy AABB per tile), and
+    // the per-tile resolution targets ~cellSize m cells so a grid cell holds
+    // few clumps (the shader evaluates at most SDF_MAX_CANDIDATES per cell).
+    const float region = std::max(shape.regionSize, 16.0f);
+    const float cellTarget = std::max(shape.cellSize, 4.0f);
+    std::map<std::array<int32_t, 3>, std::vector<uint32_t>> regions;
+    for (uint32_t i = 0; i < static_cast<uint32_t>(anchors.size()); ++i) {
+        const glm::vec3& p = anchors[i].pos;
+        const std::array<int32_t, 3> key = {
+            static_cast<int32_t>(std::floor(p.x / region)),
+            static_cast<int32_t>(std::floor(p.y / region)),
+            static_cast<int32_t>(std::floor(p.z / region))};
+        regions[key].push_back(i);
+    }
+
+    for (const auto& kv : regions) {
+        const uint32_t containerIdx = static_cast<uint32_t>(scene.containers().size());
+        std::vector<SdfInstance> local;
+        local.reserve(kv.second.size());
+        glm::vec3 mn(std::numeric_limits<float>::max());
+        glm::vec3 mx(-std::numeric_limits<float>::max());
+        for (uint32_t ai : kv.second) {
+            const GrassAnchor& a = anchors[ai];
+            SdfInstance in;
+            const uint32_t type = std::min(a.type, static_cast<uint32_t>(kTypeCount - 1));
+            in.defIdx = type;
+            in.matIdx = type;
+            in.position = a.pos;
+            in.rotation = eulerAlignYToNormal(a.normal);
+            in.scale = std::max(a.scale, 0.05f);
+            in.heightScale = 1.0f;
+            in.radiusScale = 1.0f;
+            in.intensity = 1.0f;
+            in.seed = a.seed;
+            in.containerIdx = containerIdx;
+            const BoundingBox b = scene.computeInstanceBounds(in);
+            mn = glm::min(mn, b.getMin());
+            mx = glm::max(mx, b.getMax());
+            local.push_back(in);
+        }
+        // Small pad so float rounding never clips the outer clumps; the
+        // container is the march interval, so it must cover every AABB.
+        const glm::vec3 pad = (mx - mn) * 0.02f + glm::vec3(1.0f);
+        auto axisRes = [&](float e) {
+            return std::clamp(static_cast<uint32_t>(std::ceil(e / cellTarget)), 1u, 24u);
+        };
+        const glm::vec3 extent = (mx + pad) - (mn - pad);
+        scene.addContainer(mn - pad, mx + pad,
+                           glm::uvec3(axisRes(extent.x), axisRes(extent.y), axisRes(extent.z)));
+        for (const SdfInstance& in : local) scene.addInstance(in);
     }
     return scene;
 }

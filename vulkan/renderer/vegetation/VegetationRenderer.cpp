@@ -1,5 +1,6 @@
 #include "VegetationRenderer.hpp"
 #include "../indirect/IndirectRenderer.hpp"
+#include "../sdf/SdfRenderer.hpp"
 #include "../DescriptorAllocator.hpp"
 #include "../DescriptorWriter.hpp"
 #include "../RendererUtils.hpp"
@@ -85,6 +86,9 @@ void VegetationRenderer::cleanup(VulkanApp* app) {
         windFieldCacheValid = false;
     }
     destroyCulling();
+    // The SDF consumer is never owned here; drop the pointer after the chunk
+    // removals above so no later call can reach a torn-down renderer.
+    sdfGrassConsumer = nullptr;
     appPtr = nullptr;
 }
 
@@ -1174,6 +1178,10 @@ void VegetationRenderer::clearAllInstances() {
     // destroyInstanceBuffer already clears the map entries; these are safety no-ops.
     chunkBuffers.clear();
     chunkInstanceCounts.clear();
+    // Drop every tracked grass chunk too: chunk entries not present in
+    // chunkBuffers (none today, but the collector must not outlive its
+    // source) are cleared here.
+    if (sdfGrassConsumer) sdfGrassConsumer->clearGrass();
     // Clear any pending CPU-generation chunks to prevent stale data
     // from a previous scene from being processed after scene reset.
     {
@@ -1872,6 +1880,13 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         instanceGenScratch.reserve(instanceCount * 8);
         std::vector<float>& validData = instanceGenScratch;
 
+        // Grass SDF anchors for this chunk: filled from the SAME accepted
+        // instances (position + vegetation type/biome + smooth normal), so
+        // the SDF grass consumes the existing vegetation data instead of
+        // running a second placement pass.
+        std::vector<sdf_gpu::GrassAnchor> grassAnchors;
+        if (sdfGrassConsumer) grassAnchors.reserve(instanceCount);
+
         // Per-vertex normals ride parallel to positions (same indices).
         const bool hasNormals = (pc.normals.size() == pc.positions.size());
 
@@ -1927,6 +1942,24 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 validData.push_back(nrm.y);
                 validData.push_back(nrm.z);
                 validData.push_back(0.0f);
+
+                if (sdfGrassConsumer) {
+                    // One Grass SDF clump per vegetation instance: the shader
+                    // expands it into many procedural blades. Seed and size
+                    // are deterministic from the same per-instance hash; the
+                    // [0.6, 1.4] size range mirrors vegetationHeightScale and
+                    // billboardScale keeps the physical scale identical to
+                    // the billboard it represents.
+                    sdf_gpu::GrassAnchor ga;
+                    ga.pos = pos;
+                    ga.normal = nrm;
+                    ga.type = bi;
+                    const uint32_t gh = rs ^ (posHash(pos) * 2654435761u);
+                    ga.seed = float(gh & 0xFFFFu) * (1.0f / 65535.0f) * 100.0f;
+                    const float sizeVar = float((gh >> 16) & 0xFFFFu) * (1.0f / 65535.0f);
+                    ga.scale = std::max(billboardScale, 1e-3f) * (0.6f + 0.8f * sizeVar);
+                    grassAnchors.push_back(ga);
+                }
             }
         }
 
@@ -1958,7 +1991,7 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
 
         pendingBatch.push_back({ stagingInst, instBuf,
                                  bufSize, stagingIndex, pc.chunkId, validCount,
-                                 aabbMin, aabbMax, pc.chunkCenter });
+                                 aabbMin, aabbMax, pc.chunkCenter, std::move(grassAnchors) });
     }
 
     // Flush all batched copies in a single async submission.
@@ -1993,6 +2026,14 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 ibuf.count      = c.instanceCount;
                 chunkBuffers[c.chunkId] = ibuf;
                 chunkInstanceCounts[c.chunkId] = c.instanceCount;
+                // Publish the chunk's grass SDF clumps in the same fence
+                // callback that publishes the instance buffer, so both
+                // lifetimes stay locked (destroyInstanceBuffer dropped the
+                // previous version just above).
+                if (sdfGrassConsumer && !c.grassAnchors.empty()) {
+                    sdfGrassConsumer->ingestGrassChunk(
+                        static_cast<uintptr_t>(c.chunkId), std::move(c.grassAnchors));
+                }
                 vegConsolidationDirty = true;
             }
         });
@@ -2024,6 +2065,11 @@ Buffer VegetationRenderer::acquireStagingBuffer(VulkanApp* app, VkDeviceSize siz
 }
 
 void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, VkFence completionFence) {
+    // Drop the SDF grass mirror for this chunk first (idempotent): chunk
+    // replacement/clearing must never leave stale clumps in the SDF scene.
+    if (sdfGrassConsumer) {
+        sdfGrassConsumer->removeGrassChunk(static_cast<uintptr_t>(chunkId));
+    }
     auto it = chunkBuffers.find(chunkId);
     if (it == chunkBuffers.end()) return;
 

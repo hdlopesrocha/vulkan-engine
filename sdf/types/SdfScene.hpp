@@ -15,6 +15,8 @@
 #include "sdf/types/SdfDefinition.hpp"
 #include "sdf/types/SdfFlameAnchor.hpp"
 #include "sdf/types/SdfFlameShape.hpp"
+#include "sdf/types/SdfGrassAnchor.hpp"
+#include "sdf/types/SdfGrassShape.hpp"
 #include "sdf/types/SdfGridCell.hpp"
 #include "sdf/types/SdfInstance.hpp"
 #include "sdf/types/SdfMaterial.hpp"
@@ -31,6 +33,8 @@ public:
     using FlameShape = sdf_gpu::FlameShape;
     using RockAnchor = sdf_gpu::RockAnchor;
     using RockShape = sdf_gpu::RockShape;
+    using GrassAnchor = sdf_gpu::GrassAnchor;
+    using GrassShape = sdf_gpu::GrassShape;
 
     uint32_t addDefinition(const SdfDefinition& d);
     uint32_t addMaterial(const SdfMaterial& m);
@@ -93,6 +97,17 @@ public:
     // only, no containers (renders nothing).
     static SdfScene createRocksFromAnchors(const std::vector<RockAnchor>& anchors,
                                            const RockShape& shape);
+
+    // Grass scene from explicit anchors (one Grass instance per anchor; the
+    // shader expands each into a procedural group of blades). Anchors are
+    // partitioned into regionSize x regionSize m containers (the generic
+    // container grid is the coarse cull level) with ~cellSize m cells so a
+    // grid cell holds few clumps. Three definitions/materials, one per
+    // existing vegetation type/biome (0=foliage, 1=grass, 2=wild); the anchor
+    // type selects both, so the vegetation type stays the source of truth.
+    // Empty anchors -> definitions+materials only, no containers.
+    static SdfScene createGrassFromAnchors(const std::vector<GrassAnchor>& anchors,
+                                           const GrassShape& shape);
 
     // Orientation for Y-up SDF instances (flames grow along local +Y):
     // shortest-arc rotation taking +Y to the surface normal `n`, expressed

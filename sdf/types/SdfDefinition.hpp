@@ -21,6 +21,11 @@
 //   Flame:      params0.x = base radius, params0.y = height; params1.x = tip
 //               radius, params1.y = spikiness, params1.z = spike frequency
 //   Smoke:      params0.x = maximum radius, params0.y = seed
+//   Grass:      params0.x = clump radius, params0.y = blade height,
+//               params0.z = blade width, params0.w = blade count;
+//               params1.x = curvature (tip offset fraction of height),
+//               params1.y = maximum wind lean (radians), params1.z = wind
+//               gain (lean radians per m/s), params1.w = tip width fraction
 //
 // prim/op/deformFlags/smoothK are independent scalars (no artificial vec4).
 #include <cstddef>
