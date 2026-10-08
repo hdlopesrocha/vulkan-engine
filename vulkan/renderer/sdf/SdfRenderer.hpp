@@ -38,6 +38,19 @@ class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 // SdfGridCell / SdfParamsUBO / SmokeFragBullet define the contract
 // consumed by shaders/SdfRenderer.vert(.frag) at set=1 bindings 0..8.
 
+// Push constants for the grass-shadow pipeline (112 B; GLSL twin is the
+// push_constant block in shaders/renderer/shadow/SdfGrassShadow.{vert,frag}).
+// The block carries everything the grass-only EVSM caster needs without
+// touching set 0: the cascade matrix, the SDF clock + march budget and the
+// light-to-scene march direction.
+struct SdfGrassShadowPC {
+    glm::mat4 lightViewProj; // cascade light view-projection (world -> light clip)
+    glm::vec4 params;        // x = time (s), y = max steps, z = epsilon, w = safety
+    glm::vec4 march;         // x = max step (m), y = min step (m), z/w unused
+    glm::vec4 lightDir;      // xyz = light-to-scene direction (world), w unused
+};
+static_assert(sizeof(SdfGrassShadowPC) == 112, "SdfGrassShadowPC must be 112 bytes");
+
 // Generic GPU-driven SDF renderer: one instanced proxy-cube draw per SDF
 // container; the fragment shader traverses definitions/materials/grid for the
 // surface, volume, emissive and transparent modes. All modes share the same
@@ -266,6 +279,28 @@ public:
     // frame's slot. Call OUTSIDE a render pass, before render().
     void prepareCull(VkCommandBuffer cmd);
 
+    // ── Grass shadow casting into the EVSM cascades ──────────────────────
+    // Shadow-pass interface. prepareShadowCascade() is called from each
+    // cascade CB BEFORE beginShadowPass starts the dynamic rendering scope
+    // (buffer barriers are not allowed inside a vkCmdBeginRendering scope):
+    // the host flush is dirty-gated, so the slot upload runs exactly once per
+    // frame, while every cascade CB records its own HOST->shader barrier. The
+    // later SDF task then only re-records barriers and never rewrites the
+    // slot while a cascade CB may read it. drawShadowCascade() records the
+    // grass-only proxy draw for one cascade (set 1 = sdfSets[frameIdx] +
+    // push constants; set 0 is left untouched). Only SDF_PRIM_GRASS
+    // definitions ever write moments; fire/smoke/rocks have no path into the
+    // EVSM output.
+    void prepareShadowCascade(VkCommandBuffer cmd, uint32_t frameIdx);
+    void drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
+                           const glm::mat4& lightViewProj, float time);
+    // March direction for the grass shadow shader (the shadow pass owns the
+    // light UBO; the SDF shadow pipeline deliberately does not bind set 0).
+    void setShadowLightDirection(const glm::vec3& dir);
+    // Global SDF clock (last updateParams time). The shadow task runs before
+    // the SDF task, so this is one frame stale — fine for the wind phase.
+    float getTime() const;
+
     // Proxy-cube instanced draw (instanceCount = container count) to this
     // frame's offscreen color+depth. Ends SHADER_READ_ONLY for composite.
     void render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet mainDescriptorSet, uint32_t frameIdx, bool enabled = true);
@@ -285,6 +320,15 @@ private:
     TrackedHandle<VkPipelineLayout> pipelineLayout;
     TrackedHandle<VkShaderModule> vertModule;
     TrackedHandle<VkShaderModule> fragModule;
+
+    // Grass-only EVSM caster for the shadow pass (SdfGrassShadow.*). Null
+    // until its SPIR-V exists (same lazy tolerance as createPipeline); the
+    // shadow draw no-ops while null.
+    TrackedHandle<VkPipeline> shadowPipeline;
+    TrackedHandle<VkPipelineLayout> shadowPipelineLayout;
+    TrackedHandle<VkShaderModule> shadowVertModule;
+    TrackedHandle<VkShaderModule> shadowFragModule;
+    glm::vec3 shadowLightDir_ = glm::vec3(0.0f);
 
     Buffer vertexBuffer;
     Buffer indexBuffer;
@@ -366,6 +410,13 @@ private:
     SdfStats stats_;
     VulkanApp* app_ = nullptr; // stashed for buffer (re)allocation
 
+    // Container range of the GRASS scene inside the merged scene (computed in
+    // refreshMergedLocked from the merge order lava -> rocks -> grass ->
+    // smoke). The shadow pass rasterizes exactly this range so fire/smoke/
+    // rock containers are never drawn.
+    uint32_t grassContainerBase_ = 0;
+    uint32_t grassContainerCount_ = 0;
+
     // Offscreen color+depth targets (one per frame in flight).
     std::array<VkImage, SDF_FRAMES> sdfColorImages{};
     std::array<VmaAllocation, SDF_FRAMES> sdfColorAllocations{};
@@ -383,6 +434,7 @@ private:
     void createCubeBuffers(VulkanApp* app);
     void createDescriptorSet(VulkanApp* app);
     void createPipeline(VulkanApp* app);
+    void createShadowPipeline(VulkanApp* app);
     // Re-merge lava + rock + smoke scenes into pendingScene_, rebuild its
     // bounds and grids (caller holds sceneMutex). Marks all scene slots dirty.
     void refreshMergedLocked();
@@ -396,6 +448,11 @@ private:
     void ensureSlotCapacity(uint32_t slot); // grow slot buffers with headroom; rewrites slot set bindings
     void flushSlotUploads(uint32_t slot);   // memcpy dirty scene vectors/params into slot buffers
     void flushSmokeUpload(uint32_t slot);   // memcpy dirty smoke state into the slot buffer
+    // HOST writes -> VERTEX/FRAGMENT reads for this slot's scene buffers
+    // (instances/definitions/materials/containers/grids/params/smoke); NULL
+    // handles are skipped. Shared by prepareCull, prepareShadowCascade and
+    // render (each command buffer/queue must record its own).
+    void recordHostToShaderBarrier(VkCommandBuffer cmd, uint32_t slot) const;
     void writeSlotBinding(uint32_t slot, uint32_t binding, const Buffer& buf, VkDescriptorType type);
     void refreshDepthBinding(uint32_t slot); // rewrite binding 7 iff the view changed for this slot
     // Auto-loop bullet template (slot 0) from widget defaults (caller holds sceneMutex).

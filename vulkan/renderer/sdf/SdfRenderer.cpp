@@ -16,6 +16,10 @@
 // 2 cube, 3 fire (one generic flame instance on the volumetric fire path).
 static constexpr int kSmokeShapeFire = 3;
 
+// EVSM moment format of the shadow cascades (must match ShadowRenderer's
+// EVSM_FORMAT); used by the grass-shadow pipeline's color attachment.
+static constexpr VkFormat kSdfShadowEvsmFormat = VK_FORMAT_R32G32_SFLOAT;
+
 SdfRenderer::SdfRenderer() = default;
 
 SdfRenderer::~SdfRenderer() { cleanup(nullptr); }
@@ -100,6 +104,7 @@ void SdfRenderer::init(VulkanApp* app) {
     ensureSmokeScene();
     refreshMergedLocked();
     createPipeline(app);
+    createShadowPipeline(app);
 }
 
 void SdfRenderer::createCubeBuffers(VulkanApp* app) {
@@ -226,6 +231,60 @@ void SdfRenderer::createPipeline(VulkanApp* app) {
     pipelineLayout = layoutHandle;
 }
 
+void SdfRenderer::createShadowPipeline(VulkanApp* app) {
+    // Grass-only EVSM caster (shaders/renderer/shadow/SdfGrassShadow.*). Same
+    // lazy tolerance as createPipeline: if the SPIR-V is missing, leave the
+    // pipeline null so the shadow draw cleanly no-ops.
+    try {
+        shadowVertModule = app->getOrCreateShaderModule("shaders/renderer/shadow/SdfGrassShadow.vert.spv");
+        shadowFragModule = app->getOrCreateShaderModule("shaders/renderer/shadow/SdfGrassShadow.frag.spv");
+    } catch (const std::exception& e) {
+        std::cerr << "[SdfRenderer] grass shadow shaders not available yet (" << e.what()
+                  << "); shadow pipeline deferred." << std::endl;
+        return;
+    }
+
+    ShaderStage vertStage(shadowVertModule, VK_SHADER_STAGE_VERTEX_BIT);
+    ShaderStage fragStage(shadowFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    // Set 0 = the app's scene layout. A pipeline layout cannot index set 1
+    // without a set 0; the shadow pass already has its cascade set bound
+    // there (allocated with this layout) and the grass shadow shader never
+    // statically uses it, so this pipeline neither binds nor reads set 0.
+    std::vector<VkDescriptorSetLayout> setLayouts = {
+        app->getDescriptorSetLayout(),
+        descriptorSetLayout
+    };
+
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.offset = 0;
+    pcRange.size = sizeof(SdfGrassShadowPC);
+
+    GraphicsPipelineConfig cfg{};
+    cfg.cullMode = VK_CULL_MODE_NONE; // proxy cubes seen from inside + outside (entry/exit fragments)
+    cfg.depthTestEnable = true;
+    cfg.depthWriteEnable = true;      // gl_FragDepth = grass hit depth (EVSM moment source)
+    cfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    cfg.colorFormats = {kSdfShadowEvsmFormat};
+    cfg.depthFormat = VK_FORMAT_D32_SFLOAT;
+    cfg.depthBiasEnable = true;       // beginShadowRendering sets the dynamic bias
+    auto [pipelineHandle, layoutHandle] = app->createGraphicsPipeline(
+        {vertStage.info, fragStage.info},
+        std::vector<VkVertexInputBindingDescription>{
+            VkVertexInputBindingDescription{0, sizeof(SdfProxyVertex), VK_VERTEX_INPUT_RATE_VERTEX}
+        },
+        {
+            VkVertexInputAttributeDescription{ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SdfProxyVertex, position)}
+        },
+        setLayouts,
+        &pcRange,
+        cfg);
+
+    shadowPipeline = pipelineHandle;
+    shadowPipelineLayout = layoutHandle;
+}
+
 // ─── Scene input ─────────────────────────────────────────────────────────────
 
 void SdfRenderer::repackDebugMode() {
@@ -250,6 +309,14 @@ void SdfRenderer::refreshMergedLocked() {
             sdf_gpu::SdfScene::merge(lavaScene_, rocksScene_), grassScene_),
         smokeScene_);
     pendingScene_.rebuild();
+    // Container range of the GRASS scene inside the merged scene: the merge
+    // expression above concatenates containers in lava -> rocks -> grass ->
+    // smoke order, so the grass containers form a contiguous range. The
+    // shadow pass draws exactly this range, so fire/smoke/rock containers are
+    // never rasterized. Keep in sync with the merge order above.
+    grassContainerBase_ = static_cast<uint32_t>(lavaScene_.containers().size()
+                                              + rocksScene_.containers().size());
+    grassContainerCount_ = static_cast<uint32_t>(grassScene_.containers().size());
     stats_.containerCount = static_cast<uint32_t>(pendingScene_.containers().size());
     stats_.definitionCount = static_cast<uint32_t>(pendingScene_.definitions().size());
     stats_.materialCount = static_cast<uint32_t>(pendingScene_.materials().size());
@@ -1789,23 +1856,13 @@ void SdfRenderer::refreshDepthBinding(uint32_t slot) {
     boundDepthViews_[slot] = pendingDepthView_;
 }
 
-void SdfRenderer::prepareCull(VkCommandBuffer cmd) {
-    if (app_ == nullptr) return;
-    const uint32_t slot = currentFrame_ % SDF_FRAMES;
-    {
-        std::lock_guard<std::mutex> lock(sceneMutex);
-        flushSlotUploads(slot);
-        flushSmokeUpload(slot);
-        refreshDepthBinding(slot);
-    }
-    if (stats_.containerCount == 0) return;
-
-    // HOST writes (slot SSBO + params memcpy above) -> VERTEX/FRAGMENT reads.
+void SdfRenderer::recordHostToShaderBarrier(VkCommandBuffer cmd, uint32_t slot) const {
+    // HOST writes (slot SSBO + params memcpy) -> VERTEX/FRAGMENT reads.
     // Same-thread writes happen-before submit; this Sync2 barrier makes them
     // visible to the shader stages on the recording queue. NULL handles are
     // skipped (a slot whose buffers were never allocated must not emit a
     // barrier entry — VUID forbids VK_NULL_HANDLE there).
-    SdfFrameSlot& f = slots[slot];
+    const SdfFrameSlot& f = slots[slot];
     VkBuffer bufs[8] = {f.instance.buffer, f.definition.buffer, f.material.buffer,
                          f.container.buffer, f.gridCell.buffer, f.gridIndex.buffer, f.params.buffer,
                          f.smoke.buffer};
@@ -1829,6 +1886,57 @@ void SdfRenderer::prepareCull(VkCommandBuffer cmd) {
     dep.bufferMemoryBarrierCount = n;
     dep.pBufferMemoryBarriers = barriers;
     vkCmdPipelineBarrier2(cmd, &dep);
+}
+
+void SdfRenderer::prepareCull(VkCommandBuffer cmd) {
+    if (app_ == nullptr) return;
+    const uint32_t slot = currentFrame_ % SDF_FRAMES;
+    {
+        std::lock_guard<std::mutex> lock(sceneMutex);
+        flushSlotUploads(slot);
+        flushSmokeUpload(slot);
+        refreshDepthBinding(slot);
+    }
+    if (stats_.containerCount == 0) return;
+    recordHostToShaderBarrier(cmd, slot);
+}
+
+void SdfRenderer::prepareShadowCascade(VkCommandBuffer cmd, uint32_t frameIdx) {
+    if (app_ == nullptr || cmd == VK_NULL_HANDLE) return;
+    setFrame(frameIdx);
+    const uint32_t slot = currentFrame_ % SDF_FRAMES;
+    {
+        std::lock_guard<std::mutex> lock(sceneMutex);
+        // Flush this frame's slot. Called from every cascade CB, but the
+        // dirty flags make the host memcpy run exactly once per frame; the
+        // later SDF task's prepareCull then sees clean flags and never
+        // rewrites the scene buffers while a cascade CB may still read them
+        // (params/smoke writes target buffers the grass shadow pipeline does
+        // not read; the scene buffers are gated by sceneDirtySlots_, cleared
+        // here). refreshDepthBinding is deliberately NOT called: the pending
+        // depth view is the PREVIOUS frame's per-slot view here, and binding 7
+        // is unused by the grass shadow shader — rewriting it would flap the
+        // binding and force a second (in-use) descriptor update from the SDF
+        // task. The SDF task keeps maintaining binding 7 exactly as before.
+        flushSlotUploads(slot);
+        flushSmokeUpload(slot);
+    }
+    if (stats_.containerCount == 0) return;
+    // HOST writes -> shader reads, recorded BEFORE beginShadowPass because
+    // buffer barriers are not allowed inside the dynamic rendering scope
+    // (VUID-vkCmdPipelineBarrier2-srcStageMask-09556). Each cascade CB
+    // records its own barrier (they may run on different queues).
+    recordHostToShaderBarrier(cmd, slot);
+}
+
+void SdfRenderer::setShadowLightDirection(const glm::vec3& dir) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    shadowLightDir_ = dir;
+}
+
+float SdfRenderer::getTime() const {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    return params_.time;
 }
 
 // ─── Draw ────────────────────────────────────────────────────────────────────
@@ -1882,31 +1990,7 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
     // one: prepareCull's barrier lives on the cull CB, which may be a
     // different command buffer/queue; without this the draw can read
     // pre-upload state. Same pattern as DebugSDFRenderer::render.
-    // NULL handles are skipped (see prepareCull).
-    VkBuffer bufs[8] = {f.instance.buffer, f.definition.buffer, f.material.buffer,
-                         f.container.buffer, f.gridCell.buffer, f.gridIndex.buffer, f.params.buffer,
-                         f.smoke.buffer};
-    VkBufferMemoryBarrier2 barriers[8]{};
-    uint32_t nBar = 0;
-    for (int i = 0; i < 8; ++i) {
-        if (bufs[i] == VK_NULL_HANDLE) continue;
-        barriers[nBar].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        barriers[nBar].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-        barriers[nBar].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
-        barriers[nBar].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        barriers[nBar].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-        barriers[nBar].buffer = bufs[i];
-        barriers[nBar].offset = 0;
-        barriers[nBar].size = VK_WHOLE_SIZE;
-        ++nBar;
-    }
-    if (nBar > 0) {
-        VkDependencyInfo dep{};
-        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.bufferMemoryBarrierCount = nBar;
-        dep.pBufferMemoryBarriers = barriers;
-        vkCmdPipelineBarrier2(cmd, &dep);
-    }
+    recordHostToShaderBarrier(cmd, slot);
 
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -1933,6 +2017,61 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
     app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
     setSdfColorLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     setSdfDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+void SdfRenderer::drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
+                                    const glm::mat4& lightViewProj, float time) {
+    (void)cascadeIndex; // one draw serves every cascade; only the matrix changes
+    if (app_ == nullptr || cmd == VK_NULL_HANDLE) return;
+    if (shadowPipeline == VK_NULL_HANDLE || shadowPipelineLayout == VK_NULL_HANDLE) return;
+    const uint32_t slot = currentFrame_ % SDF_FRAMES;
+    if (slots[slot].container.buffer == VK_NULL_HANDLE || sdfSets[slot] == VK_NULL_HANDLE) return;
+    if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE ||
+        indexCount == 0) return;
+
+    uint32_t grassBase = 0;
+    uint32_t grassCount = 0;
+    SdfGrassShadowPC pc{};
+    {
+        std::lock_guard<std::mutex> lock(sceneMutex);
+        // Grass-only gate: the pass rasterizes the GRASS container range only
+        // (computed by refreshMergedLocked from the merge order), so fire,
+        // smoke and rock containers are never drawn; the fragment shader
+        // additionally skips every non-grass definition before evaluation.
+        if (!config_.grass.enabled) return;
+        grassBase = grassContainerBase_;
+        grassCount = grassContainerCount_;
+        if (grassCount == 0) return;
+        pc.lightViewProj = lightViewProj;
+        pc.params = glm::vec4(time, params_.maxSteps, params_.epsilon, params_.safety);
+        pc.march = glm::vec4(params_.maxStep, params_.minStep, 0.0f, 0.0f);
+        pc.lightDir = glm::vec4(shadowLightDir_, 0.0f);
+    }
+
+    // HOST -> shader visibility: prepareShadowCascade recorded the barrier on
+    // this command buffer BEFORE beginShadowPass (buffer barriers are not
+    // allowed inside the dynamic rendering scope); same queue + same CB, so
+    // the upload is ordered before this draw.
+    // Raw binds (not cmdState): the SDF renderer's state tracker belongs to
+    // the SDF/main command buffer, never to this cascade CB, so eliding a
+    // bind through it could skip a required bind on this command buffer.
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
+    VkDescriptorSet set = sdfSets[slot];
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout,
+        1, 1, &set, 0, nullptr);
+
+    const VkBuffer vertexBuffers[] = {vertexBuffer.buffer};
+    const VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
+    vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdPushConstants(cmd, shadowPipelineLayout,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        0, sizeof(pc), &pc);
+
+    // One proxy cube per GRASS container; firstInstance offsets into the
+    // merged container array (gl_InstanceIndex includes firstInstance, so the
+    // vertex shader indexes the right container).
+    vkCmdDrawIndexed(cmd, indexCount, grassCount, 0, 0, grassBase);
 }
 
 // ─── Targets / lifecycle ─────────────────────────────────────────────────────

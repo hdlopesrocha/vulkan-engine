@@ -5,6 +5,7 @@
 #include "../solid/SolidRenderer.hpp"
 #include "../water/WaterRenderer.hpp"
 #include "../vegetation/VegetationRenderer.hpp"
+#include "../sdf/SdfRenderer.hpp"
 
 #include "../../core/VulkanApp.hpp"
 #include "../../pipeline/ShaderStage.hpp"
@@ -28,10 +29,11 @@ ShadowRenderer::ShadowRenderer(uint32_t maxShadowMapSize)
 ShadowRenderer::~ShadowRenderer() {}
 
 void ShadowRenderer::setSceneRenderers(SolidRenderer* solid, WaterRenderer* liquid,
-                                       VegetationRenderer* vegetation) {
+                                       VegetationRenderer* vegetation, SdfRenderer* sdf) {
     solidRenderer_ = solid;
     liquidRenderer_ = liquid;
     vegetationRenderer_ = vegetation;
+    sdfRenderer_ = sdf;
 }
 
 void ShadowRenderer::createStagingBuffers(VulkanApp* app, size_t frameCount) {
@@ -849,6 +851,16 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
     // in passParams.y, so with it off the TES would emit level 1.0 without
     // displacement — bind the no-tess twin instead (see beginShadowRendering).
     shadowTessOff_ = !shadowTessellationEnabled;
+
+    // SDF grass shadow caster: flush this frame's SDF slot and record the
+    // HOST->shader barrier on THIS cascade CB, before beginShadowPass starts
+    // the dynamic rendering scope (buffer barriers are not allowed inside a
+    // vkCmdBeginRendering scope). The host memcpy is dirty-gated, so it runs
+    // exactly once per frame (first cascade); the barrier is re-recorded per
+    // cascade CB because each may run on a different queue. After this the
+    // later SDF task's prepareCull only re-records barriers and never
+    // rewrites the scene buffers while a cascade CB may read them.
+    if (sdfRenderer_) sdfRenderer_->prepareShadowCascade(cmd, frameIdx);
     // Per-cascade UBO: viewProjection = cascade light matrix; passParams.x must be
     // 0 so the TES emits fragPosWorld (required by the EVSM fragment shader).
     UniformObject shadowUBO = uboStatic;
@@ -912,6 +924,15 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
         vegetationRenderer_->drawShadowCascade(app, cmd, ds, camPos, cascadeIndex);
     }
 
+    // Grass-only SDF caster: drawn after the rasterized casters so the depth
+    // test resolves grass against solid/vegetation (grass behind an occluder
+    // must not overwrite its nearer EVSM moments). Only SDF_PRIM_GRASS
+    // definitions ever reach outEVSM (SdfGrassShadow.frag).
+    if (sdfRenderer_) {
+        const float sdfTime = sdfRenderer_->getTime();
+        sdfRenderer_->drawShadowCascade(cmd, cascadeIndex, lsMatrix, sdfTime);
+    }
+
     endShadowPass(app, cmd, cascadeIndex);
 }
 
@@ -961,6 +982,10 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
     const glm::mat4 cascadeMatrices[SHADOW_CASCADE_COUNT] = {
         uboStatic.lightSpaceMatrix, uboStatic.lightSpaceMatrix1, uboStatic.lightSpaceMatrix2
     };
+
+    // Grass shadow march direction: the same directional light the rasterized
+    // casters use (the SDF shadow pipeline deliberately has no set-0 access).
+    if (sdfRenderer_) sdfRenderer_->setShadowLightDirection(uboStatic.lightDirection);
 
     // ── 1. Serial cascade cull (writes the shared cull buffers) ──
     VkCommandBuffer cullCmd = VK_NULL_HANDLE;
