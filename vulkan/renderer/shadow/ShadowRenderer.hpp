@@ -12,6 +12,7 @@
 class SolidRenderer;
 class WaterRenderer;
 class VegetationRenderer;
+class SdfRenderer;
 class SolidRenderer;
 
 class ShadowRenderer : public Renderer {
@@ -23,8 +24,9 @@ public:
 
     // Inject the scene sub-renderers whose geometry is drawn into the shadow
     // map. Called once by SceneRenderer after all sub-renderers are created.
+    // `sdf` adds the grass-only SDF caster (may be null: no SDF shadows).
     void setSceneRenderers(SolidRenderer* solid, WaterRenderer* liquid,
-                           VegetationRenderer* vegetation);
+                           VegetationRenderer* vegetation, SdfRenderer* sdf = nullptr);
 
     // Per-frame staging buffers for shadow UBO uploads via vkCmdCopyBuffer
     // (replaces vkCmdUpdateBuffer to avoid implicit FULL_QUEUE barrier).
@@ -209,4 +211,6 @@ private:
     SolidRenderer* solidRenderer_ = nullptr;
     WaterRenderer* liquidRenderer_ = nullptr;
     VegetationRenderer* vegetationRenderer_ = nullptr;
+    // Grass-only SDF shadow caster (prepareShadowCascade/drawShadowCascade).
+    SdfRenderer* sdfRenderer_ = nullptr;
 };

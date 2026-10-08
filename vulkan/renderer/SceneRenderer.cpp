@@ -792,7 +792,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // offscreen pass and is wired directly from MyApp.
     if (shadowMapper) {
         shadowMapper->setSceneRenderers(solidRenderer.get(), waterRenderer.get(),
-                                        vegetationRenderer.get());
+                                        vegetationRenderer.get(), sdfRenderer.get());
     }
     if (waterRenderer) {
         waterRenderer->setSceneRenderers(solidRenderer.get(),
