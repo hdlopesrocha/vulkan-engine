@@ -144,10 +144,11 @@ void SdfRenderer::createCubeBuffers(VulkanApp* app) {
 void SdfRenderer::createDescriptorSet(VulkanApp* app) {
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
-    // set=1 bindings 0..8: 0 instances, 1 definitions, 2 materials,
+    // set=1 bindings 0..9: 0 instances, 1 definitions, 2 materials,
     // 3 containers, 4 gridCells, 5 gridIndices, 6 params UBO, 7 sceneDepth,
-    // 8 smoke state (tuning + bullets, fragment only).
-    VkDescriptorSetLayoutBinding bindings[9]{};
+    // 8 smoke state (tuning + bullets, fragment only), 9 waterDepth
+    // (rasterized water surface, fragment only).
+    VkDescriptorSetLayoutBinding bindings[10]{};
     auto storage = [&](uint32_t b, VkShaderStageFlags stages) {
         bindings[b].binding = b;
         bindings[b].descriptorCount = 1;
@@ -170,14 +171,20 @@ void SdfRenderer::createDescriptorSet(VulkanApp* app) {
     bindings[7].descriptorCount = 1;
     bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Water-surface depth: same kind of clamp as binding 7, gated by
+    // SdfParamsUBO::waterDepthEnabled.
+    bindings[9].binding = 9;
+    bindings[9].descriptorCount = 1;
+    bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[9].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     descriptorSetLayout = descAlloc.createLayout(
-        bindings, 9, 0, nullptr, "SdfRenderer: descriptorSetLayout");
+        bindings, 10, 0, nullptr, "SdfRenderer: descriptorSetLayout");
 
     VkDescriptorPoolSize poolSizes[3] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7 * SDF_FRAMES},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * SDF_FRAMES},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 * SDF_FRAMES},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * SDF_FRAMES},
     };
     descriptorPool = descAlloc.createPool(
         poolSizes, 3, SDF_FRAMES, VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
@@ -503,6 +510,17 @@ void SdfRenderer::setSceneDepth(VkImageView view, VkImageLayout layout) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     pendingDepthView_ = view;
     pendingDepthLayout_ = layout;
+}
+
+void SdfRenderer::setWaterDepth(VkImageView view, VkImageLayout layout, bool enabled) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    pendingWaterDepthView_ = view;
+    pendingWaterDepthLayout_ = layout;
+    if (pendingWaterDepthEnabled_ != enabled) {
+        pendingWaterDepthEnabled_ = enabled;
+        params_.waterDepthEnabled = enabled ? 1.0f : 0.0f;
+        paramsDirtySlots_.fill(true);
+    }
 }
 
 // ─── Lava-anchored fire collection ─────────────────────────────────────────
@@ -1852,14 +1870,25 @@ void SdfRenderer::flushSmokeUpload(uint32_t slot) {
 }
 
 void SdfRenderer::refreshDepthBinding(uint32_t slot) {
-    if (pendingDepthView_ == VK_NULL_HANDLE) return;
-    if (boundDepthViews_[slot] == pendingDepthView_) return; // dedupe: no per-frame rewrites
     if (depthSampler == VK_NULL_HANDLE) return;
     DescriptorWriter writer(app_->getDevice());
-    writer.writeImage(sdfSets[slot], 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        depthSampler, pendingDepthView_, pendingDepthLayout_);
-    writer.flush();
-    boundDepthViews_[slot] = pendingDepthView_;
+    bool wrote = false;
+    if (pendingDepthView_ != VK_NULL_HANDLE && boundDepthViews_[slot] != pendingDepthView_) {
+        writer.writeImage(sdfSets[slot], 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            depthSampler, pendingDepthView_, pendingDepthLayout_);
+        boundDepthViews_[slot] = pendingDepthView_;
+        wrote = true;
+    }
+    // Binding 9 is rewritten only when the water view handle changes (the
+    // enabled flag lives in the params UBO, not the descriptor).
+    if (pendingWaterDepthView_ != VK_NULL_HANDLE &&
+        boundWaterDepthViews_[slot] != pendingWaterDepthView_) {
+        writer.writeImage(sdfSets[slot], 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            depthSampler, pendingWaterDepthView_, pendingWaterDepthLayout_);
+        boundWaterDepthViews_[slot] = pendingWaterDepthView_;
+        wrote = true;
+    }
+    if (wrote) writer.flush();
 }
 
 void SdfRenderer::recordHostToShaderBarrier(VkCommandBuffer cmd, uint32_t slot) const {
@@ -2136,11 +2165,21 @@ void SdfRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t h
             DescriptorWriter writer(app->getDevice());
             writer.writeImage(sdfSets[i], 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 depthSampler, sdfDepthImageViews[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            // Binding 9 (water depth) placeholder: same self-depth view so the
+            // set is complete before the first setWaterDepth(); the shader
+            // only samples it while params_.waterDepthEnabled > 0.5, so the
+            // placeholder is never read as water.
+            writer.writeImage(sdfSets[i], 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                depthSampler, sdfDepthImageViews[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             writer.flush();
             boundDepthViews_[i] = sdfDepthImageViews[i];
+            boundWaterDepthViews_[i] = sdfDepthImageViews[i];
             // A later setSceneDepth() with a different view replaces this via refreshDepthBinding().
             if (pendingDepthView_ != VK_NULL_HANDLE && pendingDepthView_ != sdfDepthImageViews[i])
                 boundDepthViews_[i] = VK_NULL_HANDLE; // force refresh to the pending view
+            if (pendingWaterDepthView_ != VK_NULL_HANDLE &&
+                pendingWaterDepthView_ != sdfDepthImageViews[i])
+                boundWaterDepthViews_[i] = VK_NULL_HANDLE;
         }
     }
 
@@ -2159,6 +2198,7 @@ void SdfRenderer::destroyRenderTargets(VulkanApp* app) {
         sdfDepthMemories[i] = VK_NULL_HANDLE;
         sdfDepthImageViews[i] = VK_NULL_HANDLE;
         boundDepthViews_[i] = VK_NULL_HANDLE;
+        boundWaterDepthViews_[i] = VK_NULL_HANDLE;
     }
 }
 

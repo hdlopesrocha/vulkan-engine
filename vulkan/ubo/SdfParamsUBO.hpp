@@ -19,6 +19,10 @@ struct alignas(16) SdfParamsUBO {
     float earlyTerm = 0.99f;  // offset 24  opacity early-out threshold
     uint32_t renderMode = 1u; // offset 28  SdfRenderer::RenderMode
     uint32_t debugFlags = 0u; // offset 32  debug bitfield
+    // Water-surface depth clamp (set=1 binding 9 sdfWaterDepth): 1 when the
+    // water pass wrote a valid geometry depth this frame. 0 keeps the shader
+    // on the solid-depth clamp only.
+    float waterDepthEnabled = 0.0f; // offset 36
 };
 static_assert(sizeof(SdfParamsUBO) == 48, "SdfParamsUBO must be 48 bytes (std140 padding)");
 static_assert(offsetof(SdfParamsUBO, time) == 0, "time offset");
@@ -30,3 +34,4 @@ static_assert(offsetof(SdfParamsUBO, epsilon) == 20, "epsilon offset");
 static_assert(offsetof(SdfParamsUBO, earlyTerm) == 24, "earlyTerm offset");
 static_assert(offsetof(SdfParamsUBO, renderMode) == 28, "renderMode offset");
 static_assert(offsetof(SdfParamsUBO, debugFlags) == 32, "debugFlags offset");
+static_assert(offsetof(SdfParamsUBO, waterDepthEnabled) == 36, "waterDepthEnabled offset");

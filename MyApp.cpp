@@ -2154,50 +2154,6 @@ public:
             });
         }
 
-        // --- SDF debug cubes + generic SDF volumes (fire) on one CB (signals tlSdf) ---
-        // Both render to their own offscreens on the dedicated sdfQueue.
-        // Debug cubes depend on the cull task's SDF buffers (tlCull); the
-        // generic SdfRenderer (fire) is self-contained (own grid upload) and
-        // shares the same submit so only one tlSdf signal is needed.
-        {
-            const bool sdfEnabled = settings.showSDFDebug;
-            asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, v]() {
-                // SDF fire is always on, so the task runs every frame (no
-                // steady-state elision: the same CB carries the fire render).
-                // The debug-cubes pass is gated by sdfEnabled internally.
-                MyApp* app = this;
-                VkCommandBuffer sdfCmd = app->beginAsyncTask("sdf");
-                if (sdfCmd == VK_NULL_HANDLE) return;
-                CommandBufferState taskState;
-                this->sceneRenderer->setCmdState(&taskState);
-                if (this->sceneRenderer->debugSDFRenderer) {
-                    this->sceneRenderer->debugSDFRenderer->render(this, sdfCmd, app->getMainDescriptorSet(), frameIdx, sdfEnabled);
-                }
-                // Generic SDF volume (fire): GPU-procedural animation needs no
-                // CPU scene edits; just stream the time uniform per frame. The
-                // in-shader depth clamp samples the solid depth, which is
-                // valid here because this submit waits on tlSolid (same wait
-                // the water pass uses) after the solid pass transitioned it
-                // to SHADER_READ_ONLY.
-                if (this->sceneRenderer->sdfRenderer) {
-                    float t = this->mainTime * (this->raymarchWidget ? this->raymarchWidget->timeScale : 1.0f);
-                    this->sceneRenderer->sdfRenderer->setFrame(frameIdx);
-                    this->sceneRenderer->sdfRenderer->updateParams(t, frameIdx);
-                    if (this->sceneRenderer->solidRenderer) {
-                        VkImageView dv = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
-                        if (dv != VK_NULL_HANDLE)
-                            this->sceneRenderer->sdfRenderer->setSceneDepth(dv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    }
-                    this->sceneRenderer->sdfRenderer->prepareCull(sdfCmd);
-                    this->sceneRenderer->sdfRenderer->render(this, sdfCmd, app->getMainDescriptorSet(), frameIdx, true);
-                }
-                // Wait on tlCull (cull buffers) AND tlSolid (solid depth is
-                // sampled for occlusion after its SHADER_READ_ONLY transition,
-                // exactly like the water pass); signal tlSdf for the composite.
-                app->submitCommandBufferAsyncToQueue(sdfCmd, app->getSdfQueue(), &tlSdf, {tlCull, tlSolid}, true, {}, {v, v}, v, {}, true);
-            });
-        }
-
         // --- Mesh bounding boxes on its own command buffer (signals semBbox) ---
         // Renders to its own offscreen color+depth framebuffer (decoupled from the
         // solid pass) so it runs in parallel with the solid/vegetation shading on the
@@ -2643,6 +2599,73 @@ public:
             } catch (...) {
                 std::cerr << "[Async] back-face task failed with unknown error, skipping back-face pass this frame" << std::endl;
             }
+        }
+
+        // --- SDF debug cubes + generic SDF volumes (fire/grass) on one CB
+        // (signals tlSdf) ---
+        // Enqueued AFTER the back-face/water join: the submit waits on
+        // tlWater, and a timeline wait is only valid once the water signal
+        // submit is guaranteed to precede it (same main-thread join pattern
+        // as asyncShadowFuture -> solid). Both passes render to their own
+        // offscreens on the dedicated sdfQueue. Debug cubes depend on the
+        // cull task's SDF buffers (tlCull); the generic SdfRenderer is
+        // self-contained (own grid upload) and shares the same submit so only
+        // one tlSdf signal is needed.
+        {
+            const bool sdfEnabled = settings.showSDFDebug;
+            const bool sdfWaterEnabled = settings.waterEnabled;
+            const bool sdfWaterInMain = settings.waterInMainPass;
+            asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, sdfWaterEnabled, sdfWaterInMain, v]() {
+                // SDF fire is always on, so the task runs every frame (no
+                // steady-state elision: the same CB carries the fire render).
+                // The debug-cubes pass is gated by sdfEnabled internally.
+                MyApp* app = this;
+                VkCommandBuffer sdfCmd = app->beginAsyncTask("sdf");
+                if (sdfCmd == VK_NULL_HANDLE) return;
+                CommandBufferState taskState;
+                this->sceneRenderer->setCmdState(&taskState);
+                if (this->sceneRenderer->debugSDFRenderer) {
+                    this->sceneRenderer->debugSDFRenderer->render(this, sdfCmd, app->getMainDescriptorSet(), frameIdx, sdfEnabled);
+                }
+                // Generic SDF volume (fire/grass): GPU-procedural animation
+                // needs no CPU scene edits; just stream the time uniform per
+                // frame. The in-shader depth clamp samples the solid depth
+                // (tlSolid) AND the rasterized water surface (tlWater), both
+                // transitioned to SHADER_READ_ONLY before this submit runs.
+                if (this->sceneRenderer->sdfRenderer) {
+                    float t = this->mainTime * (this->raymarchWidget ? this->raymarchWidget->timeScale : 1.0f);
+                    this->sceneRenderer->sdfRenderer->setFrame(frameIdx);
+                    this->sceneRenderer->sdfRenderer->updateParams(t, frameIdx);
+                    if (this->sceneRenderer->solidRenderer) {
+                        VkImageView dv = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
+                        if (dv != VK_NULL_HANDLE)
+                            this->sceneRenderer->sdfRenderer->setSceneDepth(dv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    }
+                    // Water-surface occluder: the geometry depth target is
+                    // valid only when the water pass wrote its aux attachments
+                    // this frame (the same gate the composite uses for its
+                    // water depth test). Empty-water clear-only frames clear
+                    // it to 1.0, which reads as "no occluder".
+                    if (this->sceneRenderer->waterRenderer) {
+                        const bool waterDepthValid = sdfWaterEnabled && !sdfWaterInMain &&
+                            this->sceneRenderer->waterRenderer->waterBlurNeeded();
+                        VkImageView wdv = this->sceneRenderer->waterRenderer->getWaterGeomDepthView(frameIdx);
+                        // A null view clears the enabled flag (binding keeps
+                        // its placeholder); refreshDepthBinding skips nulls.
+                        this->sceneRenderer->sdfRenderer->setWaterDepth(wdv,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            waterDepthValid && wdv != VK_NULL_HANDLE);
+                    }
+                    this->sceneRenderer->sdfRenderer->prepareCull(sdfCmd);
+                    this->sceneRenderer->sdfRenderer->render(this, sdfCmd, app->getMainDescriptorSet(), frameIdx, true);
+                }
+                // Wait on tlCull (cull buffers), tlSolid (solid depth) and
+                // tlWater (water surface depth, both sampled for occlusion
+                // after their SHADER_READ_ONLY transitions); signal tlSdf for
+                // the composite.
+                app->submitCommandBufferAsyncToQueue(sdfCmd, app->getSdfQueue(), &tlSdf,
+                    {tlCull, tlSolid, tlWater}, true, {}, {v, v, v}, v, {}, true);
+            });
         }
         // Wait for the shadow + vegetation async tasks (same rationale as above:
         // keeps their signal semaphores valid and avoids concurrent descriptor-set

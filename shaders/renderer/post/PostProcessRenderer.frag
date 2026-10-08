@@ -204,6 +204,11 @@ void main() {
     // and hid the water entirely - black water in Minimal, correct in Maximum,
     // which is the signature that led here. waterBlurEnabled is exactly "the
     // aux attachments were written this frame" (H4).
+    // Rasterized water-surface depth (valid only when the aux attachments
+    // were written this frame). Kept in scope so the SDF composite below can
+    // depth-test against the VISIBLE water surface in addition to
+    // solids/vegetation.
+    float waterSurfaceDepth = 1.0;
     if (waterAlpha > 0.0 && ubo.waterBlurEnabled > 0.5) {
         vec2 wtexel = 1.0 / vec2(textureSize(waterGeomDepthTex, 0));
         // M9: explicit LOD (divergent flow — implicit derivatives are
@@ -215,6 +220,10 @@ void main() {
         float waterGeomDepth = min(min(wd00, wd10), min(wd01, wd11));
         if (waterGeomDepth < 1.0 && obstacleDepth < waterGeomDepth) {
             waterAlpha = 0.0;
+        } else if (waterGeomDepth < 1.0) {
+            // Water remains visible: its surface is a valid occluder for the
+            // SDF composite below (grass behind water must stay hidden).
+            waterSurfaceDepth = waterGeomDepth;
         }
     }
     vec3 afterWater = mix(baseColor, waterColor.rgb, waterAlpha);
@@ -239,8 +248,11 @@ void main() {
     // The volume target stores front-to-back accumulation whose rgb is
     // already transmittance-weighted, so the correct OVER is
     // dst*(1-a) + src (a plain mix() would dim the fire twice).
+    // Occluder depth includes the visible water surface: SDF grass (and every
+    // generic SDF) behind water must not composite over it.
+    float sdfObstacleDepth = min(obstacleDepth, waterSurfaceDepth);
     float fireDepth = texture(fireDepthTex, uv).r;
-    if (fireDepth < 1.0 && !(obstacleDepth < fireDepth)) {
+    if (fireDepth < 1.0 && !(sdfObstacleDepth < fireDepth)) {
         vec4 fireColor = textureLod(fireColorTex, uv, 0.0);
         float fa = clamp(fireColor.a, 0.0, 1.0);
         if (fa > 0.0) {
@@ -249,11 +261,12 @@ void main() {
     }
 
     // 6. Debug overlays (SDF cubes + mesh bounding boxes) — composited after the
-    // brush so they sit on top, but still occluded by solid + vegetation geometry.
-    // Both render to their own offscreen depth; we hide a debug fragment that is
-    // behind the current obstacle (solid or vegetation) surface.
+    // brush so they sit on top, but still occluded by solid + vegetation + water
+    // geometry. Both render to their own offscreen depth; we hide a debug
+    // fragment that is behind the current obstacle (solid/vegetation/water)
+    // surface.
     float sdfDepth = texture(sdfDepthTex, uv).r;
-    if (sdfDepth < 1.0 && !(obstacleDepth < sdfDepth)) {
+    if (sdfDepth < 1.0 && !(sdfObstacleDepth < sdfDepth)) {
         // M9: explicit LOD (divergent flow, same argument as above).
         vec4 sdfColor = textureLod(sdfColorTex, uv, 0.0);
         if (sdfColor.a > 0.0) {
