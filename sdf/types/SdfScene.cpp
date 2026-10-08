@@ -120,9 +120,13 @@ glm::vec3 localHalfExtents(SdfPrimitiveType prim, const glm::vec4& p0, const glm
             const float hgt = std::max(p0.y, 0.0f) * height;
             const float wid = std::max(p0.z, 0.0f) * std::max(radial, height);
             const float lean = std::min(std::max(p1.y, 0.0f), 1.4f);
-            // Per-blade curvature reaches 1.4 x params1.x (SdfGrass.glsl), so
-            // the bound must use the same ceiling or the AABB/grid cull could
-            // clip bent blades.
+            // Per-blade curvature reaches 1.4 x params1.x (SdfGrass.glsl); the
+            // per-blade wind blend only rotates the bend direction inside the
+            // unit disk, so the same ceiling covers it. The shader also caps
+            // the width by the blade height (slope guard) and the conservative
+            // taper bound inflates cap radii by 1/cosA <= ~1.3; both stay
+            // within the 2 x width margin below, so using the unclamped p0.z
+            // here keeps the AABB/grid cull conservative.
             const float curve = std::max(p1.x, 0.0f) * 1.4f;
             const float extXZ = rad + 2.0f * wid + hgt * (std::sin(lean) + curve);
             return glm::vec3(std::max(extXZ, 0.001f),
