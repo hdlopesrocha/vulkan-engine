@@ -36,7 +36,8 @@ class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 // ─── GPU types (canonical std430 contract, one file per struct) ────────────
 // SdfDefinition / SdfInstance / SdfMaterial / SdfContainer /
 // SdfGridCell / SdfParamsUBO / SmokeFragBullet define the contract
-// consumed by shaders/SdfRenderer.vert(.frag) at set=1 bindings 0..8.
+// consumed by shaders/SdfRenderer.vert(.frag) at set=1 bindings 0..9
+// (9 = rasterized water-surface depth for the solid+water march clamp).
 
 // Push constants for the grass-shadow pipeline (112 B; GLSL twin is the
 // push_constant block in shaders/renderer/shadow/SdfGrassShadow.{vert,frag}).
@@ -277,6 +278,12 @@ public:
     // May be called every frame; the descriptor is rewritten only when the
     // view handle actually changes (per frame slot), never blindly per frame.
     void setSceneDepth(VkImageView view, VkImageLayout layout);
+    // Rasterized water-surface geometry depth (WaterRenderer::
+    // getWaterGeomDepthView) used to clamp the march exit against water.
+    // `enabled` gates the shader side (SdfParamsUBO::waterDepthEnabled) and
+    // must be false when the water pass did not write a valid geometry depth
+    // this frame (Minimal/aux-less water variant, water disabled).
+    void setWaterDepth(VkImageView view, VkImageLayout layout, bool enabled);
 
     // Host->SSBO upload (pending memcpys) + Sync2 visibility barrier for this
     // frame's slot. Call OUTSIDE a render pass, before render().
@@ -409,6 +416,12 @@ private:
     VkImageView pendingDepthView_ = VK_NULL_HANDLE;
     VkImageLayout pendingDepthLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     std::array<VkImageView, SDF_FRAMES> boundDepthViews_{};
+    // Water-surface depth binding (set=1 binding 9): same per-slot dedupe.
+    // The shader only samples it while params_.waterDepthEnabled > 0.5.
+    VkImageView pendingWaterDepthView_ = VK_NULL_HANDLE;
+    VkImageLayout pendingWaterDepthLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    bool pendingWaterDepthEnabled_ = false;
+    std::array<VkImageView, SDF_FRAMES> boundWaterDepthViews_{};
 
     SdfStats stats_;
     VulkanApp* app_ = nullptr; // stashed for buffer (re)allocation

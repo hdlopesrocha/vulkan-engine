@@ -63,6 +63,7 @@ layout(std140, set = 1, binding = 6) uniform SdfParamsBlock {
     SdfParamsUBO sdfParams;
 };
 layout(set = 1, binding = 7) uniform sampler2D sdfSceneDepth;
+layout(set = 1, binding = 9) uniform sampler2D sdfWaterDepth;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -84,13 +85,27 @@ bool sdfRayAabb(vec3 ro, vec3 rd, vec3 bMin, vec3 bMax,
     return tExit > max(tEnter, 0.0);
 }
 
-float sdfSceneDistance(vec3 ro, vec2 uv) {
+// One depth-texture tap -> world distance from the camera (1e5 when the texel
+// is empty/far). Shared by the solid and the water occluders.
+float sdfDepthDistance(sampler2D depthTex, vec3 ro, vec2 uv) {
     vec2 cuv = clamp(uv, vec2(0.0), vec2(1.0));
-    float raw = textureLod(sdfSceneDepth, cuv, 0.0).r;
+    float raw = textureLod(depthTex, cuv, 0.0).r;
     if (raw >= 1.0) return 1e5;
     vec4 w = ubo.invViewProjection * vec4(cuv * 2.0 - 1.0, raw, 1.0);
     if (abs(w.w) < 1e-8) return 1e5;
     return distance(ro, w.xyz / w.w);
+}
+
+// Nearest rasterized occluder distance: the solid scene depth always, plus
+// the rasterized water surface when the water pass wrote a valid geometry
+// depth this frame (SdfParamsUBO::waterDepthEnabled). Clamping the march exit
+// with the minimum occludes grass (and every SDF) behind solid AND water.
+float sdfSceneDistance(vec3 ro, vec2 uv) {
+    float d = sdfDepthDistance(sdfSceneDepth, ro, uv);
+    if (sdfParams.waterDepthEnabled > 0.5) {
+        d = min(d, sdfDepthDistance(sdfWaterDepth, ro, uv));
+    }
+    return d;
 }
 
 // World -> local through the generic SdfModel (sdf_model.glsl): inverse TRS.
