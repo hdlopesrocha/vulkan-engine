@@ -141,12 +141,10 @@ void CloudWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Wind / Animation");
         ImGuiComponents::ColSeparator();
-        ImGuiComponents::FieldLabel("Wind Speed", "Horizontal drift speed.");
+        ImGuiComponents::FieldLabel("Wind Response", "Cloud gain on the shared wind field (Wind widget: ambient direction/strength, gusts, tornadoes). 0 = clouds ignore wind.");
         ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Wind Speed", &settings.windSpeed, 0.0f, 60.0f, "%.1f m/s");
-        ImGuiComponents::FieldLabel("Wind Angle", "0 = +X, 90 = +Z.");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Wind Angle", &settings.windAngleDeg, 0.0f, 360.0f, "%.0f deg");
+        ImGui::SliderFloat("##Wind Response", &settings.windResponse, 0.0f, 10.0f, "%.2f");
+        ImGuiComponents::TooltipOnHover("Cloud gain on the shared wind field (Wind widget: ambient direction/strength, gusts, tornadoes). 0 = clouds ignore wind.");
         ImGuiComponents::FieldLabel("Time Scale", "Animation speed multiplier.");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Time Scale", &settings.timeScale, 0.0f, 4.0f, "%.2f");

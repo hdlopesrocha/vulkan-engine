@@ -3,10 +3,10 @@
 //
 // The ambient + tornado wind state lives in ONE uniform buffer on the MAIN
 // descriptor set (set=0, binding 27) so every consumer (vegetation vertex,
-// fire, SDF) samples the identical field. VegetationRenderer owns the buffer
-// and packs it; SceneRenderer binds it once at init (static set, copied to
-// per-frame sets). Contents stream via host memcpy with write-on-change
-// memcmp — never via per-frame descriptor writes.
+// fire, SDF, volumetric clouds) samples the identical field. VegetationRenderer
+// owns the buffer and packs it; SceneRenderer binds it once at init (static
+// set, copied to per-frame sets). Contents stream via host memcpy with
+// write-on-change memcmp — never via per-frame descriptor writes.
 //
 // Grounding note: there is NO runtime CPU height query reachable from the
 // updater (HeightFunction::getHeightAt implementations are build-time only:

@@ -39,8 +39,11 @@ struct CloudSettings {
     float highWindSpeedMul = 2.5f;
 
     // --- Global wind / animation ---
-    float windSpeed = 12.0f;         // m/s horizontal drift
-    float windAngleDeg = 45.0f;      // 0 = +X, 90 = +Z
+    // Cloud gain on the shared wind field (Wind widget: ambient
+    // direction/strength + gusts + tornadoes). 3.0 reproduces the previous
+    // default drift pace at the default ambient strength (4 m/s).
+    // 0 = clouds ignore wind.
+    float windResponse = 3.0f;
     float timeScale = 0.02f;          // animation speed multiplier
     float detailStrength = 0.35f;    // erosion detail amount (0 = smooth)
 

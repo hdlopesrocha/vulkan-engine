@@ -1657,7 +1657,7 @@ public:
                 clouds.lowEnabled ? 1.0f : 0.0f, clouds.midEnabled ? 1.0f : 0.0f, clouds.highEnabled ? 1.0f : 0.0f,
                 clouds.lowCoverage, clouds.midCoverage, clouds.highCoverage, cloudT,
                 clouds.lowDensity, clouds.midDensity, clouds.highDensity,
-                clouds.densityScale, clouds.windSpeed, clouds.windAngleDeg,
+                clouds.densityScale, clouds.windResponse, 0.0f,
                 clouds.lowScale, clouds.midScale, clouds.highScale,
                 clouds.lowBaseHeight, clouds.midBaseHeight, clouds.highBaseHeight,
                 clouds.lowThickness, clouds.midThickness, clouds.highThickness,

@@ -240,8 +240,8 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
 
     // binding 27: shared wind-field UBO (ambient + up to 4 tornadoes, packed
     // by VegetationRenderer). Read via shaders/includes/vegetation/WindField.glsl by
-    // every consumer (vegetation vertex, fire, SDF) so all sample the
-    // identical field. Appended after 26: binding 11 stays intentionally
+    // every consumer (vegetation vertex, fire, SDF, volumetric clouds) so all
+    // sample the identical field. Appended after 26: binding 11 stays intentionally
     // absent (legacy 360 cubemap; load-bearing hole — descriptor-buffer
     // offsets, shadow-set comments and the RT-compaction note below assume
     // it), and appending keeps the TLAS-compaction index below valid.

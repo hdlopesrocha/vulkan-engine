@@ -1,9 +1,9 @@
 // Shared wind-field sampling contract (set=0, binding 27).
 //
-// Every consumer (vegetation vertex, fire, SDF) includes this file to sample
-// the IDENTICAL field: ambient base flow + Perlin gusts + up to 4 Rankine
-// tornadoes, all GPU-side functions of the consumer's own clock (Bullet
-// pattern: zero per-frame CPU beyond the packed UBO).
+// Every consumer (vegetation vertex, fire, SDF, volumetric clouds) includes
+// this file to sample the IDENTICAL field: ambient base flow + Perlin gusts +
+// up to 4 Rankine tornadoes, all GPU-side functions of the consumer's own
+// clock (Bullet pattern: zero per-frame CPU beyond the packed UBO).
 //
 // Requires perlin.glsl (perlinNoise3D) to be included BEFORE this file.
 // The uniform block is declared here so consumers only need this one include.

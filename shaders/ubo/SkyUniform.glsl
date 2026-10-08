@@ -8,8 +8,8 @@
 //   horizonColor 0, warmth 12, zenithColor 16, exponent 28,
 //   nightHorizonColor 32, sunFlare 44, nightZenithColor 48, nightIntensity 60,
 //   starIntensity 64, skyMode 68, cloudsEnabled 72, lowEnabled 76,
-//   midEnabled 80, highEnabled 84, densityScale 88, windSpeed 92,
-//   windAngleRad 96, detailStrength 100, cloudTime 104, shadowStrength 108,
+//   midEnabled 80, highEnabled 84, densityScale 88, windResponse 92,
+//   windTime 96, detailStrength 100, cloudTime 104, shadowStrength 108,
 //   raymarchSteps 112, lightSteps 116, lowCoverage 120, lowDensity 124,
 //   lowScale 128, lowWindSpeedMul 132, lowBaseHeight 136, lowThickness 140,
 //   midCoverage 144, midDensity 148, midScale 152, midWindSpeedMul 156,
@@ -34,8 +34,8 @@ struct SkyUniform {
     uint midEnabled;        // offset  80
     uint highEnabled;       // offset  84
     float densityScale;     // offset  88
-    float windSpeed;        // offset  92
-    float windAngleRad;     // offset  96
+    float windResponse;     // offset  92  cloud gain on the shared wind field
+    float windTime;         // offset  96  real shared-wind clock (seconds)
     float detailStrength;   // offset 100
     float cloudTime;        // offset 104  advanced on CPU
     float shadowStrength;   // offset 108

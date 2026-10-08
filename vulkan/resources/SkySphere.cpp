@@ -71,14 +71,17 @@ void SkySphere::fillSkyUniform(SkyUniform& out) const {
     if (cloudSettings) {
         masterOn = cloudSettings->enabled;
         if (hasCloudsOverride) masterOn = masterOn && cloudsEnabledOverride;
-        const float windRad = glm::radians(cloudSettings->windAngleDeg);
         out.cloudsEnabled = masterOn ? 1u : 0u;
         out.lowEnabled = cloudSettings->lowEnabled ? 1u : 0u;
         out.midEnabled = cloudSettings->midEnabled ? 1u : 0u;
         out.highEnabled = cloudSettings->highEnabled ? 1u : 0u;
         out.densityScale = cloudSettings->densityScale;
-        out.windSpeed = cloudSettings->windSpeed;
-        out.windAngleRad = windRad;
+        out.windResponse = cloudSettings->windResponse;
+        // Shared-wind clock: real seconds, the same clock vegetation and fire
+        // sample the field with (MyApp passes mainTime to setCloudTime).
+        // cloudTime (packed below) stays scaled by timeScale and only paces
+        // the cloud domain's drift/warp.
+        out.windTime = cloudTime;
         out.detailStrength = cloudSettings->detailStrength;
         out.cloudTime = cloudTime * std::max(cloudSettings->timeScale, 0.0f);
         out.shadowStrength = cloudSettings->shadowStrength;

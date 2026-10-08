@@ -30,17 +30,20 @@
 //     meaning; scale sets the puff-cell wavelength, base/thickness the slab
 //     domain, coverage the density remap threshold, density the extinction
 //     multiplier, windMul the per-tier shear.
-//   windSpeed/windAngleDeg: noise-domain drift direction * speed (volume is
-//     not translated; the domain moves through it) + cirrus stretch axis.
-//   timeScale: scales cloudTime (domain drift + warp evolution).
+//   windResponse: cloud gain on the shared wind field (set=0 binding 27,
+//     shaders/includes/vegetation/WindField.glsl). The ambient base flow
+//     (Wind widget direction x strength) drives the bulk domain drift; the
+//     gust + tornado deviation adds a bounded noise-domain shear sampled on
+//     the real shared-wind clock (windTime). 0 = clouds ignore wind.
+//   timeScale: scales cloudTime (bulk drift + warp evolution).
 //   detailStrength: second-octave erosion mix + warp amplitude.
 //   densityScale/shadowStrength/ambientBoost/silverLining/sunForwardG/
 //   exposure/raymarchSteps/lightSteps: consumed identically to before
 //   (lighting formulas and loop budgets are unchanged).
 //
-// Requires: ubo.glsl + sky_view.glsl + perlin.glsl + sdf_primitives.glsl +
-// sdf_ops.glsl + sdf_noise.glsl included first (SkyUniform `sky`,
-// UniformObject `ubo`, PCG helpers, generic SDF evaluation).
+// Requires: ubo.glsl + sky_view.glsl included first (SkyUniform `sky`,
+// UniformObject `ubo`, PCG helpers). Perlin noise, the shared wind field and
+// the generic SDF framework are pulled in below.
 //
 // Entry points (signatures unchanged):
 //   raymarchClouds(camPos, viewDir, sunDir, sunColor, skyCol, dayFactor, steps)
@@ -55,14 +58,53 @@
 //     reflections still show clouds (the RT pipeline miss samples the equirect
 //     which already contains the raymarched clouds).
 
+#include "../noise/Perlin.glsl"
+#include "../vegetation/WindField.glsl"
 #include "../sdf/SdfPrimitives.glsl"
 #include "../sdf/SdfOps.glsl"
 #include "../sdf/SdfNoise.glsl"
 
+// Local wind-shear tuning (see cloudWindShear): converts the shared field's
+// gust/tornado deviation from m/s into a bounded cloud-domain displacement.
+// The seconds factor is the visual response gain (world metres = m/s * secs);
+// the max soft-saturates the result in domain units so funnel cores cannot
+// shred the noise domain.
+const float CLOUD_WIND_SHEAR_SECONDS = 90.0;
+const float CLOUD_WIND_SHEAR_MAX = 3.0;
+
+// Shared-field ambient direction, normalized with the same degenerate
+// fallback as windAmbient (the CPU packs ambientA.xy normalized already).
+vec2 cloudWindDir() {
+    vec2 d = windField.ambientA.xy;
+    float l = length(d);
+    return (l > 1e-4) ? d / l : vec2(1.0, 0.0);
+}
+
+// Bulk cloud-domain drift: the shared field's ambient base flow integrated
+// over the scaled cloud clock. Spatially constant, so the conservative puff
+// SDF and the volume density translate by the exact same offset (the
+// empty-space skip contract is unchanged). Replaces the old private
+// windSpeed/windAngleDeg sliders: direction and strength now mirror the
+// vegetation Wind widget, windResponse is the cloud-side gain.
 vec2 cloudWindVec(float speedMul) {
-    float a = sky.windAngleRad;
-    vec2 dir = vec2(cos(a), sin(a));
-    return dir * (sky.windSpeed * speedMul * sky.cloudTime);
+    float response = clamp(sky.windResponse, 0.0, 10.0);
+    float strength = max(windField.ambientA.z, 0.0);
+    return cloudWindDir() * (strength * response * speedMul * sky.cloudTime);
+}
+
+// Local shared-field shear for the noise domain only: gust + tornado
+// deviation from the ambient base flow, sampled at the cloud point on the
+// shared real-time wind clock. World m/s -> domain units through the tier
+// scale, soft-saturated at CLOUD_WIND_SHEAR_MAX. Applied exactly where
+// cloudWarpOffset is applied (coverage/detail noise, never the puff SDF), so
+// the conservative skip bound still holds.
+vec2 cloudWindShear(vec3 p, float tierScale, float speedMul) {
+    float response = clamp(sky.windResponse, 0.0, 10.0);
+    vec2 vDev = windSVF(p, sky.windTime).xz
+              - cloudWindDir() * max(windField.ambientA.z, 0.0);
+    vec2 shear = vDev * (response * speedMul * tierScale * CLOUD_WIND_SHEAR_SECONDS);
+    float m = length(shear);
+    return shear * (CLOUD_WIND_SHEAR_MAX / (CLOUD_WIND_SHEAR_MAX + m));
 }
 
 // Per-tier parameter fetch (keeps the march/shadow code tier-agnostic).
@@ -89,7 +131,7 @@ void cloudTierParams(int tier, out vec4 t, out vec2 geom, out bool enabled) {
 vec2 cloudTierDomain(vec2 xz, int tier, vec4 t) {
     vec2 sp = xz * max(t.z, 1e-7) + cloudWindVec(t.w);
     if (tier == 2) {
-        vec2 wdir = vec2(cos(sky.windAngleRad), sin(sky.windAngleRad));
+        vec2 wdir = cloudWindDir();
         vec2 wperp = vec2(-wdir.y, wdir.x);
         sp = vec2(dot(sp, wdir) * 0.35, dot(sp, wperp));
     }
@@ -212,7 +254,10 @@ float cloudSlabDensity(vec3 pos, int tier, bool cheap) {
     int octs = (tier == 0) ? 5 : 4;
     vec2 warped = sp;
     if (!cheap) {
-        warped = sp + cloudWarpOffset(sp, tier);
+        // Animated shape evolution + shared-field gust/tornado shear both
+        // distort only the noise domain; the puff SDF keeps cloudWindVec's
+        // pure bulk translation, preserving the conservative skip bound.
+        warped = sp + cloudWarpOffset(sp, tier) + cloudWindShear(pos, scale, t.w);
     }
     float base = sdfFbmOct(vec3(warped, tSeed), cheap ? 3 : octs);
     // Puff interior lifts the field so masses survive the coverage cut.
@@ -384,7 +429,10 @@ vec4 raymarchClouds(vec3 camPos, vec3 viewDir, vec3 sunDir, vec3 sunColor,
 // SDF-backed coverage field for the 2D projections (shadows, reflection
 // approx): puff domain + base/detail noise at the slab mid height, remapped
 // by the same coverage threshold. Same weights and tone mapping as before
-// apply at the call sites below.
+// apply at the call sites below. The shared-wind bulk drift is included via
+// cloudTierDomain; the animated warp and the local shared-field shear are
+// intentionally omitted (cheap projection approximation, matches the
+// pre-existing omission of cloudWarpOffset).
 float cloudShadowField(vec2 xz, int tier) {
     vec4 t;
     vec2 geom;

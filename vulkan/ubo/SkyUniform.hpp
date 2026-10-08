@@ -27,8 +27,8 @@ struct alignas(16) SkyUniform {
     uint32_t midEnabled = 0u;                      // offset  80
     uint32_t highEnabled = 0u;                     // offset  84
     float densityScale = 0.0f;                     // offset  88
-    float windSpeed = 0.0f;                        // offset  92
-    float windAngleRad = 0.0f;                     // offset  96
+    float windResponse = 0.0f;                     // offset  92  cloud gain on the shared wind field
+    float windTime = 0.0f;                         // offset  96  real shared-wind clock (seconds)
     float detailStrength = 0.0f;                   // offset 100
     float cloudTime = 0.0f;                        // offset 104  advanced on CPU
     float shadowStrength = 0.0f;                   // offset 108
@@ -75,8 +75,8 @@ static_assert(offsetof(SkyUniform, lowEnabled) == 76, "lowEnabled offset");
 static_assert(offsetof(SkyUniform, midEnabled) == 80, "midEnabled offset");
 static_assert(offsetof(SkyUniform, highEnabled) == 84, "highEnabled offset");
 static_assert(offsetof(SkyUniform, densityScale) == 88, "densityScale offset");
-static_assert(offsetof(SkyUniform, windSpeed) == 92, "windSpeed offset");
-static_assert(offsetof(SkyUniform, windAngleRad) == 96, "windAngleRad offset");
+static_assert(offsetof(SkyUniform, windResponse) == 92, "windResponse offset");
+static_assert(offsetof(SkyUniform, windTime) == 96, "windTime offset");
 static_assert(offsetof(SkyUniform, detailStrength) == 100, "detailStrength offset");
 static_assert(offsetof(SkyUniform, cloudTime) == 104, "cloudTime offset");
 static_assert(offsetof(SkyUniform, shadowStrength) == 108, "shadowStrength offset");
