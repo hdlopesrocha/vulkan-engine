@@ -58,7 +58,7 @@ layout(std430, set = 1, binding = 5) readonly buffer SdfGridIndexBuffer {
 layout(push_constant) uniform SdfGrassShadowPC {
     mat4 lightViewProj; // cascade light view-projection (world -> light clip)
     vec4 params;        // x = time (s), y = max steps, z = epsilon, w = safety
-    vec4 march;         // x = max step (m), y = min step (m), z/w unused
+    vec4 march;         // x = max step (m), y = min step (m), z = shadow LOD camScale
     vec4 lightDir;      // xyz = light-to-scene direction (world), w unused
 } pc;
 
@@ -68,12 +68,14 @@ const uint SDF_GRASS_MAX_CANDIDATES = 8u;
 // One grass clump, in the same local frame as sdfEvalInstance
 // (SdfRenderer.frag): the generic SdfModel supplies the inverse TRS and the
 // conservative local->world distance scale.
-float sdfGrassShadowEval(vec3 wpos, SdfInstance inst, SdfDefinition def) {
+float sdfGrassShadowEval(vec3 wpos, SdfInstance inst, SdfDefinition def, float lodCamScale) {
     float ds;
     vec3 q = sdfModelToLocal(sdfModelFromInstance(inst), wpos, ds);
-    // Rest-pose clump (see wind note above); camScale 0 keeps full blade
-    // detail so the shadow silhouette matches the near view.
-    return sdGrassClump(q, def.params0, def.params1, inst.seed, 0.0,
+    // Shadow LOD (see the wind note above): the march evaluates the reduced
+    // blade set for pc.march.z (shadow LOD camScale) instead of the full
+    // clump; beyond the coarse threshold it falls back to the aggregate
+    // envelope, which is the cheapest shadow representation.
+    return sdGrassClump(q, def.params0, def.params1, inst.seed, lodCamScale,
                         vec2(0.0), 0.0) * ds;
 }
 
@@ -174,7 +176,7 @@ void main() {
                 nearestBox = min(nearestBox, ob);
                 continue;
             }
-            float d = sdfGrassShadowEval(p, inst, dd);
+            float d = sdfGrassShadowEval(p, inst, dd, pc.march.z);
             // Same combination rule as sdfEvalInstance/SdfRenderer.frag, so
             // the marched field matches the rendered clump union exactly
             // (smooth-union creases included; never larger than the union).

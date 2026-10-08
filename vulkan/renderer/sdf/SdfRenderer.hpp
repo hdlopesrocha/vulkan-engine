@@ -46,7 +46,7 @@ class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 struct SdfGrassShadowPC {
     glm::mat4 lightViewProj; // cascade light view-projection (world -> light clip)
     glm::vec4 params;        // x = time (s), y = max steps, z = epsilon, w = safety
-    glm::vec4 march;         // x = max step (m), y = min step (m), z/w unused
+    glm::vec4 march;         // x = max step (m), y = min step (m), z = shadow LOD camScale
     glm::vec4 lightDir;      // xyz = light-to-scene direction (world), w unused
 };
 static_assert(sizeof(SdfGrassShadowPC) == 112, "SdfGrassShadowPC must be 112 bytes");
@@ -204,6 +204,8 @@ public:
     void setGrassTipWidth(float f);
     void setGrassRoughness(float r);
     void setGrassTint(const glm::vec3& rgb);
+    // Shadow-caster LOD camera scale (no scene rebuild: read per shadow frame).
+    void setGrassShadowLodScale(float s);
 
     // ── Smoke bomb + bullets (second generic consumer) ──────────────────
     // A static-topology smoke scene (1 Smoke-sphere def/mat/container/

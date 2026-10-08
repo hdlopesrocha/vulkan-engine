@@ -1307,6 +1307,12 @@ void SdfRenderer::setGrassTint(const glm::vec3& rgb) {
     grassDirty_ = true;
 }
 
+void SdfRenderer::setGrassShadowLodScale(float s) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    // No scene rebuild: the shadow pass reads this per frame (push constant).
+    config_.grass.shadowLodScale = std::clamp(s, 4.0f, 120.0f);
+}
+
 // ─── Smoke bomb + bullets ─────────────────────────────────────────────────
 // Scene-affecting setters rebuild the static smoke topology (cheap: 1 def /
 // mat / container / instance) and re-merge; tuning setters only stream the
@@ -2044,7 +2050,11 @@ void SdfRenderer::drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
         if (grassCount == 0) return;
         pc.lightViewProj = lightViewProj;
         pc.params = glm::vec4(time, params_.maxSteps, params_.epsilon, params_.safety);
-        pc.march = glm::vec4(params_.maxStep, params_.minStep, 0.0f, 0.0f);
+        // march.z = shadow LOD camera scale: the grass shadow march evaluates
+        // the reduced blade set (config_.grass.shadowLodScale) instead of the
+        // full clump, per the shadow LOD policy.
+        pc.march = glm::vec4(params_.maxStep, params_.minStep,
+                             config_.grass.shadowLodScale, 0.0f);
         pc.lightDir = glm::vec4(shadowLightDir_, 0.0f);
     }
 

@@ -37,4 +37,11 @@ struct SdfGrassConfig {
     float tipWidth = 0.35f;
     float roughness = 0.85f;
     glm::vec3 tint = glm::vec3(1.0f);
+    // Shadow-caster LOD: the EVSM grass march uses this fixed camera-scale
+    // value instead of the real camera distance, so shadow texels evaluate
+    // the reduced blade set (and the aggregate envelope beyond the coarse
+    // threshold) rather than the full clump. Shadows are blurred and cover
+    // far more area per texel than the main view, so a coarse LOD is both
+    // sufficient and required for performance.
+    float shadowLodScale = 32.0f;
 };

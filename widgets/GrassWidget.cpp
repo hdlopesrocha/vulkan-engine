@@ -110,6 +110,17 @@ void GrassWidget::render() {
         }
     }
 
+    // 5: Shadow casting (grass-only EVSM caster).
+    if (ImGui::CollapsingHeader("Shadows")) {
+        float lod = grass.shadowLodScale;
+        if (ImGuiComponents::SliderFloatField("Shadow LOD", &lod, 4.0f, 120.0f, "%.0f",
+                "Camera-scale value used by the grass shadow march: 4-16 keeps "
+                "full blades, ~32 uses the reduced blade set, >=60 uses the "
+                "aggregate envelope only (cheapest).")) {
+            sdfRenderer->setGrassShadowLodScale(lod);
+        }
+    }
+
     ImGui::Spacing();
     if (ImGui::Button("Rebuild grass")) {
         sdfRenderer->markGrassDirty();
