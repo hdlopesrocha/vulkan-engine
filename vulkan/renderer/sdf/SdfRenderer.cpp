@@ -2052,7 +2052,8 @@ void SdfRenderer::drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
         pc.params = glm::vec4(time, params_.maxSteps, params_.epsilon, params_.safety);
         // march.z = shadow LOD camera scale: the grass shadow march evaluates
         // the reduced blade set (config_.grass.shadowLodScale) instead of the
-        // full clump, per the shadow LOD policy.
+        // full clump, per the shadow LOD policy; >= 80 (SdfGrass.glsl
+        // GRASS_IMPOSTOR_FULL) it evaluates the impostor only (zero blades).
         pc.march = glm::vec4(params_.maxStep, params_.minStep,
                              config_.grass.shadowLodScale, 0.0f);
         pc.lightDir = glm::vec4(shadowLightDir_, 0.0f);

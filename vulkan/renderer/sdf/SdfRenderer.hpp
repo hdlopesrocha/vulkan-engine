@@ -47,6 +47,7 @@ struct SdfGrassShadowPC {
     glm::mat4 lightViewProj; // cascade light view-projection (world -> light clip)
     glm::vec4 params;        // x = time (s), y = max steps, z = epsilon, w = safety
     glm::vec4 march;         // x = max step (m), y = min step (m), z = shadow LOD camScale
+                             // (>= 80 -> impostor-only grass LOD, zero blades)
     glm::vec4 lightDir;      // xyz = light-to-scene direction (world), w unused
 };
 static_assert(sizeof(SdfGrassShadowPC) == 112, "SdfGrassShadowPC must be 112 bytes");

@@ -73,8 +73,12 @@ float sdfGrassShadowEval(vec3 wpos, SdfInstance inst, SdfDefinition def, float l
     vec3 q = sdfModelToLocal(sdfModelFromInstance(inst), wpos, ds);
     // Shadow LOD (see the wind note above): the march evaluates the reduced
     // blade set for pc.march.z (shadow LOD camScale) instead of the full
-    // clump; beyond the coarse threshold it falls back to the aggregate
-    // envelope, which is the cheapest shadow representation.
+    // clump. At pc.march.z >= GRASS_IMPOSTOR_FULL (80, SdfGrass.glsl) the
+    // impostor is the whole field: zero blades are evaluated and the caster
+    // marches one base-bulged round cone + ripple, the cheapest shadow
+    // representation. Between GRASS_IMPOSTOR_START (48) and FULL the reduced
+    // blades and the fading impostor are unioned; below START it is the
+    // blade LOD only.
     return sdGrassClump(q, def.params0, def.params1, inst.seed, lodCamScale,
                         vec2(0.0), 0.0) * ds;
 }

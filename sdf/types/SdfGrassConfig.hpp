@@ -39,9 +39,12 @@ struct SdfGrassConfig {
     glm::vec3 tint = glm::vec3(1.0f);
     // Shadow-caster LOD: the EVSM grass march uses this fixed camera-scale
     // value instead of the real camera distance, so shadow texels evaluate
-    // the reduced blade set (and the aggregate envelope beyond the coarse
-    // threshold) rather than the full clump. Shadows are blurred and cover
-    // far more area per texel than the main view, so a coarse LOD is both
-    // sufficient and required for performance.
+    // the reduced blade set rather than the full clump. Shadows are blurred
+    // and cover far more area per texel than the main view, so a coarse LOD
+    // is both sufficient and required for performance. Thresholds live in
+    // SdfGrass.glsl: below GRASS_IMPOSTOR_START (48) the blade LOD only,
+    // 48..80 the reduced blades unioned with the fading impostor, and at
+    // >= GRASS_IMPOSTOR_FULL (80) the impostor only (zero blades, cheapest:
+    // one base-bulged round cone + a low-frequency ripple).
     float shadowLodScale = 32.0f;
 };
