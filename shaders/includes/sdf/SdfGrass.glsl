@@ -12,16 +12,17 @@
 //   1. an aggregate envelope (one tapered round cone) contains the whole
 //      clump — samples farther than the detail range get this distance and
 //      skip the entire clump without evaluating a blade;
-//   2. near the envelope the blades are evaluated (two round cones each,
-//      both exact), and the blade count falls with the clump's projected-size
-//      proxy (camera distance in clump scales);
+//   2. near the envelope the blades are evaluated (two cheap conservative
+//      tapered segments each), and the blade count falls with the clump's
+//      projected-size proxy (camera distance in clump scales);
 //   3. beyond GRASS_COARSE_SCALE the clump stays on the aggregate envelope,
 //      which is the far-LOD SDF representation (no impostor/billboard swap
 //      inside the SDF path).
 //
-// Wind is applied as a rigid rotation of the clump axis (plus a per-blade
-// bend modulation); rotations preserve distances, so no Lipschitz
-// compensation is needed for the lean and sphere tracing never oversteps.
+// Wind is a rigid rotation of the clump axis (rotations preserve distances)
+// plus a per-blade bend direction blended toward the local wind vector; the
+// blend of two unit vectors stays inside the unit disk, so the blade tips
+// stay within the same curvature budget the envelope and the CPU AABB cover.
 //
 // params0 = (clumpRadius, bladeHeight, bladeWidth, bladeCount)
 // params1 = (curvature, maxLean, windGain, tipWidth)
@@ -44,7 +45,8 @@ vec2 sdfGrassHash2(float n) {
 // Exact round cone (IQ): cone from a (radius r1) to b (radius r2). Falls back
 // to the containing capsule when the taper is degenerate (a2 <= 0): a
 // superset of the round cone, so its (smaller) distance stays conservative
-// for sphere tracing.
+// for sphere tracing. Only the aggregate envelope uses it: the exact
+// distance keeps the early-out and the far-LOD silhouette tight.
 float sdGrassRoundCone(vec3 p, vec3 a, vec3 b, float r1, float r2) {
     vec3 ba = b - a;
     float l2 = dot(ba, ba);
@@ -69,22 +71,56 @@ float sdGrassRoundCone(vec3 p, vec3 a, vec3 b, float r1, float r2) {
     return (sqrt(x2 * a2 * il2) + y * rr) * il2 - r1;
 }
 
-// One curved blade: two chained round cones (root -> mid -> tip) tapering
-// from `width` to width * tipFrac, bent sideways by `curve` x height along
-// the unit horizontal direction `bendDir`. Both segments are exact, so the
-// min is an exact distance for the union.
+// Cheap conservative tapered segment: the blade's building block. `n` is the
+// unit axis a->b, `invL` = 1/|b-a|, `r0 + dr*h` the interpolated radius at
+// the clamped projection, `cosA` the cosine of the cone half-angle
+// (sqrt(1 - (dr/L)^2)).
+//
+// The exact round-cone distance is min over t of |p - c(t)| - r(t). Instead
+// of that three-way piecewise exact evaluation this measures the distance to
+// the TANGENT cone through the clamped projection: length(pa - n*dot(pa,n))
+// is the radial distance to the axis, scaled by cosA it is the distance to
+// the tangent lateral surface, and subtracting the interpolated radius at
+// the clamped projection keeps it exact on that surface. The tangent plane
+// is a supporting plane of the convex hull of the two end spheres, so the
+// result is always <= the exact distance and sphere tracing cannot overstep.
+// Near the end caps it under-estimates by at most r*(1-cosA)/cosA (the zero
+// set is the same cone with cap radii inflated by 1/cosA, which the width
+// clamp in sdGrassClump keeps inside the envelope's 2x width margin).
+float sdGrassTaper(vec3 p, vec3 a, vec3 n, float invL, float r0, float dr, float cosA) {
+    vec3 pa = p - a;
+    float t = dot(pa, n);
+    float h = clamp(t * invL, 0.0, 1.0);
+    return length(pa - n * t) * cosA - r0 - dr * h;
+}
+
+// One curved blade: two chained cheap tapered segments (root -> mid -> tip)
+// tapering from `width` to width * tipFrac, bent sideways by `curve` x height
+// along the horizontal direction `bendDir` (|bendDir| <= 1, so the tip stays
+// within curve * height of the axis). Each segment is a conservative bound,
+// so the min is a conservative distance for the union.
 float sdGrassBlade(vec3 p, vec3 root, vec3 up, float h, float width,
                    float tipFrac, float curve, vec2 bendDir) {
     float hh = max(h, 1e-4);
-    float sideways = curve * hh;
     vec3 bd = vec3(bendDir.x, 0.0, bendDir.y);
-    vec3 mid = root + up * (hh * 0.5) + bd * (sideways * 0.35);
-    vec3 tip = root + up * hh + bd * sideways;
+    vec3 mid = root + up * (hh * 0.5) + bd * (curve * hh * 0.35);
+    vec3 tip = root + up * hh + bd * (curve * hh);
     float r0 = max(width, 1e-5);
     float r1 = mix(r0, r0 * tipFrac, 0.5);
     float r2 = max(r0 * tipFrac, 1e-5);
-    return min(sdGrassRoundCone(p, root, mid, r0, r1),
-               sdGrassRoundCone(p, mid, tip, r1, r2));
+
+    // Per-segment slope factor sqrt(1 - slope^2), slope = dr/L.
+    vec3 ba1 = mid - root;
+    vec3 ba2 = tip - mid;
+    float invL1 = inversesqrt(max(dot(ba1, ba1), 1e-12));
+    float invL2 = inversesqrt(max(dot(ba2, ba2), 1e-12));
+    float s1 = (r1 - r0) * invL1;
+    float s2 = (r2 - r1) * invL2;
+    float c1 = sqrt(max(1.0 - s1 * s1, 0.0));
+    float c2 = sqrt(max(1.0 - s2 * s2, 0.0));
+    float d1 = sdGrassTaper(p, root, ba1 * invL1, invL1, r0, r1 - r0, c1);
+    float d2 = sdGrassTaper(p, mid, ba2 * invL2, invL2, r1, r2 - r1, c2);
+    return min(d1, d2);
 }
 
 // Grouped clump SDF. `camScale` = camera distance in clump scales (the
@@ -106,7 +142,12 @@ float sdGrassClump(vec3 p, vec4 p0, vec4 p1, float seed, float camScale,
 
     float radius = max(p0.x, 1e-3);
     float height = max(p0.y, 1e-3);
-    float width = clamp(p0.z, 1e-5, max(radius * 0.5, 1e-4));
+    // Width is capped against the clump radius and the blade height: the
+    // height cap keeps the tapered segments from degenerating (slope < 1) so
+    // the conservative cosA factor stays well defined and the bound's cap
+    // inflation (1/cosA <= ~1.3) stays inside the envelope's 2x width margin.
+    float width = clamp(p0.z, 1e-5,
+                        min(max(radius * 0.5, 1e-4), max(height * 0.25, 1e-4)));
     int count = int(clamp(p0.w, 1.0, 64.0));
     float curve = clamp(p1.x, 0.0, 1.5);
     float tipFrac = clamp(p1.w, 0.05, 1.0);
@@ -152,24 +193,27 @@ float sdGrassClump(vec3 p, vec4 p0, vec4 p1, float seed, float camScale,
     float d = 1e5;
     for (int i = 0; i < n; ++i) {
         float fi = float(i) + seed * 37.0;
-        // Root scatter: deterministic azimuth + radial distance.
-        vec2 rh = sdfGrassHash2(fi);
-        vec2 dir2 = vec2(rh.x * 2.0 - 1.0, rh.y * 2.0 - 1.0);
-        float dl = length(dir2);
-        dir2 = (dl > 1e-4) ? dir2 / dl : vec2(1.0, 0.0);
-        vec3 root = vec3(dir2.x, 0.0, dir2.y) * (radius * sdfGrassHash1(fi + 5.0));
-        // Per-blade bend direction (unit horizontal).
-        vec2 bh = sdfGrassHash2(fi + 11.0);
-        vec2 bend = vec2(bh.x * 2.0 - 1.0, bh.y * 2.0 - 1.0);
-        float bl = length(bend);
-        bend = (bl > 1e-4) ? bend / bl : vec2(1.0, 0.0);
-        float bhgt = sdfGrassHash1(fi + 3.0);
-        float bwr = sdfGrassHash1(fi + 7.0);
+        // Root azimuth: a uniform XZ direction from one hash pair. The unit
+        // direction doubles as the blade's outward bend, so no second
+        // direction hash and no second normalize are needed.
+        vec2 rh = sdfGrassHash2(fi) * 2.0 - 1.0;
+        float rl = length(rh);
+        rh = (rl > 1e-4) ? rh / rl : vec2(1.0, 0.0);
+        // Remaining per-blade scalars from a second hash pair; the curvature
+        // and wind phase are cheap fract remixes instead of more hashes.
+        vec2 sh = sdfGrassHash2(fi + 13.7);
+        vec3 root = vec3(rh.x, 0.0, rh.y) * (radius * sh.x);
+        // Per-blade wind: blend the outward bend direction toward the local
+        // wind direction. Both inputs are unit, so the blend stays inside the
+        // unit disk and the tip offset never exceeds the GRASS_BEND_MAX
+        // budget the envelope and the CPU AABB already cover.
+        vec2 bend = mix(rh, windDir,
+                        clamp(windAmp * (1.0 + fract(sh.x * 3.77)), 0.0, 1.0));
         d = min(d, sdGrassBlade(p, root, up,
-                                height * (0.55 + 0.45 * bhgt),
-                                width * (0.6 + 0.8 * bwr),
+                                height * (0.55 + 0.45 * sh.y),
+                                width * (0.6 + 0.8 * fract(sh.x * 7.31)),
                                 tipFrac,
-                                curve * (0.6 + 0.8 * bh.x),
+                                curve * (0.6 + 0.8 * fract(sh.y * 5.17)),
                                 bend));
     }
     return d;
