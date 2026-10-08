@@ -340,33 +340,28 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     // Register material descriptor set layout
     app.registerDescriptorSetLayout(materialDescriptorSetLayout_, "SceneDescriptorLayout: materialDescriptorSetLayout");
 
-    // ── Brush depth descriptor set layout (set=1, binding 0/1) ──
-    // Separate from the main set so the shadow pass (which uses set=0 only)
-    // doesn't need to reference these bindings. Only pipelines using SolidRenderer.frag
-    // (graphicsPipeline, depthPrePassPipeline, deferredColorPipeline) include
-    // this layout.
-    std::array<VkDescriptorSetLayoutBinding, 2> brushDepthBindings{};
-    brushDepthBindings[0].binding = 0;
-    brushDepthBindings[0].descriptorCount = 1;
-    brushDepthBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    brushDepthBindings[0].pImmutableSamplers = nullptr;
-    brushDepthBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // ── Brush SDF params descriptor set layout (set=1, binding 0) ──
+    // The per-frame brush description UBO (vulkan/ubo/BrushSdfUBO.hpp). Shared
+    // by the brush preview raymarcher (BrushSdf.frag, set=1 binding=0) and the
+    // solid shader's PAINT/REMOVE intersection test (SolidSurface.glsl). Only
+    // pipelines embedding SolidRenderer.frag / BrushSdf.frag include this
+    // layout; the shadow pass uses set=0 only.
+    VkDescriptorSetLayoutBinding brushParamsBinding{};
+    brushParamsBinding.binding = 0;
+    brushParamsBinding.descriptorCount = 1;
+    brushParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    brushParamsBinding.pImmutableSamplers = nullptr;
+    brushParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    brushDepthBindings[1].binding = 1;
-    brushDepthBindings[1].descriptorCount = 1;
-    brushDepthBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    brushDepthBindings[1].pImmutableSamplers = nullptr;
-    brushDepthBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo brushParamsLayoutInfo{};
+    brushParamsLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    brushParamsLayoutInfo.bindingCount = 1;
+    brushParamsLayoutInfo.pBindings = &brushParamsBinding;
 
-    VkDescriptorSetLayoutCreateInfo brushDepthLayoutInfo{};
-    brushDepthLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    brushDepthLayoutInfo.bindingCount = static_cast<uint32_t>(brushDepthBindings.size());
-    brushDepthLayoutInfo.pBindings = brushDepthBindings.data();
-
-    if (vkCreateDescriptorSetLayout(app.device, &brushDepthLayoutInfo, nullptr, &brushDepthDescriptorSetLayout_) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create brush depth descriptor set layout!");
+    if (vkCreateDescriptorSetLayout(app.device, &brushParamsLayoutInfo, nullptr, &brushParamsDescriptorSetLayout_) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create brush params descriptor set layout!");
     }
-    app.registerDescriptorSetLayout(brushDepthDescriptorSetLayout_, "SceneDescriptorLayout: brushDepthDescriptorSetLayout");
+    app.registerDescriptorSetLayout(brushParamsDescriptorSetLayout_, "SceneDescriptorLayout: brushParamsDescriptorSetLayout");
 
     // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
 

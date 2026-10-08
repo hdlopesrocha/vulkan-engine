@@ -104,16 +104,10 @@
 #include "space/ThreadPool.hpp"
 #include "space/Octree.hpp"
 
-// Build the {onAdded, onDeleted} renderer lambdas for one space. The main
-// scene drives the ChunkManager state machine and SDF debug markers; the
-// brush scene routes geometry to the separate brush queue and chunk maps
-// instead. Returns the pair of renderer-side lambdas; the caller wires them
-// behind a UniqueChangeCollector dedup stage and dispatches on the main
-// thread.
-//
-// Everything that differs between a space (solid vs water, main vs brush)
-// lives in this one struct so build() has no space-type branching — the four
-// call sites below only fill in a few fields each.
+// Build the {onAdded, onDeleted} renderer lambdas for one main-scene space
+// (solid or water). Returns the pair of renderer-side lambdas; the caller
+// wires them behind a UniqueChangeCollector dedup stage and dispatches on the
+// main thread.
 std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(SceneRenderer* renderer, VulkanApp* app, Scene* scene,
               Layer layer, float minSize, ThreadPool* genPool, const PublishTarget& target) {
 
@@ -121,17 +115,15 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
 
-        if (target.chunkManaged) {
-            // SDF debug cubes are collected inside SceneRenderer::processNodeLayer
-            // via scene.requestSDFCubes (mirrors the solid mesh walk) — no separate
-            // marker pass needed here.
-            // Phase 1: mark dirty and begin build IMMEDIATELY when the octree
-            // change is detected (before tessellation is dispatched to the
-            // worker pool). This transitions Clean → Queed → BuildingCPU.
-            if (renderer->world()) {
-                renderer->world()->chunkManager().markDirty(cid, nd.node->version);
-                renderer->world()->chunkManager().beginBuild(cid);
-            }
+        // SDF debug cubes are collected inside SceneRenderer::processNodeLayer
+        // via scene.requestSDFCubes (mirrors the solid mesh walk) — no separate
+        // marker pass needed here.
+        // Phase 1: mark dirty and begin build IMMEDIATELY when the octree
+        // change is detected (before tessellation is dispatched to the
+        // worker pool). This transitions Clean → Queed → BuildingCPU.
+        if (renderer->world()) {
+            renderer->world()->chunkManager().markDirty(cid, nd.node->version);
+            renderer->world()->chunkManager().beginBuild(cid);
         }
 
         OctreeNodeData nodeCopy = nd;
@@ -146,7 +138,7 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
                 // lodMesh.lod is the 0-based band level (chunkLod - 1); the
                 // stored chunkLod is 1-based. finishBuild only when the mesh is
                 // the added node's own rung.
-                if (target.chunkManaged && nodeCopy.node->getChunkLod() == lodMesh.lod + 1) {
+                if (nodeCopy.node->getChunkLod() == lodMesh.lod + 1) {
                     // Phase 3: tessellation complete on a worker thread. The
                     // chunk mesh is complete; only the octree version is
                     // tracked here — GPU data goes through slots.
@@ -157,10 +149,9 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
                 // Phase 4: Queue for main-thread GPU upload. The map is keyed
                 // by the emitting octree node id (one entry per octree node;
                 // pushing again for the same node overwrites in place, so the
-                // last tessellation result wins). One shared queue for every
-                // stream — each entry is tagged brush vs main.
+                // last tessellation result wins).
                 std::lock_guard<std::mutex> lock(target.queueMutex);
-                target.meshData[nid_] = {layer_, nid_, lodMesh, nodeCopy, /*isBrush=*/!target.chunkManaged};
+                target.meshData[nid_] = {layer_, nid_, lodMesh, nodeCopy};
             },
             minSize,
             genPool);
@@ -176,12 +167,12 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
             ls->noteDeletedNode(static_cast<uintptr_t>(nid));
         }
 
-        if (target.chunkManaged && renderer->world()) {
+        if (renderer->world()) {
             // One slot per chunk: defer the chunk's single slot until its
             // matching re-publish completes (or it ages out in
-            // processPendingMeshes). Don't free immediately — for solid/water
-            // the octree node is reused on edit (same NodeID), so republishing
-            // the chunk updates the slot in place and consumes this entry.
+            // processPendingMeshes). Don't free immediately — the octree node
+            // is reused on edit (same NodeID), so republishing the chunk
+            // updates the slot in place and consumes this entry.
             const ChunkManager::ChunkId base = static_cast<ChunkManager::ChunkId>(nid);
             uint32_t sidx = renderer->world()->chunkManager().getSlotIndex(base);
             if (sidx == UINT32_MAX) {
@@ -203,24 +194,6 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
             if (renderer->debugSDFRenderer) renderer->debugSDFRenderer->removeCubesForNode(nid);
             if (renderer->sdfRenderer) renderer->sdfRenderer->removeLavaChunk(static_cast<uintptr_t>(nid));
             return;
-        }
-
-        // Brush scene: the chunk's mesh is removed immediately from the
-        // target's chunk map + indirect renderer (slotted removal). The
-        // chunk-managed main scene returns early above (deferred slots).
-        {
-            std::lock_guard<std::recursive_mutex> lock(target.chunksMutex);
-            auto it = target.chunks.find(nid);
-            if (it != target.chunks.end()) {
-                if (it->second.meshId != UINT32_MAX) {
-                    target.indirect.removeMeshSlotted(it->second.meshId);
-                }
-                target.chunks.erase(it);
-            }
-        }
-        if (target.chunkManaged) {
-            if (renderer->debugCubeRenderer) renderer->debugCubeRenderer->removeCubeForNode(nid);
-            if (renderer->debugSDFRenderer) renderer->debugSDFRenderer->removeCubesForNode(nid);
         }
     };
     return { onAdded, onDeleted };
@@ -334,11 +307,10 @@ public:
     // Last frame delta, forwarded to postSubmit for the per-frame brush rebuild
     float lastFrameDelta = 0.0f;
     ShadowParams shadowParams;
-    // When user clicks "Apply Brush" from ImGui we defer the heavy rebuild
-    // until after the current frame is submitted to avoid waiting on fences
-    // while the frame is being recorded (causes deadlock). Set by UI,
-    // consumed in `postSubmit()`.
-    bool brushRebuildPending = false;
+    // When user clicks "Apply Brush" from ImGui we defer the octree edit until
+    // after the current frame is submitted to avoid waiting on fences while
+    // the frame is being recorded (causes deadlock). Set by UI, consumed in
+    // `postSubmit()`. (The preview itself streams per frame — no rebuild flag.)
     bool brushApplyToScenePending = false;
     bool generateMapPending = false;
     bool loadScenePending = false;
@@ -364,20 +336,14 @@ public:
     static constexpr uint32_t ASYNC_RING_SIZE = 3;
 
 
-    Octree::OctreeNodeDataHandler brushSolidAddHandler;
-    Octree::OctreeNodeDataHandler brushLiquidAddHandler;
     Octree::OctreeNodeDataHandler solidAddHandler;
     Octree::OctreeNodeDataHandler waterAddHandler;
-    
-    Octree::OctreeNodeDataHandler brushSolidRemoveHandler;
-    Octree::OctreeNodeDataHandler brushLiquidRemoveHandler;
+
     Octree::OctreeNodeDataHandler solidRemoveHandler;
     Octree::OctreeNodeDataHandler waterRemoveHandler;
 
     UniqueChangeCollector solidCollector;
     UniqueChangeCollector waterCollector;
-    UniqueChangeCollector brushSolidCollector;
-    UniqueChangeCollector brushLiquidCollector;
     // Per-slot resources for the async back-face task, reused in a ring of
     // ASYNC_RING_SIZE slots so the per-frame task allocates nothing.
     // Slot-safety: slot N%ASYNC_RING_SIZE is reused by task N+ASYNC_RING_SIZE.
@@ -644,7 +610,6 @@ public:
 
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(&world->scene(), &camera);
         widgetManager.addWidget(octreeExplorerWidget);
-        world->createBrushScene();
         brushManager.getEntries().clear();
         brushManager.getEntries().resize(3);
         brushManager.getEntries()[0].sdfType = 1;
@@ -684,9 +649,7 @@ public:
                 sceneRenderer->pendingMeshMutex,
                 sceneRenderer->solidChunks,
                 sceneRenderer->solidChunksMutex,
-                sceneRenderer->solidRenderer->getIndirectRenderer(), 
-                sceneRenderer->pendingDeleteSolidSlots, 
-                true
+                sceneRenderer->pendingDeleteSolidSlots
             }
         );
         solidAddHandler = mainOpaqueHandlers.first;
@@ -704,59 +667,11 @@ public:
                 sceneRenderer->pendingMeshMutex,
                 sceneRenderer->waterChunks,
                 sceneRenderer->waterChunksMutex,
-                sceneRenderer->waterRenderer->getIndirectRenderer(), 
-                sceneRenderer->pendingDeleteWaterSlots, 
-                true
+                sceneRenderer->pendingDeleteWaterSlots
             }
         );
         waterAddHandler = mainTransparentHandlers.first;
         waterRemoveHandler = mainTransparentHandlers.second;
-
-        std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> brushOpaqueHandlers = build(
-            sceneRenderer,
-            this, 
-            world->brushScene(), 
-            LAYER_OPAQUE, 
-            minSize, 
-            &sceneRenderer->brushRenderer->solidGenPool,
-            {
-                sceneRenderer->pendingMeshQueue,
-                sceneRenderer->pendingMeshMutex,
-                sceneRenderer->brushRenderer->solidChunks,
-                sceneRenderer->brushRenderer->solidChunksMutex,
-                sceneRenderer->brushRenderer->getSolidIR(), 
-                sceneRenderer->pendingDeleteSolidSlots, 
-                false
-            }
-        );
-        brushSolidAddHandler = brushOpaqueHandlers.first;
-        brushSolidRemoveHandler = brushOpaqueHandlers.second;
-
-        std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> brushTransparentHandlers = build(
-            sceneRenderer,
-            this, 
-            world->brushScene(), 
-            LAYER_TRANSPARENT, 
-            minSize, 
-            &sceneRenderer->brushRenderer->liquidGenPool,
-            {
-                sceneRenderer->pendingMeshQueue,
-                sceneRenderer->pendingMeshMutex,
-                sceneRenderer->brushRenderer->transparentChunks,
-                sceneRenderer->brushRenderer->transparentChunksMutex,
-                sceneRenderer->brushRenderer->getLiquidIR(), 
-                sceneRenderer->pendingDeleteWaterSlots, 
-                false
-            }
-        );
-        brushLiquidAddHandler = brushTransparentHandlers.first;
-        brushLiquidRemoveHandler = brushTransparentHandlers.second;
-
-
-
-        // 5. Brush collectors are members; rebuildBrushScene feeds them via
-        // apply and dispatches on the main thread.
-
 
         // Scene starts empty — use File > Generate Map to populate it.
 
@@ -882,7 +797,6 @@ public:
         // Create brush3dWidget after setupTextures() so loadedTextureLayers is set.
         brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager, &eventManager);
         widgetManager.addWidget(brush3dWidget);
-        rebuildBrushScene();
 
         // Create per-frame timestamp query pools for GPU profiling
         {
@@ -956,8 +870,9 @@ public:
 
     // Move vegetation texture setup into its own method for clarity
     void setupVegetationTextures();
-    // Rebuild the brush preview scene from Brush3dWidget entries
-    void rebuildBrushScene();
+    // Stream the selected brush entry's SDF description into the per-frame
+    // BrushSdfUBO (preview raymarch + solid PAINT/REMOVE intersection).
+    void updateBrushPreview(uint32_t frameIndex);
     // Apply the selected brush SDF to the main scene's octree on the selected layer
     void applyBrushToScene();
     // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
@@ -1228,7 +1143,6 @@ public:
         // the same per-frame compact/visibleCount slots (setCullFrame in
         // draw() would make every draw read a stale, never-culled slot).
         sceneRenderer->solidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
-        sceneRenderer->brushRenderer->getSolidIR().setCullFrame(frameIdx);
         sceneRenderer->waterRenderer->getIndirectRenderer().setCullFrame(frameIdx);
         if (sceneRenderer->debugSDFRenderer) {
             sceneRenderer->debugSDFRenderer->setCullFrame(frameIdx);
@@ -1499,7 +1413,7 @@ public:
         static VkSemaphore tlCull = VK_NULL_HANDLE, tlShadow = VK_NULL_HANDLE, tlSky = VK_NULL_HANDLE;
         static VkSemaphore tlSolid = VK_NULL_HANDLE, tlBrushSolid = VK_NULL_HANDLE;
         static VkSemaphore tlVeg = VK_NULL_HANDLE, tlSdf = VK_NULL_HANDLE, tlBbox = VK_NULL_HANDLE;
-        static VkSemaphore tlWater = VK_NULL_HANDLE, tlBrushLiquid = VK_NULL_HANDLE;
+        static VkSemaphore tlWater = VK_NULL_HANDLE;
         static uint64_t tlFrameValue = 0;
         // Last frame value signaled on tlWater (0 = none yet). The async RT
         // build waits on it so it cannot overwrite the TLAS/metas while a
@@ -1516,7 +1430,6 @@ public:
             tlSdf       = createTimelineSemaphore();
             tlBbox      = createTimelineSemaphore();
             tlWater     = createTimelineSemaphore();
-            tlBrushLiquid = createTimelineSemaphore();
             tlInit = true;
         }
         const uint64_t v = ++tlFrameValue;
@@ -1551,19 +1464,12 @@ public:
                 else if (this->sceneRenderer && this->sceneRenderer->boundingBoxRenderer)
                     this->sceneRenderer->boundingBoxRenderer->clearBoundingBoxesToIndirect();
                 this->sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
-                this->sceneRenderer->brushRenderer->getSolidIR().acquireBuffers(cullCmd);
-                this->sceneRenderer->brushRenderer->getSolidIR().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
                 if (settings.waterEnabled && this->sceneRenderer->waterRenderer) {
                     // Ensure water's pending uploads (vertex/index) have completed and their
                     // deferred meta (indirect/bounds) is visible before we cull.
                     this->sceneRenderer->waterRenderer->getIndirectRenderer().pollPendingTransfers(this);
                     this->sceneRenderer->waterRenderer->getIndirectRenderer().syncHostBuffersToGPU();
                     this->sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod, nullptr, false, true, false, 0, 1);
-                }
-                if (this->sceneRenderer->brushRenderer) {
-                    this->sceneRenderer->brushRenderer->getLiquidIR().pollPendingTransfers(this);
-                    this->sceneRenderer->brushRenderer->getLiquidIR().syncHostBuffersToGPU();
-                    this->sceneRenderer->brushRenderer->getLiquidIR().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod, nullptr, false, true, false, 0, 1);
                 }
                 if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
                     this->sceneRenderer->debugSDFRenderer->prepareCull(cullCmd);
@@ -1600,9 +1506,9 @@ public:
                 }
                 // Signal the single cull timeline semaphore; consumers wait on tlCull@v.
                 // Cull is the root producer. The composite no longer waits tlCull
-                // directly (it is transitively implied by tlBrushLiquid via the
-                // Cull->Shadow->Solid->Solid360->Water->BrushLiquid chain), so it is
-                // not registered into the composite's wait list. Every consumer that
+                // directly (it is transitively implied through tlSolid/tlWater and
+                // the brush preview's own registered signal), so it is not
+                // registered into the composite's wait list. Every consumer that
                 // needs cull results waits it explicitly or transitively.
                 app->submitCommandBufferAsyncToQueue(cullCmd, app->getGraphicsQueue(), &tlCull, {}, false, {}, {}, v, {}, false);
             });
@@ -1610,23 +1516,35 @@ public:
             // Restore the per-frame state for the main CB's continued recording.
             this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
 
-            // --- Brush-solid offscreen on its own queue (signals semBrushSolid) ---
-            // Renders the brush solid (front/back depths + offscreen color) the main
-            // solid/water passes sample for paint-mode occlusion. It depends only on
-            // the brush-solid cull, which completed with the cull task (semCullBrushSolid,
-            // so it is submitted on the dedicated brushSolid queue in parallel with the
-            // solid/shadow/water passes. The composite auto-waits semBrushSolid
-            // (registerSignal=true); the solid and water passes add it to their waits.
+            // --- Brush preview offscreen on its own queue (signals tlBrushSolid) ---
+            // SDF-raymarched brush preview (color + front depth) into the brush
+            // targets the composite overlays. No tessellated brush geometry and
+            // no dependency on the solid pass: the solid shader evaluates the
+            // same brush params (set=1) directly for PAINT/REMOVE. The signal is
+            // registered for the composite, which samples the brush targets.
             {
-                VkCommandBuffer brushSolidCmd = beginAsyncTask("brushSolid pass", "[MyApp]");
+                updateBrushPreview(frameIdx);
+                VkCommandBuffer brushSolidCmd = beginAsyncTask("brushSdf pass", "[MyApp]");
+                if (brushSolidCmd == VK_NULL_HANDLE) {
+                    // First begin failed (CB allocation hiccup): retry the
+                    // allocation so tlBrushSolid@v is still signaled — the
+                    // composite's registered timeline wait would otherwise
+                    // deadlock.
+                    brushSolidCmd = allocatePrimaryCommandBuffer();
+                    VkCommandBufferBeginInfo bi{};
+                    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    if (brushSolidCmd == VK_NULL_HANDLE || vkBeginCommandBuffer(brushSolidCmd, &bi) != VK_SUCCESS) {
+                        if (brushSolidCmd != VK_NULL_HANDLE) freeCommandBuffer(brushSolidCmd);
+                        brushSolidCmd = VK_NULL_HANDLE;
+                    }
+                }
                 if (brushSolidCmd != VK_NULL_HANDLE) {
                     CommandBufferState brushState;
                     this->sceneRenderer->setCmdState(&brushState);
-                    this->sceneRenderer->brushRenderer->recordEarlyPass(this, brushSolidCmd, frameIdx, *this->sceneRenderer->solidRenderer, getMainDescriptorSet());
+                    this->sceneRenderer->brushRenderer->recordPass(this, brushSolidCmd, frameIdx, getMainDescriptorSet());
                     this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
-                    // BrushSolid's signal is not registered for the composite: tlBrushSolid
-                    // is transitively implied by tlBrushLiquid (Water->BrushLiquid).
-                    submitCommandBufferAsyncToQueue(brushSolidCmd, getBrushSolidQueue(), &tlBrushSolid, {tlCull}, false, {}, {v}, v, {}, false);
+                    submitCommandBufferAsyncToQueue(brushSolidCmd, getBrushSolidQueue(), &tlBrushSolid, {tlCull}, true, {}, {v}, v, {}, true);
                 }
             }
         }
@@ -1961,11 +1879,12 @@ public:
                         vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
 
                     if (settings.renderSolid) {
-                        VkDescriptorSet brushDepthSet = this->sceneRenderer->brushRenderer->getDepthDescriptorSet(frameIdx);
-                        this->sceneRenderer->solidRenderer->drawColor(solidCmd, this, getMainDescriptorSet(), brushDepthSet);
+                        // Set=1 brush SDF params: PAINT/REMOVE evaluates the
+                        // brush field at each fragment directly.
+                        VkDescriptorSet brushParamsSet = this->sceneRenderer->brushRenderer->getParamsDescriptorSet(frameIdx);
+                        this->sceneRenderer->solidRenderer->drawColor(solidCmd, this, getMainDescriptorSet(), brushParamsSet);
                         // C2: release the single-pass selector so later
-                        // external draws (brush) never inherit the depth-write
-                        // twin. Scoped to this draw; the default stays off.
+                        // external draws never inherit the depth-write twin.
                         this->sceneRenderer->solidRenderer->setDeferredColorDepthWrite(false);
                     }
 
@@ -2043,24 +1962,24 @@ public:
                         setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
                 }
 
-                // Submit to the dedicated solid queue. Wait on the cull (visibleLods /
-                // brush depth), shadow (shadow map + restored UBO) and brush-solid
-                // results, then signal tlSolid@v (registered so the main composite CB
-                // waits on it). tlSolid@v is also waited by the water and solid360 tasks.
-                // Solid waits on the shadow map (tlShadow) and brush-solid depth
-                // (tlBrushSolid); tlCull is transitively implied by both when shadows
-                // are enabled, so it is dropped then. Shadows disabled: nothing
-                // signals tlShadow, so the solid pass waits tlCull@v directly instead
-                // (cull buffers + restored UBO). tlSolid is not registered for the
-                // composite (implied by tlBrushLiquid via Water).
+                // Submit to the dedicated solid queue. Wait on the cull
+                // (visibleLods) and shadow (shadow map + restored UBO) results,
+                // then signal tlSolid@v (registered so the main composite CB
+                // waits on it). tlSolid@v is also waited by the water task.
+                // Shadows disabled: nothing signals tlShadow, so the solid pass
+                // waits tlCull@v directly instead (cull buffers + restored UBO).
+                // The brush preview is an independent offscreen pass; its signal
+                // (tlBrushSolid) goes straight to the composite, not through the
+                // solid pass. tlSolid is not registered for the composite
+                // (implied by tlWater via Water).
                 //
                 // Solid SSR: SolidRenderer.frag samples the *previous* frame's solid
                 // color/depth (bindings 19/20), so the solid CB additionally
                 // waits on tlSolid@(v-1) — the previous frame's solid pass must
                 // have completed before its images are marched.
                 {
-                    std::vector<VkSemaphore> solidWaitSemaphores = {settings.enableShadows ? tlShadow : tlCull, tlBrushSolid};
-                    std::vector<uint64_t> solidWaitValues = {v, v};
+                    std::vector<VkSemaphore> solidWaitSemaphores = {settings.enableShadows ? tlShadow : tlCull};
+                    std::vector<uint64_t> solidWaitValues = {v};
                     if (v > 0) {
                         solidWaitSemaphores.push_back(tlSolid);
                         solidWaitValues.push_back(v - 1);
@@ -2314,10 +2233,6 @@ public:
                 }
 
                 // ── Empty-water fast path (perf_report_19 M8) ──────────────────
-                // brushLiquidPresent: the brush-liquid overlay re-enters the water
-                // geometry pass, so any brush liquid forces the full path.
-                const bool brushLiquidPresent = this->sceneRenderer->brushRenderer
-                    && this->sceneRenderer->brushRenderer->getLiquidIR().getMeshCount() > 0;
                 // waterPassEmpty is gated on the CPU-side resident water mesh
                 // count, NOT on the GPU visible-count readback: that readback is
                 // copied asynchronously and can lag several frames, so a stale
@@ -2330,7 +2245,7 @@ public:
                 const size_t waterMeshCount = this->sceneRenderer->waterRenderer
                     ? this->sceneRenderer->waterRenderer->getIndirectRenderer().getMeshCount()
                     : 0;
-                const bool waterPassEmpty = waterMeshCount == 0 && !brushLiquidPresent;
+                const bool waterPassEmpty = waterMeshCount == 0;
                 if (waterPassEmpty && !settings.waterInMainPass) {
                     // Record ONLY the water-target clears (color/body/column to
                     // transparent black, depth to 1.0) plus their layout
@@ -2338,11 +2253,10 @@ public:
                     // set/render, the water descriptor updates, the water
                     // geometry pass, the RT dispatch and timestamps 14/15.
                     this->sceneRenderer->waterRenderer->clearRenderTargets(this, cmd, frameIdx);
-                    // The brush-liquid overlay (normally the composite's
-                    // transitive waiter for tlWater) does not run on this path,
-                    // so register tlWater for the composite directly. Submit with
-                    // the same waits/signal as the full path so the
-                    // composite/brush-liquid chain stays valid.
+                    // Register tlWater for the composite directly (the empty
+                    // fast path produces the water targets the composite
+                    // samples). Submit with the same waits/signal as the full
+                    // path so the composite chain stays valid.
                     lastWaterSignal = v;
                     app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater,
                         {tlSolid, tlSky, tlVeg}, true, {}, {v, v, v}, v, {}, true);
@@ -2637,7 +2551,7 @@ public:
                             // reject terrain-occluded fragments (C5).
                             this->sceneRenderer->waterRenderer->setSolidDepthCurrentFrame(true);
                             this->sceneRenderer->waterRenderer->renderPass(this, cmd, frameIdx,
-                                settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2, /*drawBrushLiquid=*/false);
+                                settings.waterWireframeMode, this->mainTime, wsky, slot.waterDs2);
                         }
                         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                             vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
@@ -2683,49 +2597,21 @@ public:
                 // NOT defer-destroyed: they are reused ASYNC_RING_SIZE tasks later, by
                 // which time this submission has completed (guaranteed by the frame-fence
                 // chain described on cachedBackfaceRing). Signal tlWater@v.
-                // Hybrid RT: the 360 cubemap is gone. Water waits on the solid pass
-                // (tlSolid, covering shadow + brush + cull transitively) and the sky
-                // (tlSky, sampled by water shading + the RT dispatch). tlCull /
-                // tlShadow / tlBrushSolid are transitively implied — dropped.
-                // The brush-liquid overlay (when it runs) waits tlWater and registers
-                // tlBrushLiquid for the composite, so tlWater reaches the composite
-                // through it. When the overlay does NOT run (no brush-liquid
-                // geometry), nothing else registers tlWater, so register it here as a
-                // persistent composite timeline wait to keep the water targets
-                // synchronized with the composite. Water-in-main never samples the
-                // water targets in the composite and keeps its previous behavior.
+                // Water waits on the solid pass (tlSolid) and the sky (tlSky,
+                // sampled by water shading + the RT dispatch); tlCull / tlShadow
+                // are transitively implied — dropped. tlWater is registered as a
+                // persistent composite timeline wait so the water targets are
+                // synchronized with the composite. Water-in-main never samples
+                // the water targets in the composite and is not registered.
                 // Wait on the vegetation pass too: WaterRenderer.frag's reflection
                 // lookup samples the vegetation color/depth targets, which are
                 // written on the vegetation queue and signaled by tlVeg@v.
                 // Record the value so a later RT AS build waits for this
                 // frame's water consumers before overwriting TLAS/metas.
                 lastWaterSignal = v;
-                const bool registerWaterForComposite = !brushLiquidPresent && !settings.waterInMainPass;
+                const bool registerWaterForComposite = !settings.waterInMainPass;
                 app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater, {tlSolid, tlSky, tlVeg},
                     registerWaterForComposite, {}, {v, v, v}, v, {}, registerWaterForComposite);
-
-                // Brush-liquid overlay: re-enter the water geometry pass on its own
-                // queue, AFTER the main water pass completes (semWater), and draw the
-                // brush liquid IR on top of the preserved water targets. Signaled via
-                // semBrushLiquid (registered, so the composite waits on it). This lets
-                // the composite run in parallel with the brush-liquid overlay instead
-                // of serializing behind it on the water queue. Skipped entirely when
-                // there is no brush-liquid geometry (M9) or on the empty-water fast
-                // path (waterPassEmpty implies !brushLiquidPresent).
-                if (settings.waterEnabled && brushLiquidPresent && !waterPassEmpty && !settings.waterInMainPass) {
-                    VkImageView blsky = (this->sceneRenderer->skyRenderer)
-                        ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-                    VkCommandBuffer brushLiquidCmd = app->beginAsyncTask("brushLiquid pass", "[MyApp]");
-                    if (brushLiquidCmd != VK_NULL_HANDLE) {
-                        CommandBufferState lblState;
-                        this->sceneRenderer->setCmdState(&lblState);
-                        this->sceneRenderer->waterRenderer->renderBrushLiquid(app, brushLiquidCmd, frameIdx, blsky, slot.waterDs2);
-                        this->sceneRenderer->setCmdState(&taskState);
-                        app->submitCommandBufferAsyncToQueue(brushLiquidCmd, app->getBrushLiquidQueue(), &tlBrushLiquid, {tlWater}, true, {}, {v}, v, {}, true);
-                    } else {
-                        this->sceneRenderer->setCmdState(&taskState);
-                    }
-                }
 
             });
         }
@@ -3083,7 +2969,6 @@ public:
             VkImageView skyViewPP = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             VkImageView brushColorView = sceneRenderer->brushRenderer ? sceneRenderer->brushRenderer->getColorView(frameIdx) : VK_NULL_HANDLE;
             VkImageView brushDepthView = sceneRenderer->brushRenderer ? sceneRenderer->brushRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE;
-            VkImageView brushBackFaceDepthView = sceneRenderer->brushRenderer ? sceneRenderer->brushRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
             VkImageView waterGeomDepthView = VK_NULL_HANDLE;
             if (sceneRenderer->waterRenderer) {
                 waterGeomDepthView = sceneRenderer->waterRenderer->getWaterGeomDepthView(frameIdx);
@@ -3146,7 +3031,6 @@ public:
                        : sceneRenderer->waterRenderer->getDummyWaterColorView()),
                 brushColorView,
                 brushDepthView,
-                brushBackFaceDepthView,
                 waterGeomDepthView,
                 vegColorView,
                 vegDepthView,
@@ -3346,9 +3230,10 @@ public:
             return;
         }
         if (auto rebuildEvent = std::dynamic_pointer_cast<RebuildBrushEvent>(event)) {
-            // Defer heavy rebuild to postSubmit() to avoid interfering with
-            // command buffer recording and GPU fences.
-            brushRebuildPending = true;
+            // The preview is streamed per frame from the selected entry, so a
+            // rebuild event needs no deferred work; kept for compatibility
+            // with publishers that announce brush edits.
+            (void)rebuildEvent;
             return;
         }
         if (auto applyEvent = std::dynamic_pointer_cast<ApplyBrushToSceneEvent>(event)) {
@@ -3359,7 +3244,6 @@ public:
             BrushEntry* be = brushManager.getSelectedEntry();
             if (be && be->materialIndex != texEvent->index) {
                 be->materialIndex = texEvent->index;
-                brushRebuildPending = true;
             }
             return;
         }
@@ -3754,102 +3638,81 @@ static void applyBrushWithEffect(const BrushEntry& entry, SignedDistanceFunction
     }
 }
 
-// Implementation: rebuild the brush scene from Brush3dWidget entries
-void MyApp::rebuildBrushScene() {
-    if (!world || !world->brushScene() || !sceneRenderer || !brush3dWidget) return;
-    if (getenv("SKIP_BRUSH")) {
-        std::cerr << "[MyApp::rebuildBrushScene] SKIPPED (SKIP_BRUSH set)" << std::endl;
+// Per-frame brush preview update: stream the selected entry's SDF
+// description into the BrushSdfRenderer's UBO (consumed by the preview
+// raymarcher and by the solid shader's PAINT/REMOVE intersection test). No
+// octree and no tessellation: moving/scaling the brush is just a UBO rewrite.
+void MyApp::updateBrushPreview(uint32_t frameIndex) {
+    if (!sceneRenderer || !sceneRenderer->brushRenderer) return;
+
+    BrushEntry* entry = brushManager.getSelectedEntry();
+    if (!entry) {
+        // No brush: zero-radius bounds disable both the preview and the
+        // solid PAINT/REMOVE evaluation.
+        sceneRenderer->brushRenderer->updateParams(frameIndex, BrushEntry{}, glm::vec3(0.0f),
+                                                   glm::vec3(0.0f), 0.0f,
+                                                   getWidth(), getHeight());
         return;
     }
 
-    // No device-wide stall here. The brush flow uses the stable-slot indirect
-    // pipeline: clearBrushMeshes() frees old slots, handleEvents() queues geometry,
-    // and processPendingMeshes() commits each mesh independently via
-    // addMeshSlotted() + uploadSlot() — no global rebuild required.
+    // Sweep start = the position captured on the previous frame (the same pair
+    // applyBrushToScene consumes via cachedSweepStart).
+    cachedSweepStart = entry->sweepMode ? entry->previousTranslate : entry->translate;
 
-    // Process only the currently-selected brush entry from the manager
-    const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
-    size_t selCount = selectedEntry ? 1 : 0;
-
-    // Capture the start position for this frame's sweep (before any updates)
-    if (selectedEntry && selectedEntry->sweepMode) {
-        cachedSweepStart = selectedEntry->previousTranslate;
-    }
-    std::cerr << "[MyApp::rebuildBrushScene] Rebuilding with " << selCount << " selected entries" << std::endl;
-
-    // 1. Stage existing brush meshes for smooth transition (don't clear until new ones are ready)
-    sceneRenderer->brushRenderer->stageOldChunks();
-
-    // 2. Reset the brush octrees (clears spatial data without change events)
-    world->brushScene()->getOpaqueOctree().reset();
-    world->brushScene()->transparentOctree.reset();
-
-    if (!selectedEntry) {
-        // Nothing to add — free staged old slots immediately.
-        std::deque<SceneRenderer::PendingMeshData> pendingBatch;
-        sceneRenderer->drainPendingMeshes(pendingBatch, 16);
-        sceneRenderer->processPendingMeshes(this, camera.getPosition(), pendingBatch);
-        return;
-    }
-
-
-    // 3. The brush {onAdded, onDeleted} renderer lambdas (built in setup()
-    // with world->brushScene()) route geometry to the dedicated brush queue +
-    // chunk maps. The octree invokes change handlers on its own worker
-    // threads, so the renderer lambdas must NOT run during traversal — collect
-    // here and dispatch() on this (main) thread below.
-
-
-    // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
-    // distance=0.2: flat patches may have up to 20% cube-size SDF error (curved gets 10%).
-    Simplifier simplifier(0.95f, 0.2f, true);
-    // 4. Process the selected brush entry only
-    const auto& entry = *selectedEntry;
-        // Select the target octree and handler based on targetLayer
-        Octree& octree = (entry.targetLayer == 0)
-            ? world->brushScene()->getOpaqueOctree()
-            : world->brushScene()->transparentOctree;
-        Octree::OctreeNodeDataHandler& updateHandler = (entry.targetLayer == 0)
-            ? brushSolidCollector.updateHandler
-            : brushLiquidCollector.updateHandler;
-        Octree::OctreeNodeDataHandler& deleteHandler = (entry.targetLayer == 0)
-            ? brushSolidCollector.deleteHandler
-            : brushLiquidCollector.deleteHandler;
-
-        Transformation model(entry.scale, entry.translate, entry.rot);
-        SimpleBrush brush(entry.materialIndex, entry.hsv);
-
-        // Create the base SDF primitive (stack-allocated, octree copies during add)
-        // sdfType: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
-        // We use a lambda to avoid massive switch duplication for add vs del with optional effects
-        auto applyEntry = [&](SignedDistanceFunction& wrappedFunc) {
-            AddSignedDistanceOperation brushOp;
-            applyBrushWithEffect(entry, wrappedFunc, octree, brushOp, model, brush, simplifier, updateHandler, deleteHandler);
+    // Bounding sphere: union of the current and (for sweep mode) start
+    // placements, each evaluated as a non-sweep primitive with its matching
+    // model so capsule-style getSphere(model) calls see the right translate.
+    // (SweepSignedDistanceFunction::getSphere reuses the outer model for both
+    // ends, which collapses the trail for capsule-likes — so it is not used
+    // here.) Padded for the optional effect displacement like the CPU effect
+    // constructors (bias += amplitude * factor).
+    glm::vec3 boundsCenter(entry->translate);
+    float boundsRadius = glm::length(entry->scale);
+    {
+        BrushEntry noSweep = *entry;
+        noSweep.sweepMode = false;
+        auto sphereFor = [&](const glm::vec3& where, glm::vec3& c, float& r) {
+            Transformation m(entry->scale, where, entry->rot);
+            forEachBrushSDF(noSweep, m, where, entry->minSize, "[updateBrushPreview]",
+                [&](SignedDistanceFunction& func) {
+                    BoundingSphere s = func.getSphere(m, entry->minSize);
+                    if (s.radius > 0.0f) { c = s.center; r = s.radius; }
+                    else { c = func.getCenter(); r = glm::length(entry->scale); }
+                });
         };
-
-        forEachBrushSDF(entry, model, cachedSweepStart, entry.minSize, "[rebuildBrushScene]", applyEntry);
-    // 5. Flush queued change events on the MAIN thread (triggers mesh
-    // creation via the SceneRenderer brush handlers).
-    brushSolidCollector.dispatch(brushSolidAddHandler, brushSolidRemoveHandler);
-    brushLiquidCollector.dispatch(brushLiquidAddHandler, brushLiquidRemoveHandler);
-
-    // 6. Process all brush meshes IMMEDIATELY (synchronous, not deferred to
-    // the next frame's update()). The brush scene is small — this avoids the
-    // 1-frame delay where old chunks are removed and new ones are not yet
-    // uploaded, eliminating the progressive "chunk by chunk" visual update.
-    // Old staged slots are freed BEFORE new slots are allocated so the
-    // 128-slot brush pool is never exhausted by stale old entries.
-    std::deque<SceneRenderer::PendingMeshData> pendingBatch;
-    sceneRenderer->drainPendingMeshes(pendingBatch, 16);
-    sceneRenderer->processPendingMeshes(this, camera.getPosition(), pendingBatch);
-
-    // Advance previousTranslate for next frame's sweep (frame-by-frame trail)
-    if (selectedEntry && selectedEntry->sweepMode) {
-        BrushEntry* mutableEntry = brushManager.getSelectedEntry();
-        if (mutableEntry) {
-            mutableEntry->previousTranslate = mutableEntry->translate;
+        glm::vec3 cCur = boundsCenter;
+        float rCur = boundsRadius;
+        sphereFor(entry->translate, cCur, rCur);
+        boundsCenter = cCur;
+        boundsRadius = rCur;
+        if (entry->sweepMode) {
+            glm::vec3 cPrev = cCur;
+            float rPrev = rCur;
+            sphereFor(cachedSweepStart, cPrev, rPrev);
+            glm::vec3 delta = cCur - cPrev;
+            float dist = glm::length(delta);
+            boundsRadius = (dist + rCur + rPrev) * 0.5f;
+            boundsCenter = (dist < 1e-6f) ? cCur
+                : cPrev + delta * ((boundsRadius - rPrev) / dist);
         }
     }
+    if (entry->useEffect) {
+        // Match each effect's CPU sphere-bias padding (see the
+        // *DistanceEffect constructors): perlin uses amplitude * 1.97, sine
+        // 0.5, voronoi 1.0.
+        float pad = entry->effectAmplitude * 1.97f;
+        if (entry->effectType == 2) pad = entry->effectAmplitude * 0.5f;
+        else if (entry->effectType == 3) pad = entry->effectAmplitude;
+        boundsRadius += pad;
+    }
+    boundsRadius = std::max(boundsRadius, 0.1f) * 1.05f;
+
+    sceneRenderer->brushRenderer->updateParams(frameIndex, *entry, cachedSweepStart,
+                                               boundsCenter, boundsRadius,
+                                               getWidth(), getHeight());
+
+    // Advance the sweep start for the next frame's trail.
+    if (entry->sweepMode) entry->previousTranslate = entry->translate;
 }
 
 void MyApp::applyBrushToScene() {
@@ -3884,7 +3747,7 @@ void MyApp::applyBrushToScene() {
         ? solidCollector.deleteHandler
         : waterCollector.deleteHandler;
 
-    // cachedSweepStart was already set by rebuildBrushScene — use the same pair
+    // cachedSweepStart was already set by updateBrushPreview — use the same pair
     Transformation model(entry.scale, entry.translate, entry.rot);
     SimpleBrush brush(entry.materialIndex, entry.hsv);
 
@@ -3995,11 +3858,6 @@ void MyApp::postSubmit() {
     if (textureMixer) {
         textureMixer->flushPendingRequests(this);
         textureMixer->pollPendingGenerations(this);
-    }
-
-    if (brushRebuildPending) {
-        brushRebuildPending = false;
-        rebuildBrushScene();
     }
 
     if (brushApplyToScenePending) {

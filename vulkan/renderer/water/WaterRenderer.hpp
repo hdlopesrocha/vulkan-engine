@@ -23,7 +23,6 @@
 #include "../../ubo/WaterUBO.hpp"
 #include "../CommandBufferState.hpp"
 
-class BrushRenderer;
 class WaterBackFaceRenderer;
 class WireframeRenderer;
 
@@ -36,11 +35,11 @@ public:
     void cleanup(VulkanApp* app) override;
 
     // Inject the scene sub-renderers the water pass samples from or draws
-    // alongside (solid offscreen targets, brush liquid geometry, back-face
-    // depth, wireframe overlay). Called once by SceneRenderer after all
-    // sub-renderers are created. (The legacy 360° cubemap injector was removed
-    // with Solid360Renderer — water reflections are hardware ray tracing.)
-    void setSceneRenderers(SolidRenderer* solid, BrushRenderer* brush,
+    // alongside (solid offscreen targets, back-face depth, wireframe overlay).
+    // Called once by SceneRenderer after all sub-renderers are created. (The
+    // legacy 360° cubemap injector was removed with Solid360Renderer — water
+    // reflections are hardware ray tracing.)
+    void setSceneRenderers(SolidRenderer* solid,
                            WaterBackFaceRenderer* backFace,
                            WireframeRenderer* waterWireframe);
 
@@ -51,17 +50,7 @@ public:
     // buffer so the solid pass outputs are available for sampling.
     void renderPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                     bool waterWireframeEnabled, float waterTime, VkImageView skyView,
-                    VkDescriptorSet overrideWaterDs = VK_NULL_HANDLE,
-                    bool drawBrushLiquid = true);
-
-    // Brush-liquid overlay: draws the brush water geometry (secondaryIR) on top of
-    // the already-rendered water targets on its own command buffer/queue, so it runs
-    // in parallel with the main water pass's consumers. The water geometry pass is
-    // re-entered with LOAD ops (preserving the main water EVSM + geom depth) and the
-    // targets are restored to SHADER_READ_OPTIMAL for the composite. Must be called
-    // after the main water pass has completed (waits on semWater externally).
-    void renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
-                           VkImageView skyView, VkDescriptorSet overrideWaterDs = VK_NULL_HANDLE);
+                    VkDescriptorSet overrideWaterDs = VK_NULL_HANDLE);
 
     // Water render time UBO (binding 10) — created and updated here, but
     // bound into the scene descriptor sets by SceneRenderer.
@@ -106,9 +95,6 @@ public:
 
     // Execute the water offscreen geometry pass on the provided command buffer.
     // The solid render pass must have already ended on this same command buffer.
-    // `secondaryIR` is drawn with the same water pipeline, right after the main
-    // water IR, inside the same geometry pass (used for brush liquid geometry —
-    // brush water renders like main water but lives in its own IndirectRenderer).
     // `overrideWaterDs` (async path) is the caller-owned set-2 descriptor set
     // (binding 0 = real back-face depth, bindings 1-2 = RT outputs, binding 3 =
     // sky); when null the per-frame set from prepareSceneTexturesForFrame() is
@@ -116,7 +102,6 @@ public:
     void render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                 VkImageView sceneColorView,
                 VkImageView skyView = VK_NULL_HANDLE,
-                IndirectRenderer* secondaryIR = nullptr,
                 VkDescriptorSet overrideWaterDs = VK_NULL_HANDLE);
 
     // Get water color/depth image view for post-process sampling
@@ -570,7 +555,6 @@ private:
 
     // Scene sub-renderers injected via setSceneRenderers
     SolidRenderer* solidRenderer_ = nullptr;
-    BrushRenderer* brushRenderer_ = nullptr;
     WaterBackFaceRenderer* backFaceRenderer_ = nullptr;
     WireframeRenderer* waterWireframe_ = nullptr;
     class RayTracingResources* rtResources_ = nullptr;

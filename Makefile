@@ -124,7 +124,6 @@ GLSL_OPT = -O
 OUT_SPVS = \
 	$(patsubst shaders/%,$(OUT_DIR)/shaders/%.spv,$(SHADER_FILES)) \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererNoTess.vert.spv \
-	$(OUT_DIR)/shaders/renderer/solid/SolidRendererBrush.frag.spv \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererRT.frag.spv \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererRTProf.frag.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv \
@@ -142,7 +141,7 @@ OUT_SPVS = \
 # Each variant reuses a base source plus a define that selects an alternate
 # stage interface or feature set. Shader base names match the owning renderer
 # class; in-class pass qualifiers are concatenated PascalCase:
-#   SolidRenderer*      -> SolidRenderer (also bound by Shadow/BrushBackFace)
+#   SolidRenderer*      -> SolidRenderer (also bound by Shadow)
 #   WaterRenderer*      -> WaterRenderer (also bound by WaterBackFaceRenderer)
 #   ShadowRenderer*     -> ShadowRenderer
 #   VegetationRenderer* -> VegetationRenderer
@@ -181,11 +180,8 @@ $(OUT_DIR)/shaders/renderer/solid/SolidRendererNoTess.vert.spv: shaders/renderer
 $(OUT_DIR)/shaders/renderer/water/WaterRendererNoTess.vert.spv: shaders/renderer/water/WaterRenderer.vert $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/water/WaterRenderer.vert,$@,-DWATER_NO_TESS=1,--D WATER_NO_TESS=1,$(GLSL_OPT))
 
-# SolidRenderer fragment variants: BRUSH_PASS (no PAINT mode, no set=1) and the
-# hybrid RT variants (ray queries + TLAS). Non-RT hardware uses plain
-# SolidRenderer.frag.
-$(OUT_DIR)/shaders/renderer/solid/SolidRendererBrush.frag.spv: shaders/renderer/solid/SolidRenderer.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/solid/SolidRenderer.frag,$@,-DBRUSH_PASS,--D BRUSH_PASS,)
+# SolidRenderer fragment variants: the hybrid RT variants (ray queries +
+# TLAS). Non-RT hardware uses plain SolidRenderer.frag.
 $(OUT_DIR)/shaders/renderer/solid/SolidRendererRT.frag.spv: shaders/renderer/solid/SolidRenderer.frag $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/solid/SolidRenderer.frag,$@,-DRT_ENABLED,--D RT_ENABLED,)
 $(OUT_DIR)/shaders/renderer/solid/SolidRendererRTProf.frag.spv: shaders/renderer/solid/SolidRenderer.frag $(SHADER_INCLUDES)

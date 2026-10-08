@@ -75,25 +75,24 @@ void shadeSolidSurface() {
     ivec3 texIndices = fragTexIndices;
     vec3 hsvColor = fragHSV;
     float brushRedFade = 0.0;
-#ifndef BRUSH_PASS
     bool isPaintMode = ubo.brushMode > 1u;
     bool isRemoveMode = ubo.brushMode == 1u;
     if (isPaintMode || isRemoveMode) {
-        vec2 brushUV = gl_FragCoord.xy / vec2(textureSize(brushDepthTex, 0));
-        float brushFront = texture(brushDepthTex, brushUV).r;
-        float brushBack = texture(brushBackFaceDepthTex, brushUV).r;
-        float fragDepth = gl_FragCoord.z;
-        if (fragDepth >= brushFront && fragDepth <= brushBack) {
-            int brushTexIndex = int(ubo.brushTextureIndex);
+        // Direct SDF intersection: the fragment is inside the brush volume
+        // when the brush field is negative at its world position. This is the
+        // exact evaluation the brush preview raymarches, so preview and
+        // painted result always agree (sweep + effects included).
+        if (brushInsideBounds(fragPosWorld) && brushDistance(fragPosWorld) < 0.0) {
+            int brushTexIndex = clamp(int(brush.xFlags.z), 0,
+                                      max(textureSize(albedoArray, 0).z - 1, 0));
             texIndices = ivec3(brushTexIndex);
             // Override vertex HSV with the brush's HSV so painted areas get the brush tint
-            hsvColor = ubo.brushHsv;
+            hsvColor = brush.xHsv.xyz;
             if (isRemoveMode) {
                 brushRedFade = (sin(ubo.brushPhase * 6.28318) + 1.0) * 0.5;
             }
         }
     }
-#endif
 
     // Use the three tex indices and barycentric weights provided by the TES for blending
     vec3 w = fragTexWeights;
@@ -242,7 +241,6 @@ void shadeSolidSurface() {
     // Primary cascade hint for the secondary-hit fast path below (H6).
     // Default 0 reproduces today's secondary behavior wherever unused.
     int solidCascadeHint = 0;
-#ifndef BRUSH_PASS
     vec4 adjustedPosLightSpace = fragPosLightSpace;
     if (ubo.shadowsEnabled != 0u) {
         if (NdotL > 0.01) {
@@ -252,14 +250,13 @@ void shadeSolidSurface() {
             shadow = 1.0;
         }
     }
-#endif
     // RT local/contact shadows (default OFF — CSM-only is authoritative).
     // Only where CSM says lit: nearby proxy geometry adds high-frequency
     // contact occlusion the cascades cannot resolve. CSM-shadowed pixels keep
     // the CSM result (no double-darkening: combined as independent occluders).
     // Compiled out without RT_ENABLED (rtLocalShadow stays 0 = CSM-only).
     float rtLocalShadow = 0.0;
-#if !defined(BRUSH_PASS) && defined(RT_ENABLED)
+#ifdef RT_ENABLED
     bool rtReady = (rt.tlasReady != 0u);
     if (rtReady && (rt.localShadowsEnabled != 0u) && shadow < 0.5 && NdotL > 0.01) {
         vec3 sunDir = -normalize(ubo.lightDirection);
@@ -279,23 +276,19 @@ void shadeSolidSurface() {
     }
 #endif
     float totalShadow = shadow;
-#ifndef BRUSH_PASS
     // Independent-occluder combine: CSM lit + RT lit = lit; either occluded =
     // occluded. RT never brightens CSM shadows and never double-darkens.
     totalShadow = 1.0 - (1.0 - shadow) * (1.0 - clamp(rtLocalShadow, 0.0, 1.0));
-#endif
     // Volumetric cloud shadows: project the fragment along the sun direction
     // onto the three cloud slabs and attenuate direct light. Combined as an
     // independent occluder with CSM/RT (clouds never brighten either term).
     // Skipped in the shadow pass (isShadowPass fast-path returned above) and
     // when the surface faces away (NdotL == 0 keeps full shadow = 1.0).
     float cloudShadow = 0.0;
-#ifndef BRUSH_PASS
     if ((sky.cloudsEnabled != 0u) && NdotL > 0.01) {
         cloudShadow = cloudShadowAt(fragPosWorld);
         totalShadow = 1.0 - (1.0 - totalShadow) * (1.0 - cloudShadow);
     }
-#endif
 
     // Blend material parameters (ambient/specular) by barycentric weights
     vec4 matFlags0 = materials[texIndices.x].materialFlags;

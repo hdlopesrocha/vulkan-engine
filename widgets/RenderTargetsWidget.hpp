@@ -44,8 +44,13 @@ private:
     bool solidDepthDescriptorOwned = false;
     bool waterColorDescriptorOwned = false;
     bool backFaceDepthDescriptorOwned = false;
-    bool brushBackFaceDepthDescriptorOwned = false;
     bool waterDepthLinearDescriptorOwned = false;
+
+    // Offscreen brush preview descriptors (SDF preview color + front depth)
+    VkDescriptorSet brushColorDescriptor = VK_NULL_HANDLE;
+    VkDescriptorSet brushDepthDescriptor = VK_NULL_HANDLE;
+    bool brushColorDescriptorOwned = false;
+    bool brushDepthDescriptorOwned = false;
 
     // Offscreen debug previews: SDF debug cubes and mesh bounding boxes
     VkDescriptorSet sdfColorDescriptor = VK_NULL_HANDLE;
@@ -82,13 +87,6 @@ private:
     VkImageView linearBackFaceDepthView = VK_NULL_HANDLE;
     VkDescriptorSet linearBackFaceDepthDescriptor = VK_NULL_HANDLE;
     bool linearBackFaceDepthDescriptorOwned = false;
-
-    VkImage linearBrushBackFaceDepthImage = VK_NULL_HANDLE;
-    VmaAllocation linearBrushBackFaceDepthAllocation = VK_NULL_HANDLE;
-    VkDeviceMemory linearBrushBackFaceDepthMemory = VK_NULL_HANDLE;
-    VkImageView linearBrushBackFaceDepthView = VK_NULL_HANDLE;
-    VkDescriptorSet linearBrushBackFaceDepthDescriptor = VK_NULL_HANDLE;
-    bool linearBrushBackFaceDepthDescriptorOwned = false;
 
     // GPU linearization pass resources
     VkPipeline linearizePipeline = VK_NULL_HANDLE;
@@ -128,7 +126,6 @@ private:
         BackFaceDepth,
         BrushColor,
         BrushDepth,
-        BrushBackFaceDepth,
         WaterColor,
         WaterDepth,
         SdfColor,

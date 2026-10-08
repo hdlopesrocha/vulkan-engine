@@ -389,7 +389,6 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                    VkImageView waterColorView,
                                    VkImageView waterBodyView, VkImageView waterColumnView,
                                    VkImageView brushColorView, VkImageView brushDepthView,
-                                   VkImageView brushBackFaceDepthView,
                                    VkImageView waterGeomDepthView,
                                    VkImageView vegColorView, VkImageView vegDepthView,
                                    VkImageView sdfColorView, VkImageView sdfDepthView,
@@ -450,7 +449,6 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                 << " 3=" << (void*)brushColorView
                 << " 4=" << (void*)brushDepthView
                 << " 7=" << (void*)waterGeomDepthView
-                << " 8=" << (void*)brushBackFaceDepthView
                 << " 9=" << (void*)vegColorView
                 << " 10=" << (void*)vegDepthView
                 << " 11=" << (void*)sdfColorView
@@ -469,8 +467,10 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     imageInfos[4] = {linearSampler, brushDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     // Water geometry depth buffer for accurate brush-vs-water occlusion
     imageInfos[7] = {linearSampler, waterGeomDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    // Brush back-face depth for PAINT mode volume test
-    imageInfos[8] = {linearSampler, brushBackFaceDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Binding 8: kept for layout compatibility; the composite binds the brush
+    // front depth (the old back-face depth pass was removed with the brush
+    // octree — PAINT/REMOVE now evaluates the brush SDF directly instead).
+    imageInfos[8] = {linearSampler, brushDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     // Vegetation offscreen color + depth (decoupled from the solid pass)
     imageInfos[9] = {linearSampler, vegColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[10] = {linearSampler, vegDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -573,7 +573,8 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                               imageInfos[7].imageLayout);
         }
 
-        // Brush back-face depth (binding 8) — used for PAINT mode volume test
+        // Binding 8: layout-compatibility slot (composite binds the brush
+        // front depth here; the old back-face depth pass is gone).
         if (imageInfos[8].imageView != VK_NULL_HANDLE && imageInfos[8].sampler != VK_NULL_HANDLE) {
             writer.writeImage(currentDs, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                               imageInfos[8].sampler, imageInfos[8].imageView,

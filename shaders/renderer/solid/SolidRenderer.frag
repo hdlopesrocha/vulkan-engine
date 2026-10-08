@@ -20,7 +20,6 @@
 // Split out of the old shared main.frag (which selected the path with
 // -DWATER_MODE). Compile-time variants:
 //   * default            -> shaders/SolidRenderer.frag.spv
-//   * -DBRUSH_PASS       -> shaders/SolidRendererBrush.frag.spv
 //   * -DRT_ENABLED       -> shaders/SolidRendererRT.frag.spv
 //   * -DRT_ENABLED -DRT_PROFILE -> shaders/SolidRendererRTProf.frag.spv
 layout(location = VARY_UV) in vec2 fragUV;
@@ -44,10 +43,11 @@ layout(location = VARY_DEBUG) in vec3 fragTessLevel; // tessellation level heat 
 
 #include "../../includes/Textures.glsl"
 
-#if !defined(BRUSH_PASS)
-layout(set = 1, binding = 0) uniform sampler2D brushDepthTex;
-layout(set = 1, binding = 1) uniform sampler2D brushBackFaceDepthTex;
-#endif
+// Set=1 binding 0: brush SDF description (std140 UBO). PAINT/REMOVE mode
+// evaluates the brush field at the fragment position to decide whether the
+// fragment lies inside the brush volume — the exact SDF equivalent of the old
+// rasterized front/back depth interval test.
+#include "../../includes/brush/BrushSdf.glsl"
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -56,9 +56,7 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 #include "../../includes/solid/TangentBasis.glsl"
 #include "../../includes/solid/Triplanar.glsl"
 
-#ifndef BRUSH_PASS
 #include "../../includes/shadow/Shadows.glsl"
-#endif
 
 #include "../../includes/Hsv.glsl"
 

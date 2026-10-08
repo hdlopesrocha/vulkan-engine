@@ -24,7 +24,7 @@ public:
 
     VkDescriptorSetLayout descriptorSetLayout() const { return descriptorSetLayout_; }
     VkDescriptorSetLayout materialDescriptorSetLayout() const { return materialDescriptorSetLayout_; }
-    VkDescriptorSetLayout brushDepthDescriptorSetLayout() const { return brushDepthDescriptorSetLayout_; }
+    VkDescriptorSetLayout brushParamsDescriptorSetLayout() const { return brushParamsDescriptorSetLayout_; }
     VkDescriptorSet staticDescriptorSet() const { return staticDescriptorSet_; }
 
     // Descriptor-buffer query layout: identical bindings to descriptorSetLayout_
@@ -56,7 +56,7 @@ public:
 private:
     VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout materialDescriptorSetLayout_ = VK_NULL_HANDLE;
-    VkDescriptorSetLayout brushDepthDescriptorSetLayout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout brushParamsDescriptorSetLayout_ = VK_NULL_HANDLE;
     // Query-only duplicate of descriptorSetLayout_ with DESCRIPTOR_BUFFER_BIT.
     VkDescriptorSetLayout descriptorBufferQueryLayout_ = VK_NULL_HANDLE;
     // True once pipeline layouts + all set-0 bind sites use the descriptor

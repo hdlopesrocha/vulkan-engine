@@ -34,19 +34,6 @@ public:
     LocalScene& scene() { return *scene_; }
     const LocalScene& scene() const { return *scene_; }
 
-    // ── Brush scene (separate scene for editing previews) ────────────────────
-    // The brush scene has its own octrees for brush preview geometry. It is
-    // managed separately from the main scene and uses its own IndirectRenderer.
-    // Returns nullptr until createBrushScene() is called.
-    LocalScene* brushScene() { return brushScene_.get(); }
-    const LocalScene* brushScene() const { return brushScene_.get(); }
-
-    // Create (or recreate) the brush scene. Call once during setup.
-    // The brush octrees are reset on each rebuildBrushScene call.
-    void createBrushScene() {
-        brushScene_ = std::make_unique<LocalScene>();
-    }
-
     // ── Chunk manager (state machine for the async rebuild pipeline) ────────
 
     ChunkManager& chunkManager() { return chunkManager_; }
@@ -55,9 +42,6 @@ public:
 private:
     // The main scene with octrees (SDF storage + meshing).
     std::unique_ptr<LocalScene> scene_;
-
-    // The brush editing scene (separate octrees, no chunk tracking).
-    std::unique_ptr<LocalScene> brushScene_;
 
     // Chunk state machine driving the async rebuild pipeline.
     ChunkManager chunkManager_;

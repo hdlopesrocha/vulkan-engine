@@ -131,12 +131,13 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
     );
 
-    // Descriptor set layouts: main textures (set 0) then brush depth (set 1)
+    // Descriptor set layouts: main textures (set 0) then brush SDF params (set 1)
     std::vector<VkDescriptorSetLayout> setLayouts;
     if (app->getDescriptorSetLayout() != VK_NULL_HANDLE) setLayouts.push_back(app->getDescriptorSetLayout());
-    // SolidRenderer.frag references brush depth textures at set=1 (separate from the main
-    // set so the shadow pass — which uses set=0 only — doesn't require them).
-    if (app->getBrushDepthDescriptorSetLayout() != VK_NULL_HANDLE) setLayouts.push_back(app->getBrushDepthDescriptorSetLayout());
+    // SolidRenderer.frag evaluates the brush SDF for PAINT/REMOVE mode at
+    // set=1 (separate from the main set so the shadow pass — which uses set=0
+    // only — doesn't require it).
+    if (app->getBrushParamsDescriptorSetLayout() != VK_NULL_HANDLE) setLayouts.push_back(app->getBrushParamsDescriptorSetLayout());
 
     // No per-mesh model push-constants are used anymore (models are identity in shaders).
     GraphicsPipelineConfig cfg{};
@@ -307,59 +308,6 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
                 deferredColorPipelineLayout);
         }
     }
-    {
-        // Brush pipeline does not need set=1 (brush depth textures)
-        std::vector<VkDescriptorSetLayout> brushSetLayouts;
-        if (app->getDescriptorSetLayout() != VK_NULL_HANDLE) brushSetLayouts.push_back(app->getDescriptorSetLayout());
-
-        // Brush color: alpha blending enabled (CONSTANT_ALPHA), no depth write
-        // Uses SolidRenderer.frag compiled with -DBRUSH_PASS (no PAINT mode, no shadows,
-        // no set=1 brush depth declarations) via SolidRendererBrush.frag.spv.
-        ShaderStage brushFrag = ShaderStage(
-            app->getOrCreateShaderModule("shaders/renderer/solid/SolidRendererBrush.frag.spv"),
-            VK_SHADER_STAGE_FRAGMENT_BIT
-        );
-        GraphicsPipelineConfig brushCfg{};
-        brushCfg.depthWriteEnable = false;
-        brushCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-        brushCfg.colorFormats = { app->getSwapchainImageFormat() };
-        brushCfg.blendEnable = true;
-        auto [bp, bl] = app->createGraphicsPipeline(
-            { vertexShader.info, tescShader.info, teseShader.info, brushFrag.info },
-            std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
-            vk_layouts::defaultAttributes(),
-            brushSetLayouts, nullptr,
-            brushCfg
-        );
-        brushDeferredColorPipeline = bp;
-        brushDeferredColorPipelineLayout = bl;
-    }
-    {
-        // Brush overlay pipeline: opaque, no blending, same SolidRendererBrush.frag shader.
-        // Used when rendering the brush into scene_color to prevent background
-        // shadows from showing through CONSTANT_ALPHA blending.
-        std::vector<VkDescriptorSetLayout> brushSetLayouts2;
-        if (app->getDescriptorSetLayout() != VK_NULL_HANDLE) brushSetLayouts2.push_back(app->getDescriptorSetLayout());
-        ShaderStage brushOpaqueFrag = ShaderStage(
-            app->getOrCreateShaderModule("shaders/renderer/solid/SolidRendererBrush.frag.spv"),
-            VK_SHADER_STAGE_FRAGMENT_BIT
-        );
-        GraphicsPipelineConfig brushOverlayCfg{};
-        brushOverlayCfg.depthWriteEnable = false;
-        brushOverlayCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-        brushOverlayCfg.colorFormats = { app->getSwapchainImageFormat() };
-        brushOverlayCfg.blendEnable = false;
-        auto [bp, bl] = app->createGraphicsPipeline(
-            { vertexShader.info, tescShader.info, teseShader.info, brushOpaqueFrag.info },
-            std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
-            vk_layouts::defaultAttributes(),
-            brushSetLayouts2, nullptr,
-            brushOverlayCfg
-        );
-        brushOverlayPipeline = bp;
-        brushOverlayPipelineLayout = bl;
-        brushOpaqueFrag.info.module = VK_NULL_HANDLE;
-    }
     deferredPipelinesCreated = true;
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
@@ -381,39 +329,17 @@ void SolidRenderer::drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* appArg,
     indirectRenderer.drawPrepared(commandBuffer);
 }
 
-void SolidRenderer::drawColor(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet descSet, VkDescriptorSet brushDepthSet) {
+void SolidRenderer::drawColor(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet descSet, VkDescriptorSet brushParamsSet) {
     if (!appArg || activeDeferredColorPipeline() == VK_NULL_HANDLE) return;
     if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, activeDeferredColorPipeline());
     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, activeDeferredColorPipeline());
     if (descSet != VK_NULL_HANDLE) {
-        VkDescriptorSet bindSets[2] = { descSet, brushDepthSet };
-        uint32_t bindCount = (brushDepthSet != VK_NULL_HANDLE) ? 2 : 1;
+        VkDescriptorSet bindSets[2] = { descSet, brushParamsSet };
+        uint32_t bindCount = (brushParamsSet != VK_NULL_HANDLE) ? 2 : 1;
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, deferredColorPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
     }
     indirectRenderer.drawPrepared(commandBuffer);
-}
-
-void SolidRenderer::drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect) {
-    if (activeDeferredDepthPipeline() == VK_NULL_HANDLE) return;
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, activeDeferredDepthPipeline());
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeDeferredDepthPipeline());
-    if (descSet != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
-        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
-    }
-    indirect.drawPrepared(cmd);
-}
-
-void SolidRenderer::drawBrushColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect) {
-    if (brushOverlayPipeline == VK_NULL_HANDLE) return;
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, brushOverlayPipeline);
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushOverlayPipeline);
-    if (descSet != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, brushOverlayPipelineLayout, 0, 1, &descSet, 0, nullptr);
-        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushOverlayPipelineLayout, 0, 1, &descSet, 0, nullptr);
-    }
-    indirect.drawPrepared(cmd);
 }
 
 void SolidRenderer::cleanup(VulkanApp* app) {

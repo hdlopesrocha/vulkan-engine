@@ -5,7 +5,6 @@
 #include "../solid/SolidRenderer.hpp"
 #include "../water/WaterRenderer.hpp"
 #include "../vegetation/VegetationRenderer.hpp"
-#include "../brush/BrushRenderer.hpp"
 
 #include "../../core/VulkanApp.hpp"
 #include "../../pipeline/ShaderStage.hpp"
@@ -29,11 +28,10 @@ ShadowRenderer::ShadowRenderer(uint32_t maxShadowMapSize)
 ShadowRenderer::~ShadowRenderer() {}
 
 void ShadowRenderer::setSceneRenderers(SolidRenderer* solid, WaterRenderer* liquid,
-                                       VegetationRenderer* vegetation, BrushRenderer* brush) {
+                                       VegetationRenderer* vegetation) {
     solidRenderer_ = solid;
     liquidRenderer_ = liquid;
     vegetationRenderer_ = vegetation;
-    brushRenderer_ = brush;
 }
 
 void ShadowRenderer::createStagingBuffers(VulkanApp* app, size_t frameCount) {
@@ -1012,8 +1010,6 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
         blurCascade(app, blurCmd, c);
     if (solidRenderer_)
         solidRenderer_->getIndirectRenderer().prepareCull(blurCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
-    if (brushRenderer_)
-        brushRenderer_->getSolidIR().prepareCull(blurCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
     // Restore the water main-view cull too: the cascade cull above ran
     // prepareCull on the liquid IR with doMain=false, which zeroes its
     // compact/count buffers without re-emitting main-view commands. Without

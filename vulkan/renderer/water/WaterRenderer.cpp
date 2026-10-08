@@ -4,7 +4,6 @@
 #include "../DescriptorWriter.hpp"
 #include <vector>
 #include "../RendererUtils.hpp"
-#include "../brush/BrushRenderer.hpp"
 #include "WaterBackFaceRenderer.hpp"
 #include "../rt/RayTracingResources.hpp"
 #include "../debug/WireframeRenderer.hpp"
@@ -60,11 +59,10 @@ void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer_, const std::
     // Sub-renderer initialization is owned by SceneRenderer
 }
 
-void WaterRenderer::setSceneRenderers(SolidRenderer* solid, BrushRenderer* brush,
+void WaterRenderer::setSceneRenderers(SolidRenderer* solid,
                                       WaterBackFaceRenderer* backFace,
                                       WireframeRenderer* waterWireframe) {
     solidRenderer_ = solid;
-    brushRenderer_ = brush;
     backFaceRenderer_ = backFace;
     waterWireframe_ = waterWireframe;
 }
@@ -1656,7 +1654,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 }
 
 // Back-face pass implementation moved to WaterBackFaceRenderer
-void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView skyView, IndirectRenderer* secondaryIR, VkDescriptorSet overrideWaterDs) {
+void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView skyView, VkDescriptorSet overrideWaterDs) {
     if (!app || cmd == VK_NULL_HANDLE) return;
 
     prepareRender(app, cmd, frameIndex, sceneColorView, skyView);
@@ -1693,10 +1691,6 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         if (cmdState) cmdState->bindGraphicsPipeline(cmd, getWaterGeometryPipeline());
         else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, getWaterGeometryPipeline());
         waterIndirectRenderer.drawPrepared(cmd);
-        // Brush liquid water: same pipeline, same descriptor sets, its own IR.
-        // Drawn right after the main water so brush liquid depth/color lands in
-        // the same offscreen target (self-occlusion tested by water depth).
-        if (secondaryIR) secondaryIR->drawPrepared(cmd);
     }
 
     endWaterGeometryPass(cmd);
@@ -1825,43 +1819,6 @@ void WaterRenderer::renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint3
 
 }
 
-void WaterRenderer::renderBrushLiquid(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView skyView, VkDescriptorSet overrideWaterDs) {    if (!app || cmd == VK_NULL_HANDLE || !brushRenderer_) return;
-    if (frameIndex >= 3) return;
-    if (waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
-
-    VkImageView sceneColorView = solidRenderer_ ? solidRenderer_->getColorView(frameIndex) : VK_NULL_HANDLE;
-    prepareRender(app, cmd, frameIndex, sceneColorView, skyView);
-
-    // Re-enter the water geometry pass with LOAD ops so the main water EVSM color
-    // and geom depth are preserved; the brush liquid draws on top of them.
-    if (!beginWaterGeometryPass(cmd, frameIndex, /*loadExisting=*/true)) return;
-
-    VkPipeline waterPipe = getWaterGeometryPipeline();
-    VkPipelineLayout waterLayout = getWaterGeometryPipelineLayout();
-    if (waterPipe != VK_NULL_HANDLE && waterLayout != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsPipeline(cmd, waterPipe);
-        else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipe);
-
-        VkDescriptorSet mainDs = app->getMainDescriptorSet();
-        if (mainDs != VK_NULL_HANDLE) {
-            if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, waterLayout, 0, 1, &mainDs, 0, nullptr);
-            else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 0, 1, &mainDs, 0, nullptr);
-        }
-        VkDescriptorSet sceneDs = (overrideWaterDs != VK_NULL_HANDLE) ? overrideWaterDs : getWaterDepthDescriptorSet(frameIndex);
-        if (sceneDs != VK_NULL_HANDLE) {
-            if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, waterLayout, 2, 1, &sceneDs, 0, nullptr);
-            else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 2, 1, &sceneDs, 0, nullptr);
-        }
-        // Brush liquid water: same pipeline/descriptor sets, its own IndirectRenderer.
-        brushRenderer_->getLiquidIR().drawPrepared(cmd);
-    }
-
-    // Merged end: water color + water geometry depth (sampled by the composite)
-    // transition in a single barrier call (was: endWaterGeometryPass plus a
-    // second lone depth transition).
-    endWaterGeometryPassWithDepth(cmd, frameIndex);
-}
-
 // Single writer of waterRenderUBO_ (M7). Builds the full WaterRenderUBO and
 // memcpys it in one map/unmap, then clears the dirty bit. `preserveTime` keeps
 // the existing waterTime for the water-in-main flush, which has no
@@ -1916,7 +1873,7 @@ void WaterRenderer::setRtFeatureFlags(bool reflections, bool refractions, bool b
 
 void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t frameIdx,
                                bool waterWireframeEnabled, float waterTime, VkImageView skyView,
-                               VkDescriptorSet overrideWaterDs, bool drawBrushLiquid) {
+                               VkDescriptorSet overrideWaterDs) {
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[WaterRenderer::renderPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;
@@ -1989,7 +1946,6 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
 
             // Draw filled water geometry (will update depth buffer)
             getIndirectRenderer().drawPrepared(commandBuffer);
-            if (drawBrushLiquid && brushRenderer_) brushRenderer_->getLiquidIR().drawPrepared(commandBuffer);
         }
 
         endWaterGeometryPass(commandBuffer);
@@ -2021,14 +1977,11 @@ void WaterRenderer::renderPass(VulkanApp* app, VkCommandBuffer commandBuffer, ui
                 if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, wfLayout, 2, 1, &wfDepthDs, 0, nullptr);
 
             getIndirectRenderer().drawPrepared(commandBuffer);
-            if (drawBrushLiquid && brushRenderer_) brushRenderer_->getLiquidIR().drawPrepared(commandBuffer);
         }
 
         endWaterGeometryPass(commandBuffer);
     } else {
-        render(app, commandBuffer, frameIdx, sceneColorView, skyView,
-               (drawBrushLiquid && brushRenderer_) ? &brushRenderer_->getLiquidIR() : nullptr,
-               overrideWaterDs);
+        render(app, commandBuffer, frameIdx, sceneColorView, skyView, overrideWaterDs);
     }
 
     // Post-processing runs inside the active main render pass; the caller

@@ -9,5 +9,4 @@ World::~World() = default;
 
 void World::stopPools() {
     if (scene_) scene_->stopPools();
-    if (brushScene_) brushScene_->stopPools();
 }

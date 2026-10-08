@@ -66,7 +66,6 @@ namespace {
 // deliberately avoids.
 constexpr uint32_t kMaxSolidChunkSlots = 1536;   // main solid (opaque) pool
 constexpr uint32_t kMaxWaterChunkSlots = 192;    // main water (transparent) pool
-constexpr uint32_t kMaxBrushChunkSlots = 64;     // brush preview pool
 
 // Per-chunk (per-slot) geometry ceilings used to size the TOTAL packed pools
 // (total = chunkCount * perChunk). Allocation is packed/variable-size, so a chunk
@@ -166,7 +165,6 @@ void SceneRenderer::setCmdState(CommandBufferState* state) {
 }
 
 void SceneRenderer::stopGenPools() {
-    if (brushRenderer) brushRenderer->stopGenPools();
     solidGenPool.stop();
     waterGenPool.stop();
 }
@@ -270,7 +268,7 @@ SceneRenderer::SceneRenderer() :
     solidRenderer(std::make_unique<SolidRenderer>()),
     waterRenderer(std::make_unique<WaterRenderer>()),
     vegetationRenderer(std::make_unique<VegetationRenderer>()),
-    brushRenderer(std::make_unique<BrushRenderer>()),
+    brushRenderer(std::make_unique<BrushSdfRenderer>()),
     debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
     debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
@@ -332,12 +330,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         &streamer.uploadManager(), streaming::StreamCategory::Solid);
     waterRenderer->getIndirectRenderer().setUploadManager(
         &streamer.uploadManager(), streaming::StreamCategory::Water);
-    if (brushRenderer) {
-        brushRenderer->getSolidIR().setUploadManager(
-            &streamer.uploadManager(), streaming::StreamCategory::Solid);
-        brushRenderer->getLiquidIR().setUploadManager(
-            &streamer.uploadManager(), streaming::StreamCategory::Water);
-    }
 
     // skySettingsRef was initialized at construction and must be valid
     
@@ -781,29 +773,24 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     if (hasDescriptorBuffers())
         lastStaticSignature_ = currentStaticSignature(textureArrayManager);
 
-    // ── Initialize the brush renderer ──
-    // Wire the samplers used by the brush depth descriptor writes (from the
-    // water and shadow renderers, which are initialized above), then create
-    // everything brush-related: offscreen targets, back-face renderer,
-    // per-frame brush depth descriptor sets (set=1) and the dedicated brush
-    // IndirectRenderers.
+    // ── Initialize the brush preview renderer ──
+    // SDF-driven: offscreen color + front depth targets, per-frame brush
+    // params UBO + set=1 descriptor sets, and the fullscreen raymarch
+    // pipeline. No octree, no tessellated brush geometry.
     if (brushRenderer) {
-        brushRenderer->setDepthSamplers(
-            waterRenderer ? waterRenderer->getLinearSampler() : VK_NULL_HANDLE,
-            shadowMapper ? shadowMapper->getShadowMapSampler() : VK_NULL_HANDLE);
         brushRenderer->init(app, app->getWidth(), app->getHeight());
     }
 
     // ── Wire scene sub-renderers into the pass orchestrators ──
-    // The shadow pass draws solid/water/vegetation/brush geometry and the
-    // water pass samples solid offscreen targets + brush liquid geometry,
-    // so each orchestrator caches the pointers it needs.
+    // The shadow pass draws solid/water/vegetation geometry and the water pass
+    // samples the solid offscreen targets; the brush preview is an independent
+    // offscreen pass and is wired directly from MyApp.
     if (shadowMapper) {
         shadowMapper->setSceneRenderers(solidRenderer.get(), waterRenderer.get(),
-                                        vegetationRenderer.get(), brushRenderer.get());
+                                        vegetationRenderer.get());
     }
     if (waterRenderer) {
-        waterRenderer->setSceneRenderers(solidRenderer.get(), brushRenderer.get(),
+        waterRenderer->setSceneRenderers(solidRenderer.get(),
                                               backFaceRenderer.get(), waterWireframe.get());
     }
 
@@ -930,17 +917,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         kVertexBytesPerChunk,  // per-chunk vertex ceiling (total = chunks x this)
         kIndexBytesPerChunk    // per-chunk index ceiling (total = chunks x this)
     );
-
-    // Initialize brush solid/liquid IndirectRenderers with their own packed
-    // element pools (smaller — brush preview rarely exceeds a few dozen
-    // meshes). Brush geometry no longer shares the main scene slot pools.
-    // The byte budgets are TOTAL shared pool budgets now (packed slots): each
-    // chunk consumes only what its mesh actually uses.
-    if (brushRenderer) {
-        brushRenderer->initSlots(app, kMaxBrushChunkSlots,
-                                 kMaxBrushChunkSlots * (1u << 18),  // total vertex pool
-                                 kMaxBrushChunkSlots * (1u << 16)); // total index pool
-    }
 
     // Hybrid RT final wiring: water's non-async prepare path needs the RT
     // outputs, and the RT pipeline's per-slot sets need the water-depth + sky
@@ -1256,7 +1232,6 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     if (descBuffers_.ready && app->useDescriptorBuffer()) {
         writeStaticDescriptorsToBuffers(app, textureArrayManager);
         if (descriptorBufferBindActive(app)) {
-            if (brushRenderer) brushRenderer->writeDepthDescriptors(app);
             return;
         }
     }
@@ -1386,9 +1361,6 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         if (shadowMapper) shadowMapper->refreshCascadeTextureBindings(app);
     }
 
-    // Also rewrite brush depth descriptors for all per-frame main sets
-    if (brushRenderer) brushRenderer->writeDepthDescriptors(app);
-
     // Surface dropped texture-array writes instead of letting a stale binding
     // fail at draw time (perf report 23 C1 follow-up).
     if (skippedImageWrites > 0) {
@@ -1411,12 +1383,10 @@ size_t SceneRenderer::publishPendingMeshes(
     VulkanApp* app,
     std::deque<PendingMeshData>& batch,
     IndirectRenderer& opaqueIR,
-    IndirectRenderer& brushOpaqueIR,
     IndirectRenderer& waterIR,
-    IndirectRenderer& brushWaterIR,
-    const std::function<uint32_t(Layer layer, NodeID nid, bool isBrush)>& takeOldSlot,
-    const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version, bool isBrush)>& onChunkPublished,
-    const std::function<void(NodeID nid, const Geometry& geom, bool isBrush, uint8_t lod)>& onFinestPublished)
+    const std::function<uint32_t(Layer layer, NodeID nid)>& takeOldSlot,
+    const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version)>& onChunkPublished,
+    const std::function<void(NodeID nid, const Geometry& geom, uint8_t lod)>& onFinestPublished)
 {
     // One-slot-per-chunk publish. Each queue entry is a self-contained
     // geometry chunk (one mesh per chunk — chunks arrive one by one). The
@@ -1437,7 +1407,6 @@ size_t SceneRenderer::publishPendingMeshes(
         const Layer layer = item.layer;
         const NodeID nid = item.nid;
         const Octree::LoDMesh& lod = item.lodMesh;
-        const bool isBrush = item.isBrush;
 
         if (lod.lod >= 0 && lod.lod < 8) lvlHist[lod.lod]++;
         int t = ++pubTotal;
@@ -1448,20 +1417,15 @@ size_t SceneRenderer::publishPendingMeshes(
                 lod.boundsMin.x, lod.boundsMin.y, lod.boundsMin.z);
         }
 
-        // Per-entry routing: solid main → opaqueIR, solid brush → brushOpaqueIR,
-        // transparent main → waterIR, transparent brush → brushWaterIR. This is
-        // the ONLY stream distinction the publish core makes; everything
-        // downstream is one shared codepath.
-        IndirectRenderer* ir = (layer == LAYER_OPAQUE)
-            ? (isBrush ? &brushOpaqueIR : &opaqueIR)
-            : (isBrush ? &brushWaterIR : &waterIR);
+        // Per-entry routing: opaque → opaqueIR, transparent → waterIR.
+        IndirectRenderer* ir = (layer == LAYER_OPAQUE) ? &opaqueIR : &waterIR;
         if (!ir) continue;
 
         const ChunkManager::ChunkId base = static_cast<ChunkManager::ChunkId>(nid);
 
         // Resolve (and consume) any pending-delete slot for this chunk: the
         // old geometry stays resident until the new upload completes.
-        uint32_t oldSlot = takeOldSlot(layer, nid, isBrush);
+        uint32_t oldSlot = takeOldSlot(layer, nid);
 
         if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
 
@@ -1489,12 +1453,12 @@ size_t SceneRenderer::publishPendingMeshes(
         // and promotes the chunk to ReadyToSwap once resident. Coarse
         // ancestor cells (level > 0) are not tracked by the ChunkManager.
         const bool frontier = (lod.lod == 0);
-        if (!isBrush && world_ && frontier)
+        if (world_ && frontier)
             world_->chunkManager().setSlotIndex(base, slotIdx);
 
-        const bool trackChunkManager = !isBrush && frontier;
+        const bool trackChunkManager = frontier;
         ir->uploadSlot(app, slotIdx, 0.0f,
-            [ir, oldSlot, this, base, trackChunkManager, isBrush]() {
+            [ir, oldSlot, this, base, trackChunkManager]() {
                 if (oldSlot != UINT32_MAX) ir->removeMeshSlotted(oldSlot);
                 if (trackChunkManager && this->world_)
                     this->world_->chunkManager().finishUpload(base);
@@ -1503,18 +1467,16 @@ size_t SceneRenderer::publishPendingMeshes(
                 // so a build that overlapped the transfer cannot leave these
                 // chunks' triangles broken (a stale BLAS is never rebuilt by
                 // camera moves/LoD, so the corruption would persist - the
-                // "reflections vanish past a range" artifact). Brush uploads
-                // are not part of the main TLAS, so they are skipped.
-                if (!isBrush && this->rayTracing)
+                // "reflections vanish past a range" artifact).
+                if (this->rayTracing)
                     this->rayTracing->requestSceneBlasRefresh();
             });
 
-        onChunkPublished(layer, nid, slotIdx, lod.version, isBrush);
+        onChunkPublished(layer, nid, slotIdx, lod.version);
 
         // Hybrid RT: record the proxy source of main-scene chunks (world bounds
         // + dominant material). Opaque chunks feed the solid BLAS; transparent
         // (water) chunks feed the water BLAS so solid reflections see water.
-        // Brush chunks excluded (preview overlay, not scene).
         // NOTE (refraction fix): the proxy box MUST tightly enclose the actual
         // mesh surface, not the emitting octree cell. Cell cubes are full
         // volumes (tens of meters) whose faces sit at cell boundaries far from
@@ -1524,7 +1486,7 @@ size_t SceneRenderer::publishPendingMeshes(
         // bottom underneath. Tight vertex bounds make each proxy a thin slab
         // around the true surface, so the refracted ray hits the top face at
         // the real underwater point with ground-related color/thickness.
-        if (!isBrush && !lod.geom.vertices.empty()) {
+        if (!lod.geom.vertices.empty()) {
             std::lock_guard<std::recursive_mutex> lock(solidChunksMutex);
             SolidProxyData pd;
             {
@@ -1623,7 +1585,7 @@ size_t SceneRenderer::publishPendingMeshes(
         // only in the thinnest high-detail disc around the camera, with no
         // overdraw because overlapping rungs are never simultaneously visible.
         if (layer == LAYER_OPAQUE && vegetationRenderer && !lod.geom.vertices.empty()) {
-            onFinestPublished(nid, lod.geom, isBrush, lod.lod);
+            onFinestPublished(nid, lod.geom, lod.lod);
         }
 
         ++slotsPublished;
@@ -1661,7 +1623,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     lastCameraPos_ = cameraPos;
     solidRenderer->getIndirectRenderer().pollPendingTransfers(app);
     waterRenderer->getIndirectRenderer().pollPendingTransfers(app);
-    if (brushRenderer) brushRenderer->pollPendingTransfers(app);
 
     // Keep the GPU LoD gate meta in sync with the tree (self-correcting once
     // the scene is loaded). maxLodLevel is the tree's real ladder depth and
@@ -1676,14 +1637,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         solidRenderer->getIndirectRenderer().setLodRootMin(mainScene.opaqueOctree.getMin());
         waterRenderer->getIndirectRenderer().setMaxLodLevel(mainScene.maxChunkLod(LAYER_TRANSPARENT, ms));
         waterRenderer->getIndirectRenderer().setLodRootMin(mainScene.transparentOctree.getMin());
-        if (brushRenderer) {
-            if (LocalScene* brushScene = world_->brushScene()) {
-                brushRenderer->getSolidIR().setMaxLodLevel(brushScene->maxChunkLod(LAYER_OPAQUE, ms));
-                brushRenderer->getSolidIR().setLodRootMin(brushScene->opaqueOctree.getMin());
-                brushRenderer->getLiquidIR().setMaxLodLevel(brushScene->maxChunkLod(LAYER_TRANSPARENT, ms));
-                brushRenderer->getLiquidIR().setLodRootMin(brushScene->transparentOctree.getMin());
-            }
-        }
     }
 
     // ── Async visible-count snapshot (stats only) ─────────────────────────
@@ -1699,11 +1652,10 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     if (sdfRenderer) sdfRenderer->rebuildLavaIfDirty();
 
     if (batch.empty()) {
-        // No new geometry yet (brush tessellation may still be running). Keep
-        // old geometry visible — don't free anything. On the next rebuild,
-        // stageOldBrushChunks will re-capture the same slots. Still age out the
-        // main stream's orphaned pending-delete entries (genuine deletions with
-        // no replacement) so a mid-stream erase never leaks a slot.
+        // No new geometry yet (tessellation may still be running). Keep old
+        // geometry visible — don't free anything. Still age out the main
+        // stream's orphaned pending-delete entries (genuine deletions with no
+        // replacement) so a mid-stream erase never leaks a slot.
         uint32_t curFrame = app ? app->getCurrentFrame() : 0;
         ageOutPendingDeletes(curFrame, solidRenderer->getIndirectRenderer(), waterRenderer->getIndirectRenderer());
         processChunkSwapQueue(app);
@@ -1713,46 +1665,15 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         return;
     }
 
-    // ── Deferred old-slot staging (brush) ─────────────────────────────────────
-    // Instead of freeing old staged slots BEFORE allocating new ones (which
-    // creates a window where neither old nor new geometry is valid on GPU), we
-    // capture old slot indices now and free them AFTER each new slot's vertex
-    // upload completes. This keeps the old geometry visible until the new data
-    // is resident on the GPU, eliminating the 1-2 frame transient where the
-    // brush disappears or renders garbage.
-    //
-    // addMeshSlotted may reuse the same block when the same NodeID exists
-    // (in-place republish). In that case oldSlot == slotIdx and we must NOT
-    // free the old slot — it was updated in-place, not replaced.
-    //
-    // Old slots whose NodeID no longer appears in the new set are orphans: their
-    // chunk was removed in the rebuild and the stale geometry is freed
-    // immediately after all new slots are allocated.
-    std::unordered_map<NodeID, uint32_t> oldSolidSlots;
-    std::unordered_map<NodeID, uint32_t> oldTransparentSlots;
-    if (brushRenderer) brushRenderer->captureOldSlots(oldSolidSlots, oldTransparentSlots);
-
     // ── UNIFIED publish pass ──────────────────────────────────────────────────
-    // Both the main scene (solid/water) and the brush scene flow through the
-    // SAME publish core. Each entry's (layer, isBrush) tag routes it to the
-    // right IndirectRenderer, ChunkManager tracking and deferred-slot source:
-    // solid/water geometry is processed exactly the same way as brush geometry.
-    std::unordered_set<NodeID> matchedNids;
-    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch, solidRenderer->getIndirectRenderer(), brushRenderer->getSolidIR(), waterRenderer->getIndirectRenderer(), brushRenderer->getLiquidIR(),
+    // The main scene's solid/water streams flow through the same publish core;
+    // each entry's layer routes it to the right IndirectRenderer,
+    // ChunkManager tracking and deferred-slot source.
+    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch, solidRenderer->getIndirectRenderer(), waterRenderer->getIndirectRenderer(),
         // takeOldSlot: resolve+consume the old slot for a chunk (one slot per
-        // chunk — its LoD rows share it), or UINT32_MAX when none. The main
-        // stream reads its pending-delete entry (one-frame grace); the brush
-        // stream reads the deferred slots staged above.
-        [this, &matchedNids, &oldSolidSlots, &oldTransparentSlots](Layer layer, NodeID nid, bool isBrush) -> uint32_t {
-            if (isBrush) {
-                auto& oldMap = (layer == LAYER_OPAQUE) ? oldSolidSlots : oldTransparentSlots;
-                auto it = oldMap.find(nid);
-                if (it == oldMap.end()) return UINT32_MAX;
-                const uint32_t slot = it->second;
-                oldMap.erase(it);
-                matchedNids.insert(nid);
-                return slot;
-            }
+        // chunk — its LoD rows share it), or UINT32_MAX when none. Reads the
+        // pending-delete entry (one-frame grace).
+        [this](Layer layer, NodeID nid) -> uint32_t {
             auto& deleteMap = (layer == LAYER_OPAQUE)
                 ? this->pendingDeleteSolidSlots : this->pendingDeleteWaterSlots;
             auto it = deleteMap.find(nid);
@@ -1761,46 +1682,24 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
             deleteMap.erase(it);
             return slot;
         },
-        // onChunkPublished: the brush stream records the published slot/version
-        // in its chunk maps (so erasure can free it later); the main stream
-        // records the same in the scene chunk maps — frontier chunks are also
-        // tracked by the ChunkManager, but coarse ancestor cells are not, so
-        // their slot is resolved through this map when the cell is deleted.
-        [this](Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version, bool isBrush) {
-            if (isBrush) {
-                auto& chunkMap = (layer == LAYER_OPAQUE)
-                    ? this->brushRenderer->solidChunks : this->brushRenderer->transparentChunks;
-                chunkMap[nid] = Model3DVersion{slotIdx, version};
-            } else {
-                auto& chunkMap = (layer == LAYER_OPAQUE)
-                    ? this->solidChunks : this->waterChunks;
-                chunkMap[nid] = Model3DVersion{slotIdx, version};
-            }
+        // onChunkPublished: record the published slot/version in the scene
+        // chunk maps — frontier chunks are also tracked by the ChunkManager,
+        // but coarse ancestor cells are not, so their slot is resolved through
+        // this map when the cell is deleted.
+        [this](Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version) {
+            auto& chunkMap = (layer == LAYER_OPAQUE)
+                ? this->solidChunks : this->waterChunks;
+            chunkMap[nid] = Model3DVersion{slotIdx, version};
         },
-        // onFinestPublished: grass chunks (main scene only) drive vegetation
-        // from their level-0 (finest) geometry. Lava chunks (brush 4) drive
-        // the generic SDF fire the same way (flame anchors, not billboards),
-        // but ONLY at the finest rung: ancestors nest over the same lava, so
-        // coarser rungs would stack duplicate flames floating off the true
-        // surface (the GPU LoD gate that hides this for grass does not exist
-        // for SDF volumes). Frontier chunks tile the whole terrain.
-        [this, app](NodeID nid, const Geometry& geom, bool isBrush, uint8_t lod) {
-            if (!isBrush && this->vegetationRenderer) this->vegetationRenderer->generateForChunk(app, nid, geom);
-            if (!isBrush && lod == 0 && this->sdfRenderer) this->sdfRenderer->ingestLavaChunk(static_cast<uintptr_t>(nid), geom);
+        // onFinestPublished: grass chunks drive vegetation from their finest
+        // geometry; lava chunks (finest rung only) drive the generic SDF fire.
+        // Ancestors nest over the same lava, so coarser rungs would stack
+        // duplicate flames floating off the true surface.
+        [this, app](NodeID nid, const Geometry& geom, uint8_t lod) {
+            if (this->vegetationRenderer) this->vegetationRenderer->generateForChunk(app, nid, geom);
+            if (lod == 0 && this->sdfRenderer) this->sdfRenderer->ingestLavaChunk(static_cast<uintptr_t>(nid), geom);
         });
 
-    // ── Orphan + grace sweeps (one sweep for ALL old slots) ──────────────────
-    // Brush orphans: staged old slots whose NodeID no longer appears in the new
-    // set. These chunks were removed in the rebuild and have stale geometry at
-    // the old brush position — they must not linger as visible garbage.
-    for (auto& [nid, oldSlot] : oldSolidSlots) {
-        if (!matchedNids.count(nid) && brushRenderer->solidChunks.find(nid) == brushRenderer->solidChunks.end())
-            brushRenderer->getSolidIR().removeMeshSlotted(oldSlot);
-    }
-    for (auto& [nid, oldSlot] : oldTransparentSlots) {
-        if (!matchedNids.count(nid) && brushRenderer->transparentChunks.find(nid) == brushRenderer->transparentChunks.end())
-            brushRenderer->getLiquidIR().removeMeshSlotted(oldSlot);
-    }
     // Main stream: age out pending-delete entries that have been waiting longer
     // than MAX_FRAMES_IN_FLIGHT. For solid/water the octree node is reused with
     // the same NodeID, so a matching entry is normally consumed within 1 frame.
@@ -1858,10 +1757,6 @@ void SceneRenderer::logMemoryUtilization() {
     std::printf("[memutil] ---- pool utilization (report 22 C1) ----\n");
     if (solidRenderer) solidRenderer->getIndirectRenderer().logUtilization("solid");
     if (waterRenderer) waterRenderer->getIndirectRenderer().logUtilization("water");
-    if (brushRenderer) {
-        brushRenderer->getSolidIR().logUtilization("brush-solid");
-        brushRenderer->getLiquidIR().logUtilization("brush-liquid");
-    }
     if (vegetationRenderer) vegetationRenderer->logUtilization();
     // Report 23 C1: the texture side of the budget, previously uncounted.
     if (textureArrays_) textureArrays_->logMemoryUtilization("main");

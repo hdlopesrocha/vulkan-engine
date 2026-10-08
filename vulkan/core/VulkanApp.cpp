@@ -5956,8 +5956,8 @@ VkDescriptorSet VulkanApp::getStaticDescriptorSet() const {
 VkDescriptorSetLayout VulkanApp::getMaterialDescriptorSetLayout() const {
     return sceneDescriptorLayout ? sceneDescriptorLayout->materialDescriptorSetLayout() : VK_NULL_HANDLE;
 }
-VkDescriptorSetLayout VulkanApp::getBrushDepthDescriptorSetLayout() const {
-    return sceneDescriptorLayout ? sceneDescriptorLayout->brushDepthDescriptorSetLayout() : VK_NULL_HANDLE;
+VkDescriptorSetLayout VulkanApp::getBrushParamsDescriptorSetLayout() const {
+    return sceneDescriptorLayout ? sceneDescriptorLayout->brushParamsDescriptorSetLayout() : VK_NULL_HANDLE;
 }
 
 // ---------------------------------------------------------------------------

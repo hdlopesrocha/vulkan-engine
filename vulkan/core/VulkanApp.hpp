@@ -466,7 +466,7 @@ public:
         VkDescriptorSetLayout getDescriptorSetLayout() const;
         VkDescriptorSet getStaticDescriptorSet() const;
         VkDescriptorSetLayout getMaterialDescriptorSetLayout() const;
-        VkDescriptorSetLayout getBrushDepthDescriptorSetLayout() const;
+        VkDescriptorSetLayout getBrushParamsDescriptorSetLayout() const;
         // Register a descriptor set layout with the resource manager (used by
         // SceneDescriptorLayout for cleanup tracking). Kept on VulkanApp so the
         // renderer-owned layout class does not reach into private state.

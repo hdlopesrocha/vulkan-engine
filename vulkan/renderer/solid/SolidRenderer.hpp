@@ -74,16 +74,15 @@ public:
 
     // Single-pass selector (perf report 21 C2). While set, the color binds
     // use the depth-write twin; MyApp sets it only around the solid color
-    // draw so external draws (brush) never inherit it. Defaults off.
+    // draw. Defaults off.
     void setDeferredColorDepthWrite(bool enabled) { colorDepthWrite_ = enabled; }
     // Deferred depth test: draw only depth (no color)
     void drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet);
-    // Deferred depth test: draw only color with LESS_OR_EQUAL compare, no depth write
-    void drawColor(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
-    // Draw depth using an external IndirectRenderer (e.g. separate brush mesh buffer)
-    void drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
-    // Draw brush color (SolidRendererBrush.frag, no shadows) using an external IndirectRenderer
-    void drawBrushColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
+    // Deferred depth test: draw only color with LESS_OR_EQUAL compare, no
+    // depth write. `brushParamsSet` is the brush SDF params set (set=1) that
+    // PAINT/REMOVE mode evaluates against.
+    void drawColor(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet,
+                   VkDescriptorSet brushParamsSet = VK_NULL_HANDLE);
 
 private:
     
@@ -158,12 +157,6 @@ private:
     bool tessellationEnabled_ = true;
     // Single-pass flag (perf report 21 C2); see setDeferredColorDepthWrite.
     bool colorDepthWrite_ = false;
-    // Brush color pipeline (alpha blending enabled)
-    TrackedHandle<VkPipeline> brushDeferredColorPipeline;
-    TrackedHandle<VkPipelineLayout> brushDeferredColorPipelineLayout;
-    // Brush overlay pipeline (opaque, no blending) for scene_color rendering
-    TrackedHandle<VkPipeline> brushOverlayPipeline;
-    TrackedHandle<VkPipelineLayout> brushOverlayPipelineLayout;
     bool deferredPipelinesCreated = false;
 
     // Offscreen framebuffer resources matching MAX_FRAMES_IN_FLIGHT

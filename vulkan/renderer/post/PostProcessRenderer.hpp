@@ -20,7 +20,8 @@ public:
     void cleanup(VulkanApp* app) override;
 
     /// Composite scene + water + brush into the swapchain framebuffer.
-    /// Brush color/depth views come from the early brush pass offscreen targets.
+    /// Brush color/depth views come from the SDF brush preview offscreen
+    /// targets (BrushSdfRenderer).
     /// waterBodyView is the water refraction+tint body (RGB) with the body
     /// weight in A; waterColumnView packs the measured water depth (m, R) and
     /// the per-material blur radius in pixels (G). Together they drive the
@@ -41,7 +42,6 @@ public:
                 VkImageView waterColorView,
                 VkImageView waterBodyView, VkImageView waterColumnView,
                 VkImageView brushColorView, VkImageView brushDepthView,
-                VkImageView brushBackFaceDepthView,
                 VkImageView waterGeomDepthView,
                 VkImageView vegColorView, VkImageView vegDepthView,
                 VkImageView sdfColorView, VkImageView sdfDepthView,
