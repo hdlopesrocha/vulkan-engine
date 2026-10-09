@@ -207,6 +207,10 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
 class MyApp : public VulkanApp, public IEventHandler {
 public:
     Settings settings;
+    // Last grass mode applied to the renderers; the mode selector only
+    // pushes on change so the Grass/Impostors widget toggles are not
+    // overridden every frame.
+    Settings::GrassMode appliedGrassMode = Settings::GrassMode::GrassRaycast;
     SceneRenderer * sceneRenderer = nullptr;
     // Scene render queues are owned by the generic VulkanApp framework via its
     // SceneQueues member (forward-declared, created and configured below in
@@ -1368,6 +1372,24 @@ public:
             }
         } else {
             std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n";
+        }
+
+        // Grass mode selector (Settings widget): derive the effective legacy
+        // vegetation gate and the SDF grass gate from the single 3-way choice.
+        // Applied only when the mode changes, so the Grass/Impostors widget
+        // enable toggles are not overridden every frame.
+        if (settings.grassMode != appliedGrassMode) {
+            appliedGrassMode = settings.grassMode;
+            settings.vegetationEnabled =
+                (settings.grassMode == Settings::GrassMode::Vegetation);
+            if (sceneRenderer && sceneRenderer->sdfRenderer) {
+                sceneRenderer->sdfRenderer->setGrassEnabled(
+                    settings.grassMode == Settings::GrassMode::GrassRaycast);
+            }
+        }
+        if (sceneRenderer && sceneRenderer->sdfRenderer) {
+            // SDF ray-cast quality (1..8 px blocks; default 2). Dedupes.
+            sceneRenderer->sdfRenderer->setRaycastPixelSize(settings.sdfRaycastPixelSize);
         }
 
         const bool waterEnabled = settings.waterEnabled;
@@ -3469,6 +3491,9 @@ void MyApp::setupVegetationTextures() {
     impostorService->init(this);
     impostorWidget = std::make_shared<ImpostorWidget>(impostorService);
     impostorWidget->setVegetationRenderer(sceneRenderer->vegetationRenderer.get());
+    // Grass SDF impostors (procedural far-LOD) controls in the same widget.
+    if (sceneRenderer->sdfRenderer)
+        impostorWidget->setSdfRenderer(sceneRenderer->sdfRenderer.get());
     
     // Load the vegetation atlas textures (albedo, normal, opacity) into the texture array
     std::vector<TextureTriple> vegTriples = {

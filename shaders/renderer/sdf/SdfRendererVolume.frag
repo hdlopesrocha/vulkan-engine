@@ -148,7 +148,8 @@ float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
         // blade-count reduction and the aggregate-only far LOD.
         float camScale = distance(ubo.viewPosition, inst.position) / max(inst.scale, 1e-3);
         return sdGrassClump(q, def.params0, def.params1, inst.seed, camScale,
-                            windL, windAmp) * ds;
+                            windL, windAmp,
+                            sdfParams.impostorStart, sdfParams.impostorFull) * ds;
     }
     // Optional repeat before primitive eval (SDF_DEFORM_REPEAT): period from
     // params1.xyz.
@@ -350,25 +351,32 @@ void main() {
     // cell's offset by flatten(); it must NOT be added again here.
 
     vec3 ro = ubo.viewPosition;
-    vec3 toFrag = fragWorldPos - ro;
-    float toFragLen = length(toFrag);
-    if (toFragLen < 1e-8) discard;
-    vec3 rd = toFrag / toFragLen;
+    // Ray-cast quality (Settings: SDF raycast pixel size): cast ONE ray per
+    // raycastPixelSize x raycastPixelSize screen-pixel block (the block
+    // center), so the SDF output is pixelated; 1 = one ray per pixel. The
+    // proxy cubes still rasterize at full resolution, so the per-pixel
+    // hardware depth test against the pre-loaded solid depth stays exact.
+    vec2 rayUV = gl_FragCoord.xy * sdfParams.invScreenSize;
+    if (sdfParams.raycastPixelSize > 1.5) {
+        vec2 blockPx = (floor(gl_FragCoord.xy / sdfParams.raycastPixelSize) + 0.5)
+                     * sdfParams.raycastPixelSize;
+        rayUV = blockPx * sdfParams.invScreenSize;
+    }
+    vec4 rayFar = ubo.invViewProjection * vec4(rayUV * 2.0 - 1.0, 1.0, 1.0);
+    if (abs(rayFar.w) < 1e-8) discard;
+    vec3 rd = normalize(rayFar.xyz / rayFar.w - ro);
 
     float tEnter, tExit;
     if (!sdfRayAabb(ro, rd, bMin, bMax, tEnter, tExit)) discard;
     tEnter = max(tEnter, 0.0);
 
-    // Depth-clamp against the opaque scene (binding 7): the SDF task waits
-    // on tlSolid, after which the solid pass has transitioned its depth to
-    // SHADER_READ_ONLY_OPTIMAL, so sampling here is race-free. Fully
-    // occluded rays discard; partially occluded rays march only to the
+    // Depth-clamp against the opaque scene (binding 7) and the water surface
+    // (binding 9) at the marched ray's screen position (the block center when
+    // pixelated): the SDF task waits on tlSolid/tlWater, after which both
+    // depths are in SHADER_READ_ONLY_OPTIMAL, so sampling here is race-free.
+    // Fully occluded rays discard; partially occluded rays march only to the
     // occluder. (Explicit LOD: divergent flow, derivatives undefined here.)
-    vec4 pclip = ubo.viewProjection * vec4(fragWorldPos, 1.0);
-    if (pclip.w > 1e-6) {
-        vec2 suv = pclip.xy / pclip.w * 0.5 + 0.5;
-        tExit = min(tExit, sdfSceneDistance(ro, suv));
-    }
+    tExit = min(tExit, sdfSceneDistance(ro, rayUV));
     if (tEnter >= tExit) discard;
 
     // Dithered march start (up to an eighth of a noise wavelength): breaks

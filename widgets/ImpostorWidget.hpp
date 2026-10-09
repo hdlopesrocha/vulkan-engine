@@ -6,6 +6,7 @@
 
 class VulkanApp;
 class VegetationRenderer;
+class SdfRenderer;
 
 // Dedicated widget for capturing and inspecting Fibonacci-sphere impostor views
 // of billboard vegetation textures.
@@ -20,10 +21,16 @@ public:
     void setVegetationRenderer(VegetationRenderer* renderer)
         { impostorService->setVegetationRenderer(renderer); }
 
+    // Grass SDF impostors (procedural far-LOD, no atlas): the widget exposes
+    // the enable gate, an "impostors only" inspection toggle and the fade
+    // band. Never owned.
+    void setSdfRenderer(SdfRenderer* renderer) { sdfRenderer = renderer; }
+
     void render() override;
 
 private:
     std::shared_ptr<ImpostorService> impostorService;
+    SdfRenderer* sdfRenderer = nullptr;
 
     // Active selection in the combo box.
     int  selectedBillboard  = 0;

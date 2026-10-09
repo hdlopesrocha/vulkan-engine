@@ -48,10 +48,12 @@ struct SdfGrassShadowPC {
     glm::mat4 lightViewProj; // cascade light view-projection (world -> light clip)
     glm::vec4 params;        // x = time (s), y = max steps, z = epsilon, w = safety
     glm::vec4 march;         // x = max step (m), y = min step (m), z = shadow LOD camScale
-                             // (>= 80 -> impostor-only grass LOD, zero blades)
+                             // (>= impostorFull -> impostor-only grass LOD, zero blades)
+    glm::vec4 impostor;      // x = impostor fade start, y = impostor fade full
+                             // (camera distance in clump scales)
     glm::vec4 lightDir;      // xyz = light-to-scene direction (world), w unused
 };
-static_assert(sizeof(SdfGrassShadowPC) == 112, "SdfGrassShadowPC must be 112 bytes");
+static_assert(sizeof(SdfGrassShadowPC) == 128, "SdfGrassShadowPC must be 128 bytes");
 
 // Generic GPU-driven SDF renderer: one instanced proxy-cube draw per SDF
 // container; the fragment shader traverses definitions/materials/grid for the
@@ -208,6 +210,20 @@ public:
     void setGrassTint(const glm::vec3& rgb);
     // Shadow-caster LOD camera scale (no scene rebuild: read per shadow frame).
     void setGrassShadowLodScale(float s);
+    // SDF impostor fade band (camera distance in clump scales; no scene
+    // rebuild: streamed through the SDF params UBO). Setting both to 0 forces
+    // the impostor representation everywhere (Impostors-widget preview).
+    void setGrassImpostorStart(float s);
+    void setGrassImpostorFull(float f);
+    void setGrassImpostorsOnly(bool on);
+
+    // ── Ray-cast quality (Settings: SDF raycast pixel size) ──────────────
+    // The SDF ray is cast once per NxN screen-pixel block (block center) when
+    // N > 1, pixelating the SDF output; the full-resolution proxy
+    // rasterization keeps the per-pixel hardware depth test against solid.
+    // 1 = one ray per pixel. No scene rebuild (streamed through the params
+    // UBO). Default 2 (Settings::sdfRaycastPixelSize).
+    void setRaycastPixelSize(int px);
 
     // ── Smoke bomb + bullets (second generic consumer) ──────────────────
     // A static-topology smoke scene (1 Smoke-sphere def/mat/container/
@@ -372,6 +388,7 @@ private:
     SdfParamsUBO params_ = {};
     RenderMode renderMode_ = RenderMode::Surface;
     uint32_t debugFlags_ = 0;
+    int raycastPixelSize_ = 2; // Settings::sdfRaycastPixelSize (streamed via params_)
     // Per-slot dirty flags (triple-buffered slots!). A single global flag
     // breaks after the first frame: slot 0 consumes it, slots 1-2 never
     // allocate/upload yet still hit the barrier/draw with NULL buffers

@@ -56,13 +56,26 @@ void SettingsWidget::render() {
         ImGuiComponents::TooltipOnHover("Global gate for the per-material refraction/tint blur.\n"
                        "The blur runs only where this AND the layer's 'Enable Blur' are on.\n"
                        "Reflections and surface highlights are never blurred.");
-        if (ImGui::Checkbox("Render Vegetation", &settings.vegetationEnabled)) {
-            // toggled
+        // Grass representation selector: legacy billboards, SDF raycast, none.
+        {
+            const char* kGrassModes[] = { "Vegetation", "Grass Raycast", "None" };
+            int grassMode = static_cast<int>(settings.grassMode);
+            ImGuiComponents::FieldLabel("Grass", "Grass representation selector");
+            ImGui::SetNextItemWidth(kSettingsColWidth);
+            if (ImGui::Combo("##GrassMode", &grassMode, kGrassModes, 3)) {
+                settings.grassMode = static_cast<Settings::GrassMode>(grassMode);
+            }
+            ImGuiComponents::TooltipOnHover("Grass representation:\n"
+                           "  Vegetation   = legacy textured billboard/impostor draws\n"
+                           "  Grass Raycast = SDF grass (generic SDF renderer, Grass widget)\n"
+                           "  None         = no grass");
         }
-        ImGuiComponents::TooltipOnHover("Legacy textured billboard vegetation (off by default).\n"
-                       "Grass is rendered by the generic SDF renderer; its clumps stream\n"
-                       "from the same vegetation generation, so the SDF grass keeps working\n"
-                       "while this is off. Controls for it live in the Grass widget.");
+        if (ImGuiComponents::SliderIntField("SDF Raycast Pixel Size", &settings.sdfRaycastPixelSize, 1, 8, "%d px",
+                "SDF rays are cast once per NxN screen-pixel block (block center):\n"
+                "1 = one ray per pixel, 2 = 2x2 pixelation (default), up to 8x8.\n"
+                "Higher = more pixelated SDF output and cheaper ray casting.")) {
+            // SliderInt clamps to [1, 8]; nothing else to do.
+        }
         if (ImGui::Checkbox("Volumetric Clouds", &settings.cloudsEnabled)) {
             // toggled
         }

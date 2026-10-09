@@ -3,6 +3,10 @@
 #include <glm/trigonometric.hpp>
 #include <cmath>
 
+#include "../vulkan/renderer/sdf/SdfRenderer.hpp"
+#include "components/ImGuiHelpers.hpp"
+#include "components/ColumnLayout.hpp"
+
 ImpostorWidget::ImpostorWidget(std::shared_ptr<ImpostorService> svc)
     : Widget("Impostor Viewer", u8"\uf06e"), impostorService(std::move(svc)) {}
 
@@ -10,6 +14,41 @@ void ImpostorWidget::render() {
     if (!isVisible()) return;
 
     ImGui::Begin(displayTitle().c_str(), &isOpen);
+
+    // ── Grass SDF impostors (procedural far-LOD; no atlas to preview) ────
+    // The legacy atlas preview below is unrelated: the SDF grass impostor is
+    // the aggregate clump representation the raymarcher switches to with
+    // distance. These controls make it visible/inspectable.
+    if (sdfRenderer) {
+        SdfGrassConfig& grass = sdfRenderer->config().grass;
+        const SdfStats& stats = sdfRenderer->getStats();
+        if (ImGui::CollapsingHeader("Grass SDF Impostors", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextWrapped("Procedural far-LOD SDF of the grass clumps (one base-bulged "
+                               "round cone + ripple; no atlas). Clumps fade from individual "
+                               "blades into this impostor with camera distance.");
+            ImGui::Text("clumps: %u   chunks: %u", stats.grassAnchors, stats.grassChunks);
+            ImGui::TextDisabled("SDF grass is toggled by Settings > Grass (Grass Raycast / None).");
+            bool only = (grass.impostorStart <= 0.0f && grass.impostorFull <= 0.0f);
+            if (ImGuiComponents::CheckboxField("Impostors only (inspect)", &only,
+                    "Force every grass clump to its SDF impostor representation, so the "
+                    "far-LOD look can be inspected at close range.")) {
+                sdfRenderer->setGrassImpostorsOnly(only);
+            }
+            float start = grass.impostorStart;
+            if (ImGuiComponents::SliderFloatField("Impostor start", &start, 0.0f, 256.0f, "%.0f",
+                    "Camera distance (in clump scales) where the impostor starts fading in "
+                    "over the reduced blades.")) {
+                sdfRenderer->setGrassImpostorStart(start);
+            }
+            float full = grass.impostorFull;
+            if (ImGuiComponents::SliderFloatField("Impostor full", &full, 0.0f, 512.0f, "%.0f",
+                    "Camera distance (in clump scales) where the impostor is the only "
+                    "representation (zero blades).")) {
+                sdfRenderer->setGrassImpostorFull(full);
+            }
+        }
+        ImGui::Separator();
+    }
 
     const bool srcReady = impostorService && impostorService->isReady();
 

@@ -2,6 +2,12 @@
 
 class Settings {
 public:
+    // Grass representation selector (Settings widget: "Grass"):
+    //   Vegetation   = legacy textured billboard/impostor draws
+    //   GrassRaycast = SDF grass rendered by the generic SDF renderer
+    //   None         = no grass
+    enum class GrassMode { Vegetation = 0, GrassRaycast = 1, None = 2 };
+
     void resetToDefaults() {
         *this = Settings{};
     }
@@ -19,11 +25,15 @@ public:
     // layer's own flag are on (same two-way pattern as rtRefractions /
     // rtWaterReflections with the per-layer reflection/refraction toggles).
     bool blurEnabled = true;
-    // Legacy billboard/impostor vegetation. Off by default: grass is rendered
-    // by the generic SDF renderer (Grass widget), and its clumps stream from
-    // the same vegetation generation regardless of this gate. Turn on to
-    // bring back the textured billboard draws alongside the SDF grass.
+    // Legacy billboard/impostor vegetation. Derived from grassMode every
+    // frame (MyApp): true only in GrassMode::Vegetation. Grass clumps for the
+    // SDF renderer stream from the same vegetation generation regardless.
     bool vegetationEnabled = false;
+    // Active grass representation (see GrassMode). Default: SDF raycast.
+    GrassMode grassMode = GrassMode::GrassRaycast;
+    // SDF ray-cast quality: the SDF ray is cast once per NxN screen-pixel
+    // block (1 = one ray per pixel). 2 = the default 2x2 pixelation.
+    int sdfRaycastPixelSize = 2;
     bool wireframeMode = false;
     bool waterWireframeMode = false;
     bool normalMappingEnabled = true;

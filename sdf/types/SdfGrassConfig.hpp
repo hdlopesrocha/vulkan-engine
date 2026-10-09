@@ -41,10 +41,14 @@ struct SdfGrassConfig {
     // value instead of the real camera distance, so shadow texels evaluate
     // the reduced blade set rather than the full clump. Shadows are blurred
     // and cover far more area per texel than the main view, so a coarse LOD
-    // is both sufficient and required for performance. Thresholds live in
-    // SdfGrass.glsl: below GRASS_IMPOSTOR_START (48) the blade LOD only,
-    // 48..80 the reduced blades unioned with the fading impostor, and at
-    // >= GRASS_IMPOSTOR_FULL (80) the impostor only (zero blades, cheapest:
-    // one base-bulged round cone + a low-frequency ripple).
+    // is both sufficient and required for performance. At >= impostorFull it
+    // evaluates the impostor only (zero blades).
     float shadowLodScale = 32.0f;
+    // SDF impostor fade band (camera distance in clump scales): below
+    // impostorStart the blade LOD only, impostorStart..impostorFull the
+    // blades unioned with the fading impostor, at/above impostorFull the
+    // impostor only (cheapest). Editable in the Impostors widget; setting
+    // both to 0 forces the impostor everywhere ("impostors only" preview).
+    float impostorStart = 48.0f;
+    float impostorFull = 80.0f;
 };

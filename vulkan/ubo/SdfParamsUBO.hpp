@@ -23,8 +23,20 @@ struct alignas(16) SdfParamsUBO {
     // water pass wrote a valid geometry depth this frame. 0 keeps the shader
     // on the solid-depth clamp only.
     float waterDepthEnabled = 0.0f; // offset 36
+    // Ray-cast quality: the SDF ray is cast once per raycastPixelSize x
+    // raycastPixelSize screen-pixel block (block center), pixelating the SDF
+    // output; 1 = one ray per pixel. invScreenSize is the SDF target's
+    // inverse size (gl_FragCoord -> UV for the block-center ray).
+    alignas(8) glm::vec2 invScreenSize{0.0f}; // offset 40
+    float raycastPixelSize = 2.0f;   // offset 48
+    // Grass SDF impostor fade band (camera distance in clump scales):
+    // below impostorStart the blade LOD only, impostorStart..impostorFull the
+    // blades unioned with the fading impostor, at/above impostorFull the
+    // impostor only. Exposed in the Impostors widget.
+    float impostorStart = 48.0f;     // offset 52
+    float impostorFull = 80.0f;      // offset 56
 };
-static_assert(sizeof(SdfParamsUBO) == 48, "SdfParamsUBO must be 48 bytes (std140 padding)");
+static_assert(sizeof(SdfParamsUBO) == 64, "SdfParamsUBO must be 64 bytes (std140 padding)");
 static_assert(offsetof(SdfParamsUBO, time) == 0, "time offset");
 static_assert(offsetof(SdfParamsUBO, maxSteps) == 4, "maxSteps offset");
 static_assert(offsetof(SdfParamsUBO, safety) == 8, "safety offset");
@@ -35,3 +47,7 @@ static_assert(offsetof(SdfParamsUBO, earlyTerm) == 24, "earlyTerm offset");
 static_assert(offsetof(SdfParamsUBO, renderMode) == 28, "renderMode offset");
 static_assert(offsetof(SdfParamsUBO, debugFlags) == 32, "debugFlags offset");
 static_assert(offsetof(SdfParamsUBO, waterDepthEnabled) == 36, "waterDepthEnabled offset");
+static_assert(offsetof(SdfParamsUBO, invScreenSize) == 40, "invScreenSize offset");
+static_assert(offsetof(SdfParamsUBO, raycastPixelSize) == 48, "raycastPixelSize offset");
+static_assert(offsetof(SdfParamsUBO, impostorStart) == 52, "impostorStart offset");
+static_assert(offsetof(SdfParamsUBO, impostorFull) == 56, "impostorFull offset");

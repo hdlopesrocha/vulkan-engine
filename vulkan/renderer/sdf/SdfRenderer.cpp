@@ -1335,6 +1335,53 @@ void SdfRenderer::setGrassShadowLodScale(float s) {
     config_.grass.shadowLodScale = std::clamp(s, 4.0f, 120.0f);
 }
 
+void SdfRenderer::setGrassImpostorStart(float s) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(s, 0.0f, 256.0f);
+    if (v == config_.grass.impostorStart) return;
+    config_.grass.impostorStart = v;
+    // Keep the band ordered (start <= full).
+    config_.grass.impostorFull = std::max(config_.grass.impostorFull, v);
+    params_.impostorStart = config_.grass.impostorStart;
+    params_.impostorFull = config_.grass.impostorFull;
+    paramsDirtySlots_.fill(true);
+}
+
+void SdfRenderer::setGrassImpostorFull(float f) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::clamp(f, 0.0f, 512.0f);
+    if (v == config_.grass.impostorFull) return;
+    config_.grass.impostorFull = std::max(v, config_.grass.impostorStart);
+    params_.impostorFull = config_.grass.impostorFull;
+    paramsDirtySlots_.fill(true);
+}
+
+void SdfRenderer::setGrassImpostorsOnly(bool on) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    if (on) {
+        // Degenerate band: any camScale >= 0 takes the hard impostor-only
+        // path (sdGrassClump's full >= start == 0 test), so every clump is
+        // rendered as its SDF impostor for inspection.
+        config_.grass.impostorStart = 0.0f;
+        config_.grass.impostorFull = 0.0f;
+    } else {
+        config_.grass.impostorStart = 48.0f;
+        config_.grass.impostorFull = 80.0f;
+    }
+    params_.impostorStart = config_.grass.impostorStart;
+    params_.impostorFull = config_.grass.impostorFull;
+    paramsDirtySlots_.fill(true);
+}
+
+void SdfRenderer::setRaycastPixelSize(int px) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const int v = std::clamp(px, 1, 8);
+    if (v == raycastPixelSize_) return;
+    raycastPixelSize_ = v;
+    params_.raycastPixelSize = static_cast<float>(v);
+    paramsDirtySlots_.fill(true);
+}
+
 // ─── Smoke bomb + bullets ─────────────────────────────────────────────────
 // Scene-affecting setters rebuild the static smoke topology (cheap: 1 def /
 // mat / container / instance) and re-merge; tuning setters only stream the
@@ -2137,6 +2184,10 @@ void SdfRenderer::drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
         // GRASS_IMPOSTOR_FULL) it evaluates the impostor only (zero blades).
         pc.march = glm::vec4(params_.maxStep, params_.minStep,
                              config_.grass.shadowLodScale, 0.0f);
+        // Same impostor band as the main pass so shadow LOD matches the
+        // rendered grass representation (streamed, no rebuild).
+        pc.impostor = glm::vec4(config_.grass.impostorStart,
+                                config_.grass.impostorFull, 0.0f, 0.0f);
         pc.lightDir = glm::vec4(shadowLightDir_, 0.0f);
     }
 
@@ -2177,6 +2228,16 @@ void SdfRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t h
 
     sdfRenderWidth = width;
     sdfRenderHeight = height;
+    {
+        // Ray-cast quality needs gl_FragCoord -> UV: stream the target's
+        // inverse size with the other params (write-on-change via the dirty
+        // flags; resize is the only writer besides init).
+        std::lock_guard<std::mutex> lock(sceneMutex);
+        params_.invScreenSize = glm::vec2(
+            width > 0 ? 1.0f / static_cast<float>(width) : 0.0f,
+            height > 0 ? 1.0f / static_cast<float>(height) : 0.0f);
+        paramsDirtySlots_.fill(true);
+    }
 
     VkDevice device = app->getDevice();
 

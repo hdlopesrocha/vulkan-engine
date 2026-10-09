@@ -15,7 +15,7 @@
 //   2. near the envelope the blades are evaluated (two cheap conservative
 //      tapered segments each), and the blade count falls with the clump's
 //      projected-size proxy (camera distance in clump scales);
-//   3. beyond GRASS_IMPOSTOR_START a dedicated aggregate impostor
+//   3. beyond impostorStart a dedicated aggregate impostor
 //      (sdGrassImpostor: one base-bulged round cone + a one-signed
 //      low-frequency ripple) fades in as a conservative offset of the union:
 //          d = min(bladeD, impostorD + (1 - t) * K)
@@ -173,23 +173,20 @@ float sdGrassImpostor(vec3 p, vec3 up, float height, float d, float seed,
 
 // Grouped clump SDF. `camScale` = camera distance in clump scales (the
 // projected-size proxy), `windDir` = unit local wind direction in XZ,
-// `windAmp` = clamped lean angle (radians).
+// `windAmp` = clamped lean angle (radians). `impostorStart`/`impostorFull`
+// are the impostor fade band in clump scales (streamed from the SDF params
+// UBO / shadow push constants; both 0 forces the impostor everywhere).
 float sdGrassClump(vec3 p, vec4 p0, vec4 p1, float seed, float camScale,
-                   vec2 windDir, float windAmp) {
-    // Constants: detail switch radius, blade-count LOD scales, the impostor
-    // fade band and the impostor shape. The impostor shape constants have CPU
-    // twins in SdfScene.cpp (localHalfExtents) that pad the instance AABB and
-    // must stay in sync.
+                   vec2 windDir, float windAmp,
+                   float impostorStart, float impostorFull) {
+    // Constants: detail switch radius, blade-count LOD scales and the
+    // impostor shape. The impostor shape constants have CPU twins in
+    // SdfScene.cpp (localHalfExtents) that pad the instance AABB and must
+    // stay in sync.
     const float GRASS_DETAIL_MIN = 0.35;  // x height, floor for the detail range
     const float GRASS_DETAIL_WIDTH = 6.0; // x width, floor for the detail range
     const float GRASS_LOD_NEAR = 16.0;    // camera scale where blade count drops to 8
     const float GRASS_LOD_FAR = 32.0;     // camera scale where blade count drops to 4
-    // Impostor fade band: at START the offset keeps the impostor fully hidden
-    // (offset > its inradius), at FULL it is the whole field (zero blades).
-    // A shadow march with a fixed camScale >= FULL evaluates the impostor
-    // only, the cheapest shadow representation.
-    const float GRASS_IMPOSTOR_START = 48.0;
-    const float GRASS_IMPOSTOR_FULL = 80.0;
     // Impostor shape: base bulge as a fraction of the envelope's base->top
     // radius growth (base concentration), ripple amplitude as a fraction of
     // max(radius, height/2) and ripple cycles per clump scale (low
@@ -257,7 +254,7 @@ float sdGrassClump(vec3 p, vec4 p0, vec4 p1, float seed, float camScale,
     // evaluated. The impostor contains the blade envelope (see
     // sdGrassImpostor), so dropping the blade term cannot pop a blade
     // surface.
-    if (camScale >= GRASS_IMPOSTOR_FULL) {
+    if (camScale >= impostorFull) {
         float icd = sdGrassRoundCone(p, vec3(0.0), up * height, impR0, impR1);
         // Empty-space skip: the one-signed ripple extends the mass outward by
         // at most impAmp, so (icd - impAmp) / impLip is a valid lower bound of
@@ -275,7 +272,7 @@ float sdGrassClump(vec3 p, vec4 p0, vec4 p1, float seed, float camScale,
     // bound falls through to the full evaluation instead of reporting a
     // false interior.
     float agg = sdGrassRoundCone(p, vec3(0.0), up * height, envR0, envR1);
-    bool impostorActive = (camScale > GRASS_IMPOSTOR_START);
+    bool impostorActive = (camScale > impostorStart);
     float icd = 0.0;
     float impOff = 0.0;
     if (impostorActive) {
@@ -288,8 +285,11 @@ float sdGrassClump(vec3 p, vec4 p0, vec4 p1, float seed, float camScale,
         // popping it out near the end. At FULL the offset is zero and the
         // impostor is fully present. d + off is a valid SDF of the inward
         // offset surface of d, so the union stays conservative at every t.
-        float t = clamp((camScale - GRASS_IMPOSTOR_START) /
-                        (GRASS_IMPOSTOR_FULL - GRASS_IMPOSTOR_START), 0.0, 1.0);
+        // Guard the band denominator: impostors-only configs (start == full)
+        // take the hard path above for any camScale >= full, so this only
+        // needs to stay finite.
+        float band = max(impostorFull - impostorStart, 1e-4);
+        float t = clamp((camScale - impostorStart) / band, 0.0, 1.0);
         float impK = (max(impR0, impR1) + impAmp) / impLip + 1e-3;
         impOff = (1.0 - t) * impK;
         icd = sdGrassRoundCone(p, vec3(0.0), up * height, impR0, impR1);

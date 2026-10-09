@@ -59,6 +59,7 @@ layout(push_constant) uniform SdfGrassShadowPC {
     mat4 lightViewProj; // cascade light view-projection (world -> light clip)
     vec4 params;        // x = time (s), y = max steps, z = epsilon, w = safety
     vec4 march;         // x = max step (m), y = min step (m), z = shadow LOD camScale
+    vec4 impostor;      // x = impostor fade start, y = fade full (clump scales)
     vec4 lightDir;      // xyz = light-to-scene direction (world), w unused
 } pc;
 
@@ -80,7 +81,7 @@ float sdfGrassShadowEval(vec3 wpos, SdfInstance inst, SdfDefinition def, float l
     // blades and the fading impostor are unioned; below START it is the
     // blade LOD only.
     return sdGrassClump(q, def.params0, def.params1, inst.seed, lodCamScale,
-                        vec2(0.0), 0.0) * ds;
+                        vec2(0.0), 0.0, pc.impostor.x, pc.impostor.y) * ds;
 }
 
 void main() {
