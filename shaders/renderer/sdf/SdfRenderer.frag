@@ -574,6 +574,17 @@ void main() {
                 continue;
             }
             SdfDefinition dd = sdfDefinitions[di];
+            // Billboard impostor hand-off (Grass Raycast mode): clumps beyond
+            // the vegetation impostor distance are drawn as captured
+            // billboards by the vegetation impostor pass, so they must not be
+            // marched here (double representation). Skipping WITHOUT touching
+            // nearestBox makes an all-grass cell behave like empty space (DDA
+            // jump to the cell exit) instead of crawling through the skipped
+            // clump AABB at minStep.
+            if (dd.prim == SDF_PRIM_GRASS && sdfParams.grassImpostorDistance > 0.0 &&
+                distance(ubo.viewPosition, inst.position) >= sdfParams.grassImpostorDistance) {
+                continue;
+            }
             float d = sdfEvalInstance(p, inst, dd, m0, time);
             float kk = clamp(sdfUnpackSmoothK(dd), 0.0, 2.0);
             if (!haveBest) { dBest = d; haveBest = true; }

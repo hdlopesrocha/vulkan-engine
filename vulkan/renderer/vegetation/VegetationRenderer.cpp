@@ -1724,7 +1724,8 @@ void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffe
 
 }
 
-void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos) {
+void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos,
+                                   bool drawBillboards, bool drawImpostors) {
     if (!app) return;
     if (chunkBuffers.empty()) return;
     if (billboardAlbedoView == VK_NULL_HANDLE || billboardNormalView == VK_NULL_HANDLE ||
@@ -1737,7 +1738,7 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
     VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
 
     // Shading pass.
-    if (vegetationPipeline != VK_NULL_HANDLE) {
+    if (drawBillboards && vegetationPipeline != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationPipeline);
         else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
@@ -1746,8 +1747,10 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
             pipelineLayout, 0, 3, sets, 0, nullptr);
         issueVegetationDraws(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
-    // Impostor color pass
-    if (impostorPipeline != VK_NULL_HANDLE &&
+    // Impostor color pass. In Grass Raycast mode this is the ONLY pass drawn:
+    // the legacy billboards are off, and the SDF grass hands its far clumps
+    // over to these captured quads (the SDF march skips them).
+    if (drawImpostors && impostorPipeline != VK_NULL_HANDLE &&
         impostorDescSet != VK_NULL_HANDLE && impostorDistance > 0.0f) {
         if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorPipeline);
         else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorPipeline);

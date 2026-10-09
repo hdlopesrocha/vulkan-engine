@@ -1400,6 +1400,14 @@ public:
 
         const bool waterEnabled = settings.waterEnabled;
         const bool vegetationEnabled = settings.vegetationEnabled;
+        // Grass SDF billboard hand-off (Grass Raycast mode): the captured
+        // impostors take over beyond Settings::impostorDistance, so the
+        // vegetation impostor pass runs even though the legacy billboards are
+        // off. Disabled with the ray-marching master gate (no SDF grass to
+        // hand off from) and when the hand-off distance is 0.
+        const bool grassImpostorsEnabled =
+            settings.grassMode == Settings::GrassMode::GrassRaycast &&
+            settings.rayMarchingEnabled && settings.impostorDistance > 0.0f;
 
         // ── Solid scene pass (sky offscreen + depth prepass + color pass) ──
         // Recorded on its OWN command buffer (solidCmd) and submitted to the
@@ -1482,7 +1490,7 @@ public:
 
         // --- Cull + early brush pass on its own command buffer (signals semMainCull) ---
         if (sceneRenderer) {
-            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
+            asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v, grassImpostorsEnabled]() {
                 MyApp* app = this;
                 VkCommandBuffer cullCmd = app->beginAsyncTask("cull");
                 if (cullCmd == VK_NULL_HANDLE) return;
@@ -1498,7 +1506,8 @@ public:
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
                 this->sceneRenderer->solidRenderer->getIndirectRenderer().acquireBuffers(cullCmd);
-                if (this->sceneRenderer->vegetationRenderer && settings.vegetationEnabled)
+                if (this->sceneRenderer->vegetationRenderer &&
+                    (settings.vegetationEnabled || grassImpostorsEnabled))
                     this->sceneRenderer->vegetationRenderer->prepareCull(cullCmd, viewProj);
                 if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
                     this->sceneRenderer->debugSDFRenderer->registerToIndirect();
@@ -1623,6 +1632,11 @@ public:
                     waterDepthValid && wdv != VK_NULL_HANDLE);
             }
             sceneRenderer->sdfRenderer->setFrame(frameIdx);
+            // Billboard impostor hand-off: clumps beyond this camera distance
+            // are drawn by the vegetation impostor pass, so the SDF march
+            // skips them. 0 keeps every clump in the march.
+            sceneRenderer->sdfRenderer->setGrassImpostorDistance(
+                grassImpostorsEnabled ? settings.impostorDistance : 0.0f);
             sceneRenderer->sdfRenderer->refreshFrameBindings(frameIdx);
         }
 
@@ -2090,7 +2104,7 @@ public:
         // composite waits on it).
         {
             const glm::vec3 vegCamPos = camera.getPosition();
-            asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, vegCamPos, v]() {
+            asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, grassImpostorsEnabled, vegCamPos, v]() {
                 MyApp* app = this;
                 VkCommandBuffer vegCmd = app->beginAsyncTask("vegetation");
                 if (vegCmd == VK_NULL_HANDLE) return;
@@ -2136,25 +2150,60 @@ public:
                     vkCmdSetScissor(vegCmd, 0, 1, &sc);
                 };
 
-                if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
+                // Legacy billboards and/or the captured impostors. In Grass
+                // Raycast mode the billboards are off and the impostor pass is
+                // the far-field representation of the SDF grass (whose march
+                // skips those clumps); in Vegetation mode the billboards own
+                // [0, impostorDistance) and the impostors take over beyond.
+                const bool drawBillboards = vegetationEnabled;
+                const bool drawImpostors = settings.impostorDistance > 0.0f &&
+                                           (vegetationEnabled || grassImpostorsEnabled);
+                if ((drawBillboards || drawImpostors) && sceneRenderer->vegetationRenderer) {
                     sceneRenderer->vegetationRenderer->recordReadBarriers(vegCmd);
-                    // Instance 1: depth prepass (no color attachment)
-                    {
-                        VkClearValue vegDepthClear{}; vegDepthClear.depthStencil = {1.0f, 0};
-                        VkRenderingAttachmentInfo depthAtt{};
-                        depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                        depthAtt.imageView = vegDepthView;
-                        depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                        depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                        depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                        depthAtt.clearValue = vegDepthClear;
-                        beginVegInstance(nullptr, &depthAtt, 0);
-                        sceneRenderer->vegetationRenderer->drawDepth(this, vegCmd, vegCamPos);
-                        vkCmdEndRendering(vegCmd);
-                    }
-                    // Instance 2: color + depth (depth loaded from prepass)
-                    {
+                    if (drawBillboards) {
+                        // Instance 1: depth prepass (no color attachment)
+                        {
+                            VkClearValue vegDepthClear{}; vegDepthClear.depthStencil = {1.0f, 0};
+                            VkRenderingAttachmentInfo depthAtt{};
+                            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                            depthAtt.imageView = vegDepthView;
+                            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                            depthAtt.clearValue = vegDepthClear;
+                            beginVegInstance(nullptr, &depthAtt, 0);
+                            sceneRenderer->vegetationRenderer->drawDepth(this, vegCmd, vegCamPos);
+                            vkCmdEndRendering(vegCmd);
+                        }
+                        // Instance 2: color + depth (depth loaded from prepass)
+                        {
+                            VkClearValue vegColorClear{}; vegColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+                            VkRenderingAttachmentInfo colorAtt{};
+                            colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                            colorAtt.imageView = vegColorView;
+                            colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                            colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                            colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                            colorAtt.clearValue = vegColorClear;
+                            VkRenderingAttachmentInfo depthAtt{};
+                            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                            depthAtt.imageView = vegDepthView;
+                            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                            beginVegInstance(&colorAtt, &depthAtt, 1);
+                            sceneRenderer->vegetationRenderer->drawColor(this, vegCmd, vegCamPos,
+                                                                         /*drawBillboards=*/true,
+                                                                         /*drawImpostors=*/drawImpostors);
+                            vkCmdEndRendering(vegCmd);
+                        }
+                    } else {
+                        // Grass Raycast impostor-only: one color+depth CLEAR
+                        // instance. No billboard depth prepass is needed — the
+                        // impostor pipeline writes the captured depth itself
+                        // (gl_FragDepth from the captured view depth).
                         VkClearValue vegColorClear{}; vegColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+                        VkClearValue vegDepthClear{}; vegDepthClear.depthStencil = {1.0f, 0};
                         VkRenderingAttachmentInfo colorAtt{};
                         colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                         colorAtt.imageView = vegColorView;
@@ -2166,10 +2215,13 @@ public:
                         depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                         depthAtt.imageView = vegDepthView;
                         depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                        depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                        depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
                         depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                        depthAtt.clearValue = vegDepthClear;
                         beginVegInstance(&colorAtt, &depthAtt, 1);
-                        sceneRenderer->vegetationRenderer->drawColor(this, vegCmd, vegCamPos);
+                        sceneRenderer->vegetationRenderer->drawColor(this, vegCmd, vegCamPos,
+                                                                     /*drawBillboards=*/false,
+                                                                     /*drawImpostors=*/true);
                         vkCmdEndRendering(vegCmd);
                     }
                 } else {

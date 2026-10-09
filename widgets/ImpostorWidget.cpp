@@ -25,7 +25,9 @@ void ImpostorWidget::render() {
         if (ImGui::CollapsingHeader("Grass SDF Impostors", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::TextWrapped("Procedural far-LOD SDF of the grass clumps (one base-bulged "
                                "round cone + ripple; no atlas). Clumps fade from individual "
-                               "blades into this impostor with camera distance.");
+                               "blades into this impostor with camera distance; beyond "
+                               "Settings > Vegetation Impostors > Impostor Distance the "
+                               "captured billboard impostors take over (Grass Raycast mode).");
             ImGui::Text("clumps: %u   chunks: %u", stats.grassAnchors, stats.grassChunks);
             ImGui::TextDisabled("SDF grass is toggled by Settings > Grass (Grass Raycast / None).");
             bool only = (grass.impostorStart <= 0.0f && grass.impostorFull <= 0.0f);

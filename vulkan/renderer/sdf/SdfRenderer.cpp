@@ -1373,6 +1373,14 @@ void SdfRenderer::setGrassImpostorsOnly(bool on) {
     paramsDirtySlots_.fill(true);
 }
 
+void SdfRenderer::setGrassImpostorDistance(float d) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = std::max(d, 0.0f);
+    if (v == params_.grassImpostorDistance) return;
+    params_.grassImpostorDistance = v;
+    paramsDirtySlots_.fill(true);
+}
+
 void SdfRenderer::setRaycastPixelSize(int px) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     const int v = std::clamp(px, 1, 8);

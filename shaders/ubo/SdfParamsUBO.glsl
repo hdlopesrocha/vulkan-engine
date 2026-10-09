@@ -7,8 +7,8 @@
 // Offset table (verified against the C++ static_asserts):
 //   time 0, maxSteps 4, safety 8, minStep 12, maxStep 16, epsilon 20,
 //   earlyTerm 24, renderMode 28, debugFlags 32, waterDepthEnabled 36,
-//   invScreenSize 40, raycastPixelSize 48, impostorStart 52, impostorFull 56.
-// 60..64 is std140 padding (block size is a multiple of 16).
+//   invScreenSize 40, raycastPixelSize 48, impostorStart 52, impostorFull 56,
+//   grassImpostorDistance 60 (block size is a multiple of 16).
 struct SdfParamsUBO {
     float time;        // offset  0  global SDF time (s)
     float maxSteps;    // offset  4  march step budget
@@ -24,6 +24,7 @@ struct SdfParamsUBO {
     float raycastPixelSize;  // offset 48  ray per NxN block (1 = per pixel)
     float impostorStart;     // offset 52  grass impostor fade start (clump scales)
     float impostorFull;      // offset 56  grass impostor fade full (clump scales)
+    float grassImpostorDistance; // offset 60  billboard hand-off (m; 0 = off)
 };
 
 #endif // SDF_PARAMS_U_B_O_GLSL

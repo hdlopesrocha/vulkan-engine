@@ -284,10 +284,10 @@ void SettingsWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Vegetation Impostors");
         ImGuiComponents::ColSeparator();
-        ImGuiComponents::FieldLabel("Impostor Distance", "Beyond this distance vegetation is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
+        ImGuiComponents::FieldLabel("Impostor Distance", "Beyond this distance vegetation (and SDF grass in Grass Raycast mode) is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::DragFloat("##Impostor Distance", &settings.impostorDistance, 5.0f, 0.0f, 5000.0f, "%.0f m");
-        ImGuiComponents::TooltipOnHover("Beyond this distance vegetation is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
+        ImGuiComponents::TooltipOnHover("Beyond this distance vegetation (and SDF grass in Grass Raycast mode) is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
         if (settings.impostorDistance < 0.0f) settings.impostorDistance = 0.0f;
     });
 

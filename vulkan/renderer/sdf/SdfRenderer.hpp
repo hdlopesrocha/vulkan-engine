@@ -217,6 +217,12 @@ public:
     void setGrassImpostorStart(float s);
     void setGrassImpostorFull(float f);
     void setGrassImpostorsOnly(bool on);
+    // Billboard impostor hand-off (Grass Raycast mode): grass clumps beyond
+    // this camera distance (metres) are drawn by the captured-billboard
+    // impostor pass and skipped by the SDF march, so the far field is not
+    // double-represented. 0 disables the hand-off (every clump stays in the
+    // march). Streamed through the SDF params UBO (no scene rebuild).
+    void setGrassImpostorDistance(float d);
 
     // ── Ray-cast quality (Settings: SDF raycast pixel size) ──────────────
     // The SDF ray is cast once per NxN screen-pixel block (block center) when

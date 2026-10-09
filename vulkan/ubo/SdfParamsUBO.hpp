@@ -35,6 +35,11 @@ struct alignas(16) SdfParamsUBO {
     // impostor only. Exposed in the Impostors widget.
     float impostorStart = 48.0f;     // offset 52
     float impostorFull = 80.0f;      // offset 56
+    // Billboard impostor hand-off (Grass Raycast mode): grass clumps beyond
+    // this camera distance (metres) are drawn as captured impostor quads by
+    // the vegetation impostor pass and skipped by the SDF march. 0 = no
+    // hand-off (every clump stays in the march).
+    float grassImpostorDistance = 0.0f; // offset 60
 };
 static_assert(sizeof(SdfParamsUBO) == 64, "SdfParamsUBO must be 64 bytes (std140 padding)");
 static_assert(offsetof(SdfParamsUBO, time) == 0, "time offset");
@@ -51,3 +56,4 @@ static_assert(offsetof(SdfParamsUBO, invScreenSize) == 40, "invScreenSize offset
 static_assert(offsetof(SdfParamsUBO, raycastPixelSize) == 48, "raycastPixelSize offset");
 static_assert(offsetof(SdfParamsUBO, impostorStart) == 52, "impostorStart offset");
 static_assert(offsetof(SdfParamsUBO, impostorFull) == 56, "impostorFull offset");
+static_assert(offsetof(SdfParamsUBO, grassImpostorDistance) == 60, "grassImpostorDistance offset");

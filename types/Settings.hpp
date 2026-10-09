@@ -95,11 +95,11 @@ public:
     float nearPlane = 0.1f;
     float farPlane = 8092.0f;
 
-    // Impostor rendering: legacy billboard vegetation beyond this distance is
-    // drawn as a pre-captured camera-facing quad. 0 = disabled (default; the
-    // SDF grass impostor LOD replaces it). Only relevant while
-    // vegetationEnabled is on.
-    float impostorDistance = 0.0f;
+    // Impostor rendering hand-off distance (m): beyond this distance the
+    // vegetation (legacy billboards) and the SDF grass (Grass Raycast mode)
+    // are drawn as pre-captured camera-facing impostor quads. 0 = disabled.
+    // Shared by both modes so the far field hands off at one distance.
+    float impostorDistance = 512.0f;
 
     // ── Hybrid RT (raster owns primary, CSM owns macro shadows, RT owns
     // secondary visibility: solid/water reflections, water refraction/

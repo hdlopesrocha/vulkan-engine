@@ -112,8 +112,11 @@ public:
     // perf report 22 M9: all callers use drawDepth/drawColor directly.)
     // Deferred depth test: draw vegetation + impostor depth only (no color)
     void drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos);
-    // Deferred depth test: draw vegetation + impostor color only (LESS_OR_EQUAL, no depth write)
-    void drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos);
+    // Deferred depth test: draw vegetation + impostor color only (LESS_OR_EQUAL, no depth write).
+    // drawBillboards=false skips the legacy billboard pass (Grass Raycast mode
+    // records impostors only); drawImpostors gates the captured-billboard pass.
+    void drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos,
+                   bool drawBillboards = true, bool drawImpostors = true);
     void recordReadBarriers(VkCommandBuffer& commandBuffer);
 
     // ── Own offscreen framebuffer (decoupled from the solid pass) ──
