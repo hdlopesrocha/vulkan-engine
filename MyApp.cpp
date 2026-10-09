@@ -1393,6 +1393,9 @@ public:
         if (sceneRenderer && sceneRenderer->sdfRenderer) {
             // Ray-cast quality (1..8 px blocks; default 2) for the SDF pass.
             sceneRenderer->sdfRenderer->setRaycastPixelSize(settings.raycastPixelSize);
+            // Ray-marching master gate (Settings toggle / Minimal preset):
+            // off clears the SDF targets and skips the grass shadow caster.
+            sceneRenderer->sdfRenderer->setRayMarchingEnabled(settings.rayMarchingEnabled);
         }
 
         const bool waterEnabled = settings.waterEnabled;

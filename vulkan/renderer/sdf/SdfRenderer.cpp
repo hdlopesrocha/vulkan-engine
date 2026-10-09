@@ -2080,7 +2080,8 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
         solidDepthW = pendingDepthWidth_;
         solidDepthH = pendingDepthHeight_;
     }
-    const bool depthPreloaded = (solidDepthImage != VK_NULL_HANDLE && solidDepthW > 0 && solidDepthH > 0);
+    const bool depthPreloaded = rayMarchingEnabled_.load(std::memory_order_relaxed) &&
+        (solidDepthImage != VK_NULL_HANDLE && solidDepthW > 0 && solidDepthH > 0);
     if (depthPreloaded) {
         // solid: SHADER_READ_ONLY -> TRANSFER_SRC
         app->recordTransitionImageLayoutLayer(cmd, solidDepthImage, VK_FORMAT_D32_SFLOAT,
@@ -2118,7 +2119,8 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
 
     // Nothing to draw (disabled, no pipeline yet, empty scene): clear only, then SRO.
     const uint32_t instanceCount = stats_.containerCount;
-    if (!enabled || pipeline == VK_NULL_HANDLE || instanceCount == 0 ||
+    if (!enabled || !rayMarchingEnabled_.load(std::memory_order_relaxed) ||
+        pipeline == VK_NULL_HANDLE || instanceCount == 0 ||
         vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE || indexCount == 0) {
         vkCmdEndRendering(cmd);
         app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
@@ -2177,6 +2179,7 @@ void SdfRenderer::drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
                                     const glm::mat4& lightViewProj, float time) {
     (void)cascadeIndex; // one draw serves every cascade; only the matrix changes
     if (app_ == nullptr || cmd == VK_NULL_HANDLE) return;
+    if (!rayMarchingEnabled_.load(std::memory_order_relaxed)) return; // master gate
     if (shadowPipeline == VK_NULL_HANDLE || shadowPipelineLayout == VK_NULL_HANDLE) return;
     const uint32_t slot = currentFrame_ % SDF_FRAMES;
     if (slots[slot].container.buffer == VK_NULL_HANDLE || sdfSets[slot] == VK_NULL_HANDLE) return;

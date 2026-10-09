@@ -76,6 +76,13 @@ void SettingsWidget::render() {
                 "(default), up to 8x8. Higher = more pixelated and cheaper.")) {
             // SliderInt clamps to [1, 8]; nothing else to do.
         }
+        if (ImGui::Checkbox("Ray Marching", &settings.rayMarchingEnabled)) {
+            // toggled
+        }
+        ImGuiComponents::TooltipOnHover("Master gate for the generic SDF raymarcher\n"
+                       "(fire, smoke, rocks, grass) and its grass shadows.\n"
+                       "Off = cleared SDF targets (Minimal preset disables it).\n"
+                       "The sky cloud raymarch has its own Volumetric Clouds toggle.");
         if (ImGui::Checkbox("Volumetric Clouds", &settings.cloudsEnabled)) {
             // toggled
         }

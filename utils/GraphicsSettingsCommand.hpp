@@ -7,9 +7,11 @@
 //   Maximum — every secondary-visibility ray path on (RT solid/water
 //             reflections, water refraction, thickness, ray-traced depth),
 //             global water blur on, geometry/wave tessellation on, shadows
-//             on, volumetric clouds on, full-rate dual-trace rays.
-//   Minimal — all of the above off (blur, tessellation, shadows and clouds
-//             included), so the renderer falls back to the cheapest raster paths.
+//             on, volumetric clouds on, ray marching on, full-rate dual-trace
+//             rays.
+//   Minimal — all of the above off (blur, tessellation, shadows, clouds and
+//             ray marching included), so the renderer falls back to the
+//             cheapest raster paths.
 //
 // Global-only and renderer-agnostic: the preset edits Settings fields that
 // gate the per-material water features (blurEnabled, rtWaterReflections,
@@ -62,6 +64,9 @@ private:
         settings.enableShadows = true;
         // Volumetric clouds on (sky + shadows + reflections).
         settings.cloudsEnabled = true;
+        // Ray marching on (generic SDF renderer: fire/smoke/rocks/grass +
+        // grass shadows).
+        settings.rayMarchingEnabled = true;
         // Full-resolution water targets (perf report 21 M10): the composite
         // blur is depth-guided, so Maximum keeps 1.0 for the sharpest body.
         settings.waterRenderScale = 1.0f;
@@ -98,6 +103,9 @@ private:
         settings.enableShadows = false;
         // Volumetric clouds off (no sky raymarch, no cloud shadows).
         settings.cloudsEnabled = false;
+        // Ray marching off: the generic SDF pass (fire/smoke/rocks/grass)
+        // and the grass shadow caster are skipped, leaving cleared targets.
+        settings.rayMarchingEnabled = false;
         // Half-resolution water targets (perf report 21 M10): Minimal's water
         // is blur-tolerant, and the blur disc is authored in screen-space
         // units, so the look survives while fragment/bandwidth/target costs

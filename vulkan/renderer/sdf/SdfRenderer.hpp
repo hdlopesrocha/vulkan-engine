@@ -9,6 +9,7 @@
 #include "sdf/types/SdfStats.hpp"
 #include "SdfRendererTypes.hpp"
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
@@ -224,6 +225,11 @@ public:
     // 1 = one ray per pixel. No scene rebuild (streamed through the params
     // UBO). Default 2 (Settings::raycastPixelSize).
     void setRaycastPixelSize(int px);
+    // Ray-marching master gate (Settings::rayMarchingEnabled): when off, the
+    // main SDF pass clears its targets without drawing and the grass shadow
+    // caster is skipped. Lock-free: written from the frame thread, read from
+    // the async SDF/shadow tasks.
+    void setRayMarchingEnabled(bool on) { rayMarchingEnabled_.store(on, std::memory_order_relaxed); }
 
     // ── Smoke bomb + bullets (second generic consumer) ──────────────────
     // A static-topology smoke scene (1 Smoke-sphere def/mat/container/
@@ -389,6 +395,9 @@ private:
 
     uint32_t currentFrame_ = 0;
     uint32_t currentFrameIndex_ = 0; // unmodded frame index (binding-refresh gate)
+    // Ray-marching master gate (Settings::rayMarchingEnabled); atomic so the
+    // frame thread can flip it while the async tasks read it.
+    std::atomic<bool> rayMarchingEnabled_{true};
     // App frame index whose depth bindings were last refreshed (see
     // refreshFrameBindings). Guarded by sceneMutex.
     uint32_t bindingsFrame_ = 0xFFFFFFFFu;

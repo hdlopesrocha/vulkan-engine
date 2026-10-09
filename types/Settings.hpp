@@ -35,6 +35,10 @@ public:
     // one ray per NxN screen-pixel block (1 = one ray per pixel).
     // 2 = the default 2x2 pixelation.
     int raycastPixelSize = 2;
+    // Ray marching master gate: the generic SDF raymarcher (fire, smoke,
+    // rocks, grass) and its grass shadow caster. The sky cloud raymarch has
+    // its own Volumetric Clouds toggle. Minimal preset turns this off.
+    bool rayMarchingEnabled = true;
     bool wireframeMode = false;
     bool waterWireframeMode = false;
     bool normalMappingEnabled = true;
