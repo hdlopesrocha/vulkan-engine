@@ -675,13 +675,17 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
     uint32_t f = vegCullCurrentSlot;
     if (vegCascadeCullFrames[f].compactBuffers[cascadeIndex].buffer == VK_NULL_HANDLE) return;
 
-    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationShadowPipeline);
-    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
+    // Raw binds (not cmdState): this records into the shadow cascade command
+    // buffers, but the vegetation renderer's state tracker belongs to the
+    // main/task command buffer. Eliding a bind through it could skip a
+    // required bind here — beginShadowPass has already bound the SOLID shadow
+    // pipeline in this command buffer (VUID-vkCmdDrawIndexedIndirectCount-
+    // None-08600). Same rationale as SdfRenderer::drawShadowCascade.
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
 
     updateWindParamsUBO(cameraPos);
     VkDescriptorSet sets[3] = { shadowDescriptorSet, vegDescriptorSet, windParamsDescSet };
-    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
-    else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
 
     WindPushConstants pc{};
     pc.billboardScale = billboardScale;
@@ -718,12 +722,11 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
         impostorDepthDescSet != VK_NULL_HANDLE &&
         impostorDistance > 0.0f && impostorVBO.vertexBuffer.buffer != VK_NULL_HANDLE &&
         !chunkBuffers.empty()) {
-        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorShadowPipe);
-        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowPipe);
+        // Raw binds: same cross-command-buffer tracker rationale as above.
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowPipe);
 
         VkDescriptorSet depthSets[3] = { shadowDescriptorSet, impostorDepthDescSet, windParamsDescSet };
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
 
         vkCmdPushConstants(commandBuffer, impostorShadowLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
