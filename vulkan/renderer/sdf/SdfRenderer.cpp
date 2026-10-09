@@ -1981,10 +1981,27 @@ void SdfRenderer::prepareCull(VkCommandBuffer cmd) {
         std::lock_guard<std::mutex> lock(sceneMutex);
         flushSlotUploads(slot);
         flushSmokeUpload(slot);
-        refreshDepthBinding(slot);
+        // Depth-binding refresh (bindings 7/9): normally done on the main
+        // thread by refreshFrameBindings BEFORE the grass shadow pass records
+        // (the shadow CB binds this set; vkUpdateDescriptorSets is illegal
+        // while a pending CB references it — VUID 03047). Only refresh here
+        // when that did not run this frame (shadows disabled).
+        if (bindingsFrame_ != currentFrameIndex_) {
+            bindingsFrame_ = currentFrameIndex_;
+            refreshDepthBinding(slot);
+        }
     }
     if (stats_.containerCount == 0) return;
     recordHostToShaderBarrier(cmd, slot);
+}
+
+void SdfRenderer::refreshFrameBindings(uint32_t frameIdx) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    setFrame(frameIdx);
+    const uint32_t slot = currentFrame_ % SDF_FRAMES;
+    if (bindingsFrame_ == currentFrameIndex_) return;
+    bindingsFrame_ = currentFrameIndex_;
+    refreshDepthBinding(slot);
 }
 
 void SdfRenderer::prepareShadowCascade(VkCommandBuffer cmd, uint32_t frameIdx) {
@@ -1999,13 +2016,16 @@ void SdfRenderer::prepareShadowCascade(VkCommandBuffer cmd, uint32_t frameIdx) {
         // rewrites the scene buffers while a cascade CB may still read them
         // (params/smoke writes target buffers the grass shadow pipeline does
         // not read; the scene buffers are gated by sceneDirtySlots_, cleared
-        // here). refreshDepthBinding is deliberately NOT called: the pending
-        // depth view is the PREVIOUS frame's per-slot view here, and binding 7
-        // is unused by the grass shadow shader — rewriting it would flap the
-        // binding and force a second (in-use) descriptor update from the SDF
-        // task. The SDF task keeps maintaining binding 7 exactly as before.
+        // here). Depth bindings 7/9 are refreshed HERE, before this cascade CB
+        // binds the set: vkUpdateDescriptorSets is illegal while a pending CB
+        // references the set (VUID 03047), and the main thread normally did it
+        // already (refreshFrameBindings); this is the fallback path.
         flushSlotUploads(slot);
         flushSmokeUpload(slot);
+        if (bindingsFrame_ != currentFrameIndex_) {
+            bindingsFrame_ = currentFrameIndex_;
+            refreshDepthBinding(slot);
+        }
     }
     if (stats_.containerCount == 0) return;
     // HOST writes -> shader reads, recorded BEFORE beginShadowPass because

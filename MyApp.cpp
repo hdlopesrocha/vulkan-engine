@@ -1587,6 +1587,39 @@ public:
         }
 
 
+        // SDF frame inputs + depth bindings, set on the MAIN THREAD before the
+        // shadow task records: the grass shadow pass binds the SDF descriptor
+        // set, and vkUpdateDescriptorSets on a set referenced by a pending
+        // command buffer is illegal (VUID 03047). refreshFrameBindings is
+        // gated once per frame; the later SDF task only records barriers.
+        if (sceneRenderer && sceneRenderer->sdfRenderer) {
+            if (sceneRenderer->solidRenderer) {
+                VkImageView dv = sceneRenderer->solidRenderer->getDepthView(frameIdx);
+                if (dv != VK_NULL_HANDLE) {
+                    // Image + extent too: render() pre-loads the SDF depth
+                    // attachment with this solid depth so the hardware depth
+                    // test rejects occluded SDF fragments at raster time.
+                    sceneRenderer->sdfRenderer->setSceneDepth(dv,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        sceneRenderer->solidRenderer->getDepthImage(frameIdx),
+                        sceneRenderer->solidRenderer->getRenderWidth(),
+                        sceneRenderer->solidRenderer->getRenderHeight());
+                }
+            }
+            if (sceneRenderer->waterRenderer) {
+                const bool waterDepthValid = waterEnabled && !settings.waterInMainPass &&
+                    sceneRenderer->waterRenderer->waterBlurNeeded();
+                VkImageView wdv = sceneRenderer->waterRenderer->getWaterGeomDepthView(frameIdx);
+                // A null view clears the enabled flag (binding keeps its
+                // placeholder); refreshDepthBinding skips nulls.
+                sceneRenderer->sdfRenderer->setWaterDepth(wdv,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    waterDepthValid && wdv != VK_NULL_HANDLE);
+            }
+            sceneRenderer->sdfRenderer->setFrame(frameIdx);
+            sceneRenderer->sdfRenderer->refreshFrameBindings(frameIdx);
+        }
+
         // --- Shadow pass on its own command buffer (signals semShadow) ---
         // The shadow pass does its own cascade culling, blurs the cascades, and at
         // the end restores the shared visibleLods + main UBO (so the main command
@@ -2635,9 +2668,7 @@ public:
         // one tlSdf signal is needed.
         {
             const bool sdfEnabled = settings.showSDFDebug;
-            const bool sdfWaterEnabled = settings.waterEnabled;
-            const bool sdfWaterInMain = settings.waterInMainPass;
-            asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, sdfWaterEnabled, sdfWaterInMain, v]() {
+            asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, v]() {
                 // SDF fire is always on, so the task runs every frame (no
                 // steady-state elision: the same CB carries the fire render).
                 // The debug-cubes pass is gated by sdfEnabled internally.
@@ -2651,42 +2682,14 @@ public:
                 }
                 // Generic SDF volume (fire/grass): GPU-procedural animation
                 // needs no CPU scene edits; just stream the time uniform per
-                // frame. The in-shader depth clamp samples the solid depth
-                // (tlSolid) AND the rasterized water surface (tlWater), both
-                // transitioned to SHADER_READ_ONLY before this submit runs.
+                // frame. The scene slot + depth bindings were already
+                // prepared on the main thread (before the shadow pass, which
+                // also binds this set); prepareCull here only records the
+                // HOST->shader barriers for this CB.
                 if (this->sceneRenderer->sdfRenderer) {
                     float t = this->mainTime * (this->raymarchWidget ? this->raymarchWidget->timeScale : 1.0f);
                     this->sceneRenderer->sdfRenderer->setFrame(frameIdx);
                     this->sceneRenderer->sdfRenderer->updateParams(t, frameIdx);
-                    if (this->sceneRenderer->solidRenderer) {
-                        VkImageView dv = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
-                        if (dv != VK_NULL_HANDLE) {
-                            // Image + extent too: render() pre-loads the SDF
-                            // depth attachment with this solid depth so the
-                            // hardware depth test rejects occluded SDF
-                            // fragments at raster time.
-                            this->sceneRenderer->sdfRenderer->setSceneDepth(dv,
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                this->sceneRenderer->solidRenderer->getDepthImage(frameIdx),
-                                this->sceneRenderer->solidRenderer->getRenderWidth(),
-                                this->sceneRenderer->solidRenderer->getRenderHeight());
-                        }
-                    }
-                    // Water-surface occluder: the geometry depth target is
-                    // valid only when the water pass wrote its aux attachments
-                    // this frame (the same gate the composite uses for its
-                    // water depth test). Empty-water clear-only frames clear
-                    // it to 1.0, which reads as "no occluder".
-                    if (this->sceneRenderer->waterRenderer) {
-                        const bool waterDepthValid = sdfWaterEnabled && !sdfWaterInMain &&
-                            this->sceneRenderer->waterRenderer->waterBlurNeeded();
-                        VkImageView wdv = this->sceneRenderer->waterRenderer->getWaterGeomDepthView(frameIdx);
-                        // A null view clears the enabled flag (binding keeps
-                        // its placeholder); refreshDepthBinding skips nulls.
-                        this->sceneRenderer->sdfRenderer->setWaterDepth(wdv,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                            waterDepthValid && wdv != VK_NULL_HANDLE);
-                    }
                     this->sceneRenderer->sdfRenderer->prepareCull(sdfCmd);
                     this->sceneRenderer->sdfRenderer->render(this, sdfCmd, app->getMainDescriptorSet(), frameIdx, true);
                 }

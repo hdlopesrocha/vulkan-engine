@@ -285,7 +285,20 @@ public:
     // SdfParamsUBO carries renderMode and debugFlags as separate integers
     // (no bit packing).
     void updateParams(float timeSec, uint32_t frameIndex);
-    void setFrame(uint32_t frame) { currentFrame_ = frame % SDF_FRAMES; }
+    void setFrame(uint32_t frame) {
+        currentFrameIndex_ = frame;
+        currentFrame_ = frame % SDF_FRAMES;
+    }
+    // Refresh the per-slot depth bindings (set=1 bindings 7/9) once per frame
+    // BEFORE any command buffer binds the SDF set for this frame (the grass
+    // shadow pass is the first user, then the SDF pass). vkUpdateDescriptorSets
+    // is illegal while a pending CB references the set (VUID 03047), so the
+    // refresh must happen before the shadow CB records; prepareCull and
+    // prepareShadowCascade only repeat it if this was not called yet.
+    // Main thread: call after setSceneDepth/setWaterDepth, before the shadow
+    // task is enqueued. Safe: the set's previous slot use is fenced (3 frames
+    // in flight).
+    void refreshFrameBindings(uint32_t frameIdx);
     void setRenderMode(RenderMode mode);
     void setDebugFlags(uint32_t flags);
     void setMarchParams(float maxSteps, float epsilon);
@@ -375,6 +388,10 @@ private:
     VkSampler depthSampler = VK_NULL_HANDLE;
 
     uint32_t currentFrame_ = 0;
+    uint32_t currentFrameIndex_ = 0; // unmodded frame index (binding-refresh gate)
+    // App frame index whose depth bindings were last refreshed (see
+    // refreshFrameBindings). Guarded by sceneMutex.
+    uint32_t bindingsFrame_ = 0xFFFFFFFFu;
 
     // CPU scene state + dirty flags (guarded; setScene may come from the
     // load path). The merged scene stores the canonical GPU-layout structs,
