@@ -2319,6 +2319,19 @@ void SdfRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t h
         }
     }
 
+    // The placeholder writes above (re)point bindings 7/9 at the SDF's own
+    // depth for every slot. Invalidate the per-frame refresh gate so the next
+    // refreshFrameBindings() re-points them at the real solid/water views even
+    // when the app frame index did not advance: recreateSwapchain() returns
+    // before incrementing currentFrame on the present path, so the next frame
+    // reuses the same index and would otherwise skip the refresh, drawing with
+    // the placeholders while the SDF depth is the depth attachment
+    // (VUID-00344 layout mismatch).
+    {
+        std::lock_guard<std::mutex> lock(sceneMutex);
+        bindingsFrame_ = 0xFFFFFFFFu;
+    }
+
     std::cout << "[SdfRenderer] Created offscreen render targets " << width << "x" << height << std::endl;
 }
 
