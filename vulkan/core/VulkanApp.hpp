@@ -139,6 +139,11 @@ class VulkanApp {
     // without the features is invalid (VUID-RuntimeSpirv-NonWritable-06340/41),
     // so the profile variants are only built when both are supported/enabled.
     bool rtProfilingSupported = false;
+    // Fragment-stage storage-buffer atomics (enabled when advertised). The SDF
+    // march counters (SdfRenderer profile buffer, set=1 binding 10) atomicAdd
+    // from the fragment shader; the counters stay disabled (CPU gate) and the
+    // checkbox is hidden when this is false.
+    bool fragmentStoresAndAtomicsSupported = false;
     bool rayTracingEnabled() const { return accelStructSupported && rayQuerySupported; }
     bool rayPipelineEnabled() const { return rayTracingEnabled() && rayPipelineSupported; }
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProps{};

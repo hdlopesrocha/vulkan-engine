@@ -223,7 +223,15 @@ public:
     Brush3dManager brushManager;
     // Cached sweep start position so applyBrushToScene uses the same pair as the preview
     glm::vec3 cachedSweepStart = glm::vec3(0.0f);
-    static constexpr uint32_t QUERY_COUNT = 24; // 12 intervals × 2 timestamps each (20 legacy + RT dispatch 20-21 + spare 22-23)
+    // Timestamp slots (12 intervals x 2). Owner CB in brackets; each CB
+    // resets only its own slots so cross-queue reset/write races stay
+    // impossible:
+    //   0/1 .. 4/5 spare (legacy shadow/cull/brush; written by no pass)
+    //   6/7 depth prepass [solid]   8/9 sky [solid]   10/11 solid draw [solid]
+    //   12/13 vegetation [veg]      14/15 water [water]
+    //   16/17 postprocess [main]    18/19 imgui [main]
+    //   20/21 RT dispatch [water]   22/23 SDF engine [sdf]
+    static constexpr uint32_t QUERY_COUNT = 24;
     std::array<VkQueryPool, MAX_FRAMES_IN_FLIGHT> queryPools = {};
     bool queryPoolReady[MAX_FRAMES_IN_FLIGHT] = {};
     float timestampPeriod = 0.0f;
@@ -236,6 +244,11 @@ public:
     float profilePostProcess = 0.0f;
     float profileImGui = 0.0f;
     float profileRTDispatch = 0.0f; // hybrid-RT water pipeline traceRays (slots 20-21)
+    float profileSdf = 0.0f;        // SDF engine ray-march pass (slots 22-23)
+    // SDF march counters (opt-in, set=1 binding 10): fragment atomics gated by
+    // SdfRenderer::setProfileCounters; read back with a 3-frame slot latency.
+    bool sdfProfilingEnabled_ = false;
+    float profileSdfCpu = 0.0f; // CPU record time of the async SDF task
     // Per-op RT profiling (opt-in): the RT_PROFILE shader variants accumulate
     // per-op counters + device-clock thread-time into per-frame GPU buffers;
     // read/reset one frame-slot behind (see preRenderPass). Off by default —
@@ -848,8 +861,10 @@ public:
             // timestamps written but its end timestamp missing, which names the
             // exact pass the GPU is stuck in. Also dump the submission ring.
             onFrameStall = [this](uint32_t) {
-                static const char* intervalNames[7] = {
-                    "depth", "sky", "solid", "veg", "water", "post", "imgui"
+                // One name per timestamp interval (2 slots each): interval 3 is
+                // slots 6/7 (depth) ... interval 11 is slots 22/23 (SDF).
+                static const char* intervalNames[9] = {
+                    "depth", "sky", "solid", "veg", "water", "post", "imgui", "rt", "sdf"
                 };
                 for (uint32_t f = 0; f < 3; ++f) {
                     if (queryPools[f] == VK_NULL_HANDLE) continue;
@@ -863,7 +878,7 @@ public:
                             VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS)
                         continue;
                     std::cerr << "[stall] pool " << f << " timestamps:\n";
-                    for (uint32_t i = 3; i < 10; ++i) {
+                    for (uint32_t i = 3; i < 12; ++i) {
                         const uint64_t startVal = ts[4 * i], startAvail = ts[4 * i + 1];
                         const uint64_t endVal = ts[4 * i + 2], endAvail = ts[4 * i + 3];
                         const bool haveStart = startAvail != 0 && startVal != 0;
@@ -1197,7 +1212,7 @@ public:
                     if (tsA[0].availability) profileDepthPrepass = msDiff(tsA[1].value, tsA[0].value);
                     if (tsA[2].availability) profileSky          = msDiff(tsA[3].value, tsA[2].value);
                 }
-                // Group B: indices 10-19 (solid draw, veg impostor, water, postprocess, imgui)
+                // Group B: indices 10-19 (solid draw, vegetation, water, postprocess, imgui)
                 struct { uint64_t value; uint64_t availability; } tsB[10] = {};
                 if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 10, 10,
                         sizeof(tsB), tsB, sizeof(tsB[0]),
@@ -1217,6 +1232,19 @@ public:
                         && timestampPeriod > 0.0f) {
                     if (tsC[0].availability) profileRTDispatch = msDiff(tsC[1].value, tsC[0].value);
                 }
+                // Group D: indices 22-23 (SDF engine ray-march pass, own CB slots)
+                struct { uint64_t value; uint64_t availability; } tsD[2] = {};
+                if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 22, 2,
+                        sizeof(tsD), tsD, sizeof(tsD[0]),
+                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS
+                        && timestampPeriod > 0.0f) {
+                    if (tsD[0].availability) profileSdf = msDiff(tsD[1].value, tsD[0].value);
+                }
+                // SDF march counters (set=1 binding 10): snapshot the slot's
+                // last completed values (3-frame latency) for the panel.
+                if (sceneRenderer && sceneRenderer->sdfRenderer) {
+                    sceneRenderer->sdfRenderer->readProfile(frameIdx);
+                }
             }
             // Throttled console dump of the previous frame's GPU passes so slow
             // frames are attributable from run.log without the ImGui panel.
@@ -1225,7 +1253,7 @@ public:
                 if ((++profilePrintTick & 0x1F) == 0) {
                     const float gpuTotal = profileDepthPrepass + profileSky +
                         profileSolidDraw + profileVegetationImpostor + profileWater +
-                        profileRTDispatch + profilePostProcess + profileImGui;
+                        profileRTDispatch + profileSdf + profilePostProcess + profileImGui;
                     if (gpuTotal > 40.0f) {
                         std::cout << "[gpu] total=" << gpuTotal
                                   << " depth=" << profileDepthPrepass
@@ -1234,6 +1262,7 @@ public:
                                   << " veg=" << profileVegetationImpostor
                                   << " water=" << profileWater
                                   << " rt=" << profileRTDispatch
+                                  << " sdf=" << profileSdf
                                   << " post=" << profilePostProcess
                                   << " imgui=" << profileImGui
                                   << " fps=" << profileFps << std::endl;
@@ -1241,8 +1270,9 @@ public:
                 }
             }
             // Reset only the slots owned by THIS command buffer. The solid pass
-            // now records on its own command buffer (solidQueue) and resets its
-            // own slots 6-13 there; the water pass owns 14-15 and the
+            // records on its own command buffer (solidQueue) and resets its own
+            // slots 6-11 there; the vegetation pass owns 12-13 (vegQueue), the
+            // water pass 14-15 and the SDF pass 22-23 (their own CBs); the
             // postprocess/ImGui passes own 16-19. Splitting the reset across
             // command buffers avoids a cross-queue reset/write race. Slots 0-5
             // (shadow/cull/brush) are written by no pass at all, so they are no
@@ -1637,6 +1667,10 @@ public:
             // skips them. 0 keeps every clump in the march.
             sceneRenderer->sdfRenderer->setGrassImpostorDistance(
                 grassImpostorsEnabled ? settings.impostorDistance : 0.0f);
+            // SDF march counters (profiling UI): re-applied per frame so a
+            // renderer rebuild cannot leave a stale gate.
+            sceneRenderer->sdfRenderer->setProfileCounters(
+                sdfProfilingEnabled_ && sceneRenderer->sdfRenderer->profileCountersSupported());
             sceneRenderer->sdfRenderer->refreshFrameBindings(frameIdx);
         }
 
@@ -1812,11 +1846,13 @@ public:
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
 
-                // Reset the query slots owned by this command buffer (depthPrepass,
-                // sky, solid draw, veg-impostor) so the GPU profiling timestamps below
-                // start from a clean state. (The main CB resets the other slots.)
+                // Reset the query slots owned by this command buffer (depth
+                // prepass, sky, solid draw) so the GPU profiling timestamps
+                // below start from a clean state. Slots 12-13 belong to the
+                // vegetation CB and 14-15/20-23 to the water/SDF CBs; the main
+                // CB resets 16-19.
                 if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                    vkCmdResetQueryPool(solidCmd, queryPools[frameIdx], 6, 8);
+                    vkCmdResetQueryPool(solidCmd, queryPools[frameIdx], 6, 6);
 
                 // ── Sky offscreen moved to its own queue (asyncSkyFuture) so the
                 //    equirectangular sky image is produced in parallel with the solid
@@ -1981,11 +2017,6 @@ public:
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                         vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 11);
 
-                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                        vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 12);
-                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                        vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 13);
-
                     // Debug overlays on top
                     const bool showOctreeDebug = octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes();
                     if (showOctreeDebug) {
@@ -2108,6 +2139,11 @@ public:
                 MyApp* app = this;
                 VkCommandBuffer vegCmd = app->beginAsyncTask("vegetation");
                 if (vegCmd == VK_NULL_HANDLE) return;
+                // Reset the query slots owned by this command buffer (12-13) so
+                // the vegetation GPU timestamps start clean. The solid CB owns
+                // 6-11, water 14-15/20-21, SDF 22-23 and the main CB 16-19.
+                if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                    vkCmdResetQueryPool(vegCmd, queryPools[frameIdx], 12, 2);
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
                 VkImageView vegColorView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegColorView(frameIdx) : VK_NULL_HANDLE;
@@ -2158,6 +2194,8 @@ public:
                 const bool drawBillboards = vegetationEnabled;
                 const bool drawImpostors = settings.impostorDistance > 0.0f &&
                                            (vegetationEnabled || grassImpostorsEnabled);
+                if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                    vkCmdWriteTimestamp(vegCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 12);
                 if ((drawBillboards || drawImpostors) && sceneRenderer->vegetationRenderer) {
                     sceneRenderer->vegetationRenderer->recordReadBarriers(vegCmd);
                     if (drawBillboards) {
@@ -2251,6 +2289,9 @@ public:
                 app->recordTransitionImageLayoutLayer(vegCmd, vegDepthImg, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
                 sceneRenderer->vegetationRenderer->setVegColorLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 sceneRenderer->vegetationRenderer->setVegDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+                if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                    vkCmdWriteTimestamp(vegCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 13);
 
                 // Run on the dedicated vegetation queue (separate from graphicsQueue) so it
                 // parallelizes with the solid/shadow passes. Wait on the cull task's
@@ -2731,8 +2772,14 @@ public:
                 // steady-state elision: the same CB carries the fire render).
                 // The debug-cubes pass is gated by sdfEnabled internally.
                 MyApp* app = this;
+                auto tSdf = std::chrono::high_resolution_clock::now();
                 VkCommandBuffer sdfCmd = app->beginAsyncTask("sdf");
                 if (sdfCmd == VK_NULL_HANDLE) return;
+                // Reset the query slots owned by this command buffer (22-23) so
+                // the SDF engine GPU timestamps start clean. The solid CB owns
+                // 6-11, vegetation 12-13, water 14-15/20-21 and the main CB 16-19.
+                if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                    vkCmdResetQueryPool(sdfCmd, queryPools[frameIdx], 22, 2);
                 CommandBufferState taskState;
                 this->sceneRenderer->setCmdState(&taskState);
                 if (this->sceneRenderer->debugSDFRenderer) {
@@ -2748,8 +2795,14 @@ public:
                     float t = this->mainTime * (this->raymarchWidget ? this->raymarchWidget->timeScale : 1.0f);
                     this->sceneRenderer->sdfRenderer->setFrame(frameIdx);
                     this->sceneRenderer->sdfRenderer->updateParams(t, frameIdx);
+                    // SDF engine GPU interval (slots 22-23): the host->shader
+                    // barriers + the ray-march pass.
+                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                        vkCmdWriteTimestamp(sdfCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 22);
                     this->sceneRenderer->sdfRenderer->prepareCull(sdfCmd);
                     this->sceneRenderer->sdfRenderer->render(this, sdfCmd, app->getMainDescriptorSet(), frameIdx, true);
+                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                        vkCmdWriteTimestamp(sdfCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 23);
                 }
                 // Wait on tlCull (cull buffers), tlSolid (solid depth) and
                 // tlWater (water surface depth, both sampled for occlusion
@@ -2757,6 +2810,8 @@ public:
                 // the composite.
                 app->submitCommandBufferAsyncToQueue(sdfCmd, app->getSdfQueue(), &tlSdf,
                     {tlCull, tlSolid, tlWater}, true, {}, {v, v, v}, v, {}, true);
+                this->profileSdfCpu = std::chrono::duration<float, std::milli>(
+                    std::chrono::high_resolution_clock::now() - tSdf).count();
             });
         }
         // Wait for the shadow + vegetation async tasks (same rationale as above:
@@ -2895,13 +2950,14 @@ public:
                     ImGui::Text("--- GPU Timing (ms) ---");
                     float gpuTotal = profileDepthPrepass + profileSky + profileSolidDraw +
                                      profileVegetationImpostor + profileWater + profileRTDispatch +
-                                     profilePostProcess + profileImGui;
+                                     profileSdf + profilePostProcess + profileImGui;
                     ImGui::Text("Depth Prepass: %.2f", profileDepthPrepass);
                     ImGui::Text("Sky:           %.2f", profileSky);
                     ImGui::Text("Solid Draw:    %.2f", profileSolidDraw);
-                    ImGui::Text("Veg Impostor:  %.2f", profileVegetationImpostor);
+                    ImGui::Text("Vegetation:    %.2f", profileVegetationImpostor);
                     ImGui::Text("Water:         %.2f", profileWater);
                     ImGui::Text("RT Dispatch:   %.2f", profileRTDispatch);
+                    ImGui::Text("SDF Engine:    %.2f", profileSdf);
                     ImGui::Text("PostProcess:   %.2f", profilePostProcess);
                     ImGui::Text("ImGui:         %.2f", profileImGui);
                     ImGui::Text("--- GPU Total:  %.2f ---", gpuTotal);
@@ -2952,6 +3008,47 @@ public:
                                     kRtOpNames[o], timeMs[o], pct, raysK, hitsK);
                             }
                         }
+                    }
+                    // ── SDF engine (generic raymarch: fire/smoke/rocks/grass) ──
+                    ImGui::Separator();
+                    ImGui::Text("--- SDF Engine ---");
+                    if (sceneRenderer && sceneRenderer->sdfRenderer) {
+                        auto* sdf = sceneRenderer->sdfRenderer.get();
+                        const SdfStats& st = sdf->getStats();
+                        ImGui::Text("GPU pass: %.2f ms   CPU task*: %.2f ms", profileSdf, profileSdfCpu);
+                        ImGui::Text("containers: %u  defs: %u  mats: %u  cells: %u",
+                            st.containerCount, st.definitionCount, st.materialCount, st.gridCellCount);
+                        ImGui::Text("draw instances: %u (proxy cubes)", st.lastDrawInstances);
+                        // March counters (opt-in fragment atomics; gated by the
+                        // CPU-written enabled word so the off path stays free).
+                        if (sdf->profileCountersSupported()) {
+                            if (ImGui::Checkbox("SDF march counters", &sdfProfilingEnabled_)) {
+                                sdf->setProfileCounters(sdfProfilingEnabled_);
+                            }
+                        } else {
+                            ImGui::TextDisabled("march counters unsupported (fragmentStoresAndAtomics)");
+                        }
+                        if (sdfProfilingEnabled_) {
+                            const double rays = static_cast<double>(st.lastFragments);
+                            const double cells = static_cast<double>(st.lastCellVisits);
+                            ImGui::Text("rays: %llu  steps: %llu  cells: %llu",
+                                (unsigned long long)st.lastFragments,
+                                (unsigned long long)st.lastMarchSteps,
+                                (unsigned long long)st.lastCellVisits);
+                            ImGui::Text("candidates: %llu  hits: %llu",
+                                (unsigned long long)st.lastCandidateEvals,
+                                (unsigned long long)st.lastHits);
+                            ImGui::Text("avg steps/ray: %.1f  candidates/cell: %.1f  hit rate: %.1f%%",
+                                rays > 0.0 ? static_cast<double>(st.lastMarchSteps) / rays : 0.0,
+                                cells > 0.0 ? static_cast<double>(st.lastCandidateEvals) / cells : 0.0,
+                                rays > 0.0 ? 100.0 * static_cast<double>(st.lastHits) / rays : 0.0);
+                        }
+                        ImGui::Text("grass: %u/%u chunks  lava: %u/%u  rocks: %u/%u",
+                            st.grassAnchors, st.grassChunks,
+                            st.lavaAnchors, st.lavaChunks,
+                            st.rockAnchors, st.rockChunks);
+                    } else {
+                        ImGui::Text("no SDF renderer");
                     }
                     ImGui::Separator();
                     ImGui::Text("--- CPU Timing (ms) ---");

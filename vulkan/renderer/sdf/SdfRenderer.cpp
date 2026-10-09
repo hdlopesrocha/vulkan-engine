@@ -1,5 +1,6 @@
 #include "SdfRenderer.hpp"
 #include "sdf/types/SdfProxyVertex.hpp"
+#include "sdf/types/SdfProfileCounters.hpp"
 #include "../DescriptorAllocator.hpp"
 #include "../DescriptorWriter.hpp"
 #include "../RendererUtils.hpp"
@@ -51,7 +52,17 @@ void SdfRenderer::init(VulkanApp* app) {
         slot.smoke = app->createBuffer(sizeof(SmokeFragBullet), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         writeSlotBinding(s, 8, slot.smoke, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        // March counters (SdfProfileCounters): fixed size, host-visible so
+        // readProfile() can snapshot the previous completed use of the slot
+        // without a separate readback path. render() resets + gates them.
+        profileBuffers_[s] = app->createBuffer(sizeof(SdfProfileCounters),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (profileBuffers_[s].mappedData)
+            std::memset(profileBuffers_[s].mappedData, 0, sizeof(SdfProfileCounters));
+        writeSlotBinding(s, 10, profileBuffers_[s], VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     }
+    profileCountersSupported_ = app->fragmentStoresAndAtomicsSupported;
     sceneDirtySlots_.fill(true);
     paramsDirtySlots_.fill(true);
     smokeDirtySlots_.fill(true);
@@ -144,11 +155,12 @@ void SdfRenderer::createCubeBuffers(VulkanApp* app) {
 void SdfRenderer::createDescriptorSet(VulkanApp* app) {
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
-    // set=1 bindings 0..9: 0 instances, 1 definitions, 2 materials,
+    // set=1 bindings 0..10: 0 instances, 1 definitions, 2 materials,
     // 3 containers, 4 gridCells, 5 gridIndices, 6 params UBO, 7 sceneDepth,
     // 8 smoke state (tuning + bullets, fragment only), 9 waterDepth
-    // (rasterized water surface, fragment only).
-    VkDescriptorSetLayoutBinding bindings[10]{};
+    // (rasterized water surface, fragment only), 10 march counters
+    // (SdfProfileCounters, fragment atomics, gated by counters[5]).
+    VkDescriptorSetLayoutBinding bindings[11]{};
     auto storage = [&](uint32_t b, VkShaderStageFlags stages) {
         bindings[b].binding = b;
         bindings[b].descriptorCount = 1;
@@ -177,12 +189,16 @@ void SdfRenderer::createDescriptorSet(VulkanApp* app) {
     bindings[9].descriptorCount = 1;
     bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[9].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // March counters (SdfProfileCounters): fragment-stage atomic target,
+    // gated by the CPU-written `enabled` word so the default path pays only
+    // a cached load + uniform branch.
+    storage(10, VK_SHADER_STAGE_FRAGMENT_BIT);
 
     descriptorSetLayout = descAlloc.createLayout(
-        bindings, 10, 0, nullptr, "SdfRenderer: descriptorSetLayout");
+        bindings, 11, 0, nullptr, "SdfRenderer: descriptorSetLayout");
 
     VkDescriptorPoolSize poolSizes[3] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7 * SDF_FRAMES},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 * SDF_FRAMES},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * SDF_FRAMES},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * SDF_FRAMES},
     };
@@ -2055,9 +2071,32 @@ float SdfRenderer::getTime() const {
 
 // ─── Draw ────────────────────────────────────────────────────────────────────
 
+void SdfRenderer::readProfile(uint32_t frameIdx) {
+    const uint32_t slot = frameIdx % SDF_FRAMES;
+    if (profileBuffers_[slot].mappedData == nullptr) return;
+    const auto* pc = static_cast<const SdfProfileCounters*>(profileBuffers_[slot].mappedData);
+    if (pc->enabled == 0u) return; // counters off: keep the last snapshot
+    stats_.lastFragments = pc->rays;
+    stats_.lastMarchSteps = pc->steps;
+    stats_.lastCellVisits = pc->cellVisits;
+    stats_.lastCandidateEvals = pc->candidates;
+    stats_.lastHits = pc->hits;
+}
+
 void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet mainDescriptorSet, uint32_t frameIdx, bool enabled) {
     const uint32_t slot = frameIdx % SDF_FRAMES;
     currentFrame_ = slot;
+
+    // March counters: reset this slot's buffer and gate the shader atomics.
+    // The slot's previous use is fenced (frame-slot wait in drawFrame), so the
+    // mapped reset never races the GPU atomics or readProfile()'s snapshot
+    // (readProfile runs on the frame thread before this frame's task).
+    if (profileBuffers_[slot].mappedData != nullptr) {
+        auto* pc = static_cast<SdfProfileCounters*>(profileBuffers_[slot].mappedData);
+        *pc = SdfProfileCounters{};
+        pc->enabled = (profileCountersSupported_ &&
+                       profileCountersEnabled_.load(std::memory_order_relaxed)) ? 1u : 0u;
+    }
 
     VkImageView colorView = getSdfColorView(frameIdx);
     VkImageView depthView = getSdfDepthView(frameIdx);
@@ -2383,6 +2422,7 @@ void SdfRenderer::cleanup(VulkanApp* app) {
         s.containerCap = s.gridCellCap = s.gridIndexCap = 0;
     }
     depthSampler = VK_NULL_HANDLE;
+    for (auto& pb : profileBuffers_) pb = {};
     stats_ = SdfStats{};
     app_ = nullptr;
 }

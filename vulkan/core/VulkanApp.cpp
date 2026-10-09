@@ -5476,6 +5476,7 @@ void VulkanApp::createLogicalDevice() {
     // production variants stay untouched).
     const bool fragmentStoresOk = supportedFeatures.fragmentStoresAndAtomics == VK_TRUE;
     const bool vertexStoresOk = supportedFeatures.vertexPipelineStoresAndAtomics == VK_TRUE;
+    fragmentStoresAndAtomicsSupported = fragmentStoresOk;
     rtProfilingSupported = shaderClockSupported && fragmentStoresOk && vertexStoresOk;
     if (shaderClockSupported && !(fragmentStoresOk && vertexStoresOk)) {
         printf("[VulkanApp] shader clock present but storage atomics unsupported (fragment=%d vertex=%d) — per-op RT profiling disabled\n",

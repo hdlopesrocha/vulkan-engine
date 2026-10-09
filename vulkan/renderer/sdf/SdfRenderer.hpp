@@ -365,6 +365,15 @@ public:
     const SdfStats& getStats() const { return stats_; }
     uint32_t getContainerCount() const { return stats_.containerCount; }
     bool hasScene() const { return stats_.containerCount > 0; }
+    // GPU march counters (set=1 binding 10). readProfile copies the slot's last
+    // completed counters into stats_ — call on the frame thread: the slot's
+    // previous use is fenced before reuse, so the mapped read never races the
+    // GPU atomics or render()'s reset.
+    void readProfile(uint32_t frameIdx);
+    // Shader-side counter gate (profiling UI). supported() is false when the
+    // device lacks fragmentStoresAndAtomics; the counters then stay disabled.
+    void setProfileCounters(bool on) { profileCountersEnabled_.store(on, std::memory_order_relaxed); }
+    bool profileCountersSupported() const { return profileCountersSupported_; }
 
     // Shared effect tuning (single instance used by renderer + widgets).
     SdfEffectConfig& config() { return config_; }
@@ -398,6 +407,13 @@ private:
     // blindly per frame — so a set is never updated while a CB using it is pending.
     std::array<VkDescriptorSet, SDF_FRAMES> sdfSets{};
     VkSampler depthSampler = VK_NULL_HANDLE;
+
+    // SDF march counters (set=1 binding 10): one host-visible mapped buffer per
+    // frame slot. render() resets + gates it; readProfile() reads the last
+    // completed use.
+    std::array<Buffer, SDF_FRAMES> profileBuffers_;
+    bool profileCountersSupported_ = false;
+    std::atomic<bool> profileCountersEnabled_{false};
 
     uint32_t currentFrame_ = 0;
     uint32_t currentFrameIndex_ = 0; // unmodded frame index (binding-refresh gate)

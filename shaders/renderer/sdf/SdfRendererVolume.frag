@@ -64,6 +64,14 @@ layout(std140, set = 1, binding = 6) uniform SdfParamsBlock {
 };
 layout(set = 1, binding = 7) uniform sampler2D sdfSceneDepth;
 layout(set = 1, binding = 9) uniform sampler2D sdfWaterDepth;
+// SDF march counters (SdfProfileCounters, set=1 binding 10): fragment-atomic
+// target written ONLY while sdfCounters[5] (CPU-written gate) is non-zero, so
+// the default path pays one cached load plus a uniform branch. Layout shared
+// with sdf/types/SdfProfileCounters.hpp:
+//   0 rays, 1 steps, 2 cellVisits, 3 candidates, 4 hits, 5 enabled.
+layout(std430, set = 1, binding = 10) buffer SdfProfileBuffer {
+    uint sdfCounters[];
+};
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -379,6 +387,11 @@ void main() {
     tExit = min(tExit, sdfSceneDistance(ro, rayUV));
     if (tEnter >= tExit) discard;
 
+    // March counters (profiling): this invocation will march, so it counts as
+    // one ray. The gate is uniform across the draw; disabled => no atomics.
+    bool sdfProf = (sdfCounters[5] != 0u);
+    if (sdfProf) atomicAdd(sdfCounters[0], 1u);
+
     // Dithered march start (up to an eighth of a noise wavelength): breaks
     // the coherent per-pixel step phase that drew dashed rings along cloud
     // silhouettes (each ray entered the volume at the same step offset).
@@ -501,6 +514,7 @@ void main() {
     for (int i = 0; i < SDF_MAX_STEPS_HARD; i++) {
         if (i >= maxSteps || t > tExit) break;
         steps = i + 1;
+        if (sdfProf) atomicAdd(sdfCounters[1], 1u);
         vec3 p = ro + rd * t;
 
         // Analytic tracer hit (sphere test above): stop at the exact
@@ -546,6 +560,7 @@ void main() {
             t = t + max(dtCell, minStep) + 1e-4;
             continue;
         }
+        if (sdfProf) atomicAdd(sdfCounters[2], 1u);
 
         uint n = min(ccnt, SDF_MAX_CANDIDATES);
         float dBest = 1e5;
@@ -585,6 +600,7 @@ void main() {
                 distance(ubo.viewPosition, inst.position) >= sdfParams.grassImpostorDistance) {
                 continue;
             }
+            if (sdfProf) atomicAdd(sdfCounters[3], 1u);
             float d = sdfEvalInstance(p, inst, dd, m0, time);
             float kk = clamp(sdfUnpackSmoothK(dd), 0.0, 2.0);
             if (!haveBest) { dBest = d; haveBest = true; }
@@ -615,6 +631,7 @@ void main() {
         bool rockSolid = (bestDef.prim == SDF_PRIM_ROCK);
         bool grassSolid = (bestDef.prim == SDF_PRIM_GRASS);
         if (dBest < eps && (renderMode == 0u || renderMode == 3u || smokeSolid || rockSolid || grassSolid)) {
+            if (sdfProf) atomicAdd(sdfCounters[4], 1u);
             float e = max(eps * 2.0, 0.004);
             vec3 nn = sdfSurfaceNormal(p, bestInst, bestDef, bestMat, time, e);
             vec3 L = -normalize(ubo.lightDirection);
