@@ -16,7 +16,8 @@
 //   midBaseHeight 160, midThickness 164, highCoverage 168, highDensity 172,
 //   highScale 176, highWindSpeedMul 180, highBaseHeight 184, highThickness 188,
 //   silverLining 192, ambientBoost 196, sunForwardG 200, exposure 204,
-//   timeScale 208. 212..224 is std140 block-size rounding.
+//   timeScale 208, cloudRaycastPixelSize 212, invScreenSize 216.
+// 224 is the std140 block size (multiple of 16).
 // Flags are uint (compare with == 0u / != 0u).
 struct SkyUniform {
     vec3 horizonColor;      // offset   0
@@ -64,6 +65,8 @@ struct SkyUniform {
     float sunForwardG;      // offset 200
     float exposure;         // offset 204
     float timeScale;        // offset 208
+    float cloudRaycastPixelSize; // offset 212  one cloud ray per NxN px block
+    vec2 invScreenSize;     // offset 216  swapchain inverse size (ray UV)
 };
 
 #endif // SKY_UNIFORM_GLSL

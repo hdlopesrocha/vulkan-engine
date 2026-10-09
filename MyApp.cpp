@@ -1033,6 +1033,9 @@ public:
         if (sceneRenderer && sceneRenderer->skyRenderer) {
             sceneRenderer->skyRenderer->setCloudTime(mainTime);
             sceneRenderer->skyRenderer->setCloudsEnabled(settings.cloudsEnabled);
+            // Ray-cast quality also drives the sky cloud raymarch (one cloud
+            // ray per NxN screen-pixel block).
+            sceneRenderer->skyRenderer->setRaycastPixelSize(settings.raycastPixelSize);
             sceneRenderer->skyRenderer->update(this);
         }
 
@@ -1388,8 +1391,8 @@ public:
             }
         }
         if (sceneRenderer && sceneRenderer->sdfRenderer) {
-            // SDF ray-cast quality (1..8 px blocks; default 2). Dedupes.
-            sceneRenderer->sdfRenderer->setRaycastPixelSize(settings.sdfRaycastPixelSize);
+            // Ray-cast quality (1..8 px blocks; default 2) for the SDF pass.
+            sceneRenderer->sdfRenderer->setRaycastPixelSize(settings.raycastPixelSize);
         }
 
         const bool waterEnabled = settings.waterEnabled;

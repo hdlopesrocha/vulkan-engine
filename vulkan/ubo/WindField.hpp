@@ -65,8 +65,9 @@ struct WindField {
     WindTornado tornadoes[kWindFieldMaxTornadoes];
     glm::vec4 counts;   // x = activeCount (derived at pack time by counting
                         //     active flags — no stale widget counter),
-                        // y = wind debug mode (0 off, 1 heat map,
-                        //     2 velocity isosurface),
+                        // y = wind debug mode (0 off, 1 velocity heat volume,
+                        //     2 velocity isosurface, 3 compression heat
+                        //     volume, 4 direction volume),
                         // z = isosurface speed in m/s, w = unused (0)
 };
 static_assert(sizeof(WindField) == 304, "WindField must be 304 bytes");
@@ -98,9 +99,11 @@ struct TornadoSettings {
 
 struct WindFieldSettings {
     std::array<TornadoSettings, kWindFieldMaxTornadoes> tornadoes{};
-    // Wind debug mode shown by the composite overlay: 0 = off, 1 = heat +
-    // direction raymarch, 2 = velocity isosurface. Owned by the ray marching
-    // widget (not the wind widget: it visualizes, it doesn't simulate).
+    // Wind debug mode shown by the composite overlay: 0 = off,
+    // 1 = velocity heat volume, 2 = velocity isosurface,
+    // 3 = air-compression heat volume, 4 = normalized direction volume.
+    // Owned by the ray marching widget (not the wind widget: it visualizes,
+    // it doesn't simulate).
     int windDebugMode = 0;
     // Isosurface speed for mode 2 (m/s): the surface where |wind| = iso.
     float windDebugIso = 8.0f;

@@ -33,6 +33,11 @@ void SkySphere::init(VulkanApp* app, SkySettings& settings,
     // upload initial data
     SkyUniform data{};
     fillSkyUniform(data);
+    if (app) {
+        const float w = static_cast<float>(std::max(app->getWidth(), 1));
+        const float h = static_cast<float>(std::max(app->getHeight(), 1));
+        data.invScreenSize = glm::vec2(1.0f / w, 1.0f / h);
+    }
     memcpy(skyBuffer.mappedData, &data, static_cast<size_t>(sbSize));
 
     // bind into descriptor sets (binding 6)
@@ -52,7 +57,9 @@ void SkySphere::init(VulkanApp* app, SkySettings& settings,
 }
 
 void SkySphere::fillSkyUniform(SkyUniform& out) const {
-    memset(&out, 0, sizeof(out));
+    // Value-initialize (not memset): the struct holds GLM types whose
+    // default member initializers are the canonical zero baseline.
+    out = SkyUniform{};
     if (skySettings) {
         out.horizonColor = skySettings->horizonColor;
         out.zenithColor = skySettings->zenithColor;
@@ -113,13 +120,21 @@ void SkySphere::fillSkyUniform(SkyUniform& out) const {
     } else {
         out.cloudsEnabled = 0u;
     }
+    // Cloud ray-cast quality (block size) + the screen mapping used to
+    // reconstruct the block-center ray; independent of cloud enable so a
+    // stale UBO can never produce a zero/NaN inverse size.
+    out.cloudRaycastPixelSize = static_cast<float>(raycastPixelSize_);
 }
 
 void SkySphere::update(VulkanApp* app) {
     if (skyBuffer.buffer == VK_NULL_HANDLE) return;
-    (void)app;
     SkyUniform skyData;
     fillSkyUniform(skyData);
+    if (app) {
+        const float w = static_cast<float>(std::max(app->getWidth(), 1));
+        const float h = static_cast<float>(std::max(app->getHeight(), 1));
+        skyData.invScreenSize = glm::vec2(1.0f / w, 1.0f / h);
+    }
     memcpy(skyBuffer.mappedData, &skyData, static_cast<size_t>(skyBufferSize));
 }
 

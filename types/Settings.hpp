@@ -31,9 +31,10 @@ public:
     bool vegetationEnabled = false;
     // Active grass representation (see GrassMode). Default: SDF raycast.
     GrassMode grassMode = GrassMode::GrassRaycast;
-    // SDF ray-cast quality: the SDF ray is cast once per NxN screen-pixel
-    // block (1 = one ray per pixel). 2 = the default 2x2 pixelation.
-    int sdfRaycastPixelSize = 2;
+    // Ray-cast quality: the SDF raymarcher AND the sky cloud raymarcher cast
+    // one ray per NxN screen-pixel block (1 = one ray per pixel).
+    // 2 = the default 2x2 pixelation.
+    int raycastPixelSize = 2;
     bool wireframeMode = false;
     bool waterWireframeMode = false;
     bool normalMappingEnabled = true;

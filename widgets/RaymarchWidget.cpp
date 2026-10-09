@@ -549,23 +549,29 @@ void RaymarchWidget::render() {
         }
         WindFieldSettings& wfield = vegetationRenderer->getWindFieldSettings();
         int wdbg = wfield.windDebugMode;
-        const char* wdbgItems[] = {"Off", "Heat map", "Velocity surface"};
+        const char* wdbgItems[] = {"Off", "Velocity heat", "Velocity surface",
+                                   "Compression heat", "Direction"};
         {
-            ImGuiComponents::FieldLabel("Wind debug", "Raymarched overlay of the final wind field.");
+            ImGuiComponents::FieldLabel("Wind debug", "Raymarched 3D overlay of the final wind field.");
             ImGui::SetNextItemWidth(kRaymarchColWidth);
             ImGui::PushID("Wind debug##raymarch");
-            if (ImGui::Combo("##v", &wdbg, wdbgItems, 3)) {
-                wfield.windDebugMode = wdbg < 0 ? 0 : (wdbg > 2 ? 2 : wdbg);
+            if (ImGui::Combo("##v", &wdbg, wdbgItems, 5)) {
+                wfield.windDebugMode = wdbg < 0 ? 0 : (wdbg > 4 ? 4 : wdbg);
             }
             ImGui::PopID();
-            ImGuiComponents::TooltipOnHover("Off = normal composite. Heat map = air-pressure heat + direction. "
-                                            "Velocity surface = SDF isosurface where wind speed equals the iso below.");
+            ImGuiComponents::TooltipOnHover(
+                "Off = normal composite. Velocity heat = 3D heat volume of |wind| (blue calm -> red storm). "
+                "Velocity surface = isosurface where wind speed equals the iso below. "
+                "Compression heat = 3D volume of -div(wind): red = compressing, blue = expanding air. "
+                "Direction = normalized wind direction as RGB in world axes.");
         }
+        ImGui::BeginDisabled(wfield.windDebugMode != 2);
         float wiso = wfield.windDebugIso;
         if (ImGuiComponents::SliderFloatField("Surface speed", &wiso, 0.0f, 60.0f, "%.1f",
                 "Isosurface speed in m/s (velocity-surface mode only).")) {
             wfield.windDebugIso = wiso < 0.0f ? 0.0f : wiso;
         }
+        ImGui::EndDisabled();
     });
 
     // ---- Packing: same best-fit columns as the Settings menu (fixed 256px

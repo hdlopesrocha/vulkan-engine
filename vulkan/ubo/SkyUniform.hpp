@@ -57,7 +57,11 @@ struct alignas(16) SkyUniform {
     float sunForwardG = 0.0f;                      // offset 200
     float exposure = 0.0f;                         // offset 204
     float timeScale = 0.0f;                        // offset 208
-    // offset 212..224: std140 block size rounding (multiple of 16).
+    // Cloud ray-cast quality (Settings::raycastPixelSize): one cloud ray per
+    // NxN screen-pixel block (block center). invScreenSize maps gl_FragCoord
+    // -> UV and is set per frame from the swapchain size.
+    float cloudRaycastPixelSize = 2.0f;            // offset 212
+    alignas(8) glm::vec2 invScreenSize{0.0f};      // offset 216
 };
 static_assert(sizeof(SkyUniform) == 224, "SkyUniform must be 224 bytes (std140 padding)");
 static_assert(offsetof(SkyUniform, horizonColor) == 0, "horizonColor offset");
@@ -105,3 +109,5 @@ static_assert(offsetof(SkyUniform, ambientBoost) == 196, "ambientBoost offset");
 static_assert(offsetof(SkyUniform, sunForwardG) == 200, "sunForwardG offset");
 static_assert(offsetof(SkyUniform, exposure) == 204, "exposure offset");
 static_assert(offsetof(SkyUniform, timeScale) == 208, "timeScale offset");
+static_assert(offsetof(SkyUniform, cloudRaycastPixelSize) == 212, "cloudRaycastPixelSize offset");
+static_assert(offsetof(SkyUniform, invScreenSize) == 216, "invScreenSize offset");

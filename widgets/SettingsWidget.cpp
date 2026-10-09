@@ -70,10 +70,10 @@ void SettingsWidget::render() {
                            "  Grass Raycast = SDF grass (generic SDF renderer, Grass widget)\n"
                            "  None         = no grass");
         }
-        if (ImGuiComponents::SliderIntField("SDF Raycast Pixel Size", &settings.sdfRaycastPixelSize, 1, 8, "%d px",
-                "SDF rays are cast once per NxN screen-pixel block (block center):\n"
-                "1 = one ray per pixel, 2 = 2x2 pixelation (default), up to 8x8.\n"
-                "Higher = more pixelated SDF output and cheaper ray casting.")) {
+        if (ImGuiComponents::SliderIntField("Raycast Pixel Size", &settings.raycastPixelSize, 1, 8, "%d px",
+                "SDF and sky-cloud raymarchers cast one ray per NxN screen-pixel\n"
+                "block (block center): 1 = one ray per pixel, 2 = 2x2 pixelation\n"
+                "(default), up to 8x8. Higher = more pixelated and cheaper.")) {
             // SliderInt clamps to [1, 8]; nothing else to do.
         }
         if (ImGui::Checkbox("Volumetric Clouds", &settings.cloudsEnabled)) {

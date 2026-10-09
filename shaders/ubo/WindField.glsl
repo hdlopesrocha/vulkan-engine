@@ -25,8 +25,10 @@ struct WindField {
     vec4 ambientB; // x = baseFrequency, y = gustFrequency, z = gustStrength,
                    // w = unused
     WindTornado tornadoes[4]; // WIND_FIELD_MAX_TORNADOES entries, 64 bytes each
-    vec4 counts; // x = activeCount, y = wind debug mode (0 off, 1 heat map,
-                   //     2 velocity isosurface), z = isosurface speed (m/s), w = unused
+    vec4 counts; // x = activeCount, y = wind debug mode (0 off,
+                 //     1 velocity heat volume, 2 velocity isosurface,
+                 //     3 compression heat volume, 4 direction volume),
+                 //     z = isosurface speed (m/s), w = unused
 };
 
 #define WIND_FIELD_MAX_TORNADOES 4

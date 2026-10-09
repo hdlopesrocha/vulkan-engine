@@ -222,7 +222,7 @@ public:
     // N > 1, pixelating the SDF output; the full-resolution proxy
     // rasterization keeps the per-pixel hardware depth test against solid.
     // 1 = one ray per pixel. No scene rebuild (streamed through the params
-    // UBO). Default 2 (Settings::sdfRaycastPixelSize).
+    // UBO). Default 2 (Settings::raycastPixelSize).
     void setRaycastPixelSize(int px);
 
     // ── Smoke bomb + bullets (second generic consumer) ──────────────────
@@ -405,7 +405,7 @@ private:
     SdfParamsUBO params_ = {};
     RenderMode renderMode_ = RenderMode::Surface;
     uint32_t debugFlags_ = 0;
-    int raycastPixelSize_ = 2; // Settings::sdfRaycastPixelSize (streamed via params_)
+    int raycastPixelSize_ = 2; // Settings::raycastPixelSize (streamed via params_)
     // Per-slot dirty flags (triple-buffered slots!). A single global flag
     // breaks after the first frame: slot 0 consumes it, slots 1-2 never
     // allocate/upload yet still hit the barrier/draw with NULL buffers

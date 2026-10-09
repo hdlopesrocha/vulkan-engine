@@ -82,8 +82,21 @@ void main() {
     // camera position. Slab intersection decides visibility, so this covers
     // every direction: from below, from above (cloud tops), from inside, and
     // at the horizon.
+    // Cloud ray-cast quality (Settings: Raycast Pixel Size): one cloud ray
+    // per NxN screen-pixel block (block center), so the clouds pixelate while
+    // the sky gradient, stars and sun stay per-pixel. 1 = one ray per pixel.
+    vec3 cloudViewDir = normalize(viewDir);
+    if (sky.cloudRaycastPixelSize > 1.5) {
+        vec2 blockPx = (floor(gl_FragCoord.xy / sky.cloudRaycastPixelSize) + 0.5)
+                     * sky.cloudRaycastPixelSize;
+        vec2 blockNdc = blockPx * sky.invScreenSize * 2.0 - 1.0;
+        vec4 farH = ubo.invViewProjection * vec4(blockNdc, 1.0, 1.0);
+        if (abs(farH.w) > 1e-8) {
+            cloudViewDir = normalize(farH.xyz / farH.w - ubo.viewPosition);
+        }
+    }
     if (sky.cloudsEnabled != 0u) {
-        vec4 clouds = raymarchClouds(ubo.viewPosition, normalize(viewDir),
+        vec4 clouds = raymarchClouds(ubo.viewPosition, cloudViewDir,
                                      normalize(sunDir), sunColor * dayFactor
                                      + vec3(0.02) * (1.0 - dayFactor),
                                      color, dayFactor, 0);
@@ -94,7 +107,7 @@ void main() {
     // final image so reflections stay clean.
     int dbgMode = ubo.debugMode;
     if (dbgMode >= DEBUG_MODE_CLOUD_SDF && dbgMode <= DEBUG_MODE_CLOUD_SKIP) {
-        vec3 dbgCol = cloudDebugView(ubo.viewPosition, normalize(viewDir),
+        vec3 dbgCol = cloudDebugView(ubo.viewPosition, cloudViewDir,
                                      normalize(sunDir), dbgMode - DEBUG_MODE_CLOUD_SDF + 1);
         outColor = vec4(dbgCol, 1.0);
         return;

@@ -67,6 +67,36 @@ vec2 dirToEquirectUV(vec3 dir) {
     return uv;
 }
 
+// 5-stop heat ramp for a normalized scalar t in [0,1]:
+// blue -> cyan -> green -> yellow -> red. Shared by the wind velocity heat
+// volume and the velocity isosurface so both read the same speed scale.
+vec3 windHeatRamp(float t) {
+    t = clamp(t, 0.0, 1.0);
+    return mix(vec3(0.1, 0.2, 0.9),
+           mix(vec3(0.0, 0.9, 0.9),
+           mix(vec3(0.1, 0.8, 0.2),
+           mix(vec3(0.95, 0.85, 0.1), vec3(0.9, 0.1, 0.1),
+               smoothstep(0.75, 1.0, t)),
+               smoothstep(0.5, 0.75, t)),
+               smoothstep(0.25, 0.5, t)),
+               smoothstep(0.0, 0.25, t));
+}
+
+// Signed air compression of the shared wind field: compression = -div(v),
+// positive where air converges (is squeezed), negative where it expands.
+// Forward differences over eps metres; eps spans several metres so the
+// resolved circulation (tornado inflow / updraft) dominates the
+// high-frequency Perlin gust detail instead of being shredded by it.
+float windCompression(vec3 p, float time) {
+    const float eps = 2.5;
+    vec3 v  = windSVF(p, time);
+    vec3 vx = windSVF(p + vec3(eps, 0.0, 0.0), time);
+    vec3 vy = windSVF(p + vec3(0.0, eps, 0.0), time);
+    vec3 vz = windSVF(p + vec3(0.0, 0.0, eps), time);
+    float div = (vx.x - v.x + vy.y - v.y + vz.z - v.z) / eps;
+    return -div;
+}
+
 void main() {
     vec2 uv = gl_FragCoord.xy / ubo.screenSize;
 
@@ -283,92 +313,132 @@ void main() {
     }
 
     // 7. Wind debug raymarch overlay (ray marching widget, Wind Debug).
-    // Mode 1 marches the FINAL wind (ambient + tornadoes) along the view
-    // ray and shows air-pressure-as-heat blended with normalized wind
-    // direction. Mode 2 root-finds the velocity isosurface |wind| = iso and
-    // renders that surface by pressure/direction. Fully gated: identical
-    // output when the mode is 0 (off).
-    if (windField.counts.y > 0.5 && windField.counts.y < 1.5) {
-        // Fixed 28-step march over 400 m. No derivatives used (pure math
-        // field), so divergent flow is safe without explicit LOD.
+    // Modes: 1 = velocity heat volume, 2 = velocity isosurface,
+    // 3 = air-compression heat volume, 4 = normalized direction volume.
+    // The volume modes accumulate front-to-back emission along the view ray
+    // and are clipped at the solid scene depth, so the field reads as a 3D
+    // heat map inside the scene instead of a flat screen overlay. Fully
+    // gated: identical output when the mode is 0 (off).
+    const float windMode = windField.counts.y;
+    if (windMode > 0.5) {
+        // View ray through the volume. No derivatives used by the field
+        // sampling itself, so divergent flow is safe without explicit LOD.
         vec3 wdir = (dot(viewDir, viewDir) > 1e-12) ? normalize(viewDir) : vec3(0.0, 0.0, 1.0);
         vec3 wpos0 = ubo.viewPosition;
-        float meanSpeed = 0.0;
-        vec3 meanDir = vec3(0.0);
-        for (int wi = 0; wi < 28; ++wi) {
-            vec3 sp = wpos0 + wdir * (400.0 * (float(wi) + 0.5) / 28.0);
-            vec3 wv = windSVF(sp, windPush.windTime);
-            float ws = length(wv);
-            meanSpeed += ws;
-            meanDir += (ws > 1e-4) ? (wv / max(ws, 1e-4)) : vec3(0.0);
+        // March at most 400 m of air, but stop the volume at the solid scene
+        // surface so foreground geometry is not tinted (sky keeps 400 m).
+        float windMaxT = 400.0;
+        if (sceneDepth < 1.0) {
+            float sceneDist = length(worldPos.xyz - wpos0);
+            if (sceneDist > 0.0) windMaxT = min(windMaxT, sceneDist);
         }
-        meanSpeed /= 28.0;
-        meanDir /= 28.0;
-        // Pressure proxy = mean speed; heat ramp 0..40 m/s blue->red.
-        // isnan guard: a poisoned sample must not blank the overlay.
-        float heat = clamp(isnan(meanSpeed) ? 0.0 : meanSpeed / 40.0, 0.0, 1.0);
-        vec3 heatCol = mix(vec3(0.1, 0.2, 0.9),
-                        mix(vec3(0.0, 0.9, 0.9),
-                        mix(vec3(0.1, 0.8, 0.2),
-                        mix(vec3(0.95, 0.85, 0.1), vec3(0.9, 0.1, 0.1),
-                            smoothstep(0.75, 1.0, heat)),
-                            smoothstep(0.5, 0.75, heat)),
-                            smoothstep(0.25, 0.5, heat)),
-                            smoothstep(0.0, 0.25, heat));
-        vec3 dirCol = meanDir * 0.5 + 0.5;
-        vec3 overlay = mix(heatCol, dirCol, 0.5);
-        finalColor = mix(finalColor, overlay, 0.65);
-    } else if (windField.counts.y >= 1.5) {
-        // Velocity isosurface: SDF d(p) = iso - |wind|, rooted by fixed
-        // march + bisection. Renders the surface where the wind is fastest
-        // by air pressure (heat) and direction, like the heat map above.
-        float iso = max(windField.counts.z, 0.0);
-        vec3 wdir = (dot(viewDir, viewDir) > 1e-12) ? normalize(viewDir) : vec3(0.0, 0.0, 1.0);
-        vec3 wpos0 = ubo.viewPosition;
-        float prevT = 0.0;
-        float prevD = iso - length(windSVF(wpos0, windPush.windTime));
-        bool hitS = false;
-        vec3 hitP = wpos0;
-        for (int wi = 1; wi <= 48; ++wi) {
-            float tS = 400.0 * float(wi) / 48.0;
-            vec3 sp = wpos0 + wdir * tS;
-            vec3 wv = windSVF(sp, windPush.windTime);
-            float dS = iso - (isnan(length(wv)) ? 1e5 : length(wv));
-            if (prevD > 0.0 && dS <= 0.0) {
-                // Bisection refine: 6 halvings on the bracket.
-                float ta = prevT;
-                float tb = tS;
-                for (int bi = 0; bi < 6; ++bi) {
-                    float tm = 0.5 * (ta + tb);
-                    vec3 pm = wpos0 + wdir * tm;
-                    float dm = iso - length(windSVF(pm, windPush.windTime));
-                    if (dm > 0.0) {
-                        ta = tm;
-                    } else {
-                        tb = tm;
-                    }
+
+        if (windMode < 1.5) {
+            // 7a. Velocity heat volume: density ∝ speed, heat color 0..40 m/s
+            // (blue = calm, red = storm force). Front-to-back over-composite.
+            const int steps = 28;
+            float stepLen = windMaxT / float(steps);
+            vec3 acc = vec3(0.0);
+            float trans = 1.0;
+            for (int wi = 0; wi < steps; ++wi) {
+                vec3 sp = wpos0 + wdir * (stepLen * (float(wi) + 0.5));
+                float ws = length(windSVF(sp, windPush.windTime));
+                // isnan guard: a poisoned sample must not blank the overlay.
+                if (!isnan(ws)) {
+                    float a = 1.0 - exp(-ws * 1.5e-4 * stepLen);
+                    acc += windHeatRamp(ws / 40.0) * a * trans;
+                    trans *= 1.0 - a;
+                    if (trans < 0.02) break;
                 }
-                hitP = wpos0 + wdir * (0.5 * (ta + tb));
-                hitS = true;
-                break;
             }
-            prevT = tS;
-            prevD = dS;
-        }
-        if (hitS) {
-            vec3 hv = windSVF(hitP, windPush.windTime);
-            float hs = length(hv);
-            float heat = clamp(hs / 40.0, 0.0, 1.0);
-            vec3 heatCol = mix(vec3(0.1, 0.2, 0.9),
-                            mix(vec3(0.0, 0.9, 0.9),
-                            mix(vec3(0.1, 0.8, 0.2),
-                            mix(vec3(0.95, 0.85, 0.1), vec3(0.9, 0.1, 0.1),
-                                smoothstep(0.75, 1.0, heat)),
-                                smoothstep(0.5, 0.75, heat)),
-                                smoothstep(0.25, 0.5, heat)),
-                                smoothstep(0.0, 0.25, heat));
-            vec3 dirCol = (hs > 1e-4) ? (hv / max(hs, 1e-4)) * 0.5 + 0.5 : vec3(0.5);
-            finalColor = mix(finalColor, mix(heatCol, dirCol, 0.5), 0.8);
+            finalColor = finalColor * trans + acc;
+        } else if (windMode < 2.5) {
+            // 7b. Velocity isosurface: SDF d(p) = iso - |wind|, rooted by
+            // fixed march + bisection. Renders the surface where the wind
+            // speed equals the iso by speed (heat) and direction.
+            float iso = max(windField.counts.z, 0.0);
+            float prevT = 0.0;
+            float prevD = iso - length(windSVF(wpos0, windPush.windTime));
+            bool hitS = false;
+            vec3 hitP = wpos0;
+            for (int wi = 1; wi <= 48; ++wi) {
+                float tS = 400.0 * float(wi) / 48.0;
+                vec3 sp = wpos0 + wdir * tS;
+                vec3 wv = windSVF(sp, windPush.windTime);
+                float dS = iso - (isnan(length(wv)) ? 1e5 : length(wv));
+                if (prevD > 0.0 && dS <= 0.0) {
+                    // Bisection refine: 6 halvings on the bracket.
+                    float ta = prevT;
+                    float tb = tS;
+                    for (int bi = 0; bi < 6; ++bi) {
+                        float tm = 0.5 * (ta + tb);
+                        vec3 pm = wpos0 + wdir * tm;
+                        float dm = iso - length(windSVF(pm, windPush.windTime));
+                        if (dm > 0.0) {
+                            ta = tm;
+                        } else {
+                            tb = tm;
+                        }
+                    }
+                    hitP = wpos0 + wdir * (0.5 * (ta + tb));
+                    hitS = true;
+                    break;
+                }
+                prevT = tS;
+                prevD = dS;
+            }
+            if (hitS) {
+                vec3 hv = windSVF(hitP, windPush.windTime);
+                float hs = length(hv);
+                vec3 dirCol = (hs > 1e-4) ? (hv / max(hs, 1e-4)) * 0.5 + 0.5 : vec3(0.5);
+                finalColor = mix(finalColor,
+                    mix(windHeatRamp(hs / 40.0), dirCol, 0.5), 0.8);
+            }
+        } else if (windMode < 3.5) {
+            // 7c. Air-compression heat volume: signed -div(v) from the
+            // analytic field. Red = converging (compressed) air, blue =
+            // expanding air; neutral air contributes no opacity. 1 s^-1 is
+            // full saturation (tornado inflow sits around 0.8 s^-1).
+            const int steps = 24;
+            const float kRange = 1.0; // s^-1 at full saturation
+            float stepLen = windMaxT / float(steps);
+            vec3 acc = vec3(0.0);
+            float trans = 1.0;
+            for (int wi = 0; wi < steps; ++wi) {
+                vec3 sp = wpos0 + wdir * (stepLen * (float(wi) + 0.5));
+                float c = windCompression(sp, windPush.windTime);
+                if (!isnan(c)) {
+                    float cm = clamp(abs(c) / kRange, 0.0, 1.0);
+                    float a = 1.0 - exp(-abs(c) * 4.0e-3 * stepLen);
+                    vec3 col = (c >= 0.0)
+                        ? mix(vec3(1.0, 0.9, 0.3), vec3(1.0, 0.1, 0.0), cm)
+                        : mix(vec3(0.4, 1.0, 1.0), vec3(0.05, 0.15, 1.0), cm);
+                    acc += col * a * trans;
+                    trans *= 1.0 - a;
+                    if (trans < 0.02) break;
+                }
+            }
+            finalColor = finalColor * trans + acc;
+        } else {
+            // 7d. Normalized velocity direction volume: RGB = dir * 0.5 + 0.5
+            // in world axes, density ∝ speed so calm air stays transparent.
+            const int steps = 28;
+            float stepLen = windMaxT / float(steps);
+            vec3 acc = vec3(0.0);
+            float trans = 1.0;
+            for (int wi = 0; wi < steps; ++wi) {
+                vec3 sp = wpos0 + wdir * (stepLen * (float(wi) + 0.5));
+                vec3 wv = windSVF(sp, windPush.windTime);
+                float ws = length(wv);
+                if (!isnan(ws) && ws > 1e-4) {
+                    float a = 1.0 - exp(-ws * 1.5e-4 * stepLen);
+                    vec3 col = (wv / ws) * 0.5 + 0.5;
+                    acc += col * (a * trans);
+                    trans *= 1.0 - a;
+                    if (trans < 0.02) break;
+                }
+            }
+            finalColor = finalColor * trans + acc;
         }
     }
 

@@ -28,6 +28,9 @@ public:
     void setCloudSettings(CloudSettings* clouds);
     void setCloudTime(float t);
     void setCloudsEnabled(bool e);
+    // Cloud ray-cast quality (Settings::raycastPixelSize): one cloud ray per
+    // NxN screen-pixel block; forwarded to the SkySphere UBO.
+    void setRaycastPixelSize(int px);
 
     // Update sky internals (e.g. SkySphere animation)
     void update(VulkanApp* app);

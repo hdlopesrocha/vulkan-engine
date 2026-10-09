@@ -160,6 +160,10 @@ void SkyRenderer::setCloudsEnabled(bool e) {
     if (skySphere) skySphere->setCloudsEnabled(e);
 }
 
+void SkyRenderer::setRaycastPixelSize(int px) {
+    if (skySphere) skySphere->setRaycastPixelSize(px);
+}
+
 void SkyRenderer::update(VulkanApp* app) {
     if (skySphere) skySphere->update(app);
 }
