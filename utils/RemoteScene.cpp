@@ -18,8 +18,6 @@ int64_t nowMs() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-int layerIndex(Layer layer) { return layer == LAYER_TRANSPARENT ? 1 : 0; }
-
 // Triplanar helpers duplicated from space/Tesselator.cpp (kept static there).
 // Remote meshes carry positions only, so UVs are rebuilt here with the same
 // dominant-axis mapping the local tessellator uses.
@@ -57,10 +55,145 @@ uint32_t readU32LE(const uint8_t* p) {
 
 } // namespace
 
-RemoteScene::RemoteScene() = default;
+RemoteScene::RemoteScene() {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    layers_.reserve(2);
+    layers_.push_back({"Opaque", LayerRendererType::Solid, true});
+    layers_.push_back({"Transparent", LayerRendererType::Water, true});
+    {
+        std::lock_guard<std::mutex> mlock(metaMutex_);
+        haveMeta_.assign(2, false);
+        rootMin_.assign(2, glm::vec3(0.0f));
+        chunkSize_.assign(2, 0.0f);
+        rootChunkLod_.assign(2, 0);
+    }
+}
 
 RemoteScene::~RemoteScene() {
     disconnect();
+}
+
+size_t RemoteScene::layerCount() const {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    return layers_.size();
+}
+
+std::string RemoteScene::layerName(Layer layer) const {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return {};
+    return layers_[static_cast<size_t>(layer)].name;
+}
+
+void RemoteScene::setLayerName(Layer layer, const std::string& name) {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return;
+    layers_[static_cast<size_t>(layer)].name = name;
+}
+
+LayerRendererType RemoteScene::layerRenderer(Layer layer) const {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size())
+        return (layer == LAYER_TRANSPARENT) ? LayerRendererType::Water : LayerRendererType::Solid;
+    return layers_[static_cast<size_t>(layer)].renderer;
+}
+
+void RemoteScene::setLayerRenderer(Layer layer, LayerRendererType renderer) {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return;
+    layers_[static_cast<size_t>(layer)].renderer = renderer;
+}
+
+bool RemoteScene::layerEnabled(Layer layer) const {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return false;
+    return layers_[static_cast<size_t>(layer)].enabled;
+}
+
+void RemoteScene::setLayerEnabled(Layer layer, bool enabled) {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return;
+    layers_[static_cast<size_t>(layer)].enabled = enabled;
+}
+
+Layer RemoteScene::addLayer(const std::string& name, LayerRendererType renderer) {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    LayerInfo info;
+    info.name = name.empty() ? ("Layer " + std::to_string(layers_.size())) : name;
+    info.renderer = renderer;
+    info.enabled = true;
+    layers_.push_back(info);
+    const size_t n = layers_.size();
+    {
+        std::lock_guard<std::mutex> mlock(metaMutex_);
+        if (haveMeta_.size() < n) {
+            haveMeta_.resize(n, false);
+            rootMin_.resize(n, glm::vec3(0.0f));
+            chunkSize_.resize(n, 0.0f);
+            rootChunkLod_.resize(n, 0);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> hlock(handlersMutex_);
+        if (updateHandlers_.size() < n) updateHandlers_.resize(n);
+        if (deleteHandlers_.size() < n) deleteHandlers_.resize(n);
+    }
+    return static_cast<Layer>(n - 1);
+}
+
+bool RemoteScene::removeLayer(Layer layer) {
+    if (layer < 0) return false;
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (static_cast<size_t>(layer) >= layers_.size() || layers_.size() <= 1) return false;
+    layers_.erase(layers_.begin() + layer);
+    return true;
+}
+
+void RemoteScene::ensureLayerLocked(Layer layer) {
+    // layersMutex_ held by caller.
+    if (layer < 0) return;
+    const size_t need = static_cast<size_t>(layer) + 1;
+    if (layers_.size() >= need) return;
+    const size_t from = layers_.size();
+    layers_.reserve(need);
+    for (size_t i = from; i < need; ++i) {
+        LayerInfo info;
+        info.name = "Layer " + std::to_string(i);
+        info.renderer = (static_cast<Layer>(i) == LAYER_TRANSPARENT)
+            ? LayerRendererType::Water : LayerRendererType::Solid;
+        info.enabled = true;
+        layers_.push_back(info);
+    }
+}
+
+void RemoteScene::ensureLayerForMetaLocked(uint8_t layer) {
+    // Caller holds metaMutex_. Only grows the meta vectors here; layer +
+    // handler growth is done via ensureCapacityForLayer (no locks held) to
+    // keep a single global lock order (layers -> meta -> handlers).
+    const size_t need = static_cast<size_t>(layer) + 1;
+    if (haveMeta_.size() < need) {
+        haveMeta_.resize(need, false);
+        rootMin_.resize(need, glm::vec3(0.0f));
+        chunkSize_.resize(need, 0.0f);
+        rootChunkLod_.resize(need, 0);
+    }
+}
+
+void RemoteScene::ensureCapacityForLayer(Layer layer) {
+    if (layer < 0) return;
+    const size_t need = static_cast<size_t>(layer) + 1;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        ensureLayerLocked(layer);
+    }
+    {
+        std::lock_guard<std::mutex> mlock(metaMutex_);
+        ensureLayerForMetaLocked(static_cast<uint8_t>(layer));
+    }
+    {
+        std::lock_guard<std::mutex> hlock(handlersMutex_);
+        if (updateHandlers_.size() < need) updateHandlers_.resize(need);
+        if (deleteHandlers_.size() < need) deleteHandlers_.resize(need);
+    }
 }
 
 bool RemoteScene::connect(const Endpoint& ep, int timeoutMs) {
@@ -101,7 +234,7 @@ void RemoteScene::disconnectLocked() {
 // ---------------------------------------------------------------- registry
 
 RemoteScene::Stub* RemoteScene::upsertStub(const chunkproto::ChunkRecord& rec) {
-    if (rec.layer > 1) return nullptr;
+    ensureCapacityForLayer(static_cast<Layer>(rec.layer));
     std::lock_guard<std::mutex> lock(stubsMutex_);
     auto it = byServer_.find(rec.id);
     Stub* stub = nullptr;
@@ -152,14 +285,42 @@ bool RemoteScene::killStub(uint64_t serverId) {
 // ---------------------------------------------------------------- snapshot
 
 void RemoteScene::loadScene(SceneLoaderCallback& /*callback*/,
-                            Octree::OctreeNodeDataHandler opaqueUpdateHandler,
-                            Octree::OctreeNodeDataHandler opaqueDeleteHandler,
-                            Octree::OctreeNodeDataHandler transparentUpdateHandler,
-                            Octree::OctreeNodeDataHandler transparentDeleteHandler) {
-    updateHandler_[0] = opaqueUpdateHandler;
-    deleteHandler_[0] = opaqueDeleteHandler;
-    updateHandler_[1] = transparentUpdateHandler;
-    deleteHandler_[1] = transparentDeleteHandler;
+                            std::vector<Octree::OctreeNodeDataHandler> updateHandlers,
+                            std::vector<Octree::OctreeNodeDataHandler> deleteHandlers) {
+    {
+        std::lock_guard<std::mutex> hlock(handlersMutex_);
+        updateHandlers_ = std::move(updateHandlers);
+        deleteHandlers_ = std::move(deleteHandlers);
+        // Guarantee at least the two default layers so old two-handler callers
+        // (now vector callers) keep working.
+        if (updateHandlers_.size() < 2) updateHandlers_.resize(2);
+        if (deleteHandlers_.size() < 2) deleteHandlers_.resize(2);
+    }
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        if (layers_.size() < 2) {
+            while (layers_.size() < 2) {
+                const size_t i = layers_.size();
+                layers_.push_back({i == 1 ? "Transparent" : "Opaque",
+                    i == 1 ? LayerRendererType::Water : LayerRendererType::Solid, true});
+            }
+        }
+        const size_t n = std::max(updateHandlers_.size(), layers_.size());
+        if (layers_.size() < n) {
+            for (size_t i = layers_.size(); i < n; ++i)
+                layers_.push_back({"Layer " + std::to_string(i), LayerRendererType::Solid, true});
+        }
+    }
+    {
+        std::lock_guard<std::mutex> mlock(metaMutex_);
+        const size_t n = std::max(updateHandlers_.size(), layers_.size());
+        if (haveMeta_.size() < n) {
+            haveMeta_.resize(n, false);
+            rootMin_.resize(n, glm::vec3(0.0f));
+            chunkSize_.resize(n, 0.0f);
+            rootChunkLod_.resize(n, 0);
+        }
+    }
 
     if (!connected_) {
         failed_ = true;
@@ -207,19 +368,24 @@ void RemoteScene::loadScene(SceneLoaderCallback& /*callback*/,
             if (raw.size() >= 9) {
                 const uint32_t n = readU32LE(raw.data() + 5);
                 size_t off = 9;
-                std::lock_guard<std::mutex> lock(metaMutex_);
-                for (uint32_t i = 0; i < n && off + 24 <= raw.size(); ++i, off += 24) {
-                    const uint8_t layer = raw[off];
-                    if (layer > 1) continue;
-                    memcpy(&rootMin_[layer], raw.data() + off + 1, 12);
-                    float rootLen, chunkSize;
-                    memcpy(&rootLen, raw.data() + off + 13, 4);
-                    memcpy(&chunkSize, raw.data() + off + 17, 4);
-                    (void)rootLen;
-                    chunkSize_[layer] = chunkSize;
-                    rootChunkLod_[layer] = raw[off + 21];
-                    haveMeta_[layer] = true;
+                int maxLayer = -1;
+                {
+                    std::lock_guard<std::mutex> lock(metaMutex_);
+                    for (uint32_t i = 0; i < n && off + 24 <= raw.size(); ++i, off += 24) {
+                        const uint8_t layer = raw[off];
+                        ensureLayerForMetaLocked(layer);
+                        memcpy(&rootMin_[layer], raw.data() + off + 1, 12);
+                        float rootLen, chunkSize;
+                        memcpy(&rootLen, raw.data() + off + 13, 4);
+                        memcpy(&chunkSize, raw.data() + off + 17, 4);
+                        (void)rootLen;
+                        chunkSize_[layer] = chunkSize;
+                        rootChunkLod_[layer] = raw[off + 21];
+                        haveMeta_[layer] = true;
+                        maxLayer = std::max<int>(maxLayer, layer);
+                    }
                 }
+                if (maxLayer >= 0) ensureCapacityForLayer(maxLayer);
             }
         } else if (type == chunkproto::MSG_CHUNK_BATCH) {
             if (raw.size() < 7) continue;
@@ -233,7 +399,12 @@ void RemoteScene::loadScene(SceneLoaderCallback& /*callback*/,
                 Stub* stub = upsertStub(rec);
                 if (!stub) continue;
                 OctreeNodeData nd(stub->level, &stub->node, stub->cube, nullptr);
-                if (updateHandler_[stub->layer]) updateHandler_[stub->layer](nd);
+                Octree::OctreeNodeDataHandler handler;
+                {
+                    std::lock_guard<std::mutex> hlock(handlersMutex_);
+                    if (stub->layer < updateHandlers_.size()) handler = updateHandlers_[stub->layer];
+                }
+                if (handler) handler(nd);
                 ++nChunks;
             }
         } else if (type == chunkproto::MSG_DELETE_BATCH) {
@@ -250,9 +421,14 @@ void RemoteScene::loadScene(SceneLoaderCallback& /*callback*/,
                 const uint8_t layer = stub->layer;
                 stub->alive = false;
                 OctreeNodeData nd(stub->level, &stub->node, stub->cube, nullptr);
+                Octree::OctreeNodeDataHandler handler;
+                {
+                    std::lock_guard<std::mutex> hlock(handlersMutex_);
+                    if (layer < deleteHandlers_.size()) handler = deleteHandlers_[layer];
+                }
                 // Collector lambdas only touch their own map: safe to call
                 // with stubsMutex held (no stub access inside).
-                if (deleteHandler_[layer]) deleteHandler_[layer](nd);
+                if (handler) handler(nd);
             }
         } else if (type == chunkproto::MSG_SNAPSHOT_END) {
             break;
@@ -282,7 +458,12 @@ void RemoteScene::routeFrame(const std::vector<uint8_t>& raw) {
             // Drop the mesh cache entry: the same (id) with a newer version
             // must re-fetch. Old-version entries stay valid history.
             OctreeNodeData nd(stub->level, &stub->node, stub->cube, nullptr);
-            if (updateHandler_[stub->layer]) updateHandler_[stub->layer](nd);
+            Octree::OctreeNodeDataHandler handler;
+            {
+                std::lock_guard<std::mutex> hlock(handlersMutex_);
+                if (stub->layer < updateHandlers_.size()) handler = updateHandlers_[stub->layer];
+            }
+            if (handler) handler(nd);
         }
     } else if (type == chunkproto::MSG_DELETE_BATCH) {
         if (raw.size() < 7) return;
@@ -305,7 +486,12 @@ void RemoteScene::routeFrame(const std::vector<uint8_t>& raw) {
                 }
             }
             OctreeNodeData nd(stub->level, &stub->node, stub->cube, nullptr);
-            if (deleteHandler_[layer]) deleteHandler_[layer](nd);
+            Octree::OctreeNodeDataHandler handler;
+            {
+                std::lock_guard<std::mutex> hlock(handlersMutex_);
+                if (layer < deleteHandlers_.size()) handler = deleteHandlers_[layer];
+            }
+            if (handler) handler(nd);
         }
     } else if (type == chunkproto::MSG_SCENE_META) {
         // Scene reload server-side: refresh the gate inputs (same layout as
@@ -313,17 +499,22 @@ void RemoteScene::routeFrame(const std::vector<uint8_t>& raw) {
         if (raw.size() < 9) return;
         const uint32_t n = readU32LE(raw.data() + 5);
         size_t off = 9;
-        std::lock_guard<std::mutex> lock(metaMutex_);
-        for (uint32_t i = 0; i < n && off + 24 <= raw.size(); ++i, off += 24) {
-            const uint8_t layer = raw[off];
-            if (layer > 1) continue;
-            memcpy(&rootMin_[layer], raw.data() + off + 1, 12);
-            float chunkSize;
-            memcpy(&chunkSize, raw.data() + off + 17, 4);
-            chunkSize_[layer] = chunkSize;
-            rootChunkLod_[layer] = raw[off + 21];
-            haveMeta_[layer] = true;
+        int maxLayer = -1;
+        {
+            std::lock_guard<std::mutex> lock(metaMutex_);
+            for (uint32_t i = 0; i < n && off + 24 <= raw.size(); ++i, off += 24) {
+                const uint8_t layer = raw[off];
+                ensureLayerForMetaLocked(layer);
+                memcpy(&rootMin_[layer], raw.data() + off + 1, 12);
+                float chunkSize;
+                memcpy(&chunkSize, raw.data() + off + 17, 4);
+                chunkSize_[layer] = chunkSize;
+                rootChunkLod_[layer] = raw[off + 21];
+                haveMeta_[layer] = true;
+                maxLayer = std::max<int>(maxLayer, layer);
+            }
         }
+        if (maxLayer >= 0) ensureCapacityForLayer(maxLayer);
     } else if (type == chunkproto::MSG_MESH_DATA) {
         // Mesh replies belong to the single outstanding fetch (server answers
         // per-connection FIFO). Anything else is a late duplicate: drop it.
@@ -399,6 +590,7 @@ bool RemoteScene::fetchMesh(uint64_t serverId, chunkproto::MeshData& out) {
 void RemoteScene::scheduleRetry(Layer layer, uint64_t serverId) {
     OctreeNodeData nd;
     bool have = false;
+    Octree::OctreeNodeDataHandler handler;
     {
         std::lock_guard<std::mutex> lock(stubsMutex_);
         const int64_t now = nowMs();
@@ -413,7 +605,12 @@ void RemoteScene::scheduleRetry(Layer layer, uint64_t serverId) {
     }
     // Re-record so a later dispatch retries the fetch. Stubs are never freed
     // before disconnect, so nd stays valid.
-    if (have && layer <= 1 && updateHandler_[layer]) updateHandler_[layer](nd);
+    {
+        std::lock_guard<std::mutex> hlock(handlersMutex_);
+        if (layer >= 0 && static_cast<size_t>(layer) < updateHandlers_.size())
+            handler = updateHandlers_[static_cast<size_t>(layer)];
+    }
+    if (have && handler) handler(nd);
 }
 
 // ---------------------------------------------------------------- Scene
@@ -544,8 +741,9 @@ bool RemoteScene::isNodeUpToDate(Layer layer, OctreeNodeData& data, uint version
 int RemoteScene::maxChunkLod(Layer layer, float minSize) const {
     // Mirrors LocalScene::maxChunkLod with the META-provided ingredients:
     // min(heightRootToChunk(0, minSize), rootChunkLod - 1), floored at 0.
-    const int li = layerIndex(layer);
     std::lock_guard<std::mutex> lock(metaMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= haveMeta_.size()) return 0;
+    const size_t li = static_cast<size_t>(layer);
     if (!haveMeta_[li] || chunkSize_[li] <= 0.0f || rootChunkLod_[li] == 0) return 0;
     const float ratio = std::max(1.0f, chunkSize_[li] / std::max(minSize, 1.0f));
     const int maxLevels = static_cast<int>(std::floor(std::log2(ratio)));
@@ -554,5 +752,6 @@ int RemoteScene::maxChunkLod(Layer layer, float minSize) const {
 
 glm::vec3 RemoteScene::lodRootMin(Layer layer) const {
     std::lock_guard<std::mutex> lock(metaMutex_);
-    return rootMin_[layerIndex(layer)];
+    if (layer < 0 || static_cast<size_t>(layer) >= rootMin_.size()) return glm::vec3(0.0f);
+    return rootMin_[static_cast<size_t>(layer)];
 }

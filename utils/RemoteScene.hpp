@@ -72,11 +72,10 @@ public:
     void disconnect();
     bool failed() const { return failed_.load(); } // set when socket dies mid-loadScene
     // Scene interface --------------------------------------------------
+    // Dynamic layers: handlers are indexed by Layer (vector position).
     void loadScene(SceneLoaderCallback& callback,
-                   Octree::OctreeNodeDataHandler opaqueUpdateHandler,
-                   Octree::OctreeNodeDataHandler opaqueDeleteHandler,
-                   Octree::OctreeNodeDataHandler transparentUpdateHandler,
-                   Octree::OctreeNodeDataHandler transparentDeleteHandler) override;
+                   std::vector<Octree::OctreeNodeDataHandler> updateHandlers,
+                   std::vector<Octree::OctreeNodeDataHandler> deleteHandlers) override;
     void requestModel3D(Layer layer, OctreeNodeData& data,
                         const GeometryLodCallback& callback,
                         ThreadPool* poolOverride = nullptr) override;
@@ -89,6 +88,19 @@ public:
     bool isNodeUpToDate(Layer layer, OctreeNodeData& data, uint version) override;
     int maxChunkLod(Layer layer, float minSize) const override;
     glm::vec3 lodRootMin(Layer layer) const override;
+
+    // ── Dynamic layer list (mirrors the server's layer ids) ──
+    size_t layerCount() const override;
+    std::string layerName(Layer layer) const override;
+    void setLayerName(Layer layer, const std::string& name) override;
+    LayerRendererType layerRenderer(Layer layer) const override;
+    void setLayerRenderer(Layer layer, LayerRendererType renderer) override;
+    bool layerEnabled(Layer layer) const override;
+    void setLayerEnabled(Layer layer, bool enabled) override;
+    Layer addLayer(const std::string& name, LayerRendererType renderer) override;
+    bool removeLayer(Layer layer) override;
+    Octree* getLayerOctree(Layer layer) override { (void)layer; return nullptr; }
+    const Octree* getLayerOctree(Layer layer) const override { (void)layer; return nullptr; }
 
 private:
     struct Stub {
@@ -111,6 +123,17 @@ private:
             return std::hash<uint64_t>{}(k.serverId * 1000003ull + k.version);
         }
     };
+    struct LayerInfo {
+        std::string name = "Layer";
+        LayerRendererType renderer = LayerRendererType::Solid;
+        bool enabled = true;
+    };
+
+    void ensureLayerLocked(Layer layer);
+    void ensureLayerForMetaLocked(uint8_t layer);
+    // Grow layers/meta/handlers to cover `layer` (no locks held on entry;
+    // acquires in the global order layers -> meta -> handlers).
+    void ensureCapacityForLayer(Layer layer);
 
     // Registry ----------------------------------------------------------
     Stub* upsertStub(const chunkproto::ChunkRecord& rec); // creates/refreshes
@@ -139,9 +162,16 @@ private:
     std::atomic<bool> failed_{false};
     std::thread receiverThread_;
 
-    // Stored per-layer collector lambdas from loadScene().
-    Octree::OctreeNodeDataHandler updateHandler_[2];
-    Octree::OctreeNodeDataHandler deleteHandler_[2];
+    // Stored per-layer collector lambdas from loadScene() (index = Layer).
+    // Guarded by handlersMutex_ because routeFrame runs on the receiver
+    // thread while the main thread may grow the layer list.
+    mutable std::mutex handlersMutex_;
+    std::vector<Octree::OctreeNodeDataHandler> updateHandlers_;
+    std::vector<Octree::OctreeNodeDataHandler> deleteHandlers_;
+
+    // Dynamic layer metadata (names/renderers/enabled). Guarded by layersMutex_.
+    mutable std::mutex layersMutex_;
+    std::vector<LayerInfo> layers_;
 
     // Stub registry (never frees until disconnect).
     mutable std::mutex stubsMutex_;
@@ -149,12 +179,12 @@ private:
     std::unordered_map<OctreeNode*, uint64_t> byNode_;
     std::unordered_map<uint64_t, int64_t> lastRetryMs_;
 
-    // Scene meta (root lattice + ladder depth per layer).
+    // Scene meta (root lattice + ladder depth per layer, index = Layer).
     mutable std::mutex metaMutex_;
-    bool haveMeta_[2] = {false, false};
-    glm::vec3 rootMin_[2] = {glm::vec3(0.0f), glm::vec3(0.0f)};
-    float chunkSize_[2] = {0.0f, 0.0f};
-    uint8_t rootChunkLod_[2] = {0, 0};
+    std::vector<bool> haveMeta_;
+    std::vector<glm::vec3> rootMin_;
+    std::vector<float> chunkSize_;
+    std::vector<uint8_t> rootChunkLod_;
 
     // Mesh cache by (serverId, version).
     mutable std::mutex cacheMutex_;
