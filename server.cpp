@@ -90,31 +90,37 @@ int main(int argc, char** argv) {
 
     std::atomic<uint64_t> nSolid{0}, nSolidDel{0}, nLiquid{0}, nLiquidDel{0};
 
-    Octree::OctreeNodeDataHandler liquidNodeEventCallback =
-        [&](const OctreeNodeData& nd) {
-            web.pushUpsert(chunksnap::makeRecord(chunkIds, nd, chunkproto::LAYER_TRANSPARENT));
-            if ((++nLiquid % 2000) == 0)
-                std::cout << "[server] transparent upserts=" << nLiquid.load() << "\n";
+    // Dynamic layers: one upsert/erase pair per scene layer (index = Layer).
+    // Layers 0/1 keep the historic opaque/transparent counters.
+    auto makeUpsert = [&](Layer layer) -> Octree::OctreeNodeDataHandler {
+        return [&, layer](const OctreeNodeData& nd) {
+            web.pushUpsert(chunksnap::makeRecord(chunkIds, nd, static_cast<uint8_t>(layer)));
+            if (layer == LAYER_OPAQUE) {
+                if ((++nSolid % 2000) == 0)
+                    std::cout << "[server] opaque upserts=" << nSolid.load() << "\n";
+            } else if (layer == LAYER_TRANSPARENT) {
+                if ((++nLiquid % 2000) == 0)
+                    std::cout << "[server] transparent upserts=" << nLiquid.load() << "\n";
+            }
         };
-    Octree::OctreeNodeDataHandler liquidNodeEraseCallback =
-        [&](const OctreeNodeData& nd) {
-            // Retire the opaque id; unknown nodes (id 0) were never announced.
+    };
+    auto makeErase = [&](Layer layer) -> Octree::OctreeNodeDataHandler {
+        return [&, layer](const OctreeNodeData& nd) {
             const uint64_t id = chunkIds.remove(nd.node);
             if (id != ChunkIdRegistry::kInvalid) web.pushDelete(id);
-            ++nLiquidDel;
+            if (layer == LAYER_OPAQUE) ++nSolidDel;
+            else if (layer == LAYER_TRANSPARENT) ++nLiquidDel;
         };
-    Octree::OctreeNodeDataHandler solidNodeEventCallback =
-        [&](const OctreeNodeData& nd) {
-            web.pushUpsert(chunksnap::makeRecord(chunkIds, nd, chunkproto::LAYER_OPAQUE));
-            if ((++nSolid % 2000) == 0)
-                std::cout << "[server] opaque upserts=" << nSolid.load() << "\n";
-        };
-    Octree::OctreeNodeDataHandler solidNodeEraseCallback =
-        [&](const OctreeNodeData& nd) {
-            const uint64_t id = chunkIds.remove(nd.node);
-            if (id != ChunkIdRegistry::kInvalid) web.pushDelete(id);
-            ++nSolidDel;
-        };
+    };
+    const size_t nLayers = mainScene.layerCount();
+    std::vector<Octree::OctreeNodeDataHandler> upserts;
+    std::vector<Octree::OctreeNodeDataHandler> erases;
+    upserts.reserve(nLayers);
+    erases.reserve(nLayers);
+    for (size_t i = 0; i < nLayers; ++i) {
+        upserts.push_back(makeUpsert(static_cast<Layer>(i)));
+        erases.push_back(makeErase(static_cast<Layer>(i)));
+    }
 
     try {
         web.start();
@@ -133,15 +139,11 @@ int main(int argc, char** argv) {
     auto t0 = std::chrono::steady_clock::now();
     if (!scenePath.empty()) {
         std::cout << "server: loading scene file '" << scenePath << "'\n";
-        mainScene.load(scenePath,
-            solidNodeEventCallback, solidNodeEraseCallback,
-            liquidNodeEventCallback, liquidNodeEraseCallback, nullptr);
+        mainScene.load(scenePath, upserts, erases, nullptr);
     } else {
         std::cout << "server: no scene file found, generating procedural map\n";
         MainSceneLoader mainSceneLoader;
-        mainScene.loadScene(mainSceneLoader,
-            solidNodeEventCallback, solidNodeEraseCallback,
-            liquidNodeEventCallback, liquidNodeEraseCallback);
+        mainScene.loadScene(mainSceneLoader, upserts, erases);
     }
     auto t1 = std::chrono::steady_clock::now();
     double secs = std::chrono::duration<double>(t1 - t0).count();

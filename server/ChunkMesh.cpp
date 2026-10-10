@@ -81,9 +81,12 @@ bool buildChunkMesh(ChunkIdRegistry& ids, LocalScene& scene, uint64_t id,
     // ever cast back to a pointer.
     OctreeNode* target = ids.lookup(id);
     if (!target) return false;
-    const bool found =
-        tessellateInTree(scene.getOpaqueOctree(), target, chunkproto::LAYER_OPAQUE, id, out) ||
-        tessellateInTree(scene.transparentOctree, target, chunkproto::LAYER_TRANSPARENT, id, out);
+    bool found = false;
+    const size_t n = scene.layerCount();
+    for (size_t i = 0; i < n && !found; ++i) {
+        Octree* tree = scene.getLayerOctree(static_cast<Layer>(i));
+        if (tree) found = tessellateInTree(*tree, target, static_cast<uint8_t>(i), id, out);
+    }
     if (!found) return false;
     // Re-verify AFTER tessellation: a concurrent delete + allocator reuse
     // could have swapped the occupant mid-walk. On mismatch the reply is

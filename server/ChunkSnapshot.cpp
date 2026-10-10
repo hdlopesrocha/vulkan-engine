@@ -60,8 +60,11 @@ static void walkTree(const Octree& tree, uint8_t layer, ChunkIdRegistry& ids,
 std::vector<chunkproto::ChunkRecord> collectAll(ChunkIdRegistry& ids, LocalScene& scene) {
     std::vector<chunkproto::ChunkRecord> out;
     out.reserve(8192);
-    walkTree(scene.getOpaqueOctree(), chunkproto::LAYER_OPAQUE, ids, out);
-    walkTree(scene.transparentOctree, chunkproto::LAYER_TRANSPARENT, ids, out);
+    const size_t n = scene.layerCount();
+    for (size_t i = 0; i < n; ++i) {
+        Octree* tree = scene.getLayerOctree(static_cast<Layer>(i));
+        if (tree) walkTree(*tree, static_cast<uint8_t>(i), ids, out);
+    }
     return out;
 }
 
@@ -81,9 +84,12 @@ static void metaForTree(const Octree& tree, uint8_t layer,
 
 std::vector<chunkproto::SceneMetaLayer> collectMeta(LocalScene& scene) {
     std::vector<chunkproto::SceneMetaLayer> out;
-    out.reserve(2);
-    metaForTree(scene.getOpaqueOctree(), chunkproto::LAYER_OPAQUE, out);
-    metaForTree(scene.transparentOctree, chunkproto::LAYER_TRANSPARENT, out);
+    const size_t n = scene.layerCount();
+    out.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        Octree* tree = scene.getLayerOctree(static_cast<Layer>(i));
+        if (tree) metaForTree(*tree, static_cast<uint8_t>(i), out);
+    }
     return out;
 }
 
