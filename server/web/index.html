@@ -438,17 +438,24 @@ createApp({
     // WS endpoint resolution: ?ws= full override, ?port= override, same-host
     // /ws by default, localhost:8080 fallback for file:// (location.host is
     // empty there, which previously produced the broken URL "ws:///ws").
+    // Bind-all hosts (0.0.0.0, ::) are not dialable, so they map to localhost:
+    // opening the page as http://0.0.0.0:8080/ must still reach ws://localhost:8080/ws.
+    function dialableHostname() {
+      const h = location.hostname || 'localhost';
+      if (h === '0.0.0.0' || h === '::' || h === '[::]') return 'localhost';
+      return h;
+    }
     function resolveWsUrl() {
+      const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
       try {
         const q = new URLSearchParams(location.search);
         const o = q.get('ws');
         if (o) return o;
         const p = q.get('port');
-        if (p) return (location.protocol === 'https:' ? 'wss://' : 'ws://') +
-          (location.hostname || 'localhost') + ':' + p + '/ws';
+        if (p) return scheme + dialableHostname() + ':' + p + '/ws';
       } catch (e) {}
       if (location.protocol === 'file:' || !location.host) return 'ws://localhost:8080/ws';
-      return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+      return scheme + dialableHostname() + (location.port ? ':' + location.port : '') + '/ws';
     }
 
     // ---- WebGL ----
