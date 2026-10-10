@@ -1513,9 +1513,20 @@ public:
         if (sceneRenderer && sceneRenderer->sdfRenderer) {
             // Ray-cast quality (1..8 px blocks; default 2) for the SDF pass.
             sceneRenderer->sdfRenderer->setRaycastPixelSize(settings.raycastPixelSize);
+            // March tiers (perf report 25 M12): step budget + smoke resolve
+            // samples. The setters dedupe unchanged values (params slots go
+            // dirty only on change), so these per-frame calls are cheap; the
+            // values stream through SdfParamsUBO with no idle and no target
+            // rebuild (unlike the water/vegetation render-scale path above).
+            // No idle-guarded recreate applies here by design.
+            sceneRenderer->sdfRenderer->setMaxSteps(settings.sdfMaxSteps);
+            sceneRenderer->sdfRenderer->setSmokeSamples(settings.sdfSmokeSamples);
             // Ray-marching master gate (Settings toggle / Minimal preset):
             // off clears the SDF targets and skips the grass shadow caster.
             sceneRenderer->sdfRenderer->setRayMarchingEnabled(settings.rayMarchingEnabled);
+            // M10 (report 25): current view-projection for the CPU container
+            // screen-overlap gate on the solid-depth preload copy.
+            sceneRenderer->sdfRenderer->setOcclusionViewProj(camera.getViewProjectionMatrix());
         }
 
         const bool waterEnabled = settings.waterEnabled;
@@ -2857,9 +2868,32 @@ public:
         // one tlSdf signal is needed.
         {
             const bool sdfEnabled = settings.showSDFDebug;
+            // M11 (report 25): content-gated SDF submit, mirroring the
+            // report-22 SDF-task/bbox elision. An idle SDF frame (debug cubes
+            // off, no generic containers, ray-march gate off) records only
+            // clears, so past warmup and toggle transitions the task is not
+            // even enqueued: no draw, no depth-preload copy, no
+            // submit/signal. Skipped frames register no tlSdf value and the
+            // composite only waits on registered timelines, so the DAG is
+            // unchanged. Target layouts stay stable: the last recorded frame
+            // left them cleared + SHADER_READ_ONLY.
+            // NOTE: getContainerCount() is read lock-free (one frame stale at
+            // most); a stale zero only delays newly-appeared content by one
+            // frame, never a validation error.
+            const bool sdfHasContent = this->sceneRenderer && this->sceneRenderer->sdfRenderer &&
+                this->sceneRenderer->sdfRenderer->getContainerCount() > 0;
+            const bool sdfIdle = !sdfEnabled && !sdfHasContent && !settings.rayMarchingEnabled;
+            static bool sdfPrevIdle = false;
+            static uint32_t sdfWarmupRuns = 0;
+            const bool sdfTransition = (sdfIdle != sdfPrevIdle);
+            sdfPrevIdle = sdfIdle;
+            const bool sdfSkipSubmit = sdfIdle && !sdfTransition && sdfWarmupRuns >= 3;
+            if (!sdfSkipSubmit) {
+            if (sdfWarmupRuns < 3) ++sdfWarmupRuns;
             asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, v]() {
-                // SDF fire is always on, so the task runs every frame (no
-                // steady-state elision: the same CB carries the fire render).
+                // SDF fire is always on, so the task runs every frame it is
+                // enqueued (no steady-state elision inside the task: the same
+                // CB carries the fire render when content exists).
                 // The debug-cubes pass is gated by sdfEnabled internally.
                 MyApp* app = this;
                 auto tSdf = std::chrono::high_resolution_clock::now();
@@ -2903,6 +2937,7 @@ public:
                 this->profileSdfCpu = std::chrono::duration<float, std::milli>(
                     std::chrono::high_resolution_clock::now() - tSdf).count();
             });
+            } // !sdfSkipSubmit (M11 elision: no CB, no tlSdf signal)
         }
         // Wait for the shadow + vegetation async tasks (same rationale as above:
         // keeps their signal semaphores valid and avoids concurrent descriptor-set

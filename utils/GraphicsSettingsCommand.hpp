@@ -67,6 +67,13 @@ private:
         // Ray marching on (generic SDF renderer: fire/smoke/rocks/grass +
         // grass shadows).
         settings.rayMarchingEnabled = true;
+        // SDF march tiers (perf report 25 M12): Maximum keeps the reference
+        // budgets (64 steps, 2x2 raycast, 12 smoke samples). Streams through
+        // the SdfParamsUBO setters (no idle, no rebuild), so unlike
+        // textureArraySize this tier IS preset-safe.
+        settings.sdfMaxSteps = 64;
+        settings.sdfSmokeSamples = 12;
+        settings.raycastPixelSize = 2;
         // Full-resolution water targets (perf report 21 M10): the composite
         // blur is depth-guided, so Maximum keeps 1.0 for the sharpest body.
         settings.waterRenderScale = 1.0f;
@@ -106,6 +113,12 @@ private:
         // Ray marching off: the generic SDF pass (fire/smoke/rocks/grass)
         // and the grass shadow caster are skipped, leaving cleared targets.
         settings.rayMarchingEnabled = false;
+        // SDF march tiers (perf report 25 M12): Minimal marches cheaper when
+        // the user re-enables marching (32 steps, 4x4 raycast, 6 smoke
+        // samples). Off stays off via rayMarchingEnabled above.
+        settings.sdfMaxSteps = 32;
+        settings.sdfSmokeSamples = 6;
+        settings.raycastPixelSize = 4;
         // Half-resolution water targets (perf report 21 M10): Minimal's water
         // is blur-tolerant, and the blur disc is authored in screen-space
         // units, so the look survives while fragment/bandwidth/target costs

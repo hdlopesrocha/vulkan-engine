@@ -76,6 +76,23 @@ void SettingsWidget::render() {
                 "(default), up to 8x8. Higher = more pixelated and cheaper.")) {
             // SliderInt clamps to [1, 8]; nothing else to do.
         }
+        // SDF march tiers (perf report 25 M12): step budget + smoke resolve
+        // samples. Maximum keeps 64/12; Minimal sets 32/6 via the preset.
+        // Streams through SdfParamsUBO (no idle, no rebuild), unlike the
+        // texture-array tier below it.
+        if (ImGuiComponents::SliderIntField("SDF Max Steps", &settings.sdfMaxSteps, 16, 256, "%d steps",
+                "SDF march step budget (shader hard-caps at 256). 64 = reference\n"
+                "(Maximum), 32 = Minimal tier. Lower = cheaper and coarser.")) {
+            if (settings.sdfMaxSteps < 16) settings.sdfMaxSteps = 16;
+            if (settings.sdfMaxSteps > 256) settings.sdfMaxSteps = 256;
+        }
+        if (ImGuiComponents::SliderIntField("SDF Smoke Samples", &settings.sdfSmokeSamples, 4, 12, "%d",
+                "Phase-B smoke resolve samples across the measured thickness.\n"
+                "12 = reference (Maximum), 6 = Minimal tier. Thin smoke costs\n"
+                "thin samples; the shader loop keeps trip count 12 with a break.")) {
+            if (settings.sdfSmokeSamples < 4) settings.sdfSmokeSamples = 4;
+            if (settings.sdfSmokeSamples > 12) settings.sdfSmokeSamples = 12;
+        }
         if (ImGui::Checkbox("Ray Marching", &settings.rayMarchingEnabled)) {
             // toggled
         }

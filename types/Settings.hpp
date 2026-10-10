@@ -35,6 +35,25 @@ public:
     // one ray per NxN screen-pixel block (1 = one ray per pixel).
     // 2 = the default 2x2 pixelation.
     int raycastPixelSize = 2;
+    // ── SDF march quality tiers (perf report 25 M12) ─────────────────────
+    // Tier precedent: report-23 C1 (Settings::textureArraySize, default 1024,
+    // low 512, idle-guarded reallocate) and report-24 H8 (tiered equirect
+    // bake, recreate on tier change). Unlike those, march tiers need no
+    // device idle and no target recreation: they stream through the existing
+    // SdfRenderer setters into SdfParamsUBO (per-frame calls in MyApp, the
+    // renderer dedupes unchanged values), so preset switches stay instant.
+    // Maximum keeps the reference budgets; Minimal marches cheaper.
+    //   sdfMaxSteps: march step budget (clamped 16..256 in the setter; the
+    //     shader hard-caps at SDF_MAX_STEPS_HARD = 256). Minimal 32.
+    //   sdfSmokeSamples: phase-B smoke resolve samples (clamped 4..12; the
+    //     shader loop keeps the constant trip count 12 with an early break).
+    //     Minimal 6. The fixed shadow-resolve constant is unchanged.
+    // CPU distance-scaled maxSteps per container is NOT implemented: render()
+    // issues one instanced draw over all containers from a single global UBO
+    // budget, so per-container budgets need a draw split + shader plumbing
+    // (see the TODO at SdfRenderer::render). Tier-only for now.
+    int sdfMaxSteps = 64;
+    int sdfSmokeSamples = 12;
     // Ray marching master gate: the generic SDF raymarcher (fire, smoke,
     // rocks, grass) and its grass shadow caster. The sky cloud raymarch has
     // its own Volumetric Clouds toggle. Minimal preset turns this off.
