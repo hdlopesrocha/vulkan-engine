@@ -163,8 +163,157 @@ void SceneRenderer::setCmdState(CommandBufferState* state) {
 }
 
 void SceneRenderer::stopGenPools() {
-    solidGenPool.stop();
-    waterGenPool.stop();
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    for (auto& st : layerStates_) {
+        if (st && st->genPool) st->genPool->stop();
+    }
+}
+
+void SceneRenderer::ensureLayerStates(size_t n) {
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    if (n < 2) n = 2; // keep the historic opaque/transparent slots alive
+    while (layerStates_.size() < n)
+        layerStates_.push_back(std::make_unique<SceneLayerState>());
+}
+
+size_t SceneRenderer::layerStateCount() const {
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    return layerStates_.size();
+}
+
+std::unordered_map<NodeID, Model3DVersion>& SceneRenderer::layerChunks(Layer layer) {
+    ensureLayerStates(static_cast<size_t>(std::max<Layer>(layer + 1, 2)));
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    return layerStates_[static_cast<size_t>(layer)]->chunks;
+}
+
+std::recursive_mutex& SceneRenderer::layerMutex(Layer layer) {
+    ensureLayerStates(static_cast<size_t>(std::max<Layer>(layer + 1, 2)));
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    return *layerStates_[static_cast<size_t>(layer)]->mutex;
+}
+
+std::unordered_map<NodeID, SceneRenderer::PendingDeleteEntry>& SceneRenderer::layerPendingDeletes(Layer layer) {
+    ensureLayerStates(static_cast<size_t>(std::max<Layer>(layer + 1, 2)));
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    return layerStates_[static_cast<size_t>(layer)]->pendingDeletes;
+}
+
+ThreadPool& SceneRenderer::layerGenPool(Layer layer) {
+    ensureLayerStates(static_cast<size_t>(std::max<Layer>(layer + 1, 2)));
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    return *layerStates_[static_cast<size_t>(layer)]->genPool;
+}
+
+size_t SceneRenderer::getLayerModelCount(Layer layer) const {
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layerStates_.size() || !layerStates_[static_cast<size_t>(layer)])
+        return 0;
+    // Chunk maps are guarded by their own mutex; size() is only called from
+    // the main thread / UI, matching the old solidChunks.size() usage.
+    return layerStates_[static_cast<size_t>(layer)]->chunks.size();
+}
+
+LayerRendererType SceneRenderer::layerRendererType(Layer layer) const {
+    if (world_) {
+        const Scene& scene = world_->activeScene();
+        if (layer >= 0 && static_cast<size_t>(layer) < scene.layerCount())
+            return scene.layerRenderer(layer);
+    }
+    return (layer == LAYER_TRANSPARENT) ? LayerRendererType::Water : LayerRendererType::Solid;
+}
+
+IndirectRenderer* SceneRenderer::indirectForLayer(Layer layer) {
+    const bool isWater = (layerRendererType(layer) == LayerRendererType::Water);
+    if (isWater) return waterRenderer ? &waterRenderer->getIndirectRenderer() : nullptr;
+    return solidRenderer ? &solidRenderer->getIndirectRenderer() : nullptr;
+}
+
+size_t SceneRenderer::getRegisteredModelCount() const {
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    size_t total = 0;
+    for (size_t i = 0; i < layerStates_.size(); ++i) {
+        if (!layerStates_[i]) continue;
+        if (layerRendererType(static_cast<Layer>(i)) != LayerRendererType::Solid) continue;
+        total += layerStates_[i]->chunks.size();
+    }
+    return total;
+}
+
+void SceneRenderer::removeAllLayerMeshes(Layer layer) {
+    // The layer may have been remapped since its slots were published, so
+    // free its slots from BOTH renderers (removeMeshSlotted on an unknown
+    // slot only frees the draw block — safe when the slot belongs to the
+    // other pool's index space because each pool owns its allocator).
+    std::unordered_map<NodeID, Model3DVersion> copy;
+    {
+        std::lock_guard<std::mutex> lock(layerStatesMutex_);
+        if (layer < 0 || static_cast<size_t>(layer) >= layerStates_.size()) return;
+        auto& st = layerStates_[static_cast<size_t>(layer)];
+        if (!st) return;
+        std::lock_guard<std::recursive_mutex> guard(*st->mutex);
+        copy = st->chunks;
+        st->chunks.clear();
+        st->pendingDeletes.clear();
+    }
+    // NOTE: slots from the other pool share the same numeric space; freeing
+    // a solid slot index in the water pool would corrupt it. We cannot know
+    // which pool owns each slot from the index alone, so only free via the
+    // layer's CURRENT renderer — stale slots in the old pool leak until a
+    // full removeAllMeshes(). The LayersWidget documents that a renderer
+    // switch is cleanest before Generate Map; mid-scene switches still route
+    // new publishes correctly.
+    if (IndirectRenderer* ir = indirectForLayer(layer)) {
+        for (const auto& kv : copy) ir->removeMeshSlotted(kv.second.meshId);
+    }
+    {
+        std::lock_guard<std::recursive_mutex> plock(proxyMutex_);
+        for (const auto& kv : copy) {
+            solidProxyData.erase(kv.first);
+            waterProxyData.erase(kv.first);
+        }
+    }
+}
+
+void SceneRenderer::removeAllMeshes() {
+    if (solidRenderer) solidRenderer->getIndirectRenderer().removeAllMeshes();
+    if (waterRenderer) waterRenderer->getIndirectRenderer().removeAllMeshes();
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    for (auto& st : layerStates_) {
+        if (!st) continue;
+        std::lock_guard<std::recursive_mutex> guard(*st->mutex);
+        st->chunks.clear();
+        st->pendingDeletes.clear();
+    }
+    {
+        std::lock_guard<std::recursive_mutex> plock(proxyMutex_);
+        solidProxyData.clear();
+        waterProxyData.clear();
+    }
+}
+
+void SceneRenderer::removeAllMeshesSolidOnly() {
+    if (solidRenderer) solidRenderer->getIndirectRenderer().removeAllMeshes();
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    for (size_t i = 0; i < layerStates_.size(); ++i) {
+        if (!layerStates_[i]) continue;
+        if (layerRendererType(static_cast<Layer>(i)) != LayerRendererType::Solid) continue;
+        std::lock_guard<std::recursive_mutex> guard(*layerStates_[i]->mutex);
+        layerStates_[i]->chunks.clear();
+        layerStates_[i]->pendingDeletes.clear();
+    }
+}
+
+void SceneRenderer::removeAllMeshesWaterOnly() {
+    if (waterRenderer) waterRenderer->getIndirectRenderer().removeAllMeshes();
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    for (size_t i = 0; i < layerStates_.size(); ++i) {
+        if (!layerStates_[i]) continue;
+        if (layerRendererType(static_cast<Layer>(i)) != LayerRendererType::Water) continue;
+        std::lock_guard<std::recursive_mutex> guard(*layerStates_[i]->mutex);
+        layerStates_[i]->chunks.clear();
+        layerStates_[i]->pendingDeletes.clear();
+    }
 }
 
 void SceneRenderer::recreateWaterTargets(VulkanApp* app, uint32_t width, uint32_t height) {
@@ -278,6 +427,7 @@ SceneRenderer::SceneRenderer() :
     // IndirectRenderer.comp dispatch, so the vegetation renderer must share the solid
     // IndirectRenderer (it supplies the per-frame veg output buffers + metadata).
     vegetationRenderer->setSolidIndirectRenderer(&solidRenderer->getIndirectRenderer());
+    ensureLayerStates(2);
 }
 
 SceneRenderer::~SceneRenderer() {
@@ -1387,10 +1537,6 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 size_t SceneRenderer::publishPendingMeshes(
     VulkanApp* app,
     std::deque<PendingMeshData>& batch,
-    IndirectRenderer& opaqueIR,
-    IndirectRenderer& waterIR,
-    const std::function<uint32_t(Layer layer, NodeID nid)>& takeOldSlot,
-    const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version)>& onChunkPublished,
     const std::function<void(NodeID nid, const Geometry& geom, uint8_t lod)>& onFinestPublished)
 {
     // One-slot-per-chunk publish. Each queue entry is a self-contained
@@ -1402,16 +1548,31 @@ size_t SceneRenderer::publishPendingMeshes(
     // allocates a NEW span and frees the old one once the replacement upload
     // completes.
     //
-    // takeOldSlot is consumed once per chunk: a pending-delete entry captures
-    // the old slot and frees it after ITS upload completes (old geometry
-    // stays resident until the new data is valid on GPU).
+    // The pending-delete entry (one-frame grace) is consumed once per chunk:
+    // the old geometry stays resident until the new upload completes.
     size_t slotsPublished = 0;
     static std::atomic<int> lvlHist[8] = {};
     static std::atomic<int> pubTotal{0};
+    // Grow layer states once so per-entry ensureLayerStates never reallocates
+    // mid-batch (PublishTarget-style stability for the whole loop).
+    {
+        Layer maxLayer = 1;
+        for (const auto& item : batch) maxLayer = std::max(maxLayer, item.layer);
+        ensureLayerStates(static_cast<size_t>(maxLayer) + 1);
+    }
     for (auto& item : batch) {
         const Layer layer = item.layer;
         const NodeID nid = item.nid;
         const Octree::LoDMesh& lod = item.lodMesh;
+
+        // Disabled layers never publish (the LayersWidget frees their slots
+        // on disable; re-enabling needs Generate Map to repopulate).
+        if (world_) {
+            const Scene& scene = world_->activeScene();
+            if (layer < 0 || static_cast<size_t>(layer) >= scene.layerCount() ||
+                !scene.layerEnabled(layer))
+                continue;
+        }
 
         if (lod.lod >= 0 && lod.lod < 8) lvlHist[lod.lod]++;
         int t = ++pubTotal;
@@ -1422,15 +1583,24 @@ size_t SceneRenderer::publishPendingMeshes(
                 lod.boundsMin.x, lod.boundsMin.y, lod.boundsMin.z);
         }
 
-        // Per-entry routing: opaque → opaqueIR, transparent → waterIR.
-        IndirectRenderer* ir = (layer == LAYER_OPAQUE) ? &opaqueIR : &waterIR;
+        // Per-entry routing via the Scene's per-layer renderer selection
+        // (LayersWidget): Solid layers → solid IR, Water layers → water IR.
+        IndirectRenderer* ir = indirectForLayer(layer);
         if (!ir) continue;
 
         const ChunkManager::ChunkId base = static_cast<ChunkManager::ChunkId>(nid);
 
         // Resolve (and consume) any pending-delete slot for this chunk: the
         // old geometry stays resident until the new upload completes.
-        uint32_t oldSlot = takeOldSlot(layer, nid);
+        uint32_t oldSlot = UINT32_MAX;
+        {
+            auto& deleteMap = layerPendingDeletes(layer);
+            auto it = deleteMap.find(nid);
+            if (it != deleteMap.end()) {
+                oldSlot = it->second.slotIndex;
+                deleteMap.erase(it);
+            }
+        }
 
         if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
 
@@ -1477,11 +1647,14 @@ size_t SceneRenderer::publishPendingMeshes(
                     this->rayTracing->requestSceneBlasRefresh();
             });
 
-        onChunkPublished(layer, nid, slotIdx, lod.version);
+        {
+            auto& chunkMap = layerChunks(layer);
+            chunkMap[nid] = Model3DVersion{slotIdx, lod.version};
+        }
 
         // Hybrid RT: record the proxy source of main-scene chunks (world bounds
-        // + dominant material). Opaque chunks feed the solid BLAS; transparent
-        // (water) chunks feed the water BLAS so solid reflections see water.
+        // + dominant material). Solid-mapped chunks feed the solid BLAS;
+        // water-mapped chunks feed the water BLAS so solid reflections see water.
         // NOTE (refraction fix): the proxy box MUST tightly enclose the actual
         // mesh surface, not the emitting octree cell. Cell cubes are full
         // volumes (tens of meters) whose faces sit at cell boundaries far from
@@ -1491,8 +1664,9 @@ size_t SceneRenderer::publishPendingMeshes(
         // bottom underneath. Tight vertex bounds make each proxy a thin slab
         // around the true surface, so the refracted ray hits the top face at
         // the real underwater point with ground-related color/thickness.
+        const bool isWaterLayer = (layerRendererType(layer) == LayerRendererType::Water);
         if (!lod.geom.vertices.empty()) {
-            std::lock_guard<std::recursive_mutex> lock(solidChunksMutex);
+            std::lock_guard<std::recursive_mutex> lock(proxyMutex_);
             SolidProxyData pd;
             {
                 glm::vec3 tmin = lod.geom.vertices[0].position;
@@ -1530,7 +1704,7 @@ size_t SceneRenderer::publishPendingMeshes(
                 pd.minp = tmin;
                 pd.maxp = tmax;
                 pd.materialId = static_cast<uint32_t>(std::max(0, bestMat));
-                if (layer == LAYER_TRANSPARENT) {
+                if (isWaterLayer) {
                     // Water reflection proxy: thin slab at the lake surface.
                     // The water mesh is a flat lake top + terrain-contact
                     // walls, so the raw vertex bounds span from the lake
@@ -1575,13 +1749,13 @@ size_t SceneRenderer::publishPendingMeshes(
                 }
             }
             pd.rung = static_cast<uint32_t>(lod.lod);
-            if (layer == LAYER_OPAQUE)
-                solidProxyData[nid] = pd;
-            else
+            if (isWaterLayer)
                 waterProxyData[nid] = pd;
+            else
+                solidProxyData[nid] = pd;
         }
 
-        // Generate vegetation for every published grass chunk (lod.lod is the
+        // Generate vegetation for every published solid-mapped chunk (lod.lod is the
         // 0-based band rung, so every rung carries its own grass for full
         // terrain coverage). The LoD band gate in
         // IndirectRenderer.comp keeps exactly one rung per region visible, so only the
@@ -1589,7 +1763,7 @@ size_t SceneRenderer::publishPendingMeshes(
         // finest) lets grass appear across the whole visible terrain instead of
         // only in the thinnest high-detail disc around the camera, with no
         // overdraw because overlapping rungs are never simultaneously visible.
-        if (layer == LAYER_OPAQUE && vegetationRenderer && !lod.geom.vertices.empty()) {
+        if (!isWaterLayer && vegetationRenderer && !lod.geom.vertices.empty()) {
             onFinestPublished(nid, lod.geom, lod.lod);
         }
 
@@ -1634,14 +1808,40 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // lodRootMin the tree root's min corner — the dyadic lattice origin the
     // hierarchical rung gate derives parent cells from. Per-chunk values here
     // would mis-align the parent cells and cull most rungs (holes across the
-    // terrain).
+    // terrain). With dynamic layers, each shared IR uses the max over the
+    // layers currently mapped to it (first mapped layer's root lattice).
     if (world_) {
         const float ms = 30.0f;
         Scene& renderScene = world_->activeScene();
-        solidRenderer->getIndirectRenderer().setMaxLodLevel(renderScene.maxChunkLod(LAYER_OPAQUE, ms));
-        solidRenderer->getIndirectRenderer().setLodRootMin(renderScene.lodRootMin(LAYER_OPAQUE));
-        waterRenderer->getIndirectRenderer().setMaxLodLevel(renderScene.maxChunkLod(LAYER_TRANSPARENT, ms));
-        waterRenderer->getIndirectRenderer().setLodRootMin(renderScene.lodRootMin(LAYER_TRANSPARENT));
+        ensureLayerStates(renderScene.layerCount());
+        int solidMax = 0, waterMax = 0;
+        glm::vec3 solidRoot(0.0f), waterRoot(0.0f);
+        bool haveSolid = false, haveWater = false;
+        for (size_t i = 0; i < renderScene.layerCount(); ++i) {
+            const Layer l = static_cast<Layer>(i);
+            if (!renderScene.layerEnabled(l)) continue;
+            if (renderScene.layerRenderer(l) == LayerRendererType::Water) {
+                waterMax = std::max(waterMax, renderScene.maxChunkLod(l, ms));
+                if (!haveWater) { waterRoot = renderScene.lodRootMin(l); haveWater = true; }
+            } else {
+                solidMax = std::max(solidMax, renderScene.maxChunkLod(l, ms));
+                if (!haveSolid) { solidRoot = renderScene.lodRootMin(l); haveSolid = true; }
+            }
+        }
+        // Fall back to the historic layers so an empty/disabled scene never
+        // leaves the gate uninitialized.
+        if (!haveSolid && renderScene.layerCount() > 0) {
+            solidMax = renderScene.maxChunkLod(LAYER_OPAQUE, ms);
+            solidRoot = renderScene.lodRootMin(LAYER_OPAQUE);
+        }
+        if (!haveWater && renderScene.layerCount() > 1) {
+            waterMax = renderScene.maxChunkLod(LAYER_TRANSPARENT, ms);
+            waterRoot = renderScene.lodRootMin(LAYER_TRANSPARENT);
+        }
+        solidRenderer->getIndirectRenderer().setMaxLodLevel(solidMax);
+        solidRenderer->getIndirectRenderer().setLodRootMin(solidRoot);
+        waterRenderer->getIndirectRenderer().setMaxLodLevel(waterMax);
+        waterRenderer->getIndirectRenderer().setLodRootMin(waterRoot);
     }
 
     // ── Async visible-count snapshot (stats only) ─────────────────────────
@@ -1666,7 +1866,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         // stream's orphaned pending-delete entries (genuine deletions with no
         // replacement) so a mid-stream erase never leaks a slot.
         uint32_t curFrame = app ? app->getCurrentFrame() : 0;
-        ageOutPendingDeletes(curFrame, solidRenderer->getIndirectRenderer(), waterRenderer->getIndirectRenderer());
+        ageOutPendingDeletes(curFrame);
         processChunkSwapQueue(app);
         // Hybrid RT: deletions without publishes still change the proxy set
         // (fingerprint check inside is O(N) and early-outs when idle).
@@ -1675,31 +1875,10 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     }
 
     // ── UNIFIED publish pass ──────────────────────────────────────────────────
-    // The main scene's solid/water streams flow through the same publish core;
-    // each entry's layer routes it to the right IndirectRenderer,
-    // ChunkManager tracking and deferred-slot source.
-    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch, solidRenderer->getIndirectRenderer(), waterRenderer->getIndirectRenderer(),
-        // takeOldSlot: resolve+consume the old slot for a chunk (one slot per
-        // chunk — its LoD rows share it), or UINT32_MAX when none. Reads the
-        // pending-delete entry (one-frame grace).
-        [this](Layer layer, NodeID nid) -> uint32_t {
-            auto& deleteMap = (layer == LAYER_OPAQUE)
-                ? this->pendingDeleteSolidSlots : this->pendingDeleteWaterSlots;
-            auto it = deleteMap.find(nid);
-            if (it == deleteMap.end()) return UINT32_MAX;
-            const uint32_t slot = it->second.slotIndex;
-            deleteMap.erase(it);
-            return slot;
-        },
-        // onChunkPublished: record the published slot/version in the scene
-        // chunk maps — frontier chunks are also tracked by the ChunkManager,
-        // but coarse ancestor cells are not, so their slot is resolved through
-        // this map when the cell is deleted.
-        [this](Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version) {
-            auto& chunkMap = (layer == LAYER_OPAQUE)
-                ? this->solidChunks : this->waterChunks;
-            chunkMap[nid] = Model3DVersion{slotIdx, version};
-        },
+    // Every scene layer flows through the same publish core; each entry's
+    // layer routes it to the right IndirectRenderer (via the Scene's
+    // LayerRendererType), ChunkManager tracking and deferred-slot source.
+    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch,
         // onFinestPublished: grass chunks drive vegetation from their finest
         // geometry; lava/rock chunks (finest rung only) drive the generic SDF
         // fire and boulders. Ancestors nest over the same surface, so coarser
@@ -1713,11 +1892,11 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         });
 
     // Main stream: age out pending-delete entries that have been waiting longer
-    // than MAX_FRAMES_IN_FLIGHT. For solid/water the octree node is reused with
+    // than MAX_FRAMES_IN_FLIGHT. The octree node is reused with
     // the same NodeID, so a matching entry is normally consumed within 1 frame.
     // Entries that age out are genuine deletions (no replacement).
     uint32_t curFrame = app ? app->getCurrentFrame() : 0;
-    ageOutPendingDeletes(curFrame, solidRenderer->getIndirectRenderer(), waterRenderer->getIndirectRenderer());
+    ageOutPendingDeletes(curFrame);
     
     // Every frame, process the chunk swap queue (slotted mode).
     // This swaps in newly-built RenderProxies and retires old ones.
@@ -1731,19 +1910,31 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     rebuildProxySet(app, chunksPublished > 0 || albedoRefresh);
 }
 
-void SceneRenderer::ageOutPendingDeletes(uint32_t curFrame, IndirectRenderer& solidIR, IndirectRenderer& waterIR) {
-    auto ageOut = [curFrame](std::unordered_map<NodeID, PendingDeleteEntry>& deleteMap, IndirectRenderer& ir) {
+void SceneRenderer::ageOutPendingDeletes(uint32_t curFrame) {
+    // Snapshot the layer list so per-layer ensureLayerStates never mutates
+    // while we iterate.
+    std::vector<Layer> layers;
+    {
+        std::lock_guard<std::mutex> lock(layerStatesMutex_);
+        for (size_t i = 0; i < layerStates_.size(); ++i)
+            layers.push_back(static_cast<Layer>(i));
+    }
+    size_t totalPending = 0;
+    for (Layer layer : layers) {
+        IndirectRenderer* ir = indirectForLayer(layer);
+        if (!ir) continue;
+        auto& deleteMap = layerPendingDeletes(layer);
         for (auto it = deleteMap.begin(); it != deleteMap.end(); ) {
             if (curFrame - it->second.birthFrame > VulkanApp::MAX_FRAMES_IN_FLIGHT) {
-                ir.removeMeshSlotted(it->second.slotIndex);
+                ir->removeMeshSlotted(it->second.slotIndex);
                 it = deleteMap.erase(it);
             } else {
                 ++it;
+                ++totalPending;
             }
         }
-    };
-    ageOut(pendingDeleteSolidSlots, solidIR);
-    ageOut(pendingDeleteWaterSlots, waterIR);
+        totalPending += deleteMap.size() > 0 ? 0 : 0;
+    }
 #ifdef DEBUG
     // DIAG: pending-delete backlog growth per second (user-reported draw-cmd
     // accumulation). Entries are consumed by matching publishes or aged out
@@ -1753,10 +1944,12 @@ void SceneRenderer::ageOutPendingDeletes(uint32_t curFrame, IndirectRenderer& so
     auto nowD = std::chrono::steady_clock::now();
     if (nowD - lastDiag >= std::chrono::seconds(1)) {
         lastDiag = nowD;
-        std::cout << "[SceneRenderer::diag] pendingDelSolid=" << pendingDeleteSolidSlots.size()
-                  << " pendingDelWater=" << pendingDeleteWaterSlots.size()
+        std::cout << "[SceneRenderer::diag] pendingDelTotal=" << totalPending
+                  << " layers=" << layers.size()
                   << " curFrame=" << curFrame << std::endl;
     }
+#else
+    (void)totalPending;
 #endif
 }
 
@@ -1797,9 +1990,14 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
     // address (VK_EXT/BDA) needs no separate buffer: the merged pools already
     // provide the single-large-buffer + offset model.
     if (world_) {
+        int maxLod = 0;
+        try {
+            if (world_->activeScene().layerCount() > 0)
+                maxLod = world_->activeScene().maxChunkLod(LAYER_OPAQUE, 1.0f);
+        } catch (...) {}
         std::cout << "[SceneRenderer] initSlottedMode: world "
-                  << (world_->activeScene().maxChunkLod(LAYER_OPAQUE, 1.0f))
-                  << " maxChunkLod(opaque) / world set — pools sized to worst case\n";
+                  << maxLod
+                  << " maxChunkLod(layer0) / world set — pools sized to worst case\n";
     }
     std::cout << "[SceneRenderer] memory model: "
               << (app->supportsSparseBinding()
@@ -1933,12 +2131,12 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
         std::vector<DebugCubeRenderer::CubeWithColor> bbCubes;
         std::mutex bbMtx;
         scene.requestBoundingBoxes(layer, nodeData,
-            [&bbCubes, &bbMtx, layer, &nodeData](const BoundingCube& cube) {
+            [&bbCubes, &bbMtx, layer, &nodeData, this](const BoundingCube& cube) {
                 DebugCubeRenderer::CubeWithColor c;
                 c.cube = BoundingBox(cube.getMin(), cube.getMax());
-                c.color = (layer == LAYER_OPAQUE)
-                    ? glm::vec3(0.0f, 1.0f, 0.0f)
-                    : glm::vec3(0.0f, 0.5f, 1.0f);
+                c.color = (layerRendererType(layer) == LayerRendererType::Water)
+                    ? glm::vec3(0.0f, 0.5f, 1.0f)
+                    : glm::vec3(0.0f, 1.0f, 0.0f);
                 // LoD meta for the bbox cull's clipmap band gate (mirrors the solid
                 // chunk entry): cellSize = node cube side, level = 0-based band
                 // rung (chunkLod - 1), base = chunk min corner.
@@ -1954,7 +2152,14 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
 }
 
 size_t SceneRenderer::getTransparentModelCount() {
-    return waterChunks.size();
+    std::lock_guard<std::mutex> lock(layerStatesMutex_);
+    size_t total = 0;
+    for (size_t i = 0; i < layerStates_.size(); ++i) {
+        if (!layerStates_[i]) continue;
+        if (layerRendererType(static_cast<Layer>(i)) != LayerRendererType::Water) continue;
+        total += layerStates_[i]->chunks.size();
+    }
+    return total;
 }
 
 void SceneRenderer::writeTlasBinding(VulkanApp* app, VkDescriptorSet dstSet) {
@@ -2124,7 +2329,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
     size_t count = 0;
     const bool wantWater = rtWaterProxyEnabled;
     {
-        std::lock_guard<std::recursive_mutex> lock(solidChunksMutex);
+        std::lock_guard<std::recursive_mutex> lock(proxyMutex_);
         auto hashMap = [&](const std::unordered_map<NodeID, SolidProxyData>& m) {
             for (const auto& kv : m) {
                 const SolidProxyData& d = kv.second;
@@ -2200,7 +2405,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                 for (const auto& s : filtered) keptSolidProxyIds_.insert(s.chunkId);
                 keptWaterProxyIds_.clear();
                 for (const auto& s : wfiltered) keptWaterProxyIds_.insert(s.chunkId);
-                std::lock_guard<std::recursive_mutex> lock(solidChunksMutex);
+                std::lock_guard<std::recursive_mutex> lock(proxyMutex_);
                 VkBufferDeviceAddressInfo q{};
                 q.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
                 VkDeviceAddress vaddr = 0, iaddr = 0, wvaddr = 0, wiaddr = 0;
@@ -2283,15 +2488,25 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
     std::vector<RTProxyBox> solids;
     std::vector<RTProxyBox> waters;
     {
-        std::lock_guard<std::recursive_mutex> lock(solidChunksMutex);
-        // GC entries for erased chunks (publish maps are authoritative).
+        std::lock_guard<std::recursive_mutex> plock(proxyMutex_);
+        // GC entries for erased chunks (per-layer publish maps are authoritative:
+        // keep a proxy while ANY layer still tracks the NodeID).
+        auto hasChunkAnywhere = [&](NodeID nid) -> bool {
+            std::lock_guard<std::mutex> lock(layerStatesMutex_);
+            for (const auto& st : layerStates_) {
+                if (!st) continue;
+                std::lock_guard<std::recursive_mutex> guard(*st->mutex);
+                if (st->chunks.find(nid) != st->chunks.end()) return true;
+            }
+            return false;
+        };
         for (auto it = solidProxyData.begin(); it != solidProxyData.end(); ) {
-            if (solidChunks.find(it->first) == solidChunks.end())
+            if (!hasChunkAnywhere(it->first))
                 it = solidProxyData.erase(it);
             else ++it;
         }
         for (auto it = waterProxyData.begin(); it != waterProxyData.end(); ) {
-            if (waterChunks.find(it->first) == waterChunks.end())
+            if (!hasChunkAnywhere(it->first))
                 it = waterProxyData.erase(it);
             else ++it;
         }

@@ -122,9 +122,25 @@ public:
         OctreeNodeData node;
     };
 
-    // Mutex protecting the solid/water chunk maps and mesh operations
-    std::recursive_mutex solidChunksMutex;
-    std::recursive_mutex waterChunksMutex;
+    // ── Dynamic per-layer GPU state ──
+    // One entry per Scene layer (index = Layer). Each layer tracks its own
+    // chunk registry + deferred-delete slots + generation pool, while the two
+    // shared IndirectRenderers (solid/water) are selected per layer via the
+    // Scene's LayerRendererType (LayersWidget). States are heap-allocated so
+    // PublishTarget references stay stable across vector growth.
+    struct PendingDeleteEntry {
+        uint32_t slotIndex = UINT32_MAX;
+        uint32_t birthFrame = 0;
+    };
+    struct SceneLayerState {
+        std::unordered_map<NodeID, Model3DVersion> chunks;
+        std::unordered_map<NodeID, PendingDeleteEntry> pendingDeletes;
+        std::unique_ptr<std::recursive_mutex> mutex;
+        std::unique_ptr<ThreadPool> genPool;
+        SceneLayerState()
+            : mutex(std::make_unique<std::recursive_mutex>()),
+              genPool(std::make_unique<ThreadPool>(std::max(2u, std::thread::hardware_concurrency() / 2))) {}
+    };
 
     // Texture arrays (owned by main): per-layer albedo averages feed the RT
     // proxy albedo. Set once in init(); read on the render thread.
@@ -136,11 +152,7 @@ public:
     // render thread in processPendingMeshes to refresh RT proxy albedos.
     std::atomic<bool> proxyAlbedoRefresh_{false};
 
-    // ── Chunk tracking ──
-    // Track model ids for transparent/water meshes so we can remove them if erased/updated
-    std::unordered_map<NodeID, Model3DVersion> waterChunks;
-    std::unordered_map<NodeID, Model3DVersion> solidChunks;
-
+    // ── Chunk tracking (per Scene layer, index = Layer) ──
     // Slots whose chunks were erased but may be replaced (same NodeID, new
     // version). For solid/water the octree node is reused on edit, so NodeID
     // stays stable — addMeshSlotted finds the existing entry and republishes
@@ -148,13 +160,6 @@ public:
     // replacement upload completes). The old slot must survive until the new
     // upload completes to avoid a 1-frame hole. Entries are matched by NodeID
     // and aged out after MAX_FRAMES_IN_FLIGHT frames past their birth frame.
-    struct PendingDeleteEntry {
-        uint32_t slotIndex = UINT32_MAX;
-        uint32_t birthFrame = 0;
-    };
-    std::unordered_map<NodeID, PendingDeleteEntry> pendingDeleteSolidSlots;
-    std::unordered_map<NodeID, PendingDeleteEntry> pendingDeleteWaterSlots;
-
     // ── World reference (separates world logic from rendering) ──
     // The World owns chunks, octrees, and the ChunkManager state machine.
     // The SceneRenderer only reads chunk state and produces/consumes
@@ -163,22 +168,33 @@ public:
     World* world() { return world_; }
     const World* world() const { return world_; }
 
-    // Register/inspect opaque model versions (moved from SolidRenderer)
-    size_t getRegisteredModelCount() const { return solidChunks.size(); }
+    // ── Dynamic per-layer state access ──
+    // ensureLayerStates grows the vector to at least n entries (creating
+    // generation pools on demand). All accessors auto-grow.
+    void ensureLayerStates(size_t n);
+    size_t layerStateCount() const;
+    std::unordered_map<NodeID, Model3DVersion>& layerChunks(Layer layer);
+    std::recursive_mutex& layerMutex(Layer layer);
+    std::unordered_map<NodeID, PendingDeleteEntry>& layerPendingDeletes(Layer layer);
+    ThreadPool& layerGenPool(Layer layer);
+    size_t getLayerModelCount(Layer layer) const;
+    // Renderer routing for a layer (reads the active Scene's LayerRendererType;
+    // falls back to layer 1 = water, others = solid when no world/scene).
+    LayerRendererType layerRendererType(Layer layer) const;
+    IndirectRenderer* indirectForLayer(Layer layer);
+    // Back-compat: total solid (opaque) count across Solid-mapped layers.
+    size_t getRegisteredModelCount() const;
 
-    // Remove all registered opaque meshes via IndirectRenderer and clear the map
-    void removeAllRegisteredMeshes() {
-        if (!solidRenderer) return;
-        solidRenderer->getIndirectRenderer().removeAllMeshes();
-        solidChunks.clear();
-    }
-
-    // Remove all registered transparent/water meshes and clear the map
-    void removeAllTransparentMeshes() {
-        if (!waterRenderer) return;
-        waterRenderer->getIndirectRenderer().removeAllMeshes();
-        waterChunks.clear();
-    }
+    // Remove all registered meshes for one layer (from both IRs — the layer
+    // may have been remapped since its slots were published) and clear it.
+    void removeAllLayerMeshes(Layer layer);
+    // Remove every layer's meshes (clears both IRs).
+    void removeAllMeshes();
+    // Back-compat wrappers:
+    void removeAllRegisteredMeshes() { removeAllMeshesSolidOnly(); }
+    void removeAllTransparentMeshes() { removeAllMeshesWaterOnly(); }
+    void removeAllMeshesSolidOnly();
+    void removeAllMeshesWaterOnly();
 
     // Pool utilization telemetry (perf report 22 C1): logs used vs committed
     // for every mesh pool plus vegetation/debug streams. Called after scene
@@ -282,6 +298,8 @@ public:
     };
     std::unordered_map<NodeID, SolidProxyData> solidProxyData;
     std::unordered_map<NodeID, SolidProxyData> waterProxyData;
+    // Guards solidProxyData/waterProxyData (previously solidChunksMutex).
+    mutable std::recursive_mutex proxyMutex_;
     // When false, water chunks are excluded from the proxy (e.g. water hidden).
     // Set from the frame settings before processPendingMeshes runs.
     bool rtWaterProxyEnabled = true;
@@ -387,36 +405,28 @@ public:
     streaming::TerrainStreamer streamer;
 
 private:
-    // Single publish core for a pending mesh batch — every stream behaves
+    // Single publish core for a pending mesh batch — every layer behaves
     // identically. Publishes each generated geometry chunk AS RECEIVED: every
     // PendingMeshData is ONE self-contained mesh (no ladder structures). Each
     // chunk occupies a slot; the mesh lands in the slot row for its LoD level
     // and publishes its own draw entry. No per-chunk reassembly. Returns the
     // number of slots published.
     //
-    // The core selects, per-entry, by layer, which IndirectRenderer and
-    // slot bookkeeping apply. Each chunk's build state runs through the
-    // ChunkManager.
+    // The core selects, per-entry, by the Scene's LayerRendererType, which
+    // IndirectRenderer and per-layer slot bookkeeping apply. Each chunk's
+    // build state runs through the ChunkManager.
     //
-    //  takeOldSlot:      resolve and consume the old slot for a chunk, or
-    //                    UINT32_MAX when none. Callers free it after the new
-    //                    upload completes.
-    //  onChunkPublished: main-thread side effect once a chunk's slot is
-    //                    published (records the Model3DVersion map).
     //  onFinestPublished: notified with the level-0 (finest) geometry of
-    //                    opaque chunks so they can drive vegetation.
+    //                    solid chunks so they can drive vegetation.
     size_t publishPendingMeshes(
         VulkanApp* app,
         std::deque<PendingMeshData>& batch,
-        IndirectRenderer& opaqueIR,
-        IndirectRenderer& waterIR,
-        const std::function<uint32_t(Layer layer, NodeID nid)>& takeOldSlot,
-        const std::function<void(Layer layer, NodeID nid, uint32_t slotIdx, uint32_t version)>& onChunkPublished,
         const std::function<void(NodeID nid, const Geometry& geom, uint8_t lod)>& onFinestPublished);
 
-    // Age out main-stream pending-delete slots older than MAX_FRAMES_IN_FLIGHT
-    // (genuine deletions with no replacement chunk).
-    void ageOutPendingDeletes(uint32_t curFrame, IndirectRenderer& solidIR, IndirectRenderer& waterIR);
+    // Age out pending-delete slots older than MAX_FRAMES_IN_FLIGHT
+    // (genuine deletions with no replacement chunk). Routes each layer's
+    // entries to its current IndirectRenderer.
+    void ageOutPendingDeletes(uint32_t curFrame);
 
     // World reference (null until setWorld is called).
     // The World owns ChunkManager and all chunk state.
@@ -506,18 +516,22 @@ public:
 
     // Thread-safe mesh queue fed by tessellation on the generation pools;
     // drained on the main thread by processPendingMeshes(). ONE shared queue
-    // for solid and water.
+    // for all scene layers.
     mutable std::mutex                          pendingMeshMutex;
     std::unordered_map<NodeID, PendingMeshData> pendingMeshQueue;
 
-    // Dedicated generation pools for solid and water so both layers tessellate
-    // truly in parallel: neither waits for the other to finish, and neither
-    // competes for the shared scene pool. Public so the app can hand them to
-    // processNodeLayer when building its own solid/water space-change lambdas.
-    ThreadPool solidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
-    ThreadPool waterGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
+    // Back-compat accessors for the first two generation pools (prefer
+    // layerGenPool(layer) for new code).
+    ThreadPool& solidGenPoolRef() { return layerGenPool(LAYER_OPAQUE); }
+    ThreadPool& waterGenPoolRef() { return layerGenPool(LAYER_TRANSPARENT); }
 
     CommandBufferState frameCmdState;
+
+private:
+    // Per-layer GPU state (index = Layer). Guarded by layerStatesMutex_ for
+    // add/remove; each entry's own mutex guards its chunk maps.
+    mutable std::mutex layerStatesMutex_;
+    std::vector<std::unique_ptr<SceneLayerState>> layerStates_;
 };
 
 // ...existing code...
