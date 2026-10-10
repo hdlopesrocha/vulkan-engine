@@ -2,14 +2,17 @@
 
 // GPU-side SDF march counters (set=1 binding 10 storage buffer, fragment
 // atomics). The layout is shared with shaders/renderer/sdf/SdfRenderer.frag
-// and its byte-identical twin SdfRendererVolume.frag, which declare the same
-// six-uint array (sdfCounters[0..5]).
+// (single source; the surface pipeline variant SdfRendererSurface.frag.spv is
+// compiled from the same file with -DSDF_VARIANT=1 and declares the same
+// six-uint array, sdfCounters[0..5]).
 //
 // The shader only atomically increments when `enabled` (written by the CPU
 // each frame from SdfRenderer::setProfileCounters), so the default path costs
 // one cached load plus a uniform branch. Requires fragmentStoresAndAtomics;
 // when the device does not advertise it the counters stay disabled and the UI
 // toggle is hidden.
+// L14 TODO (needs an app run to validate): move the gate to a push constant
+// or a stripped specialization variant; the six-uint layout above stays.
 #include <cstdint>
 
 struct SdfProfileCounters {

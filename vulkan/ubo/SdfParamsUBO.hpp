@@ -1,11 +1,15 @@
 #pragma once
 
-// Global raymarch / debug parameters (one small UBO, std140, 48 bytes).
+// Global raymarch / debug parameters (one small UBO, std140, 80 bytes).
 // Canonical definition shared with the GLSL twin
 // shaders/ubo/SdfParamsUBO.glsl — same names, fields and offsets.
 // Independent scalars; renderMode/debugFlags are separate integers (no
 // packed float). alignas(16) matches the std140 struct base alignment, so the
-// block size is 48 (32 bytes of fields + 16-byte alignment rounding).
+// block size is 80 (68 bytes of fields + 16-byte alignment rounding).
+// M12 (perf report 25): smokeSamples tiers the phase-B smoke resolve
+// (Settings::sdfSmokeSamples, 4..12, default 12 = reference); maxSteps and
+// raycastPixelSize tier the march the same way. All three stream through the
+// existing setters with no idle and no rebuild.
 #include <cstddef>
 #include <cstdint>
 
@@ -40,8 +44,22 @@ struct alignas(16) SdfParamsUBO {
     // the vegetation impostor pass and skipped by the SDF march. 0 = no
     // hand-off (every clump stays in the march).
     float grassImpostorDistance = 0.0f; // offset 60
+    // Distance-tiered SDF LOD (Group C: C3 noise LOD + H7 normal tier).
+    // Below sdfLodNear every sample is full detail (tetrahedral normals on
+    // hits); beyond sdfLodFar flame deform/spike noise and its wind-lean
+    // sample are skipped (no Lipschitz halving there either) and surface
+    // normals use forward differences reusing the hit-step dBest. Between
+    // the two, deformation stays full while hits already use cheap normals.
+    // A value <= 0 disables that tier (the shader substitutes 1e5 = never),
+    // so a zero-filled UBO behaves exactly like the pre-LOD march.
+    float sdfLodNear = 120.0f; // offset 64
+    float sdfLodFar = 360.0f;  // offset 68
+    // Phase-B smoke resolve samples (M12 tier, Settings::sdfSmokeSamples,
+    // 4..12, default 12 = reference). Shares the std140 tail row with the
+    // LOD fields above (offsets 64/68/72 + 4 bytes implicit padding = 80).
+    float smokeSamples = 12.0f; // offset 72
 };
-static_assert(sizeof(SdfParamsUBO) == 64, "SdfParamsUBO must be 64 bytes (std140 padding)");
+static_assert(sizeof(SdfParamsUBO) == 80, "SdfParamsUBO must be 80 bytes (std140 padding)");
 static_assert(offsetof(SdfParamsUBO, time) == 0, "time offset");
 static_assert(offsetof(SdfParamsUBO, maxSteps) == 4, "maxSteps offset");
 static_assert(offsetof(SdfParamsUBO, safety) == 8, "safety offset");
@@ -57,3 +75,6 @@ static_assert(offsetof(SdfParamsUBO, raycastPixelSize) == 48, "raycastPixelSize 
 static_assert(offsetof(SdfParamsUBO, impostorStart) == 52, "impostorStart offset");
 static_assert(offsetof(SdfParamsUBO, impostorFull) == 56, "impostorFull offset");
 static_assert(offsetof(SdfParamsUBO, grassImpostorDistance) == 60, "grassImpostorDistance offset");
+static_assert(offsetof(SdfParamsUBO, sdfLodNear) == 64, "sdfLodNear offset");
+static_assert(offsetof(SdfParamsUBO, sdfLodFar) == 68, "sdfLodFar offset");
+static_assert(offsetof(SdfParamsUBO, smokeSamples) == 72, "smokeSamples offset");

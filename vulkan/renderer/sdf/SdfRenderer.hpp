@@ -40,8 +40,9 @@ class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 // consumed by shaders/SdfRenderer.vert(.frag) at set=1 bindings 0..9
 // (9 = rasterized water-surface depth for the solid+water march clamp).
 
-// Push constants for the grass-shadow pipeline (112 B; GLSL twin is the
-// push_constant block in shaders/renderer/shadow/SdfGrassShadow.{vert,frag}).
+// Push constants for the grass-shadow pipeline (128 B; GLSL twin is the
+// push_constant block in shaders/renderer/shadow/SdfGrassShadow.{vert,frag},
+// shared by the full and the H8 SHADOW_IMPOSTOR_ONLY variant pipelines).
 // The block carries everything the grass-only EVSM caster needs without
 // touching set 0: the cascade matrix, the SDF clock + march budget and the
 // light-to-scene march direction.
@@ -62,6 +63,11 @@ static_assert(sizeof(SdfGrassShadowPC) == 128, "SdfGrassShadowPC must be 128 byt
 // traversal + pipeline; only SdfRenderParams::timeMode.z (RenderMode)
 // changes shading. Transparent mode is shaded in-shader (no blend state) as
 // a placeholder until a dedicated blended pipeline variant is added.
+// C1 (perf report 25): two fragment pipelines share one vertex module, one
+// descriptor layout and one pipeline layout from the single SdfRenderer.frag
+// source — the generic pipeline (all modes) plus the surface variant
+// (SdfRendererSurface.frag.spv, -DSDF_VARIANT=1, smoke resolve compiled
+// out), bound for Surface/Transparent modes with fallback to generic.
 class SdfRenderer : public Renderer {
 public:
     enum class RenderMode : uint32_t { Surface = 0, Volume = 1, Emissive = 2, Transparent = 3 };
@@ -236,6 +242,17 @@ public:
     // caster is skipped. Lock-free: written from the frame thread, read from
     // the async SDF/shadow tasks.
     void setRayMarchingEnabled(bool on) { rayMarchingEnabled_.store(on, std::memory_order_relaxed); }
+    bool isRayMarchingEnabled() const { return rayMarchingEnabled_.load(std::memory_order_relaxed); }
+    // M10 (report 25): screen-space overlap gate for the solid-depth preload
+    // copy. The frame thread stores the current view-projection each frame;
+    // render() skips the full-screen copy when no container projects onto
+    // the screen. Validation-neutral: only removes a copy + transitions,
+    // end-state layouts are unchanged.
+    void setOcclusionViewProj(const glm::mat4& vp);
+    // C2 (report 25): smoke container sizing. true (default) keeps the
+    // legacy 3700 m XZ pad (A/B baseline, zero behavior change); false fits
+    // the container to the smoke ball + live bullet flights (quantized refit).
+    void setSmokeWideContainer(bool wide);
 
     // ── Smoke bomb + bullets (second generic consumer) ──────────────────
     // A static-topology smoke scene (1 Smoke-sphere def/mat/container/
@@ -315,6 +332,14 @@ public:
     void setDebugFlags(uint32_t flags);
     void setMarchParams(float maxSteps, float epsilon);
     void setMarchRange(float minStep, float maxStep, float earlyTermThreshold);
+    // March-tier setters (perf report 25 M12, Settings::sdfMaxSteps /
+    // sdfSmokeSamples). Each dedupes unchanged values and marks all params
+    // slots dirty, so the per-frame MyApp wiring is cheap. No idle, no
+    // rebuild: the values stream through SdfParamsUBO (unlike the report-23
+    // C1 texture tier, which needs a device idle + full re-upload).
+    void setMaxSteps(int steps);
+    void setSmokeSamples(int n);
+    void setMarchTiers(int maxSteps, int smokeSamples);
     // External scene depth (main depth buffer view) used for occlusion.
     // May be called every frame; the descriptor is rewritten only when the
     // view handle actually changes (per frame slot), never blindly per frame.
@@ -386,6 +411,12 @@ private:
     TrackedHandle<VkPipelineLayout> pipelineLayout;
     TrackedHandle<VkShaderModule> vertModule;
     TrackedHandle<VkShaderModule> fragModule;
+    // C1 surface fragment variant (SdfRendererSurface.frag.spv, same vertex
+    // module + pipeline layout as above). Null until its SPIR-V exists (same
+    // lazy tolerance as createPipeline); render() falls back to `pipeline`.
+    // L13: one vertex source/module serves both pipelines.
+    TrackedHandle<VkShaderModule> fragSurfaceModule;
+    TrackedHandle<VkPipeline> pipelineSurface;
 
     // Grass-only EVSM caster for the shadow pass (SdfGrassShadow.*). Null
     // until its SPIR-V exists (same lazy tolerance as createPipeline); the
@@ -394,6 +425,13 @@ private:
     TrackedHandle<VkPipelineLayout> shadowPipelineLayout;
     TrackedHandle<VkShaderModule> shadowVertModule;
     TrackedHandle<VkShaderModule> shadowFragModule;
+    // H8 impostor-only grass-shadow variant (SHADOW_IMPOSTOR_ONLY=1 build of
+    // the same source): created with createGraphicsPipelineWithLayout reusing
+    // shadowPipelineLayout (identical set layouts + push range), so no extra
+    // descriptor set or layout is created. Null until its SPIR-V exists;
+    // drawShadowCascade falls back to the full pipeline while null.
+    TrackedHandle<VkPipeline> shadowImpostorPipeline;
+    TrackedHandle<VkShaderModule> shadowImpostorFragModule;
     glm::vec3 shadowLightDir_ = glm::vec3(0.0f);
 
     Buffer vertexBuffer;
@@ -420,6 +458,11 @@ private:
     // Ray-marching master gate (Settings::rayMarchingEnabled); atomic so the
     // frame thread can flip it while the async tasks read it.
     std::atomic<bool> rayMarchingEnabled_{true};
+    // M10 occlusion gate: latest frame view-projection for the CPU 2D
+    // container-overlap test (guarded by sceneMutex; render() takes it under
+    // the same lock that reads the pending depth image).
+    glm::mat4 occlusionViewProj_{1.0f};
+    bool occlusionViewProjValid_ = false;
     // App frame index whose depth bindings were last refreshed (see
     // refreshFrameBindings). Guarded by sceneMutex.
     uint32_t bindingsFrame_ = 0xFFFFFFFFu;
@@ -445,6 +488,31 @@ private:
     std::array<bool, SDF_FRAMES> sceneDirtySlots_ = {true, true, true};
     std::array<bool, SDF_FRAMES> paramsDirtySlots_ = {true, true, true};
     std::array<bool, SDF_FRAMES> smokeDirtySlots_ = {true, true, true};
+    // M9 (perf report 25): staging -> device-local copy discipline. flush*
+    // memcpys into the staging twins and stages the byte counts below; the
+    // first command buffer of the frame records the vkCmdCopyBuffer copies
+    // (copiesPendingSlots_ consumed there) while EVERY command buffer of the
+    // frame records its own barrier via recordHostToShaderBarrier (each CB /
+    // queue must: the shadow cascades, the cull CB and the SDF CB may be
+    // different CBs). The *Frame_ arrays remember which frame index staged /
+    // copied / flushed each slot, so steady-state frames (nothing staged
+    // this frame) record no barrier at all instead of the old unconditional
+    // 8-entry barrier. Per-slot dirty flags stay the upload gate.
+    // TODO(M9-full): promote the copies to the existing staging pool
+    // (StagingRingBuffer / streaming::UploadManager, report-23 C3 batched
+    // pattern) on a dedicated transfer queue with ownership transfer; the
+    // per-slot staging twins here are the safe subset that preserves the
+    // triple-buffer lifetime without new fence tracking.
+    // TODO(M12-distance): CPU distance-scaled maxSteps per container (near
+    // full budget, far halved) needs a draw split: render() issues ONE
+    // instanced draw over all containers from a single global UBO budget, so
+    // per-container budgets need per-draw push constants + near/far passes
+    // with A/B. Tier-only until then.
+    std::array<bool, SDF_FRAMES> copiesPendingSlots_{false, false, false};
+    std::array<std::array<VkDeviceSize, 6>, SDF_FRAMES> stagedBytes_{};
+    std::array<uint32_t, SDF_FRAMES> sceneCopiedFrame_{};
+    std::array<uint32_t, SDF_FRAMES> paramsFlushedFrame_{};
+    std::array<uint32_t, SDF_FRAMES> smokeFlushedFrame_{};
     float lastTime_ = 0.0f; // global time of the last updateParams (bullet birth clock)
 
     // Lava-anchored flame collection (brush-4 chunk geometry -> anchors,
@@ -472,6 +540,10 @@ private:
     std::unordered_map<uintptr_t, std::vector<sdf_gpu::GrassAnchor>> grassByChunk_;
     // Shared tuning (single source of truth for renderer + widgets).
     SdfEffectConfig config_;
+    // C2: true = legacy 3700 m XZ smoke pad (default, A/B baseline);
+    // false = tight ball + live-flight fit (see fitSmokeTightLocked).
+    // Guarded by sceneMutex.
+    bool smokeWideContainer_ = true;
     bool lavaDirty_ = false;    // anchors changed -> rebuild staged
     bool rocksDirty_ = false;   // anchors/shape changed -> rebuild staged
     bool grassDirty_ = false;   // vegetation clumps/shape changed -> rebuild staged
@@ -530,6 +602,21 @@ private:
     // Re-merge lava + rock + smoke scenes into pendingScene_, rebuild its
     // bounds and grids (caller holds sceneMutex). Marks all scene slots dirty.
     void refreshMergedLocked();
+    // C2 (report 25): tight smoke-container fit. liveBulletBoundsLocked
+    // returns the world-space AABB of every LIVE bullet's full flight segment
+    // (start -> start+dir*pathLength, radius + wake margin; smoke-local frame
+    // mapped to world via the shape rotation). Full path, not current
+    // traveled distance, so bounds stay static during flight: one refit on
+    // birth, one on death. tightSmokeBoundsLocked unions that with the smoke
+    // ball and snaps out to kSmokeFitQuantum (the epsilon mechanism).
+    // Caller holds sceneMutex.
+    bool liveBulletBoundsLocked(glm::vec3& mn, glm::vec3& mx) const;
+    void tightSmokeBoundsLocked(glm::vec3& mn, glm::vec3& mx) const;
+    void fitSmokeTightLocked();
+    void refitSmokeContainerIfNeededLocked();
+    // M10: true when any merged container can cover a pixel (conservative:
+    // true until the first view-projection arrives). Takes sceneMutex.
+    bool containersOverlapScreen();
     // ── SdfModel helpers (one transform convention for every effect) ─────
     // Euler XYZ radians, R = Rx * Ry * Rz (mirrors sdfEulerMat in sdf_ops).
     // Caller holds sceneMutex.
@@ -540,15 +627,31 @@ private:
     void ensureSlotCapacity(uint32_t slot); // grow slot buffers with headroom; rewrites slot set bindings
     void flushSlotUploads(uint32_t slot);   // memcpy dirty scene vectors/params into slot buffers
     void flushSmokeUpload(uint32_t slot);   // memcpy dirty smoke state into the slot buffer
-    // HOST writes -> VERTEX/FRAGMENT reads for this slot's scene buffers
-    // (instances/definitions/materials/containers/grids/params/smoke); NULL
-    // handles are skipped. Shared by prepareCull, prepareShadowCascade and
-    // render (each command buffer/queue must record its own).
+    // M9: record the staged vkCmdCopyBuffer copies (stage -> gpu twins) for
+    // this slot plus the transfer availability barrier (HOST -> TRANSFER for
+    // the staging source, then the copies). No-op unless copies are pending:
+    // the first command buffer of the frame consumes them, later ones only
+    // re-record the visibility barrier below. Must be called OUTSIDE a
+    // render pass, before any draw that reads the slot.
+    void recordSlotCopies(VkCommandBuffer cmd, uint32_t slot);
+    // HOST writes -> VERTEX/FRAGMENT reads for this slot's params/smoke plus
+    // TRANSFER writes -> VERTEX/FRAGMENT reads for the scene gpu twins copied
+    // this frame; entries are recorded ONLY for payload written/copied this
+    // frame (tracked by paramsFlushedFrame_/smokeFlushedFrame_/
+    // sceneCopiedFrame_), NULL handles are skipped. Shared by prepareCull,
+    // prepareShadowCascade and render (each command buffer/queue must record
+    // its own: a barrier on the cull CB does not order the SDF CB's reads).
+    // Steady-state frames record nothing here (old code emitted an
+    // unconditional 8-entry VK_WHOLE_SIZE barrier up to 3x/frame/slot).
     void recordHostToShaderBarrier(VkCommandBuffer cmd, uint32_t slot) const;
     void writeSlotBinding(uint32_t slot, uint32_t binding, const Buffer& buf, VkDescriptorType type);
     void refreshDepthBinding(uint32_t slot); // rewrite binding 7 iff the view changed for this slot
     // Auto-loop bullet template (slot 0) from widget defaults (caller holds sceneMutex).
     void refreshAutoBulletLocked();
+    // H4: recompute the CPU-side tracer sphere from the bullet slots + time
+    // (mirrors smokeBulletState GLSL); caller holds sceneMutex. Marks the
+    // smoke SSBO dirty only when the sphere/valid flag changed.
+    void refreshTracerLocked();
     void markSmokeSSBO(); // flag all smoke slots dirty (tuning/bullet change, no scene rebuild)
     // Single-flight policy: at most one bullet at a time. A live manual
     // round suppresses the auto bullet until it dies (wake grace included).

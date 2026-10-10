@@ -16,6 +16,15 @@
 // Shape ids shared with SdfSmokeConfig + the shaders: 0 cloud, 1 sphere,
 // 2 cube, 3 fire (one generic flame instance on the volumetric fire path).
 static constexpr int kSmokeShapeFire = 3;
+// C2 (report 25): tight smoke-container quantization. Fitted bounds snap out
+// to this grid so a flying bullet does not rebuild the scene every frame
+// (full-path fit => bounds are static during flight; rebuilds happen only on
+// bullet birth/death or smoke param edits). 128 m keeps the worst proxy at
+// ~2.7 km only while a max-range round is actually live, vs 7.4 km always.
+// TODO: adapt the container grid resolution to the fitted extent (currently
+// fixed 4x4x4 from createSmokeBomb, so fitted cells are coarser than the
+// ball-only case; DDA-skip cost per cell rises while coverage falls).
+static constexpr float kSmokeFitQuantum = 128.0f;
 
 // EVSM moment format of the shadow cascades (must match ShadowRenderer's
 // EVSM_FORMAT); used by the grass-shadow pipeline's color attachment.
@@ -40,6 +49,11 @@ void SdfRenderer::init(VulkanApp* app) {
     params_.maxStep = std::clamp(config_.lava.scale, 1.0f, 32.0f);
     params_.epsilon = 0.01f;
     params_.earlyTerm = 0.99f;
+    // Group C distance-tiered LOD defaults (C3 noise LOD + H7 normal tier):
+    // full detail inside 120 m, far LOD beyond 360 m. Tunable; A/B against
+    // 0/0 (= LOD off) per docs/perf_report_25.tex C3/H7.
+    params_.sdfLodNear = 120.0f;
+    params_.sdfLodFar = 360.0f;
     repackDebugMode();
     renderMode_ = RenderMode::Volume; // fire-first default; generic modes via setRenderMode
     repackDebugMode();
@@ -66,6 +80,12 @@ void SdfRenderer::init(VulkanApp* app) {
     sceneDirtySlots_.fill(true);
     paramsDirtySlots_.fill(true);
     smokeDirtySlots_.fill(true);
+    // M9: fresh frames have staged/copied nothing yet; 0xFFFFFFFF never
+    // equals a real frame index, so the first frame's barriers are recorded.
+    // copiesPendingSlots_/stagedBytes_ are value-initialized (false/zero).
+    sceneCopiedFrame_.fill(0xFFFFFFFFu);
+    paramsFlushedFrame_.fill(0xFFFFFFFFu);
+    smokeFlushedFrame_.fill(0xFFFFFFFFu);
     // Default smoke tuning mirrors SdfEffectConfig defaults (single source:
     // SdfSmokeConfig for the cloud, SdfBulletConfig for bullet FX/gold); the
     // state block uses the canonical natural fields, packed once here.
@@ -157,7 +177,7 @@ void SdfRenderer::createDescriptorSet(VulkanApp* app) {
 
     // set=1 bindings 0..10: 0 instances, 1 definitions, 2 materials,
     // 3 containers, 4 gridCells, 5 gridIndices, 6 params UBO, 7 sceneDepth,
-    // 8 smoke state (tuning + bullets, fragment only), 9 waterDepth
+    // 8 smoke state (tuning + bullets + H4 tracer sphere, fragment only), 9 waterDepth
     // (rasterized water surface, fragment only), 10 march counters
     // (SdfProfileCounters, fragment atomics, gated by counters[5]).
     VkDescriptorSetLayoutBinding bindings[11]{};
@@ -252,6 +272,35 @@ void SdfRenderer::createPipeline(VulkanApp* app) {
 
     pipeline = pipelineHandle;
     pipelineLayout = layoutHandle;
+
+    // C1 surface variant: same vertex stage + descriptor sets, fragment
+    // compiled with -DSDF_VARIANT=1 (smoke resolve compiled out). Reuses
+    // pipelineLayout via createGraphicsPipelineWithLayout (the SolidRenderer
+    // RT-variant precedent), so no duplicate layout is created. Separate
+    // try/catch: a missing variant SPIR-V must NOT take down the generic
+    // pipeline above — render() falls back to it. L13: vertModule is shared,
+    // not duplicated.
+    try {
+        fragSurfaceModule = app->getOrCreateShaderModule("shaders/renderer/sdf/SdfRendererSurface.frag.spv");
+    } catch (const std::exception& e) {
+        std::cerr << "[SdfRenderer] surface variant not available yet (" << e.what()
+                  << "); using the generic pipeline for all modes." << std::endl;
+        return;
+    }
+    ShaderStage vertStageSurface(vertModule, VK_SHADER_STAGE_VERTEX_BIT);
+    ShaderStage fragStageSurface(fragSurfaceModule, VK_SHADER_STAGE_FRAGMENT_BIT);
+    pipelineSurface = app->createGraphicsPipelineWithLayout(
+        {vertStageSurface.info, fragStageSurface.info},
+        std::vector<VkVertexInputBindingDescription>{
+            VkVertexInputBindingDescription{0, sizeof(SdfProxyVertex), VK_VERTEX_INPUT_RATE_VERTEX}
+        },
+        std::vector<VkVertexInputAttributeDescription>{
+            VkVertexInputAttributeDescription{ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SdfProxyVertex, position)}
+        },
+        setLayouts,
+        nullptr,
+        cfg,
+        pipelineLayout);
 }
 
 void SdfRenderer::createShadowPipeline(VulkanApp* app) {
@@ -306,6 +355,44 @@ void SdfRenderer::createShadowPipeline(VulkanApp* app) {
 
     shadowPipeline = pipelineHandle;
     shadowPipelineLayout = layoutHandle;
+
+    // H8 impostor-only variant (SHADOW_IMPOSTOR_ONLY=1): same vertex stage and
+    // set layouts, reuses shadowPipelineLayout via createGraphicsPipelineWithLayout
+    // (SolidRenderer's RT-variant precedent) so no duplicate layout is created.
+    // Same lazy tolerance: a missing SPIR-V leaves the variant null and outer
+    // cascades fall back to the full grass march. Validation-clean: identical
+    // attachments (EVSM R32G32 + D32), Sync2/barriers untouched, no legacy passes.
+    try {
+        shadowImpostorFragModule = app->getOrCreateShaderModule("shaders/renderer/shadow/SdfGrassShadowImpostor.frag.spv");
+    } catch (const std::exception& e) {
+        std::cerr << "[SdfRenderer] grass shadow impostor shaders not available yet (" << e.what()
+                  << "); outer cascades fall back to the full grass march." << std::endl;
+        return;
+    }
+    {
+        ShaderStage impVertStage(shadowVertModule, VK_SHADER_STAGE_VERTEX_BIT);
+        ShaderStage impFragStage(shadowImpostorFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
+        GraphicsPipelineConfig impCfg{};
+        impCfg.cullMode = VK_CULL_MODE_NONE; // proxy cubes seen from inside + outside (entry/exit fragments)
+        impCfg.depthTestEnable = true;
+        impCfg.depthWriteEnable = true;      // gl_FragDepth = grass hit depth (EVSM moment source)
+        impCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        impCfg.colorFormats = {kSdfShadowEvsmFormat};
+        impCfg.depthFormat = VK_FORMAT_D32_SFLOAT;
+        impCfg.depthBiasEnable = true;       // beginShadowRendering sets the dynamic bias
+        shadowImpostorPipeline = app->createGraphicsPipelineWithLayout(
+            {impVertStage.info, impFragStage.info},
+            std::vector<VkVertexInputBindingDescription>{
+                VkVertexInputBindingDescription{0, sizeof(SdfProxyVertex), VK_VERTEX_INPUT_RATE_VERTEX}
+            },
+            {
+                VkVertexInputAttributeDescription{ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SdfProxyVertex, position)}
+            },
+            setLayouts,
+            &pcRange,
+            impCfg,
+            shadowPipelineLayout);
+    }
 }
 
 // ─── Scene input ─────────────────────────────────────────────────────────────
@@ -440,11 +527,19 @@ void SdfRenderer::ensureSmokeScene() {
             // outside the smoke AABB stay empty and march at DDA-skip cost
             // only. XZ only: bullets fly in the shape's local XZ plane, and a
             // Y margin would overlap the terrain/lava containers below.
+            // C2: wide (default, A/B baseline) keeps the legacy pad above;
+            // tight fits the ball + live bullet flights (quantized). The
+            // caller re-merges afterwards (refreshMergedLocked), which marks
+            // the scene slots dirty through the existing upload path.
             if (!smokeScene_.containers().empty()) {
-                auto& c = smokeScene_.containers()[0];
-                const float ext = 3700.0f;
-                c.boundsMin -= glm::vec3(ext, 0.0f, ext);
-                c.boundsMax += glm::vec3(ext, 0.0f, ext);
+                if (smokeWideContainer_) {
+                    auto& c = smokeScene_.containers()[0];
+                    const float ext = 3700.0f;
+                    c.boundsMin -= glm::vec3(ext, 0.0f, ext);
+                    c.boundsMax += glm::vec3(ext, 0.0f, ext);
+                } else {
+                    fitSmokeTightLocked();
+                }
             }
         }
     } else {
@@ -458,6 +553,154 @@ void SdfRenderer::ensureSmokeScene() {
         m.absorption = config_.smoke.absorption;
         m.scattering = config_.smoke.scattering;
     }
+}
+
+void SdfRenderer::setSmokeWideContainer(bool wide) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    if (wide == smokeWideContainer_) return;
+    smokeWideContainer_ = wide;
+    ensureSmokeScene();
+    refreshMergedLocked();
+}
+
+void SdfRenderer::setOcclusionViewProj(const glm::mat4& vp) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    occlusionViewProj_ = vp;
+    occlusionViewProjValid_ = true;
+}
+
+bool SdfRenderer::liveBulletBoundsLocked(glm::vec3& mn, glm::vec3& mx) const {
+    // Union of every LIVE bullet's full flight segment in world space. Uses
+    // the same live window as the shader and anyManualBulletLiveLocked
+    // (flight + 8 s wake grace), so a visible round is never outside the
+    // fitted container. Slot 0 (looped auto) included via fmod age.
+    bool any = false;
+    const glm::mat3 rot = smokeRotLocked(); // smoke-local -> world rotation
+    const glm::vec3 origin = config_.smoke.pos;
+    // Wake churn spreads past the bore: keep the wake radius + 2 m slack on
+    // top of the head radius (conservative; shrinks nothing else).
+    const float margin = smokeState_.tuning.wakeRadius + 2.0f;
+    for (uint32_t i = 0; i < kSmokeMaxBullets; ++i) {
+        const Bullet& b = smokeState_.bullets[i];
+        if (b.intensity <= 0.0f) continue;
+        const float speed = std::max(glm::length(b.velocity), 1e-3f);
+        const float travelTime = std::max(b.pathLength, 1e-3f) / speed;
+        const float age = (b.loopDuration > 0.0f)
+            ? std::fmod(lastTime_ - b.phase, b.loopDuration)
+            : (lastTime_ - b.phase);
+        if (age < 0.0f || age > travelTime + 8.0f) continue;
+        const glm::vec3 dirL = b.velocity / speed;
+        const glm::vec3 endL = b.start + dirL * b.pathLength;
+        const float r = std::max(b.radiusStart, b.radiusEnd) + margin;
+        const glm::vec3 sW = origin + rot * b.start;
+        const glm::vec3 eW = origin + rot * endL;
+        const glm::vec3 bmn = glm::min(sW, eW) - glm::vec3(r);
+        const glm::vec3 bmx = glm::max(sW, eW) + glm::vec3(r);
+        if (!any) {
+            mn = bmn;
+            mx = bmx;
+            any = true;
+        } else {
+            mn = glm::min(mn, bmn);
+            mx = glm::max(mx, bmx);
+        }
+    }
+    return any;
+}
+
+void SdfRenderer::tightSmokeBoundsLocked(glm::vec3& mn, glm::vec3& mx) const {
+    // Ball term mirrors createSmokeBomb (sdf/types/SdfScene.cpp): the tight
+    // ball container is center +/- (pad + scale) with pad = max(scale*0.25,
+    // 4). That container covers the smoke instance AABB (half = scale +
+    // turbulence pad < scale + 4), so starting from it can never clip the
+    // ball; rotation keeps a uniform cube invariant. MUST stay in sync with
+    // createSmokeBomb's pad formula.
+    const float ballPad = std::max(config_.smoke.scale * 0.25f, 4.0f);
+    const float ballR = ballPad + config_.smoke.scale;
+    mn = config_.smoke.pos - glm::vec3(ballR);
+    mx = config_.smoke.pos + glm::vec3(ballR);
+    glm::vec3 bmn, bmx;
+    if (liveBulletBoundsLocked(bmn, bmx)) {
+        mn = glm::min(mn, bmn);
+        mx = glm::max(mx, bmx);
+    }
+    // Snap OUT to the fit quantum: the epsilon mechanism. Refit compares
+    // quantized bounds, so sub-quantum drift (a flying bullet's head is
+    // inside the already-fitted full path) never rebuilds.
+    mn = glm::floor(mn / kSmokeFitQuantum) * kSmokeFitQuantum;
+    mx = glm::ceil(mx / kSmokeFitQuantum) * kSmokeFitQuantum;
+}
+
+void SdfRenderer::fitSmokeTightLocked() {
+    // One-container bounds rewrite (no scene rebuild here); the caller
+    // (ensureSmokeScene paths) re-merges via refreshMergedLocked, which
+    // rebuilds the grid through the existing rebuild() path.
+    if (smokeScene_.containers().empty()) return;
+    glm::vec3 mn, mx;
+    tightSmokeBoundsLocked(mn, mx);
+    auto& c = smokeScene_.containers()[0];
+    c.boundsMin = mn;
+    c.boundsMax = mx;
+}
+
+void SdfRenderer::refitSmokeContainerIfNeededLocked() {
+    // Per-frame live-path refit from updateParams (caller holds sceneMutex).
+    // Steady state (no birth/death/edit) compares quantized bounds and
+    // returns with zero allocation and zero GPU work.
+    if (smokeWideContainer_) return;
+    if (!config_.smoke.enabled || config_.smoke.shape == kSmokeShapeFire) return;
+    if (smokeScene_.containers().empty()) return;
+    glm::vec3 mn, mx;
+    tightSmokeBoundsLocked(mn, mx);
+    const auto& c = smokeScene_.containers()[0];
+    constexpr float kEps = 1e-3f;
+    const glm::vec3 dMn = glm::abs(c.boundsMin - mn);
+    const glm::vec3 dMx = glm::abs(c.boundsMax - mx);
+    if (dMn.x <= kEps && dMn.y <= kEps && dMn.z <= kEps &&
+        dMx.x <= kEps && dMx.y <= kEps && dMx.z <= kEps) return;
+    smokeScene_.containers()[0].boundsMin = mn;
+    smokeScene_.containers()[0].boundsMax = mx;
+    smokeScene_.rebuild(); // refresh the single-container grid (4x4x4)
+    refreshMergedLocked(); // re-merge + mark scene slots dirty (existing path)
+}
+
+bool SdfRenderer::containersOverlapScreen() {
+    // M10: cheap CPU 2D bounds test from the merged container AABBs. Each
+    // box projects 8 corners to clip space; overlap needs one corner with
+    // w > 0 inside the (margined) NDC box, or straddled near-plane signs
+    // (box enclosing the camera). Fully-behind boxes cover no pixels.
+    // Conservative by construction: any doubt returns true (copy runs).
+    glm::mat4 vp(1.0f);
+    std::vector<std::pair<glm::vec3, glm::vec3>> boxes;
+    {
+        std::lock_guard<std::mutex> lock(sceneMutex);
+        if (!occlusionViewProjValid_) return true;
+        vp = occlusionViewProj_;
+        boxes.reserve(pendingScene_.containers().size());
+        for (const SdfContainer& c : pendingScene_.containers())
+            boxes.emplace_back(c.boundsMin, c.boundsMax);
+    }
+    if (boxes.empty()) return false;
+    for (const auto& [mn, mx] : boxes) {
+        bool hasFront = false, hasBehind = false;
+        for (int k = 0; k < 8; ++k) {
+            const glm::vec3 p((k & 1) ? mx.x : mn.x,
+                              (k & 2) ? mx.y : mn.y,
+                              (k & 4) ? mx.z : mn.z);
+            const glm::vec4 clip = vp * glm::vec4(p, 1.0f);
+            if (clip.w <= 1e-4f) {
+                hasBehind = true;
+                continue;
+            }
+            hasFront = true;
+            if (std::abs(clip.x) <= 1.05f * clip.w &&
+                std::abs(clip.y) <= 1.05f * clip.w) return true;
+        }
+        // Straddles the near plane (camera inside or box crossing it):
+        // the proxy can cover pixels.
+        if (hasFront && hasBehind) return true;
+    }
+    return false;
 }
 
 bool SdfRenderer::rebuildGridIfDirty() {
@@ -478,6 +721,10 @@ void SdfRenderer::updateParams(float timeSec, uint32_t frameIndex) {
     params_.time = timeSec;
     lastTime_ = timeSec; // bullet birth clock (fireBullet stamps this)
     syncAutoBulletLocked(); // re-arm auto when a manual round dies (transition-only write)
+    // C2: per-frame live-path container refit (quantized; steady state is a
+    // bounds compare with no allocation). No-op on the wide (default) path.
+    refitSmokeContainerIfNeededLocked();
+    refreshTracerLocked(); // H4: bullet heads are a function of time: re-pack every frame
     repackDebugMode();
     paramsDirtySlots_.fill(true);
 }
@@ -520,6 +767,36 @@ void SdfRenderer::setMarchRange(float minStep, float maxStep, float earlyTermThr
     params_.maxStep = maxStep;
     params_.earlyTerm = earlyTermThreshold;
     paramsDirtySlots_.fill(true);
+}
+
+// March-tier setters (perf report 25 M12). Clamp to the shader-meaningful
+// ranges (16..256 steps: the frag hard-caps at SDF_MAX_STEPS_HARD = 256;
+// 4..12 smoke samples: the phase-B loop keeps trip count 12 with a break).
+// Unchanged values are deduped so the per-frame MyApp wiring stays cheap.
+void SdfRenderer::setMaxSteps(int steps) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = static_cast<float>(std::clamp(steps, 16, 256));
+    if (v == params_.maxSteps) return;
+    params_.maxSteps = v;
+    paramsDirtySlots_.fill(true);
+}
+
+void SdfRenderer::setSmokeSamples(int n) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float v = static_cast<float>(std::clamp(n, 4, 12));
+    if (v == params_.smokeSamples) return;
+    params_.smokeSamples = v;
+    paramsDirtySlots_.fill(true);
+}
+
+void SdfRenderer::setMarchTiers(int maxSteps, int smokeSamples) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    const float vs = static_cast<float>(std::clamp(maxSteps, 16, 256));
+    const float vn = static_cast<float>(std::clamp(smokeSamples, 4, 12));
+    bool changed = false;
+    if (vs != params_.maxSteps) { params_.maxSteps = vs; changed = true; }
+    if (vn != params_.smokeSamples) { params_.smokeSamples = vn; changed = true; }
+    if (changed) paramsDirtySlots_.fill(true);
 }
 
 void SdfRenderer::setSceneDepth(VkImageView view, VkImageLayout layout,
@@ -1454,6 +1731,7 @@ void SdfRenderer::refreshAutoBulletLocked() {
     b.phase = config_.smoke.growthDuration;
     syncAutoBulletLocked(); // applies autoFire + single-flight (marks dirty on change)
     markSmokeSSBO();
+    refreshTracerLocked(); // H4: re-pack the tracer sphere after the template changed
 }
 
 glm::mat3 SdfRenderer::smokeRotLocked() const {
@@ -1496,6 +1774,56 @@ void SdfRenderer::syncAutoBulletLocked() {
     const float want = (config_.bullet.autoFire && !anyManualBulletLiveLocked()) ? 1.0f : 0.0f;
     if (smokeState_.bullets[0].intensity != want) {
         smokeState_.bullets[0].intensity = want;
+        markSmokeSSBO();
+    }
+}
+
+// H4: CPU side of the proxy-granularity tracer. Mirrors smokeBulletState()
+// (SdfSmoke.glsl) per slot at the current lastTime_: looping rounds use the
+// GLSL mod() convention (C++ fmod differs for negative arguments), one-shots
+// use max(t - phase, 0). Bullets are already stored in the smoke-local frame,
+// so the head needs no transform. Single-flight (auto XOR manual, slots 2..7
+// always empty) guarantees at most one live head-on-path round: the first
+// such slot wins, which is also the nearest along any ray. The fragment then
+// tests this ONE sphere instead of looping 8 bullets; tracer-off/miss pixels
+// pay one cached load + uniform branch. Caller holds sceneMutex.
+// TODO: if multi-live rounds are ever allowed, stream the first N live heads
+// (extend tracerMeta/tracerSphere to an array) instead of the first only.
+void SdfRenderer::refreshTracerLocked() {
+    const float t = lastTime_;
+    bool found = false;
+    glm::vec3 head{0.0f};
+    float radius = 0.0f;
+    for (uint32_t i = 0; i < kSmokeMaxBullets; ++i) {
+        const Bullet& b = smokeState_.bullets[i];
+        if (b.intensity <= 0.0f) continue;
+        const float len = glm::length(b.velocity);
+        const float speed = std::max(len, 1e-3f);
+        const float pathLen = std::max(b.pathLength, 1e-3f);
+        const float travelTime = pathLen / speed;
+        float age = 0.0f;
+        if (b.loopDuration > 0.0f) {
+            const float loopDur = std::max(b.loopDuration, 1e-3f);
+            const float loopT = t - std::floor(t / loopDur) * loopDur; // == GLSL mod()
+            age = std::max(loopT - b.phase, 0.0f);
+        } else {
+            age = std::max(t - b.phase, 0.0f);
+        }
+        const float traveled = std::clamp(speed * age, 0.0f, pathLen);
+        const bool headOnPath = (age <= travelTime + 0.05f);
+        const bool live = (age <= travelTime + 8.0f);
+        if (!live || !headOnPath) continue;
+        const glm::vec3 dir = b.velocity / std::max(len, 1e-6f);
+        head = b.start + dir * traveled;
+        radius = std::max(std::max(b.radiusStart, b.radiusEnd), 0.3f);
+        found = true;
+        break; // single-flight: at most one live round
+    }
+    const glm::vec4 newSphere(head, radius);
+    const float newValid = found ? 1.0f : 0.0f;
+    if (smokeState_.tracerMeta.x != newValid || smokeState_.tracerSphere != newSphere) {
+        smokeState_.tracerSphere = newSphere;
+        smokeState_.tracerMeta = glm::vec4(newValid, 0.0f, 0.0f, 0.0f);
         markSmokeSSBO();
     }
 }
@@ -1843,6 +2171,7 @@ void SdfRenderer::fireBullet(float angleDeg) {
     m.phase = lastTime_;
     syncAutoBulletLocked();
     markSmokeSSBO();
+    refreshTracerLocked(); // H4: the new round's head parks at traveled 0
 }
 
 void SdfRenderer::clearBullets() {
@@ -1851,6 +2180,7 @@ void SdfRenderer::clearBullets() {
         smokeState_.bullets[i].intensity = 0.0f; // intensity 0 = empty
     }
     markSmokeSSBO();
+    refreshTracerLocked(); // H4: invalidate the packed sphere
 }
 
 uint32_t SdfRenderer::bulletSlotsUsed() const {
@@ -1884,7 +2214,16 @@ void SdfRenderer::writeSlotBinding(uint32_t slot, uint32_t binding, const Buffer
 void SdfRenderer::ensureSlotCapacity(uint32_t slot) {
     SdfFrameSlot& f = slots[slot];
     const size_t maxRange = static_cast<size_t>(app_->getMaxStorageBufferRange());
-    auto grow = [&](Buffer& buf, uint32_t& cap, size_t elemSize, size_t need, uint32_t binding) {
+    // M9: each scene vector is a staging/device-local pair. The staging twin
+    // is the host-visible memcpy source (TRANSFER_SRC); the gpu twin is the
+    // device-local march source (TRANSFER_DST + STORAGE) the descriptors
+    // point at. Both grow together with headroom (mirrors
+    // DebugSDFRenderer::ensureCullCapacity); clamps keep VK_WHOLE_SIZE under
+    // maxStorageBufferRange. Rewritten only on (re)allocation, never per
+    // frame, so the write cannot race a pending CB in steady state
+    // (VUID-03047 discipline the depth refresh below also respects).
+    auto growPair = [&](Buffer& stage, Buffer& gpu, uint32_t& cap, size_t elemSize,
+                        size_t need, uint32_t binding) {
         if (need < 1) need = 1; // keep bindings valid even when the scene is empty
         if (need <= cap) return;
         // Grow with headroom (mirrors DebugSDFRenderer::ensureCullCapacity);
@@ -1893,22 +2232,31 @@ void SdfRenderer::ensureSlotCapacity(uint32_t slot) {
         const size_t maxFit = maxRange / elemSize;
         if (newCap > maxFit) newCap = maxFit;
         if (newCap < need) newCap = need; // single huge scene: validation may warn, still bind fully
-        if (buf.buffer != VK_NULL_HANDLE)
-            app_->resources.removeBufferVma(buf.buffer, buf.allocation);
-        buf = app_->createBuffer(static_cast<VkDeviceSize>(newCap * elemSize),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        if (stage.buffer != VK_NULL_HANDLE)
+            app_->resources.removeBufferVma(stage.buffer, stage.allocation);
+        if (gpu.buffer != VK_NULL_HANDLE)
+            app_->resources.removeBufferVma(gpu.buffer, gpu.allocation);
+        stage = app_->createBuffer(static_cast<VkDeviceSize>(newCap * elemSize),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        // Device-local march source: createBuffer adds TRANSFER_DST for
+        // non-host-visible buffers itself (VulkanApp::createBuffer), so the
+        // copy target flag is covered by STORAGE here.
+        gpu = app_->createBuffer(static_cast<VkDeviceSize>(newCap * elemSize),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
         cap = static_cast<uint32_t>(newCap);
+        // Bind the DEVICE-LOCAL twin: the march never reads host-visible.
         // Rewritten only on (re)allocation, never per frame, so the write
         // cannot race a pending CB in steady state.
-        writeSlotBinding(slot, binding, buf, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        writeSlotBinding(slot, binding, gpu, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     };
-    grow(f.instance, f.instanceCap, sizeof(SdfInstance), pendingScene_.instances().size(), 0);
-    grow(f.definition, f.definitionCap, sizeof(SdfDefinition), pendingScene_.definitions().size(), 1);
-    grow(f.material, f.materialCap, sizeof(SdfMaterial), pendingScene_.materials().size(), 2);
-    grow(f.container, f.containerCap, sizeof(SdfContainer), pendingScene_.containers().size(), 3);
-    grow(f.gridCell, f.gridCellCap, sizeof(SdfGridCell), pendingScene_.cells().size(), 4);
-    grow(f.gridIndex, f.gridIndexCap, sizeof(uint32_t), pendingScene_.indices().size(), 5);
+    growPair(f.instance, f.gpuInstance, f.instanceCap, sizeof(SdfInstance), pendingScene_.instances().size(), 0);
+    growPair(f.definition, f.gpuDefinition, f.definitionCap, sizeof(SdfDefinition), pendingScene_.definitions().size(), 1);
+    growPair(f.material, f.gpuMaterial, f.materialCap, sizeof(SdfMaterial), pendingScene_.materials().size(), 2);
+    growPair(f.container, f.gpuContainer, f.containerCap, sizeof(SdfContainer), pendingScene_.containers().size(), 3);
+    growPair(f.gridCell, f.gpuGridCell, f.gridCellCap, sizeof(SdfGridCell), pendingScene_.cells().size(), 4);
+    growPair(f.gridIndex, f.gpuGridIndex, f.gridIndexCap, sizeof(uint32_t), pendingScene_.indices().size(), 5);
 }
 
 void SdfRenderer::flushSlotUploads(uint32_t slot) {
@@ -1916,6 +2264,9 @@ void SdfRenderer::flushSlotUploads(uint32_t slot) {
     SdfFrameSlot& f = slots[slot];
     if (sceneDirtySlots_[slot]) {
         ensureSlotCapacity(slot);
+        // M9: memcpy into the STAGING twins only (the march reads the gpu
+        // twins). Byte counts are staged alongside so recordSlotCopies can
+        // size the vkCmdCopyBuffer copies after the mutex is released.
         auto copy = [](Buffer& dst, const void* src, size_t bytes) {
             if (bytes == 0 || dst.mappedData == nullptr || src == nullptr) return;
             std::memcpy(dst.mappedData, src, bytes);
@@ -1926,11 +2277,21 @@ void SdfRenderer::flushSlotUploads(uint32_t slot) {
         copy(f.container, pendingScene_.containers().data(), pendingScene_.containers().size() * sizeof(SdfContainer));
         copy(f.gridCell, pendingScene_.cells().data(), pendingScene_.cells().size() * sizeof(SdfGridCell));
         copy(f.gridIndex, pendingScene_.indices().data(), pendingScene_.indices().size() * sizeof(uint32_t));
+        stagedBytes_[slot] = {
+            static_cast<VkDeviceSize>(pendingScene_.instances().size() * sizeof(SdfInstance)),
+            static_cast<VkDeviceSize>(pendingScene_.definitions().size() * sizeof(SdfDefinition)),
+            static_cast<VkDeviceSize>(pendingScene_.materials().size() * sizeof(SdfMaterial)),
+            static_cast<VkDeviceSize>(pendingScene_.containers().size() * sizeof(SdfContainer)),
+            static_cast<VkDeviceSize>(pendingScene_.cells().size() * sizeof(SdfGridCell)),
+            static_cast<VkDeviceSize>(pendingScene_.indices().size() * sizeof(uint32_t)),
+        };
+        copiesPendingSlots_[slot] = true;
         sceneDirtySlots_[slot] = false;
     }
     if (paramsDirtySlots_[slot]) {
         if (f.params.mappedData != nullptr)
             std::memcpy(f.params.mappedData, &params_, sizeof(params_));
+        paramsFlushedFrame_[slot] = currentFrameIndex_;
         paramsDirtySlots_[slot] = false;
     }
 }
@@ -1941,7 +2302,67 @@ void SdfRenderer::flushSmokeUpload(uint32_t slot) {
     if (!smokeDirtySlots_[slot]) return;
     if (f.smoke.mappedData != nullptr)
         std::memcpy(f.smoke.mappedData, &smokeState_, sizeof(smokeState_));
+    smokeFlushedFrame_[slot] = currentFrameIndex_;
     smokeDirtySlots_[slot] = false;
+}
+
+// M9: stage -> device-local copies for this slot, recorded once per frame
+// (the first command buffer consumes copiesPendingSlots_; later CBs the same
+// frame only re-record the visibility barrier in
+// recordHostToShaderBarrier). Two Sync2 barriers bracket the copies, each
+// documented: (1) HOST writes (the flush memcpys above, same-thread
+// writes happen-before submit) -> TRANSFER reads, so the copy sees staged
+// bytes even on non-coherent heaps; (2) TRANSFER writes -> shader reads, so
+// the draws below sample copied bytes. Called OUTSIDE a render pass (buffer
+// barriers are illegal inside vkCmdBeginRendering scope).
+void SdfRenderer::recordSlotCopies(VkCommandBuffer cmd, uint32_t slot) {
+    if (slot >= SDF_FRAMES || cmd == VK_NULL_HANDLE) return;
+    if (!copiesPendingSlots_[slot]) return;
+    copiesPendingSlots_[slot] = false;
+    SdfFrameSlot& f = slots[slot];
+    const VkBuffer stages[6] = {f.instance.buffer, f.definition.buffer, f.material.buffer,
+                                f.container.buffer, f.gridCell.buffer, f.gridIndex.buffer};
+    const VkBuffer gpus[6] = {f.gpuInstance.buffer, f.gpuDefinition.buffer, f.gpuMaterial.buffer,
+                              f.gpuContainer.buffer, f.gpuGridCell.buffer, f.gpuGridIndex.buffer};
+    // (1) HOST -> TRANSFER availability for the staging sources just memcpyd.
+    {
+        VkBufferMemoryBarrier2 avail[6]{};
+        uint32_t n = 0;
+        for (int i = 0; i < 6; ++i) {
+            if (stages[i] == VK_NULL_HANDLE || stagedBytes_[slot][i] == 0) continue;
+            avail[n].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            avail[n].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+            avail[n].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+            avail[n].dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            avail[n].dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+            avail[n].buffer = stages[i];
+            avail[n].offset = 0;
+            avail[n].size = VK_WHOLE_SIZE;
+            ++n;
+        }
+        if (n > 0) {
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.bufferMemoryBarrierCount = n;
+            dep.pBufferMemoryBarriers = avail;
+            vkCmdPipelineBarrier2(cmd, &dep);
+        }
+    }
+    // The copies themselves (staged byte counts captured under sceneMutex).
+    for (int i = 0; i < 6; ++i) {
+        if (stages[i] == VK_NULL_HANDLE || gpus[i] == VK_NULL_HANDLE) continue;
+        const VkDeviceSize bytes = stagedBytes_[slot][i];
+        if (bytes == 0) continue;
+        VkBufferCopy region{};
+        region.srcOffset = 0;
+        region.dstOffset = 0;
+        region.size = bytes;
+        vkCmdCopyBuffer(cmd, stages[i], gpus[i], 1, &region);
+    }
+    sceneCopiedFrame_[slot] = currentFrameIndex_;
+    // (2) TRANSFER -> SHADER visibility is recorded in
+    // recordHostToShaderBarrier below (same CB, right after the copies),
+    // and re-recorded by every later CB of this frame from copiedFrame_.
 }
 
 void SdfRenderer::refreshDepthBinding(uint32_t slot) {
@@ -1967,28 +2388,55 @@ void SdfRenderer::refreshDepthBinding(uint32_t slot) {
 }
 
 void SdfRenderer::recordHostToShaderBarrier(VkCommandBuffer cmd, uint32_t slot) const {
-    // HOST writes (slot SSBO + params memcpy) -> VERTEX/FRAGMENT reads.
+    // M9: barrier ONLY for payload written/copied this frame (tracked by
+    // paramsFlushedFrame_/smokeFlushedFrame_/sceneCopiedFrame_). Steady-state
+    // frames record nothing: the old code emitted an unconditional 8-entry
+    // HOST_WRITE -> VERTEX|FRAGMENT barrier (VK_WHOLE_SIZE on all 8 buffers)
+    // up to 3x per frame per slot (shadow cascades + cull CB + SDF CB).
     // Same-thread writes happen-before submit; this Sync2 barrier makes them
     // visible to the shader stages on the recording queue. NULL handles are
     // skipped (a slot whose buffers were never allocated must not emit a
-    // barrier entry — VUID forbids VK_NULL_HANDLE there).
+    // barrier entry — VUID forbids VK_NULL_HANDLE there). Each CB/queue
+    // records its own: a barrier on the cull CB does not order the SDF CB.
+    if (slot >= SDF_FRAMES || cmd == VK_NULL_HANDLE) return;
+    const bool paramsFresh = (paramsFlushedFrame_[slot] == currentFrameIndex_);
+    const bool smokeFresh = (smokeFlushedFrame_[slot] == currentFrameIndex_);
+    const bool sceneFresh = (sceneCopiedFrame_[slot] == currentFrameIndex_);
+    if (!paramsFresh && !smokeFresh && !sceneFresh) return;
     const SdfFrameSlot& f = slots[slot];
-    VkBuffer bufs[8] = {f.instance.buffer, f.definition.buffer, f.material.buffer,
-                         f.container.buffer, f.gridCell.buffer, f.gridIndex.buffer, f.params.buffer,
-                         f.smoke.buffer};
+    // 2 small host-visible entries (params UBO + smoke SSBO) + 6
+    // device-local scene entries (transfer copies, not host writes).
+    VkBuffer hostBufs[2] = {f.params.buffer, f.smoke.buffer};
+    const bool hostFresh[2] = {paramsFresh, smokeFresh};
+    VkBuffer gpuBufs[6] = {f.gpuInstance.buffer, f.gpuDefinition.buffer, f.gpuMaterial.buffer,
+                           f.gpuContainer.buffer, f.gpuGridCell.buffer, f.gpuGridIndex.buffer};
     VkBufferMemoryBarrier2 barriers[8]{};
     uint32_t n = 0;
-    for (int i = 0; i < 8; ++i) {
-        if (bufs[i] == VK_NULL_HANDLE) continue;
+    for (int i = 0; i < 2; ++i) {
+        if (!hostFresh[i] || hostBufs[i] == VK_NULL_HANDLE) continue;
         barriers[n].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
         barriers[n].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
         barriers[n].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
         barriers[n].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
         barriers[n].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-        barriers[n].buffer = bufs[i];
+        barriers[n].buffer = hostBufs[i];
         barriers[n].offset = 0;
         barriers[n].size = VK_WHOLE_SIZE;
         ++n;
+    }
+    if (sceneFresh) {
+        for (int i = 0; i < 6; ++i) {
+            if (gpuBufs[i] == VK_NULL_HANDLE) continue;
+            barriers[n].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barriers[n].srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            barriers[n].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            barriers[n].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barriers[n].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            barriers[n].buffer = gpuBufs[i];
+            barriers[n].offset = 0;
+            barriers[n].size = VK_WHOLE_SIZE;
+            ++n;
+        }
     }
     if (n == 0) return;
     VkDependencyInfo dep{};
@@ -2016,6 +2464,10 @@ void SdfRenderer::prepareCull(VkCommandBuffer cmd) {
         }
     }
     if (stats_.containerCount == 0) return;
+    // M9: copies once per frame (first CB consumes copiesPending), then this
+    // CB's own visibility barrier (early-outs when nothing staged/copied or
+    // flushed this frame).
+    recordSlotCopies(cmd, slot);
     recordHostToShaderBarrier(cmd, slot);
 }
 
@@ -2056,6 +2508,10 @@ void SdfRenderer::prepareShadowCascade(VkCommandBuffer cmd, uint32_t frameIdx) {
     // buffer barriers are not allowed inside the dynamic rendering scope
     // (VUID-vkCmdPipelineBarrier2-srcStageMask-09556). Each cascade CB
     // records its own barrier (they may run on different queues).
+    // M9: the copies ride the first cascade CB only (copiesPending consumed
+    // there); every cascade CB still records its own barrier above for the
+    // payload staged/copied/flushed this frame.
+    recordSlotCopies(cmd, slot);
     recordHostToShaderBarrier(cmd, slot);
 }
 
@@ -2127,8 +2583,27 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
         solidDepthW = pendingDepthWidth_;
         solidDepthH = pendingDepthHeight_;
     }
-    const bool depthPreloaded = rayMarchingEnabled_.load(std::memory_order_relaxed) &&
-        (solidDepthImage != VK_NULL_HANDLE && solidDepthW > 0 && solidDepthH > 0);
+    // M11: coverage decision BEFORE any transition or copy, so an idle pass
+    // (disabled, gated, no pipeline, empty scene, missing buffers) skips the
+    // solid-depth preload below and records clear-only (see the !marching
+    // early-out after beginRendering). Folds both legacy early-outs,
+    // including the slot-buffer null check.
+    const uint32_t instanceCount = stats_.containerCount;
+    SdfFrameSlot& f = slots[slot];
+    const bool marching = enabled && rayMarchingEnabled_.load(std::memory_order_relaxed) &&
+        pipeline != VK_NULL_HANDLE && instanceCount > 0 &&
+        vertexBuffer.buffer != VK_NULL_HANDLE && indexBuffer.buffer != VK_NULL_HANDLE && indexCount > 0 &&
+        f.gpuInstance.buffer != VK_NULL_HANDLE;
+    // M10: pay the full-screen solid-depth copy only when it can reject
+    // fragments — i.e. we will march AND at least one container projects
+    // onto the screen (cheap CPU 2D NDC test from merged container AABBs).
+    // The in-shader tExit clamp + composite depth test stay as backstops.
+    // TODO(M10-step2, report 25): copy at raycastPixelSize resolution
+    // instead of full (needs target resize + shader UV remap; not attempted
+    // without a running A/B).
+    const bool depthPreloaded = marching &&
+        (solidDepthImage != VK_NULL_HANDLE && solidDepthW > 0 && solidDepthH > 0) &&
+        containersOverlapScreen();
     if (depthPreloaded) {
         // solid: SHADER_READ_ONLY -> TRANSFER_SRC
         app->recordTransitionImageLayoutLayer(cmd, solidDepthImage, VK_FORMAT_D32_SFLOAT,
@@ -2164,22 +2639,11 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
             sdfRenderWidth, sdfRenderHeight, colorClear, depthClear);
     }
 
-    // Nothing to draw (disabled, no pipeline yet, empty scene): clear only, then SRO.
-    const uint32_t instanceCount = stats_.containerCount;
-    if (!enabled || !rayMarchingEnabled_.load(std::memory_order_relaxed) ||
-        pipeline == VK_NULL_HANDLE || instanceCount == 0 ||
-        vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE || indexCount == 0) {
-        vkCmdEndRendering(cmd);
-        app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-        app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-        setSdfColorLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        setSdfDepthLayout(frameIdx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        stats_.lastDrawInstances = 0;
-        return;
-    }
-
-    SdfFrameSlot& f = slots[slot];
-    if (f.instance.buffer == VK_NULL_HANDLE) {
+    // Nothing to march (disabled, gated, no pipeline yet, empty scene):
+    // clear only, then SRO. End-state layouts match the draw path exactly,
+    // and the solid-depth preload above was already skipped (M10/M11), so a
+    // skipped frame leaves stable clear + SHADER_READ_ONLY targets.
+    if (!marching) {
         vkCmdEndRendering(cmd);
         app->recordTransitionImageLayoutLayer(cmd, colorImg, app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
         app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
@@ -2193,10 +2657,33 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
     // one: prepareCull's barrier lives on the cull CB, which may be a
     // different command buffer/queue; without this the draw can read
     // pre-upload state. Same pattern as DebugSDFRenderer::render.
+    // M9: copies were already recorded by prepareCull/prepareShadowCascade
+    // (copiesPending consumed there, so this records no second copy); this
+    // barrier covers cross-CB visibility for the payload staged/copied or
+    // flushed this frame and early-outs in steady state. The device-local
+    // gpu twins are what the draw reads (descriptors were repointed there in
+    // ensureSlotCapacity), so march samples never touch the host-visible
+    // heap. TODO(M12-distance): per-container step scaling needs a draw
+    // split (one instanced draw, one global budget) — tier-only until then.
+    recordSlotCopies(cmd, slot);
     recordHostToShaderBarrier(cmd, slot);
 
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline);
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    // C1: bind the surface variant for surface/transparent modes when it
+    // exists (same layout + descriptor sets, so the bind is interchangeable;
+    // generic stays the fallback for volume/emissive and for a missing
+    // variant module). renderMode_ is written under sceneMutex — copy it out
+    // under the same lock (short critical section, as above).
+    VkPipeline activePipeline = pipeline;
+    {
+        std::lock_guard<std::mutex> lock(sceneMutex);
+        if ((renderMode_ == RenderMode::Surface || renderMode_ == RenderMode::Transparent) &&
+            pipelineSurface != VK_NULL_HANDLE) {
+            activePipeline = pipelineSurface;
+        }
+    }
+
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, activePipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
 
     VkDescriptorSet descriptorSets[] = {mainDescriptorSet, sdfSets[slot]};
     if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 2, descriptorSets, 0, nullptr);
@@ -2224,18 +2711,19 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
 
 void SdfRenderer::drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
                                     const glm::mat4& lightViewProj, float time) {
-    (void)cascadeIndex; // one draw serves every cascade; only the matrix changes
     if (app_ == nullptr || cmd == VK_NULL_HANDLE) return;
     if (!rayMarchingEnabled_.load(std::memory_order_relaxed)) return; // master gate
     if (shadowPipeline == VK_NULL_HANDLE || shadowPipelineLayout == VK_NULL_HANDLE) return;
     const uint32_t slot = currentFrame_ % SDF_FRAMES;
-    if (slots[slot].container.buffer == VK_NULL_HANDLE || sdfSets[slot] == VK_NULL_HANDLE) return;
+    // M9: shadow draw samples the device-local twin (see render() above).
+    if (slots[slot].gpuContainer.buffer == VK_NULL_HANDLE || sdfSets[slot] == VK_NULL_HANDLE) return;
     if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE ||
         indexCount == 0) return;
 
     uint32_t grassBase = 0;
     uint32_t grassCount = 0;
     SdfGrassShadowPC pc{};
+    bool impostorOnly = false;
     {
         std::lock_guard<std::mutex> lock(sceneMutex);
         // Grass-only gate: the pass rasterizes the GRASS container range only
@@ -2259,6 +2747,15 @@ void SdfRenderer::drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
         pc.impostor = glm::vec4(config_.grass.impostorStart,
                                 config_.grass.impostorFull, 0.0f, 0.0f);
         pc.lightDir = glm::vec4(shadowLightDir_, 0.0f);
+        // H8: outer cascades march impostors, not blades (coarse outer
+        // cascades cannot resolve blade detail; report-22 C2 precedent). A
+        // shadowLodScale at/above impostorFull already means impostor-only
+        // everywhere, so cascade 0 takes the cheap variant too.
+        // TODO: drive this from ShadowRenderer's per-cascade projected texel
+        // size instead of the cascade index once that metric is plumbed
+        // through to SdfRenderer.
+        impostorOnly = (cascadeIndex > 0) ||
+                       (config_.grass.shadowLodScale >= config_.grass.impostorFull);
     }
 
     // HOST -> shader visibility: prepareShadowCascade recorded the barrier on
@@ -2268,7 +2765,14 @@ void SdfRenderer::drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
     // Raw binds (not cmdState): the SDF renderer's state tracker belongs to
     // the SDF/main command buffer, never to this cascade CB, so eliding a
     // bind through it could skip a required bind on this command buffer.
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
+    // H8: impostor-only variant for outer cascades: same EVSM moment contract
+    // (vec2(exp(2z), exp(4z)) + gl_FragDepth), zero blade ALU. Falls back to
+    // the full march while the variant module is missing. The descriptor set
+    // bind uses shadowPipelineLayout, which the variant reuses by construction.
+    VkPipeline shadowPipe = shadowPipeline;
+    if (impostorOnly && shadowImpostorPipeline != VK_NULL_HANDLE)
+        shadowPipe = shadowImpostorPipeline;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipe);
     VkDescriptorSet set = sdfSets[slot];
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout,
         1, 1, &set, 0, nullptr);
