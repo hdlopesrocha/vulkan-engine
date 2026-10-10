@@ -66,13 +66,25 @@ public:
     ~MainSceneLoader() = default;
 
     void loadScene(
-        Octree &opaqueLayer, 
-        Octree::OctreeNodeDataHandler &opaqueUpdateHandler,
-        Octree::OctreeNodeDataHandler &opaqueDeleteHandler,
-        Octree &transparentLayer,
-        Octree::OctreeNodeDataHandler &transparentUpdateHandler,
-        Octree::OctreeNodeDataHandler &transparentDeleteHandler
+        std::vector<Octree*>& octrees,
+        std::vector<Octree::OctreeNodeDataHandler>& updateHandlers,
+        std::vector<Octree::OctreeNodeDataHandler>& deleteHandlers
         ) {
+        // Dynamic layers: layer 0 = opaque terrain, layer 1 = transparent
+        // water when present. Extra layers start empty (brushes populate them).
+        if (octrees.empty() || !octrees[0]) return;
+        Octree& opaqueLayer = *octrees[0];
+        Octree::OctreeNodeDataHandler opaqueUpdateHandler;
+        Octree::OctreeNodeDataHandler opaqueDeleteHandler;
+        if (!updateHandlers.empty()) opaqueUpdateHandler = updateHandlers[0];
+        if (!deleteHandlers.empty()) opaqueDeleteHandler = deleteHandlers[0];
+        Octree* transparentPtr = octrees.size() > 1 ? octrees[1] : nullptr;
+        Octree::OctreeNodeDataHandler transparentUpdateHandler;
+        Octree::OctreeNodeDataHandler transparentDeleteHandler;
+        if (updateHandlers.size() > 1) transparentUpdateHandler = updateHandlers[1];
+        if (deleteHandlers.size() > 1) transparentDeleteHandler = deleteHandlers[1];
+        const bool hasTransparent = (transparentPtr != nullptr);
+        Octree& transparentLayer = hasTransparent ? *transparentPtr : opaqueLayer;
 
         int sizePerTile = 32;
         int tiles= 256;
@@ -147,7 +159,7 @@ public:
             opaqueLayer.apply(DeleteSignedDistanceOperation(), distortedFunction, model, SimpleBrush(7), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
-        {
+        if (hasTransparent) {
             std::cout << "\ttransparentLayer.add(sphere)"<< std::endl;
             glm::vec3 center = glm::vec3(1500+512.0f,512.0f,500+512.0f);
             BoundingSphere sphere = BoundingSphere(center, 64);
@@ -156,7 +168,7 @@ public:
             transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(1), sizePerTile, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
 
-        {
+        if (hasTransparent) {
             std::cout << "\ttransparentLayer.add(sphere)"<< std::endl;
             glm::vec3 center = glm::vec3(1500+256.0f,256.0f,500+512.0f + 256.0f);
             BoundingSphere sphere = BoundingSphere(center, 128);
@@ -306,7 +318,7 @@ public:
             opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), sizePerTile*0.25f, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
-        {
+        if (hasTransparent) {
             Transformation model = Transformation();
             std::cout << "\ttransparentLayer.add(water)"<< std::endl;
             BoundingBox waterBox = mapBox;
@@ -393,7 +405,7 @@ public:
         }
         glm::vec3 ringPosition(0.0f, 800.0f, 0.0f);
         glm::vec3 ringSize(512.0f, 32.0f, 512.0f);
-        {
+        if (hasTransparent) {
             int numSegs = 256;
             float angleStep = 2.0f * glm::pi<float>() / numSegs;
             float overlap = 0.05f;
