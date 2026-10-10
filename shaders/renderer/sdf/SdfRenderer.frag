@@ -17,6 +17,27 @@
 // combined SDF (adaptive stepping) -> density/temperature/emission
 // front-to-back accumulation with early termination.
 
+// C1/L14 (perf report 25): pipeline-variant specialization via compile-time
+// defines. The Makefile builds one .spv per variant from THIS single source
+// (there is no SdfRendererVolume.* twin anymore):
+//   SDF_VARIANT 0 = generic (default): full traversal, pixel-identical to the
+//     legacy module; bound for volume/emissive modes (and as the fallback for
+//     every mode while a variant module is missing).
+//   SDF_VARIANT 1 = surface: the smoke two-phase resolve is compiled out (it
+//     only runs for renderMode 1/2, so surface/transparent modes never enter
+//     it); bound when renderMode_ is Surface/Transparent. The runtime
+//     sdfParams.renderMode read below stays as a correctness backstop, so
+//     binding the "wrong" variant still renders correctly (only slower).
+//   SDF_STRIP_DEBUG 0 = keep the smoke/fire debug ramps (default, shipping
+//     behavior). 1 compiles the ~70 lines of debug-view code out; wiring a
+//     stripped non-debug pipeline + selection is TODO (needs an app run).
+#ifndef SDF_VARIANT
+#define SDF_VARIANT 0
+#endif
+#ifndef SDF_STRIP_DEBUG
+#define SDF_STRIP_DEBUG 0
+#endif
+
 #include "../../includes/Locations.glsl"
 
 layout(location = VARY_POSWORLD) in vec3 fragWorldPos;
@@ -75,6 +96,45 @@ layout(std430, set = 1, binding = 10) buffer SdfProfileBuffer {
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
+// ── Step-budget proof + march magic constants (perf report 25 L15, M12) ────
+// One block deriving every march-path constant and its interaction, so the
+// next tuning pass does not re-break sphere-tracing conservatism:
+//   SDF_MAX_STEPS_HARD = 256: compiler-visible absolute loop bound only.
+//     The EFFECTIVE budget is sdfParams.maxSteps (M12 tier: 64 Maximum
+//     reference, 32 Minimal), clamped at :407-409. No ray can out-step the
+//     tier budget; the hard cap only bounds the unrolled trip count.
+//   SDF_MAX_CANDIDATES = 8: grid cells store at most 8 instance indices, so
+//     a step evaluates at most the FIRST 8 in grid order (:565,573-609).
+//     Known skew (report C3): first-N is not nearest-N; turbulence-widened
+//     skipR below admits MORE candidates, never fewer. Cap evaluated
+//     candidates per step (nearest-N by AABB distance) before touching this.
+//   Lipschitz 0.5 halving (:231-233): noise/spike deformations are not
+//     metric (|grad d| can exceed 1 by ~deform amplitude / feature size), so
+//     deformed definitions halve the canonical distance and the world step
+//     (d * ds) can no longer overestimate. Undeformed paths (rock sphere,
+//     rigid grass lean) skip it: exact distances there. A uniform factor
+//     cancels in the normal normalize, so shading is unaffected — only the
+//     step bound turns conservative (up to 2x more steps through deformed
+//     fields: the M12 Minimal tier pays this back with fewer budgeted steps).
+//   DDA epsilon 1e-4 (:560,620): guaranteed minimum progress per iteration.
+//     A ray exactly on a cell boundary face has dtCell == 0 there and would
+//     otherwise advance only minStep per iteration and stall inside the step
+//     budget (the half-screen "no smoke" cross when the camera sat on a grid
+//     wall). Every advance adds the epsilon on top of max(jump, minStep).
+//   Dither 1/8 wavelength (:395-403): breaks the coherent per-pixel step
+//     phase that drew dashed rings along cloud silhouettes. Scaled by the
+//     noise wavelength (1/noiseScale) so small/flame scenes stay unaffected;
+//     bounded (< wl/8) so it never skips a thin feature.
+//   skipR widening (:586): skipR = maxStep + 0.1 + abs(turbulence). The
+//     maxStep + 0.1 term keeps the AABB pre-test from rejecting instances
+//     whose surface is within one step; the turbulence term widens
+//     acceptance exactly where the field deforms (conservative: fewer
+//     skips, never missed hits). Interaction: halving x widening x the
+//     fixed 12-sample resolve is the worst-case pixel (64 x 8 x noise +
+//     12); the M12 tiers scale all three levers together (steps, pixel
+//     block, smoke samples) so the product falls faster than any lever
+//     alone. Step-budget proof: max overstep = maxStep * safety < min
+//     feature size at each LOD tier; keep it so when retuning.
 const int SDF_MAX_STEPS_HARD = 256;
 const uint SDF_MAX_CANDIDATES = 8u;
 
@@ -93,27 +153,24 @@ bool sdfRayAabb(vec3 ro, vec3 rd, vec3 bMin, vec3 bMax,
     return tExit > max(tEnter, 0.0);
 }
 
-// One depth-texture tap -> world distance from the camera (1e5 when the texel
-// is empty/far). Shared by the solid and the water occluders.
-float sdfDepthDistance(sampler2D depthTex, vec3 ro, vec2 uv) {
+// H5: one depth-texture tap -> ray distance WITHOUT a second invVP
+// reconstruct (1e5 when the texel is empty/far). clipA = VP*vec4(ro,1) and
+// clipB = VP*vec4(rd,0) are built ONCE per pixel at the call site; each tap
+// then solves the ray depth t from raw = (Az+Bz*t)/(Aw+Bw*t):
+//   t = (Az - raw*Aw) / (raw*Bw - Bz).
+// The tap sits on the same UV as the ray build, so the reconstructed point
+// lies on this ray (up to float rounding) and t == distance(ro, w) with the
+// normalized rd. Shared by the solid and the water occluders. Explicit LOD is
+// kept (divergent flow, derivatives undefined here).
+float sdfDepthDistanceRay(vec4 clipA, vec4 clipB, sampler2D depthTex, vec2 uv) {
     vec2 cuv = clamp(uv, vec2(0.0), vec2(1.0));
     float raw = textureLod(depthTex, cuv, 0.0).r;
     if (raw >= 1.0) return 1e5;
-    vec4 w = ubo.invViewProjection * vec4(cuv * 2.0 - 1.0, raw, 1.0);
-    if (abs(w.w) < 1e-8) return 1e5;
-    return distance(ro, w.xyz / w.w);
-}
-
-// Nearest rasterized occluder distance: the solid scene depth always, plus
-// the rasterized water surface when the water pass wrote a valid geometry
-// depth this frame (SdfParamsUBO::waterDepthEnabled). Clamping the march exit
-// with the minimum occludes grass (and every SDF) behind solid AND water.
-float sdfSceneDistance(vec3 ro, vec2 uv) {
-    float d = sdfDepthDistance(sdfSceneDepth, ro, uv);
-    if (sdfParams.waterDepthEnabled > 0.5) {
-        d = min(d, sdfDepthDistance(sdfWaterDepth, ro, uv));
-    }
-    return d;
+    float denom = raw * clipB.w - clipB.z;
+    if (abs(denom) < 1e-8) return 1e5;
+    float t = (clipA.z - raw * clipA.w) / denom;
+    if (t < 0.0) return 1e5;
+    return t;
 }
 
 // World -> local through the generic SdfModel (sdf_model.glsl): inverse TRS.
@@ -123,8 +180,35 @@ vec3 sdfWorldToLocal(vec3 wpos, SdfInstance inst, out float outScale) {
     return sdfModelToLocal(sdfModelFromInstance(inst), wpos, outScale);
 }
 
+void sdfGrassWindLean(SdfInstance inst, SdfDefinition def, float time,
+                      out vec2 windL, out float windAmp) {
+    // The shared wind field is sampled once at the clump origin (the same
+    // field the vegetation billboard shader reads), converted into the
+    // clump's local XZ frame and applied as a RIGID lean inside
+    // sdGrassClump; rotation preserves distances, so the returned
+    // distance stays exact for sphere tracing (no Lipschitz halving).
+    vec3 windW = windSVF(inst.position, time);
+    vec2 wind2 = vec2(windW.x, windW.z);
+    windAmp = min(length(wind2) * max(def.params1.z, 0.0),
+                  max(def.params1.y, 0.0));
+    windL = vec2(0.0);
+    if (dot(wind2, wind2) > 1e-8) {
+        // Rotation-only world -> local (the clump frame is rotated by the
+        // instance euler); scale must not skew a direction.
+        vec3 wl = transpose(sdfEulerMat(inst.rotation)) * vec3(wind2.x, 0.0, wind2.y);
+        float l2 = dot(wl.xz, wl.xz);
+        windL = (l2 > 1e-8) ? wl.xz * inversesqrt(l2) : vec2(0.0);
+    }
+}
+
 float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
-                      SdfMaterial mat, float time) {
+                      SdfMaterial mat, float time, float lodT,
+                      vec2 grassWindL, float grassWindAmp) {
+    // lodT = ray distance of this sample (== t at the call site): drives the
+    // C3 distance-tiered noise LOD. grassWindL/grassWindAmp arrive
+    // precomputed (march: per-ray cache; normals: computed once per hit) so
+    // the evaluator performs no wind-field sample for grass. Non-grass
+    // callers pass vec2(0.0)/0.0 (ignored).
     // Every primitive is evaluated in the local frame supplied by its
     // SdfModel; the smoke primitive marches inside that frame and never
     // performs any transform itself.
@@ -134,29 +218,14 @@ float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
         return smokeMarchSDF(q, def, time) * ds;
     }
     if (def.prim == SDF_PRIM_GRASS) {
-        // Grass clump: one grouped SDF per existing vegetation instance. The
-        // shared wind field is sampled once at the clump origin (the same
-        // field the vegetation billboard shader reads), converted into the
-        // clump's local XZ frame and applied as a RIGID lean inside
-        // sdGrassClump; rotation preserves distances, so the returned
-        // distance stays exact for sphere tracing (no Lipschitz halving).
-        vec3 windW = windSVF(inst.position, time);
-        vec2 wind2 = vec2(windW.x, windW.z);
-        float windAmp = min(length(wind2) * max(def.params1.z, 0.0),
-                            max(def.params1.y, 0.0));
-        vec2 windL = vec2(0.0);
-        if (dot(wind2, wind2) > 1e-8) {
-            // Rotation-only world -> local (the clump frame is rotated by the
-            // instance euler); scale must not skew a direction.
-            vec3 wl = transpose(sdfEulerMat(inst.rotation)) * vec3(wind2.x, 0.0, wind2.y);
-            float l2 = dot(wl.xz, wl.xz);
-            windL = (l2 > 1e-8) ? wl.xz * inversesqrt(l2) : vec2(0.0);
-        }
+        // Grass clump: one grouped SDF per existing vegetation instance; the
+        // rigid wind lean arrives precomputed (see sdfGrassWindLean) and the
+        // projected-size camScale LOD precedent is unchanged.
         // Projected-size proxy: camera distance in clump scales. Drives the
         // blade-count reduction and the aggregate-only far LOD.
         float camScale = distance(ubo.viewPosition, inst.position) / max(inst.scale, 1e-3);
         return sdGrassClump(q, def.params0, def.params1, inst.seed, camScale,
-                            windL, windAmp,
+                            grassWindL, grassWindAmp,
                             sdfParams.impostorStart, sdfParams.impostorFull) * ds;
     }
     // Optional repeat before primitive eval (SDF_DEFORM_REPEAT): period from
@@ -179,6 +248,13 @@ float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
     // (Offsets stay in local units, consistent with d.)
     vec3 qn = q;
     float hhn = 3.2;
+    // C3(3): distance-tiered noise LOD (uniform-driven, default conservative:
+    // sdfLodFar <= 0 means 1e5, i.e. never skip — the pre-LOD march). Beyond
+    // the tier the flame deform/spike noise AND the wind-lean sample feeding
+    // it are skipped; the undeformed primitive distance is already a valid
+    // (larger, safer) sphere-tracing bound, so far steps only get longer.
+    float lodFarC3 = (sdfParams.sdfLodFar > 0.0) ? sdfParams.sdfLodFar : 1e5;
+    bool farLod = lodT > lodFarC3;
     if (def.prim == SDF_PRIM_FLAME) {
         float hh = max(def.params0.y, 1e-3);
         qn = q * (3.2 / hh);
@@ -193,8 +269,10 @@ float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
         // when a consumer below is active (deform bit or spikes), mirroring
         // their exact conditions, so undeformed flames pay zero extra ALU.
         // NaN-safe: windSVF is NaN-safe and the clamp bounds the shift.
+        // Far LOD adds one more gate: with no consumer active out there the
+        // wind sample is skipped entirely.
         float spkAmp = max(def.params1.y, 0.0);
-        if (((deform & SDF_DEFORM_NOISE) != 0u) || (spkAmp > 0.001)) {
+        if ((((deform & SDF_DEFORM_NOISE) != 0u) || (spkAmp > 0.001)) && !farLod) {
             float turbResp = 0.25 + clamp(mat.turbulence, 0.0, 2.0);
             vec3 wfFire = windSVF(wpos, time);
             vec2 fireLean = clamp(wfFire.xz * (0.05 * turbResp), vec2(-0.5), vec2(0.5));
@@ -208,7 +286,7 @@ float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
     // sphere tracing would skip through the field. Flag every deformed
     // definition and compensate below; the undeformed path is unchanged.
     bool deformed = false;
-    if ((deform & SDF_DEFORM_NOISE) != 0u) {
+    if (((deform & SDF_DEFORM_NOISE) != 0u) && !farLod) {
         float turb = mat.turbulence;
         float rise = mat.riseSpeed;
         d += sdfFlameDeform(qn, time, inst.seed, turb, rise);
@@ -218,7 +296,7 @@ float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
         // Tapered-flame spikes (params1.y = amplitude, .z = frequency):
         // ridged tongues over the smooth capsule; 0 = rounded capsule.
         float spk = max(def.params1.y, 0.0);
-        if (spk > 0.001) {
+        if ((spk > 0.001) && !farLod) {
             d += sdfFlameSpikes(qn, hhn, inst.seed, def.params1.z, spk);
             deformed = true;
         }
@@ -228,6 +306,8 @@ float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
     // longer overestimate the true distance by more than the deform gain.
     // A uniform factor cancels in sdfSurfaceNormal (normalize), so shading
     // is unaffected; only the march step bound becomes conservative.
+    // Kept ONLY where the LOD still deforms (deformed is false on the far
+    // path, so far samples march the undeformed bound with full steps).
     if (deformed) {
         d *= 0.5;
     }
@@ -235,16 +315,42 @@ float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
 }
 
 vec3 sdfSurfaceNormal(vec3 p, SdfInstance inst, SdfDefinition def,
-                      SdfMaterial mat, float time, float e) {
+                      SdfMaterial mat, float time, float e, float lodT) {
+    // Tetrahedral 4-tap (near path, H7): unchanged gradients, plus the
+    // threaded-through LOD distance and a once-per-hit grass wind lean.
+    vec2 gwl = vec2(0.0);
+    float gwa = 0.0;
+    if (def.prim == SDF_PRIM_GRASS) {
+        sdfGrassWindLean(inst, def, time, gwl, gwa);
+    }
     vec3 k0 = vec3(1.0, -1.0, -1.0);
     vec3 k1 = vec3(-1.0, -1.0, 1.0);
     vec3 k2 = vec3(-1.0, 1.0, -1.0);
     vec3 k3 = vec3(1.0, 1.0, 1.0);
-    float f0 = sdfEvalInstance(p + k0 * e, inst, def, mat, time);
-    float f1 = sdfEvalInstance(p + k1 * e, inst, def, mat, time);
-    float f2 = sdfEvalInstance(p + k2 * e, inst, def, mat, time);
-    float f3 = sdfEvalInstance(p + k3 * e, inst, def, mat, time);
+    float f0 = sdfEvalInstance(p + k0 * e, inst, def, mat, time, lodT, gwl, gwa);
+    float f1 = sdfEvalInstance(p + k1 * e, inst, def, mat, time, lodT, gwl, gwa);
+    float f2 = sdfEvalInstance(p + k2 * e, inst, def, mat, time, lodT, gwl, gwa);
+    float f3 = sdfEvalInstance(p + k3 * e, inst, def, mat, time, lodT, gwl, gwa);
     vec3 n = k0 * f0 + k1 * f1 + k2 * f2 + k3 * f3;
+    float l = length(n);
+    return (l > 1e-9) ? (n / l) : vec3(0.0, 1.0, 0.0);
+}
+
+// H7 far path: 3-tap forward difference reusing the hit-step dBest as the
+// center tap (3 new evals instead of 4; 4 SDF evals per hit incl. the march
+// step, vs 5 before). Selected beyond sdfLodNear; the rock triplanar shade
+// downstream is unchanged (it only consumes the returned normal).
+vec3 sdfSurfaceNormalFD(vec3 p, SdfInstance inst, SdfDefinition def,
+                        SdfMaterial mat, float time, float e, float dC, float lodT) {
+    vec2 gwl = vec2(0.0);
+    float gwa = 0.0;
+    if (def.prim == SDF_PRIM_GRASS) {
+        sdfGrassWindLean(inst, def, time, gwl, gwa);
+    }
+    float fx = sdfEvalInstance(p + vec3(e, 0.0, 0.0), inst, def, mat, time, lodT, gwl, gwa);
+    float fy = sdfEvalInstance(p + vec3(0.0, e, 0.0), inst, def, mat, time, lodT, gwl, gwa);
+    float fz = sdfEvalInstance(p + vec3(0.0, 0.0, e), inst, def, mat, time, lodT, gwl, gwa);
+    vec3 n = vec3(fx - dC, fy - dC, fz - dC);
     float l = length(n);
     return (l > 1e-9) ? (n / l) : vec3(0.0, 1.0, 0.0);
 }
@@ -382,9 +488,20 @@ void main() {
     // (binding 9) at the marched ray's screen position (the block center when
     // pixelated): the SDF task waits on tlSolid/tlWater, after which both
     // depths are in SHADER_READ_ONLY_OPTIMAL, so sampling here is race-free.
-    // Fully occluded rays discard; partially occluded rays march only to the
-    // occluder. (Explicit LOD: divergent flow, derivatives undefined here.)
-    tExit = min(tExit, sdfSceneDistance(ro, rayUV));
+    // H5: the clip-space ray (clipA/clipB, two VP matvecs hoisted out of the
+    // taps) replaces up to two extra invVP reconstructs; solid taps first and
+    // a solid-only occlude skips the water tap entirely (water can only shrink
+    // the exit, never lift it). Fully occluded rays discard; partially
+    // occluded rays march only to the occluder.
+    vec4 clipA = ubo.viewProjection * vec4(ro, 1.0);
+    vec4 clipB = ubo.viewProjection * vec4(rd, 0.0);
+    float solidD = sdfDepthDistanceRay(clipA, clipB, sdfSceneDepth, rayUV);
+    if (tEnter >= min(tExit, solidD)) discard;
+    float occlD = solidD;
+    if (sdfParams.waterDepthEnabled > 0.5) {
+        occlD = min(occlD, sdfDepthDistanceRay(clipA, clipB, sdfWaterDepth, rayUV));
+    }
+    tExit = min(tExit, occlD);
     if (tEnter >= tExit) discard;
 
     // March counters (profiling): this invocation will march, so it counts as
@@ -466,47 +583,60 @@ void main() {
     // measured and shaded, so later contacts march through without
     // double-counting while fire ahead still accumulates.
     bool smokeResolved = false;
+    // C3(2): per-ray grass wind-lean cache (4 entries, fully associative,
+    // round-robin eviction). Keyed by instance SSBO index; a miss recomputes
+    // via sdfGrassWindLean, so eviction only costs ALU, never correctness.
+    // Tags init to an impossible index; the cache lives one fragment
+    // invocation (no cross-frame state, no barriers).
+    uint grassWindTag[4];
+    vec2 grassWindLean[4];
+    float grassWindAmp[4];
+    for (uint w = 0u; w < 4u; w++) {
+        grassWindTag[w] = 0xFFFFFFFFu;
+        grassWindLean[w] = vec2(0.0);
+        grassWindAmp[w] = 0.0;
+    }
+    uint grassWindCursor = 0u;
 
-    // Visible tracer round: ONE analytic gold sphere of the bullet's own
-    // radius at the head, evaluated ONCE before the march (the old
-    // per-sample sphere test aliased into stacked horizontal discs, and the
-    // multi-sphere chain shaded every sub-sphere with its own highlight, so
-    // it read as several smaller balls). Exact ray/sphere root gives a
-    // banding-free hit distance. The smoke container expands over the flight
-    // path, so the proxy is covered even outside the smoke ball.
+    // H4: visible tracer round, CPU-compacted. refreshTracerLocked() packs the
+    // single live round (single-flight auto-XOR-manual guarantees at most one
+    // live head-on-path bullet) into smokeGpu.tracerSphere (smoke-local head
+    // xyz + radius w) / tracerMeta.x (valid), so the fragment tests ONE sphere
+    // instead of looping 8 bullets through smokeBulletState. Tracer-off and
+    // analytic-miss pixels pay one cached load + uniform branch and zero bullet
+    // ALU; the local-frame transforms below run only while a round is live.
+    // Exact ray/sphere root keeps the banding-free hit distance, and the gold
+    // shading path (smokeTracerColor) is unchanged. The per-step re-tests
+    // below stay single `bestT` compares (untouched).
     //
     // The round is packed in the smoke instance's LOCAL frame, so the test
     // runs there through the transform packed in the smoke SSBO — world
     // camera coordinates and local bullet coordinates must never meet (that
     // mismatch put the tracer at the world origin offset, not at the smoke).
     // Shading converts the local normal/view/sun through the same rotation.
-    vec3 roL = smokeWorldToLocal(ro);
-    vec3 rdL = smokeDirToLocal(rd);
-    float aL = max(dot(rdL, rdL), 1e-12); // 1 for the unit-scale smoke bomb
     float bestT = 1e5;
     vec3 bestC = vec3(0.0);
     float bestR = 0.0;
-    if (smokeGpu.tracerActive > 0.5) {
-        for (int bi = 0; bi < 8; ++bi) {
-            Bullet bbl = smokeGpu.bullets[bi];
-            if (bbl.intensity <= 0.0) continue;
-            SmokeBulletState bst = smokeBulletState(bbl, time);
-            if (!bst.live || !bst.headOnPath) continue;
-            vec3 bD = bbl.velocity / max(length(bbl.velocity), 1e-6);
-            vec3 head = bbl.start + bD * bst.traveled;
-            // One sphere, bullet's own radius (max of both ends, guard floor).
-            float radius = max(max(bbl.radiusStart, bbl.radiusEnd), 0.3);
-            vec3 oc = roL - head;
-            float bq = dot(oc, rdL);
-            float cq = dot(oc, oc) - radius * radius;
-            float disc = bq * bq - aL * cq;
-            if (disc > 0.0) {
-                float tHit = (-bq - sqrt(disc)) / aL;
-                if (tHit > 0.0 && tHit < bestT) {
-                    bestT = tHit;
-                    bestC = head;
-                    bestR = radius;
-                }
+    vec3 roL = vec3(0.0);
+    vec3 rdL = vec3(0.0, 0.0, 1.0);
+    float aL = 1.0;
+    if ((smokeGpu.tracerActive > 0.5) && (smokeGpu.tracerMeta.x > 0.5)) {
+        roL = smokeWorldToLocal(ro);
+        rdL = smokeDirToLocal(rd);
+        aL = max(dot(rdL, rdL), 1e-12); // 1 for the unit-scale smoke bomb
+        // One sphere, bullet's own radius (CPU-floored at 0.3, re-guarded here).
+        vec3 head = smokeGpu.tracerSphere.xyz;
+        float radius = max(smokeGpu.tracerSphere.w, 0.3);
+        vec3 oc = roL - head;
+        float bq = dot(oc, rdL);
+        float cq = dot(oc, oc) - radius * radius;
+        float disc = bq * bq - aL * cq;
+        if (disc > 0.0) {
+            float tHit = (-bq - sqrt(disc)) / aL;
+            if (tHit > 0.0) {
+                bestT = tHit;
+                bestC = head;
+                bestR = radius;
             }
         }
     }
@@ -570,6 +700,16 @@ void main() {
         SdfDefinition bestDef;
         SdfMaterial bestMat;
         bool haveBest = false;
+        // C3(1): bounded nearest-N selection. Phase 1 records the AABB
+        // distance + instance index of every passing candidate in grid order
+        // (no SDF eval yet); phase 2 evaluates at most 4 through the full
+        // evaluator. nCand <= 4 keeps grid order — close-up pixel-identical
+        // including subtraction folds, whose sequential combine is order
+        // sensitive; larger sets evaluate the 4 nearest by AABB distance
+        // (far-field tolerance covers the culled tail).
+        float candOb[8];
+        uint candIdx[8];
+        uint nCand = 0u;
         for (uint k = 0u; k < SDF_MAX_CANDIDATES; k++) {
             if (k >= n) break;
             uint gAddr = coff + k;
@@ -600,8 +740,80 @@ void main() {
                 distance(ubo.viewPosition, inst.position) >= sdfParams.grassImpostorDistance) {
                 continue;
             }
+            candOb[nCand] = ob;
+            candIdx[nCand] = ii;
+            nCand++;
+        }
+        // Order the at-most-4 evaluations: grid order when nothing is culled,
+        // increasing AABB distance otherwise (4-wide insertion selection over
+        // at most 8 recorded candidates; static bounds, function-local
+        // arrays only).
+        uint evalIdx[4];
+        uint nEval = min(nCand, 4u);
+        if (nCand <= 4u) {
+            for (uint s = 0u; s < 4u; s++) {
+                if (s >= nEval) break;
+                evalIdx[s] = candIdx[s];
+            }
+        } else {
+            float evalOb[4];
+            uint nSel = 0u;
+            for (uint c = 0u; c < 8u; c++) {
+                if (c >= nCand) break;
+                uint pos = nSel;
+                for (uint s = 0u; s < 4u; s++) {
+                    if (s >= nSel) break;
+                    if (candOb[c] < evalOb[s]) { pos = s; break; }
+                }
+                if (pos >= 4u) continue;
+                if (nSel < 4u) nSel++;
+                for (int s = 3; s >= 0; s--) {
+                    if (s <= int(pos)) break;
+                    if (uint(s) < nSel) {
+                        evalOb[uint(s)] = evalOb[uint(s) - 1u];
+                        evalIdx[uint(s)] = evalIdx[uint(s) - 1u];
+                    }
+                }
+                evalOb[pos] = candOb[c];
+                evalIdx[pos] = candIdx[c];
+            }
+        }
+        for (uint s = 0u; s < 4u; s++) {
+            if (s >= nEval) break;
+            uint ii = evalIdx[s];
+            SdfInstance inst = sdfInstances[ii];
+            SdfDefinition dd = sdfDefinitions[inst.defIdx];
+            SdfMaterial m0 = sdfMaterials[inst.matIdx];
             if (sdfProf) atomicAdd(sdfCounters[3], 1u);
-            float d = sdfEvalInstance(p, inst, dd, m0, time);
+            // C3(2): per-ray grass wind-lean cache (exact: the lean is a
+            // function of the instance frame + UBO time only). Flame wind is
+            // sampled at the moving wpos inside the evaluator and is never
+            // cached. Non-grass instances skip the lookup entirely.
+            vec2 wl = vec2(0.0);
+            float wa = 0.0;
+            if (dd.prim == SDF_PRIM_GRASS) {
+                bool windHit = false;
+                for (uint w = 0u; w < 4u; w++) {
+                    if (grassWindTag[w] == ii) {
+                        wl = grassWindLean[w];
+                        wa = grassWindAmp[w];
+                        windHit = true;
+                        break;
+                    }
+                }
+                if (!windHit) {
+                    vec2 nl = vec2(0.0);
+                    float na = 0.0;
+                    sdfGrassWindLean(inst, dd, time, nl, na);
+                    wl = nl;
+                    wa = na;
+                    grassWindLean[grassWindCursor] = nl;
+                    grassWindAmp[grassWindCursor] = na;
+                    grassWindTag[grassWindCursor] = ii;
+                    grassWindCursor = (grassWindCursor + 1u) % 4u;
+                }
+            }
+            float d = sdfEvalInstance(p, inst, dd, m0, time, t, wl, wa);
             float kk = clamp(sdfUnpackSmoothK(dd), 0.0, 2.0);
             if (!haveBest) { dBest = d; haveBest = true; }
             else { dBest = sdfCombine(dBest, d, dd.op, kk); }
@@ -633,7 +845,13 @@ void main() {
         if (dBest < eps && (renderMode == 0u || renderMode == 3u || smokeSolid || rockSolid || grassSolid)) {
             if (sdfProf) atomicAdd(sdfCounters[4], 1u);
             float e = max(eps * 2.0, 0.004);
-            vec3 nn = sdfSurfaceNormal(p, bestInst, bestDef, bestMat, time, e);
+            // H7: tiered normal reconstruction on the C3 distance uniforms
+            // (sdfLodNear <= 0 disables the tier: always tetrahedral). The
+            // rock triplanar shade below consumes nn unchanged.
+            float lodNearH7 = (sdfParams.sdfLodNear > 0.0) ? sdfParams.sdfLodNear : 1e5;
+            vec3 nn = (t < lodNearH7)
+                ? sdfSurfaceNormal(p, bestInst, bestDef, bestMat, time, e, t)
+                : sdfSurfaceNormalFD(p, bestInst, bestDef, bestMat, time, e, dBest, t);
             vec3 L = -normalize(ubo.lightDirection);
             float ndl = max(dot(nn, L), 0.0);
             float alpha = clamp(bestMat.opacity, 0.0, 1.0);
@@ -686,6 +904,12 @@ void main() {
         // per ray: no step-budget exhaustion, no view-dependent landing, so
         // the look no longer tracks the camera. Surface/transparent modes
         // keep the old zero-crossing hit above and never enter here.
+        // C1: surface pipelines (SDF_VARIANT 1) serve renderMode 0/3, for
+        // which the runtime test below is always false, so the whole smoke
+        // resolve is compiled out (no -O needed) and the chain continues at
+        // the `if (isSmoke)` test. Generic/volume pipelines keep the full
+        // chain; the runtime renderMode read stays the backstop either way.
+#if SDF_VARIANT != 1
         if (isSmoke && !smokeSolid && !smokeResolved && renderMode != 0u && renderMode != 3u) {
             float loopDurS = max(smokeGpu.tuning.loopDuration, 1.0);
             float loopTS = smokeLoopT(time, loopDurS);
@@ -727,11 +951,24 @@ void main() {
                     // Phase B: fixed-count uniform march across the measured
                     // thickness. Jittered start; each sample shaded with its
                     // marched-in depth (deep mass reads darker, stably).
+                    // H6: thickness-tiered sample count — grazing rays take
+                    // 4, mid rays 8, deep rays 12 (was: always 12). Thresholds
+                    // are in metres of measured thickness; jittered start and
+                    // depth shading below are unchanged.
                     float thickS = max(tA1 - loS, 1e-3);
-                    float dtS = thickS / 12.0;
+                    int thickSamples = (thickS < 12.0) ? 4 : ((thickS < 60.0) ? 8 : 12);
+                    // M12 tier: also honor the settings sample budget
+                    // (SdfParamsUBO::smokeSamples, 4..12, default 12). The ray
+                    // takes the cheaper of the thickness tier and the budget;
+                    // a zero-filled UBO falls back to the 12-sample reference.
+                    float smokeN = clamp(sdfParams.smokeSamples, 4.0, 12.0);
+                    if (!(smokeN >= 4.0)) smokeN = 12.0;
+                    int smokeSamples = min(thickSamples, int(smokeN + 0.5));
+                    float dtS = thickS / float(smokeSamples);
                     float jS = float(sdfHashU(uvec3(uvec2(gl_FragCoord.xy), 19u))) * (1.0 / 4294967295.0);
                     float ts = loS + jS * dtS;
                     for (int j = 0; j < 12; ++j) {
+                        if (j >= smokeSamples) break;
                         if (ts > tA1) break;
                         // Tracer inside the volume: shade at its exact depth
                         // with only the smoke ahead of it accumulated.
@@ -763,6 +1000,13 @@ void main() {
                         dbgSmokeSampled = 1.0;
                         float densS = ssm.finalD;
                         if (densS > 0.001) {
+                            // H6: late opaque samples skip the shade march
+                            // (up to 8 shadow taps inside smokeShade) plus the
+                            // two exps. The first two samples always shade so
+                            // thin tiers still establish color/debug peaks;
+                            // the skipped tail carries <= (1 - earlyTerm) of
+                            // transmittance (<= 1% at defaults).
+                            if (j >= 2 && (1.0 - trans) >= opacityThresh) break;
                             float ltSm = 1.0;
                             vec3 emisS = smokeShade(qs, rdLocalS, rNowS, shapeScaleS, windLocalS,
                                                    smokeGpu.tuning, bestMat, time,
@@ -818,7 +1062,9 @@ void main() {
                 // Approaching the ball: exact sphere tracing to its surface.
                 dt = clamp(dBest * safety, minStep, maxStep);
             }
-        } else if (isSmoke) {
+        } else
+#endif
+        if (isSmoke) {
             // Volume already resolved behind us (or a surface mode, handled
             // by the zero-crossing hit above): sphere-trace through without
             // accumulating so fire ahead still marches normally.
@@ -898,7 +1144,8 @@ void main() {
 
     // Smoke debug views (§24): 0 = normal smoke (falls through), 1-10 below.
     // Stored in debugFlags bits 4-7 so the fire debug views (bits 0-2) are
-    // unaffected.
+    // unaffected. L14: compiled out of stripped (SDF_STRIP_DEBUG=1) variants.
+#if !SDF_STRIP_DEBUG
     uint smokeDbg = (debugFlags >> 4u) & 15u;
     // Cloud-only: solids shade as opaque bodies and have no volume samples
     // to visualize (a latched view would otherwise paint their background).
@@ -947,7 +1194,9 @@ void main() {
         gl_FragDepth = sdfProjDepth(ro, rd, (tFirst >= 0.0) ? tFirst : tEnter);
         return;
     }
+#endif // !SDF_STRIP_DEBUG
 
+#if !SDF_STRIP_DEBUG
     if (debugView) {
         // Bit 0 enables a debug view; bits 1-2 select which one:
         //   0 = march steps (traversal cost heat)
@@ -970,6 +1219,7 @@ void main() {
         gl_FragDepth = sdfProjDepth(ro, rd, (tFirst >= 0.0) ? tFirst : tEnter);
         return;
     }
+#endif // !SDF_STRIP_DEBUG
 
     if (hit) {
         outColor = vec4(hitColor, 1.0);

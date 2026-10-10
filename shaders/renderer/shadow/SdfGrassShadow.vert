@@ -26,11 +26,15 @@ layout(std430, set = 1, binding = 3) readonly buffer SdfContainerBuffer {
     SdfContainer sdfContainers[];
 };
 
-// Push constants (112 B; C++ twin SdfGrassShadowPC in SdfRenderer.hpp).
+// Push constants (128 B; C++ twin SdfGrassShadowPC in SdfRenderer.hpp).
+// The impostor member is statically unused in the vertex stage but keeps the
+// block layout twin with the fragment stage and the C++ struct (the old block
+// omitted it, shifting lightDir to offset 96 vs 112 in the C++ struct).
 layout(push_constant) uniform SdfGrassShadowPC {
     mat4 lightViewProj; // cascade light view-projection (world -> light clip)
     vec4 params;        // x = time (s), y = max steps, z = epsilon, w = safety
-    vec4 march;         // x = max step (m), y = min step (m), z/w unused
+    vec4 march;         // x = max step (m), y = min step (m), z = shadow LOD camScale
+    vec4 impostor;      // x = impostor fade start, y = fade full (unused in VS)
     vec4 lightDir;      // xyz = light-to-scene direction (world), w unused
 } pc;
 

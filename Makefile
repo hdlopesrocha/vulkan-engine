@@ -128,6 +128,8 @@ OUT_SPVS = \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererRTProf.frag.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv \
+	$(OUT_DIR)/shaders/renderer/shadow/SdfGrassShadowImpostor.frag.spv \
+	$(OUT_DIR)/shaders/renderer/sdf/SdfRendererSurface.frag.spv \
 	$(OUT_DIR)/shaders/renderer/vegetation/ImpostorCapture.vert.spv \
 	$(OUT_DIR)/shaders/renderer/water/WaterRendererNoTess.vert.spv \
 	$(OUT_DIR)/shaders/renderer/water/WaterRendererRT.frag.spv \
@@ -214,12 +216,30 @@ $(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv: shaders/renderer/sol
 $(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv: shaders/renderer/shadow/ShadowRendererBlur.frag $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/shadow/ShadowRendererBlur.frag,$@,-DBLUR5=1,--D BLUR5=1,$(GLSL_OPT))
 
+# H8 (perf report 25): impostor-only grass-shadow EVSM caster. Same source as
+# SdfGrassShadow.frag; SHADOW_IMPOSTOR_ONLY=1 compiles out the blade loop so
+# outer cascades march the aggregate impostor (zero blades) instead of
+# branching on pc.march.z at runtime. Same EVSM moment contract.
+$(OUT_DIR)/shaders/renderer/shadow/SdfGrassShadowImpostor.frag.spv: shaders/renderer/shadow/SdfGrassShadow.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/shadow/SdfGrassShadow.frag,$@,-DSHADOW_IMPOSTOR_ONLY=1,--D SHADOW_IMPOSTOR_ONLY=1,)
+
 # H4/C2: ImpostorCapture variant of VegetationRenderer.vert (VEG_CAPTURE=1):
 # evaluates the height scale locally exactly as before the bake (canonical
 # single instance, no aux buffer bound). Built WITHOUT -O like its generic
 # sibling so capture output is maximally unchanged.
 $(OUT_DIR)/shaders/renderer/vegetation/ImpostorCapture.vert.spv: shaders/renderer/vegetation/VegetationRenderer.vert $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/vegetation/VegetationRenderer.vert,$@,-DVEG_CAPTURE=1,--D VEG_CAPTURE=1,)
+
+# C1/L13 (perf report 25): SDF surface fragment variant. Same single source as
+# the generic module (shaders/renderer/sdf/SdfRenderer.frag); SDF_VARIANT=1
+# compiles out the smoke two-phase resolve taken only by volume/emissive
+# modes. Deliberately WITHOUT $(GLSL_OPT): -O inlines the march and triples
+# module size (measured 239KB -> 677KB); the #if cut shrinks it to ~166KB at
+# the default flags. The deleted SdfRendererVolume.* twins are NOT rebuilt:
+# both pipelines share SdfRenderer.vert + this one .frag (L13: one vertex
+# module for both). SDF_STRIP_DEBUG variants stay dormant (TODO L14).
+$(OUT_DIR)/shaders/renderer/sdf/SdfRendererSurface.frag.spv: shaders/renderer/sdf/SdfRenderer.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/sdf/SdfRenderer.frag,$@,-DSDF_VARIANT=1,--D SDF_VARIANT=1,)
 
 
 # Recursively create all object directories needed for all sources

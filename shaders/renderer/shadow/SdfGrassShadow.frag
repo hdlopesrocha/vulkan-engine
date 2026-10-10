@@ -54,7 +54,8 @@ layout(std430, set = 1, binding = 5) readonly buffer SdfGridIndexBuffer {
     uint sdfGridIndices[];
 };
 
-// Push constants (112 B; C++ twin SdfGrassShadowPC in SdfRenderer.hpp).
+// Push constants (128 B; C++ twin SdfGrassShadowPC in SdfRenderer.hpp,
+// shared by the full and the SHADOW_IMPOSTOR_ONLY variant pipelines).
 layout(push_constant) uniform SdfGrassShadowPC {
     mat4 lightViewProj; // cascade light view-projection (world -> light clip)
     vec4 params;        // x = time (s), y = max steps, z = epsilon, w = safety
@@ -66,12 +67,50 @@ layout(push_constant) uniform SdfGrassShadowPC {
 const int SDF_GRASS_SHADOW_MAX_STEPS_HARD = 256;
 const uint SDF_GRASS_MAX_CANDIDATES = 8u;
 
+// H8 impostor-only shadow representation (SHADOW_IMPOSTOR_ONLY=1 pipeline
+// variant): the hard far-LOD body of sdGrassClump (base-bulged round cone +
+// ripple, zero blades) in the shadow rest pose (up = +Y, no lean — the shadow
+// pass never binds the wind field, see the wind note above). Constants mirror
+// sdGrassClump (bend ceiling 1.4, base bulge 0.5, ripple 0.30, freq 2.5,
+// detail 0.35 x height / 6.0 x width); keep in sync with SdfGrass.glsl
+// (TODO: factor one shared helper). Matches the full evaluator at
+// camScale >= impostorFull in the rest pose, so the EVSM moment contract
+// (vec2(exp(2z), exp(4z)) + gl_FragDepth) is unchanged.
+#ifdef SHADOW_IMPOSTOR_ONLY
+float sdGrassShadowImpostorOnly(vec3 p, vec4 p0, vec4 p1, float seed) {
+    float radius = max(p0.x, 1e-3);
+    float height = max(p0.y, 1e-3);
+    float curve = clamp(p1.x, 0.0, 1.5);
+    float width = clamp(p0.z, 1e-5,
+                        min(max(radius * 0.5, 1e-4), max(height * 0.25, 1e-4)));
+    vec3 up = vec3(0.0, 1.0, 0.0);
+    float envR0 = radius + 2.0 * width;
+    float envR1 = radius + 2.0 * width + height * curve * 1.4;
+    float impScale = max(radius, height * 0.5);
+    float impAmp = 0.30 * impScale;
+    float impFreq = 2.5 / max(impScale, 1e-3);
+    float impR0 = envR0 + 0.5 * (envR1 - envR0);
+    float impR1 = envR1;
+    float impLip = sdGrassImpostorLip(height, impAmp, impFreq);
+    float icd = sdGrassRoundCone(p, vec3(0.0), up * height, impR0, impR1);
+    float detail = max(height * 0.35, width * 6.0);
+    if (icd > max(detail, impAmp * 1.5)) return (icd - impAmp) / impLip;
+    return sdGrassImpostor(p, up, height, icd, seed, impAmp, impFreq);
+}
+#endif
+
 // One grass clump, in the same local frame as sdfEvalInstance
 // (SdfRenderer.frag): the generic SdfModel supplies the inverse TRS and the
 // conservative local->world distance scale.
 float sdfGrassShadowEval(vec3 wpos, SdfInstance inst, SdfDefinition def, float lodCamScale) {
     float ds;
     vec3 q = sdfModelToLocal(sdfModelFromInstance(inst), wpos, ds);
+#ifdef SHADOW_IMPOSTOR_ONLY
+    // H8: outer cascades never resolve blades — the blade loop in sdGrassClump
+    // is compiled out instead of sitting behind the pc.march.z runtime branch.
+    // (lodCamScale intentionally unused: the impostor body has no blade LOD.)
+    return sdGrassShadowImpostorOnly(q, def.params0, def.params1, inst.seed) * ds;
+#else
     // Shadow LOD (see the wind note above): the march evaluates the reduced
     // blade set for pc.march.z (shadow LOD camScale) instead of the full
     // clump. At pc.march.z >= GRASS_IMPOSTOR_FULL (80, SdfGrass.glsl) the
@@ -82,6 +121,7 @@ float sdfGrassShadowEval(vec3 wpos, SdfInstance inst, SdfDefinition def, float l
     // blade LOD only.
     return sdGrassClump(q, def.params0, def.params1, inst.seed, lodCamScale,
                         vec2(0.0), 0.0, pc.impostor.x, pc.impostor.y) * ds;
+#endif
 }
 
 void main() {

@@ -1,12 +1,13 @@
 #ifndef SMOKE_FRAG_BULLET_GLSL
 #define SMOKE_FRAG_BULLET_GLSL
 
-// Canonical smoke state block (std430, 624 B). Single definition shared with
+// Canonical smoke state block (std430, 656 B). Single definition shared with
 // the CPU: sdf/types/SmokeFragBullet.hpp — identical layout and offsets.
 // Smoke is 16-byte aligned, Bullet has a 48-byte stride and the instance
 // transform follows the bullets with std430 vec3 16-byte alignment:
 //   tuning 0, bullets 176 (stride 48), worldPos 560, worldScale 572,
-//   rotCol0 576, rotCol1 592, rotCol2 608, tracerActive 620.
+//   rotCol0 576, rotCol1 592, rotCol2 608, tracerActive 620,
+//   tracerSphere 624 (xyz head center + w radius), tracerMeta 640 (x = valid).
 #include "Bullet.glsl"
 #include "Smoke.glsl"
 
@@ -24,6 +25,11 @@ struct SmokeFragBullet {
     vec3 rotCol1;     // offset 592
     vec3 rotCol2;     // offset 608
     float tracerActive;// offset 620  0 = smoke disabled / Fire shape
+    // H4: CPU-compacted tracer sphere (see the CPU twin): xyz = head center
+    // in the smoke-local frame, w = radius. tracerMeta.x = 1 while a live
+    // head-on-path round exists.
+    vec4 tracerSphere; // offset 624
+    vec4 tracerMeta;   // offset 640
 };
 
 #endif // SMOKE_FRAG_BULLET_GLSL
