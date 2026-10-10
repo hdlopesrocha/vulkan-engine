@@ -15,6 +15,7 @@
 #include "ChunkProtocol.hpp"
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -99,6 +100,10 @@ private:
     std::atomic<uint64_t> meshesSent_{0};
 
     std::string indexHtml_; // cached page
+    // Source path + mtime of the cached page: re-read on change so viewer
+    // edits are served without a server restart.
+    std::string indexPath_;
+    std::filesystem::file_time_type indexMtime_{};
     std::mutex indexMutex_;
     std::string loadIndexHtml();
 };

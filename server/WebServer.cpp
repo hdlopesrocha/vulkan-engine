@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -92,7 +93,14 @@ void WebServer::pushDelete(uint64_t id) {
 
 std::string WebServer::loadIndexHtml() {
     std::lock_guard<std::mutex> l(indexMutex_);
-    if (!indexHtml_.empty()) return indexHtml_;
+    // Re-read when the file changed on disk (one stat per page view), so
+    // viewer edits take effect without restarting the server.
+    if (!indexHtml_.empty() && !indexPath_.empty()) {
+        std::error_code ec;
+        if (!std::filesystem::exists(indexPath_, ec) ||
+            std::filesystem::last_write_time(indexPath_, ec) == indexMtime_)
+            return indexHtml_;
+    }
     static const char* kCandidates[] = {
         "server/web/index.html",     // CWD = repo root
         "../server/web/index.html",  // CWD = bin/
@@ -106,6 +114,9 @@ std::string WebServer::loadIndexHtml() {
         std::ostringstream ss;
         ss << f.rdbuf();
         indexHtml_ = ss.str();
+        indexPath_ = p;
+        std::error_code ec;
+        indexMtime_ = std::filesystem::last_write_time(indexPath_, ec);
         std::cout << "[web] serving page from '" << p << "' (" << indexHtml_.size() << " bytes)\n";
         return indexHtml_;
     }
