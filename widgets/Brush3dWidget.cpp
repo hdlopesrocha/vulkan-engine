@@ -35,14 +35,19 @@ Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers,
 {
 }
 
+std::string Brush3dWidget::layerDisplayName(int targetLayer) const {
+    if (scene_ && targetLayer >= 0 && static_cast<size_t>(targetLayer) < scene_->layerCount())
+        return scene_->layerName(targetLayer);
+    if (targetLayer >= 0 && targetLayer < 2) return layerNames[targetLayer];
+    return "Layer";
+}
+
 void Brush3dWidget::render() {
     if (!isOpen) return;
 
     ImGui::SetNextWindowSize(ImVec2(1280, 680), ImGuiCond_FirstUseEver);
     ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
     if (!wg.visible()) return;
-
-    // Add / remove entry buttons (mutate the manager)
     if (ImGui::Button("+ Add Brush Entry")) {
         manager.addEntry();
         dirty = true;
@@ -80,10 +85,11 @@ void Brush3dWidget::render() {
         // Render only the selected entry (use the updated currentIndex)
         int sel = currentIndex;
         ImGui::PushID(sel);
-        char label[64];
+        std::string layerLabel = layerDisplayName(entriesRef[sel].targetLayer);
+        char label[128];
         snprintf(label, sizeof(label), "Entry %d: %s (%s)", sel,
                  sdfTypeNames[entriesRef[sel].sdfType],
-                 layerNames[entriesRef[sel].targetLayer]);
+                 layerLabel.c_str());
         if (ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen)) {
             renderEntry(sel);
         }
@@ -150,9 +156,23 @@ void Brush3dWidget::renderEntry(int index) {
         }
     }
 
-    // Target Layer
-    if (ImGui::Combo("Layer", &e.targetLayer, layerNames, IM_ARRAYSIZE(layerNames))) {
-        dirty = true;
+    // Target Layer (dynamic list from the Scene; falls back to Opaque/Transparent)
+    {
+        const int nLayers = scene_ ? static_cast<int>(scene_->layerCount()) : 2;
+        const int clamped = std::max(0, std::min(e.targetLayer, std::max(0, nLayers - 1)));
+        if (clamped != e.targetLayer) { e.targetLayer = clamped; dirty = true; }
+        std::string preview = layerDisplayName(e.targetLayer);
+        if (ImGui::BeginCombo("Layer", preview.c_str())) {
+            for (int i = 0; i < nLayers; ++i) {
+                const bool sel = (i == e.targetLayer);
+                std::string name = layerDisplayName(i);
+                if (ImGui::Selectable(name.c_str(), sel)) {
+                    e.targetLayer = i;
+                    dirty = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
     }
 
     // Material picker with thumbnail

@@ -9,7 +9,7 @@
 #include <limits>
 #include <string>
 
-OctreeExplorerWidget::OctreeExplorerWidget(LocalScene* scene_, Camera* camera_)
+OctreeExplorerWidget::OctreeExplorerWidget(Scene* scene_, Camera* camera_)
     : Widget("Octree Explorer", u8"\uf1ad"), scene(scene_), camera(camera_) {}
 
 const char* OctreeExplorerWidget::spaceTypeToString(SpaceType t) {
@@ -29,11 +29,22 @@ void OctreeExplorerWidget::render() {
     // Clear expanded cubes before rendering tree
     expandedCubes.clear();
 
-    ImGui::Text("Layer: %s", selectedLayer == 0 ? "Opaque" : "Transparent");
+    const size_t nLayers = scene ? scene->layerCount() : 0;
+    if (nLayers == 0) {
+        ImGui::TextDisabled("No scene layers");
+        return;
+    }
+    if (selectedLayer < 0 || static_cast<size_t>(selectedLayer) >= nLayers)
+        selectedLayer = 0;
+    const std::string curName = scene->layerName(selectedLayer);
+    ImGui::Text("Layer: %s", curName.c_str());
     ImGui::SameLine();
-    if (ImGui::BeginCombo("##layer", selectedLayer == 0 ? "Opaque" : "Transparent")) {
-        if (ImGui::Selectable("Opaque", selectedLayer == 0)) selectedLayer = 0;
-        if (ImGui::Selectable("Transparent", selectedLayer == 1)) selectedLayer = 1;
+    if (ImGui::BeginCombo("##layer", curName.c_str())) {
+        for (size_t i = 0; i < nLayers; ++i) {
+            const bool sel = (static_cast<int>(i) == selectedLayer);
+            if (ImGui::Selectable(scene->layerName(static_cast<Layer>(i)).c_str(), sel))
+                selectedLayer = static_cast<int>(i);
+        }
         ImGui::EndCombo();
     }
 
@@ -59,7 +70,12 @@ void OctreeExplorerWidget::render() {
     }
     ImGuiHelpers::SetTooltipIfHovered("Expand/collapse helpers: Expand All = one frame, Persist Expand = keep expanded, Collapse All = collapse now");
 
-    const Octree& tree = (selectedLayer == 0) ? scene->getOpaqueOctree() : scene->transparentOctree;
+    const Octree* treePtr = scene->getLayerOctree(selectedLayer);
+    if (!treePtr) {
+        ImGui::TextDisabled("Layer has no local octree (remote mode)");
+        return;
+    }
+    const Octree& tree = *treePtr;
     handleRayExpandShortcut(tree);
     renderTree(tree);
 }

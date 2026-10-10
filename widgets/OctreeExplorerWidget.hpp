@@ -14,7 +14,8 @@ class Ray;
 // Starts collapsed; shows node type/chunk flags and children.
 class OctreeExplorerWidget : public Widget {
 public:
-    explicit OctreeExplorerWidget(LocalScene* scene, Camera* camera = nullptr);
+    explicit OctreeExplorerWidget(Scene* scene, Camera* camera = nullptr);
+    void setScene(Scene* s) { scene = s; }
     void render() override;
     bool getShowDebugCubes() const { return showDebugCubes; }
 
@@ -27,8 +28,10 @@ public:
     const std::vector<CubeWithColor>& getExpandedCubes() const { return expandedCubes; }
 
 private:
-    LocalScene* scene; // not owned
-    int selectedLayer = 0; // 0 = opaque, 1 = transparent
+    // Use the base Scene interface so the explorer works with any layer count
+    // (LocalScene; remote scenes have no octrees and show a placeholder).
+    Scene* scene; // not owned
+    int selectedLayer = 0;
     int maxDepth = 10;     // safety cap for very deep trees
     bool chunksOnly = false;
     std::vector<CubeWithColor> expandedCubes; // Cubes of expanded nodes with colors

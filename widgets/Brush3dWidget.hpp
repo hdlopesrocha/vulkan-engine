@@ -25,6 +25,12 @@ public:
 
     void render() override;
 
+    // Dynamic scene layers for the target-layer combo (set by MyApp after the
+    // world exists; may be null, in which case the static fallback names are
+    // used). Not owned.
+    void setScene(Scene* scene) { scene_ = scene; }
+    std::string layerDisplayName(int targetLayer) const;
+
     // Note: widget now publishes a `RebuildBrushEvent` via the provided EventManager
 
 private:
@@ -37,6 +43,7 @@ private:
     uint32_t loadedTextureLayers;
     bool dirty = false;
     EventManager* eventManager = nullptr;
+    Scene* scene_ = nullptr;
     // selected index is owned by the manager
 
     static const char* sdfTypeNames[];
