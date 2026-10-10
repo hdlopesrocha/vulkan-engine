@@ -62,6 +62,7 @@
 #include "sdf/types/SdfScene.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
 #include "widgets/Brush3dWidget.hpp"
+#include "widgets/LayersWidget.hpp"
 #include "widgets/MusicWidget.hpp"
 #include "widgets/components/FilePicker.hpp"
 #include "sdf/AddSignedDistanceOperation.hpp"
@@ -316,6 +317,7 @@ public:
     std::shared_ptr<GrassWidget> grassWidget;
     std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
+    std::shared_ptr<class LayersWidget> layersWidget;
     std::shared_ptr<RadialMenu> radialMenu;
     std::unique_ptr<RadialMenuHandler> radialMenuHandler;
     WidgetManager widgetManager;
@@ -374,14 +376,17 @@ public:
     static constexpr uint32_t ASYNC_RING_SIZE = 3;
 
 
-    Octree::OctreeNodeDataHandler solidAddHandler;
-    Octree::OctreeNodeDataHandler waterAddHandler;
-
-    Octree::OctreeNodeDataHandler solidRemoveHandler;
-    Octree::OctreeNodeDataHandler waterRemoveHandler;
-
-    UniqueChangeCollector solidCollector;
-    UniqueChangeCollector waterCollector;
+    // Dynamic per-scene-layer dispatch: index = Layer. collectors[i] is the
+    // dedup stage for layer i; layerAdd/RemoveHandlers[i] are the renderer
+    // lambdas built by build(). Rebuilt by ensureLayerHandlers() whenever the
+    // active scene's layerCount changes (LayersWidget add/remove). Stored as
+    // shared_ptr because UniqueChangeCollector's lambdas capture `this` and
+    // the object must stay alive while worker threads dispatch it (add/remove
+    // only ever appends/truncates the tail on the main thread).
+    std::vector<std::shared_ptr<UniqueChangeCollector>> collectors;
+    std::vector<Octree::OctreeNodeDataHandler> layerAddHandlers;
+    std::vector<Octree::OctreeNodeDataHandler> layerRemoveHandlers;
+    mutable std::mutex layersSyncMutex_;
     // Per-slot resources for the async back-face task, reused in a ring of
     // ASYNC_RING_SIZE slots so the per-frame task allocates nothing.
     // Slot-safety: slot N%ASYNC_RING_SIZE is reused by task N+ASYNC_RING_SIZE.
@@ -693,48 +698,11 @@ public:
         // octree walk emits cells at every ladder level (chunkLod 1..5) and
         // the GPU cull keeps the level matching the camera distance.
         // build() creates the {onAdded, onDeleted} renderer lambdas for each
-        // main-scene space; the dedup collectors in front of them (fed to
+        // scene layer; the dedup collectors in front of them (fed to
         // Scene::loadScene/action and Octree::apply) replay final per-node
         // state into these handlers on the tessellation threads.
         // sceneForChanges is the ACTIVE scene (remote stubs or local octree).
-        Scene* sceneForChanges = &world->activeScene();
-        float minSize = 30.0f;
-        std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> mainOpaqueHandlers = build(
-            sceneRenderer, 
-            this, 
-            sceneForChanges, 
-            LAYER_OPAQUE, 
-            minSize, 
-            &sceneRenderer->solidGenPool,
-            
-            {
-                sceneRenderer->pendingMeshQueue,
-                sceneRenderer->pendingMeshMutex,
-                sceneRenderer->solidChunks,
-                sceneRenderer->solidChunksMutex,
-                sceneRenderer->pendingDeleteSolidSlots
-            }
-        );
-        solidAddHandler = mainOpaqueHandlers.first;
-        solidRemoveHandler = mainOpaqueHandlers.second;
-
-        std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> mainTransparentHandlers = build(
-            sceneRenderer, 
-            this, 
-            sceneForChanges, 
-            LAYER_TRANSPARENT, 
-            minSize, 
-            &sceneRenderer->waterGenPool,
-            {
-                sceneRenderer->pendingMeshQueue,
-                sceneRenderer->pendingMeshMutex,
-                sceneRenderer->waterChunks,
-                sceneRenderer->waterChunksMutex,
-                sceneRenderer->pendingDeleteWaterSlots
-            }
-        );
-        waterAddHandler = mainTransparentHandlers.first;
-        waterRemoveHandler = mainTransparentHandlers.second;
+        ensureLayerHandlers();
 
         // Scene starts empty — use File > Generate Map to populate it.
 
@@ -867,7 +835,13 @@ public:
    
         // Create brush3dWidget after setupTextures() so loadedTextureLayers is set.
         brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager, &eventManager);
+        brush3dWidget->setScene(&world->activeScene());
         widgetManager.addWidget(brush3dWidget);
+
+        // Dynamic scene layers + per-layer renderer selection.
+        layersWidget = std::make_shared<LayersWidget>(&world->activeScene(), sceneRenderer,
+            [this]() { syncLayers(); });
+        widgetManager.addWidget(layersWidget);
 
         // Create per-frame timestamp query pools for GPU profiling
         {
@@ -963,17 +937,34 @@ public:
     // (replaces UniqueOctreeChangeHandler::handleEvents).
     void dispatchSolidEvents();
     void dispatchLiquidEvents();
+    void dispatchLayerEvents(Layer layer);
+    void dispatchAllEvents();
+    // Rebuild collectors + renderer handlers for the active scene's current
+    // layer list. Safe to call any time on the main thread: grows
+    // SceneRenderer states + collectors, rebuilds handlers only when the
+    // count changed (existing handlers stay valid — SceneRenderer states are
+    // heap-allocated).
+    void ensureLayerHandlers();
+    // Sync after LayersWidget add/remove: ensure handlers + clear GPU for
+    // removed layers. Called from update() (poll) and explicitly by the widget.
+    void syncLayers();
 
-    // Start the background tessellation thread for the current scene. Solid
-    // and water chunks are dispatched on separate threads so both layers
-    // tessellate truly in parallel (water no longer waits for solid to
-    // finish). `completionLog` is printed verbatim once both threads join.
+    // Start the background tessellation thread for the current scene. Every
+    // layer dispatches on its own thread so all layers tessellate truly in
+    // parallel. `completionLog` is printed verbatim once all threads join.
     void startTessellationThreads(const char* completionLog) {
-        sceneProcessThread = std::thread([this, completionLog]() {
-            std::thread solidThread([this]() { dispatchSolidEvents(); });
-            std::thread waterThread([this]() { dispatchLiquidEvents(); });
-            solidThread.join();
-            waterThread.join();
+        ensureLayerHandlers();
+        size_t n = 0;
+        {
+            std::lock_guard<std::mutex> lock(layersSyncMutex_);
+            n = collectors.size();
+        }
+        sceneProcessThread = std::thread([this, completionLog, n]() {
+            std::vector<std::thread> workers;
+            workers.reserve(n);
+            for (size_t i = 0; i < n; ++i)
+                workers.emplace_back([this, i]() { dispatchLayerEvents(static_cast<Layer>(i)); });
+            for (auto& t : workers) t.join();
             std::cout << completionLog;
         });
     }
@@ -1002,12 +993,12 @@ public:
     // flips it and joins (safe to call in local mode too: no-op).
     std::atomic<bool> remoteDispatchRun{false};
     void startRemoteDispatchLoop() {
+        ensureLayerHandlers();
         remoteDispatchRun = true;
         sceneProcessThread = std::thread([this]() {
             std::cout << "[MyApp] remote dispatch loop started\n";
             while (remoteDispatchRun.load()) {
-                dispatchSolidEvents();
-                dispatchLiquidEvents();
+                dispatchAllEvents();
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
             std::cout << "[MyApp] remote dispatch loop stopped\n";
@@ -1041,7 +1032,7 @@ public:
             nunchukPublisher.update();
             nunchukPublisher.applyControls(&eventManager, camera, deltaTime,
                                            &controllerManager, &brushManager,
-                                            (world && !useRemote) ? &world->scene().opaqueOctree : nullptr);
+                                            (world && !useRemote && world->scene().layerCount() > 0) ? world->scene().getLayerOctree(0) : nullptr);
         } else {
             // Still poll nunchuk state so Home/A button edge detection works
             nunchukPublisher.update();
@@ -1069,6 +1060,8 @@ public:
         // Chunks closest to the camera are uploaded first. Drains pending
         // entries from the ONE shared queue.
         if (sceneRenderer && !isLoading) {
+            // Dynamic layers: pick up LayersWidget add/remove without restart.
+            syncLayers();
             // Hybrid RT: water volumes join the proxy only while water renders.
             sceneRenderer->rtWaterProxyEnabled = settings.waterEnabled;
             std::deque<SceneRenderer::PendingMeshData> pendingBatch;
@@ -4126,17 +4119,24 @@ void MyApp::applyBrushToScene() {
         }
     }();
 
-    // Select target octree and handler based on targetLayer
-    Octree& octree = (entry.targetLayer == 0)
-        ? world->scene().opaqueOctree
-        : world->scene().transparentOctree;
+    // Select target octree and handler based on targetLayer (dynamic index).
+    ensureLayerHandlers();
+    Layer targetLayer = static_cast<Layer>(entry.targetLayer);
+    if (!world->activeScene().validLayer(targetLayer)) {
+        std::cerr << "[MyApp::applyBrushToScene] invalid targetLayer " << entry.targetLayer << std::endl;
+        return;
+    }
+    Octree* octreePtr = world->scene().getLayerOctree(targetLayer);
+    if (!octreePtr) return;
+    Octree& octree = *octreePtr;
 
-    Octree::OctreeNodeDataHandler& updateHandler = (entry.targetLayer == 0)
-        ? solidCollector.updateHandler
-        : waterCollector.updateHandler;
-    Octree::OctreeNodeDataHandler& deleteHandler = (entry.targetLayer == 0)
-        ? solidCollector.deleteHandler
-        : waterCollector.deleteHandler;
+    Octree::OctreeNodeDataHandler updateHandler, deleteHandler;
+    {
+        std::lock_guard<std::mutex> lock(layersSyncMutex_);
+        if (targetLayer < 0 || static_cast<size_t>(targetLayer) >= collectors.size()) return;
+        updateHandler = collectors[targetLayer]->updateHandler;
+        deleteHandler = collectors[targetLayer]->deleteHandler;
+    }
 
     // cachedSweepStart was already set by updateBrushPreview — use the same pair
     Transformation model(entry.scale, entry.translate, entry.rot);
@@ -4152,8 +4152,7 @@ void MyApp::applyBrushToScene() {
 
     // Flush queued change events to trigger mesh creation. Chunk uploads are
     // incremental (addMeshSlotted() + uploadSlot()) — no global rebuild required.
-    solidCollector.dispatch(solidAddHandler, solidRemoveHandler);
-    waterCollector.dispatch(waterAddHandler, waterRemoveHandler);
+    dispatchAllEvents();
 
     // Update previousTranslate for the next sweep apply
     if (entry.sweepMode) {
@@ -4195,8 +4194,7 @@ void MyApp::resetSceneState() {
     processPendingCommandBuffers();
 
     if (sceneRenderer) {
-        sceneRenderer->removeAllRegisteredMeshes();
-        sceneRenderer->removeAllTransparentMeshes();
+        sceneRenderer->removeAllMeshes();
         world->chunkManager().removeAll();
         if (sceneRenderer->debugCubeRenderer) sceneRenderer->debugCubeRenderer->clearCubes();
         if (sceneRenderer->debugSDFRenderer) sceneRenderer->debugSDFRenderer->clearCubes();
@@ -4218,19 +4216,109 @@ void MyApp::resetSceneState() {
         return;
     }
 
-    world->scene().opaqueOctree.reset();
-    world->scene().transparentOctree.reset();
+    world->scene().resetAllLayers();
 
-    solidCollector.clear();
-    waterCollector.clear();
+    {
+        std::lock_guard<std::mutex> lock(layersSyncMutex_);
+        for (auto& c : collectors) c->clear();
+    }
+}
+
+void MyApp::dispatchLayerEvents(Layer layer) {
+    std::shared_ptr<UniqueChangeCollector> collector;
+    Octree::OctreeNodeDataHandler onAdd, onDel;
+    {
+        std::lock_guard<std::mutex> lock(layersSyncMutex_);
+        if (layer < 0 || static_cast<size_t>(layer) >= collectors.size()) return;
+        if (static_cast<size_t>(layer) >= layerAddHandlers.size()) return;
+        collector = collectors[static_cast<size_t>(layer)];
+        onAdd = layerAddHandlers[static_cast<size_t>(layer)];
+        onDel = layerRemoveHandlers[static_cast<size_t>(layer)];
+    }
+    if (!collector) return;
+    // Disabled layers drop queued events (no tessellation while hidden).
+    // Re-enabling needs Generate Map / reload to repopulate (documented in
+    // the LayersWidget).
+    if (world && !world->activeScene().layerEnabled(layer)) {
+        collector->clear();
+        return;
+    }
+    collector->dispatch(onAdd, onDel);
+}
+
+void MyApp::dispatchAllEvents() {
+    // Snapshot size under lock; per-layer dispatch re-locks to copy.
+    size_t n = 0;
+    {
+        std::lock_guard<std::mutex> lock(layersSyncMutex_);
+        n = collectors.size();
+    }
+    for (size_t i = 0; i < n; ++i)
+        dispatchLayerEvents(static_cast<Layer>(i));
 }
 
 void MyApp::dispatchSolidEvents() {
-    solidCollector.dispatch(solidAddHandler, solidRemoveHandler);
+    dispatchLayerEvents(LAYER_OPAQUE);
 }
 
 void MyApp::dispatchLiquidEvents() {
-    waterCollector.dispatch(waterAddHandler, waterRemoveHandler);
+    size_t n = 0;
+    {
+        std::lock_guard<std::mutex> lock(layersSyncMutex_);
+        n = collectors.size();
+    }
+    if (n > 1) dispatchLayerEvents(LAYER_TRANSPARENT);
+}
+
+void MyApp::ensureLayerHandlers() {
+    if (!world || !sceneRenderer) return;
+    std::lock_guard<std::mutex> lock(layersSyncMutex_);
+    Scene& scene = world->activeScene();
+    const size_t n = std::max<size_t>(scene.layerCount(), 2);
+    sceneRenderer->ensureLayerStates(n);
+    if (collectors.size() == n && layerAddHandlers.size() == n && layerRemoveHandlers.size() == n) return;
+    // Grow (stable addresses via shared_ptr) or shrink (only the tail is ever
+    // removed — LayersWidget restricts removal to the last layer, so earlier
+    // indices stay valid; pending events for the dropped layer are discarded).
+    // Old collectors stay alive via shared_ptr copies held by in-flight
+    // dispatches.
+    while (collectors.size() > n) collectors.pop_back();
+    while (collectors.size() < n)
+        collectors.push_back(std::make_shared<UniqueChangeCollector>());
+    // Rebuild ALL handlers: build() captures PublishTarget references to the
+    // layer's heap-allocated state, so previously built handlers stay valid,
+    // but rebuilding is cheap and keeps indices in sync after add/remove.
+    layerAddHandlers.assign(n, {});
+    layerRemoveHandlers.assign(n, {});
+    Scene* sceneForChanges = &world->activeScene();
+    const float minSize = 30.0f;
+    for (size_t i = 0; i < n; ++i) {
+        const Layer layer = static_cast<Layer>(i);
+        auto handlers = build(
+            sceneRenderer, this, sceneForChanges, layer, minSize,
+            &sceneRenderer->layerGenPool(layer),
+            {
+                sceneRenderer->pendingMeshQueue,
+                sceneRenderer->pendingMeshMutex,
+                sceneRenderer->layerChunks(layer),
+                sceneRenderer->layerMutex(layer),
+                sceneRenderer->layerPendingDeletes(layer)
+            });
+        layerAddHandlers[i] = handlers.first;
+        layerRemoveHandlers[i] = handlers.second;
+    }
+}
+
+void MyApp::syncLayers() {
+    if (!world) return;
+    Scene* active = &world->activeScene();
+    if (layersWidget) {
+        layersWidget->setScene(active);
+        layersWidget->setAllowStructureEdit(!useRemote);
+    }
+    if (brush3dWidget) brush3dWidget->setScene(active);
+    if (octreeExplorerWidget) octreeExplorerWidget->setScene(active);
+    ensureLayerHandlers();
 }
 
 void MyApp::generateMap() {
@@ -4239,36 +4327,47 @@ void MyApp::generateMap() {
         return;
     }
     resetSceneState();
+    ensureLayerHandlers();
 
     // Build the octree (CPU only, no tessellation)
     MainSceneLoader loader;
-    world->scene().loadScene(loader,
-        solidCollector.updateHandler, solidCollector.deleteHandler,
-        waterCollector.updateHandler, waterCollector.deleteHandler
-    );
+    std::vector<Octree::OctreeNodeDataHandler> ups, dels;
+    {
+        std::lock_guard<std::mutex> lock(layersSyncMutex_);
+        ups.reserve(collectors.size());
+        dels.reserve(collectors.size());
+        for (auto& c : collectors) { ups.push_back(c->updateHandler); dels.push_back(c->deleteHandler); }
+    }
+    world->scene().loadScene(loader, ups, dels);
     std::cout << "[MyApp::generateMap] Octree construction complete\n";
 
-    // Tessellate chunks in a background thread. Solid and water are handled on
-    // separate threads so both layers tessellate truly in parallel (water no
-    // longer waits for solid to finish).
+    // Tessellate chunks in background threads, one per layer.
     startTessellationThreads("[MyApp::generateMap] Scene chunk tessellation complete\n");
 }
 
 void MyApp::loadRemoteScene() {
     if (!useRemote || !remoteScene) return;
+    ensureLayerHandlers();
     // The loader callback is meaningless remotely (no local octree to build);
     // RemoteScene ignores it and replays the server snapshot instead.
     MainSceneLoader loader;
-    remoteScene->loadScene(loader,
-        solidCollector.updateHandler, solidCollector.deleteHandler,
-        waterCollector.updateHandler, waterCollector.deleteHandler);
+    std::vector<Octree::OctreeNodeDataHandler> ups, dels;
+    {
+        std::lock_guard<std::mutex> lock(layersSyncMutex_);
+        ups.reserve(collectors.size());
+        dels.reserve(collectors.size());
+        for (auto& c : collectors) { ups.push_back(c->updateHandler); dels.push_back(c->deleteHandler); }
+    }
+    remoteScene->loadScene(loader, ups, dels);
     if (remoteScene->failed() || !remoteScene->isConnected()) {
         // Fall back to LocalScene: drop partial remote events, disconnect,
         // and generate locally instead. The renderer never saw a mix because
         // nothing was dispatched yet (dispatch starts below, only on success).
         std::cout << "[MyApp::loadRemoteScene] snapshot failed; falling back to LocalScene\n";
-        solidCollector.clear();
-        waterCollector.clear();
+        {
+            std::lock_guard<std::mutex> lock(layersSyncMutex_);
+            for (auto& c : collectors) c->clear();
+        }
         remoteScene->disconnect();
         remoteScene.reset();
         useRemote = false;
@@ -4286,15 +4385,19 @@ void MyApp::loadSceneFromFile(const std::string& path) {
         return;
     }
     resetSceneState();
+    ensureLayerHandlers();
 
-    world->scene().load(path,
-        solidCollector.updateHandler, solidCollector.deleteHandler,
-        waterCollector.updateHandler, waterCollector.deleteHandler,
-        &settings);
+    std::vector<Octree::OctreeNodeDataHandler> ups, dels;
+    {
+        std::lock_guard<std::mutex> lock(layersSyncMutex_);
+        ups.reserve(collectors.size());
+        dels.reserve(collectors.size());
+        for (auto& c : collectors) { ups.push_back(c->updateHandler); dels.push_back(c->deleteHandler); }
+    }
+    world->scene().load(path, ups, dels, &settings);
     std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '" << path << "'\n";
 
-    // Solid and water tessellate on separate threads so both layers progress
-    // truly in parallel (water no longer waits for solid to finish).
+    // Every layer tessellates on its own thread.
     startTessellationThreads("[MyApp::loadSceneFromFile] Scene tessellation complete\n");
 }
 void MyApp::postSubmit() {
