@@ -187,8 +187,7 @@ void LocalScene::noteDeletedNode(uintptr_t nodeId) {
     emittedVersion_.erase(nodeId);
 }
 
-int LocalScene::maxChunkLod(Layer layer, float minSize) const {
-    // The number of LoD levels a chunk can hold above its tessellation
+int LocalScene::maxChunkLod(Layer layer, float minSize) const {    // The number of LoD levels a chunk can hold above its tessellation
     // frontier before reaching the chunk-size boundary, clamped to the
     // ladder the tree actually provides: the root carries the highest
     // chunkLod, and its mesh is the far-distance fallback, so levels beyond
@@ -201,6 +200,11 @@ int LocalScene::maxChunkLod(Layer layer, float minSize) const {
         rootChunkLod = stored > 0 ? stored - 1 : -1;
     }
     return std::max(0, std::min(tree.heightRootToChunk(0, minSize), rootChunkLod));
+}
+
+glm::vec3 LocalScene::lodRootMin(Layer layer) const {
+    const Octree& tree = layer == LAYER_OPAQUE ? opaqueOctree : transparentOctree;
+    return tree.getMin();
 }
 
 void LocalScene::loadScene(SceneLoaderCallback& callback, Octree::OctreeNodeDataHandler opaqueUpdateHandler, Octree::OctreeNodeDataHandler opaqueDeleteHandler, Octree::OctreeNodeDataHandler transparentUpdateHandler, Octree::OctreeNodeDataHandler transparentDeleteHandler) {

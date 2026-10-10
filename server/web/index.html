@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Octree Chunks — live viewer</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: #0b0f14; color: #e5e7eb; }
+  header { display: flex; gap: 12px; align-items: center; padding: 8px 12px; background: #111827; border-bottom: 1px solid #1f2937; flex-wrap: wrap; }
+  header h1 { font-size: 14px; margin: 0 8px 0 0; font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; display: inline-block; }
+  .dot.on { background: #22c55e; }
+  .pill { background: #1f2937; border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+  button { background: #2563eb; color: white; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; }
+  button.ghost { background: #374151; }
+  .connwarn { display: flex; gap: 10px; align-items: center; padding: 6px 12px; background: #7f1d1d; color: #fecaca; font-size: 12px; flex-wrap: wrap; }
+  .connwarn code { background: rgba(0,0,0,.35); padding: 1px 6px; border-radius: 4px; }
+  .connwarn button { background: #b91c1c; }
+  main { display: flex; height: calc(100vh - 90px); }
+  .viewport { position: relative; flex: 1; min-width: 0; }
+  canvas { width: 100%; height: 100%; display: block; background: #020617; }
+  .help { position: absolute; left: 8px; bottom: 8px; font-size: 11px; background: rgba(17,24,39,.85); padding: 6px 8px; border-radius: 6px; line-height: 1.5; max-width: 360px; }
+  aside { width: 360px; border-left: 1px solid #1f2937; background: #0f172a; display: flex; flex-direction: column; min-height: 0; }
+  .sec { padding: 8px 10px; border-bottom: 1px solid #1f2937; }
+  .sec h2 { font-size: 12px; margin: 0 0 6px 0; text-transform: uppercase; letter-spacing: .06em; color: #93c5fd; }
+  .kv { display: grid; grid-template-columns: 110px 1fr; font-size: 12px; gap: 2px 8px; }
+  .kv b { color: #9ca3af; font-weight: 500; }
+  .kv span { font-variant-numeric: tabular-nums; word-break: break-all; }
+  .list { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .list input[type=search] { margin: 8px 10px; padding: 6px 8px; border-radius: 6px; border: 1px solid #374151; background: #111827; color: white; }
+  .rows { overflow: auto; flex: 1; font-size: 11px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 4px 6px; border-bottom: 1px solid #1f2937; text-align: left; white-space: nowrap; }
+  th { position: sticky; top: 0; background: #111827; cursor: pointer; }
+  tr.sel { background: #1e3a8a; }
+  tr:hover { background: #1f2937; }
+  footer { padding: 4px 12px; font-size: 11px; color: #9ca3af; background: #111827; border-top: 1px solid #1f2937; }
+  label.chk { font-size: 12px; display: inline-flex; gap: 4px; align-items: center; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Octree chunks</h1>
+    <span class="dot" :class="{on: connected}"></span>
+    <span class="pill">{{ connected ? 'ws connected' : 'ws disconnected' }}</span>
+    <span class="pill">total {{ chunks.size }}</span>
+    <span class="pill">opaque {{ opaqueCount }}</span>
+    <span class="pill">transparent {{ transparentCount }}</span>
+    <span class="pill">{{ fps.toFixed(0) }} fps</span>
+    <span class="pill">{{ culled }} culled</span>
+    <button @click="requestAll">Request all</button>
+    <button class="ghost" @click="clearAll">Clear</button>
+    <label class="chk"><input type="checkbox" v-model="showOpaque"> opaque</label>
+    <label class="chk"><input type="checkbox" v-model="showTransparent"> transparent</label>
+    <label class="chk"><input type="checkbox" v-model="showWireframe"> wireframe</label>
+    <label class="chk">speed <input type="range" min="16" max="2048" v-model.number="camSpeed" style="width:90px"> {{ camSpeed }}</label>
+  </header>
+  <div v-if="!connected" class="connwarn">
+    <span>WS unreachable: <code>{{ wsTarget }}</code> — {{ wsError }}</span>
+    <span>Start the server (<code>cd bin &amp;&amp; ./server</code>, default port 8080) and open
+      <code>http://localhost:8080/</code> — not the HTML file directly.
+      Overrides: <code>?port=8081</code> or <code>?ws=ws://host:port/ws</code></span>
+    <button @click="reconnect">Reconnect</button>
+  </div>
+  <main>
+    <div class="viewport">
+      <canvas id="gl"></canvas>
+      <div class="help">
+        <b>Camera (matches Vulkan):</b> W/S forward/back · A/D left/right · Q/E down/up ·
+        H/F yaw−/+ · G/T pitch−/+ · R/Y roll−/+ · drag = yaw/pitch · click box = select + wireframe
+        (frustum-culled boxes, depth-tested wireframe)
+      </div>
+    </div>
+    <aside>
+      <div class="sec">
+        <h2>Selected chunk (click a box)</h2>
+        <div v-if="!selected" style="font-size:12px;color:#9ca3af">none — click a box or a row below</div>
+        <div v-else class="kv">
+          <b>id</b><span>{{ selected.id }}</span>
+          <b>layer</b><span>{{ selected.layer === 0 ? 'opaque' : 'transparent' }}</span>
+          <b>level</b><span>{{ selected.level }}</span>
+          <b>min</b><span>{{ fmt3(selected.minX, selected.minY, selected.minZ) }}</span>
+          <b>size</b><span>{{ selected.size }}</span>
+          <b>max</b><span>{{ fmt3(selected.minX + selected.size, selected.minY + selected.size, selected.minZ + selected.size) }}</span>
+          <b>lod / chunkLod</b><span>{{ selected.lod }} / {{ selected.chunkLod }}</span>
+          <b>leaf</b><span>{{ selected.isLeaf ? 'yes' : 'no' }}</span>
+          <b>type</b><span>{{ spaceName(selected.spaceType) }}</span>
+          <b>version</b><span>{{ selected.version }}</span>
+          <b>brush</b><span>{{ selected.brushIndex }}</span>
+          <b>sdf[8]</b><span>{{ selected.sdf.map(fmtF).join(', ') }}</span>
+          <b>mesh</b><span>{{ meshStatus }}</span>
+        </div>
+      </div>
+      <div class="sec list" style="flex:1">
+        <h2>All chunks ({{ filtered.length }} shown of {{ chunks.size }})</h2>
+        <input type="search" v-model="query" placeholder="filter: id, layer, level, brush…">
+        <div class="rows">
+          <table>
+            <thead><tr>
+              <th @click="sortBy('id')">id</th><th @click="sortBy('layer')">layer</th>
+              <th @click="sortBy('level')">lvl</th><th @click="sortBy('size')">size</th>
+              <th @click="sortBy('version')">ver</th><th @click="sortBy('lod')">lod</th>
+              <th @click="sortBy('brushIndex')">brush</th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="c in filtered.slice(0, 800)" :key="c.id" :class="{sel: selected && selected.id === c.id}" @click="select(c.id)">
+                <td>{{ shortId(c.id) }}</td><td>{{ c.layer === 0 ? 'opq' : 'trn' }}</td>
+                <td>{{ c.level }}</td><td>{{ c.size.toFixed(0) }}</td>
+                <td>{{ c.version }}</td><td>{{ c.lod }}/{{ c.chunkLod }}</td><td>{{ c.brushIndex }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </aside>
+  </main>
+  <footer>binary + gzip over ws /ws · magic CHK1 · record 76B · mesh 0x02/0x14 · {{ wsTarget }} · {{ lastMsg }}</footer>
+</div>
+
+<script>
+const { createApp, ref, computed, onMounted } = Vue;
+
+// ---- protocol ----
+const MAGIC = [0x43, 0x48, 0x4B, 0x31]; // 'CHK1'
+const T_REQ_ALL = 0x01, T_REQ_MESH = 0x02;
+const T_START = 0x10, T_BATCH = 0x11, T_DEL = 0x12, T_END = 0x13, T_MESH = 0x14;
+const REC_SIZE = 76;
+
+async function gzipEncode(u8) {
+  const cs = new CompressionStream('gzip');
+  const src = new Blob([u8]).stream().pipeThrough(cs);
+  return new Uint8Array(await new Response(src).arrayBuffer());
+}
+async function gzipDecode(ab) {
+  const ds = new DecompressionStream('gzip');
+  const src = new Blob([ab]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(src).arrayBuffer());
+}
+function parseRecord(dv, off) {
+  const id = dv.getBigUint64(off, true).toString();
+  const minX = dv.getFloat32(off + 8, true), minY = dv.getFloat32(off + 12, true), minZ = dv.getFloat32(off + 16, true);
+  const size = dv.getFloat32(off + 20, true);
+  const level = dv.getUint32(off + 24, true);
+  const lod = dv.getUint8(off + 28), chunkLod = dv.getUint8(off + 29);
+  const isLeaf = dv.getUint8(off + 30), spaceType = dv.getUint8(off + 31), layer = dv.getUint8(off + 32);
+  const version = dv.getUint32(off + 36, true);
+  const brushIndex = dv.getInt32(off + 40, true);
+  const sdf = [];
+  for (let i = 0; i < 8; i++) sdf.push(dv.getFloat32(off + 44 + 4 * i, true));
+  return { id, minX, minY, minZ, size, level, lod, chunkLod, isLeaf, spaceType, layer, version, brushIndex, sdf };
+}
+function parseMesh(raw) {
+  // MESH_DATA: magic[4], type, u64 id, u32 version, u8 layer, pad[3], u32 nVerts, u32 nIdx, verts, idx
+  if (raw.length < 29) return null;
+  const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  const id = dv.getBigUint64(5, true).toString();
+  const version = dv.getUint32(13, true);
+  const layer = dv.getUint8(17);
+  const nVerts = dv.getUint32(21, true), nIdx = dv.getUint32(25, true);
+  if (raw.length < 29 + nVerts * 12 + nIdx * 4) return null;
+  const pos = new Float32Array(nVerts * 3);
+  let off = 29;
+  for (let i = 0; i < nVerts * 3; i++, off += 4) pos[i] = dv.getFloat32(off, true);
+  const idx = new Uint32Array(nIdx);
+  for (let i = 0; i < nIdx; i++, off += 4) idx[i] = dv.getUint32(off, true);
+  return { id, version, layer, pos, idx };
+}
+
+// ---- math (quaternion camera matching math/Camera.cpp + KeyboardPublisher) ----
+function angleAxis(axis, rad) {
+  const n = Math.hypot(axis[0], axis[1], axis[2]) || 1;
+  const s = Math.sin(rad / 2) / n;
+  return [axis[0] * s, axis[1] * s, axis[2] * s, Math.cos(rad / 2)];
+}
+function qmul(a, b) {
+  return [
+    a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1],
+    a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0],
+    a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3],
+    a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2]];
+}
+function qnorm(q) { const l = Math.hypot(q[0],q[1],q[2],q[3]) || 1; return [q[0]/l,q[1]/l,q[2]/l,q[3]/l]; }
+function qrot(q, v) {
+  const [x,y,z,w] = q;
+  const uv = [y*v[2]-z*v[1], z*v[0]-x*v[2], x*v[1]-y*v[0]];
+  const uuv = [y*uv[2]-z*uv[1], z*uv[0]-x*uv[2], x*uv[1]-y*uv[0]];
+  return [v[0]+2*(w*uv[0]+uuv[0]), v[1]+2*(w*uv[1]+uuv[1]), v[2]+2*(w*uv[2]+uuv[2])];
+}
+function eulerToQuat(yawDeg, pitchDeg, rollDeg) {
+  const qy = angleAxis([0,1,0], yawDeg*Math.PI/180);
+  const qp = angleAxis([1,0,0], pitchDeg*Math.PI/180);
+  const qr = angleAxis([0,0,1], rollDeg*Math.PI/180);
+  return qnorm(qmul(qy, qmul(qp, qr)));
+}
+const V3 = {
+  add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],
+  sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],
+  scale:(a,s)=>[a[0]*s,a[1]*s,a[2]*s],
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  norm:(a)=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l];},
+  dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+};
+function lookAt(eye, center, up) {
+  let f = V3.norm(V3.sub(center, eye)), s = V3.norm(V3.cross(f, up)), u = V3.cross(s, f);
+  return new Float32Array([s[0],u[0],-f[0],0, s[1],u[1],-f[1],0, s[2],u[2],-f[2],0,
+    -V3.dot(s,eye),-V3.dot(u,eye),V3.dot(f,eye),1]);
+}
+function perspective(fovDeg, aspect, near, far) {
+  const f = 1/Math.tan(fovDeg*Math.PI/360), nf = 1/(near-far);
+  return new Float32Array([f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*nf,-1, 0,0,2*far*near*nf,0]);
+}
+function matMul(a, b) {
+  const o = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    o[c*4+r] = a[r]*b[c*4] + a[4+r]*b[c*4+1] + a[8+r]*b[c*4+2] + a[12+r]*b[c*4+3];
+  }
+  return o;
+}
+function invertMat(m) {
+  const o = new Float32Array(16);
+  const a00=m[0],a01=m[1],a02=m[2],a03=m[3],a10=m[4],a11=m[5],a12=m[6],a13=m[7],
+        a20=m[8],a21=m[9],a22=m[10],a23=m[11],a30=m[12],a31=m[13],a32=m[14],a33=m[15];
+  const b00=a00*a11-a01*a10,b01=a00*a12-a02*a10,b02=a00*a13-a03*a10,b03=a01*a12-a02*a11,
+        b04=a01*a13-a03*a11,b05=a02*a13-a03*a12,b06=a20*a31-a21*a30,b07=a20*a32-a22*a30,
+        b08=a20*a33-a23*a30,b09=a21*a32-a22*a31,b10=a21*a33-a23*a31,b11=a22*a33-a23*a32;
+  let det=b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;
+  if (!det) return null;
+  det=1/det;
+  o[0]=(a11*b11-a12*b10+a13*b09)*det; o[1]=(a02*b10-a01*b11-a03*b09)*det;
+  o[2]=(a31*b05-a32*b04+a33*b03)*det; o[3]=(a22*b04-a21*b05-a23*b03)*det;
+  o[4]=(a12*b08-a10*b11-a13*b07)*det; o[5]=(a00*b11-a02*b08+a03*b07)*det;
+  o[6]=(a32*b02-a30*b05-a33*b01)*det; o[7]=(a20*b05-a22*b02+a23*b01)*det;
+  o[8]=(a10*b10-a11*b08+a13*b06)*det; o[9]=(a01*b08-a00*b10-a03*b06)*det;
+  o[10]=(a30*b04-a31*b02+a33*b00)*det; o[11]=(a21*b02-a20*b04-a23*b00)*det;
+  o[12]=(a11*b07-a10*b09-a12*b06)*det; o[13]=(a00*b09-a01*b07+a02*b06)*det;
+  o[14]=(a31*b01-a30*b03-a32*b00)*det; o[15]=(a20*b03-a21*b01+a22*b00)*det;
+  return o;
+}
+// ---- frustum culling (Gribb/Hartmann planes from column-major VP) ----
+function extractPlanes(vp) {
+  function plane(a, b, s) {
+    const p = [vp[a] + s * vp[b], vp[4 + a] + s * vp[4 + b], vp[8 + a] + s * vp[8 + b], vp[12 + a] + s * vp[12 + b]];
+    const l = Math.hypot(p[0], p[1], p[2]) || 1;
+    return [p[0] / l, p[1] / l, p[2] / l, p[3] / l];
+  }
+  // left, right, bottom, top, near, far (inward-facing)
+  return [plane(3, 0, 1), plane(3, 0, -1), plane(3, 1, 1), plane(3, 1, -1), plane(3, 2, 1), plane(3, 2, -1)];
+}
+function aabbVisible(planes, mn, mx) {
+  for (const pl of planes) {
+    const px = pl[0] >= 0 ? mx[0] : mn[0];
+    const py = pl[1] >= 0 ? mx[1] : mn[1];
+    const pz = pl[2] >= 0 ? mx[2] : mn[2];
+    if (pl[0] * px + pl[1] * py + pl[2] * pz + pl[3] < 0) return false;
+  }
+  return true;
+}
+
+createApp({
+  setup() {
+    const chunks = ref(new Map());
+    const connected = ref(false);
+    const selectedId = ref(null);
+    const query = ref('');
+    const sortKey = ref('level');
+    const showOpaque = ref(true), showTransparent = ref(true);
+    const showWireframe = ref(true);
+    const camSpeed = ref(512);
+    const fps = ref(0);
+    const culled = ref(0);
+    const lastMsg = ref('no data yet');
+    const wsTarget = ref('…');
+    const wsError = ref('connecting…');
+    const wsAttempts = ref(0);
+    const meshStatus = ref('no selection');
+    const expectedTotal = ref(0);
+    let ws = null, chunksVersion = 0, meshBufVersion = 0, reconnectTimer = 0;
+    // Selected chunk tessellation (wireframe overlay), filled by T_MESH.
+    let meshId = null, meshVersion = -1, meshPos = null, meshIdx = null;
+
+    // camera mirrors Vulkan: pos(-512,2048,0), yaw -90 (math/Camera + MyApp setup)
+    const cam = { pos: [-512, 2048, 0], quat: eulerToQuat(-90, 0, 0), timer: 0, keys: new Set() };
+
+    const selected = computed(() => selectedId.value ? (chunks.value.get(selectedId.value) || null) : null);
+    const opaqueCount = computed(() => { let n = 0; for (const c of chunks.value.values()) if (c.layer === 0) n++; return n; });
+    const transparentCount = computed(() => { let n = 0; for (const c of chunks.value.values()) if (c.layer === 1) n++; return n; });
+    const filtered = computed(() => {
+      const q = query.value.trim().toLowerCase();
+      let arr = [...chunks.value.values()];
+      if (!showOpaque.value) arr = arr.filter(c => c.layer !== 0);
+      if (!showTransparent.value) arr = arr.filter(c => c.layer !== 1);
+      if (q) arr = arr.filter(c => c.id.toLowerCase().includes(q) || String(c.level) === q ||
+        String(c.brushIndex) === q || (q === 'opaque' && c.layer === 0) || (q === 'transparent' && c.layer === 1));
+      const k = sortKey.value;
+      arr.sort((a, b) => (a[k] < b[k] ? -1 : a[k] > b[k] ? 1 : 0));
+      return arr;
+    });
+
+    function shortId(id) { return id.length > 10 ? '…' + id.slice(-8) : id; }
+    function fmtF(x) { return (typeof x === 'number' && isFinite(x)) ? x.toFixed(1) : String(x); }
+    function fmt3(a, b, c) { return `${fmtF(a)}, ${fmtF(b)}, ${fmtF(c)}`; }
+    function spaceName(t) { return t === 0 ? 'Empty' : t === 1 ? 'Surface' : t === 2 ? 'Solid' : '?'; }
+    function sortBy(k) { sortKey.value = k; }
+    function clearMesh(silent) {
+      meshId = null; meshVersion = -1; meshPos = null; meshIdx = null;
+      meshBufVersion++;
+      if (!silent) meshStatus.value = 'no selection';
+    }
+    function select(id) {
+      selectedId.value = id;
+      chunksVersion++;
+      requestMesh(id);
+    }
+    function clearAll() {
+      chunks.value.clear(); selectedId.value = null; chunksVersion++;
+      clearMesh();
+    }
+
+    async function requestAll() {
+      if (!ws || ws.readyState !== 1) return;
+      const gz = await gzipEncode(new Uint8Array([T_REQ_ALL]));
+      ws.send(gz);
+      lastMsg.value = 'REQUEST_ALL sent (gzip binary)';
+    }
+
+    async function requestMesh(idStr) {
+      if (idStr == null) { clearMesh(); return; }
+      if (!ws || ws.readyState !== 1) { meshStatus.value = 'offline — no socket'; return; }
+      try {
+        const p = new Uint8Array(9);
+        new DataView(p.buffer).setBigUint64(1, BigInt(idStr), true);
+        p[0] = T_REQ_MESH;
+        meshStatus.value = 'loading…';
+        ws.send(await gzipEncode(p));
+        lastMsg.value = `REQUEST_MESH ${shortId(idStr)} sent (gzip binary)`;
+      } catch (e) { meshStatus.value = 'request failed: ' + e; }
+    }
+
+    function handleMessage(raw) {
+      if (raw.length < 5) return;
+      for (let i = 0; i < 4; i++) if (raw[i] !== MAGIC[i]) return;
+      const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+      const type = dv.getUint8(4);
+      if (type === T_START) {
+        expectedTotal.value = dv.getUint32(5, true);
+        chunks.value.clear(); selectedId.value = null; chunksVersion++;
+        clearMesh();
+        lastMsg.value = `snapshot start: expect ${expectedTotal.value}`;
+      } else if (type === T_BATCH) {
+        const n = dv.getUint16(5, true);
+        let selTouched = false;
+        for (let i = 0; i < n; i++) {
+          const off = 7 + i * REC_SIZE;
+          if (off + REC_SIZE > raw.length) break;
+          const c = parseRecord(dv, off);
+          chunks.value.set(c.id, c);
+          if (c.id === selectedId.value) selTouched = true;
+        }
+        chunksVersion++;
+        lastMsg.value = `batch +${n} (total ${chunks.value.size}, gzip ${raw.length}B raw)`;
+        // Live update of the selected chunk: refresh its wireframe geometry.
+        if (selTouched && selectedId.value != null) requestMesh(selectedId.value);
+      } else if (type === T_DEL) {
+        const n = dv.getUint16(5, true);
+        for (let i = 0; i < n; i++) {
+          const off = 7 + i * 8;
+          if (off + 8 > raw.length) break;
+          const id = dv.getBigUint64(off, true).toString();
+          chunks.value.delete(id);
+          if (selectedId.value === id) { selectedId.value = null; clearMesh(); }
+        }
+        chunksVersion++;
+        lastMsg.value = `delete −${n} (total ${chunks.value.size})`;
+      } else if (type === T_END) {
+        lastMsg.value = `snapshot end: ${chunks.value.size} chunks live`;
+      } else if (type === T_MESH) {
+        const m = parseMesh(raw);
+        if (!m) { lastMsg.value = 'mesh: short frame ignored'; return; }
+        if (m.id !== selectedId.value) return; // stale reply for an old selection
+        meshId = m.id; meshVersion = m.version; meshPos = m.pos; meshIdx = m.idx;
+        meshBufVersion++;
+        const nTris = m.idx.length / 3;
+        meshStatus.value = nTris > 0
+          ? `${nTris} tris · ${(m.pos.length / 3)} verts · v${m.version}`
+          : `empty (non-surface v${m.version})`;
+        lastMsg.value = `mesh ${shortId(m.id)}: ${nTris} tris`;
+      }
+    }
+
+    function connect() {
+      const url = resolveWsUrl();
+      wsTarget.value = url;
+      wsAttempts.value++;
+      let opened = false;
+      try {
+        ws = new WebSocket(url);
+      } catch (e) {
+        wsError.value = 'bad URL (' + e + ')';
+        scheduleReconnect();
+        return;
+      }
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = async () => {
+        opened = true;
+        connected.value = true;
+        wsError.value = 'connected';
+        await requestAll();
+      };
+      ws.onclose = (ev) => {
+        connected.value = false;
+        const code = ev && ev.code ? ' (code ' + ev.code + (ev.reason ? ': ' + ev.reason : '') + ')' : '';
+        wsError.value = opened
+          ? 'connection lost' + code + ' — is the server still running?'
+          : 'connection refused' + code + ' — is the server running on that host:port?';
+        scheduleReconnect();
+      };
+      ws.onerror = () => { try { ws.close(); } catch (e) {} };
+      ws.onmessage = async (ev) => {
+        try {
+          const raw = await gzipDecode(ev.data);
+          handleMessage(raw);
+        } catch (e) { lastMsg.value = 'gzip decode error: ' + e; }
+      };
+    }
+    function scheduleReconnect() {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, 1500);
+    }
+    function reconnect() {
+      clearTimeout(reconnectTimer);
+      try { if (ws) ws.close(); } catch (e) {}
+      connect();
+    }
+    // WS endpoint resolution: ?ws= full override, ?port= override, same-host
+    // /ws by default, localhost:8080 fallback for file:// (location.host is
+    // empty there, which previously produced the broken URL "ws:///ws").
+    function resolveWsUrl() {
+      try {
+        const q = new URLSearchParams(location.search);
+        const o = q.get('ws');
+        if (o) return o;
+        const p = q.get('port');
+        if (p) return (location.protocol === 'https:' ? 'wss://' : 'ws://') +
+          (location.hostname || 'localhost') + ':' + p + '/ws';
+      } catch (e) {}
+      if (location.protocol === 'file:' || !location.host) return 'ws://localhost:8080/ws';
+      return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+    }
+
+    // ---- WebGL ----
+    // Passes per frame:
+    //   1. deferred depth pre-pass: selected mesh triangles with color writes
+    //      off, so the depth buffer holds the solid surface;
+    //   2. main pass: frustum-culled chunk boxes (LINES) + selected wireframe
+    //      (LINES) with depth test on, so hidden edges are occluded correctly.
+    let gl = null, prog = null, posBuf = null, colBuf = null, uVP = null;
+    let meshTriBuf = null, meshLineBuf = null, meshLineColBuf = null;
+    let vertCount = 0, meshTriCount = 0, meshLineCount = 0;
+    let builtKey = '', builtMeshVersion = -1;
+    function initGL() {
+      const cv = document.getElementById('gl');
+      gl = cv.getContext('webgl', { antialias: true });
+      if (!gl) return;
+      const vs = 'attribute vec3 aPos; attribute vec3 aCol; uniform mat4 uVP; varying vec3 vC;' +
+        'void main(){ gl_Position = uVP * vec4(aPos, 1.0); vC = aCol; }';
+      const fs = 'precision mediump float; varying vec3 vC; void main(){ gl_FragColor = vec4(vC, 1.0); }';
+      function sh(t, s) { const h = gl.createShader(t); gl.shaderSource(h, s); gl.compileShader(h); return h; }
+      prog = gl.createProgram();
+      gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
+      gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+      gl.linkProgram(prog);
+      gl.useProgram(prog);
+      posBuf = gl.createBuffer(); colBuf = gl.createBuffer();
+      meshTriBuf = gl.createBuffer(); meshLineBuf = gl.createBuffer(); meshLineColBuf = gl.createBuffer();
+      uVP = gl.getUniformLocation(prog, 'uVP');
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL); // wireframe sits exactly on the pre-pass surface
+    }
+    function layerColor(c) {
+      if (c.spaceType === 0) return [0.42, 0.45, 0.5];
+      if (c.spaceType === 2) return [0.96, 0.62, 0.04];
+      return c.layer === 0 ? [0.29, 0.87, 0.5] : [0.13, 0.83, 0.93];
+    }
+    const EDGES = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]];
+    function bindArr(buf, data, loc, size) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+    }
+    // Rebuilds box line buffers, skipping chunks whose AABB sits fully
+    // outside the view frustum (CPU frustum culling). Returns culled count.
+    function rebuildBuffers(planes) {
+      if (!gl) return 0;
+      const pos = [], col = [];
+      let culled = 0;
+      for (const c of chunks.value.values()) {
+        if (c.layer === 0 && !showOpaque.value) continue;
+        if (c.layer === 1 && !showTransparent.value) continue;
+        const mn = [c.minX, c.minY, c.minZ], mx = [c.minX + c.size, c.minY + c.size, c.minZ + c.size];
+        if (planes && !aabbVisible(planes, mn, mx)) { culled++; continue; }
+        const sel = selectedId.value === c.id;
+        const cc = sel ? [0.98, 0.8, 0.08] : layerColor(c);
+        const cx = [];
+        for (let i = 0; i < 8; i++)
+          cx.push([c.minX + ((i & 4) ? c.size : 0), c.minY + ((i & 2) ? c.size : 0), c.minZ + ((i & 1) ? c.size : 0)]);
+        for (const [a, b] of EDGES) {
+          pos.push(...cx[a], ...cx[b]);
+          col.push(...cc, ...cc);
+        }
+      }
+      vertCount = pos.length / 3;
+      const aPos = gl.getAttribLocation(prog, 'aPos');
+      const aCol = gl.getAttribLocation(prog, 'aCol');
+      bindArr(posBuf, new Float32Array(pos), aPos, 3);
+      bindArr(colBuf, new Float32Array(col), aCol, 3);
+      return culled;
+    }
+    // Expands selected-mesh triangles into line edges for the wireframe pass.
+    function rebuildMeshBuffers() {
+      meshTriCount = 0; meshLineCount = 0;
+      if (!gl || !meshPos || !meshIdx || meshIdx.length === 0) return;
+      const aPos = gl.getAttribLocation(prog, 'aPos');
+      const aCol = gl.getAttribLocation(prog, 'aCol');
+      bindArr(meshTriBuf, meshPos, aPos, 3);
+      meshTriCount = meshIdx.length;
+      const lp = new Float32Array(meshIdx.length * 2 * 3);
+      for (let t = 0; t < meshIdx.length; t += 3) {
+        const a = meshIdx[t] * 3, b = meshIdx[t + 1] * 3, d = meshIdx[t + 2] * 3;
+        const o = t * 6;
+        lp[o] = meshPos[a]; lp[o + 1] = meshPos[a + 1]; lp[o + 2] = meshPos[a + 2];
+        lp[o + 3] = meshPos[b]; lp[o + 4] = meshPos[b + 1]; lp[o + 5] = meshPos[b + 2];
+        lp[o + 6] = meshPos[b]; lp[o + 7] = meshPos[b + 1]; lp[o + 8] = meshPos[b + 2];
+        lp[o + 9] = meshPos[d]; lp[o + 10] = meshPos[d + 1]; lp[o + 11] = meshPos[d + 2];
+        lp[o + 12] = meshPos[d]; lp[o + 13] = meshPos[d + 1]; lp[o + 14] = meshPos[d + 2];
+        lp[o + 15] = meshPos[a]; lp[o + 16] = meshPos[a + 1]; lp[o + 17] = meshPos[a + 2];
+      }
+      bindArr(meshLineBuf, lp, aPos, 3);
+      const lc = new Float32Array((lp.length / 3) * 3);
+      for (let i = 0; i < lc.length; i += 3) { lc[i] = 1.0; lc[i + 1] = 0.95; lc[i + 2] = 0.55; }
+      bindArr(meshLineColBuf, lc, aCol, 3);
+      meshLineCount = lp.length / 3;
+    }
+    function camForward() { return V3.norm(qrot(cam.quat, [0, 0, -1])); }
+    function camUp() { return V3.norm(qrot(cam.quat, [0, 1, 0])); }
+    function camRight() { const f = camForward(), u = camUp(); return V3.norm(V3.cross(f, u)); }
+    function updateCamera(dt) {
+      const k = cam.keys;
+      const fwd = camForward(), up = camUp(), right = camRight();
+      const hasT = k.has('KeyW')||k.has('KeyS')||k.has('KeyA')||k.has('KeyD')||k.has('KeyQ')||k.has('KeyE');
+      if (hasT) cam.timer += dt; else cam.timer = 0;
+      const accel = (Math.exp(cam.timer) - 1) / (Math.exp(1) - 1);
+      const vel = camSpeed.value * dt * (hasT ? Math.max(accel, 1e-3) : 0);
+      let mv = [0, 0, 0];
+      if (k.has('KeyW')) mv = V3.add(mv, V3.scale(fwd, vel));
+      if (k.has('KeyS')) mv = V3.add(mv, V3.scale(fwd, -vel));
+      if (k.has('KeyD')) mv = V3.add(mv, V3.scale(right, vel));
+      if (k.has('KeyA')) mv = V3.add(mv, V3.scale(right, -vel));
+      if (k.has('KeyE')) mv = V3.add(mv, V3.scale(up, vel));
+      if (k.has('KeyQ')) mv = V3.add(mv, V3.scale(up, -vel));
+      cam.pos = V3.add(cam.pos, mv);
+      const ang = 45 * dt; // deg/s, matches Camera::angularSpeedRad
+      const D = Math.PI / 180;
+      function yaw(d) { cam.quat = qnorm(qmul(angleAxis([0,1,0], d*D), cam.quat)); }
+      function pitch(d) { cam.quat = qnorm(qmul(angleAxis(camRight(), d*D), cam.quat)); }
+      function roll(d) { cam.quat = qnorm(qmul(angleAxis(camForward(), d*D), cam.quat)); }
+      if (k.has('KeyH')) yaw(-ang);
+      if (k.has('KeyF')) yaw(ang);
+      if (k.has('KeyG')) pitch(-ang);
+      if (k.has('KeyT')) pitch(ang);
+      if (k.has('KeyR')) roll(-ang);
+      if (k.has('KeyY')) roll(ang);
+    }
+    function frame(dt) {
+      updateCamera(dt);
+      const cv = document.getElementById('gl');
+      const r = cv.parentElement.getBoundingClientRect();
+      const w = Math.max(2, r.width|0), h = Math.max(2, (r.height)|0);
+      if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+      if (!gl) return;
+      const aspect = cv.width / cv.height;
+      const proj = perspective(60, aspect, 0.1, 8092);
+      const view = lookAt(cam.pos, V3.add(cam.pos, camForward()), camUp());
+      const vp = matMul(proj, view);
+      const planes = extractPlanes(vp);
+      // Box buffers depend on data + filters + frustum, so the rebuild key
+      // includes a quantized camera pose (rebuilt while moving, cached idle).
+      const key = [chunksVersion, showOpaque.value, showTransparent.value, selectedId.value, aspect,
+        cam.pos.map(x => x.toFixed(1)).join(','), cam.quat.map(x => x.toFixed(4)).join(',')].join('|');
+      if (key !== builtKey) {
+        culled.value = rebuildBuffers(planes);
+        builtKey = key;
+      }
+      if (meshBufVersion !== builtMeshVersion) { rebuildMeshBuffers(); builtMeshVersion = meshBufVersion; }
+      const aPos = gl.getAttribLocation(prog, 'aPos');
+      const aCol = gl.getAttribLocation(prog, 'aCol');
+      gl.viewport(0, 0, cv.width, cv.height);
+      gl.clearColor(0.008, 0.02, 0.05, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.uniformMatrix4fv(uVP, false, vp);
+      // Selected-mesh visibility shares the chunk-box frustum test.
+      let meshVisible = showWireframe.value && meshTriCount > 0 && meshId != null;
+      if (meshVisible) {
+        const c = chunks.value.get(meshId);
+        if (!c) meshVisible = false;
+        else if (!aabbVisible(planes, [c.minX, c.minY, c.minZ],
+                              [c.minX + c.size, c.minY + c.size, c.minZ + c.size])) meshVisible = false;
+      }
+      // 1. deferred depth pre-pass: solid triangles write depth only.
+      if (meshVisible) {
+        gl.colorMask(false, false, false, false);
+        gl.depthMask(true);
+        gl.bindBuffer(gl.ARRAY_BUFFER, meshTriBuf);
+        gl.enableVertexAttribArray(aPos);
+        gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+        gl.drawArrays(gl.TRIANGLES, 0, meshTriCount);
+        gl.colorMask(true, true, true, true);
+      }
+      // 2. main pass: culled boxes + depth-tested wireframe.
+      gl.depthMask(true);
+      gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, colBuf);
+      gl.enableVertexAttribArray(aCol);
+      gl.vertexAttribPointer(aCol, 3, gl.FLOAT, false, 0, 0);
+      if (vertCount) gl.drawArrays(gl.LINES, 0, vertCount);
+      if (meshVisible && meshLineCount > 0) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, meshLineBuf);
+        gl.enableVertexAttribArray(aPos);
+        gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, meshLineColBuf);
+        gl.enableVertexAttribArray(aCol);
+        gl.vertexAttribPointer(aCol, 3, gl.FLOAT, false, 0, 0);
+        gl.drawArrays(gl.LINES, 0, meshLineCount);
+      }
+    }
+    function pick(nx, ny) {
+      if (!gl) return;
+      const cv = document.getElementById('gl');
+      const aspect = cv.width / cv.height;
+      const vp = matMul(perspective(60, aspect, 0.1, 8092), lookAt(cam.pos, V3.add(cam.pos, camForward()), camUp()));
+      const inv = invertMat(vp);
+      if (!inv) return;
+      function unproj(x, y, z) {
+        const v = [x, y, z, 1];
+        const o = [0,0,0,0];
+        for (let r = 0; r < 4; r++) o[r] = inv[r]*v[0]+inv[4+r]*v[1]+inv[8+r]*v[2]+inv[12+r]*v[3];
+        return [o[0]/o[3], o[1]/o[3], o[2]/o[3]];
+      }
+      const p0 = unproj(nx, ny, -1), p1 = unproj(nx, ny, 1);
+      const dir = V3.norm(V3.sub(p1, p0));
+      let best = null, bestT = 1e30;
+      for (const c of chunks.value.values()) {
+        if (c.layer === 0 && !showOpaque.value) continue;
+        if (c.layer === 1 && !showTransparent.value) continue;
+        const mn = [c.minX, c.minY, c.minZ], mx = [c.minX + c.size, c.minY + c.size, c.minZ + c.size];
+        let t0 = 0, t1 = 1e30, ok = true;
+        for (let i = 0; i < 3; i++) {
+          const o = p0[i], d = dir[i];
+          if (Math.abs(d) < 1e-9) { if (o < mn[i] || o > mx[i]) { ok = false; break; } }
+          else {
+            let a = (mn[i]-o)/d, b = (mx[i]-o)/d;
+            if (a > b) { const t = a; a = b; b = t; }
+            t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+            if (t0 > t1) { ok = false; break; }
+          }
+        }
+        if (ok && t0 < bestT && t0 > 0) { bestT = t0; best = c.id; }
+      }
+      if (best) selectedId.value = best;
+      chunksVersion++;
+    }
+
+    onMounted(() => {
+      initGL();
+      connect();
+      window.addEventListener('keydown', (e) => {
+        const t = (e.target && e.target.tagName) || '';
+        if (t === 'INPUT' || t === 'TEXTAREA') return;
+        cam.keys.add(e.code);
+      });
+      window.addEventListener('keyup', (e) => cam.keys.delete(e.code));
+      const cv = document.getElementById('gl');
+      let down = null, moved = 0;
+      cv.addEventListener('mousedown', (e) => { down = [e.clientX, e.clientY]; moved = 0; });
+      window.addEventListener('mousemove', (e) => {
+        if (!down) return;
+        const dx = e.movementX || 0, dy = e.movementY || 0;
+        moved += Math.abs(dx) + Math.abs(dy);
+        const s = 0.15;
+        cam.quat = qnorm(qmul(angleAxis([0,1,0], -dx*s*Math.PI/180), cam.quat));
+        cam.quat = qnorm(qmul(angleAxis(camRight(), -dy*s*Math.PI/180), cam.quat));
+      });
+      window.addEventListener('mouseup', (e) => {
+        if (!down) return;
+        const wasClick = moved < 5;
+        down = null;
+        if (!wasClick) return;
+        const r = cv.getBoundingClientRect();
+        const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+        const ny = -(((e.clientY - r.top) / r.height) * 2 - 1);
+        pick(nx, ny);
+      });
+      let last = performance.now();
+      let frames = 0, t0 = last;
+      function loop(now) {
+        const dt = Math.min(0.1, (now - last) / 1000);
+        last = now;
+        frame(dt);
+        frames++;
+        if (now - t0 > 500) { fps.value = frames * 1000 / (now - t0); frames = 0; t0 = now; }
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+      window.addEventListener('resize', () => { builtKey = ''; });
+    });
+
+    return { chunks, connected, selected, selectedId, query, sortKey, showOpaque, showTransparent,
+      showWireframe, camSpeed, fps, culled, lastMsg, meshStatus, wsTarget, wsError,
+      filtered, opaqueCount, transparentCount,
+      requestAll, clearAll, select, sortBy, reconnect, shortId, fmtF, fmt3, spaceName };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

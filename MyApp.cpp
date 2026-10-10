@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <cstring>
 #include <cstdlib>
+#include <atomic>
 #include <array>
 #include <sys/resource.h>
 #include <glm/glm.hpp>
@@ -32,6 +33,7 @@
 #include "vulkan/renderer/SceneQueues.hpp"
 #include "vulkan/renderer/RendererUtils.hpp"
 #include "utils/LocalScene.hpp"
+#include "utils/RemoteScene.hpp"
 #include "widgets/SettingsWidget.hpp"
 #include "widgets/SkyWidget.hpp"
 #include "widgets/SkySettings.hpp"
@@ -218,6 +220,17 @@ public:
     // VulkanApp delegate to SceneQueues, keeping this class free of scene-staging
     // boilerplate.
     World * world = nullptr;
+    // Remote scene (rendering the chunk-streaming server). Set at startup:
+    // MyApp tries the WebSocket first and falls back to the local octrees
+    // when it is unreachable. Owned here; World::activeScene() decides which
+    // scene the renderer consumes.
+    std::unique_ptr<RemoteScene> remoteScene;
+    bool useRemote = false;
+    // "host:port" of the chunk server. Overridable via --remote=HOST:PORT,
+    // env VULKAN_REMOTE=HOST:PORT; --local (or VULKAN_REMOTE=off) skips the
+    // connection attempt entirely.
+    std::string remoteEndpoint = "127.0.0.1:8080";
+    bool remoteDisabled = false;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
     Brush3dManager brushManager;
@@ -338,6 +351,7 @@ public:
     bool brushApplyToScenePending = false;
     bool generateMapPending = false;
     bool loadScenePending = false;
+    bool remoteLoadPending = false;
     std::string pendingLoadPath;
 
     // Camera and input
@@ -632,6 +646,30 @@ public:
         world = new World();
         sceneRenderer->setWorld(world);
 
+        // Try the remote chunk server first; on any failure the local octrees
+        // stay authoritative (see useRemote guards below). The octree explorer
+        // always shows the LOCAL scene (empty in remote mode) — remote chunks
+        // live in RemoteScene stub nodes, not in an octree.
+        if (!remoteDisabled) {
+            RemoteScene::Endpoint ep;
+            if (parseRemoteEndpoint(remoteEndpoint, ep)) {
+                auto remote = std::make_unique<RemoteScene>();
+                if (remote->connect(ep)) {
+                    useRemote = true;
+                    remoteScene = std::move(remote);
+                    world->setActiveScene(remoteScene.get());
+                    std::cout << "[MyApp::setup] rendering RemoteScene from "
+                              << ep.host << ":" << ep.port << "\n";
+                }
+            } else {
+                std::cout << "[MyApp::setup] bad remote endpoint '" << remoteEndpoint
+                          << "'; keeping LocalScene\n";
+            }
+        }
+        if (!useRemote) {
+            std::cout << "[MyApp::setup] rendering LocalScene\n";
+        }
+
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(&world->scene(), &camera);
         widgetManager.addWidget(octreeExplorerWidget);
         brushManager.getEntries().clear();
@@ -658,7 +696,8 @@ public:
         // main-scene space; the dedup collectors in front of them (fed to
         // Scene::loadScene/action and Octree::apply) replay final per-node
         // state into these handlers on the tessellation threads.
-        Scene* sceneForChanges = &world->scene();
+        // sceneForChanges is the ACTIVE scene (remote stubs or local octree).
+        Scene* sceneForChanges = &world->activeScene();
         float minSize = 30.0f;
         std::pair<Octree::OctreeNodeDataHandler,Octree::OctreeNodeDataHandler> mainOpaqueHandlers = build(
             sceneRenderer, 
@@ -890,9 +929,13 @@ public:
                 }
             };
         }
-        // Try loading the default scene; fall back to procedural generation if it fails
+        // Scene content source: remote snapshot when connected, otherwise the
+        // local default scene file or procedural generation.
         const std::string defaultScenePath = "scenes/default.scene";
-        if (std::filesystem::exists(defaultScenePath)) {
+        if (useRemote) {
+            remoteLoadPending = true;
+            std::cout << "[MyApp::setup] Loading chunks from remote server on first frame\n";
+        } else if (std::filesystem::exists(defaultScenePath)) {
             pendingLoadPath = defaultScenePath;
             loadScenePending = true;
             std::cout << "[MyApp::setup] Loading default scene from '" << defaultScenePath << "'\n";
@@ -935,6 +978,53 @@ public:
         });
     }
 
+    // Parse "host:port" into a RemoteScene endpoint. Returns false on garbage.
+    static bool parseRemoteEndpoint(const std::string& s, RemoteScene::Endpoint& out) {
+        const size_t colon = s.rfind(':');
+        if (colon == std::string::npos || colon == 0 || colon + 1 >= s.size()) return false;
+        try {
+            const int port = std::stoi(s.substr(colon + 1));
+            if (port <= 0 || port > 65535) return false;
+            out.host = s.substr(0, colon);
+            out.port = static_cast<uint16_t>(port);
+            return !out.host.empty();
+        } catch (...) {
+            return false;
+        }
+    }
+
+    // Download the remote snapshot into the collectors. On failure the caller
+    // falls back to LocalScene (collectors are cleared first).
+    void loadRemoteScene();
+    // Recurring dispatch loop for the live remote stream. Reuses
+    // sceneProcessThread (joined by the existing reset/shutdown paths).
+    // The loop runs while remoteDispatchRun is set; stopRemoteDispatch()
+    // flips it and joins (safe to call in local mode too: no-op).
+    std::atomic<bool> remoteDispatchRun{false};
+    void startRemoteDispatchLoop() {
+        remoteDispatchRun = true;
+        sceneProcessThread = std::thread([this]() {
+            std::cout << "[MyApp] remote dispatch loop started\n";
+            while (remoteDispatchRun.load()) {
+                dispatchSolidEvents();
+                dispatchLiquidEvents();
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            std::cout << "[MyApp] remote dispatch loop stopped\n";
+        });
+    }
+    void stopRemoteDispatch() {
+        if (remoteDispatchRun.exchange(false)) {
+            if (sceneProcessThread.joinable()) sceneProcessThread.join();
+        }
+    }
+    // Disconnect the remote scene first (wakes mesh fetchers blocked on the
+    // socket), before any thread joins or pool stops below.
+    void stopRemoteStreaming() {
+        stopRemoteDispatch();
+        if (remoteScene) remoteScene->disconnect();
+    }
+
 // (setup implementation defined out-of-line below)
 
     void update(float deltaTime) override {
@@ -951,7 +1041,7 @@ public:
             nunchukPublisher.update();
             nunchukPublisher.applyControls(&eventManager, camera, deltaTime,
                                            &controllerManager, &brushManager,
-                                            world ? &world->scene().opaqueOctree : nullptr);
+                                            (world && !useRemote) ? &world->scene().opaqueOctree : nullptr);
         } else {
             // Still poll nunchuk state so Home/A button edge detection works
             nunchukPublisher.update();
@@ -2903,7 +2993,10 @@ public:
                     sceneFolderBuf[s.size()] = '\0';
                 }
                 if (scenePicker_.isSaveMode()) {
-                    if (world) world->scene().save(sceneFolderBuf, &settings);
+                    // Saving the (empty) local scene over a file while
+                    // rendering remotely would destroy data: refuse.
+                    if (world && !useRemote) world->scene().save(sceneFolderBuf, &settings);
+                    else std::cout << "[MyApp] save ignored in remote mode\n";
                 } else {
                     pendingLoadPath = sceneFolderBuf;
                     loadScenePending = true;
@@ -3325,6 +3418,11 @@ public:
     // may have left work in flight.
     deviceWaitIdle();
 
+    // Remote streaming stops first: disconnect wakes mesh fetchers blocked on
+    // the socket (they run on the gen pools stopped below), then joins the
+    // receiver and dispatch threads.
+    stopRemoteStreaming();
+
     // Join tessellation thread before tearing down Vulkan resources.
     if (sceneProcessThread.joinable()) sceneProcessThread.join();
 
@@ -3385,6 +3483,8 @@ public:
         // Device-lost teardown path: join/stop CPU threads only, never touch
         // Vulkan (any vkDestroy* on objects still tracked in use would trip a
         // validation error). Mirrors the thread-stopping half of clean().
+        // Remote streaming stops first so blocked mesh fetchers wake up.
+        stopRemoteStreaming();
         if (sceneProcessThread.joinable()) sceneProcessThread.join();
         asyncThreadPool.stop();
         if (world) world->stopPools();
@@ -3573,8 +3673,27 @@ int main(int argc, char** argv) {
         rlim.rlim_cur = rlim.rlim_max;
         setrlimit(RLIMIT_RTPRIO, &rlim);
     }
+    // Remote scene endpoint: --remote=HOST:PORT (or --remote HOST:PORT),
+    // --local to skip the connection attempt, env VULKAN_REMOTE likewise
+    // ("off"/"0" disables). Default tries 127.0.0.1:8080 and falls back to
+    // LocalScene when unreachable.
+    std::string remoteEndpoint = "127.0.0.1:8080";
+    bool remoteDisabled = false;
+    if (const char* env = std::getenv("VULKAN_REMOTE")) {
+        const std::string e = env;
+        if (e.empty() || e == "off" || e == "0") remoteDisabled = true;
+        else remoteEndpoint = e;
+    }
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--local") remoteDisabled = true;
+        else if (a.rfind("--remote=", 0) == 0) remoteEndpoint = a.substr(9);
+        else if (a == "--remote" && i + 1 < argc) remoteEndpoint = argv[++i];
+    }
     try {
         MyApp app;
+        app.remoteEndpoint = remoteEndpoint;
+        app.remoteDisabled = remoteDisabled;
         app.run();
         return 0;
     } catch (const std::exception& e) {
@@ -3947,6 +4066,13 @@ void MyApp::updateBrushPreview(uint32_t frameIndex) {
 
 void MyApp::applyBrushToScene() {
     if (!world || !sceneRenderer) return;
+    // Brush edits target the LOCAL octrees; in remote mode there is nothing
+    // local to edit (the server owns the SDF), so refuse instead of silently
+    // building invisible local content.
+    if (useRemote) {
+        std::cout << "[MyApp::applyBrushToScene] ignored in remote mode (server owns the scene)\n";
+        return;
+    }
 
     const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
     if (!selectedEntry) return;
@@ -4007,12 +4133,19 @@ void MyApp::applyBrushToScene() {
 // so array-layer transitions happen outside of active draw command buffers.
 
 void MyApp::action() {
+    // Remote mode has no local tessellation pass; restart live dispatch.
+    if (useRemote) {
+        stopRemoteDispatch();
+        // Wait for the GPU to finish all in-flight work before clearing GPU resources
+        deviceWaitIdle();
+        startRemoteDispatchLoop();
+        return;
+    }
     // Join any previous background tessellation thread
     if (sceneProcessThread.joinable()) sceneProcessThread.join();
 
     // Wait for the GPU to finish all in-flight work before clearing GPU resources
     deviceWaitIdle();
-
 
     // Tessellate chunks in a background thread. Solid and water are handled on
     // separate threads so both layers tessellate truly in parallel (water no
@@ -4021,6 +4154,7 @@ void MyApp::action() {
 }
 
 void MyApp::resetSceneState() {
+    stopRemoteDispatch();
     if (sceneProcessThread.joinable()) sceneProcessThread.join();
     deviceWaitIdle();
     processPendingCommandBuffers();
@@ -4041,6 +4175,14 @@ void MyApp::resetSceneState() {
         }
     }
 
+    // Remote mode has no local octree content; the GPU/collector clearing
+    // above is the whole reset (all callers that rebuild octrees are guarded
+    // to local mode). Keep the live stream flowing.
+    if (useRemote) {
+        startRemoteDispatchLoop();
+        return;
+    }
+
     world->scene().opaqueOctree.reset();
     world->scene().transparentOctree.reset();
 
@@ -4057,6 +4199,10 @@ void MyApp::dispatchLiquidEvents() {
 }
 
 void MyApp::generateMap() {
+    if (useRemote) {
+        std::cout << "[MyApp::generateMap] ignored in remote mode (rendering server scene)\n";
+        return;
+    }
     resetSceneState();
 
     // Build the octree (CPU only, no tessellation)
@@ -4073,7 +4219,37 @@ void MyApp::generateMap() {
     startTessellationThreads("[MyApp::generateMap] Scene chunk tessellation complete\n");
 }
 
+void MyApp::loadRemoteScene() {
+    if (!useRemote || !remoteScene) return;
+    // The loader callback is meaningless remotely (no local octree to build);
+    // RemoteScene ignores it and replays the server snapshot instead.
+    MainSceneLoader loader;
+    remoteScene->loadScene(loader,
+        solidCollector.updateHandler, solidCollector.deleteHandler,
+        waterCollector.updateHandler, waterCollector.deleteHandler);
+    if (remoteScene->failed() || !remoteScene->isConnected()) {
+        // Fall back to LocalScene: drop partial remote events, disconnect,
+        // and generate locally instead. The renderer never saw a mix because
+        // nothing was dispatched yet (dispatch starts below, only on success).
+        std::cout << "[MyApp::loadRemoteScene] snapshot failed; falling back to LocalScene\n";
+        solidCollector.clear();
+        waterCollector.clear();
+        remoteScene->disconnect();
+        remoteScene.reset();
+        useRemote = false;
+        if (world) world->setActiveScene(nullptr);
+        generateMapPending = true;
+        return;
+    }
+    std::cout << "[MyApp::loadRemoteScene] snapshot replayed; starting live dispatch\n";
+    startRemoteDispatchLoop();
+}
+
 void MyApp::loadSceneFromFile(const std::string& path) {
+    if (useRemote) {
+        std::cout << "[MyApp::loadSceneFromFile] ignored in remote mode (rendering server scene)\n";
+        return;
+    }
     resetSceneState();
 
     world->scene().load(path,
@@ -4108,6 +4284,12 @@ void MyApp::postSubmit() {
     if (loadScenePending) {
         loadScenePending = false;
         loadSceneFromFile(pendingLoadPath);
+        if (sceneRenderer) sceneRenderer->logMemoryUtilization();
+    }
+
+    if (remoteLoadPending) {
+        remoteLoadPending = false;
+        loadRemoteScene();
         if (sceneRenderer) sceneRenderer->logMemoryUtilization();
     }
 }

@@ -34,6 +34,13 @@ public:
     LocalScene& scene() { return *scene_; }
     const LocalScene& scene() const { return *scene_; }
 
+    // The scene the renderer consumes: the remote scene while connected,
+    // otherwise the local one. MyApp sets this once at startup; it never
+    // changes mid-frame (set before any dispatch, read any time after).
+    void setActiveScene(Scene* scene) { activeScene_ = scene; }
+    Scene& activeScene() { return activeScene_ ? *activeScene_ : *scene_; }
+    const Scene& activeScene() const { return activeScene_ ? *activeScene_ : *scene_; }
+
     // ── Chunk manager (state machine for the async rebuild pipeline) ────────
 
     ChunkManager& chunkManager() { return chunkManager_; }
@@ -42,6 +49,10 @@ public:
 private:
     // The main scene with octrees (SDF storage + meshing).
     std::unique_ptr<LocalScene> scene_;
+
+    // Non-owning view of the rendered scene (remote or local). Never null
+    // when read through activeScene() (falls back to scene_).
+    Scene* activeScene_ = nullptr;
 
     // Chunk state machine driving the async rebuild pipeline.
     ChunkManager chunkManager_;

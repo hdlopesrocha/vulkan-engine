@@ -1637,11 +1637,11 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // terrain).
     if (world_) {
         const float ms = 30.0f;
-        LocalScene& mainScene = world_->scene();
-        solidRenderer->getIndirectRenderer().setMaxLodLevel(mainScene.maxChunkLod(LAYER_OPAQUE, ms));
-        solidRenderer->getIndirectRenderer().setLodRootMin(mainScene.opaqueOctree.getMin());
-        waterRenderer->getIndirectRenderer().setMaxLodLevel(mainScene.maxChunkLod(LAYER_TRANSPARENT, ms));
-        waterRenderer->getIndirectRenderer().setLodRootMin(mainScene.transparentOctree.getMin());
+        Scene& renderScene = world_->activeScene();
+        solidRenderer->getIndirectRenderer().setMaxLodLevel(renderScene.maxChunkLod(LAYER_OPAQUE, ms));
+        solidRenderer->getIndirectRenderer().setLodRootMin(renderScene.lodRootMin(LAYER_OPAQUE));
+        waterRenderer->getIndirectRenderer().setMaxLodLevel(renderScene.maxChunkLod(LAYER_TRANSPARENT, ms));
+        waterRenderer->getIndirectRenderer().setLodRootMin(renderScene.lodRootMin(LAYER_TRANSPARENT));
     }
 
     // ── Async visible-count snapshot (stats only) ─────────────────────────
@@ -1798,7 +1798,7 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
     // provide the single-large-buffer + offset model.
     if (world_) {
         std::cout << "[SceneRenderer] initSlottedMode: world "
-                  << (world_->scene().maxChunkLod(LAYER_OPAQUE, 1.0f))
+                  << (world_->activeScene().maxChunkLod(LAYER_OPAQUE, 1.0f))
                   << " maxChunkLod(opaque) / world set — pools sized to worst case\n";
     }
     std::cout << "[SceneRenderer] memory model: "

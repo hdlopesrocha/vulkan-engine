@@ -72,7 +72,7 @@ IMGUI_CORE_OBJS := $(patsubst third_party/imgui/%.cpp,$(OBJ_DIR)/imgui/%.o,$(IMG
 IMGUI_BACKEND_OBJS := $(patsubst third_party/imgui/backends/%.cpp,$(OBJ_DIR)/imgui/backends/%.o,$(IMGUI_BACKEND_SRCS))
 IMGUI_OBJS := $(IMGUI_CORE_OBJS) $(IMGUI_BACKEND_OBJS)
 # shader sources and generated SPIR-V
-SRCS := $(wildcard MyApp.cpp world/*.cpp utils/*.cpp vulkan/*.cpp vulkan/core/*.cpp vulkan/resources/*.cpp vulkan/pipeline/*.cpp vulkan/renderer/*.cpp vulkan/renderer/*/*.cpp vulkan/streaming/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp sdf/gpu/*.cpp sdf/types/*.cpp space/*.cpp services/*.cpp) third_party/miniaudio/miniaudio_impl.cpp
+SRCS := $(wildcard MyApp.cpp world/*.cpp utils/*.cpp vulkan/*.cpp vulkan/core/*.cpp vulkan/resources/*.cpp vulkan/pipeline/*.cpp vulkan/renderer/*.cpp vulkan/renderer/*/*.cpp vulkan/streaming/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp sdf/gpu/*.cpp sdf/types/*.cpp space/*.cpp services/*.cpp server/*.cpp) third_party/miniaudio/miniaudio_impl.cpp
 OBJ_DIR := $(OUT_DIR)/obj
 
 # Compose object lists, then forcibly filter out any absolute /imgui/*.o
@@ -228,7 +228,7 @@ define make-obj-dirs
 	@mkdir -p $(OBJ_DIR)
 	@mkdir -p $(OBJ_DIR)/imgui
 	@mkdir -p $(OBJ_DIR)/imgui/backends
-	@find world utils vulkan widgets events math sdf space services -type d 2>/dev/null | while read dir; do \
+	@find world utils vulkan widgets events math sdf space services server -type d 2>/dev/null | while read dir; do \
 		mkdir -p $(OBJ_DIR)/$$dir; \
 	done
 endef
@@ -256,6 +256,7 @@ imgui: $(IMGUI_OBJS)
 server: $(SERVER_OBJS)
 	@mkdir -p $(OUT_DIR)
 	@$(CC) $(CFLAGS) $(SERVER_INCLUDES) server.cpp $(SERVER_OBJS) -o $(OUT_DIR)/server $(SERVER_LIBS) $(LDFLAGS)
+	@if [ -d server/web ]; then mkdir -p $(OUT_DIR)/web && cp -a server/web/. $(OUT_DIR)/web/ || true; fi
 
 $(OUT): $(OBJS)
 	@echo "Linking: $(OUT)"

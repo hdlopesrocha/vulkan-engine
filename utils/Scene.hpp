@@ -74,4 +74,9 @@ public:
     // chunk's ladder maxLevel is clamped to this so HeightRootToChunk(N) >= 0
     // always holds — coarse levels never exceed the chunk's own size band.
     virtual int maxChunkLod(Layer layer, float minSize) const = 0;
+
+    // Root-lattice origin for the GPU rung gate (must be bit-identical to the
+    // tree root min the chunks were tessellated against; per-chunk values
+    // mis-align parent cells and cull most rungs).
+    virtual glm::vec3 lodRootMin(Layer layer) const { return glm::vec3(0.0f); }
 };

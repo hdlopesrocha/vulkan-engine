@@ -29,6 +29,7 @@ public:
     void requestBoundingBoxes(Layer layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride = nullptr) override;
     bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override;
     int maxChunkLod(Layer layer, float minSize) const override;
+    glm::vec3 lodRootMin(Layer layer) const override;
     void loadScene(SceneLoaderCallback& callback, Octree::OctreeNodeDataHandler opaqueUpdateHandler, Octree::OctreeNodeDataHandler opaqueDeleteHandler, Octree::OctreeNodeDataHandler transparentUpdateHandler, Octree::OctreeNodeDataHandler transparentDeleteHandler) override;
     void save(const std::string& filePath, const Settings* settings = nullptr);
     void load(const std::string& filePath, Settings* settings = nullptr);
