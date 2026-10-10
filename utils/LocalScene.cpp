@@ -25,28 +25,160 @@ struct SceneBundleHeader {
 };
 
 constexpr const char kSceneBundleMagic[8] = {'S', 'C', 'N', 'B', 'N', 'D', 'L', '1'};
-constexpr uint32_t kSceneBundleVersion = 1;
+constexpr uint32_t kSceneBundleVersionV1 = 1;
+constexpr uint32_t kSceneBundleVersionV2 = 2;
+constexpr uint32_t kSceneBundleVersion = kSceneBundleVersionV2;
 }
 
 LocalScene::LocalScene()
-    : opaqueOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)),
-      transparentOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)),
-      threadPool(std::thread::hardware_concurrency()) {}
+    : threadPool(std::thread::hardware_concurrency()) {
+    layers_.reserve(2);
+    SceneLayer opaque;
+    opaque.name = "Opaque";
+    opaque.renderer = LayerRendererType::Solid;
+    opaque.enabled = true;
+    opaque.octree = std::make_shared<Octree>(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9));
+    layers_.push_back(std::move(opaque));
+    SceneLayer transp;
+    transp.name = "Transparent";
+    transp.renderer = LayerRendererType::Water;
+    transp.enabled = true;
+    transp.octree = std::make_shared<Octree>(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9));
+    layers_.push_back(std::move(transp));
+}
 
 LocalScene::~LocalScene() = default;
 
 void LocalScene::stopPools() {
     threadPool.stop();
-    opaqueOctree.threadPool.stop();
-    transparentOctree.threadPool.stop();
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    for (auto& l : layers_) {
+        if (l.octree) l.octree->threadPool.stop();
+    }
 }
 
-Octree& LocalScene::getOpaqueOctree() { return opaqueOctree; }
-const Octree& LocalScene::getOpaqueOctree() const { return opaqueOctree; }
+size_t LocalScene::layerCount() const {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    return layers_.size();
+}
+
+std::string LocalScene::layerName(Layer layer) const {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return {};
+    return layers_[static_cast<size_t>(layer)].name;
+}
+
+void LocalScene::setLayerName(Layer layer, const std::string& name) {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return;
+    layers_[static_cast<size_t>(layer)].name = name;
+}
+
+LayerRendererType LocalScene::layerRenderer(Layer layer) const {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size())
+        return (layer == LAYER_TRANSPARENT) ? LayerRendererType::Water : LayerRendererType::Solid;
+    return layers_[static_cast<size_t>(layer)].renderer;
+}
+
+void LocalScene::setLayerRenderer(Layer layer, LayerRendererType renderer) {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return;
+    layers_[static_cast<size_t>(layer)].renderer = renderer;
+}
+
+bool LocalScene::layerEnabled(Layer layer) const {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return false;
+    return layers_[static_cast<size_t>(layer)].enabled;
+}
+
+void LocalScene::setLayerEnabled(Layer layer, bool enabled) {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return;
+    layers_[static_cast<size_t>(layer)].enabled = enabled;
+}
+
+Layer LocalScene::addLayer(const std::string& name, LayerRendererType renderer) {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    SceneLayer l;
+    l.name = name.empty() ? ("Layer " + std::to_string(layers_.size())) : name;
+    l.renderer = renderer;
+    l.enabled = true;
+    // New layers share the reference root lattice so the GPU rung gate stays
+    // aligned across layers.
+    glm::vec3 rootMin(0.0f);
+    float rootLen = 30.0f;
+    float chunkSize = glm::pow(2, 9);
+    if (!layers_.empty() && layers_[0].octree) {
+        rootMin = layers_[0].octree->getMin();
+        rootLen = layers_[0].octree->getLengthX();
+        chunkSize = layers_[0].octree->chunkSize;
+    }
+    l.octree = std::make_shared<Octree>(BoundingCube(rootMin, rootLen), chunkSize);
+    layers_.push_back(std::move(l));
+    return static_cast<Layer>(layers_.size() - 1);
+}
+
+bool LocalScene::removeLayer(Layer layer) {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return false;
+    if (layers_.size() <= 1) return false; // keep at least one layer
+    layers_.erase(layers_.begin() + layer);
+    return true;
+}
+
+Octree* LocalScene::getLayerOctree(Layer layer) {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return nullptr;
+    return layers_[static_cast<size_t>(layer)].octree.get();
+}
+
+const Octree* LocalScene::getLayerOctree(Layer layer) const {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return nullptr;
+    return layers_[static_cast<size_t>(layer)].octree.get();
+}
+
+Octree* LocalScene::layerOctreeLocked(Layer layer) const {
+    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return nullptr;
+    return layers_[static_cast<size_t>(layer)].octree.get();
+}
+
+Octree& LocalScene::getOpaqueOctree() { return *getLayerOctree(LAYER_OPAQUE); }
+const Octree& LocalScene::getOpaqueOctree() const {
+    return *const_cast<LocalScene*>(this)->getLayerOctree(LAYER_OPAQUE);
+}
+Octree& LocalScene::getTransparentOctree() {
+    Octree* o = getLayerOctree(LAYER_TRANSPARENT);
+    if (!o) o = getLayerOctree(LAYER_OPAQUE);
+    return *o;
+}
+const Octree& LocalScene::getTransparentOctree() const {
+    const Octree* o = const_cast<LocalScene*>(this)->getLayerOctree(LAYER_TRANSPARENT);
+    if (!o) o = const_cast<LocalScene*>(this)->getLayerOctree(LAYER_OPAQUE);
+    return *o;
+}
+
+void LocalScene::resetAllLayers() {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    for (auto& l : layers_) {
+        if (l.octree) l.octree->reset();
+    }
+    std::lock_guard<std::mutex> elock(emittedMutex_);
+    emittedVersion_.clear();
+}
 
 
 void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride) {
-    Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
+    std::shared_ptr<Octree> tree;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        Octree* raw = layerOctreeLocked(layer);
+        if (raw && layer >= 0 && static_cast<size_t>(layer) < layers_.size())
+            tree = layers_[static_cast<size_t>(layer)].octree;
+    }
+    if (!tree) return;
     ThreadContext context;
 
 
@@ -103,7 +235,13 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
 }
 
 void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride) {
-    Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
+    std::shared_ptr<Octree> tree;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        if (layer >= 0 && static_cast<size_t>(layer) < layers_.size())
+            tree = layers_[static_cast<size_t>(layer)].octree;
+    }
+    if (!tree) return;
     ThreadContext context;
 
     // Walk starts AT the chunk node (not the whole tree): only this chunk's
@@ -143,7 +281,13 @@ void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCub
 }
 
 void LocalScene::requestBoundingBoxes(Layer layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride) {
-    Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
+    std::shared_ptr<Octree> tree;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        if (layer >= 0 && static_cast<size_t>(layer) < layers_.size())
+            tree = layers_[static_cast<size_t>(layer)].octree;
+    }
+    if (!tree) return;
     ThreadContext context;
 
     // Walk starts AT the chunk node (not the whole tree): only this chunk's
@@ -179,6 +323,7 @@ void LocalScene::requestBoundingBoxes(Layer layer, OctreeNodeData &data, const B
 }
 
 bool LocalScene::isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) {
+    (void)layer;
     return data.node->version >= version;
 }
 
@@ -193,33 +338,43 @@ int LocalScene::maxChunkLod(Layer layer, float minSize) const {    // The number
     // chunkLod, and its mesh is the far-distance fallback, so levels beyond
     // it are never drawn. The root's chunkLod is stored +1 shifted (uint8,
     // 0 = unset), so decode it back to the 0-based level count here.
-    const Octree& tree = layer == LAYER_OPAQUE ? opaqueOctree : transparentOctree;
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    const Octree* tree = layerOctreeLocked(layer);
+    if (!tree) return 0;
     int rootChunkLod = -1;
-    if (tree.root) {
-        const int stored = tree.root->getChunkLod();
+    if (tree->root) {
+        const int stored = tree->root->getChunkLod();
         rootChunkLod = stored > 0 ? stored - 1 : -1;
     }
-    return std::max(0, std::min(tree.heightRootToChunk(0, minSize), rootChunkLod));
+    return std::max(0, std::min(tree->heightRootToChunk(0, minSize), rootChunkLod));
 }
 
 glm::vec3 LocalScene::lodRootMin(Layer layer) const {
-    const Octree& tree = layer == LAYER_OPAQUE ? opaqueOctree : transparentOctree;
-    return tree.getMin();
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    const Octree* tree = layerOctreeLocked(layer);
+    if (!tree) return glm::vec3(0.0f);
+    return tree->getMin();
 }
 
-void LocalScene::loadScene(SceneLoaderCallback& callback, Octree::OctreeNodeDataHandler opaqueUpdateHandler, Octree::OctreeNodeDataHandler opaqueDeleteHandler, Octree::OctreeNodeDataHandler transparentUpdateHandler, Octree::OctreeNodeDataHandler transparentDeleteHandler) {
-    std::cout << "LocalScene::loadScene() " << std::endl;
+void LocalScene::loadScene(SceneLoaderCallback& callback, std::vector<Octree::OctreeNodeDataHandler> updateHandlers, std::vector<Octree::OctreeNodeDataHandler> deleteHandlers) {
+    std::cout << "LocalScene::loadScene() layers=" << layerCount() << std::endl;
     auto startTime = std::chrono::steady_clock::now();
-    callback.loadScene(opaqueOctree, opaqueUpdateHandler, opaqueDeleteHandler, transparentOctree, transparentUpdateHandler, transparentDeleteHandler);
+    std::vector<Octree*> octrees;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        octrees.reserve(layers_.size());
+        for (auto& l : layers_) octrees.push_back(l.octree.get());
+    }
+    // Pad handler vectors to the layer count so the loader can index freely.
+    if (updateHandlers.size() < octrees.size()) updateHandlers.resize(octrees.size());
+    if (deleteHandlers.size() < octrees.size()) deleteHandlers.resize(octrees.size());
+    callback.loadScene(octrees, updateHandlers, deleteHandlers);
     auto endTime = std::chrono::steady_clock::now();
     double elapsed = std::chrono::duration<double>(endTime - startTime).count();
     std::cout << "LocalScene::loadScene Ok! " << std::to_string(elapsed) << "s"  << std::endl;
 }
 
 void LocalScene::save(const std::string& filePath, const Settings* settings) {
-    OctreeFile opaqueSaver(&opaqueOctree, "opaque");
-    OctreeFile transparentSaver(&transparentOctree, "transparent");
-
     std::filesystem::path outPath(filePath);
     if (outPath.has_parent_path()) {
         std::filesystem::create_directories(outPath.parent_path());
@@ -238,8 +393,31 @@ void LocalScene::save(const std::string& filePath, const Settings* settings) {
     header.hasSettings = settings ? 1u : 0u;
     raw.write(reinterpret_cast<const char*>(&header), sizeof(header));
 
-    opaqueSaver.writeToStream(raw);
-    transparentSaver.writeToStream(raw);
+    uint32_t layerCount = 0;
+    std::vector<std::string> names;
+    std::vector<uint8_t> renderers;
+    std::vector<uint8_t> enabled;
+    std::vector<Octree*> trees;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        layerCount = static_cast<uint32_t>(layers_.size());
+        for (auto& l : layers_) {
+            names.push_back(l.name);
+            renderers.push_back(static_cast<uint8_t>(l.renderer));
+            enabled.push_back(l.enabled ? 1u : 0u);
+            trees.push_back(l.octree.get());
+        }
+    }
+    raw.write(reinterpret_cast<const char*>(&layerCount), sizeof(layerCount));
+    for (uint32_t i = 0; i < layerCount; ++i) {
+        uint32_t nlen = static_cast<uint32_t>(names[i].size());
+        raw.write(reinterpret_cast<const char*>(&nlen), sizeof(nlen));
+        if (nlen > 0) raw.write(names[i].data(), nlen);
+        raw.write(reinterpret_cast<const char*>(&renderers[i]), sizeof(uint8_t));
+        raw.write(reinterpret_cast<const char*>(&enabled[i]), sizeof(uint8_t));
+        OctreeFile saver(trees[i], names[i].empty() ? ("layer" + std::to_string(i)) : names[i]);
+        saver.writeToStream(raw);
+    }
 
     if (settings) {
         raw.write(reinterpret_cast<const char*>(settings), sizeof(Settings));
@@ -249,13 +427,10 @@ void LocalScene::save(const std::string& filePath, const Settings* settings) {
     gzipCompressToOfstream(input, file);
     file.close();
 
-    std::cout << "LocalScene::save('" << filePath << "') Ok!" << std::endl;
+    std::cout << "LocalScene::save('" << filePath << "') Ok! layers=" << layerCount << std::endl;
 }
 
 void LocalScene::load(const std::string& filePath, Settings* settings) {
-    OctreeFile opaqueLoader(&opaqueOctree, "opaque");
-    OctreeFile transparentLoader(&transparentOctree, "transparent");
-
     std::ifstream file(filePath, std::ios::binary);
     if (!file) {
         std::cerr << "LocalScene::load() Error opening file: " << filePath << std::endl;
@@ -270,13 +445,55 @@ void LocalScene::load(const std::string& filePath, Settings* settings) {
         std::cerr << "LocalScene::load() Invalid scene bundle: " << filePath << std::endl;
         return;
     }
-    if (header.version != kSceneBundleVersion) {
+    if (header.version != kSceneBundleVersionV1 && header.version != kSceneBundleVersionV2) {
         std::cerr << "LocalScene::load() Unsupported bundle version " << header.version << " in " << filePath << std::endl;
         return;
     }
 
-    opaqueLoader.readFromStream(raw);
-    transparentLoader.readFromStream(raw);
+    if (header.version == kSceneBundleVersionV1) {
+        // Legacy two-layer bundle: opaque + transparent, no layer metadata.
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        while (layers_.size() < 2) {
+            SceneLayer l;
+            l.name = "Layer " + std::to_string(layers_.size());
+            l.renderer = LayerRendererType::Solid;
+            l.octree = std::make_shared<Octree>(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9));
+            layers_.push_back(std::move(l));
+        }
+        OctreeFile opaqueLoader(layers_[0].octree.get(), "opaque");
+        OctreeFile transparentLoader(layers_[1].octree.get(), "transparent");
+        opaqueLoader.readFromStream(raw);
+        transparentLoader.readFromStream(raw);
+    } else {
+        uint32_t layerCount = 0;
+        raw.read(reinterpret_cast<char*>(&layerCount), sizeof(layerCount));
+        if (!raw || layerCount == 0 || layerCount > 64) {
+            std::cerr << "LocalScene::load() Bad layer count " << layerCount << std::endl;
+            return;
+        }
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        layers_.clear();
+        for (uint32_t i = 0; i < layerCount; ++i) {
+            uint32_t nlen = 0;
+            raw.read(reinterpret_cast<char*>(&nlen), sizeof(nlen));
+            std::string name;
+            if (nlen > 0 && nlen < 256) {
+                name.resize(nlen);
+                raw.read(name.data(), nlen);
+            }
+            uint8_t rend = 0, en = 1;
+            raw.read(reinterpret_cast<char*>(&rend), sizeof(uint8_t));
+            raw.read(reinterpret_cast<char*>(&en), sizeof(uint8_t));
+            SceneLayer l;
+            l.name = name.empty() ? ("Layer " + std::to_string(i)) : name;
+            l.renderer = (rend == 1) ? LayerRendererType::Water : LayerRendererType::Solid;
+            l.enabled = (en != 0);
+            l.octree = std::make_shared<Octree>();
+            OctreeFile loader(l.octree.get(), l.name);
+            loader.readFromStream(raw);
+            layers_.push_back(std::move(l));
+        }
+    }
 
     if (header.hasSettings != 0u) {
         Settings loadedSettings = {};
@@ -287,7 +504,7 @@ void LocalScene::load(const std::string& filePath, Settings* settings) {
     }
 
     file.close();
-    std::cout << "LocalScene::load('" << filePath << "') Ok!" << std::endl;
+    std::cout << "LocalScene::load('" << filePath << "') Ok! layers=" << layerCount() << std::endl;
 }
 
 static void notifyChunkNodes(OctreeNode* node, const BoundingCube& cube, uint level,
@@ -303,12 +520,17 @@ static void notifyChunkNodes(OctreeNode* node, const BoundingCube& cube, uint le
         if (children[i])
             notifyChunkNodes(children[i], cube.getChild(i), level + 1, allocator, updateHandler, deleteHandler);
     }
+    (void)deleteHandler;
 }
 
-void LocalScene::load(const std::string& filePath, const Octree::OctreeNodeDataHandler opaqueUpdateHandler, const Octree::OctreeNodeDataHandler opaqueDeleteHandler, const Octree::OctreeNodeDataHandler transparentUpdateHandler, const Octree::OctreeNodeDataHandler transparentDeleteHandler, Settings* settings) {
+void LocalScene::load(const std::string& filePath, std::vector<Octree::OctreeNodeDataHandler> updateHandlers, std::vector<Octree::OctreeNodeDataHandler> deleteHandlers, Settings* settings) {
     load(filePath, settings);
-    if (opaqueOctree.root)
-        notifyChunkNodes(opaqueOctree.root, opaqueOctree, 0, *opaqueOctree.allocator, opaqueUpdateHandler, opaqueDeleteHandler);
-    if (transparentOctree.root)
-        notifyChunkNodes(transparentOctree.root, transparentOctree, 0, *transparentOctree.allocator, transparentUpdateHandler, transparentDeleteHandler);
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    if (updateHandlers.size() < layers_.size()) updateHandlers.resize(layers_.size());
+    if (deleteHandlers.size() < layers_.size()) deleteHandlers.resize(layers_.size());
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        Octree* tree = layers_[i].octree.get();
+        if (tree && tree->root && tree->allocator && updateHandlers[i])
+            notifyChunkNodes(tree->root, *tree, 0, *tree->allocator, updateHandlers[i], deleteHandlers[i]);
+    }
 }
