@@ -1,0 +1,765 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+% Long unbreakable \texttt{} paths are the main source of overfull boxes in
+% this report; a generous emergencystretch plus sloppy paragraph breaking lets
+% TeX loosen those lines instead of running into the margin.
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\title{Performance Report 25: Vulkan Engine \\
+\large SDF Ray Marching on the GPU --- the 66k-Word Fragment Shader, the 7\,km Proxy, and the Per-Step Noise Bill}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Reports~17--24 audited everything except the engine's most expensive single
+shader: the generic GPU-driven SDF renderer
+(\texttt{vulkan/renderer/sdf/SdfRenderer.cpp} + \texttt{shaders/renderer/sdf/SdfRenderer.frag},
+990 lines, five consumers --- lava fire, rock boulders, grass clumps, smoke
+bomb/bullets, debug views --- sharing one traversal). This report audits SDF
+ray-marching performance and SDF rendering on the GPU: march structure,
+per-step ALU, proxy coverage, target/residency cost, and host/upload
+overhead.
+
+The fragment shader disassembles to \textbf{65\,907 words / 4\,948
+instructions} --- $14\times$ the composite, $16\times$ the sky shader, and by
+far the largest module in the engine --- and it ships \emph{twice}
+(\texttt{SdfRenderer.frag.spv} and \texttt{SdfRendererVolume.frag.spv} are
+byte-identical builds, 239\,380 bytes each). Every covered pixel pays, in
+order: an inverse-view-projection ray build, a depth-texture tap plus a second
+invVP reconstruct for the occluder clamp, an 8-bullet analytic tracer loop,
+then up to \texttt{maxSteps} (default 64, hard cap 256) iterations each
+evaluating up to 8 candidates through full \texttt{sdfEvalInstance} ---
+world-to-local TRS, wind-field sample, procedural noise, smoke 4D noise ---
+plus a 12-sample fixed-count smoke resolve and, on hits, a 4-tap normal
+reconstruction that re-runs the whole evaluator 4 more times. The smoke
+container is padded by \textbf{3.7\,km on each XZ side}
+(\texttt{SdfRenderer.cpp:444--447}), so its proxy cube covers the screen from
+almost anywhere and the ``container cull'' culls almost nothing. The pass owns
+full-resolution color+depth targets ($\sim$50\,MiB at 1080p), a full-screen
+solid-depth preload copy per frame, and triple-buffered host-visible scene
+slots re-barriered on every command buffer that touches them.
+
+It finds \textbf{15 issues} (3 critical, 5 high, 4 medium, 3 low). Each
+carries the standard technique and a copy-pasteable prompt preserving
+validation-clean execution, Synchronization2, and runtime feature detection.
+Scope score \textbf{4.9/10}; folding the SDF slice into the combined estimate
+at 10\% weight gives \textbf{6.0/10}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+\subsection{Scope and Method}
+
+One subsystem, never audited as a performance subject: the generic SDF
+renderer --- scene representation (\texttt{sdf/types/SdfScene.hpp},
+merged lava+rocks+grass+smoke in \texttt{refreshMergedLocked},
+\texttt{SdfRenderer.cpp:324--389}), proxy-cube rasterization (one instanced
+cube per container, \texttt{render}, \texttt{:2086--2230}), the shared
+traversal (\texttt{shaders/renderer/sdf/SdfRenderer.frag:351--897}:
+ray/AABB, depth clamp, grid DDA, AABB test, combined SDF,
+front-to-back accumulation), the smoke two-phase resolve (\texttt{:689--820}), the grass
+shadow caster (\texttt{drawShadowCascade}, \texttt{:2231--2290} +
+\texttt{SdfGrassShadow.*}), and the host upload/barrier path
+(\texttt{ensureSlotCapacity/flushSlotUploads/recordHostToShaderBarrier},
+\texttt{:1884--2019}). Ray tracing, water, raster core, vegetation, submits,
+pools, arrays, mixer, load path, and the composite/sky/brush tail are
+referenced only at interfaces. Method matches reports~22--24: full reads with
+file:line evidence, \texttt{spirv-dis} on shipped modules, byte tallies from
+creation code. The application was not executed; dynamic magnitudes are
+analytic estimates from verified structure at $1920\times1080$ (2.07\,M
+pixels), 3 frames in flight.
+
+\subsection{Measured Budgets}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Module} & \textbf{Words} & \textbf{Instrs} & \textbf{Role} \\
+\midrule
+\texttt{SdfRenderer.frag.spv} & 65\,907 & 4\,948 & generic march (surface+volume+emissive+transparent) \\
+\texttt{SdfRendererVolume.frag.spv} & 65\,907 & 4\,948 & byte-identical twin of the above \\
+\texttt{BrushSdf.frag.spv} & 24\,647 & 1\,932 & brush SDF leg (fetched via composite) \\
+\texttt{SdfGrassShadow.frag.spv} & 13\,859 & 1\,070 & grass-only EVSM caster, per cascade \\
+\texttt{SdfRenderer.vert.spv} & 2\,291 & 384 & proxy-cube VS (either variant) \\
+\texttt{SdfGrassShadow.vert.spv} & 2\,362 & 397 & shadow proxy-cube VS \\
+\texttt{DebugSDFRenderer.frag.spv} & 850 & 46 & debug-cube leg (separate pass) \\
+\bottomrule
+\end{tabular}
+\caption{Disassembly word counts (\texttt{spirv-dis | wc -w}, the
+reports~20--24 convention) and instruction counts (op lines). The SDF march
+fragment is $14\times$ the composite (949 instrs) and $5.8\times$ the sky
+equirect bake: it is the most expensive shader the engine ships, twice.}
+\end{table}
+
+Per-frame fixed structure: one SDF fullscreen-capable pass (proxy cubes,
+every frame --- fire is always on, \texttt{MyApp.cpp:2759--2811}), one
+full-screen solid-depth preload copy (4 transitions + \texttt{vkCmdCopyImage},
+\texttt{SdfRenderer.cpp:2141--2175}), one grass-shadow march per cascade,
+slot memcpys + up-to-8-entry HOST$\rightarrow$shader barriers on every CB
+that binds the set, and a dedicated \texttt{tlSdf} queue submit the composite
+waits on. Committed SDF-side memory (\S\ref{sec:vram}):
+\textbf{$\sim$50\,MiB device} targets at 1080p ($\sim$200\,MiB at 4K) plus
+triple-buffered host-visible scene slots.
+
+\subsection{Recommended Order}
+
+Kill the duplicate module and the 7\,km proxy (C1, C2) $\rightarrow$ cap the
+per-step candidate/noise bill (C3) $\rightarrow$ hoist the tracer, dedupe the
+depth math, bound the smoke resolve, cheapen normals, specialize the shadow
+march (H4--H8) $\rightarrow$ stage uploads device-local, gate the preload
+copy, elide empty-container draws, tier march quality (M9--M12)
+$\rightarrow$ hygiene (L13--L15).
+
+% =====================================================================
+\section{Cost Model}
+% =====================================================================
+
+\begin{equation}
+\begin{aligned}
+C = &\underbrace{\sum_{\mathrm{passes}} G_{\mathrm{pass}} V C_{\mathrm{vert}} + S C_{\mathrm{submit}} + L C_{\mathrm{bringup}} + G C_{\mathrm{sweep}}}_{\text{reports 20--23}} + \underbrace{P\,C_{\mathrm{tail}} + B\,C_{\mathrm{brush}} + K\,C_{\mathrm{equirect}}}_{\text{report 24}} \\
+&+ \underbrace{F_{\mathrm{sdf}}\,N_{\mathrm{steps}}\,N_{\mathrm{cand}}\,C_{\mathrm{eval}} + F_{\mathrm{smoke}}\,C_{\mathrm{resolve}} + F_{\mathrm{proxy}}\,C_{\mathrm{cover}}}_{\text{this report}}
+\end{aligned}
+\end{equation}
+
+with $F_{\mathrm{sdf}}$ the proxy-covered pixels per frame (up to fullscreen
+when the smoke container is on screen), $N_{\mathrm{steps}} \le 64$ default
+(256 hard cap, \texttt{SdfRenderer.frag:78,407--409}), $N_{\mathrm{cand}} \le 8$
+(\texttt{:79,565}), $C_{\mathrm{eval}}$ one full \texttt{sdfEvalInstance}
+(TRS + wind + noise + smoke/bullets), $F_{\mathrm{smoke}}$ the smoke-resolved
+pixels $\times$ 12 fixed sub-samples (\texttt{:731--808}), and
+$F_{\mathrm{proxy}}\,C_{\mathrm{cover}}$ the proxy-raster + depth-preload
+copy cost. Reports~20--24 priced geometry, submits, bring-up, sweeps,
+residency, and the tail; this report prices the march, which scales with
+\emph{covered pixels $\times$ steps $\times$ candidates $\times$ noise} ---
+the only term in the engine with four multiplicative factors.
+
+% =====================================================================
+\section{SDF Residency}
+\label{sec:vram}
+% =====================================================================
+
+Tallied from creation code at $1920\times1080$, 3 frames in flight
+(\texttt{SDF\_FRAMES = MAX\_FRAMES\_IN\_FLIGHT = 3},
+\texttt{SdfRenderer.hpp:78}, \texttt{SdfRenderer.cpp:2292--2360}).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{5.9cm}p{4.3cm}r@{}}
+\toprule
+\textbf{Resource} & \textbf{Sizing} & \textbf{Bytes} \\
+\midrule
+SDF color targets & $3 \times 1920\times1080$ RGBA (swapchain fmt) & $\sim$25\,MiB dev \\
+SDF depth targets & $3 \times 1920\times1080$ D32 & $\sim$25\,MiB dev \\
+Scene slots (6 SSBOs $\times$ 3) & instances/defs/mats/containers/cells/indices & scene-size, host-vis \\
+Params + smoke + profile ($\times$3) & 64\,B + bullet block + counters & $<$1\,MiB host-vis \\
+Duplicate SPIR-V on disk & $2 \times 239$\,KB frag + $2 \times 10$\,KB vert & $\sim$0.5\,MiB disk \\
+\midrule
+Total targets & & $\sim$50\,MiB dev ($\sim$200\,MiB at 4K) \\
+\bottomrule
+\end{tabular}
+\caption{Committed SDF memory. Scene slots are host-visible/coherent
+(\texttt{createBuffer} in \texttt{init}, \texttt{SdfRenderer.cpp:46--64},
+grown with headroom in \texttt{ensureSlotCapacity}, \texttt{:1884--1912});
+targets are full-resolution regardless of proxy coverage or
+\texttt{raycastPixelSize}. Report~22's tally did not include these targets.}
+\end{table}
+
+The targets are full-screen-resolution even though the default
+\texttt{raycastPixelSize = 2} (\texttt{SdfParamsUBO.hpp:31}) shades one ray
+per $2\times2$ block; the scene slots triple every vector (three memcpys per
+content change, one per slot via per-slot dirty flags, \texttt{:1914--1937}).
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: A 66k-Word Fragment Shader Shipped Twice, Evaluated Every Covered Pixel}
+\label{sec:c1}
+
+\textbf{Severity: Critical.}
+
+\texttt{SdfRenderer.frag.spv} measures 65\,907 words / 4\,948 instructions:
+$14\times$ the composite, $70\times$ the water-blur leg, the largest module
+in the shipped tree by a factor of $\sim$2.7 over the next
+(\texttt{main\_brush.frag}, 22\,511 words). It implements four render modes,
+five primitive families, smoke bullets/tracer, two-phase smoke resolve,
+triplanar rock texturing, gold tracer shading, two debug-view families, and
+profiling atomics in \emph{one} module selected at runtime by
+\texttt{sdfParams.renderMode} (\texttt{SdfRenderer.frag:424}). Every covered
+pixel executes the same 4\,948-instruction program with divergent branches,
+so surface-mode grass pixels carry the smoke-resolve code and fire pixels
+carry the triplanar rock path in I-cache whether or not they run. Worse, the
+build ships it twice: \texttt{SdfRendererVolume.frag.spv} is word-identical
+(65\,907 / 4\,948, 239\,380 bytes each) to \texttt{SdfRenderer.frag.spv} ---
+two compiles, two disk copies, two shader modules
+(\texttt{createPipeline} loads both variants, \texttt{SdfRenderer.cpp:213--255})
+for one source.
+
+\textit{Technique: specialize, then deduplicate.} Split by render mode at
+pipeline-creation time (one \texttt{-DRENDER\_MODE=n} specialization per
+pipeline, or two pipelines: surface vs volume/emissive; transparent is a
+placeholder per \texttt{SdfRenderer.hpp:59--64}), so each variant's dead mode
+code is compiled out; delete the twin source/module and point both pipelines
+at one \texttt{.frag}. The \texttt{renderMode} UBO field stays as the
+selector until the second pipeline exists, then becomes a pipeline choice.
+
+\begin{tcolorbox}[promptbox={Prompt --- C1: specialized SDF pipelines, one fragment source}]
+Goal: no pixel carries code for modes it cannot take. Steps: (1) add
+\texttt{-D} mode specializations (or \texttt{VkSpecializationInfo} on a
+\texttt{RENDER\_MODE} constant) and verify each variant disassembles smaller;
+(2) create surface and volume pipeline variants in
+\texttt{SdfRenderer::createPipeline} selected by \texttt{renderMode\_};
+(3) delete the byte-identical twin (\texttt{SdfRendererVolume.frag} source +
+module load) and share one \texttt{.frag}. Files:
+\texttt{shaders/renderer/sdf/SdfRenderer.frag},
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp}, \texttt{Makefile} (shader rules).
+Validation: pixel-identical output per mode, SPIR-V word count down per
+variant, disk $-239$\,KB, validation-clean.
+\end{tcolorbox}
+
+\subsection{C2: The Smoke Container Is Padded 3.7\,km per Side, So the Proxy Cull Culls Nothing}
+\label{sec:c2}
+
+\textbf{Severity: Critical.}
+
+\texttt{ensureSmokeScene} grows the smoke container by \texttt{ext = 3700.0f}
+metres on each XZ side (\texttt{SdfRenderer.cpp:443--448}) so ``slider edits
+never rebuild the scene'' --- the comment is honest about the tradeoff. The
+cost: the proxy cube for that container (\texttt{render} draws one cube per
+container, \texttt{:2223}) covers the screen from almost any camera that can
+see the smoke at all, and every covered pixel pays the full march prologue
+(invVP ray build, depth-tap + invVP reconstruct at
+\texttt{SdfRenderer.frag:373--375,98--105,111--117}, 8-bullet tracer loop at
+\texttt{:489--512}, DDA setup) even when the visible smoke is a 50\,m ball.
+Cells outside the smoke AABB ``stay empty and march at DDA-skip cost only''
+(\texttt{:439--441}) --- but DDA-skip cost is still up to 64 loop iterations
+of cell math per pixel, each ending in \texttt{continue} at
+\texttt{:552--562}. The architecture section of the prompt spec
+(\texttt{docs/prompt\_sdf.txt}: container AABB $\rightarrow$ proxy
+rasterization $\rightarrow$ ray/AABB) assumes tight containers; a 7.4\,km
+container is the opposite.
+
+\textit{Technique: fit the container, stream the flight path.} Size the
+container to the smoke ball plus the \emph{live} bullet path (max traveled
+distance of live bullets this frame, already computed on GPU/CPU for
+\texttt{smokeBulletState}), not the maxima (scale 1024 + path 2560 + radius
+100). Rebuild or re-fit the single container AABB when bullets fly/die (a
+one-container bounds rewrite + grid rebuild, not a scene rebuild); keep the
+no-rebuild fast path when no bullet is live.
+
+\begin{tcolorbox}[promptbox={Prompt --- C2: tight smoke container}]
+Goal: proxy pixels track visible smoke, not slider maxima. Steps: (1) compute
+the live flight-path extent per frame (live bullets' traveled + radius, else
+smoke ball only); (2) re-fit container bounds + grid when it changes beyond
+epsilon, reusing the existing \texttt{rebuild}/grid path; (3) keep the 3700\,m
+sizing behind a debug flag for A/B. Files:
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp} (\texttt{ensureSmokeScene},
+\texttt{refreshMergedLocked}), \texttt{sdf/types/SdfScene.*}.
+Validation: proxy coverage (drawn pixels) down by an order of magnitude on
+typical scenes, pixel-identical smoke, validation-clean.
+\end{tcolorbox}
+
+\subsection{C3: Per-Step Cost Is Steps $\times$ Candidates $\times$ Full Noise Evaluations}
+\label{sec:c3}
+
+\textbf{Severity: Critical.}
+
+The march loop (\texttt{SdfRenderer.frag:514--897}) runs up to
+\texttt{maxSteps} (64 default, 256 cap) iterations; each non-empty iteration
+evaluates up to \texttt{SDF\_MAX\_CANDIDATES = 8} candidates through the full
+\texttt{sdfEvalInstance} (\texttt{:573--609} $\rightarrow$ \texttt{:126--235}):
+world-to-local TRS with scale extraction, optional repeat, primitive eval,
+then for flames canonical-space rescale + shared wind-field sample
+(\texttt{windSVF} at \texttt{:199}, itself Perlin-based) + flame deform noise
+(\texttt{sdfFlameDeform} $\rightarrow$ \texttt{sdfNoise}, 8 hashes per eval
+per \texttt{SdfNoise.glsl:5}) + spike noise (\texttt{:109--117}), with the
+0.5 Lipschitz halving forcing twice as many steps through deformed fields
+(\texttt{:231--233}). The AABB pre-test (\texttt{:584--590}) uses
+\texttt{skipR = maxStep + 0.1 + abs(turbulence)} --- turbulence \emph{widens}
+acceptance, so windy flames evaluate more candidates, not fewer. A worst-case
+covered pixel is therefore $\sim$64 steps $\times$ 8 candidates $\times$
+(TRS + wind + 1--2 noise evals + smoke/bullet fields): thousands of noise
+evaluations per pixel, all in one fragment invocation with no subgroup or
+half-rate fallback.
+
+\textit{Technique: bound the inner loop, cheapen the evaluator.} Cap
+evaluated candidates per step (nearest-N by AABB distance, not first-N in grid
+order); hoist the per-instance wind sample out of the per-step loop where the
+instance set is stable across steps (sample once per candidate per ray, reuse
+with the time term advanced); add a distance-tiered noise LOD (far samples
+skip deform/spike noise, matching the existing grass \texttt{camScale} LOD
+precedent at \texttt{:157--160}). Keep the Lipschitz halving only where the
+LOD still deforms.
+
+\begin{tcolorbox}[promptbox={Prompt --- C3: bounded candidates, LOD'd noise}]
+Goal: worst-case pixel ALU down $3$--$5\times$ with no close-up change.
+Steps: (1) sort/select nearest $\le$4 candidates per step by AABB distance
+before SDF eval; (2) cache the wind-lean vector per candidate per ray;
+(3) skip deform/spike noise beyond a distance tier (uniform-driven, default
+conservative). Files: \texttt{shaders/renderer/sdf/SdfRenderer.frag},
+\texttt{shaders/includes/sdf/SdfNoise.glsl},
+\texttt{shaders/includes/sdf/SdfModel.glsl}. Validation: close-up A/B
+identical, far-field A/B within tolerance, step/candidate counters
+(\S\ref{sec:m9} counters) down, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{High-Severity Issues}
+% =====================================================================
+
+\subsection{H4: The 8-Bullet Tracer Loop Runs per Pixel Before the First March Step}
+
+\textbf{Severity: High.}
+
+Before the march loop starts, every ray evaluates up to 8 bullets:
+\texttt{smokeBulletState} + ray/sphere root per live bullet
+(\texttt{SdfRenderer.frag:483--512}), plus two local-frame transforms
+(\texttt{smokeWorldToLocal/smokeDirToLocal}, \texttt{:483--484}) and, on a
+hit, full gold shading (\texttt{smokeTracerColor}, \texttt{:320--349}: 2
+noise evals, normalize chain, \texttt{pow} specular + fresnel). The
+\texttt{tracerActive} gate (\texttt{:489}) is uniform-friendly, but when any
+tracer is live \emph{every} proxy-covered pixel pays the 8-iteration loop even
+if the bullet occupies a dozen pixels --- the classic small-hot-object in a
+huge-proxy failure, amplified by C2's 7\,km container. The in-march checks
+(\texttt{:525--529,722--726,741--745}) then re-test \texttt{bestT} per step.
+
+\textit{Technique: analytic pre-pass at proxy granularity.} Evaluate the
+tracer in the vertex stage (or a tiny pre-dispatch): if no live bullet's
+sphere intersects the proxy, skip the fragment loop entirely via a push
+constant / uniform branch; else pass the single winning (T, center, radius)
+as flat varyings so fragments test one sphere, not eight. The per-step
+re-tests collapse to one compare.
+
+\begin{tcolorbox}[promptbox={Prompt --- H4: proxy-granularity tracer}]
+Goal: tracer-off and tracer-miss pixels pay zero bullet ALU. Steps: (1) move
+the 8-bullet root solve to the vertex stage (or CPU per container per frame
+--- 8 spheres is trivial) and pass the winner through; (2) fragment tests one
+\texttt{t >= bestT} compare; (3) keep the gold shading path unchanged.
+Files: \texttt{shaders/renderer/sdf/SdfRenderer.vert},
+\texttt{shaders/renderer/sdf/SdfRenderer.frag},
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp}. Validation: tracer A/B
+identical, bullet-miss pixels at tracer-off ALU, validation-clean.
+\end{tcolorbox}
+
+\subsection{H5: Every Pixel Pays Two Inverse-View-Projection Reconstructs Before Marching}
+
+\textbf{Severity: High.}
+
+Ray generation builds \texttt{rd} through the full invVP matvec + divide +
+\texttt{normalize} (\texttt{SdfRenderer.frag:373--375}); the occluder clamp
+then does it \emph{again} inside \texttt{sdfDepthDistance}
+(\texttt{:98--105}: another invVP matvec + divide + \texttt{distance}), once
+for solid depth and once more for water depth when enabled
+(\texttt{sdfSceneDistance}, \texttt{:111--117}). That is up to three invVP
+matvecs + two normalizes + one length per pixel before \texttt{t} advances a
+single step --- on pixels that then \texttt{discard} at \texttt{tEnter >=
+tExit} (\texttt{:388}). The composite already reconstructs the same world
+position for the same pixel (report~24 C3); the SDF pass recomputes it from
+scratch.
+
+\textit{Technique: reconstruct once, reuse twice.} Compute the ray and reuse
+the.ua depth-derived occluder distance from a shared helper that takes the
+already-computed ray (or linearize depth against the ray instead of
+reconstructing a second world point); skip the water tap when
+\texttt{waterDepthEnabled} is clear (already branched, but hoist the branch
+above the solid reconstruct so fully-occluded rays skip the second tap).
+
+\begin{tcolorbox}[promptbox={Prompt --- H5: single-reconstruct occluder clamp}]
+Goal: one invVP per pixel, not three. Steps: (1) reuse the ray-build
+registers in the depth clamp (project along \texttt{rd} instead of a second
+matvec); (2) order solid-before-water with early discard; (3) keep the
+explicit-LOD sampling (divergent flow, derivatives undefined). Files:
+\texttt{shaders/renderer/sdf/SdfRenderer.frag}. Validation: occluded-pixel
+A/B identical, ALU counters down on discard-heavy views, validation-clean.
+\end{tcolorbox}
+
+\subsection{H6: The Smoke Resolve Is a Fixed 12-Sample Second March per Ray}
+
+\textbf{Severity: High.}
+
+Once a ray enters the smoke ball, phase B marches a \emph{fixed} 12 samples
+across the measured thickness (\texttt{SdfRenderer.frag:730--808}), each
+sample running \texttt{smokeSampleDensity} (warp: 3 \texttt{sdfNoise} + fine
+noise at \texttt{SdfSmoke.glsl:410,419}, plus \texttt{sdfNoise4} wobble at
+\texttt{:202}) and \texttt{smokeShade} (sun/wind local transforms, emission),
+plus \texttt{exp} extinction per sample (\texttt{SdfRenderer.frag:789}) and
+a depth-falloff \texttt{exp} (\texttt{:775}). Twelve noise-heavy samples run
+even for thin grazing rays (thickness $\sim$ step size) and even after the
+ray is nearly opaque (the early-out at \texttt{:795} only triggers past the
+threshold, checked after shading). The analytic thickness that phase A just
+measured (\texttt{tA1 - loS}, \texttt{:730}) is available but never scales
+the sample count.
+
+\textit{Technique: thickness-proportional samples.} Scale the sub-sample
+count by measured thickness (e.g.\ 4/8/12 tiers, or
+\texttt{ceil(thickness / meanFreePath)} clamped to 12); step the early-out
+check before shading when transmittance is already low; reuse the phase-A
+analytic interval for the debug-peak latching instead of re-deriving it per
+sample.
+
+\begin{tcolorbox}[promptbox={Prompt --- H6: adaptive smoke sample count}]
+Goal: thin smoke costs thin samples. Steps: (1) tier the phase-B loop by
+\texttt{thickS} (grazing rays take 4, mid rays 8, deep rays 12); (2) test the
+opacity early-out before \texttt{smokeShade} on late samples; (3) keep the
+jittered start and depth shading. Files:
+\texttt{shaders/renderer/sdf/SdfRenderer.frag},
+\texttt{shaders/includes/sdf/SdfSmoke.glsl}. Validation: thin-smoke A/B,
+sample-count histogram down, validation-clean.
+\end{tcolorbox}
+
+\subsection{H7: Surface Normals Cost 4 Full SDF Evaluations per Hit}
+
+\textbf{Severity: High.}
+
+\texttt{sdfSurfaceNormal} (\texttt{SdfRenderer.frag:237--250}) evaluates
+\texttt{sdfEvalInstance} four more times per surface hit --- each with the
+full TRS + wind + noise + smoke chain of C3. Rock hits then add triplanar
+weight \texttt{pow} + 6 array fetches + whiteout normal math
+(\texttt{:261--290,295--313}); grass hits add a second \texttt{pow}
+backlight (\texttt{:648}). Hits are the \emph{common} case for rock/grass in
+surface mode (every blade contact terminates at \texttt{:633--660}), so the
+normal bill dominates the hit path 4:1 over the march step that found the
+surface.
+
+\textit{Technique: cheaper normals where the signal allows.} Use the march
+gradient (central differences reuse the already-evaluated \texttt{dBest}
+neighborhood) or a 2-tap forward difference for far/LOD'd grass; reserve the
+tetrahedral 4-tap only for near rock/flame surfaces. The existing epsilon
+(\texttt{max(eps*2, 0.004)}, \texttt{:635}) already scales with settings, so
+tier it with the same distance uniform as C3.
+
+\begin{tcolorbox}[promptbox={Prompt --- H7: tiered normal reconstruction}]
+Goal: hits cost 1--2 evals, not 5. Steps: (1) add a distance/LOD uniform
+selecting tetrahedral (near) vs forward-difference (far) normals; (2) reuse
+the hit-step \texttt{dBest} as the center tap; (3) keep the rock triplanar
+shade unchanged. Files:
+\texttt{shaders/renderer/sdf/SdfRenderer.frag}. Validation: near-surface A/B
+identical, far-field within tolerance, eval counters down on hit-heavy views,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{H8: The Grass Shadow March Duplicates the Main March per Cascade}
+
+\textbf{Severity: High.}
+
+\texttt{SdfGrassShadow.frag.spv} (13\,859 words / 1\,070 instrs) re-marches
+grass SDF once per shadow cascade from \texttt{drawShadowCascade}
+(\texttt{SdfRenderer.cpp:2231--2290}), with its own push-constant march
+budget (\texttt{SdfGrassShadowPC}, \texttt{SdfRenderer.hpp:48--57}). Grass
+pixels are thus marched at least twice per frame (main + shadow), plus the
+vegetation billboard/impostor shadow variants from report~22. The shadow LOD
+policy (\texttt{shadowLodScale}, \texttt{pc.march.z}) exists but the fragment
+still carries the full grass-clump evaluator including wind lean and impostor
+blend; the ``impostor-only, zero blades'' fast path ($\ge 80$,
+\texttt{SdfRenderer.cpp:2269--2271}) is a runtime branch inside the same
+1\,070-instruction program.
+
+\textit{Technique: shadow-LOD specialization.} Compile a shadow-only grass
+evaluator (no color, no smoke/fire/rock paths, impostor-only variant as a
+separate pipeline, not a branch); drive cascade selection of the cheap
+variant from the existing \texttt{shadowLodScale} without re-marching full
+clumps in outer cascades (the report-22 C2 precedent: coarse outer cascades
+do not resolve blade detail).
+
+\begin{tcolorbox}[promptbox={Prompt --- H8: shadow-only grass evaluator}]
+Goal: outer-cascade grass shadow costs impostors, not blades. Steps:
+(1) split the grass-shadow fragment into full vs impostor-only pipelines;
+(2) select per cascade by projected texel size; (3) keep the EVSM moment
+output contract. Files:
+\texttt{shaders/renderer/shadow/SdfGrassShadow.*},
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp}. Validation: shadow A/B per
+cascade, outer-cascade ALU down, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M9: Triple-Buffered Host-Visible Scene Slots With per-CB Full Barriers}
+\label{sec:m9}
+
+\textbf{Severity: Medium.}
+
+Every scene/params/smoke change memcpys into \emph{three} slot buffers
+(per-slot dirty flags, \texttt{flushSlotUploads/flushSmokeUpload},
+\texttt{SdfRenderer.cpp:1914--1951}), and every command buffer that binds the
+set records an 8-entry HOST$\rightarrow$shader barrier
+(\texttt{recordHostToShaderBarrier}, \texttt{:1969--1999}:
+\texttt{HOST\_WRITE} $\rightarrow$ \texttt{VERTEX|FRAGMENT\_READ},
+\texttt{VK\_WHOLE\_SIZE} on all 8 buffers). That barrier is recorded up to
+three times per frame for the same slot payload: once per shadow-cascade CB
+(\texttt{prepareShadowCascade}, \texttt{:2025--2060}), once in the SDF CB's
+\texttt{prepareCull} (\texttt{:2001--2022}), and again in \texttt{render}
+(\texttt{:2196}). The buffers are host-visible/coherent device shares, so
+every march sample reads scene data over the host-visible heap path instead
+of device-local.
+
+\textit{Technique: device-local scene, single barrier.} Upload through the
+existing staging pool into device-local scene buffers (report~23 C3's batched
+pattern); keep one host-visible scratch per slot only for the memcpy source.
+Record the availability barrier once per queue per frame, not once per CB.
+
+\begin{tcolorbox}[promptbox={Prompt --- M9: device-local SDF scene buffers}]
+Goal: march samples read device-local; one barrier per queue. Steps: (1) add
+device-local scene buffers + staging upload in \texttt{ensureSlotCapacity};
+(2) record the host-to-shader barrier once per frame per queue;
+(3) keep the per-slot dirty flags as the upload gate. Files:
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp}. Validation: identical scene
+contents, barrier count down, validation-clean (watch the VUID-03047
+no-update-while-pending rule the code comments already respect).
+\end{tcolorbox}
+
+\subsection{M10: Full-Screen Solid-Depth Preload Copy Every Frame}
+
+\textbf{Severity: Medium.}
+
+\texttt{render} copies the rasterized solid depth into the SDF depth
+attachment before every march (\texttt{SdfRenderer.cpp:2141--2175}: solid
+READ\_ONLY $\rightarrow$ TRANSFER\_SRC, SDF $\rightarrow$ TRANSFER\_DST,
+\texttt{vkCmdCopyImage} over
+\texttt{min(sdfW, solidW) $\times$ min(sdfH, solidH)}, both back). That is a
+full-screen depth copy plus 4 layout transitions per frame so the hardware
+depth test can reject behind-terrain fragments at raster time --- on top of
+the in-shader \texttt{tExit} clamp (H5) and the composite depth test that do
+the same job logically. When \texttt{rayMarchingEnabled} is off or the scene
+is empty the copy is skipped, but when fire/grass is enabled (the steady
+state) it runs unconditionally, even if no container overlaps the depth that
+changed.
+
+\begin{tcolorbox}[promptbox={Prompt --- M10: conditional depth preload}]
+Goal: pay the copy only when it rejects fragments. Steps: (1) skip the copy
+when no container's screen rect overlaps solid depth (2D bounds test on the
+CPU from container AABBs); (2) copy at \texttt{raycastPixelSize} resolution
+and let the hardware test stay conservative; (3) keep the in-shader clamp as
+the correctness backstop. Files:
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp} (\texttt{render}). Validation:
+occlusion A/B identical, copy bandwidth down on sky-dominant views,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{M11: No Empty-Coverage Elision --- the Pass Draws, Copies, and Submits Regardless}
+
+\textbf{Severity: Medium.}
+
+\texttt{render} clears and transitions even with zero containers, and the SDF
+task always submits and signals \texttt{tlSdf}
+(\texttt{MyApp.cpp:2759--2811}: ``no steady-state elision: the same CB
+carries the fire render''). The per-slot early-outs
+(\texttt{SdfRenderer.cpp:2182--2217}) still record transitions, begin/end an
+empty rendering scope, and pay the submit the composite waits on. Report~22
+C3 and report~24 C1 already shipped this exact elision for SDF debug cubes,
+bbox, and brush tails (skip submit/signal, route the composite wait to the
+already-signalled timeline); the generic SDF pass is the one task that was
+explicitly excluded.
+
+\begin{tcolorbox}[promptbox={Prompt --- M11: content-gated SDF submit}]
+Goal: an empty SDF scene costs nothing. Steps: (1) skip the draw, the
+depth-preload copy, and the submit/signal when \texttt{containerCount == 0}
+and \texttt{rayMarchingEnabled} is off, mirroring the report-22 SDF-task
+elision; (2) keep target layouts stable across skipped frames; (3) route the
+composite wait to the cull timeline on skipped frames. Files:
+\texttt{MyApp.cpp}, \texttt{vulkan/renderer/sdf/SdfRenderer.cpp}.
+Validation: identical pixels with empty scenes, submit count down by one when
+idle, validation-clean.
+\end{tcolorbox}
+
+\subsection{M12: March Quality Is One Global Setting, Not Tiered by Preset or Distance}
+
+\textbf{Severity: Medium.}
+
+\texttt{maxSteps} (64), \texttt{minStep}, \texttt{maxStep},
+\texttt{raycastPixelSize} (2), and the smoke 12-sample constant are global
+widget values (\texttt{SdfParamsUBO}, \texttt{vulkan/ubo/SdfParamsUBO.hpp};
+\texttt{setMarchParams/setMarchRange/setRaycastPixelSize},
+\texttt{SdfRenderer.cpp:510--522,227--238}), identical on Minimal and
+Maximum. The raycast pixel size already pixelates output $2\times2$ (a
+$4\times$ ray-count win the report endorses), but nothing tiers step budget
+or resolve samples by preset, and nothing scales them by distance (far smoke
+marches with near-fire fidelity). Report~23 C1 and report~24 H8 set the
+precedent: resolution/step tiers behind \texttt{Settings}.
+
+\begin{tcolorbox}[promptbox={Prompt --- M12: tiered march quality}]
+Goal: Minimal marches cheaper, Maximum unchanged. Steps: (1) add march tiers
+to \texttt{Settings} (steps, pixel size, smoke samples) wired through the
+existing setters; (2) scale \texttt{maxSteps} by container distance on the CPU
+(near containers full budget, far containers halved); (3) A/B each tier.
+Files: \texttt{utils/Settings.hpp},
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp},
+\texttt{shaders/renderer/sdf/SdfRenderer.frag}. Validation: per-tier A/B,
+frame-time delta on march-heavy views, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L13: Twin Vertex Shaders, Twin Sources, Twin Pipelines for One Cube}
+
+\texttt{SdfRenderer.vert.spv} and \texttt{SdfRendererVolume.vert.spv} are
+both 2\,291 words / 384 instrs --- the same proxy-cube passthrough compiled
+twice because the sources are duplicated
+(\texttt{shaders/renderer/sdf/SdfRenderer.vert} vs
+\texttt{SdfRendererVolume.vert}, both 990-line frag twins at the source
+level per \S1). One vertex source, one module, shared by both pipelines (C1's
+specializations differ only in the fragment stage).
+
+\subsection{L14: Profiling Atomics and Debug Views Ride the Hot Shader}
+
+The march-counter atomics (\texttt{sdfCounters}, set=1 binding 10,
+\texttt{SdfRenderer.frag:67--74,392--393,517,563,603,634}) are correctly
+gated by a uniform branch, but the gate word lives in the same SSBO as the
+counted words (false-sharing-friendly layout), and the debug-view branches
+(fire bits 0--2 at \texttt{:951--972}, smoke nibble at \texttt{:902--949})
+wrap $\sim$70 lines of ramp/color code compiled into every pixel. Move the
+gate to a push constant or specialization (C1 removes it with the mode), and
+compile debug views out of the shipping (non-debug) pipeline variant.
+
+\subsection{L15: Stale Comments and Magic March Constants in the March Path}
+
+\texttt{SDF\_MAX\_STEPS\_HARD = 256} and \texttt{SDF\_MAX\_CANDIDATES = 8}
+(\texttt{SdfRenderer.frag:78--79}) are unexplained globals; the Lipschitz
+0.5 halving (\texttt{:231--233}), the DDA epsilon \texttt{1e-4}
+(\texttt{:560,620}), the dither eighth-wavelength (\texttt{:395--403}), and
+the \texttt{skipR} turbulence widening (\texttt{:586}) each carry a comment,
+but the \emph{interaction} (halving $\times$ widening $\times$ fixed 12-sample
+resolve) is nowhere derived. Document the step-budget proof in one place
+(max overstep $<$ min feature size at each LOD tier, M12) so the next tuning
+pass does not re-break sphere-tracing conservatism.
+
+% =====================================================================
+\section{Implementation Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lp{5.8cm}p{5.6cm}@{}}
+\toprule
+\textbf{Item} & \textbf{Change} & \textbf{Est.\ effect} \\
+\midrule
+C1 & Specialized pipelines, one frag source & $-239$\,KB disk; I-cache + register pressure down per mode \\
+C2 & Tight smoke container & proxy coverage $10\times$ down on typical views \\
+C3 & Bounded candidates + noise LOD & worst-case pixel ALU $3$--$5\times$ down \\
+H4 & Proxy-granularity tracer & tracer-miss pixels to zero bullet ALU \\
+H5 & Single-reconstruct clamp & $-2$ invVP matvecs per pixel \\
+H6 & Adaptive smoke samples & thin-smoke pixels $12 \rightarrow 4$ samples \\
+H7 & Tiered normals & hits $5 \rightarrow 2$ evals \\
+H8 & Shadow-only grass evaluator & outer-cascade shadow ALU down \\
+M9--M12 & Device-local scene, conditional copy, elision, tiers & additive host + bandwidth \\
+L13--L15 & Shared VS, counter/debug hygiene, constants & noise floor \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C1--C3 are the items that change what the engine \emph{costs per frame} on
+the SDF path: program size, covered pixels, and per-step ALU. H4--H8 remove
+the per-pixel taxes inside that program. None of the changes touches scene
+content except C3/M12/H7--H8's quality tiers (explicit knobs with A/B).
+
+Explicitly out of scope (audited shallowly or not at all; candidates for
+report~26): the impostor bake's synchronous 20-view capture
+(\texttt{ImpostorCapture.cpp:240--336}); the GDAL heightmap load path
+(\texttt{math/HeightMapTif.cpp}); CPU threading
+(\texttt{space/ThreadPool.cpp}); input/events
+(\texttt{events/EventManager.cpp}); and the ImGui widget layer
+(release-only, never profiled) --- all carried forward from report~24.
+
+% =====================================================================
+\section{Overall Score}
+\label{sec:score25}
+% =====================================================================
+
+\subsection{Rubric (Report-25 Scope)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcp{7.2cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Wt.} & \textbf{Score and justification} \\
+\midrule
+March efficiency & 40\% & \textbf{4.5} --- DDA skipping, AABB pre-test, adaptive
+fire stepping, analytic smoke interval, early termination and the $2\times2$
+raycast default are good; 64--256 steps $\times$ 8 full-noise candidates with
+turbulence-widened acceptance drags it down. \\
+Proxy \& coverage & 25\% & \textbf{4.0} --- container proxy + ray/AABB + depth
+clamp + fullscreen-depth preload is the right structure; the 7.4\,km smoke
+container and unconditional copy/submit defeat it. \\
+Program structure & 20\% & \textbf{5.0} --- one generic traversal for five
+consumers is the right architecture; one 4\,948-instruction module for four
+modes, shipped twice, with tracer/shadow/debug code inline is not. \\
+Upload / target hygiene & 15\% & \textbf{6.5} --- per-slot dirty flags,
+handle-deduped descriptor refreshes, VUID-03047 discipline and coherent mapped
+uploads are good; host-visible scene reads and triple per-frame barriers are
+not. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Overall: 4.9/10 Scope, 6.0/10 Combined}
+
+\begin{equation}
+0.40(4.5) + 0.25(4.0) + 0.20(5.0) + 0.15(6.5) = \mathbf{4.9}
+\end{equation}
+
+Report~24 scored the combined engine 6.1/10; that estimate priced everything
+except the march itself. Measuring it:
+
+\begin{equation}
+0.90(6.1) + 0.10(4.9) = \mathbf{6.0}
+\end{equation}
+
+The engine's verdict is unchanged in kind, extended in scope one last time:
+the frame-graph architecture (async queues, timeline DAG, cached descriptors,
+elided debug tasks, tight containers everywhere else) is sound; the SDF
+march --- the largest program, the widest proxy, and the only
+pixels$\times$steps$\times$candidates$\times$noise term --- is where the
+money is. Landing C1--C3 moves this scope toward $\sim$8/10 with no
+redesign.
+
+\end{document}
