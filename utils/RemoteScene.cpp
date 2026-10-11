@@ -533,6 +533,18 @@ void RemoteScene::routeFrame(const std::vector<uint8_t>& raw) {
         memcpy(fetchReply_.positions.data(), raw.data() + 29, (size_t)nVerts * 12u);
         fetchReply_.indices.resize(nIdx);
         memcpy(fetchReply_.indices.data(), raw.data() + 29 + (size_t)nVerts * 12u, (size_t)nIdx * 4u);
+        // Trailing per-vertex brush array (append-only extension): absent on
+        // old senders, in which case buildGeometry falls back per vertex.
+        fetchReply_.brush.clear();
+        {
+            const size_t need = 29u + (size_t)nVerts * 12u + (size_t)nIdx * 4u + (size_t)nVerts * 4u;
+            if (raw.size() >= need && nVerts > 0) {
+                const uint8_t* bp = raw.data() + 29 + (size_t)nVerts * 12u + (size_t)nIdx * 4u;
+                fetchReply_.brush.resize(nVerts);
+                for (uint32_t i = 0; i < nVerts; ++i)
+                    fetchReply_.brush[i] = static_cast<int32_t>(readU32LE(bp + 4 * i));
+            }
+        }
         fetchReady_ = true;
         fetchCv_.notify_one();
     }
@@ -643,6 +655,8 @@ Geometry RemoteScene::buildGeometry(const chunkproto::MeshData& mesh, int brushI
     for (uint32_t idx : mesh.indices) {
         if (idx >= nv) return Geometry(); // corrupt payload: publish nothing
     }
+    // Per-vertex brush when the sender provided it, else the chunk brush.
+    const bool haveBrush = mesh.brush.size() == nv;
     // Area-weighted smooth normals (≈ the SDF-gradient normals the local
     // tessellator emits).
     std::vector<glm::vec3> normals(nv, glm::vec3(0.0f));
@@ -665,7 +679,8 @@ Geometry RemoteScene::buildGeometry(const chunkproto::MeshData& mesh, int brushI
         const float l = glm::length(n);
         n = l > 1e-9f ? n / l : glm::vec3(0.0f, 1.0f, 0.0f);
         const glm::vec3 p(mesh.positions[3 * i], mesh.positions[3 * i + 1], mesh.positions[3 * i + 2]);
-        Vertex v(p, n, triplanarMapping(p, triplanarPlane(n)) * 0.1f, brushIndex);
+        const int bi = haveBrush ? mesh.brush[i] : brushIndex;
+        Vertex v(p, n, triplanarMapping(p, triplanarPlane(n)) * 0.1f, bi);
         geo.vertices.push_back(v);
     }
     geo.indices.assign(mesh.indices.begin(), mesh.indices.end());

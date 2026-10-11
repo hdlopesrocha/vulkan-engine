@@ -19,9 +19,12 @@
 //     0x13 SNAPSHOT_END   : no payload
 //     0x14 MESH_DATA      : u64 chunk id, u32 version, u8 layer, u8 pad[3],
 //                           u32 vertCount, u32 idxCount,
-//                           vertCount x 3 f32 positions, idxCount x u32 indices.
+//                           vertCount x 3 f32 positions, idxCount x u32 indices,
+//                           vertCount x i32 per-vertex brushIndex.
 //                           vertCount == 0 means "no geometry" (unknown id,
-//                           non-surface chunk, or empty mesh).
+//                           non-surface chunk, or empty mesh). The trailing
+//                           brush array may be absent (old senders); receivers
+//                           then fall back to the chunk record's brush.
 //     0x15 SCENE_META     : u32 layerCount, then per layer:
 //                           u8 layer, f32 rootMin xyz, f32 rootLen,
 //                           f32 chunkSize, u8 rootChunkLod (stored, +1-shifted),
@@ -116,13 +119,16 @@ struct SceneMetaLayer {
 };
 std::vector<uint8_t> buildSceneMeta(const SceneMetaLayer* layers, size_t count);
 
-// On-demand tessellated chunk geometry (positions are xyz triplets).
+// On-demand tessellated chunk geometry (positions are xyz triplets, brush
+// holds one brushIndex per vertex for per-vertex debug coloring; it may be
+// shorter than vertCount when the sender has no per-vertex data).
 struct MeshData {
     uint64_t id = 0;
     uint32_t version = 0;
     uint8_t layer = 0;
     std::vector<float> positions;   // vertCount * 3
     std::vector<uint32_t> indices;
+    std::vector<int32_t> brush;     // vertCount entries (may be empty)
 };
 std::vector<uint8_t> buildMeshData(const MeshData& mesh);
 

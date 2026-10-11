@@ -30,10 +30,12 @@ void tessellateNode(const Octree& tree, OctreeNode* node, const BoundingCube& cu
     tree.iterateTriangles(node, cube, level, tess, &ctx, chunkLod);
     const Geometry& g = tess.geometry;
     out.positions.reserve(g.vertices.size() * 3);
+    out.brush.reserve(g.vertices.size());
     for (const Vertex& v : g.vertices) {
         out.positions.push_back(v.position.x);
         out.positions.push_back(v.position.y);
         out.positions.push_back(v.position.z);
+        out.brush.push_back(v.brushIndex);
     }
     out.indices.assign(g.indices.begin(), g.indices.end());
 }

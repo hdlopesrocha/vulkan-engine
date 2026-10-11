@@ -154,7 +154,7 @@ std::vector<uint8_t> buildMeshData(const MeshData& mesh) {
     const uint32_t nVerts = static_cast<uint32_t>(mesh.positions.size() / 3);
     const uint32_t nIdx = static_cast<uint32_t>(mesh.indices.size());
     std::vector<uint8_t> v;
-    v.reserve(24 + mesh.positions.size() * 4 + mesh.indices.size() * 4);
+    v.reserve(24 + mesh.positions.size() * 4 + mesh.indices.size() * 4 + (size_t)nVerts * 4);
     v.push_back('C'); v.push_back('H'); v.push_back('K'); v.push_back('1');
     v.push_back(MSG_MESH_DATA);
     putU64(v, mesh.id);
@@ -164,6 +164,10 @@ std::vector<uint8_t> buildMeshData(const MeshData& mesh) {
     putU32(v, nIdx);
     for (float f : mesh.positions) putF32(v, f);
     for (uint32_t i : mesh.indices) putU32(v, i);
+    // Trailing per-vertex brush array (append-only extension: old receivers
+    // stop at the indices). Missing entries encode as 0.
+    for (uint32_t i = 0; i < nVerts; ++i)
+        putI32(v, i < mesh.brush.size() ? mesh.brush[i] : 0);
     return v;
 }
 
