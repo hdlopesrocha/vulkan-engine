@@ -34,16 +34,42 @@ public:
 
     // Capture NUM_VIEWS impostor frames for ONE billboard type into layers
     // [billboardIndex*NUM_VIEWS .. billboardIndex*NUM_VIEWS+NUM_VIEWS-1].
+    // Synchronous: blocks until the GPU renders complete (fence wait), exactly
+    // like the old runSingleTimeCommands path. Prefer captureAsync off the
+    // frame path.
     void capture(VulkanApp* app,
                  VkImageView albedoView, VkImageView normalView,
                  VkImageView opacityView, VkSampler  sampler,
                  float billboardScale, uint32_t billboardIndex = 0);
+
+    // H8 (perf report 26): async single-type capture. Records the identical
+    // per-view command stream and submits it to the graphics queue WITHOUT
+    // blocking; returns a fence signaled when all NUM_VIEWS renders have
+    // completed and the layers sit in SHADER_READ_ONLY_OPTIMAL. ImGui sets +
+    // the capturedTypes bit publish in a fence callback (pumped by
+    // processPendingCommandBuffers). Contract: wait the fence before the next
+    // capture*/captureAll* call (shared UBO/instance/descriptor slots) and
+    // before first sampling (setImpostorData / scene use) — frame fences do
+    // NOT cover it. Await with VulkanApp::waitFence. Bit-identical layers.
+    VkFence captureAsync(VulkanApp* app,
+                         VkImageView albedoView, VkImageView normalView,
+                         VkImageView opacityView, VkSampler  sampler,
+                         float billboardScale, uint32_t billboardIndex = 0);
 
     // Convenience wrapper: capture all NUM_BILLBOARD_TYPES in one call.
     void captureAll(VulkanApp* app,
                     VkImageView albedoView, VkImageView normalView,
                     VkImageView opacityView, VkSampler  sampler,
                     float billboardScale);
+
+    // H8 (perf report 26): async whole-array capture. Stages all three types
+    // then issues ONE graphics-queue submit for all 60 views (type order,
+    // shared type-independent UBO slots, per-type instance slots selected via
+    // firstInstance); same fence/publish contract as captureAsync.
+    VkFence captureAllAsync(VulkanApp* app,
+                            VkImageView albedoView, VkImageView normalView,
+                            VkImageView opacityView, VkSampler sampler,
+                            float billboardScale);
 
     bool isReady() const { return capturedTypes > 0; }
 
@@ -114,6 +140,10 @@ private:
     // canonical layout in vulkan/ubo/CaptureUBO.hpp.
     VkBuffer       uboBuffer = VK_NULL_HANDLE;
     void*          uboMapped = nullptr;
+    // L14 (perf report 26): already the tightest legal stride — the align-up
+    // of sizeof(CaptureUBO) to minUniformBufferOffsetAlignment computed in
+    // init(). Packing views any tighter would break the dynamic-offset
+    // alignment requirement, so this must NOT be reduced to sizeof(CaptureUBO).
     VkDeviceSize   uboStride = 256;  // aligned to minUniformBufferOffsetAlignment
 
     // Shared set=2 wind params descriptor set + layout, owned by the
@@ -121,7 +151,8 @@ private:
     // bound for pipeline compatibility — its content is never read).
     VegetationRenderer* sharedVegRenderer = nullptr;
 
-    // Minimal vertex + instance buffers (single base vertex, one instance).
+    // Minimal vertex + instance buffers: 24-corner base mesh plus one vec4
+    // instance slot per billboard type (draws select via firstInstance).
     VkBuffer       captureVertBuf = VK_NULL_HANDLE;
     VkBuffer       captureInstBuf = VK_NULL_HANDLE;
     void*          captureInstMapped = nullptr;
@@ -174,6 +205,15 @@ private:
                           VkImageView albedo, VkImageView normal,
                           VkImageView opacity, VkSampler sampler);
     void createImGuiDescSetsForType(VulkanApp* app, uint32_t billboardType);
+    // H8 async-capture internals (see ImpostorCapture.cpp): shared camera-UBO
+    // upload, per-view recorder (caller-agnostic command stream), async submit
+    // over a contiguous type range, and post-fence publish.
+    void writeCaptureCameraUbos(float billboardScale, uint32_t layerBase);
+    void recordCaptureViews(VkCommandBuffer cb, VulkanApp* app, uint32_t layerBase,
+                            uint32_t viewCount, uint32_t firstInstance, const CapturePC& pc);
+    VkFence submitCaptureTypesAsync(VulkanApp* app, const CapturePC& pc,
+                                    uint32_t typeBegin, uint32_t typeCount);
+    void completeCaptureType(VulkanApp* app, uint32_t billboardType, float billboardScale);
 public:
     void destroyImGuiDescSets();
     void invalidateImGuiDescriptors() { destroyImGuiDescSets(); }

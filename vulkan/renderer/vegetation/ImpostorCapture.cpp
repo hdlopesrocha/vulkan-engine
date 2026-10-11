@@ -162,41 +162,15 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
     initDone = false;
 }
 
-void ImpostorCapture::capture(VulkanApp* app,
-                               VkImageView albedoView, VkImageView normalView,
-                               VkImageView opacityView, VkSampler   sampler,
-                               float billboardScale, uint32_t billboardType) {
-    if (!initDone || !app) return;
-    if (albedoView == VK_NULL_HANDLE || normalView == VK_NULL_HANDLE ||
-        opacityView == VK_NULL_HANDLE || sampler   == VK_NULL_HANDLE) {
-        fprintf(stderr, "[ImpostorCapture] capture: billboard texture arrays not ready\n");
-        return;
-    }
-    if (billboardType >= NUM_BILLBOARD_TYPES) {
-        fprintf(stderr, "[ImpostorCapture] capture: billboardType=%u out of range\n", billboardType);
-        return;
-    }
+// ────────────────── H8 async-capture helpers (perf report 26) ─────────────
+// The recorded per-view command stream is identical to the old synchronous
+// runSingleTimeCommands version (same transitions, clears, binds, push
+// constants, draws with identical instance/UBO bytes), so captured texels are
+// bit-identical — only host submit timing changes. All submits below use the
+// graphics queue (2-arg runSingleTimeCommandsAsync overload): capture renders
+// and can never ride the transfer queue.
 
-    // Layer range for this billboard type.
-    const uint32_t layerBase = billboardType * NUM_VIEWS;
-
-    // Remove old descriptor sets for this type before overwriting images.
-    for (uint32_t v = 0; v < NUM_VIEWS; ++v) {
-        VkDescriptorSet ds = imguiDescSets[layerBase + v];
-        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); imguiDescSets[layerBase + v] = VK_NULL_HANDLE; }
-        VkDescriptorSet dsN = imguiNormalDescSets[layerBase + v];
-        if (dsN != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(dsN); imguiNormalDescSets[layerBase + v] = VK_NULL_HANDLE; }
-    }
-
-    // Update the texture descriptor set with current billboard arrays.
-    updateTexDescSet(app->getDevice(), albedoView, normalView, opacityView, sampler);
-
-    // Single centred instance at the origin with the correct billboard type.
-    {
-        const glm::vec4 inst(0.0f, 0.0f, 0.0f, float(billboardType));
-        std::memcpy(captureInstMapped, &inst, sizeof(inst));
-    }
-
+void ImpostorCapture::writeCaptureCameraUbos(float billboardScale, uint32_t layerBase) {
     // Pre-compute all 20 UBOs.
     const glm::vec3 center(0.0f, billboardScale * 0.5f, 0.0f);
     const float captureDist = billboardScale * 2.5f;
@@ -230,6 +204,184 @@ void ImpostorCapture::capture(VulkanApp* app,
 
     // Upload updated inv VP data to the GPU buffer (persistently mapped).
     std::memcpy(captureInvVPMapped, captureInvVP.data(), TOTAL_LAYERS * sizeof(glm::mat4));
+}
+
+void ImpostorCapture::recordCaptureViews(VkCommandBuffer cb, VulkanApp* app,
+                                         uint32_t layerBase, uint32_t viewCount,
+                                         uint32_t firstInstance, const CapturePC& pc) {
+    VkBuffer     vbs[2]     = { captureVertBuf, captureInstBuf };
+    VkDeviceSize offsets[2] = { 0, 0 };
+
+    for (uint32_t viewIdx = 0; viewIdx < viewCount; ++viewIdx) {
+        const uint32_t layerIdx = layerBase + viewIdx;
+
+        // Transition color layers to COLOR_ATTACHMENT_OPTIMAL
+        app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
+        app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
+        app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
+        // Transition depth UNDEFINED → DEPTH_STENCIL_ATTACHMENT (reuse each view)
+        app->recordTransitionImageLayoutLayer(cb, depthImage, VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+
+        VkRenderingAttachmentInfo colorAtts[3]{};
+        colorAtts[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAtts[0].imageView = captureLayerViews[layerIdx];
+        colorAtts[0].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAtts[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAtts[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAtts[0].clearValue.color = { 0.0f, 0.0f, 0.0f, 0.0f };
+        colorAtts[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAtts[1].imageView = captureNormalLayerViews[layerIdx];
+        colorAtts[1].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAtts[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAtts[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAtts[1].clearValue.color = { 0.5f, 0.5f, 1.0f, 0.0f };
+        colorAtts[2].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAtts[2].imageView = captureDepthLayerViews[layerIdx];
+        colorAtts[2].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAtts[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAtts[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAtts[2].clearValue.color = { 1.0f, 0.0f, 0.0f, 0.0f }; // clear depth to far=1.0
+
+        VkRenderingAttachmentInfo depthAtt{};
+        depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depthAtt.imageView = depthView;
+        depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAtt.clearValue.depthStencil = { 1.0f, 0 };
+
+        VkRenderingInfo renderingInfo{};
+        renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        renderingInfo.renderArea.offset = {0, 0};
+        renderingInfo.renderArea.extent = {TEX_SIZE, TEX_SIZE};
+        renderingInfo.layerCount = 1;
+        renderingInfo.colorAttachmentCount = 3;
+        renderingInfo.pColorAttachments = colorAtts;
+        renderingInfo.pDepthAttachment = &depthAtt;
+
+        // Defensive: ensure descriptor sets are allocated before starting render
+        if (uboDescSet == VK_NULL_HANDLE || texDescSet == VK_NULL_HANDLE) {
+            std::cerr << "[ImpostorCapture] descriptor sets not ready, skipping capture for this view." << std::endl;
+            continue;
+        }
+
+        vkCmdBeginRendering(cb, &renderingInfo);
+
+        VkViewport vp{ 0.0f, 0.0f, float(TEX_SIZE), float(TEX_SIZE), 0.0f, 1.0f };
+        VkRect2D   sci{ { 0, 0 }, { TEX_SIZE, TEX_SIZE } };
+        vkCmdSetViewport(cb, 0, 1, &vp);
+        vkCmdSetScissor(cb, 0, 1, &sci);
+
+        if (cmdState) cmdState->bindGraphicsPipeline(cb, capturePipeline);
+        else vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, capturePipeline);
+
+        const uint32_t dynOffset = static_cast<uint32_t>(viewIdx * uboStride);
+        VkDescriptorSet sets[3] = { uboDescSet, texDescSet, sharedVegRenderer->getWindParamsDescSet() };
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cb,
+                                capturePipelineLayout, 0, 3, sets, 1, &dynOffset);
+        else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                capturePipelineLayout, 0, 3, sets, 1, &dynOffset);
+
+        vkCmdPushConstants(cb, capturePipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(CapturePC), &pc);
+
+        vkCmdBindVertexBuffers(cb, 0, 2, vbs, offsets);
+        vkCmdBindIndexBuffer(cb, captureIdxBuf, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cb, captureIdxCount, NUM_INSTANCES, 0, 0, firstInstance);
+
+        vkCmdEndRendering(cb);
+
+        // Transition color + depth layers back to SHADER_READ_ONLY_OPTIMAL
+        app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
+        app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
+        app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
+    }
+}
+
+VkFence ImpostorCapture::submitCaptureTypesAsync(VulkanApp* app, const CapturePC& pc,
+                                                 uint32_t typeBegin, uint32_t typeCount) {
+    // One async submit covering [typeBegin, typeBegin + typeCount). Views run
+    // back to back on the graphics queue in type order, so the shared UBO
+    // slots (type-independent content) are never rewritten mid-flight and the
+    // 60 renders of captureAllAsync need no interim fence.
+    return app->runSingleTimeCommandsAsync([&](VkCommandBuffer cb) {
+        for (uint32_t t = typeBegin; t < typeBegin + typeCount; ++t)
+            recordCaptureViews(cb, app, t * NUM_VIEWS, NUM_VIEWS, t, pc);
+    });
+}
+
+void ImpostorCapture::completeCaptureType(VulkanApp* app, uint32_t billboardType,
+                                          float billboardScale) {
+    // Publish one captured type: retire the previous ImGui sets FIRST so a
+    // re-capture (sync, or async whose creation is still deferred) can never
+    // orphan a set, then create the new ones. Runs inline before return on the
+    // sync path and as a fence callback (deferDestroyUntilFence, pumped by
+    // processPendingCommandBuffers — the same mechanism the vegetation
+    // streaming path uses to publish chunks) on the async path. Either way it
+    // runs strictly after this type's capture renders have completed.
+    const uint32_t layerBase = billboardType * NUM_VIEWS;
+    for (uint32_t v = 0; v < NUM_VIEWS; ++v) {
+        VkDescriptorSet ds = imguiDescSets[layerBase + v];
+        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); imguiDescSets[layerBase + v] = VK_NULL_HANDLE; }
+        VkDescriptorSet dsN = imguiNormalDescSets[layerBase + v];
+        if (dsN != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(dsN); imguiNormalDescSets[layerBase + v] = VK_NULL_HANDLE; }
+    }
+    createImGuiDescSetsForType(app, billboardType);
+    capturedTypes |= (1u << billboardType);
+    fprintf(stderr,
+            "[ImpostorCapture] Captured billboard type %u | %u views | scale=%.1f | layers %u-%u\n",
+            billboardType, NUM_VIEWS, billboardScale, layerBase, layerBase + NUM_VIEWS - 1);
+}
+
+
+void ImpostorCapture::capture(VulkanApp* app,
+                               VkImageView albedoView, VkImageView normalView,
+                               VkImageView opacityView, VkSampler   sampler,
+                               float billboardScale, uint32_t billboardType) {
+    if (!initDone || !app) return;
+    if (albedoView == VK_NULL_HANDLE || normalView == VK_NULL_HANDLE ||
+        opacityView == VK_NULL_HANDLE || sampler   == VK_NULL_HANDLE) {
+        fprintf(stderr, "[ImpostorCapture] capture: billboard texture arrays not ready\n");
+        return;
+    }
+    if (billboardType >= NUM_BILLBOARD_TYPES) {
+        fprintf(stderr, "[ImpostorCapture] capture: billboardType=%u out of range\n", billboardType);
+        return;
+    }
+
+    // Layer range for this billboard type.
+    const uint32_t layerBase = billboardType * NUM_VIEWS;
+
+    // Old ImGui sets for this type are retired in completeCaptureType() after
+    // the GPU work finishes (inline on the sync path, fence-deferred on the
+    // async path), so a re-capture can never orphan a deferred set.
+
+    // Update the texture descriptor set with current billboard arrays.
+    updateTexDescSet(app->getDevice(), albedoView, normalView, opacityView, sampler);
+
+    // Single centred instance at the origin with the correct billboard type.
+    // The instance buffer holds one slot per billboard type; the draw selects
+    // it with firstInstance, so staged per-type data never aliases and the
+    // instanceData values are identical to the old single-slot upload
+    // (gl_InstanceIndex is unread by every vegetation shader: pixel-identical).
+    {
+        const glm::vec4 inst(0.0f, 0.0f, 0.0f, float(billboardType));
+        std::memcpy(static_cast<uint8_t*>(captureInstMapped) + billboardType * sizeof(inst),
+                    &inst, sizeof(inst));
+    }
+
+    // Camera UBOs + invVP slice for this type's layers (bytes identical to
+    // the previous inline version; factored out so captureAllAsync can stage
+    // all types before one submit).
+    writeCaptureCameraUbos(billboardScale, layerBase);
 
     // Push constant: no wind, density culling disabled, impostorDistance=0.
     CapturePC pc{};
@@ -238,109 +390,15 @@ void ImpostorCapture::capture(VulkanApp* app,
     pc.windTime           = 0.0f;
     pc.impostorDistance   = 0.0f;
 
-    app->runSingleTimeCommands([&](VkCommandBuffer cb) {
-        VkBuffer     vbs[2]     = { captureVertBuf, captureInstBuf };
-        VkDeviceSize offsets[2] = { 0, 0 };
-
-        for (uint32_t viewIdx = 0; viewIdx < NUM_VIEWS; ++viewIdx) {
-            const uint32_t layerIdx = layerBase + viewIdx;
-
-            // Transition color layers to COLOR_ATTACHMENT_OPTIMAL
-            app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
-                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
-            app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
-                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
-            app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
-                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
-            // Transition depth UNDEFINED → DEPTH_STENCIL_ATTACHMENT (reuse each view)
-            app->recordTransitionImageLayoutLayer(cb, depthImage, VK_FORMAT_D32_SFLOAT,
-                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-
-            VkRenderingAttachmentInfo colorAtts[3]{};
-            colorAtts[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            colorAtts[0].imageView = captureLayerViews[layerIdx];
-            colorAtts[0].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorAtts[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            colorAtts[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            colorAtts[0].clearValue.color = { 0.0f, 0.0f, 0.0f, 0.0f };
-            colorAtts[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            colorAtts[1].imageView = captureNormalLayerViews[layerIdx];
-            colorAtts[1].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorAtts[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            colorAtts[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            colorAtts[1].clearValue.color = { 0.5f, 0.5f, 1.0f, 0.0f };
-            colorAtts[2].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            colorAtts[2].imageView = captureDepthLayerViews[layerIdx];
-            colorAtts[2].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorAtts[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            colorAtts[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            colorAtts[2].clearValue.color = { 1.0f, 0.0f, 0.0f, 0.0f }; // clear depth to far=1.0
-
-            VkRenderingAttachmentInfo depthAtt{};
-            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depthAtt.imageView = depthView;
-            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            depthAtt.clearValue.depthStencil = { 1.0f, 0 };
-
-            VkRenderingInfo renderingInfo{};
-            renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-            renderingInfo.renderArea.offset = {0, 0};
-            renderingInfo.renderArea.extent = {TEX_SIZE, TEX_SIZE};
-            renderingInfo.layerCount = 1;
-            renderingInfo.colorAttachmentCount = 3;
-            renderingInfo.pColorAttachments = colorAtts;
-            renderingInfo.pDepthAttachment = &depthAtt;
-
-            // Defensive: ensure descriptor sets are allocated before starting render
-            if (uboDescSet == VK_NULL_HANDLE || texDescSet == VK_NULL_HANDLE) {
-                std::cerr << "[ImpostorCapture] descriptor sets not ready, skipping capture for this view." << std::endl;
-                continue;
-            }
-
-            vkCmdBeginRendering(cb, &renderingInfo);
-
-            VkViewport vp{ 0.0f, 0.0f, float(TEX_SIZE), float(TEX_SIZE), 0.0f, 1.0f };
-            VkRect2D   sci{ { 0, 0 }, { TEX_SIZE, TEX_SIZE } };
-            vkCmdSetViewport(cb, 0, 1, &vp);
-            vkCmdSetScissor(cb, 0, 1, &sci);
-
-            if (cmdState) cmdState->bindGraphicsPipeline(cb, capturePipeline);
-            else vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, capturePipeline);
-
-            const uint32_t dynOffset = static_cast<uint32_t>(viewIdx * uboStride);
-            VkDescriptorSet sets[3] = { uboDescSet, texDescSet, sharedVegRenderer->getWindParamsDescSet() };
-            if (cmdState) cmdState->bindGraphicsDescriptorSets(cb,
-                                    capturePipelineLayout, 0, 3, sets, 1, &dynOffset);
-            else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    capturePipelineLayout, 0, 3, sets, 1, &dynOffset);
-
-            vkCmdPushConstants(cb, capturePipelineLayout,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(CapturePC), &pc);
-
-            vkCmdBindVertexBuffers(cb, 0, 2, vbs, offsets);
-            vkCmdBindIndexBuffer(cb, captureIdxBuf, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cb, captureIdxCount, NUM_INSTANCES, 0, 0, 0);
-
-            vkCmdEndRendering(cb);
-
-            // Transition color + depth layers back to SHADER_READ_ONLY_OPTIMAL
-            app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
-            app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
-            app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
-        }
-    });
-
-    createImGuiDescSetsForType(app, billboardType);
-    capturedTypes |= (1u << billboardType);
-    fprintf(stderr,
-            "[ImpostorCapture] Captured billboard type %u | %u views | scale=%.1f | layers %u-%u\n",
-            billboardType, NUM_VIEWS, billboardScale, layerBase, layerBase + NUM_VIEWS - 1);
+    // Async submit of this type's NUM_VIEWS renders (identical command stream;
+    // see recordCaptureViews). The fence wait below preserves the synchronous
+    // contract — the old code blocked inside runSingleTimeCommands — with the
+    // codebase's validation-clean poll wait. Reaping of the transient command
+    // buffer stays on the frame pump (processPendingCommandBuffers), as with
+    // every other runSingleTimeCommandsAsync submitter.
+    VkFence fence = submitCaptureTypesAsync(app, pc, billboardType, 1);
+    VulkanApp::waitFence(app->getDevice(), fence);
+    completeCaptureType(app, billboardType, billboardScale);
 }
 
 void ImpostorCapture::captureAll(VulkanApp* app,
@@ -352,6 +410,89 @@ void ImpostorCapture::captureAll(VulkanApp* app,
     }
     fprintf(stderr, "[ImpostorCapture] captureAll complete: %u types × %u views = %u layers\n",
             NUM_BILLBOARD_TYPES, NUM_VIEWS, TOTAL_LAYERS);
+}
+
+VkFence ImpostorCapture::captureAsync(VulkanApp* app,
+                                       VkImageView albedoView, VkImageView normalView,
+                                       VkImageView opacityView, VkSampler sampler,
+                                       float billboardScale, uint32_t billboardType) {
+    if (!initDone || !app) return VK_NULL_HANDLE;
+    if (albedoView == VK_NULL_HANDLE || normalView == VK_NULL_HANDLE ||
+        opacityView == VK_NULL_HANDLE || sampler   == VK_NULL_HANDLE) {
+        fprintf(stderr, "[ImpostorCapture] captureAsync: billboard texture arrays not ready\n");
+        return VK_NULL_HANDLE;
+    }
+    if (billboardType >= NUM_BILLBOARD_TYPES) {
+        fprintf(stderr, "[ImpostorCapture] captureAsync: billboardType=%u out of range\n", billboardType);
+        return VK_NULL_HANDLE;
+    }
+    const uint32_t layerBase = billboardType * NUM_VIEWS;
+
+    updateTexDescSet(app->getDevice(), albedoView, normalView, opacityView, sampler);
+
+    {
+        const glm::vec4 inst(0.0f, 0.0f, 0.0f, float(billboardType));
+        std::memcpy(static_cast<uint8_t*>(captureInstMapped) + billboardType * sizeof(inst),
+                    &inst, sizeof(inst));
+    }
+    writeCaptureCameraUbos(billboardScale, layerBase);
+
+    // Push constant: no wind, density culling disabled, impostorDistance=0.
+    CapturePC pc{};
+    pc.billboardScale     = billboardScale;
+    pc.windEnabled        = 0.0f;
+    pc.windTime           = 0.0f;
+    pc.impostorDistance   = 0.0f;
+
+    VkFence fence = submitCaptureTypesAsync(app, pc, billboardType, 1);
+    // Publish after the fence (see completeCaptureType); pumped by
+    // processPendingCommandBuffers. `this`/`app` outlive the fence by
+    // ownership (service/app lifetime), same as the vegetation streaming
+    // publish callbacks.
+    app->deferDestroyUntilFence(fence, [this, app, billboardType, billboardScale]() {
+        completeCaptureType(app, billboardType, billboardScale);
+    });
+    return fence;
+}
+
+VkFence ImpostorCapture::captureAllAsync(VulkanApp* app,
+                                          VkImageView albedoView, VkImageView normalView,
+                                          VkImageView opacityView, VkSampler sampler,
+                                          float billboardScale) {
+    if (!initDone || !app) return VK_NULL_HANDLE;
+    if (albedoView == VK_NULL_HANDLE || normalView == VK_NULL_HANDLE ||
+        opacityView == VK_NULL_HANDLE || sampler   == VK_NULL_HANDLE) {
+        fprintf(stderr, "[ImpostorCapture] captureAllAsync: billboard texture arrays not ready\n");
+        return VK_NULL_HANDLE;
+    }
+
+    updateTexDescSet(app->getDevice(), albedoView, normalView, opacityView, sampler);
+
+    for (uint32_t t = 0; t < NUM_BILLBOARD_TYPES; ++t) {
+        const glm::vec4 inst(0.0f, 0.0f, 0.0f, float(t));
+        std::memcpy(static_cast<uint8_t*>(captureInstMapped) + t * sizeof(inst),
+                    &inst, sizeof(inst));
+        writeCaptureCameraUbos(billboardScale, t * NUM_VIEWS);
+    }
+
+    // Push constant: no wind, density culling disabled, impostorDistance=0.
+    CapturePC pc{};
+    pc.billboardScale     = billboardScale;
+    pc.windEnabled        = 0.0f;
+    pc.windTime           = 0.0f;
+    pc.impostorDistance   = 0.0f;
+
+    // ONE submit for all 60 views (type order, shared type-independent UBO
+    // slots, per-type instance slots via firstInstance): no mid-flight CPU
+    // rewrite of shared slots, so no interim fence is needed.
+    VkFence fence = submitCaptureTypesAsync(app, pc, 0, NUM_BILLBOARD_TYPES);
+    app->deferDestroyUntilFence(fence, [this, app, billboardScale]() {
+        for (uint32_t t = 0; t < NUM_BILLBOARD_TYPES; ++t)
+            completeCaptureType(app, t, billboardScale);
+        fprintf(stderr, "[ImpostorCapture] captureAllAsync complete: %u types × %u views = %u layers\n",
+                NUM_BILLBOARD_TYPES, NUM_VIEWS, TOTAL_LAYERS);
+    });
+    return fence;
 }
 
 VkDescriptorSet ImpostorCapture::getImGuiDescSet(uint32_t billboardType, uint32_t viewIdx) const {
@@ -586,6 +727,12 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     // locally exactly as before the bake — the capture draws a canonical
     // single instance with no aux buffer bound, so it must not declare the
     // baked-height input (VUID-07904).
+    // Shader derivation (H8, perf report 26): there is NO on-disk
+    // ImpostorCapture.vert source. This module is compiled from
+    // VegetationRenderer.vert with -DVEG_CAPTURE=1 (see the Makefile
+    // ImpostorCapture.vert.spv rule). The former ImpostorCaptureLegacy.vert
+    // (a pass-through to a nonexistent vegetation.geom, zero in-tree
+    // references) was deleted, not rebuilt.
     VkShaderModule vertShader = app->getOrCreateShaderModule("shaders/renderer/vegetation/ImpostorCapture.vert.spv");
     VkShaderModule fragShader = app->getOrCreateShaderModule("shaders/renderer/vegetation/ImpostorCapture.frag.spv");
 
@@ -761,9 +908,11 @@ void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
     captureIdxBuf = idxBuf.buffer;
     captureIdxCount = 36;
 
-    // Instance buffer: 1 vec4 (xyz=world pos, w=billboardIndex), host-visible.
+    // Instance buffer: one vec4 slot per billboard type (xyz=world pos,
+    // w=billboardIndex), host-visible. Draws select the slot with firstInstance
+    // (see capture()/captureAllAsync), so staged per-type data never aliases.
     // Needs VERTEX_BUFFER_BIT because it's bound as vertex buffer binding 1.
-    Buffer ib = app->createBuffer(NUM_INSTANCES * sizeof(glm::vec4),
+    Buffer ib = app->createBuffer(NUM_BILLBOARD_TYPES * sizeof(glm::vec4),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     captureInstBuf = ib.buffer;

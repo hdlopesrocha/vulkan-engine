@@ -227,6 +227,12 @@ $(OUT_DIR)/shaders/renderer/shadow/SdfGrassShadowImpostor.frag.spv: shaders/rend
 # evaluates the height scale locally exactly as before the bake (canonical
 # single instance, no aux buffer bound). Built WITHOUT -O like its generic
 # sibling so capture output is maximally unchanged.
+# H8 (perf report 26): derivation documented here because the module source
+# does NOT exist on disk — bin/shaders/.../ImpostorCapture.vert.spv IS
+# VegetationRenderer.vert compiled with -DVEG_CAPTURE=1 (ImpostorCapture.cpp
+# loads exactly this path). shaders/.../ImpostorCaptureLegacy.vert (a
+# pass-through to a nonexistent vegetation.geom, zero in-tree references) was
+# deleted and is intentionally NOT rebuilt by the generic pattern rule below.
 $(OUT_DIR)/shaders/renderer/vegetation/ImpostorCapture.vert.spv: shaders/renderer/vegetation/VegetationRenderer.vert $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/vegetation/VegetationRenderer.vert,$@,-DVEG_CAPTURE=1,--D VEG_CAPTURE=1,)
 
