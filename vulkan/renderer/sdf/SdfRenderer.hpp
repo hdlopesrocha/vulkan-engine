@@ -438,6 +438,11 @@ private:
     TrackedHandle<VkPipeline> shadowImpostorPipeline;
     TrackedHandle<VkShaderModule> shadowImpostorFragModule;
     glm::vec3 shadowLightDir_ = glm::vec3(0.0f);
+    // M10 (perf report 27): cascade-invariant grass-shadow PC fields, built
+    // once per frame; drawShadowCascade fills only lightViewProj (+time) per
+    // cascade under the per-cascade lock. shadowBaseFrame_ keys the cache.
+    SdfGrassShadowPC shadowBasePC_{};
+    uint32_t shadowBaseFrame_ = 0xFFFFFFFFu;
 
     Buffer vertexBuffer;
     Buffer indexBuffer;

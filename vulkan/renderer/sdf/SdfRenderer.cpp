@@ -258,6 +258,13 @@ void SdfRenderer::createPipeline(VulkanApp* app) {
     cfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     cfg.colorFormats = {app->getSwapchainImageFormat()};
     cfg.depthFormat = VK_FORMAT_D32_SFLOAT;
+    // L14 (report 27): profiler-gate push constant (SdfRenderer.frag
+    // sdfProfiler, FRAGMENT only). Shared by the generic + surface pipelines
+    // through pipelineLayout (same source, same block).
+    VkPushConstantRange profRange{};
+    profRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    profRange.offset = 0;
+    profRange.size = sizeof(uint32_t);
     auto [pipelineHandle, layoutHandle] = app->createGraphicsPipeline(
         {vertStage.info, fragStage.info},
         std::vector<VkVertexInputBindingDescription>{
@@ -267,7 +274,7 @@ void SdfRenderer::createPipeline(VulkanApp* app) {
             VkVertexInputAttributeDescription{ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SdfProxyVertex, position)}
         },
         setLayouts,
-        nullptr,
+        &profRange,
         cfg);
 
     pipeline = pipelineHandle;
@@ -2781,6 +2788,18 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
         0, 2, descriptorSets, 0, nullptr);
 
+    // L14 (report 27): push the profiler gate (the same 0/1 written into the
+    // counters buffer above); the fragment reads it instead of loading
+    // sdfCounters[5] per invocation. Raw push: push constants are layout
+    // state, valid on any command buffer.
+    {
+        uint32_t profGate = 0u;
+        if (profileBuffers_[slot].mappedData != nullptr)
+            profGate = static_cast<const SdfProfileCounters*>(profileBuffers_[slot].mappedData)->enabled;
+        vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(uint32_t), &profGate);
+    }
+
     const VkBuffer vertexBuffers[] = {vertexBuffer.buffer};
     const VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
@@ -2825,19 +2844,29 @@ void SdfRenderer::drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
         grassBase = grassContainerBase_;
         grassCount = grassContainerCount_;
         if (grassCount == 0) return;
+        // M10 (report 27): cascade-invariant PC fields are built once per
+        // frame; each cascade fills only lightViewProj (+time) under the
+        // same per-cascade lock (kept for the slice). Values are identical:
+        // params_/config_ only change between frames in steady state, and
+        // the caller passes the same frame time to every cascade.
+        if (shadowBaseFrame_ != currentFrameIndex_) {
+            shadowBasePC_.params = glm::vec4(0.0f, params_.maxSteps, params_.epsilon, params_.safety);
+            // march.z = shadow LOD camera scale: the grass shadow march evaluates
+            // the reduced blade set (config_.grass.shadowLodScale) instead of the
+            // full clump, per the shadow LOD policy; >= 80 (SdfGrass.glsl
+            // GRASS_IMPOSTOR_FULL) it evaluates the impostor only (zero blades).
+            shadowBasePC_.march = glm::vec4(params_.maxStep, params_.minStep,
+                                            config_.grass.shadowLodScale, 0.0f);
+            // Same impostor band as the main pass so shadow LOD matches the
+            // rendered grass representation (streamed, no rebuild).
+            shadowBasePC_.impostor = glm::vec4(config_.grass.impostorStart,
+                                               config_.grass.impostorFull, 0.0f, 0.0f);
+            shadowBasePC_.lightDir = glm::vec4(shadowLightDir_, 0.0f);
+            shadowBaseFrame_ = currentFrameIndex_;
+        }
+        pc = shadowBasePC_;
         pc.lightViewProj = lightViewProj;
-        pc.params = glm::vec4(time, params_.maxSteps, params_.epsilon, params_.safety);
-        // march.z = shadow LOD camera scale: the grass shadow march evaluates
-        // the reduced blade set (config_.grass.shadowLodScale) instead of the
-        // full clump, per the shadow LOD policy; >= 80 (SdfGrass.glsl
-        // GRASS_IMPOSTOR_FULL) it evaluates the impostor only (zero blades).
-        pc.march = glm::vec4(params_.maxStep, params_.minStep,
-                             config_.grass.shadowLodScale, 0.0f);
-        // Same impostor band as the main pass so shadow LOD matches the
-        // rendered grass representation (streamed, no rebuild).
-        pc.impostor = glm::vec4(config_.grass.impostorStart,
-                                config_.grass.impostorFull, 0.0f, 0.0f);
-        pc.lightDir = glm::vec4(shadowLightDir_, 0.0f);
+        pc.params.x = time;
         // H8: outer cascades march impostors, not blades (coarse outer
         // cascades cannot resolve blade detail; report-22 C2 precedent). A
         // shadowLodScale at/above impostorFull already means impostor-only
