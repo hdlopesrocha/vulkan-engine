@@ -2257,31 +2257,39 @@ public:
         // at composite time (PostProcessRenderer.frag). Like the other async passes, it
         // uses a dedicated CommandBufferState and signals semVeg (registered so the
         // composite waits on it).
+        // H7 + M12 (perf report 27): single veg-pass decision owned by the
+        // renderer (VegetationRenderer::beginVegPass over wantDraw +
+        // hasDrawContent). hasDrawContent() is main-thread readable, so the
+        // outcome is known BEFORE either the veg or the water task is
+        // enqueued. Skipped frames enqueue no veg task at all (no CB, no
+        // tlVeg signal); both water submits wait tlCull@v instead of tlVeg@v
+        // (see the water blocks). tlCull is signaled unconditionally every
+        // frame, and skipped frames leave the veg targets stable
+        // SHADER_READ_ONLY with the cleared bytes the warmup frames left —
+        // exactly what water's reflection lookup expects from an empty
+        // meadow. Transitions/warmup always run full; the tlVeg wait is
+        // restored automatically on content transitions (vegRun true again).
+        // The old main-thread duplicate (vegPrevWantDraw/vegWarmupRuns) is
+        // removed; the renderer holds the only transition/warmup state.
+        bool vegWillSignal = true; // function scope: read by the water submits below
         {
             const glm::vec3 vegCamPos = camera.getPosition();
-            // H7 (report 26): main-thread veg-pass skip decision, mirroring
-            // the report-25 M11 SDF elision. vegWantDraw exactly matches the
-            // worker's (drawBillboards || drawImpostors): grassImpostorsEnabled
-            // already folds in impostorDistance > 0, and the worker below uses
-            // the captured vegImpostorDist snapshot instead of re-reading
-            // settings (same capture pattern as the other flags), so the skip
-            // condition and the worker's empty branch coincide provably. The
-            // submit is RETAINED on skipped frames (near-empty CB): the water
-            // pass waits tlVeg@v explicitly, so dropping the signal would hang
-            // it — full submit elision needs the water block's wait list,
-            // owned by another worker. Skipped frames record no transitions,
-            // no begins and no draws; layouts stay SHADER_READ_ONLY (as the
-            // warmup frames left them) and the targets keep their cleared
-            // bytes, which is exactly what the full clear-only path produces.
+            // vegWantDraw matches the worker's (drawBillboards ||
+            // drawImpostors): grassImpostorsEnabled already folds in
+            // impostorDistance > 0, and the worker below uses the captured
+            // vegImpostorDist snapshot instead of re-reading settings (same
+            // capture pattern as the other flags), so the skip condition and
+            // the worker's empty branch coincide provably.
             const bool vegWantDraw = vegetationEnabled || grassImpostorsEnabled;
             const float vegImpostorDist = settings.impostorDistance;
-            static bool vegPrevWantDraw = true; // first frame runs full (establishes layouts)
-            static uint32_t vegWarmupRuns = 0;
-            const bool vegTransition = (vegWantDraw != vegPrevWantDraw);
-            vegPrevWantDraw = vegWantDraw;
-            const bool vegSkipRender = !vegWantDraw && !vegTransition && vegWarmupRuns >= 3;
-            if (!vegSkipRender && vegWarmupRuns < 3) ++vegWarmupRuns;
-            asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, grassImpostorsEnabled, vegCamPos, vegImpostorDist, vegSkipRender, v]() {
+            const bool vegHasContent = sceneRenderer->vegetationRenderer
+                ? sceneRenderer->vegetationRenderer->hasDrawContent() : false;
+            const bool vegRun = sceneRenderer->vegetationRenderer
+                ? sceneRenderer->vegetationRenderer->beginVegPass(vegWantDraw, vegHasContent)
+                : vegWantDraw;
+            vegWillSignal = vegRun;
+            if (vegRun) {
+            asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, grassImpostorsEnabled, vegCamPos, vegImpostorDist, v]() {
                 MyApp* app = this;
                 VkCommandBuffer vegCmd = app->beginAsyncTask("vegetation");
                 if (vegCmd == VK_NULL_HANDLE) return;
@@ -2301,28 +2309,12 @@ public:
                     {settings.enableShadows ? tlShadow : tlCull}, true, {}, {v}, v, {}, true);
                     return;
                 }
-                // H7: steady-empty fast path (None mode past warmup, or the
-                // content gate below). Records nothing but still submits with
-                // the same waits/signal, so tlVeg@v keeps the water pass +
-                // composite DAG intact. Layouts stay SHADER_READ_ONLY and the
-                // targets keep the cleared bytes the warmup frames left —
-                // identical to the full clear-only path (zero draws either
-                // way). Full submit elision (no tlVeg signal) is dropped: it
-                // would require substituting the water block's explicit tlVeg
-                // wait, which lives outside this block.
-                const bool vegHasContent =
-                    sceneRenderer->vegetationRenderer->hasDrawContent();
-                const bool vegRecordInstances =
-                    sceneRenderer->vegetationRenderer->beginInstancePass(vegHasContent);
-                if (vegSkipRender || !vegRecordInstances) {
-                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE) {
-                        vkCmdWriteTimestamp(vegCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 12);
-                        vkCmdWriteTimestamp(vegCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 13);
-                    }
-                    app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg,
-                        {settings.enableShadows ? tlShadow : tlCull}, true, {}, {v}, v, {}, true);
-                    return;
-                }
+                // H7 + M12 (perf report 27): no worker-side skip here. The
+                // main thread already ran the unified arbiter (vegRun, see
+                // above); this task is only enqueued on run frames, so it
+                // always records + submits + signals tlVeg@v below. Skipped
+                // frames never reach this lambda, and water waits tlCull@v
+                // instead (vegWillSignal).
                 // Render area must match the vegetation offscreen targets' backing size
                 // (which are resized to the swapchain extent in SceneRenderer::onSwapchainResized).
                 // Using getWidth()/getHeight() here caused VUID-VkRenderingInfo-pNext-06079 when the
@@ -2474,6 +2466,7 @@ public:
                 app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg,
                     {settings.enableShadows ? tlShadow : tlCull}, true, {}, {v}, v, {}, true);
             });
+            } // if (vegRun): skipped frames enqueue nothing (H7, report 27)
         }
 
         // --- Mesh bounding boxes on its own command buffer (signals semBbox) ---
@@ -2513,7 +2506,7 @@ public:
         // Frames whose previous cull produced zero visible water chunks take a
         // clear-only fast path instead (M8).
         if (waterEnabled && sceneRenderer) {
-            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
+            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v, vegWillSignal]() {
                 MyApp* app = this;
                 VkCommandBuffer cmd = app->beginAsyncTask("backFace");
                 if (cmd == VK_NULL_HANDLE) return;
@@ -2550,9 +2543,14 @@ public:
                     // fast path produces the water targets the composite
                     // samples). Submit with the same waits/signal as the full
                     // path so the composite chain stays valid.
+                    // H7 (perf report 27): on veg-skipped frames the veg task
+                    // enqueued nothing and signaled no tlVeg@v, so wait tlCull@v
+                    // instead (signaled unconditionally every frame; the veg
+                    // targets sit stable SHADER_READ_ONLY with cleared bytes).
+                    // Same values, same DAG; one fewer submit on empty frames.
                     lastWaterSignal = v;
                     app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater,
-                        {tlSolid, tlSky, tlVeg}, true, {}, {v, v, v}, v, {}, true);
+                        {tlSolid, tlSky, vegWillSignal ? tlVeg : tlCull}, true, {}, {v, v, v}, v, {}, true);
                     return;
                 }
 
@@ -2903,7 +2901,9 @@ public:
                 // frame's water consumers before overwriting TLAS/metas.
                 lastWaterSignal = v;
                 const bool registerWaterForComposite = !settings.waterInMainPass;
-                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater, {tlSolid, tlSky, tlVeg},
+                // H7 (perf report 27): tlCull@v substitutes for tlVeg@v on
+                // veg-skipped frames (no veg submit/signal those frames).
+                app->submitCommandBufferAsyncToQueue(cmd, app->getWaterQueue(), &tlWater, {tlSolid, tlSky, vegWillSignal ? tlVeg : tlCull},
                     registerWaterForComposite, {}, {v, v, v}, v, {}, registerWaterForComposite);
 
             });
