@@ -89,3 +89,7 @@ Thumbs.db
 *.dwo
 .deepcode/
 imgui.ini
+
+# Web viewer build inputs/outputs
+node_modules/
+server/web/dist/

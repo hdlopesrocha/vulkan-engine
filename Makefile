@@ -272,11 +272,18 @@ _all: imgui shaders $(OUT) server
 imgui: $(IMGUI_OBJS)
 	@echo "ImGui compilation complete"
 
+.PHONY: web
+web:
+	@if [ -f server/web/package.json ]; then \
+		echo "Building web viewer (vite)"; \
+		cd server/web && (test -d node_modules || npm ci) && npm run build; \
+	fi
+
 .PHONY: server
-server: $(SERVER_OBJS)
+server: $(SERVER_OBJS) web
 	@mkdir -p $(OUT_DIR)
 	@$(CC) $(CFLAGS) $(SERVER_INCLUDES) server.cpp $(SERVER_OBJS) -o $(OUT_DIR)/server $(SERVER_LIBS) $(LDFLAGS)
-	@if [ -d server/web ]; then mkdir -p $(OUT_DIR)/web && cp -a server/web/. $(OUT_DIR)/web/ || true; fi
+	@if [ -d server/web/dist ]; then mkdir -p $(OUT_DIR)/web && cp -a server/web/dist/. $(OUT_DIR)/web/ || true; fi
 
 $(OUT): $(OBJS)
 	@echo "Linking: $(OUT)"
@@ -453,7 +460,7 @@ cloc:
 	@echo "Running cloc to count lines of code..."
 	@# Exclude runtime bins and third_party from the count; print to terminal (no file)
 	@if command -v cloc >/dev/null 2>&1; then \
-		cloc --exclude-dir=$(OUT_DIR),third_party,docs --exclude-ext=tex .; \
+		cloc --exclude-dir=$(OUT_DIR),third_party,docs,node_modules,dist --exclude-ext=tex .; \
 	else \
 		echo "cloc not found on PATH. Install it (e.g. sudo apt install cloc) to get a detailed LOC report."; \
 	fi
