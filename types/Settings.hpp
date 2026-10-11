@@ -15,8 +15,9 @@ public:
     // Global toggles
     bool enableShadows = true;
     // Volumetric clouds (sky raymarch + ground shadows + reflections).
-    // Minimal preset disables; Maximum enables.
-    bool cloudsEnabled = true;
+    // Minimal preset disables; Maximum enables. Default off: the sky
+    // gradient renders without the volumetric march.
+    bool cloudsEnabled = false;
     // Toggle rendering of the main solid scene (terrain/meshes)
     bool renderSolid = true;
     bool waterEnabled = true;
@@ -29,8 +30,10 @@ public:
     // frame (MyApp): true only in GrassMode::Vegetation. Grass clumps for the
     // SDF renderer stream from the same vegetation generation regardless.
     bool vegetationEnabled = false;
-    // Active grass representation (see GrassMode). Default: SDF raycast.
-    GrassMode grassMode = GrassMode::GrassRaycast;
+    // Active grass representation (see GrassMode). Default: legacy
+    // billboard/impostor vegetation (vegetationEnabled derives from this
+    // every frame in MyApp).
+    GrassMode grassMode = GrassMode::Vegetation;
     // Ray-cast quality: the SDF raymarcher AND the sky cloud raymarcher cast
     // one ray per NxN screen-pixel block (1 = one ray per pixel).
     // 2 = the default 2x2 pixelation.
@@ -56,8 +59,10 @@ public:
     int sdfSmokeSamples = 12;
     // Ray marching master gate: the generic SDF raymarcher (fire, smoke,
     // rocks, grass) and its grass shadow caster. The sky cloud raymarch has
-    // its own Volumetric Clouds toggle. Minimal preset turns this off.
-    bool rayMarchingEnabled = true;
+    // its own Volumetric Clouds toggle. Default off with vegetation grass
+    // (SDF grass needs the marcher; re-enable with GrassRaycast mode).
+    // Minimal preset turns this off.
+    bool rayMarchingEnabled = false;
     bool wireframeMode = false;
     bool waterWireframeMode = false;
     bool normalMappingEnabled = true;
