@@ -86,13 +86,21 @@ layout(std140, set = 1, binding = 6) uniform SdfParamsBlock {
 layout(set = 1, binding = 7) uniform sampler2D sdfSceneDepth;
 layout(set = 1, binding = 9) uniform sampler2D sdfWaterDepth;
 // SDF march counters (SdfProfileCounters, set=1 binding 10): fragment-atomic
-// target written ONLY while sdfCounters[5] (CPU-written gate) is non-zero, so
-// the default path pays one cached load plus a uniform branch. Layout shared
-// with sdf/types/SdfProfileCounters.hpp:
+// target written ONLY while the profiler gate is non-zero, so the default
+// path pays a uniform branch and no atomics. Layout shared with
+// sdf/types/SdfProfileCounters.hpp:
 //   0 rays, 1 steps, 2 cellVisits, 3 candidates, 4 hits, 5 enabled.
 layout(std430, set = 1, binding = 10) buffer SdfProfileBuffer {
     uint sdfCounters[];
 };
+// L14 (report 27): the profiler gate word (sdfCounters[5] above) is uniform
+// per draw, so it arrives as a push constant instead of an indexed SSBO load
+// per invocation: identical branch behavior, one less SSBO load per covered
+// pixel. render() pushes the same 0/1 it writes into sdfCounters[5]; the
+// counters buffer stays bound (atomics still target it while enabled).
+layout(push_constant) uniform SdfProfilerPC {
+    uint profilerEnabled;
+} sdfProfiler;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -135,6 +143,8 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 //     block, smoke samples) so the product falls faster than any lever
 //     alone. Step-budget proof: max overstep = maxStep * safety < min
 //     feature size at each LOD tier; keep it so when retuning.
+//     Report 27 L15: the grass-shadow twins (SdfGrassShadow.frag:67-68)
+//     carry the same proof for the shadow step law.
 const int SDF_MAX_STEPS_HARD = 256;
 const uint SDF_MAX_CANDIDATES = 8u;
 
@@ -505,8 +515,9 @@ void main() {
     if (tEnter >= tExit) discard;
 
     // March counters (profiling): this invocation will march, so it counts as
-    // one ray. The gate is uniform across the draw; disabled => no atomics.
-    bool sdfProf = (sdfCounters[5] != 0u);
+    // one ray. The gate is uniform across the draw (L14 push constant);
+    // disabled => no atomics.
+    bool sdfProf = (sdfProfiler.profilerEnabled != 0u);
     if (sdfProf) atomicAdd(sdfCounters[0], 1u);
 
     // Dithered march start (up to an eighth of a noise wavelength): breaks
@@ -816,6 +827,13 @@ void main() {
             float d = sdfEvalInstance(p, inst, dd, m0, time, t, wl, wa);
             float kk = clamp(sdfUnpackSmoothK(dd), 0.0, 2.0);
             if (!haveBest) { dBest = d; haveBest = true; }
+            // C2 (report 27): plain-union fast path — every grass definition
+            // uses op=Union (SdfScene::createGrassFromAnchors) and plain
+            // union provably reduces to min() (sdfCombine falls through to
+            // opUnion; smoothK is only read by the SMOOTH_* arms), so union
+            // combines cost one min. Other ops keep the 6-way dispatch.
+            // skipR/nearestBox/haveBest ordering untouched.
+            else if (dd.op == SDF_OP_UNION) { dBest = min(dBest, d); }
             else { dBest = sdfCombine(dBest, d, dd.op, kk); }
             if (d < dMin) { dMin = d; bestInst = inst; bestDef = dd; bestMat = m0; }
         }

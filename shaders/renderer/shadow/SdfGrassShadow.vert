@@ -18,6 +18,13 @@ layout(location = ATTR_POS) in vec3 inPosition;
 
 layout(location = VARY_POSWORLD) out vec3 fragWorldPos;
 layout(location = VARY_BRUSHPATCH) flat out int fragContainerIndex;
+// M10 (report 27): march scalars derived once per vertex (identical ops to
+// the old per-fragment derivation in SdfGrassShadow.frag, deleted there);
+// flat varyings carry them unchanged to every fragment of the proxy.
+// Locations 16/17 are pipeline-local (no geometry stage here); Locations.glsl
+// is untouched.
+layout(location = 16) flat out vec4 vShadowMarch; // x=eps, y=safety, z=minStep, w=maxStep
+layout(location = 17) flat out int vShadowMaxSteps;
 
 #include "../../includes/SceneBindings.glsl"
 #include "../../includes/sdf/SdfMaterial.glsl"
@@ -51,4 +58,17 @@ void main() {
     fragWorldPos = worldPos;
     fragContainerIndex = int(idx);
     gl_Position = pc.lightViewProj * vec4(worldPos, 1.0);
+    // M10 (report 27): cascade march constants, verbatim from the deleted
+    // per-fragment derivation (same operations in the same order, evaluated
+    // once per vertex instead of once per fragment). The 256 clamp mirrors
+    // SDF_GRASS_SHADOW_MAX_STEPS_HARD (proof at SdfGrassShadow.frag:67-68).
+    int vSteps = int(pc.params.y + 0.5);
+    if (vSteps <= 0) vSteps = 64;
+    vSteps = min(vSteps, 256);
+    vShadowMaxSteps = vSteps;
+    float vEps = (pc.params.z > 0.0) ? pc.params.z : 0.01;
+    float vSafety = clamp((pc.params.w > 0.0) ? pc.params.w : 0.7, 0.1, 1.0);
+    float vMinStep = max(pc.march.y, 1e-4);
+    float vMaxStep = max((pc.march.x > 0.0) ? pc.march.x : 1.0, vMinStep);
+    vShadowMarch = vec4(vEps, vSafety, vMinStep, vMaxStep);
 }

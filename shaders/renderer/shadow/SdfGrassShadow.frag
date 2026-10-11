@@ -31,6 +31,11 @@
 
 layout(location = VARY_POSWORLD) in vec3 fragWorldPos;
 layout(location = VARY_BRUSHPATCH) flat in int fragContainerIndex;
+// M10 (report 27): march scalars derived once per vertex into flat varyings
+// (identical ops to the old per-fragment derivation, which is deleted
+// below); flat interpolation carries them unchanged to every fragment.
+layout(location = 16) flat in vec4 vShadowMarch; // x=eps, y=safety, z=minStep, w=maxStep
+layout(location = 17) flat in int vShadowMaxSteps;
 
 layout(location = FRAG_OUT_COLOR) out vec2 outEVSM;
 
@@ -64,6 +69,24 @@ layout(push_constant) uniform SdfGrassShadowPC {
     vec4 lightDir;      // xyz = light-to-scene direction (world), w unused
 } pc;
 
+// ── Step-budget proof (report 27 L15; main-march twins at SdfRenderer.frag:138-139) ──
+// SDF_GRASS_SHADOW_MAX_STEPS_HARD = 256 is the compiler-visible loop bound
+// only; the EFFECTIVE budget is pc.params.y (from SdfParamsUBO::maxSteps,
+// default 64), clamped in the vertex stage. SDF_GRASS_MAX_CANDIDATES = 8
+// matches the grid cell storage cap, mirroring the main march's first-8 rule.
+// The grass step law below (:244-247) is pure sphere tracing on EXACT
+// distances: the clump lean is rigid (rotations preserve distances; this
+// pass marches the rest pose, see the wind note above) and grass carries no
+// noise/spike deformation, so no Lipschitz halving applies and a step of
+// dBest * safety (safety < 1) can never overstep the field. The maxStep
+// clamp only shortens longer jumps; the min advance (1e-5) plus the
+// rejected-AABB advance (nearestBox, same rule as SdfRenderer.frag) guarantee
+// progress every iteration. Budget rule: max overstep per step =
+// maxStep * safety must stay below the min blade width at the shadow LOD
+// (pc.march.z; the SHADOW_IMPOSTOR_ONLY variant marches zero blades, so its
+// bound is the impostor cone, looser still). Keep this proof when retuning:
+// raising maxStep past the blade width breaks sphere-tracing conservatism and
+// tunnels thin blades. Comment only; zero code change.
 const int SDF_GRASS_SHADOW_MAX_STEPS_HARD = 256;
 const uint SDF_GRASS_MAX_CANDIDATES = 8u;
 
@@ -149,13 +172,14 @@ void main() {
     vec3 t1 = (bMax - fragWorldPos) * invDir;
     float tExit = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
 
-    int maxSteps = int(pc.params.y + 0.5);
-    if (maxSteps <= 0) maxSteps = 64;
-    maxSteps = min(maxSteps, SDF_GRASS_SHADOW_MAX_STEPS_HARD);
-    float eps = (pc.params.z > 0.0) ? pc.params.z : 0.01;
-    float safety = clamp((pc.params.w > 0.0) ? pc.params.w : 0.7, 0.1, 1.0);
-    float minStep = max(pc.march.y, 1e-4);
-    float maxStep = max((pc.march.x > 0.0) ? pc.march.x : 1.0, minStep);
+    // M10 (report 27): march scalars arrive from the vertex stage (flat, so
+    // every fragment sees the identical value the old per-fragment
+    // derivation produced there).
+    int maxSteps = vShadowMaxSteps;
+    float eps = vShadowMarch.x;
+    float safety = vShadowMarch.y;
+    float minStep = vShadowMarch.z;
+    float maxStep = vShadowMarch.w;
 
     vec3 cellSize = max((bMax - bMin) / vec3(dim), vec3(1e-6));
     int nInstances = int(sdfInstances.length());
@@ -207,13 +231,11 @@ void main() {
             uint ii = sdfGridIndices[gAddr];
             if (ii >= uint(nInstances)) continue;
             SdfInstance inst = sdfInstances[ii];
-            uint di = inst.defIdx;
-            if (di >= uint(nDefs)) continue;
-            SdfDefinition dd = sdfDefinitions[di];
-            // Grass-only guarantee: every non-grass primitive is skipped
-            // before evaluation and can never contribute a distance, a hit
-            // or a march step.
-            if (dd.prim != SDF_PRIM_GRASS) continue;
+            // C2 (report 27): AABB test ABOVE the definition fetch — it needs
+            // only the instance bounds, so AABB-rejected candidates (the
+            // common case, the reason skipR exists) skip the SdfDefinition
+            // SSBO load entirely. The prim test stays after the fetch (prim
+            // lives in the definition).
             vec3 oq = max(max(inst.boundsMin - p, p - inst.boundsMax), vec3(0.0));
             float ob = length(oq);
             float skipR = maxStep + 0.1;
@@ -221,12 +243,23 @@ void main() {
                 nearestBox = min(nearestBox, ob);
                 continue;
             }
+            uint di = inst.defIdx;
+            if (di >= uint(nDefs)) continue;
+            SdfDefinition dd = sdfDefinitions[di];
+            // Grass-only guarantee: every non-grass primitive is skipped
+            // before evaluation and can never contribute a distance, a hit
+            // or a march step.
+            if (dd.prim != SDF_PRIM_GRASS) continue;
             float d = sdfGrassShadowEval(p, inst, dd, pc.march.z);
-            // Same combination rule as sdfEvalInstance/SdfRenderer.frag, so
-            // the marched field matches the rendered clump union exactly
-            // (smooth-union creases included; never larger than the union).
+            // C2 (report 27): plain-union fast path — every grass definition
+            // uses op=Union (SdfScene::createGrassFromAnchors) and plain
+            // union provably reduces to min() (sdfCombine falls through to
+            // opUnion; smoothK is only read by the SMOOTH_* arms), so union
+            // combines cost one min. Other ops keep the sdfCombine dispatch.
+            // skipR/nearestBox/haveBest ordering untouched.
             float kk = clamp(dd.smoothK, 0.0, 2.0);
             if (!haveBest) { dBest = d; haveBest = true; }
+            else if (dd.op == SDF_OP_UNION) { dBest = min(dBest, d); }
             else { dBest = sdfCombine(dBest, d, dd.op, kk); }
         }
         if (!haveBest) {
