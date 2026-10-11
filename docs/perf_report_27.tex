@@ -1,0 +1,786 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+% Long unbreakable \texttt{} paths are the main source of overfull boxes in
+% this report; a generous emergencystretch plus sloppy paragraph breaking lets
+% TeX loosen those lines instead of running into the margin.
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\title{Performance Report 27: Vulkan Engine \\
+\large Same Pixels, Less Work --- the Pixel-Identical Slice of Ray Marching and Grass}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Report~26 audited the grass seam and mixed two kinds of wins: quality knobs
+(blade tiers, density thinning, shadow LOD, unified ladders) and exact wins.
+This report re-iterates the same scope --- the billboard/impostor vegetation
+renderer, the SDF grass march, and their shadows --- admitting \emph{only}
+changes that do not change rendered quality: same operations in the same
+order executed fewer times, provably dead work removed, and identical bytes
+through a cheaper path, each gated on a pixel-identical A/B. Anything that
+re-rounds, re-clocks, re-tiers, or re-orders blending is excluded by name in
+\S\ref{sec:unchanged}.
+
+Since report~26, eleven of its preserving items landed (working tree,
+partly uncommitted): cheap-first discard, the shared best-view helper,
+veg empty-gates, async capture, barrier versioning, shared staging, the
+EVSM writer dedupe, device-local SDF twins, and the surface-variant select.
+What remains exact is still large: every SDF eval rebuilds the euler matrix
+twice (6 trig + 2 matmuls, \texttt{SdfOps.glsl:101--118}) plus a wind-lean
+field sample on cache miss; the shadow march fetches the definition SSBO
+\emph{before} the AABB test that would reject it; the vertex stages redo
+per-instance trig, tilt frames, and the 20-view select per corner per pass;
+the veg color pipeline blends with alpha identically 1.0; and the capture
+pays 7 transitions per view $\times$ 60 views.
+
+It finds \textbf{15 issues} (3 critical, 5 high, 4 medium, 3 low), all
+pixel-identical by construction with an A/B gate each. Scope score
+\textbf{5.8/10}; folding into the combined estimate at 10\% weight gives
+\textbf{5.9/10}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+\subsection{Scope and Method}
+
+Same seam as report~26: vegetation billboards/impostors
+(\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp},
+\texttt{ImpostorCapture.*}, 13 shaders), the SDF grass path
+(\texttt{SdfRenderer.cpp}, \texttt{SdfScene.cpp:625--746},
+\texttt{SdfGrass.glsl}, grass regions of \texttt{SdfRenderer.frag}), and
+the double shadow (\texttt{SdfGrassShadow.*}, veg shadow draws). Audited at
+the working tree \emph{including} the uncommitted report-26
+implementations, so no issue below duplicates landed work
+(\S\ref{sec:banked}). Method matches reports~22--26: full reads with
+file:line evidence; SPIR-V word/instruction tallies re-synthesized with the
+\texttt{Makefile} \texttt{glslc} flags for every module this report's
+deltas touch (\texttt{bin/shaders/} still ships no veg/sdf/shadow modules).
+The application was not executed; magnitudes are analytic estimates at
+$1920\times1080$, 3 frames in flight.
+
+\subsection{The Pixel-Identical Gate}
+\label{sec:gate}
+
+An issue qualifies for this report iff its mechanism belongs to one of
+three classes: (1) the \emph{same floating-point operations in the same
+order}, executed fewer times (hoisting loop-invariant or
+frame-invariant work); (2) \emph{provably dead} work removed (discarded
+pixels' fetches, barriers for bytes never written, binds nothing reads);
+(3) \emph{identical bytes through a cheaper path} (batched barriers,
+targeted uploads, deduplicated spells). Every prompt ends in a
+pixel-identical A/B: any mismatch fails the item, no tolerance bands.
+Excluded on sight: different rounding (CPU precompute, analytic re-derives),
+different clocks (baking time-varying fields early), different tiers or
+thresholds, and order-dependent blending. \S\ref{sec:unchanged} records each
+exclusion with its rationale so report~26's knobs are not re-litigated.
+
+\subsection{Measured Budgets}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Module} & \textbf{Words} & \textbf{Instrs} & \textbf{Role} \\
+\midrule
+\texttt{SdfRenderer.frag} & 69\,698 & 5\,332 & generic march incl.\ grass branch \\
+\texttt{SdfRendererSurface.frag}$^*$ & 48\,432 & 3\,902 & \texttt{-DSDF\_VARIANT=1} \\
+\texttt{VegetationRenderer.frag} & 14\,391 & 1\,286 & billboard color (H6 landed) \\
+\texttt{VegetationRendererImpostor.frag} & 14\,144 & 1\,271 & impostor color \\
+\texttt{VegetationRenderer.vert} & 9\,986 & 738 & billboard expander \\
+\texttt{VegetationRendererShadow.vert} & 9\,260 & 667 & billboard shadow expander \\
+\texttt{SdfGrassShadow.frag} & 13\,859 & 1\,070 & grass-only EVSM march \\
+\texttt{SdfGrassShadowImpostor.frag}$^*$ & 10\,086 & 792 & \texttt{-DSHADOW\_IMPOSTOR\_ONLY=1} \\
+\texttt{VegetationRendererImpostor.vert} & 3\,785 & 341 & best-view via shared helper \\
+\texttt{VegetationRendererImpostorDepth.vert} & 3\,761 & 336 & depth twin, same helper \\
+\texttt{VegetationRendererDepth.frag} & 2\,570 & 403 & billboard depth prepass (H6 landed) \\
+\texttt{SdfRenderer.vert} & 2\,291 & 384 & shared SDF proxy-cube VS \\
+\texttt{SdfGrassShadow.vert} & 2\,372 & 399 & grass proxy-cube VS (light VP) \\
+\texttt{VegetationRendererShadow.frag} & 2\,016 & 343 & billboard EVSM writer \\
+\texttt{VegetationRendererImpostorDepth.frag} & 1\,257 & 155 & impostor depth prepass \\
+\texttt{VegetationRendererBake.comp}$^*$ & 1\,560 & 108 & height-scale bake \\
+\texttt{ImpostorCapture.frag}$^*$ & 1\,525 & 124 & 60-view capture FS \\
+\texttt{VegetationRendererImpostorShadow.frag}$^*$ & 987 & 138 & impostor EVSM writer \\
+\bottomrule
+\end{tabular}
+\caption{Disassembly word/instruction counts, re-synthesized for every
+module this report's deltas touch (changed rows vs report~26: billboard
+frag +84 words from the H6 reorder, impostor verts +$\sim$100 words from
+the shared-helper extract, depth frag +101 words). Rows marked $^*$ are
+carried from report~26's synthesis (sources unchanged). \texttt{bin/shaders/}
+still ships none of these modules, so synthesis stands.}
+\end{table}
+
+\subsection{Banked Since Report 26}
+\label{sec:banked}
+
+The following preserving items from reports~25--26 are implemented in the
+audited tree and are \emph{not} re-reported; \S\S4--7 cover only the
+remainder. Veg side: cheap-first discard in both billboard fragments
+(26~H6), the bit-identical best-view helper (26~H4, still per-vertex),
+main-view and shadow empty-gates (26~H7:
+\texttt{hasDrawContent/beginInstancePass},
+\texttt{VegetationRenderer.cpp:1268--1300}, plus the shadow-cascade gate at
+\texttt{:719--726}), async capture with the orphan deleted (26~H8),
+barrier versioning plus the wind-UBO snapshot (26~M9), shared staging
+(26~M12), the EVSM writer dedupe (26~L13), the stride invariant note
+(26~L14), the blade-budget proof (26~L15). SDF side: device-local scene
+twins (25~M9), the surface-variant select (25~C1,
+\texttt{SdfRenderer.cpp:2671--2683}), the overlap-gated depth copy (25~M10,
+\texttt{:2604--2606}), the clear-only path (25~M11, \texttt{:2646--2654}),
+the fresh-frame barrier gate (25~M9 residual, \texttt{:2390--2405}), the
+bounded candidate selection plus per-ray wind cache (25~C3 slices,
+\texttt{SdfRenderer.frag:703--709,788--814}), the SDF shadow gates plus
+outer-cascade impostor-only march (\texttt{:2715--2758}), and the veg-gated
+shadow dispatch (\texttt{ShadowRenderer.cpp:921,1000--1003}).
+
+\subsection{Recommended Order}
+
+Table the per-instance frames (C1, C2) $\rightarrow$ fix the fetch order
+and the combine dispatch in both marches (C3) $\rightarrow$ unblend,
+debloat capture recording, de-spike tint drags, elide the retained submit,
+hoist impostor-fragment trig (H4--H8) $\rightarrow$ tap order, flat
+constants, fence scope, one arbiter (M9--M12) $\rightarrow$ hygiene
+(L13--L15).
+
+% =====================================================================
+\section{Cost Model}
+% =====================================================================
+
+\begin{equation}
+\begin{aligned}
+C = &\underbrace{\sum_{\mathrm{passes}} G_{\mathrm{pass}} V C_{\mathrm{vert}} + S C_{\mathrm{submit}} + L C_{\mathrm{bringup}} + G C_{\mathrm{sweep}}}_{\text{reports 20--23}} + \underbrace{P\,C_{\mathrm{tail}} + B\,C_{\mathrm{brush}} + K\,C_{\mathrm{equirect}}}_{\text{report 24}} \\
+&+ \underbrace{F_{\mathrm{sdf}}\,N_{\mathrm{steps}}\,N_{\mathrm{cand}}\,C_{\mathrm{eval}} + F_{\mathrm{smoke}}\,C_{\mathrm{resolve}} + F_{\mathrm{proxy}}\,C_{\mathrm{cover}}}_{\text{report 25}} \\
+&+ \underbrace{G_{\mathrm{veg}}\,V_{24}\,C_{\mathrm{wind}} + I\,C_{\mathrm{bestview}} + F_{\mathrm{imp}}\,C_{\mathrm{reproj}} + S_{\mathrm{cas}}\,(C_{\mathrm{vegshadow}} + C_{\mathrm{grassmarch}})}_{\text{report 26, quality knobs removed}}
+\end{aligned}
+\end{equation}
+
+Report~26's equation stands; this report shrinks its terms without moving
+their meaning: $C_{\mathrm{eval}}$ loses the euler rebuilds (C1) and the
+combine dispatch (C2); $C_{\mathrm{grassmarch}}$ additionally loses the
+pre-accept definition fetches (C2); $V_{24}$ loses the invariant trig/tilt
+(C3); $C_{\mathrm{bestview}}$ collapses to a table read (C3); the capture
+and submit terms lose barrier/record overhead (H5, H7). No term changes
+value for any pixel --- that is the gate (\S\ref{sec:gate}).
+
+% =====================================================================
+\section{Grass Residency}
+% =====================================================================
+
+Unchanged from report~26 (\S3 there): $\sim$385\,MiB worst-case
+vegetation reservation (256\,MiB concatenation + 32\,MiB baked heights +
+$\sim$50\,MiB targets + $\sim$47\,MiB impostor arrays at 1080p) plus the
+SDF target/slot slice. This report adds no buffers except two narrow
+per-instance tables (C1, C3), each sized by live instance count, not
+capacity: $\sim$64\,B $\times$ merged instances device-local for the SDF
+frame table, $\sim$48\,B $\times$ veg instances for the vertex-invariant
+table. Both are rounding error next to the reservation they make cheaper
+to feed.
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: Every SDF Eval Rebuilds the Euler Matrix Twice and Samples Wind on Cache Miss}
+\label{sec:c1}
+
+\textbf{Severity: Critical.}
+
+\texttt{sdfEulerMat} is 6 trig calls plus 2 mat3 multiplies
+(\texttt{SdfOps.glsl:101--118}). Each grass-candidate evaluation builds it
+\emph{twice}: once inside \texttt{sdfModelToLocal}
+(\texttt{SdfModel.glsl:37--41}: transpose + scale divide + min-axis) and
+again inside the wind lean (\texttt{SdfRenderer.frag:183--202}:
+\texttt{windSVF(inst.position, time)} at \texttt{:190} plus a second
+\texttt{transpose(sdfEulerMat(inst.rotation))} at \texttt{:198}), on top of
+a third construction in \texttt{sdfModelDirToLocal} where used
+(\texttt{SdfModel.glsl:46--49}). That is $\sim$150 flops of transform
+setup per candidate per step, before the first blade is evaluated --- and
+grass rotations are genuinely nontrivial
+(\texttt{eulerAlignYToNormal}, \texttt{SdfScene.cpp:722}), so no axis
+degeneracy saves it. The 4-entry per-ray wind cache
+(\texttt{SdfRenderer.frag:788--814}) only softens the lean half, and only
+until the 5th live candidate evicts; the matrix half has no cache at all.
+The shadow march pays the same setup inside
+\texttt{sdfGrassShadowEval} once per candidate per step
+(\texttt{SdfGrassShadow.frag:224}).
+
+\textit{Technique: a per-frame per-instance frame table, same GLSL.}
+Evaluate once per merged instance per frame, in a tiny compute dispatch
+using the identical expressions: euler matrix (9 floats), translation,
+per-axis scale, min-axis scale, lean direction + amplitude at the frame's
+$params$ time through the identical \texttt{windSVF} call. The march, the
+normals (\texttt{:324,348}), and the shadow evaluator read the row instead
+of rebuilding it; the 4-entry ray cache is deleted (fewer live registers,
+same values). Inputs are per-instance-per-frame constants, so the table is
+bit-identical by construction; the A/B still gates.
+
+\begin{tcolorbox}[promptbox={Prompt --- C1: per-instance SDF frame table}]
+Goal: transform setup once per instance per frame, not twice per eval per
+step. Steps: (1) add a device-local frame table (mat3 + translation +
+scale + min-scale + lean vec2 + amp) sized by merged instance count,
+filled by a per-frame compute using the verbatim \texttt{sdfEulerMat} /
+\texttt{windSVF} / clamp expressions at frame time; (2) rewrite
+\texttt{sdfModelToLocal}, \texttt{sdfModelDirToLocal}, and
+\texttt{sdfGrassWindLean} call sites to read the row (keep signatures, drop
+the recompute); (3) delete the per-ray wind cache arrays. Files:
+\texttt{shaders/includes/sdf/SdfModel.glsl},
+\texttt{shaders/renderer/sdf/SdfRenderer.frag},
+\texttt{shaders/renderer/shadow/SdfGrassShadow.frag},
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp} (dispatch + binding).
+Validation: pixel-identical A/B on march-heavy views, eval ALU counters
+down, validation-clean.
+\end{tcolorbox}
+
+\subsection{C2: The Shadow March Fetches Definitions Before the AABB Test; Both Marches Dispatch a 6-Way Combine for a min()}
+\label{sec:c2}
+
+\textbf{Severity: Critical.}
+
+In \texttt{SdfGrassShadow.frag:203--231} the candidate loop fetches the
+instance (\texttt{:209}) \emph{and} the definition (\texttt{:210--212})
+before testing the primitive (\texttt{:216}) and the AABB
+(\texttt{:217--223}). The AABB needs only the instance bounds, so every
+AABB-rejected candidate --- the common case, the reason \texttt{skipR}
+exists --- pays a full \texttt{SdfDefinition} SSBO load for nothing. The
+main march already orders this correctly (AABB at
+\texttt{SdfRenderer.frag:724--730} precedes the definition fetch at
+\texttt{:731}); the shadow march never got the same reorder. Second, both
+marches combine through the 6-way \texttt{sdfCombine} dispatch
+(\texttt{SdfOps.glsl:54--71}; shadow \texttt{:228--230}, main
+\texttt{:816--819}) even though every grass definition uses plain union
+(\texttt{SdfScene.cpp:658}, \texttt{op = Union}) --- and for plain union
+the dispatch provably reduces to \texttt{min}: none of the smooth branches
+can trigger, and \texttt{smoothK} (0.5, \texttt{SdfScene.cpp:665}) is only
+read by the \texttt{SMOOTH\_*} arms. A single \texttt{op == UNION} compare
+plus \texttt{min} returns exactly what the dispatch returns, per candidate
+per step, in both marches.
+
+\begin{tcolorbox}[promptbox={Prompt --- C2: AABB-first shadow fetch, union fast path}]
+Goal: rejected shadow candidates cost an AABB test, union combines cost a
+min. Steps: (1) in the shadow loop, move the AABB test above the definition
+fetch (prim test stays after the fetch --- \texttt{prim} lives in the
+definition); (2) in both marches, branch \texttt{op == SDF\_OP\_UNION}
+(\texttt{SdfOpType.glsl:6}) to plain \texttt{min}, keeping
+\texttt{sdfCombine} for every other op; (3) keep \texttt{skipR},
+\texttt{nearestBox}, and the \texttt{haveBest} sequencing untouched. Files:
+\texttt{shaders/renderer/shadow/SdfGrassShadow.frag},
+\texttt{shaders/renderer/sdf/SdfRenderer.frag}. Validation: pixel-identical
+A/B (including subtraction folds in mixed cells), SSBO-load counters down,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{C3: Vertex Stages Redo Per-Instance Trig, Tilt Frames, and the Best-View Select per Corner per Pass}
+\label{sec:c3}
+
+\textbf{Severity: Critical (with a documented boundary).}
+
+Three vertex computations are constant across all corners of an instance
+within a frame, yet run per corner per pass (depth + color + 3 shadow
+cascades on billboards; color + depth + cascades on impostors):
+\texttt{theta/cosT/sinT} from \texttt{rotFrac}
+(\texttt{VegetationRenderer.vert:194--196}, 24$\times$ redundant trig per
+instance per pass); the tilt frame from the per-instance surface normal
+(\texttt{:228--232}: renormalize + two Rodrigues applications per corner);
+and the 20-iteration best-view select, now shared via
+\texttt{ImpostorViews.glsl} but still executed per vertex (4$\times$ per
+quad per pass by the helper's own documented contract). The merged cull
+cannot host the hoist --- it emits one command per \emph{chunk}
+(\texttt{IndirectRenderer.comp:282--303}, \texttt{processVegetation}) ---
+so the vehicle is a dedicated per-instance compute per frame (the bake
+precedent, report~22 C2): cosT/sinT, normalized surfN, best layer, and the
+impostor \texttt{toCamera} vector become instance attributes consumed by
+all five passes. Boundary, stated plainly: the \emph{wind} half
+(\texttt{:221} + \texttt{WindField.glsl:100--108}) is sampled at
+per-\emph{corner} positions (\texttt{worldPos + localPos}) through
+position-dependent Perlin and tornado cores, so center-sampling it would
+change values --- wind stays per-vertex. This item kills the invariant
+$\sim$15\% around it, not the wind.
+
+\begin{tcolorbox}[promptbox={Prompt --- C3: per-instance vertex-invariant table}]
+Goal: invariant trig/frames/select once per instance per frame. Steps:
+(1) add a per-frame compute over live veg instances writing cosT/sinT,
+normalized surfN, best layer, and toCamera with the verbatim shader
+expressions at the frame's \texttt{windTimeSeconds} and wind-UBO revision;
+(2) consume them as instance-rate attributes in billboard, shadow, and both
+impostor vertex stages (keep corner math, wind, placement untouched);
+(3) leave the merged cull and the bake alone. Files:
+\texttt{shaders/renderer/vegetation/} (all four vertex stages),
+\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp}. Validation:
+pixel-identical A/B, vertex-invocation ALU down with wind held constant,
+validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{High-Severity Issues}
+% =====================================================================
+
+\subsection{H4: The Veg Color Pipeline Blends With Alpha Identically 1.0}
+
+\textbf{Severity: High.}
+
+\texttt{VegetationRenderer.frag} ends every path with
+\texttt{outColor.a = 1.0} (\texttt{:157}; debug early-out included,
+\texttt{:51}), and the impostor twin does the same (\texttt{:134}). With
+\texttt{SRC\_ALPHA / ONE\_MINUS\_SRC\_ALPHA} blend factors
+(\texttt{VegetationRenderer.cpp:1061--1065}) the blend unit computes
+\texttt{src * 1 + dst * 0 = src} on every veg pixel: full-rate blending
+hardware engaged for an identity function over the whole vegetation target,
+every frame, both modes. (The impostor color pipeline needs no change:
+\texttt{RendererUtils.hpp:96} defaults \texttt{blendEnable} to false and
+its config never enables it.) Disabling blend on the veg color pipeline
+returns exactly \texttt{src} per pixel with the depth test
+(\texttt{LESS\_OR\_EQUAL}, no depth write, \texttt{:1059--1060}) untouched.
+
+\begin{tcolorbox}[promptbox={Prompt --- H4: unblend the veg color pipeline}]
+Goal: veg color pixels skip the blend unit at identical output. Steps:
+(1) disable blending on the veg color pipeline (leave EVSM/depth pipelines
+alone); (2) assert alpha $\equiv$ 1.0 under all \texttt{debugMode} paths;
+(3) keep depth compare/write and the H6 discard order. Files:
+\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp}. Validation:
+pixel-identical A/B, ROP/bandwidth counters down, validation-clean.
+\end{tcolorbox}
+
+\subsection{H5: Capture Recording Pays 420 Barrier Calls and Rebinds Loop-Invariants per View}
+
+\textbf{Severity: High.}
+
+\texttt{recordCaptureViews} (\texttt{ImpostorCapture.cpp:209--307})
+transitions 4 images into attachment layout per view (\texttt{:219--227})
+and 3 back per view (\texttt{:300--305}): 7 barrier calls $\times$ 60 views
+= 420 dispatches for what is 4 layouts in and $3 \times 60$ layers out.
+Each layer is cleared on load (\texttt{:233--247}), so keeping the three
+arrays in \texttt{COLOR\_ATTACHMENT\_OPTIMAL} across all views of a capture
+and transitioning each layer to \texttt{SHADER\_READ\_ONLY} once at the end
+--- batched into a handful of multi-barrier calls --- stores identical
+bytes. Likewise the transient depth image (\texttt{storeOp DONT\_CARE},
+\texttt{:254}) can stay in depth-attachment layout across views, and the
+pipeline bind, viewport/scissor, and vertex/index binds (\texttt{:274--295})
+are view-invariant (only the dynamic UBO offset, \texttt{:282}, changes per
+view) and hoist out of the loop. Finally, the init-time pre-transition of
+all 60 layers (\texttt{:67--79}) is redundant: every capture re-transitions
+its layers from \texttt{UNDEFINED} on first touch. Same layouts, same
+clears, same draws; far fewer recording calls and GPU bubbles. Load-time
+only, but it sits on the only path that stalls startup.
+
+\begin{tcolorbox}[promptbox={Prompt --- H5: batched capture transitions, hoisted binds}]
+Goal: identical capture bytes with an order of magnitude fewer barriers.
+Steps: (1) keep arrays in attachment layout across a capture; emit one
+batched out-transition per array at the end; (2) hoist pipeline/viewport/VB
+binds out of the per-view loop (keep the per-view dynamic-offset bind);
+(3) delete the init pre-transition; (4) keep the async single-submit shape
+(\texttt{:309--318}). Files:
+\texttt{vulkan/renderer/vegetation/ImpostorCapture.cpp}. Validation:
+byte-identical arrays (hash compare), capture wall time down,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{H6: Tint/Roughness Sliders Rebuild the Whole Grass Scene}
+
+\textbf{Severity: High (spike frames, not steady state).}
+
+\texttt{shape.tint} is packed into the three grass materials at rebuild
+(\texttt{SdfScene.cpp:670--671} from \texttt{config\_.grass.tint},
+\texttt{SdfRenderer.cpp:1511}), yet every grass setter --- structural or
+not --- sets \texttt{grassDirty\_} (\texttt{SdfRenderer.cpp:1536--1614}),
+so a tint or roughness drag re-runs the full re-merge plus the 6-vector
+re-upload (\texttt{flushSlotUploads}, \texttt{:2262--2290} copies whole
+vectors on \texttt{sceneDirtySlots\_}). Materials already live in their own
+uploaded vector (\texttt{f.material}, \texttt{:2276}); a tint-only change
+can memcpy 3 material entries into staging and copy the material range
+alone, skipping the rebuild entirely. Identical buffer bytes, no re-merge:
+split each setter into structural (rebuild) vs material-only (targeted
+upload, guarded by a structural-hash compare so a missed field can never
+silently take the cheap path).
+
+\begin{tcolorbox}[promptbox={Prompt --- H6: material-only grass tint path}]
+Goal: tint/roughness drags cost 3 material entries, not a re-merge. Steps:
+(1) add a material-only dirty kind evaluated from a structural hash;
+(2) upload only the material vector range on that path; (3) keep full
+rebuild for every structural field. Files:
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp},
+\texttt{sdf/types/SdfScene.cpp}. Validation: byte-identical slot buffers
+vs full rebuild, spike frames gone on drags, validation-clean.
+\end{tcolorbox}
+
+\subsection{H7: The Veg Skip Keeps a Submit Only Because Water Waits on tlVeg}
+
+\textbf{Severity: High.}
+
+The H7 skip path deliberately retains the vegetation submit: water's queue
+submit waits \texttt{\{tlSolid, tlSky, tlVeg\}}
+(\texttt{MyApp.cpp:2882}; fast path \texttt{:2531}) because its reflection
+lookup samples the veg targets, so dropping the tlVeg signal would hang it
+(\texttt{MyApp.cpp:2246} documents the constraint). But the cull task
+signals \texttt{tlCull} unconditionally every frame (\texttt{:1695}), and
+on skipped frames the veg targets sit stable in
+\texttt{SHADER\_READ\_ONLY} with cleared bytes --- exactly what water's
+lookup expects from an empty meadow. Routing water's wait to
+\texttt{tlCull} on veg-skipped frames (the report-22 C3 / SDF-M11 pattern,
+precedent at \texttt{MyApp.cpp:2983}: ``no CB, no tlSdf signal'') elides an
+entire submit + signal + queue round-trip per empty frame with the DAG
+intact. Same waits, same layouts, same bytes; one fewer submit.
+
+\begin{tcolorbox}[promptbox={Prompt --- H7: reroute water's wait, elide the veg submit}]
+Goal: empty veg frames cost zero submits. Steps: (1) on veg-skipped frames
+substitute \texttt{tlCull} for \texttt{tlVeg} in water's wait list (both
+submits); (2) skip the veg CB record \emph{and} submit/signal; (3) keep
+layouts stable and restore the tlVeg wait on content transitions. Files:
+\texttt{MyApp.cpp}. Validation: identical water/composite pixels on empty
+views, submit count down by one, validation-clean (watch the VUID-06079
+extent rule the block already respects).
+\end{tcolorbox}
+
+\subsection{H8: Impostor Fragments Recompute Per-Instance Trig per Pixel}
+
+\textbf{Severity: High.}
+
+\texttt{VegetationRendererImpostor.frag:96--102} rebuilds
+\texttt{theta/cosT/sinT} from the flat \texttt{inRotFrac} and rotates the
+decoded normal per \emph{pixel}, though theta is constant across the whole
+instance; the billboard twin has no such term (its TBN arrives via
+varyings). Hoisting \texttt{cosT/sinT} to flat varyings (computed once per
+vertex, or read from the C3 table) keeps the identical operations in the
+identical order and deletes 2 trig calls per impostor pixel, on the far
+field that covers the most screen area at range. Same treatment for the
+per-pixel \texttt{normalize(-ubo.lightDirection)} (uniform input,
+\texttt{:103} and billboard \texttt{:123,126}): normalize once per draw
+(CPU) or per vertex, not per pixel.
+
+\begin{tcolorbox}[promptbox={Prompt --- H8: flat trig varyings for impostors}]
+Goal: per-instance trig once per vertex, not once per pixel. Steps:
+(1) pass \texttt{cosT/sinT} as flat varyings from the impostor vertex stage
+(or the C3 table); (2) keep the per-pixel rotate/normalize/lighting chain
+bit-identical; (3) fold the uniform light-direction normalize out of both
+color fragments. Files:
+\texttt{shaders/renderer/vegetation/VegetationRendererImpostor.vert/.frag},
+\texttt{VegetationRenderer.frag}. Validation: pixel-identical A/B,
+fragment ALU down on impostor-heavy views, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M9: Impostor Depth Tap Runs After the Albedo Tap It Could Precede}
+
+\textbf{Severity: Medium.}
+
+The impostor fragment fetches albedo and discards on alpha
+(\texttt{VegetationRendererImpostor.frag:66--67}), \emph{then} fetches
+captured depth and discards out-of-range texels (\texttt{:78--80}). The two
+discard conditions are independent (alpha vs depth range), so their
+conjunction --- the survivor set --- is order-free; fetching the single
+depth tap first lets depth-culled background pixels skip the albedo fetch
+entirely. Survivors pay the same two taps in swapped order with identical
+values (both explicit-LOD array fetches, no derivatives involved). One-line
+reorder, zero semantic change.
+
+\begin{tcolorbox}[promptbox={Prompt --- M9: depth-tap-first impostor discard}]
+Goal: depth-culled pixels cost one fetch, not two. Steps: (1) move the
+depth fetch + range discard above the albedo fetch; (2) keep the
+reprojection, normal decode, and lighting untouched. Files:
+\texttt{shaders/renderer/vegetation/VegetationRendererImpostor.frag}.
+Validation: pixel-identical A/B, fetch counters down on skyline views,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{M10: Shadow-March Constants Are Re-Derived per Fragment and per Cascade}
+
+\textbf{Severity: Medium.}
+
+Every grass-shadow fragment re-derives \texttt{maxSteps/eps/safety/minStep/
+maxStep} from push constants (\texttt{SdfGrassShadow.frag:152--158}),
+and every cascade rebuilds the whole \texttt{SdfGrassShadowPC} under the
+scene lock (\texttt{SdfRenderer.cpp:2727--2759}) although only
+\texttt{lightViewProj} varies per cascade. Computing the five scalars once
+per vertex into flat varyings (identical operations) and hoisting the
+cascade-invariant PC fields out of the per-cascade lock leaves every
+fragment and every cascade with bit-identical inputs at a fraction of the
+redundant ALU and lock holds.
+
+\begin{tcolorbox}[promptbox={Prompt --- M10: flat shadow constants, hoisted PC}]
+Goal: march constants computed once, not per fragment per cascade. Steps:
+(1) derive the five scalars in the shadow vertex stage into flat varyings;
+(2) build invariant PC fields once per frame, fill only
+\texttt{lightViewProj} per cascade (keep the lock for the per-cascade
+slice). Files: \texttt{shaders/renderer/shadow/SdfGrassShadow.vert/.frag},
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp}. Validation: pixel-identical
+shadow A/B per cascade, validation-clean.
+\end{tcolorbox}
+
+\subsection{M11: setImpostorData Waits All Frame Fences on a Capture-Gated Path}
+
+\textbf{Severity: Medium (rare path, cheap fix).}
+
+\texttt{setImpostorData} calls \texttt{waitForFrameFences}
+(\texttt{VegetationRenderer.cpp:1387}) but runs only from
+\texttt{rewire()} on capture events (\texttt{ImpostorService.cpp:46--55}),
+and the synchronous capture already fence-waits internally before publish
+(\texttt{ImpostorCapture.hpp} async contract). Waiting every in-flight
+frame fence for data the capture fence already covers stalls an unrelated
+pipeline for nothing. Drop the call on the sync path; wait the capture
+fence on the async path. Identical descriptor contents, narrower stall.
+
+\begin{tcolorbox}[promptbox={Prompt --- M11: narrow the impostor-data fence}]
+Goal: impostor wiring waits for its capture, not for the world. Steps:
+(1) remove \texttt{waitForFrameFences} from the sync-capture wiring path;
+(2) wait the capture fence on the async path before publish; (3) keep the
+\texttt{isReady}/null-view guards. Files:
+\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp},
+\texttt{services/ImpostorService.cpp}. Validation: identical descriptor
+sets, stall gone on recapture, validation-clean.
+\end{tcolorbox}
+
+\subsection{M12: Two Skip Arbiters Must Agree Forever}
+
+\textbf{Severity: Medium (no frame saving; divergence risk).}
+
+The veg-skip decision now lives in two places that must coincide: main
+thread statics in \texttt{MyApp.cpp} (\texttt{vegPrevWantDraw /
+vegWarmupRuns}, plus the \texttt{vegWantDraw} formula) and renderer
+atomics (\texttt{vegInstancePrev / vegInstanceWarmup},
+\texttt{VegetationRenderer.hpp}, decided in
+\texttt{beginInstancePass}, \texttt{VegetationRenderer.cpp:1281--1300}).
+Today they agree by careful construction; any future edit to one side's
+transition or warmup rule silently breaks the other into a missed draw or
+a stuck skip. Unify behind the renderer's arbiter (the main-thread formula
+becomes a pure input to it), preserving today's exact skip outcomes ---
+same states, one owner, plus a debug assert that the worker-side and
+main-side decisions match while both exist.
+
+\begin{tcolorbox}[promptbox={Prompt --- M12: single veg-skip arbiter}]
+Goal: one skip decision, not two that must agree. Steps: (1) move the
+warmup/transition bookkeeping fully into \texttt{beginInstancePass};
+(2) make the main-thread check a pure function of the same inputs;
+(3) assert equality of both decisions until the duplicate is deleted.
+Files: \texttt{MyApp.cpp},
+\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp/.hpp}.
+Validation: identical skip behavior on empty/transitioning scenes,
+validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L13: Impostor Twin Vertex Shaders Still Differ Only in Varyings}
+
+The color and depth impostor vertex stages now share the best-view select
+(\texttt{ImpostorViews.glsl}) but still duplicate placement, culling, and
+density logic around different varying sets (\texttt{VARY\_TANGENTWS} vs
+\texttt{VARY\_FACE\_NORMAL + VARY\_ROTFRAC + VARY\_POSLIGHT}) and different
+sentinel conventions. The \texttt{VegetationRendererImpostorShadow.frag}
+(49 lines) remains a stripped twin of the 135-line color fragment with
+identical inputs. Fold the twins behind \texttt{-D} variants over one
+vertex core and one fragment core, as H8 did for the capture source: same
+SPIR-V semantics, half the spellings to keep in sync.
+
+\subsection{L14: The Profile Counter Gate Is an SSBO Load per Invocation}
+
+The march-profiler gate word is read from the counter SSBO by every
+invocation (\texttt{SdfRenderer.frag:509}, layout documented at
+\texttt{:89--94}: the target is written only while \texttt{sdfCounters[5]}
+is non-zero). It is uniform per draw by construction. Move it to a push
+constant (or a specialization constant next to the C1 surface/volume
+split): identical branch behavior, one less indexed SSBO load per covered
+pixel, and the counters buffer unbound from the hot set when profiling is
+off.
+
+\subsection{L15: Shadow March Constants Lack the L15 Treatment}
+
+Report~26's L15 collected the blade-budget proof at
+\texttt{sdGrassClump}; the march budgets never got it:
+\texttt{SDF\_GRASS\_SHADOW\_MAX\_STEPS\_HARD = 256} and
+\texttt{SDF\_GRASS\_MAX\_CANDIDATES = 8}
+(\texttt{SdfGrassShadow.frag:67--68}) and their main-march twins
+(\texttt{SdfRenderer.frag:138--139}, derivation sketched at
+\texttt{:102--106}) carry no proof of why 256 steps $\times$ 8 candidates
+suffices at the grass step law (\texttt{SdfGrassShadow.frag:244--247} pure
+sphere tracing, no floor). Document the step-budget proof (max overstep
+$<$ min blade width at the shadow LOD) next to the constants so the next
+tuning pass cannot silently break sphere-tracing conservatism --- comment
+only, zero code change.
+
+% =====================================================================
+\section{Deliberately Unchanged}
+\label{sec:unchanged}
+
+The gate (\S\ref{sec:gate}) rejected the following, each re-verified for
+this report; they are performance opportunities only at the price of
+different pixels, and belong to a quality-knob report, not this one.
+Report~26 items C1 (unified ladder), C3 (blade tiers), M10 (billboard
+thinning), M11 (footprint shadow LOD), the texel-driven shadow TODO
+(\texttt{SdfRenderer.cpp:2754--2756}), half-res targets, and the
+\texttt{raycastPixelSize} resolution trade all change what is shaded.
+Finer-grained rejections, with cause:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item \textbf{Impostor depth prepass as drawn in report~26's shadow.}
+The impostor color pipeline does not write depth
+(\texttt{RendererUtils.hpp:93} default) and blends alpha-1.0 outputs in
+compacted draw order; overlapping quads therefore resolve last-wins, not
+nearest-wins. A prepass would switch overlap resolution to nearest ---
+a fix, but a \emph{different image}. Only the tap reorder (M9) and the
+trig hoist (H8) survive the gate.
+\item \textbf{Eliding billboard shadow draws in GrassRaycast mode (26~H5
+half).} Billboard depths land in the shared cascade EVSM maps that the
+impostor fragment samples (\texttt{set 0 bindings 4/8/9} +
+\texttt{ShadowCalculationHard},
+\texttt{VegetationRendererImpostor.frag:18--20,117--126}). Removing them
+re-lights every impostor pixel: different image, excluded.
+\item \textbf{Per-corner wind hoisting.} \texttt{applyWindSkew} samples at
+\texttt{worldPos + localPos} (\texttt{VegetationRenderer.vert:221}),
+i.e.\ per-corner positions through position-dependent Perlin and tornado
+cores (\texttt{WindField.glsl:100--108}). Center-sampling changes values;
+only the corner-invariant trig/frame around it qualifies (C3).
+\item \textbf{Tracer proxy-granularity (25~H4) and CPU TRS precompute.}
+Moving analytic root solves or matrix builds across the CPU/GPU boundary
+re-rounds; sphere tracing amplifies ulps at silhouettes. Visually
+identical is not bit-identical --- excluded.
+\item \textbf{Consolidation-time wind bake (26~C2 as framed).} Baking at
+consolidation evaluates a different clock than the frame's draws.
+Superseded by the same-frame tables (C1, C3), which evaluate the frame's
+time.
+\item \textbf{Tetrahedral normals, smoke resolve tiers, step tiers.}
+Different math, different images --- quality knobs, excluded.
+\item \textbf{SDF instance-list frustum compaction.} Saves proxy-vertex
+processing of a few cubes only; complexity exceeds the vertex saving.
+\item \textbf{Capture UBO stride.} Verified the tightest legal stride
+(dynamic-offset alignment floor); no change exists.
+\item \textbf{Cross-vertex broadcast via subgroups.} Quad-verts-in-one-
+subgroup is not portable (the \texttt{ImpostorViews.glsl} contract);
+excluded.
+\end{itemize}
+
+% =====================================================================
+\section{Implementation Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lp{5.8cm}p{5.6cm}@{}}
+\toprule
+\textbf{Item} & \textbf{Change} & \textbf{Est.\ effect} \\
+\midrule
+C1 & Per-instance SDF frame table & transform setup $2\times$/eval $\rightarrow$ $1\times$/frame \\
+C2 & Shadow AABB-first + union fast path & def fetches elided on reject; combine $\rightarrow$ min \\
+C3 & Per-instance vertex-invariant table & $24\times$ trig/tilt/select $\rightarrow$ $1\times$/frame \\
+H4 & Unblend veg color & $-$blend ROP on all veg pixels \\
+H5 & Capture barrier/batch hygiene & 420 barrier calls $\rightarrow$ handful; binds hoisted \\
+H6 & Material-only tint path & drags skip re-merge + full re-upload \\
+H7 & Veg submit elision via wait reroute & $-1$ submit/frame when empty \\
+H8 & Flat impostor trig varyings & $-$2 trig/px + uniform normalize/px \\
+M9--M12 & Tap order, flat constants, fence scope, one arbiter & additive micro + risk removal \\
+L13--L15 & Twin dedupe, counter gate, cap docs & noise floor \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C1--C3 remove the dominant exact redundancies in the two marches and the
+vertex stages. H4--H8 remove per-pixel, load-time, spike-frame, and
+per-submit taxes. None changes any pixel by construction; each carries an
+A/B gate that fails closed.
+
+Explicitly out of scope (carried forward): GDAL heightmap load
+(\texttt{math/HeightMapTif.cpp}), CPU threading
+(\texttt{space/ThreadPool.cpp}), input/events
+(\texttt{events/EventManager.cpp}), and the ImGui widget layer
+(release-only, never profiled).
+
+% =====================================================================
+\section{Overall Score}
+\label{sec:score27}
+% =====================================================================
+
+\subsection{Rubric (Report-27 Scope)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcp{7.2cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Wt.} & \textbf{Score and justification} \\
+\midrule
+March inner-loop exactness & 35\% & \textbf{5.5} --- bounded selection,
+AABB-first main fetch order, per-ray wind cache, surface-variant select
+and the clear-only path are good; twice-built euler matrices, a
+pre-accept definition fetch in the shadow loop, and a 6-way dispatch for
+a min drag it down. \\
+Pass / command exactness & 30\% & \textbf{6.0} --- H7 gates on both views
+and cascades, overlap-gated preload, SDF submit elision and gated shadow
+dispatch are good; the retained veg submit, identity blending, and missing
+impostor tap order are not. \\
+Load-time exactness & 15\% & \textbf{5.0} --- async single-submit capture
+is good; 420 barrier calls, per-view invariant rebinds, and a redundant
+init pre-transition are not. \\
+Upload / state hygiene & 20\% & \textbf{6.5} ---
+versioned barriers, dirty-gated uploads, staged copies, the EVSM dedupe
+and the L15 proofs are good; dual arbiters, full-rebuild tint drags, the
+SSBO counter gate and undocumented caps are not. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Overall: 5.8/10 Scope, 5.9/10 Combined}
+
+\begin{equation}
+0.35(5.5) + 0.30(6.0) + 0.15(5.0) + 0.20(6.5) = \mathbf{5.8}
+\end{equation}
+
+Report~26 scored the combined engine 5.9/10; that estimate priced the grass
+seam including its quality knobs. Re-measuring the exact slice:
+
+\begin{equation}
+0.90(5.9) + 0.10(5.8) = \mathbf{5.9}
+\end{equation}
+
+The verdict is unchanged in number and sharpened in meaning: eleven exact
+wins banked since report~26, fifteen exact wins remaining, zero pixels
+harmed. Landing C1--C3 moves this scope toward $\sim$8/10 with no redesign
+and no A/B drift.
+
+\end{document}
