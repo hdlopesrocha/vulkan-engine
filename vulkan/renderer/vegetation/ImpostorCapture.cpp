@@ -228,9 +228,10 @@ void ImpostorCapture::recordCaptureViews(VkCommandBuffer cb, VulkanApp* app,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
 
     // H5 (perf report 27): view-invariant binds hoisted out of the per-view
-    // loop — pipeline, viewport/scissor, vertex/index buffers. Only the
-    // dynamic UBO offset changes per view, so only the descriptor bind (plus
-    // the identical push constants) is recorded per view.
+    // loop — pipeline, viewport/scissor, vertex/index buffers (plus the
+    // loop-invariant CapturePC push, M6 report 28). Only the dynamic UBO
+    // offset changes per view, so only the descriptor bind is recorded per
+    // view.
     VkViewport vp{ 0.0f, 0.0f, float(TEX_SIZE), float(TEX_SIZE), 0.0f, 1.0f };
     VkRect2D   sci{ { 0, 0 }, { TEX_SIZE, TEX_SIZE } };
     vkCmdSetViewport(cb, 0, 1, &vp);
@@ -243,6 +244,16 @@ void ImpostorCapture::recordCaptureViews(VkCommandBuffer cb, VulkanApp* app,
     VkDeviceSize offsets[2] = { 0, 0 };
     vkCmdBindVertexBuffers(cb, 0, 2, vbs, offsets);
     vkCmdBindIndexBuffer(cb, captureIdxBuf, 0, VK_INDEX_TYPE_UINT32);
+
+    // M6 (perf report 28): loop-invariant CapturePC push hoisted out of the
+    // per-view loop. The bytes are identical for every view of the call (only
+    // the dynamic UBO offset varies per view), and push-constant state
+    // survives begin/endRendering, so one push records exactly the values
+    // every draw previously re-pushed. The per-view dynamic-offset
+    // descriptor bind stays inside the loop.
+    vkCmdPushConstants(cb, capturePipelineLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(CapturePC), &pc);
 
     for (uint32_t viewIdx = 0; viewIdx < viewCount; ++viewIdx) {
         const uint32_t layerIdx = layerBase + viewIdx;
@@ -292,10 +303,6 @@ void ImpostorCapture::recordCaptureViews(VkCommandBuffer cb, VulkanApp* app,
                                 capturePipelineLayout, 0, 3, sets, 1, &dynOffset);
         else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 capturePipelineLayout, 0, 3, sets, 1, &dynOffset);
-
-        vkCmdPushConstants(cb, capturePipelineLayout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(CapturePC), &pc);
 
         vkCmdDrawIndexed(cb, captureIdxCount, NUM_INSTANCES, 0, 0, firstInstance);
 
