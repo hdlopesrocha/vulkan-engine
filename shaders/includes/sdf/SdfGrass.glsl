@@ -137,6 +137,8 @@ float sdGrassBlade(vec3 p, vec3 root, vec3 up, float h, float width,
 // Lipschitz constant of the rippled cone (coneD - disp): 1 + amp * (freq +
 // 2/height). Dividing by it makes sdGrassImpostor 1-Lipschitz; sdGrassClump
 // also uses it to convert the impostor inradius bound into a fade offset.
+// (L15, perf report 26: full blade-budget proof collected at the
+// sdGrassClump constants below.)
 float sdGrassImpostorLip(float height, float amp, float freq) {
     return 1.0 + amp * (freq + 2.0 / max(height, 1e-3));
 }
@@ -198,6 +200,36 @@ float sdGrassClump(vec3 p, vec4 p0, vec4 p1, float seed, float camScale,
     // so the aggregate envelope (and the CPU AABB in SdfScene.cpp) must cover
     // 1.4 x curvature or the early-out could overestimate near the tips.
     const float GRASS_BEND_MAX = 1.4;
+
+    // L15 BLADE-BUDGET PROOF (perf report 26, comment-only — the constants
+    // above are load-bearing; do not retune without re-checking each bound):
+    // (a) Per evaluated blade the taper segments under-estimate the exact
+    //     round-cone distance by at most r*(1-cosA)/cosA at the caps
+    //     (sdGrassTaper). The width clamp below keeps every segment slope
+    //     dr/L < 1, so cosA stays well away from 0 (1/cosA <= ~1.3) and the
+    //     cap overstep is < ~0.3 x the local blade radius — strictly less
+    //     than the blade's own radius at every blade-count tier (tiers change
+    //     WHICH blades are evaluated, never a blade's width).
+    // (b) The cap inflation (radii scaled by 1/cosA) stays inside the
+    //     aggregate envelope because envR0 pads the clump radius by
+    //     2 x width, more than twice the worst-case inflation.
+    // (c) Per-blade curvature spans [0.6, 1.4) x curve
+    //     (0.6 + 0.8*fract, blade loop below); GRASS_BEND_MAX = 1.4 covers the
+    //     ceiling, and envR1 carries height*curve*1.4 for the same reason, so
+    //     the envelope early-out can never overestimate near bent tips. The
+    //     CPU twin (SdfScene.cpp localHalfExtents) must cover the same
+    //     1.4 x extent or the instance AABB under-covers the lean.
+    // (d) Impostor side: every lower bound that touches the rippled cone
+    //     divides by impLip (sdGrassImpostorLip), and the fade offset K =
+    //     (max(impR0, impR1) + impAmp)/impLip + 1e-3 exceeds the compensated
+    //     impostor inradius, so the offset surface is empty at band entry and
+    //     the union min() stays conservative across [START, FULL]. The hard
+    //     far path above uses (icd - impAmp)/impLip for the same reason.
+    // Tier table (count only — thresholds/tiers alter pixels, C3-owned):
+    //   camScale <= 16: all `count` blades (<= 24); <= 32: first 8 in hash
+    //   order; > 32: first 4; >= impostorFull: 0 blades (impostor only).
+    //   The subset is a hash-order prefix, hence deterministic per
+    //   (seed, camScale) with no popping between frames at fixed distance.
 
     float radius = max(p0.x, 1e-3);
     float height = max(p0.y, 1e-3);
@@ -305,6 +337,9 @@ float sdGrassClump(vec3 p, vec4 p0, vec4 p1, float seed, float camScale,
     }
 
     // Blade-count LOD: deterministic hash-ordered subset, stable per frame.
+    // (L15: the per-blade taper bound above holds at every tier — thinning
+    // only drops whole blades (a C3 quality knob), it never widens the
+    // overstep of an evaluated blade past its own radius.)
     int n = count;
     if (camScale > GRASS_LOD_FAR) n = min(n, 4);
     else if (camScale > GRASS_LOD_NEAR) n = min(n, 8);

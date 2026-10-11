@@ -5,6 +5,7 @@
 
 #include "../../includes/Locations.glsl"
 #include "../../includes/SceneBindings.glsl"
+#include "../../includes/shadow/EvsmWrite.glsl"
 
 layout(location = VARY_POSWORLD) in vec3 inWorldPos;
 
@@ -14,9 +15,8 @@ void main() {
     vec4 lsPos = ubo.viewProjection * vec4(inWorldPos, 1.0);
     float depth = clamp(lsPos.z / lsPos.w, 0.0, 1.0);
 
-    float c = 2.0;
-    float posM1 = exp( c * depth);
-    float posM2 = exp( 2.0 * c * depth);
-
-    outEVSM = vec2(posM1, posM2);
+    // Moments via the shared EVSM writer (same spelling as
+    // VegetationRendererShadow.frag): 2.0 * depth is an exact power-of-two
+    // scale, so exp sees bit-identical inputs and returns identical moments.
+    outEVSM = evsmMoments(depth);
 }
