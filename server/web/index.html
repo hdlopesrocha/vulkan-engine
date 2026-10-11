@@ -110,7 +110,7 @@
               <th @click="sortBy('id')">id</th><th @click="sortBy('layer')">layer</th>
               <th @click="sortBy('level')">lvl</th><th @click="sortBy('size')">size</th>
               <th @click="sortBy('version')">ver</th><th @click="sortBy('lod')">lod</th>
-              <th @click="sortBy('brushIndex')">brush</th>
+              <th @click="sortBy('chunkLod')">chunkLoD</th><th @click="sortBy('brushIndex')">brush</th>
             </tr>
             <tr class="filterrow">
               <th><input type="search" v-model="colFilter.id" placeholder="id…"></th>
@@ -119,13 +119,14 @@
               <th><input type="search" v-model="colFilter.size" placeholder="size…"></th>
               <th><input type="search" v-model="colFilter.version" placeholder="ver…"></th>
               <th><input type="search" v-model="colFilter.lod" placeholder="lod…"></th>
+              <th><input type="search" v-model="colFilter.chunkLod" placeholder="chunkLoD…"></th>
               <th><input type="search" v-model="colFilter.brush" placeholder="brush…"></th>
             </tr></thead>
             <tbody>
               <tr v-for="c in filtered.slice(0, 800)" :key="c.id" :class="{sel: selected && selected.id === c.id}" @click="select(c.id)">
                 <td>{{ shortId(c.id) }}</td><td>{{ layerTag(c.layer) }}</td>
                 <td>{{ c.level }}</td><td>{{ c.size.toFixed(0) }}</td>
-                <td>{{ c.version }}</td><td>{{ c.lod }}/{{ c.chunkLod }}</td><td>{{ c.brushIndex }}</td>
+                <td>{{ c.version }}</td><td>{{ c.lod }}</td><td>{{ c.chunkLod }}</td><td>{{ c.brushIndex }}</td>
               </tr>
             </tbody>
           </table>
@@ -330,13 +331,15 @@ createApp({
     const chunks = ref(new Map());
     const connected = ref(false);
     const selectedId = ref(null);
-    // Per-column filters (one search box per table column). The same match
-    // set gates the table AND the rendered chunks (boxes, picking,
-    // wireframe) alike.
-    const colFilter = ref({ id: '', layer: '', level: '', size: '', version: '', lod: '', brush: '' });
+    // Per-column filters (one search box per table column). The chunkLoD
+    // column defaults to '1', so the list AND the rendered chunks start on
+    // the frontier rung; clearing it (or typing a range like 1-3) renders
+    // more rungs. The same match set gates the table AND the rendered
+    // chunks (boxes, picking, wireframe) alike.
+    const colFilter = ref({ id: '', layer: '', level: '', size: '', version: '', lod: '', chunkLod: '1', brush: '' });
     function normFilters() {
       const f = colFilter.value, n = {};
-      for (const k of ['id', 'layer', 'level', 'size', 'version', 'lod', 'brush'])
+      for (const k of ['id', 'layer', 'level', 'size', 'version', 'lod', 'chunkLod', 'brush'])
         n[k] = (f[k] || '').trim().toLowerCase();
       return n;
     }
@@ -363,22 +366,18 @@ createApp({
       if (f.level && !matchNum(c.level, f.level)) return false;
       if (f.size && !matchNum(c.size, f.size)) return false;
       if (f.version && !matchNum(c.version, f.version)) return false;
-      if (f.lod && !(String(c.lod) === f.lod || String(c.chunkLod) === f.lod || `${c.lod}/${c.chunkLod}`.includes(f.lod))) return false;
+      if (f.lod && !matchNum(c.lod, f.lod)) return false;
+      if (f.chunkLod && !matchNum(c.chunkLod, f.chunkLod)) return false;
       if (f.brush && !matchNum(c.brushIndex, f.brush)) return false;
       return true;
     }
     const sortKey = ref('level');
     const layerVisibility = ref({ 0: true, 1: true });
     const showWireframe = ref(true);
-    // LoD rung isolation for the 3D view: only chunks whose stored chunkLod
-    // equals this value are drawn. Fixed at the frontier rung (1); the
-    // slider was removed, so coarser rungs stay listed but are not drawn.
-    const lodFilter = ref(1);
-    const rungCount = computed(() => {
-      let n = 0;
-      for (const c of chunks.value.values()) if (c.chunkLod === lodFilter.value) n++;
-      return n;
-    });
+    // NOTE: there is no separate rung gate anymore. The chunkLoD column
+    // filter (default '1') is the rung selector: it gates the table AND the
+    // rendered chunks through matchesFilters, so clearing it (or typing a
+    // range like 1-3) renders more rungs.
     const fps = ref(0);
     const culled = ref(0);
     const lastMsg = ref('no data yet');
@@ -663,7 +662,7 @@ createApp({
       lineMin: 0, lineMax: 0, lineSum: 0 };
     window.__wire = () => ({ ...dbg, meshId, meshStatus: meshStatus.value,
       selectedId: selectedId.value, showWireframe: showWireframe.value,
-      chunks: chunks.value.size, lodFilter: lodFilter.value, rungCount: rungCount.value,
+      chunks: chunks.value.size,
       filters: { ...colFilter.value }, layers: JSON.parse(JSON.stringify(layerInfo.value)),
       cam: { pos: [...cam.pos], quat: [...cam.quat] } });
     let gl = null, prog = null, posBuf = null, colBuf = null, uVP = null;
@@ -724,7 +723,6 @@ createApp({
       const q = normFilters();
       for (const c of chunks.value.values()) {
         if (layerVisibility.value[c.layer] === false) continue;
-        if (c.chunkLod !== lodFilter.value) continue; // LoD rung isolation
         if (!matchesFilters(c, q)) continue; // column filters gate rendered chunks
         const mn = [c.minX, c.minY, c.minZ], mx = [c.minX + c.size, c.minY + c.size, c.minZ + c.size];
         if (planes && !aabbVisible(planes, mn, mx)) { culled++; continue; }
@@ -853,7 +851,7 @@ createApp({
       // Box buffers depend on data + filters + frustum, so the rebuild key
       // includes a quantized camera pose (rebuilt while moving, cached idle).
       const visKey = layerList.value.map(l => layerVisibility.value[l] ? 1 : 0).join(',');
-      const key = [chunksVersion, visKey, metaRev, lodFilter.value, JSON.stringify(colFilter.value), selectedId.value, aspect,
+      const key = [chunksVersion, visKey, metaRev, JSON.stringify(colFilter.value), selectedId.value, aspect,
         cam.pos.map(x => x.toFixed(1)).join(','), cam.quat.map(x => x.toFixed(4)).join(',')].join('|');
       if (key !== builtKey) {
         culled.value = rebuildBuffers(planes);
@@ -874,7 +872,6 @@ createApp({
       if (meshVisible) {
         const c = chunks.value.get(meshId);
         if (!c) meshVisible = false;
-        else if (c.chunkLod !== lodFilter.value) meshVisible = false;
         else if (!matchesFilters(c, normFilters())) meshVisible = false;
         else if (!aabbVisible(planes, [c.minX, c.minY, c.minZ],
                               [c.minX + c.size, c.minY + c.size, c.minZ + c.size])) meshVisible = false;
@@ -928,7 +925,6 @@ createApp({
       const pq = normFilters();
       for (const c of chunks.value.values()) {
         if (layerVisibility.value[c.layer] === false) continue;
-        if (c.chunkLod !== lodFilter.value) continue; // hidden rung: not pickable
         if (!matchesFilters(c, pq)) continue; // filtered out: not pickable
         const mn = [c.minX, c.minY, c.minZ], mx = [c.minX + c.size, c.minY + c.size, c.minZ + c.size];
         let t0 = 0, t1 = 1e30, ok = true;
@@ -1001,7 +997,7 @@ createApp({
     });
 
     return { chunks, connected, selected, selectedId, colFilter, sortKey, layerVisibility,
-      layerList, layerCounts, layerName, layerTag, lodFilter, rungCount,
+      layerList, layerCounts, layerName, layerTag,
       showWireframe, fps, culled, lastMsg, meshStatus, brushSwatch, wsTarget, wsError,
       filtered,
       requestAll, clearAll, select, sortBy, reconnect, resetCamera, shortId, fmtF, fmt3, spaceName };
