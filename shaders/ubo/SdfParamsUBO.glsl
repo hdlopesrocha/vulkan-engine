@@ -9,7 +9,7 @@
 //   earlyTerm 24, renderMode 28, debugFlags 32, waterDepthEnabled 36,
 //   invScreenSize 40, raycastPixelSize 48, impostorStart 52, impostorFull 56,
 //   grassImpostorDistance 60, sdfLodNear 64, sdfLodFar 68,
-//   smokeSamples 72 (block size is a multiple of 16: 76 -> 80).
+//   smokeSamples 72, maxTurbulence 76 (block size is a multiple of 16: 80).
 struct SdfParamsUBO {
     float time;        // offset  0  global SDF time (s)
     float maxSteps;    // offset  4  march step budget
@@ -29,6 +29,11 @@ struct SdfParamsUBO {
     float sdfLodNear;  // offset 64  full-detail range (m): tetrahedral normals below
     float sdfLodFar;   // offset 68  far LOD range (m): deform/lean skip + FD normals beyond
     float smokeSamples; // offset 72  phase-B smoke samples (M12 tier 4..12, 12 = reference)
+    // H3 (perf report 28): CPU-scanned max |turbulence| over the merged
+    // materials (CPU twin: vulkan/ubo/SdfParamsUBO.hpp — same names, fields
+    // and offsets). Tier-1 far reject bound: no material fetch above
+    // maxStep + 0.1 + this; exact per-material skipR test follows (tier-2).
+    float maxTurbulence; // offset 76  turbulence bound (refreshed on rebuilds)
 };
 
 #endif // SDF_PARAMS_U_B_O_GLSL

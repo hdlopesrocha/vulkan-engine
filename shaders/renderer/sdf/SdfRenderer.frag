@@ -548,6 +548,14 @@ void main() {
     float maxStep = sdfParams.maxStep;
     if (maxStep <= 0.0) maxStep = 1.0;
     maxStep = max(maxStep, minStep);
+    // H3 (perf report 28): tier-1 far-reject bound — the exact CPU-scanned
+    // maximum of |turbulence| over the merged materials (sdfParams.maxTurbulence,
+    // re-scanned on structural rebuilds, reused on material-only patches).
+    // maxStep + 0.1 + bound accepts everything the per-material skipR test
+    // accepts, so tier-1 rejects with NO material fetch and tier-2 runs the
+    // exact test after the fetch. length() is kept (never a squared compare:
+    // fl(s*s) rounding can flip the boundary decision).
+    float tierSkipH3 = maxStep + 0.1 + abs(sdfParams.maxTurbulence);
     float time = sdfParams.time;
     uint renderMode = sdfParams.renderMode; // 0 surface,1 volume,2 emissive,3 transparent
     uint debugFlags = sdfParams.debugFlags;
@@ -731,9 +739,16 @@ void main() {
             uint di = inst.defIdx;
             uint mi = inst.matIdx;
             if (di >= uint(nDefs) || mi >= uint(nMats)) continue;
-            SdfMaterial m0 = sdfMaterials[mi];
             vec3 oq = max(max(inst.boundsMin - p, p - inst.boundsMax), vec3(0.0));
             float ob = length(oq); // exact distance to the instance AABB
+            // H3 (perf report 28) tier-1: beyond the CPU-scanned bound no
+            // material could accept, so reject with NO material fetch (far
+            // rejects, the common case, skip a ~100 B material SSBO load).
+            if (ob > tierSkipH3) {
+                nearestBox = min(nearestBox, ob); // conservative advance source
+                continue;
+            }
+            SdfMaterial m0 = sdfMaterials[mi];
             float skipR = maxStep + 0.1 + abs(m0.turbulence);
             if (ob > skipR) {
                 nearestBox = min(nearestBox, ob); // conservative advance source

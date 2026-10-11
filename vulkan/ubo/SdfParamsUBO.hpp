@@ -58,6 +58,14 @@ struct alignas(16) SdfParamsUBO {
     // 4..12, default 12 = reference). Shares the std140 tail row with the
     // LOD fields above (offsets 64/68/72 + 4 bytes implicit padding = 80).
     float smokeSamples = 12.0f; // offset 72
+    // H3 (perf report 28): exact upper bound of |turbulence| over the merged
+    // materials (grass carries 0.0, fire/smoke 0.6; struct default 0.6).
+    // Scanned on the CPU at merge time (SdfRenderer::refreshMergedLocked);
+    // the march tier-1 far reject uses it with NO material fetch, then runs
+    // the exact per-material skipR test after the fetch (tier-2). Re-scanned
+    // on structural rebuilds, reused on material-only patches (which never
+    // touch turbulence). Fills the std140 tail row: offsets 64/68/72/76.
+    float maxTurbulence = 0.6f; // offset 76
 };
 static_assert(sizeof(SdfParamsUBO) == 80, "SdfParamsUBO must be 80 bytes (std140 padding)");
 static_assert(offsetof(SdfParamsUBO, time) == 0, "time offset");
@@ -78,3 +86,4 @@ static_assert(offsetof(SdfParamsUBO, grassImpostorDistance) == 60, "grassImposto
 static_assert(offsetof(SdfParamsUBO, sdfLodNear) == 64, "sdfLodNear offset");
 static_assert(offsetof(SdfParamsUBO, sdfLodFar) == 68, "sdfLodFar offset");
 static_assert(offsetof(SdfParamsUBO, smokeSamples) == 72, "smokeSamples offset");
+static_assert(offsetof(SdfParamsUBO, maxTurbulence) == 76, "maxTurbulence offset");

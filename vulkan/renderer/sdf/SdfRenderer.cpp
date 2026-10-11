@@ -438,6 +438,22 @@ void SdfRenderer::refreshMergedLocked() {
     stats_.definitionCount = static_cast<uint32_t>(pendingScene_.definitions().size());
     stats_.materialCount = static_cast<uint32_t>(pendingScene_.materials().size());
     stats_.gridCellCount = static_cast<uint32_t>(pendingScene_.cells().size());
+    // H3 (perf report 28): exact upper bound of |turbulence| over the merged
+    // materials, streamed through the params-dirty path. The march tier-1 far
+    // reject uses it with NO material fetch (beyond maxStep + 0.1 + bound no
+    // material could accept); tier-2 keeps the exact per-material skipR test
+    // after the fetch. Every structural rebuild funnels through here, so the
+    // bound is re-scanned; the H6 material-only patch returns early without
+    // re-merging and reuses the last scan (it never touches turbulence).
+    {
+        float maxTurb = 0.0f;
+        for (const SdfMaterial& m : pendingScene_.materials()) {
+            const float a = std::fabs(m.turbulence);
+            if (a > maxTurb) maxTurb = a;
+        }
+        params_.maxTurbulence = maxTurb;
+        paramsDirtySlots_.fill(true);
+    }
     sceneDirtySlots_.fill(true);
     // One-time proof of what the merged scene holds (instances per type).
     // Extended with the exact smoke-side values that decide visibility, so
