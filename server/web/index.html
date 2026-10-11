@@ -36,6 +36,7 @@
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th, td { padding: 4px 6px; border-bottom: 1px solid #1f2937; text-align: left; white-space: nowrap; }
   th { position: sticky; top: 0; background: #111827; cursor: pointer; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: baseline; }
   tr.sel { background: #1e3a8a; }
   tr:hover { background: #1f2937; }
   footer { padding: 4px 12px; font-size: 11px; color: #9ca3af; background: #111827; border-top: 1px solid #1f2937; }
@@ -91,7 +92,7 @@
           <b>leaf</b><span>{{ selected.isLeaf ? 'yes' : 'no' }}</span>
           <b>type</b><span>{{ spaceName(selected.spaceType) }}</span>
           <b>version</b><span>{{ selected.version }}</span>
-          <b>brush</b><span>{{ selected.brushIndex }}</span>
+          <b>brush</b><span><span class="swatch" :style="{ background: brushSwatch }"></span>{{ selected.brushIndex }}</span>
           <b>sdf[8]</b><span>{{ selected.sdf.map(fmtF).join(', ') }}</span>
           <b>mesh</b><span>{{ meshStatus }}</span>
         </div>
@@ -153,6 +154,26 @@ function parseRecord(dv, off) {
   const sdf = [];
   for (let i = 0; i < 8; i++) sdf.push(dv.getFloat32(off + 44 + 4 * i, true));
   return { id, minX, minY, minZ, size, level, lod, chunkLod, isLeaf, spaceType, layer, version, brushIndex, sdf };
+}
+// Debug brush colors — exact mirror of the Vulkan DEBUG_MODE_MATERIAL_INDEX
+// views, so the wireframe shows the same color a brush has in the app:
+// solid uses the 16-entry palette in shaders/includes/solid/SolidSurface.glsl
+// (floored mod, so negative ids wrap), water the golden-ratio hue in
+// shaders/includes/water/WaterSurface.glsl (negative ids show magenta).
+const BRUSH_PALETTE = [
+  [0.90,0.10,0.10],[0.10,0.90,0.10],[0.10,0.10,0.90],[0.90,0.90,0.10],
+  [0.90,0.10,0.90],[0.10,0.90,0.90],[1.00,0.55,0.10],[0.55,0.35,0.15],
+  [0.60,0.20,0.80],[1.00,0.50,0.70],[0.70,1.00,0.30],[0.00,0.45,0.55],
+  [0.05,0.10,0.35],[0.45,0.50,0.10],[0.60,0.60,0.60],[1.00,1.00,1.00],
+];
+function brushColor(brushIndex, layer) {
+  if (layer === 1) {
+    if (brushIndex < 0) return [1.0, 0.0, 1.0];
+    const hh = (((brushIndex * 0.61803398875) % 1) + 1) % 1;
+    const t = Math.PI * 2;
+    return [0.0, 0.33, 0.67].map(o => Math.min(1, Math.max(0, 0.5 + 0.5 * Math.cos(t * (hh + o)))));
+  }
+  return BRUSH_PALETTE[((brushIndex % 16) + 16) % 16];
 }
 function parseMesh(raw) {
   // MESH_DATA: magic[4], type, u64 id, u32 version, u8 layer, pad[3], u32 nVerts, u32 nIdx, verts, idx
@@ -305,6 +326,11 @@ createApp({
     function fmtF(x) { return (typeof x === 'number' && isFinite(x)) ? x.toFixed(1) : String(x); }
     function fmt3(a, b, c) { return `${fmtF(a)}, ${fmtF(b)}, ${fmtF(c)}`; }
     function spaceName(t) { return t === 0 ? 'Empty' : t === 1 ? 'Surface' : t === 2 ? 'Solid' : '?'; }
+    const brushSwatch = computed(() => {
+      if (!selected.value) return 'transparent';
+      const cc = brushColor(selected.value.brushIndex, selected.value.layer);
+      return `rgb(${Math.round(cc[0] * 255)},${Math.round(cc[1] * 255)},${Math.round(cc[2] * 255)})`;
+    });
     function sortBy(k) { sortKey.value = k; }
     function clearMesh(silent) {
       meshId = null; meshVersion = -1; meshPos = null; meshIdx = null;
@@ -573,8 +599,13 @@ createApp({
         lsum += v;
       }
       dbg.lineMin = lmin; dbg.lineMax = lmax; dbg.lineSum = lsum;
+      // Wireframe color = the chunk's debug brush color (same rule as the
+      // Vulkan DEBUG_MODE_MATERIAL_INDEX views).
+      const chunk = meshId != null ? chunks.value.get(meshId) : null;
+      const cc = chunk ? brushColor(chunk.brushIndex, chunk.layer) : [1.0, 1.0, 1.0];
+      dbg.wireColor = cc;
       const lc = new Float32Array((lp.length / 3) * 3);
-      for (let i = 0; i < lc.length; i += 3) { lc[i] = 1.0; lc[i + 1] = 0.95; lc[i + 2] = 0.55; }
+      for (let i = 0; i < lc.length; i += 3) { lc[i] = cc[0]; lc[i + 1] = cc[1]; lc[i + 2] = cc[2]; }
       bindArr(meshLineColBuf, lc, aCol, 3);
       meshLineCount = lp.length / 3;
     }
@@ -760,7 +791,7 @@ createApp({
     });
 
     return { chunks, connected, selected, selectedId, query, sortKey, showOpaque, showTransparent,
-      showWireframe, camSpeed, fps, culled, lastMsg, meshStatus, wsTarget, wsError,
+      showWireframe, camSpeed, fps, culled, lastMsg, meshStatus, brushSwatch, wsTarget, wsError,
       filtered, opaqueCount, transparentCount,
       requestAll, clearAll, select, sortBy, reconnect, shortId, fmtF, fmt3, spaceName };
   }
