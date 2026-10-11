@@ -111,4 +111,10 @@ private:
     std::filesystem::file_time_type indexMtime_{};
     std::mutex indexMutex_;
     std::string loadIndexHtml();
+    // Web root serving the built Vue app (the directory holding the resolved
+    // index.html, i.e. .../web). loadIndexHtml() sets it as a side effect.
+    std::string webRoot_;
+    // Serve one static asset from webRoot_ (binary-safe). Returns false for
+    // missing files / path escapes; contentType is set from the extension.
+    bool loadWebAsset(const std::string& rel, std::string& out, std::string& contentType);
 };

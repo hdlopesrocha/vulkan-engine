@@ -102,11 +102,12 @@ std::string WebServer::loadIndexHtml() {
             return indexHtml_;
     }
     static const char* kCandidates[] = {
-        "server/web/index.html",     // CWD = repo root
-        "../server/web/index.html",  // CWD = bin/
-        "web/index.html",            // CWD = bin/ after `make` copy
+        "server/web/dist/index.html",  // CWD = repo root (vite build)
+        "../server/web/dist/index.html",
+        "web/index.html",              // CWD = bin/ after `make` copy of dist/
         "./web/index.html",
         "bin/web/index.html",
+        "server/web/index.html",       // legacy single-file fallback (dev)
     };
     for (const char* p : kCandidates) {
         std::ifstream f(p, std::ios::binary);
@@ -117,11 +118,56 @@ std::string WebServer::loadIndexHtml() {
         indexPath_ = p;
         std::error_code ec;
         indexMtime_ = std::filesystem::last_write_time(indexPath_, ec);
-        std::cout << "[web] serving page from '" << p << "' (" << indexHtml_.size() << " bytes)\n";
+        // Web root = the directory holding index.html (dist/ or legacy web/).
+        webRoot_ = std::filesystem::path(p).parent_path().string();
+        if (webRoot_.empty()) webRoot_ = ".";
+        std::cout << "[web] serving page from '" << p << "' (" << indexHtml_.size()
+                  << " bytes, root '" << webRoot_ << "')\n";
         return indexHtml_;
     }
-    std::cerr << "[web] index.html not found (tried server/web/index.html, ../server/web/index.html, web/index.html)\n";
+    std::cerr << "[web] index.html not found (tried server/web/dist/index.html, web/index.html)\n";
     return {};
+}
+
+// Static asset from the built app (vite dist/): "<root>/<rel>" read fresh
+// per request so `npm run build` takes effect without a server restart.
+// Only regular files directly under webRoot_ (or its assets/ subdir) are
+// served; anything else (.., absolute paths, directories) is rejected.
+bool WebServer::loadWebAsset(const std::string& rel, std::string& out, std::string& contentType) {
+    if (rel.empty() || rel[0] == '/' || rel.find("..") != std::string::npos) return false;
+    std::lock_guard<std::mutex> l(indexMutex_);
+    if (webRoot_.empty()) return false;
+    std::error_code ec;
+    std::filesystem::path full = std::filesystem::path(webRoot_) / rel;
+    if (!std::filesystem::is_regular_file(full, ec)) return false;
+    // Containment: canonical(full) must stay inside canonical(webRoot_).
+    std::filesystem::path root = std::filesystem::weakly_canonical(webRoot_, ec);
+    std::filesystem::path canon = std::filesystem::weakly_canonical(full, ec);
+    if (ec) return false;
+    {
+        std::string rs = root.string(), cs = canon.string();
+        if (cs.size() < rs.size() || cs.compare(0, rs.size(), rs) != 0) return false;
+    }
+    std::ifstream f(canon, std::ios::binary);
+    if (!f) return false;
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    out = ss.str();
+    auto endsWith = [&](const char* suf) {
+        size_t n = std::strlen(suf);
+        return canon.string().size() >= n &&
+            canon.string().compare(canon.string().size() - n, n, suf) == 0;
+    };
+    if (endsWith(".js")) contentType = "text/javascript; charset=utf-8";
+    else if (endsWith(".css")) contentType = "text/css; charset=utf-8";
+    else if (endsWith(".html")) contentType = "text/html; charset=utf-8";
+    else if (endsWith(".json") || endsWith(".map")) contentType = "application/json";
+    else if (endsWith(".svg")) contentType = "image/svg+xml";
+    else if (endsWith(".png")) contentType = "image/png";
+    else if (endsWith(".ico")) contentType = "image/x-icon";
+    else if (endsWith(".wasm")) contentType = "application/wasm";
+    else contentType = "application/octet-stream";
+    return true;
 }
 
 void WebServer::start() {
@@ -339,6 +385,9 @@ bool WebServer::handleHttpOrWs(int fd) {
            << ",\"meshes\":" << meshesSent() << "}\n";
         body = ss.str();
         ctype = "application/json";
+    } else if (loadWebAsset(path.substr(1), body, ctype)) {
+        // Built-app asset (vite dist/: ./assets/*, favicons, ...). Code path
+        // unchanged on miss (falls through to 404 below).
     } else {
         code = 404; codeText = "Not Found";
         body = "not found\n";
