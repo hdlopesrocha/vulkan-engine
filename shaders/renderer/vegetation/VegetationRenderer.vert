@@ -35,6 +35,10 @@ layout(location = VARY_BRUSHPATCH) flat out int outBrushIndex;
 layout(location = VARY_POSWORLD) out vec3 outWorldPos;
 layout(location = VARY_PLANE_NORMAL) flat out vec3 outPlaneNormal;
 layout(location = VARY_POSLIGHT) flat out vec3 outTangentWS;
+// H8 (perf report 27): uniform light direction normalized once per vertex,
+// not per pixel (uniform input, identical value). VARY_TANGENTWS is unused
+// in the billboard color/depth interface.
+layout(location = VARY_TANGENTWS) flat out vec3 outLightDirN;
 
 // Canonical scene UBO (set=0 binding=0): the shared struct IS the block
 // layout — no packed/named-view split.
@@ -242,6 +246,9 @@ void main() {
     outBrushIndex = billboardIdx;
     outPlaneNormal = planeNormal;
     outTangentWS = tangent;
+    // H8 (perf report 27): uniform light-direction normalize hoisted out of
+    // the color fragment (uniform input, identical value).
+    outLightDirN = normalize(-ubo.lightDirection);
 
     // UV: from vertex attribute, array layer = billboard index
     fragTexCoord = vec3(inCornerUV, float(billboardIdx));

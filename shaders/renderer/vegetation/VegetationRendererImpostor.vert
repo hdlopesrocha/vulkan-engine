@@ -14,7 +14,14 @@ layout(location = ATTR_VEG_AUX) in float inBakedHeight;
 layout(location = VARY_UV) out vec3 outTexCoord;
 layout(location = VARY_POSWORLD) out vec3 outWorldPos;
 layout(location = VARY_FACE_NORMAL) flat out vec3 outFaceNormal;
-layout(location = VARY_ROTFRAC) flat out float outRotFrac;
+// H8 (perf report 27): per-instance trig as a flat varying (replaces the
+// flat rotFrac, whose only fragment consumer was the per-pixel theta/cosT/
+// sinT rebuild). Same location, no new interpolators.
+layout(location = VARY_ROTFRAC) flat out vec2 outCosSinT;
+// H8 (perf report 27): uniform light direction normalized once per vertex,
+// not per pixel (uniform input, identical value). VARY_TANGENTWS is unused
+// in the impostor color interface.
+layout(location = VARY_TANGENTWS) flat out vec3 outLightDirN;
 layout(location = VARY_POSLIGHT) flat out vec3 outInstanceOffset;
 
 // Canonical scene UBO (set=0 binding=0): the shared struct IS the block
@@ -44,7 +51,6 @@ void main() {
     vec3 worldPos = instanceData.xyz;
     int billboardIdx = int(floor(instanceData.w));
     float rotFrac = fract(instanceData.w);
-    outRotFrac = rotFrac;
 
     vec3 camPos = ubo.viewPosition;
     float dist = distance(worldPos, camPos);
@@ -78,6 +84,18 @@ void main() {
     // done here: vertex invocations cannot share values without subgroup ops,
     // and quad-in-one-subgroup is not portable.
     vec3 toCamera = normalize(camPos - worldPos);
+
+    // H8 (perf report 27): per-instance trig once per vertex, not once per
+    // pixel. theta/cosT/sinT are a pure function of the flat rotFrac (same
+    // verbatim expression the fragment stage evaluated), so every pixel of
+    // the instance receives the identical pair via the flat varying; the
+    // per-pixel rotate/normalize/lighting chain in the fragment stage is
+    // untouched. The uniform light-direction normalize moves here for the
+    // same reason (uniform input, identical value, one evaluation per
+    // vertex instead of per pixel).
+    float theta = rotFrac * 6.28318530718;
+    outCosSinT = vec2(cos(theta), sin(theta));
+    outLightDirN = normalize(-ubo.lightDirection);
 
     int layerIdx = impostorBestLayerIndex(toCamera, rotFrac, billboardIdx);
 

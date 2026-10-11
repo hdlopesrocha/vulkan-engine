@@ -7,6 +7,8 @@ layout(location = VARY_BRUSHPATCH) in flat int inBrushIndex;
 layout(location = VARY_POSWORLD) in      vec3 inWorldPos;    // interpolated vertex world position
 layout(location = VARY_PLANE_NORMAL) in flat vec3 inPlaneNormal; // billboard face normal (world space)
 layout(location = VARY_POSLIGHT) in flat vec3 inTangentWS;   // billboard tangent (world space)
+// H8 (perf report 27): uniform light direction already normalized per vertex.
+layout(location = VARY_TANGENTWS) in flat vec3 inLightDirN;
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 #include "../../includes/SceneBindings.glsl"
@@ -120,7 +122,9 @@ void main() {
     // Lighting: ambient + Lambertian diffuse + Blinn-Phong specular.
     // ubo.lightDir points FROM the light source toward the scene.
     // ---------------------------------------------------------------
-    vec3  L     = normalize(-ubo.lightDirection);
+    // H8 (perf report 27): L arrives normalized from the vertex stage (flat
+    // varying, uniform input); the lighting chain below is unchanged.
+    vec3  L     = inLightDirN;
     float NdotL = max(dot(worldNormal, L), 0.0);
 
     vec3  V     = normalize(ubo.viewPosition - inWorldPos);
