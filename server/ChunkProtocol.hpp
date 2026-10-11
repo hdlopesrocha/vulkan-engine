@@ -28,10 +28,15 @@
 //     0x15 SCENE_META     : u32 layerCount, then per layer:
 //                           u8 layer, f32 rootMin xyz, f32 rootLen,
 //                           f32 chunkSize, u8 rootChunkLod (stored, +1-shifted),
-//                           u8 pad[2]. Sent once per snapshot after START so
-//                           render clients can set up the LoD rung gate
-//                           (root lattice origin + ladder depth) exactly.
-//                           The web viewer ignores it.
+//                           u8 pad[2];
+//                           then an extension section, per layer:
+//                           u8 layer, u8 renderer (0 Solid, 1 Water),
+//                           u8 nameLen, name bytes (UTF-8, not NUL-terminated).
+//                           Sent once per snapshot after START so render
+//                           clients can set up the LoD rung gate (root lattice
+//                           origin + ladder depth) exactly and name layers.
+//                           Receivers that predate the extension stop after
+//                           the fixed entries and ignore the tail.
 //
 // Chunk ids are OPAQUE server-assigned monotonic numbers (1, 2, 3, ...).
 // They are never node pointers and never reused while the mapping lives:
@@ -54,6 +59,7 @@
 //   44 f32 sdf[8]
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace chunkproto {
@@ -108,14 +114,17 @@ std::vector<uint8_t> buildSnapshotEnd();
 std::vector<uint8_t> buildChunkBatch(const ChunkRecord* recs, size_t count);
 std::vector<uint8_t> buildDeleteBatch(const uint64_t* ids, size_t count);
 
-// Scene-level metadata for render clients (LoD rung gate setup). One entry
-// per layer; rootChunkLod uses the stored +1-shifted representation.
+// Scene-level metadata for render clients (LoD rung gate setup + layer
+// directory). One entry per layer; rootChunkLod uses the stored
+// +1-shifted representation; renderer is 0 (Solid) / 1 (Water).
 struct SceneMetaLayer {
     uint8_t layer = 0;
     float rootMinX = 0.0f, rootMinY = 0.0f, rootMinZ = 0.0f;
     float rootLen = 0.0f;
     float chunkSize = 0.0f;
     uint8_t rootChunkLod = 0;
+    uint8_t renderer = 0;
+    std::string name;
 };
 std::vector<uint8_t> buildSceneMeta(const SceneMetaLayer* layers, size_t count);
 

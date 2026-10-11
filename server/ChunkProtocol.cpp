@@ -135,7 +135,7 @@ std::vector<uint8_t> buildDeleteBatch(const uint64_t* ids, size_t count) {
 
 std::vector<uint8_t> buildSceneMeta(const SceneMetaLayer* layers, size_t count) {
     std::vector<uint8_t> v;
-    v.reserve(9 + count * 24);
+    v.reserve(9 + count * 64);
     v.push_back('C'); v.push_back('H'); v.push_back('K'); v.push_back('1');
     v.push_back(MSG_SCENE_META);
     putU32(v, static_cast<uint32_t>(count));
@@ -146,6 +146,16 @@ std::vector<uint8_t> buildSceneMeta(const SceneMetaLayer* layers, size_t count) 
         putF32(v, m.rootLen);
         putF32(v, m.chunkSize);
         v.push_back(m.rootChunkLod); v.push_back(0); v.push_back(0);
+    }
+    // Extension section (append-only: receivers that predate it stop after
+    // the fixed entries above and ignore this tail).
+    for (size_t i = 0; i < count; ++i) {
+        const SceneMetaLayer& m = layers[i];
+        const size_t nameLen = std::min(m.name.size(), size_t(255));
+        v.push_back(m.layer);
+        v.push_back(m.renderer);
+        v.push_back(static_cast<uint8_t>(nameLen));
+        v.insert(v.end(), m.name.begin(), m.name.begin() + nameLen);
     }
     return v;
 }

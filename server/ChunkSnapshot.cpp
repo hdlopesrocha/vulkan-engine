@@ -74,11 +74,10 @@ std::vector<chunkproto::ChunkRecord> collectAll(ChunkIdRegistry& ids, LocalScene
     return out;
 }
 
-static void metaForTree(const Octree& tree, uint8_t layer,
+static void metaForTree(const Octree& tree, const chunkproto::SceneMetaLayer& dir,
                         std::vector<chunkproto::SceneMetaLayer>& out) {
     std::shared_lock<std::shared_mutex> lock(tree.treeMutex);
-    chunkproto::SceneMetaLayer m;
-    m.layer = layer;
+    chunkproto::SceneMetaLayer m = dir;
     m.rootMinX = tree.getMin().x;
     m.rootMinY = tree.getMin().y;
     m.rootMinZ = tree.getMin().z;
@@ -93,8 +92,16 @@ std::vector<chunkproto::SceneMetaLayer> collectMeta(LocalScene& scene) {
     const size_t n = scene.layerCount();
     out.reserve(n);
     for (size_t i = 0; i < n; ++i) {
-        Octree* tree = scene.getLayerOctree(static_cast<Layer>(i));
-        if (tree) metaForTree(*tree, static_cast<uint8_t>(i), out);
+        const Layer layer = static_cast<Layer>(i);
+        Octree* tree = scene.getLayerOctree(layer);
+        if (!tree) continue;
+        // Layer directory (names + renderer mapping) comes from the scene,
+        // read before the tree lock so no locks ever nest here.
+        chunkproto::SceneMetaLayer dir;
+        dir.layer = static_cast<uint8_t>(i);
+        dir.name = scene.layerName(layer);
+        dir.renderer = static_cast<uint8_t>(scene.layerRenderer(layer));
+        metaForTree(*tree, dir, out);
     }
     return out;
 }
