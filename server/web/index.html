@@ -58,7 +58,6 @@
     <button class="ghost" @click="clearAll">Clear</button>
     <button class="ghost" @click="resetCamera" title="Restore the default start view">Reset camera</button>
     <label class="chk"><input type="checkbox" v-model="showWireframe"> wireframe</label>
-    <label class="chk">speed <input type="range" min="16" max="2048" v-model.number="camSpeed" style="width:90px"> {{ camSpeed }}</label>
   </header>
   <div v-if="!connected" class="connwarn">
     <span>WS unreachable: <code>{{ wsTarget }}</code> — {{ wsError }}</span>
@@ -358,7 +357,6 @@ createApp({
       for (const c of chunks.value.values()) if (c.chunkLod === lodFilter.value) n++;
       return n;
     });
-    const camSpeed = ref(512);
     const fps = ref(0);
     const culled = ref(0);
     const lastMsg = ref('no data yet');
@@ -374,15 +372,17 @@ createApp({
     let meshId = null, meshVersion = -1, meshPos = null, meshIdx = null, meshBrush = null;
 
     // camera mirrors Vulkan: pos(-512,2048,0), yaw -90 (math/Camera + MyApp setup).
-    // Pose + speed persist in localStorage across reloads (validated on load).
+    // Pose persists in localStorage across reloads (validated on load).
+    // Move speed is fixed at the Vulkan default (Camera::speed = 512).
     const CAM_STORE_KEY = 'chunkViewer.camera.v1';
-    const CAM_DEFAULT = { pos: [-512, 2048, 0], yaw: -90, speed: 512 };
+    const CAM_DEFAULT = { pos: [-512, 2048, 0], yaw: -90 };
+    const CAM_SPEED = 512;
     const cam = { pos: [...CAM_DEFAULT.pos], quat: eulerToQuat(CAM_DEFAULT.yaw, 0, 0), timer: 0, keys: new Set() };
     const NAV_KEYS = ['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE','KeyH','KeyF','KeyG','KeyT','KeyR','KeyY'];
     let camDirty = false, lastCamSave = 0;
     function saveCamera() {
       try {
-        localStorage.setItem(CAM_STORE_KEY, JSON.stringify({ pos: cam.pos, quat: cam.quat, speed: camSpeed.value }));
+        localStorage.setItem(CAM_STORE_KEY, JSON.stringify({ pos: cam.pos, quat: cam.quat }));
       } catch (e) {}
       camDirty = false;
       lastCamSave = performance.now();
@@ -397,14 +397,12 @@ createApp({
         const ok4 = a => Array.isArray(a) && a.length === 4 && a.every(Number.isFinite);
         if (ok3(o.pos)) cam.pos = [...o.pos];
         if (ok4(o.quat)) cam.quat = qnorm([...o.quat]);
-        if (Number.isFinite(o.speed)) camSpeed.value = Math.min(2048, Math.max(16, o.speed));
       } catch (e) {}
     }
     function resetCamera() {
       cam.pos = [...CAM_DEFAULT.pos];
       cam.quat = eulerToQuat(CAM_DEFAULT.yaw, 0, 0);
       cam.timer = 0;
-      camSpeed.value = CAM_DEFAULT.speed;
       saveCamera();
     }
     loadCamera();
@@ -610,7 +608,7 @@ createApp({
       selectedId: selectedId.value, showWireframe: showWireframe.value,
       chunks: chunks.value.size, lodFilter: lodFilter.value, rungCount: rungCount.value,
       filters: { ...colFilter.value },
-      cam: { pos: [...cam.pos], quat: [...cam.quat] }, camSpeed: camSpeed.value });
+      cam: { pos: [...cam.pos], quat: [...cam.quat] } });
     let gl = null, prog = null, posBuf = null, colBuf = null, uVP = null;
     let meshTriBuf = null, meshLineBuf = null, meshLineColBuf = null;
     let vertCount = 0, meshTriCount = 0, meshLineCount = 0;
@@ -752,7 +750,7 @@ createApp({
       const hasT = k.has('KeyW')||k.has('KeyS')||k.has('KeyA')||k.has('KeyD')||k.has('KeyQ')||k.has('KeyE');
       if (hasT) cam.timer += dt; else cam.timer = 0;
       const accel = (Math.exp(cam.timer) - 1) / (Math.exp(1) - 1);
-      const vel = camSpeed.value * dt * (hasT ? Math.max(accel, 1e-3) : 0);
+      const vel = CAM_SPEED * dt * (hasT ? Math.max(accel, 1e-3) : 0);
       let mv = [0, 0, 0];
       if (k.has('KeyW')) mv = V3.add(mv, V3.scale(fwd, vel));
       if (k.has('KeyS')) mv = V3.add(mv, V3.scale(fwd, -vel));
@@ -938,7 +936,7 @@ createApp({
 
     return { chunks, connected, selected, selectedId, colFilter, sortKey, layerVisibility,
       layerList, layerCounts, layerName, layerTag, lodFilter, rungCount,
-      showWireframe, camSpeed, fps, culled, lastMsg, meshStatus, brushSwatch, wsTarget, wsError,
+      showWireframe, fps, culled, lastMsg, meshStatus, brushSwatch, wsTarget, wsError,
       filtered,
       requestAll, clearAll, select, sortBy, reconnect, resetCamera, shortId, fmtF, fmt3, spaceName };
   }
