@@ -64,19 +64,10 @@ void ImpostorCapture::init(VulkanApp* app, VegetationRenderer* vegRenderer) {
     imguiDescSets.fill(VK_NULL_HANDLE);
     capturedTypes = 0;
 
-    // Pre-transition all 60 layers UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
-    // so the render pass sees a writable layout before the first capture.
-    app->runSingleTimeCommands([&](VkCommandBuffer cb) {
-        app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            1, 0, TOTAL_LAYERS);
-        app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            1, 0, TOTAL_LAYERS);
-        app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            1, 0, TOTAL_LAYERS);
-    });
+    // H5 (perf report 27): no init-time pre-transition. It is redundant:
+    // every capture re-transitions its layer ranges from UNDEFINED on first
+    // touch inside recordCaptureViews (batched, CLEAR on load discards prior
+    // bytes), so pre-transitioning all 60 layers here only costs a submit.
 
     initDone = true;
     fprintf(stderr, "[ImpostorCapture] init complete: %u billboard types × %u views = %u layers @ %ux%u\n",
@@ -209,22 +200,52 @@ void ImpostorCapture::writeCaptureCameraUbos(float billboardScale, uint32_t laye
 void ImpostorCapture::recordCaptureViews(VkCommandBuffer cb, VulkanApp* app,
                                          uint32_t layerBase, uint32_t viewCount,
                                          uint32_t firstInstance, const CapturePC& pc) {
+    // Defensive: ensure descriptor sets are allocated before recording
+    // anything (loop-invariant, so check once up front instead of per view).
+    if (uboDescSet == VK_NULL_HANDLE || texDescSet == VK_NULL_HANDLE || viewCount == 0) {
+        std::cerr << "[ImpostorCapture] descriptor sets not ready, skipping capture for these views." << std::endl;
+        return;
+    }
+
+    // H5 (perf report 27): batched attachment transitions. Every layer is
+    // CLEARed on load, so the three arrays stay in COLOR_ATTACHMENT_OPTIMAL
+    // across all views of a capture: one batched UNDEFINED → ATTACHMENT
+    // transition per array up front (discards prior bytes, correct for both
+    // first capture and re-capture) and one batched ATTACHMENT →
+    // SHADER_READ_ONLY transition per array at the end. Same per-layer
+    // old/new layouts as the old per-view transitions, in a handful of
+    // multi-layer calls instead of 6 per view.
+    app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerBase, viewCount);
+    app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerBase, viewCount);
+    app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerBase, viewCount);
+    // H5 (perf report 27): the transient depth image has storeOp DONT_CARE,
+    // so it stays in depth-attachment layout across views (and captures);
+    // the helper skips the barrier when the tracked layout is already there.
+    app->recordTransitionImageLayoutLayer(cb, depthImage, VK_FORMAT_D32_SFLOAT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+
+    // H5 (perf report 27): view-invariant binds hoisted out of the per-view
+    // loop — pipeline, viewport/scissor, vertex/index buffers. Only the
+    // dynamic UBO offset changes per view, so only the descriptor bind (plus
+    // the identical push constants) is recorded per view.
+    VkViewport vp{ 0.0f, 0.0f, float(TEX_SIZE), float(TEX_SIZE), 0.0f, 1.0f };
+    VkRect2D   sci{ { 0, 0 }, { TEX_SIZE, TEX_SIZE } };
+    vkCmdSetViewport(cb, 0, 1, &vp);
+    vkCmdSetScissor(cb, 0, 1, &sci);
+
+    if (cmdState) cmdState->bindGraphicsPipeline(cb, capturePipeline);
+    else vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, capturePipeline);
+
     VkBuffer     vbs[2]     = { captureVertBuf, captureInstBuf };
     VkDeviceSize offsets[2] = { 0, 0 };
+    vkCmdBindVertexBuffers(cb, 0, 2, vbs, offsets);
+    vkCmdBindIndexBuffer(cb, captureIdxBuf, 0, VK_INDEX_TYPE_UINT32);
 
     for (uint32_t viewIdx = 0; viewIdx < viewCount; ++viewIdx) {
         const uint32_t layerIdx = layerBase + viewIdx;
-
-        // Transition color layers to COLOR_ATTACHMENT_OPTIMAL
-        app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
-        app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
-        app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
-        // Transition depth UNDEFINED → DEPTH_STENCIL_ATTACHMENT (reuse each view)
-        app->recordTransitionImageLayoutLayer(cb, depthImage, VK_FORMAT_D32_SFLOAT,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
 
         VkRenderingAttachmentInfo colorAtts[3]{};
         colorAtts[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -263,21 +284,7 @@ void ImpostorCapture::recordCaptureViews(VkCommandBuffer cb, VulkanApp* app,
         renderingInfo.pColorAttachments = colorAtts;
         renderingInfo.pDepthAttachment = &depthAtt;
 
-        // Defensive: ensure descriptor sets are allocated before starting render
-        if (uboDescSet == VK_NULL_HANDLE || texDescSet == VK_NULL_HANDLE) {
-            std::cerr << "[ImpostorCapture] descriptor sets not ready, skipping capture for this view." << std::endl;
-            continue;
-        }
-
         vkCmdBeginRendering(cb, &renderingInfo);
-
-        VkViewport vp{ 0.0f, 0.0f, float(TEX_SIZE), float(TEX_SIZE), 0.0f, 1.0f };
-        VkRect2D   sci{ { 0, 0 }, { TEX_SIZE, TEX_SIZE } };
-        vkCmdSetViewport(cb, 0, 1, &vp);
-        vkCmdSetScissor(cb, 0, 1, &sci);
-
-        if (cmdState) cmdState->bindGraphicsPipeline(cb, capturePipeline);
-        else vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, capturePipeline);
 
         const uint32_t dynOffset = static_cast<uint32_t>(viewIdx * uboStride);
         VkDescriptorSet sets[3] = { uboDescSet, texDescSet, sharedVegRenderer->getWindParamsDescSet() };
@@ -290,20 +297,19 @@ void ImpostorCapture::recordCaptureViews(VkCommandBuffer cb, VulkanApp* app,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(CapturePC), &pc);
 
-        vkCmdBindVertexBuffers(cb, 0, 2, vbs, offsets);
-        vkCmdBindIndexBuffer(cb, captureIdxBuf, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cb, captureIdxCount, NUM_INSTANCES, 0, 0, firstInstance);
 
         vkCmdEndRendering(cb);
-
-        // Transition color + depth layers back to SHADER_READ_ONLY_OPTIMAL
-        app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
-        app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
-        app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
     }
+
+    // H5 (perf report 27): one batched out-transition per array at the end
+    // of the capture range (same per-layer old/new layouts as before).
+    app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerBase, viewCount);
+    app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerBase, viewCount);
+    app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerBase, viewCount);
 }
 
 VkFence ImpostorCapture::submitCaptureTypesAsync(VulkanApp* app, const CapturePC& pc,
