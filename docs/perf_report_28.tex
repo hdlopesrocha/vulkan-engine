@@ -1,0 +1,541 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+% Long unbreakable \texttt{} paths are the main source of overfull boxes in
+% this report; a generous emergencystretch plus sloppy paragraph breaking lets
+% TeX loosen those lines instead of running into the margin.
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\title{Performance Report 28: Vulkan Engine \\
+\large The Tables That Remain --- Finishing the Pixel-Identical Slice of Ray Marching and Grass}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Report~27 admitted only pixel-identical changes to the grass seam and found
+15; twelve landed exactly as specified (commits \texttt{06df5e37} through
+\texttt{ee29528d}: union fast path, unblended veg color, batched capture,
+material-only tint, submit elision, flat trig, and the hygiene tail). Three
+were skipped as specified-plus-validation: the SDF frame table (callees take
+\texttt{SdfInstance} by value with no index), the vertex-invariant table
+(new compute, new attributes, unowned files), and the twin folding (build
+plumbing plus deliberate edge differences). This report re-iterates the same
+scope under the same gate (\S\ref{sec:gate27}, unchanged) and finds what is
+genuinely left: buildable specifications for all three skipped items ---
+with the index-threading, binding numbers, and file lists the handoffs asked
+for --- plus one new bandwidth win the re-audit surfaced (two-tier
+turbulence reject) and three exact micro-items (smoothK hoist, twin
+placement include with dead-varying cleanup, push-invariance trivia).
+
+It finds \textbf{7 issues} (2 critical, 1 high, 3 medium, 1 low), all
+pixel-identical by construction with an A/B gate each. Scope score
+\textbf{6.4/10}; folding into the combined estimate at 10\% weight gives
+\textbf{6.0/10}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+\subsection{Scope and Method}
+
+Same seam as reports~26--27: vegetation billboards/impostors, the SDF grass
+march, and their shadows, audited at the working tree including all
+committed report-27 implementations. One scope-relevant tree change is
+\emph{not} this report's doing and is not committed here: uncommitted
+\texttt{types/Settings.hpp} flips the defaults (clouds off,
+\texttt{grassMode = Vegetation}, \texttt{rayMarchingEnabled = false}), so
+the default steady state now exercises the vegetation path while the SDF
+items below engage in GrassRaycast mode. Both paths are covered regardless.
+Method matches reports~22--27: full reads with file:line evidence; SPIR-V
+word counts re-synthesized with the \texttt{Makefile} \texttt{glslc} flags
+for every touched module (\texttt{bin/shaders/} still ships none of them).
+The application was not executed; magnitudes are analytic estimates at
+$1920\times1080$, 3 frames in flight.
+
+\subsection{The Gate (Unchanged From Report 27)}
+\label{sec:gate27}
+
+Same three qualifying classes: identical floating-point operations in
+identical order executed fewer times; provably dead work removed;
+identical bytes through a cheaper path. Every prompt fails closed on a
+pixel-identical A/B. Re-rounds, re-clocks, re-tiers, and order-dependent
+blends are excluded; \S\ref{sec:unchanged28} extends the ledger with four
+traps this re-audit caught (squared-distance compare, CPU-side normalize,
+turbulence-gating without a bound, unbinding a now-free buffer).
+
+\subsection{Measured Budgets}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Module} & \textbf{Words} & \textbf{Instrs} & \textbf{Role} \\
+\midrule
+\texttt{SdfRenderer.frag} & 69\,793 & 5\,342 & generic march (union path, PC gate) \\
+\texttt{VegetationRenderer.frag} & 14\,388 & 1\,289 & billboard color (flat lightDir) \\
+\texttt{VegetationRendererImpostor.frag} & 14\,117 & 1\,272 & impostor color (tap reorder) \\
+\texttt{SdfGrassShadow.frag} & 13\,685 & 1\,058 & grass EVSM march (reordered) \\
+\texttt{VegetationRenderer.vert} & 10\,029 & 742 & billboard expander \\
+\texttt{VegetationRendererShadow.vert} & 9\,260 & 667 & billboard shadow expander \\
+\texttt{VegetationRendererImpostor.vert} & 3\,880 & 347 & best-view + flat trig \\
+\texttt{VegetationRendererImpostorDepth.vert} & 3\,761 & 336 & depth twin \\
+\texttt{SdfGrassShadow.vert} & 2\,876 & 440 & proxy VS + flat constants \\
+\texttt{VegetationRendererDepth.frag} & 2\,570 & 403 & billboard depth prepass \\
+\texttt{SdfRenderer.vert} & 2\,291 & 384 & shared SDF proxy-cube VS \\
+\texttt{VegetationRendererImpostorDepth.frag} & 1\,257 & 155 & impostor depth prepass \\
+\texttt{VegetationRendererShadow.frag} & 2\,016 & 343 & billboard EVSM writer \\
+\bottomrule
+\end{tabular}
+\caption{Word counts (\texttt{spirv-dis | wc -w}) and instruction counts
+(op lines), re-synthesized; every delta vs report~27 is direction-plausible
+(shadow frag $-174$ words as its derivation moved to the vert, $+504$
+there; union branch $+10$ instrs in the main march; flat trig $+18$ in the
+impostor vert). Variant rows from report~27 are unchanged and omitted.}
+\end{table}
+
+\subsection{Banked Since Report 27}
+\label{sec:banked28}
+
+Twelve of fifteen landed, verified against the committed tree (no
+re-reporting below): C2 union fast path + shadow AABB-first reorder,
+H4 unblend, H5 capture batching, H6 material-only tint, H7 submit elision,
+H8 flat trig, M9 tap-first, M10 flat constants + PC cache, M11 fence
+narrowing, M12 unified arbiter, L14 profiler push, L15 cap proof
+(\texttt{06df5e37}, \texttt{44210f24}, \texttt{f321a080},
+\texttt{1e1b6017}, \texttt{1796b1a5}, \texttt{7a2d9472},
+\texttt{ee29528d}). Skipped with handoffs: the SDF frame table (C1),
+the vertex-invariant table (C3), the twin folding (L13) --- specified
+buildably here as C1, C2, and M5 respectively.
+
+\subsection{Recommended Order}
+
+Build the SDF frame table (C1) $\rightarrow$ the vertex-invariant table
+(C2) $\rightarrow$ the two-tier turbulence reject (H3) $\rightarrow$
+smoothK hoist, twin include, push trivia (M4--M6) $\rightarrow$ varying
+packing (L7).
+
+% =====================================================================
+\section{Cost Model}
+% =====================================================================
+
+\begin{equation}
+\begin{aligned}
+C = &\underbrace{\sum_{\mathrm{passes}} G_{\mathrm{pass}} V C_{\mathrm{vert}} + S C_{\mathrm{submit}} + L C_{\mathrm{bringup}} + G C_{\mathrm{sweep}}}_{\text{reports 20--23}} + \underbrace{P\,C_{\mathrm{tail}} + B\,C_{\mathrm{brush}} + K\,C_{\mathrm{equirect}}}_{\text{report 24}} \\
+&+ \underbrace{F_{\mathrm{sdf}}\,N_{\mathrm{steps}}\,N_{\mathrm{cand}}\,C_{\mathrm{eval}} + F_{\mathrm{smoke}}\,C_{\mathrm{resolve}} + F_{\mathrm{proxy}}\,C_{\mathrm{cover}}}_{\text{report 25}} \\
+&+ \underbrace{G_{\mathrm{veg}}\,V_{24}\,C_{\mathrm{wind}} + I\,C_{\mathrm{bestview}} + F_{\mathrm{imp}}\,C_{\mathrm{reproj}} + S_{\mathrm{cas}}\,(C_{\mathrm{vegshadow}} + C_{\mathrm{grassmarch}})}_{\text{reports 26--27, knobs removed, exact wins banked}}
+\end{aligned}
+\end{equation}
+
+Twelve exact terms have been removed from this equation since report~26;
+the remaining reducible structure is per-instance frame setup inside
+$C_{\mathrm{eval}}$ (C1), per-vertex invariant work inside $V_{24}$ and
+$C_{\mathrm{bestview}}$ (C2), the pre-accept material fetch inside
+$N_{\mathrm{cand}}$ (H3), and trivia (M4--L7). The equation's values are
+unchanged for every pixel --- the gate.
+
+% =====================================================================
+\section{Grass Residency}
+% =====================================================================
+
+Unchanged from reports~26--27 ($\sim$385\,MiB worst-case vegetation
+reservation plus the SDF slice). The two tables add $\sim$64\,B
+$\times$ merged instances (C1, device-local) and $\sim$48\,B $\times$ live
+veg instances (C2, device-local) --- rounding error beside the reservation.
+No other issue in this report allocates.
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: SDF Frame Table, Buildable Specification (Skipped 27-C1)}
+\label{sec:c1}
+
+\textbf{Severity: Critical.}
+
+Report~27's C1 stands unimplemented: every candidate evaluation rebuilds
+\texttt{sdfEulerMat} twice (6 trig + 2 matmuls,
+\texttt{SdfOps.glsl:101--118}) inside \texttt{sdfModelToLocal} and the
+wind lean (\texttt{SdfRenderer.frag:183--202}), plus a wind-lean field
+sample on each 4-entry-cache miss (\texttt{:788--814}), plus a third
+construction in \texttt{sdfModelDirToLocal} where used
+(\texttt{SdfModel.glsl:37--49}) --- $\sim$150 flops of setup per candidate
+per step for genuinely nontrivial rotations
+(\texttt{SdfScene.cpp:722}). The skip rationale is now precise rather than
+blocking: the evaluators take \texttt{SdfInstance} \emph{by value with no
+index} (\texttt{sdfEvalInstance} at \texttt{SdfRenderer.frag:214},
+\texttt{sdfSurfaceNormal} at \texttt{:327},
+\texttt{sdfSurfaceNormalFD} at \texttt{:353},
+\texttt{sdfGrassShadowEval} at \texttt{SdfGrassShadow.frag:128}), so no
+callee can address a table row today. The buildable path: thread the
+instance index (callers already hold it --- march \texttt{ii} at
+\texttt{SdfRenderer.frag:783}, shadow \texttt{ii} at
+\texttt{SdfGrassShadow.frag:207}; normals track best-by-value today and
+gain a best-index alongside) and read a per-frame table row instead of
+rebuilding. Table contents, all frame-invariant per instance: euler mat3,
+translation, per-axis scale, min-axis scale, lean vec2 + amplitude
+(\texttt{windSVF} at the instance origin, already per-instance by
+construction), plus \texttt{camScale} and the min-axis out-scale (both
+functions of frame uniforms + instance data only, same \texttt{sqrt} the
+march runs today). New \texttt{binding = 11} in set 1 (the layout declares
+\texttt{bindings[11]}, indices 0--10:
+\texttt{SdfRenderer.cpp:183}, smoke at 8, profile at 10), filled by a new
+\texttt{.comp} (auto-discovered by the \texttt{Makefile}) dispatched after
+\texttt{recordSlotCopies} on the same queue; extend the set-1 layout with
+the COMPUTE stage bit for the fill. Then delete the per-ray wind cache
+arrays. Same GLSL expressions, same frame time, same order: bit-identical,
+gated by A/B.
+
+\begin{tcolorbox}[promptbox={Prompt --- C1: SDF frame table with index threading}]
+Goal: transform setup once per instance per frame. Steps: (1) thread the
+instance index through the four evaluators (callers hold it; normals gain a
+best-index); (2) add the table at set-1 binding 11 with the contents above,
+filled by a per-frame compute using verbatim shader expressions;
+(3) rewrite the three euler constructions + lean + camScale reads to table
+reads; (4) delete the ray wind cache; (5) extend set-1 with COMPUTE usage
+for the fill only. Files: \texttt{shaders/renderer/sdf/SdfRenderer.frag},
+\texttt{shaders/includes/sdf/SdfModel.glsl},
+\texttt{shaders/renderer/shadow/SdfGrassShadow.frag},
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp/.hpp}, new \texttt{.comp}.
+Validation: pixel-identical A/B on march-heavy views in both grass modes,
+validation-clean (watch the new binding's stage flags and the fill/draw
+ordering).
+\end{tcolorbox}
+
+\subsection{C2: Vertex-Invariant Table, Buildable Specification (Skipped 27-C3)}
+\label{sec:c2}
+
+\textbf{Severity: Critical (wind stays per-vertex, as proven).}
+
+Report~27's C3 stands unimplemented with its boundary verified, not just
+stated: \texttt{applyWindSkew} samples at per-\emph{corner} positions
+(\texttt{worldPos + localPos}, \texttt{VegetationRenderer.vert:221})
+through position-dependent Perlin and tornado cores
+(\texttt{WindField.glsl:100--108}), so center-sampling changes values and
+wind stays per-vertex forever. Everything around it is frame-invariant per
+instance and still runs per corner per pass (depth + color + 3 cascades;
+color + depth + cascades on impostors): \texttt{cosT/sinT}
+(\texttt{VegetationRenderer.vert:194--196}), normalized surfN + Rodrigues
+tilt basis (\texttt{:228--232}), best layer (shared helper, still
+per-vertex by contract), impostor \texttt{toCamera}, plus
+\texttt{quadHalfW/H} and \texttt{billboardScale * hs} (pure instance
+functions). Vehicle, fully specified: a dedicated per-instance compute per
+frame (the merged cull emits per-\emph{chunk} commands,
+\texttt{IndirectRenderer.comp:282--303}, so it cannot host this; bake
+precedent stands) writing a device-local row consumed as a new
+instance-rate buffer (binding index 3; bindings 0--2 are vertex/instance/aux
+per the pipeline creation, and attribute location 9, \texttt{ATTR\_},
+is free: \texttt{locations.hpp} uses 0--8). All four vertex stages
+(billboard, billboard shadow, both impostor twins) read the row; corner
+math, wind, and placement stay byte-identical. Same expressions, same
+frame clock and UBO revision: bit-identical, gated by A/B with wind held
+constant.
+
+\begin{tcolorbox}[promptbox={Prompt --- C2: vertex-invariant table, specified}]
+Goal: invariant trig/frames/select/sizes once per instance per frame.
+Steps: (1) add the per-frame compute + table buffer (binding 3, new
+attribute location, instance rate); (2) consume the row in all four vertex
+stages, deleting only the verbatim recomputations; (3) leave wind,
+placement, cull, and bake untouched. Files:
+\texttt{shaders/renderer/vegetation/} (four vertex stages, one new
+\texttt{.comp}), \texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp/.hpp},
+\texttt{Makefile} (auto-discovery covers \texttt{.comp}; attribute plumbing
+is the manual part). Validation: pixel-identical A/B in both grass modes
+with wind held constant, then with wind live, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{High-Severity Issues}
+% =====================================================================
+
+\subsection{H3: Two-Tier Turbulence Reject With a CPU Max Bound (New)}
+\label{sec:h3}
+
+\textbf{Severity: High.}
+
+The main march fetches the material \emph{before} the AABB test
+(\texttt{SdfRenderer.frag:719--730}) for exactly one reason: the widened
+accept radius \texttt{skipR = maxStep + 0.1 + abs(m0.turbulence)}
+(\texttt{:726}). But turbulence is a tiny known set: grass and rock
+materials carry 0.0 (\texttt{SdfScene.cpp:530}, grass \texttt{turbulence =
+0.0}), fire/smoke carry 0.6 (\texttt{:383,432,496,614}; struct default 0.6,
+\texttt{SdfMaterial.hpp:34}). A CPU max-scan over the merged materials at
+\texttt{refreshMergedLocked} time yields an exact bound, streamed through
+the existing params-dirty path, enabling two tiers with identical
+decisions: tier 1 rejects \texttt{ob > maxStep + 0.1 + maxTurb} with
+\emph{no} material fetch (beyond the bound no material could accept);
+tier 2 fetches and runs the exact \texttt{skipR} test. Far rejects ---
+the common case, the reason the pre-test exists --- skip a $\sim$100\,B
+material SSBO load each. The bound is conservative by construction, and
+the tint-only path (which never touches turbulence) reuses the last scan.
+The load-bearing part is the bound, not the reorder: gating the fetch on
+anything weaker than the true maximum would mis-reject.
+
+\begin{tcolorbox}[promptbox={Prompt --- H3: max-turbulence two-tier reject}]
+Goal: far rejects skip the material fetch. Steps: (1) CPU max-scan of
+\texttt{|turbulence|} over merged materials at merge time into a params
+field; (2) tier-1 reject above \texttt{maxStep + 0.1 + bound} with no
+fetch, tier-2 exact test after fetch; (3) re-scan on structural rebuilds,
+reuse on material-only patches. Files:
+\texttt{shaders/renderer/sdf/SdfRenderer.frag},
+\texttt{sdf/types/SdfScene.cpp},
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp},
+\texttt{vulkan/ubo/SdfParamsUBO.hpp}. Validation: pixel-identical A/B
+including smoke-heavy views, material-load counters down,
+validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M4: smoothK Unpack Runs on the Union Path That Ignores It}
+
+\textbf{Severity: Medium.}
+
+Since the C2-union landing, both marches compute
+\texttt{float kk = clamp(sdfUnpackSmoothK(dd), 0.0, 2.0)} for \emph{every}
+evaluated candidate (\texttt{SdfRenderer.frag:828},
+\texttt{SdfGrassShadow.frag:260}) and then ignore it on the union arm.
+\texttt{sdfUnpackSmoothK} is a bare field read
+(\texttt{SdfMaterial.glsl:21}), so the saving is one unpack plus one clamp
+per candidate per step on the union path --- small per unit, multiplied by
+steps $\times$ candidates $\times$ covered pixels. Move the unpack into the
+non-union arm (identical values where read; unread where dropped).
+
+\begin{tcolorbox}[promptbox={Prompt --- M4: unpack smoothK only off the union path}]
+Goal: union candidates skip one unpack+clamp each. Steps: (1) compute
+\texttt{kk} inside the non-union branch in both marches; (2) keep the
+\texttt{haveBest} first-take and the dispatch untouched. Files:
+\texttt{shaders/renderer/sdf/SdfRenderer.frag},
+\texttt{shaders/renderer/shadow/SdfGrassShadow.frag}. Validation:
+pixel-identical A/B, validation-clean.
+\end{tcolorbox}
+
+\subsection{M5: Twin Placement Include and Dead Varying Decls (Skipped 27-L13, Re-Specified)}
+
+\textbf{Severity: Medium (maintenance first, micro second).}
+
+Full \texttt{-D} folding stays out (build plumbing plus deliberate edge
+differences, per the skip), but the re-audit narrows the safe core: the
+placement blocks (center $\rightarrow$ quad $\rightarrow$ offset
+$\rightarrow$ finalPos $\rightarrow$ UV crop) of
+\texttt{VegetationRendererImpostor.vert} and
+\texttt{VegetationRendererImpostorDepth.vert} are textually identical, while
+their prologues deliberately differ (cull sources, density context, H8
+trig in color only) and stay separate. Extract the core into a shared
+placement include: zero runtime delta, one spelling. Same pass removes
+three dead declarations the audit proved unread: \texttt{inFaceNormal} in
+the impostor color fragment (sole write is the free assignment
+\texttt{faceNorm = toCamera} at \texttt{Impostor.vert:143}),
+\texttt{inBrushIndex} in both billboard fragments (VS copy is trivial),
+and the depth fragment's \texttt{inPlaneNormal/inTangentWS/inWorldPos}
+(the VS is shared with color, which needs them, so only the frag decls
+go). Negligible ALU either way; stated honestly as drift prevention plus
+freed interpolator slots.
+
+\begin{tcolorbox}[promptbox={Prompt --- M5: placement include, dead decls}]
+Goal: one placement spelling, no dead varyings. Steps: (1) extract the
+identical center-to-crop core into a shared include used by both impostor
+vertex twins (prologues untouched); (2) delete the three dead
+declarations (and the color-VS faceNorm write); (3) keep the shared
+billboard VS writes (color needs them). Files:
+\texttt{shaders/renderer/vegetation/},
+\texttt{shaders/includes/vegetation/}. Validation: pixel-identical A/B,
+byte-comparable SPIR-V modulo names, validation-clean.
+\end{tcolorbox}
+
+\subsection{M6: Loop-Invariant Push Batching (Capture PC, Shadow Time)}
+
+\textbf{Severity: Medium (load-time and idle-path trivia, exact).}
+
+Two pushes repeat invariant bytes: \texttt{recordCaptureViews} pushes the
+identical \texttt{CapturePC} per view
+(\texttt{ImpostorCapture.cpp:289--291} inside the 20-loop; only the dynamic
+UBO offset varies per view) --- push once per call. And
+\texttt{drawShadowCascade} refills \texttt{pc.params.x = time} per cascade
+while the caller passes the identical frame \texttt{sdfTime} to every
+cascade --- fold time into the \texttt{shadowBasePC\_} cache with a debug
+check on the identity. Same bytes pushed, $\sim$19 + 2 redundant pushes
+gone per capture/frame.
+
+\begin{tcolorbox}[promptbox={Prompt --- M6: invariant push batching}]
+Goal: pushes repeat only varying bytes. Steps: (1) hoist the capture PC
+push out of the per-view loop (keep the per-view dynamic-offset bind);
+(2) fold shadow time into the base-PC cache with an identity
+debug-check. Files:
+\texttt{vulkan/renderer/vegetation/ImpostorCapture.cpp},
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp}. Validation: byte-identical
+capture arrays, identical shadow PCs, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L7: Pack the Shadow Step Count Into the March Vec4}
+
+\texttt{vShadowMaxSteps} rides its own flat int varying (location 17)
+while \texttt{vShadowMarch} carries four floats at location 16
+(\texttt{SdfGrassShadow.vert}, report~27 M10). Step counts never exceed 256,
+exactly representable in float; carrying the count in the vec4's exact
+integral value and converting back with \texttt{int(x + 0.5)} reproduces
+the identical integer and frees an interpolator slot. Trivia, stated as
+trivia: same value, one fewer location.
+
+% =====================================================================
+\section{Deliberately Unchanged}
+\label{sec:unchanged28}
+
+Carried from reports~26--27 (ladders, tiers, thinning, footprint LOD,
+resolutions, prepass overlap semantics, shared-EVSM shadow elision,
+per-corner wind, clocks, rounding-boundary crossings, frustum compaction,
+stride floor, subgroup broadcast): still quality knobs or rounding changes,
+still excluded. Four traps this re-audit caught, recorded so they stay
+caught:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item \textbf{Squared-distance AABB compare.} Replacing
+\texttt{length(oq) > skipR} with \texttt{dot(oq,oq) > skipR*skipR} saves a
+sqrt per candidate but is \emph{not} bit-identical: \texttt{fl(s*s)}
+rounding can flip the decision exactly at the boundary. H3's CPU max bound
+is the exact way to skip the fetch, not the sqrt.
+\item \textbf{CPU-side light-direction normalize.} Hoisting
+\texttt{normalize(-ubo.lightDirection)} to the CPU (glm) re-rounds vs the
+GPU path; the H8 flat varying (GPU, same op) is the exact form. Same reason
+CPU TRS precompute stays out.
+\item \textbf{Unbinding the profile-counters buffer (27-L14 residual).}
+Post-push the bound-but-unread buffer costs zero loads; conditional unbind
+needs descriptor/layout surgery for no gain. Retired, not deferred.
+\item \textbf{Impostor cull-source asymmetry.} The color twin culls on
+\texttt{ubo.viewPosition}, the depth twin on
+\texttt{windParams.cameraPosition} (same camera by construction, different
+sources). Unifying either side alters cull sets if they ever diverge;
+without evidence of divergence this is not an exact change. Left as-is,
+prologues stay separate (M5).
+\end{itemize}
+
+% =====================================================================
+\section{Implementation Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lp{5.8cm}p{5.6cm}@{}}
+\toprule
+\textbf{Item} & \textbf{Change} & \textbf{Est.\ effect} \\
+\midrule
+C1 & SDF frame table (specified) & setup $2\times$/eval $\rightarrow$ $1\times$/frame \\
+C2 & Vertex-invariant table (specified) & $24\times$ trig/tilt/select $\rightarrow$ $1\times$/frame \\
+H3 & Two-tier turbulence reject & far rejects skip material fetch \\
+M4 & smoothK hoist off union path & $-$unpack+clamp per union candidate \\
+M5 & Placement include + dead decls & one spelling; freed interpolators \\
+M6 & Invariant push batching & $-19$ pushes/capture, $-2$/frame \\
+L7 & Step-count packing & one fewer interpolator location \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C1--C2 are the last structural exact wins on the seam; H3 is the last
+bandwidth win in the march loop. Everything else exact is trivia or
+hygiene. Landing C1--C2 moves this scope toward $\sim$8/10 with no
+redesign and no A/B drift.
+
+Explicitly out of scope (carried forward): GDAL heightmap load
+(\texttt{math/HeightMapTif.cpp}), CPU threading
+(\texttt{space/ThreadPool.cpp}), input/events
+(\texttt{events/EventManager.cpp}), and the ImGui widget layer
+(release-only, never profiled).
+
+% =====================================================================
+\section{Overall Score}
+\label{sec:score28}
+% =====================================================================
+
+\subsection{Rubric (Report-28 Scope)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcp{7.2cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Wt.} & \textbf{Score and justification} \\
+\midrule
+March inner-loop exactness & 35\% & \textbf{6.0} --- union path, shadow
+AABB-first order, per-ray wind cache, surface-variant select and the
+material-only upload path are good; twice-built euler matrices and the
+pre-accept material fetch drag it down. \\
+Pass / command exactness & 30\% & \textbf{6.5} --- H7 gates on both views
+and cascades, submit elision, unblend, tap order, flat trig and the unified
+arbiter are good; the vertex-invariant half of the vertex bill is still
+per-corner. \\
+Load-time exactness & 15\% & \textbf{6.0} --- async single-submit capture
+with batched barriers and hoisted binds is good; push trivia and the
+retained sync path are not. \\
+Upload / state hygiene & 20\% & \textbf{7.0} --- versioned barriers,
+dirty-gated uploads, staged copies, narrowed fences, the EVSM dedupe, the
+L15 proofs and the material-only path are good; the twin include and dead
+decls remain. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Overall: 6.4/10 Scope, 6.0/10 Combined}
+
+\begin{equation}
+0.35(6.0) + 0.30(6.5) + 0.15(6.0) + 0.20(7.0) = \mathbf{6.4}
+\end{equation}
+
+Report~27 scored the combined engine 5.9/10; twelve exact wins banked
+since. Re-measuring the exact slice:
+
+\begin{equation}
+0.90(5.9) + 0.10(6.4) = \mathbf{6.0}
+\end{equation}
+
+The combined engine rounds up a tenth on the strength of work that changed
+no pixel: the seam's exact slice went from ``largest remaining'' to
+``two tables, one bound, and trivia.'' C1--C2--H3 close it.
+
+\end{document}
