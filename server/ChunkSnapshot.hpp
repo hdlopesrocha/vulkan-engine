@@ -19,6 +19,10 @@ namespace chunksnap {
 // Build one record from an octree callback payload. `layer` is 0/1.
 chunkproto::ChunkRecord makeRecord(ChunkIdRegistry& ids, const OctreeNodeData& nd, uint8_t layer);
 
+// Collects every chunk-rung node (each Surface node with chunkLod>0: chunk
+// cells AND their ancestors) from both octrees — the same set the live
+// apply handlers announce, so a re-request reproduces live state exactly.
+// Thread-safe: takes each tree's shared lock while walking.
 std::vector<chunkproto::ChunkRecord> collectAll(ChunkIdRegistry& ids, LocalScene& scene);
 
 // Scene-level metadata (root lattice origin + ladder depth per layer) for

@@ -43,11 +43,17 @@ static void walkTree(const Octree& tree, uint8_t layer, ChunkIdRegistry& ids,
         stack.pop_back();
         OctreeNode* node = cur.node;
         if (!node) continue;
-        if (node->isChunk()) {
+        // Emit EVERY ladder rung, not just the chunk-size frontier: the live
+        // Octree::apply handlers fire for every Surface node with chunkLod>0
+        // (chunk cells AND their ancestors up the ladder), so the snapshot
+        // must replay the same set — otherwise a re-request after Clear only
+        // ever rebuilds rung 1 and the coarser rungs are lost.
+        if (node->getChunkLod() > 0 && node->getType() == SpaceType::Surface) {
             OctreeNodeData nd(cur.level, node, cur.cube, nullptr);
             out.push_back(makeRecord(ids, nd, layer));
-            continue; // chunks are frontier: do not descend (mirrors notifyChunkNodes)
         }
+        // Always descend: finer rungs live in the subtree (an emitted
+        // ancestor never subsumes its descendants' rungs).
         OctreeNode* children[8] = {};
         node->getChildren(*tree.allocator, children);
         for (int i = 7; i >= 0; --i) {
