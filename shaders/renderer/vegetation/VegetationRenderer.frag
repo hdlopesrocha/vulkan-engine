@@ -3,7 +3,8 @@
 #include "../../includes/Locations.glsl"
 
 layout(location = VARY_UV) in vec3 inTexCoord;  // xy=uv, z=array layer
-layout(location = VARY_BRUSHPATCH) in flat int inBrushIndex;
+// M5 (perf report 28): dead inBrushIndex declaration removed (trivial VS
+// copy, unread below; the shared VS write stays for the capture pipeline).
 layout(location = VARY_POSWORLD) in      vec3 inWorldPos;    // interpolated vertex world position
 layout(location = VARY_PLANE_NORMAL) in flat vec3 inPlaneNormal; // billboard face normal (world space)
 layout(location = VARY_POSLIGHT) in flat vec3 inTangentWS;   // billboard tangent (world space)

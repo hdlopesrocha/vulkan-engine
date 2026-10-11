@@ -6,7 +6,8 @@
 // xy=UV, z=float(layerIdx) packed by the geometry shader.
 layout(location = VARY_UV) in vec3 inTexCoord;
 layout(location = VARY_POSWORLD) in vec3 inWorldPos;
-layout(location = VARY_FACE_NORMAL) flat in vec3 inFaceNormal;
+// M5 (perf report 28): dead inFaceNormal declaration removed (sole producer
+// was the free VS copy faceNorm = toCamera; no statement below reads it).
 // H8 (perf report 27): flat per-instance trig from the vertex stage (same
 // location as the old rotFrac it replaces) + flat normalized light direction.
 layout(location = VARY_ROTFRAC) flat in vec2 inCosSinT;

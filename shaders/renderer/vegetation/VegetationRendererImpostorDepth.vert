@@ -87,41 +87,8 @@ void main() {
 
     float hs = inBakedHeight;
 
-    // Uniform hs scaling, matching impostors.vert: quad, centre and UV crop
-    // must render the plant at the same size the billboard had.
-    // The quad stays glued to sloped ground by rising along the surface normal.
-    vec3 surfN = inInstanceNormal;
-    float surfNLen2 = dot(surfN, surfN);
-    surfN = (surfNLen2 > 1e-8) ? surfN * inversesqrt(surfNLen2) : vec3(0.0, 1.0, 0.0);
-    vec3 center = worldPos + surfN * (billboardScale * hs * 0.5);
-    vec3 worldUp = vec3(0.0, 1.0, 0.0);
-
-    vec3 right;
-    float sinElev = length(vec2(toCamera.x, toCamera.z));
-    if (sinElev > 0.001) {
-        right = normalize(cross(worldUp, toCamera));
-    } else {
-        right = vec3(1.0, 0.0, 0.0);
-    }
-    vec3 upDir = normalize(cross(toCamera, right));
-
-    float quadHalfW = 0.75 * billboardScale * hs;
-    float quadHalfH = 0.5  * billboardScale * hs;
-    right = right * quadHalfW;
-    vec3 up = upDir * quadHalfH;
-
-    float u = inCornerUV.x;
-    float v = inCornerUV.y;
-    vec3 offset = (u - 0.5) * 2.0 * right + (0.5 - v) * 2.0 * up;
-    vec3 finalPos = center + offset;
-
-    float uFrac = 1.5 / 2.886751346;
-    float vFrac = 1.0 / 2.886751346;
-    float vOff  = 0.5 - 0.5 / 2.886751346;
-    outTexCoord = vec3(0.5 + (inCornerUV.x - 0.5) * uFrac,
-                       inCornerUV.y * vFrac + vOff,
-                       float(layerIdx));
-    outWorldPos = finalPos;
+    // M5 (perf report 28): shared placement core (center -> quad -> offset ->
+    // finalPos -> UV crop); the prologue above stays twin-specific.
+    #include "../../includes/vegetation/ImpostorPlacement.glsl"
     outInstanceOffset = worldPos;
-    gl_Position = ubo.viewProjection * vec4(finalPos, 1.0);
 }
