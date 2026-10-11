@@ -840,7 +840,6 @@ void main() {
                 }
             }
             float d = sdfEvalInstance(p, inst, dd, m0, time, t, wl, wa);
-            float kk = clamp(sdfUnpackSmoothK(dd), 0.0, 2.0);
             if (!haveBest) { dBest = d; haveBest = true; }
             // C2 (report 27): plain-union fast path — every grass definition
             // uses op=Union (SdfScene::createGrassFromAnchors) and plain
@@ -849,7 +848,9 @@ void main() {
             // combines cost one min. Other ops keep the 6-way dispatch.
             // skipR/nearestBox/haveBest ordering untouched.
             else if (dd.op == SDF_OP_UNION) { dBest = min(dBest, d); }
-            else { dBest = sdfCombine(dBest, d, dd.op, kk); }
+            // M4 (perf report 28): smoothK unpack+clamp runs only off the
+            // union path (union keeps min(); identical values where read).
+            else { float kk = clamp(sdfUnpackSmoothK(dd), 0.0, 2.0); dBest = sdfCombine(dBest, d, dd.op, kk); }
             if (d < dMin) { dMin = d; bestInst = inst; bestDef = dd; bestMat = m0; }
         }
         if (!haveBest) {

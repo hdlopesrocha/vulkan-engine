@@ -34,8 +34,10 @@ layout(location = VARY_BRUSHPATCH) flat in int fragContainerIndex;
 // M10 (report 27): march scalars derived once per vertex into flat varyings
 // (identical ops to the old per-fragment derivation, which is deleted
 // below); flat interpolation carries them unchanged to every fragment.
-layout(location = 16) flat in vec4 vShadowMarch; // x=eps, y=safety, z=minStep, w=maxStep
-layout(location = 17) flat in int vShadowMaxSteps;
+// L7 (report 28): z carries the exact integral step count (int(x + 0.5)
+// back); minStep is re-derived verbatim from pc.march.y (same op as the old
+// vertex derivation). Location 17 is freed.
+layout(location = 16) flat in vec4 vShadowMarch; // x=eps, y=safety, z=steps, w=maxStep
 
 layout(location = FRAG_OUT_COLOR) out vec2 outEVSM;
 
@@ -174,11 +176,13 @@ void main() {
 
     // M10 (report 27): march scalars arrive from the vertex stage (flat, so
     // every fragment sees the identical value the old per-fragment
-    // derivation produced there).
-    int maxSteps = vShadowMaxSteps;
+    // derivation produced there). L7 (report 28): the count converts back
+    // with int(x + 0.5) (exact: the vert stores an integral value < 2^24 in
+    // a flat varying); minStep repeats the old vertex expression verbatim.
+    int maxSteps = int(vShadowMarch.z + 0.5);
     float eps = vShadowMarch.x;
     float safety = vShadowMarch.y;
-    float minStep = vShadowMarch.z;
+    float minStep = max(pc.march.y, 1e-4);
     float maxStep = vShadowMarch.w;
 
     vec3 cellSize = max((bMax - bMin) / vec3(dim), vec3(1e-6));
@@ -257,10 +261,11 @@ void main() {
             // opUnion; smoothK is only read by the SMOOTH_* arms), so union
             // combines cost one min. Other ops keep the sdfCombine dispatch.
             // skipR/nearestBox/haveBest ordering untouched.
-            float kk = clamp(dd.smoothK, 0.0, 2.0);
             if (!haveBest) { dBest = d; haveBest = true; }
             else if (dd.op == SDF_OP_UNION) { dBest = min(dBest, d); }
-            else { dBest = sdfCombine(dBest, d, dd.op, kk); }
+            // M4 (perf report 28): smoothK unpack+clamp runs only off the
+            // union path (union keeps min(); identical values where read).
+            else { float kk = clamp(dd.smoothK, 0.0, 2.0); dBest = sdfCombine(dBest, d, dd.op, kk); }
         }
         if (!haveBest) {
             // Conservative advance to the nearest rejected clump AABB, capped
