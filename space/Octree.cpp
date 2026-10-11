@@ -572,12 +572,25 @@ void Octree::iterateTriangles(
         if(samePosition(a->position, b->position, eps)) return;
         if(samePosition(b->position, c->position, eps)) return;
         if(samePosition(c->position, a->position, eps)) return;
-        // Tesselator::handle drops triangles with a DISCARD brush; mirror that
-        // check here so a triangle is only ever emitted once with a valid brush.
-        if(a->brushIndex <= DISCARD_BRUSH_INDEX || b->brushIndex <= DISCARD_BRUSH_INDEX
-            || c->brushIndex <= DISCARD_BRUSH_INDEX) return;
+        // Brush fallback for unattributed vertices: rung-parent chunks
+        // aggregate finer non-chunk cells whose vertices were solved
+        // (positions valid) but never painted (brush DISCARD), because paint
+        // runs on chunk assignment, not on subdivision. Such triangles are
+        // real surface; attribute them with the anchor chunk's brush (`from`
+        // carries the rung being tessellated) instead of dropping them, which
+        // left holes in chunk wireframes/meshes. Copies only — shared octree
+        // vertex state is never mutated. When the anchor itself is
+        // unattributed the old drop behavior is kept (Tesselator::handle
+        // below enforces the same rule).
+        Vertex ca = *a, cb = *b, cc = *c;
+        const int fallbackBrush = (from != NULL) ? from->vertex.brushIndex : DISCARD_BRUSH_INDEX;
+        if(ca.brushIndex <= DISCARD_BRUSH_INDEX) ca.brushIndex = fallbackBrush;
+        if(cb.brushIndex <= DISCARD_BRUSH_INDEX) cb.brushIndex = fallbackBrush;
+        if(cc.brushIndex <= DISCARD_BRUSH_INDEX) cc.brushIndex = fallbackBrush;
+        if(ca.brushIndex <= DISCARD_BRUSH_INDEX || cb.brushIndex <= DISCARD_BRUSH_INDEX
+            || cc.brushIndex <= DISCARD_BRUSH_INDEX) return;
 
-        func.handle(*a, *b, *c);
+        func.handle(ca, cb, cc);
     };
 
     auto emitSegment = [&](const EdgeSpan &edge, float start, float end, bool sign0, bool sign1) {
