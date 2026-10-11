@@ -96,6 +96,10 @@ std::vector<uint8_t> buildRequestMesh(uint64_t chunkId) {
     return v;
 }
 
+std::vector<uint8_t> buildRequestAllMeshes() {
+    return std::vector<uint8_t>{MSG_REQUEST_ALL_MESHES};
+}
+
 std::vector<uint8_t> buildSnapshotStart(uint32_t total) {
     std::vector<uint8_t> v;
     v.reserve(9);
@@ -160,13 +164,12 @@ std::vector<uint8_t> buildSceneMeta(const SceneMetaLayer* layers, size_t count) 
     return v;
 }
 
-std::vector<uint8_t> buildMeshData(const MeshData& mesh) {
+// One MeshData entry as it appears in MESH_DATA payloads and MESH_BATCH
+// frames (u64 id, u32 version, u8 layer, pad[3], u32 nVerts, u32 nIdx,
+// verts, idx, per-vertex brush array).
+static void appendMeshEntry(std::vector<uint8_t>& v, const MeshData& mesh) {
     const uint32_t nVerts = static_cast<uint32_t>(mesh.positions.size() / 3);
     const uint32_t nIdx = static_cast<uint32_t>(mesh.indices.size());
-    std::vector<uint8_t> v;
-    v.reserve(24 + mesh.positions.size() * 4 + mesh.indices.size() * 4 + (size_t)nVerts * 4);
-    v.push_back('C'); v.push_back('H'); v.push_back('K'); v.push_back('1');
-    v.push_back(MSG_MESH_DATA);
     putU64(v, mesh.id);
     putU32(v, mesh.version);
     v.push_back(mesh.layer); v.push_back(0); v.push_back(0); v.push_back(0);
@@ -178,6 +181,24 @@ std::vector<uint8_t> buildMeshData(const MeshData& mesh) {
     // stop at the indices). Missing entries encode as 0.
     for (uint32_t i = 0; i < nVerts; ++i)
         putI32(v, i < mesh.brush.size() ? mesh.brush[i] : 0);
+}
+
+std::vector<uint8_t> buildMeshData(const MeshData& mesh) {
+    std::vector<uint8_t> v;
+    v.reserve(29 + mesh.positions.size() * 4 + mesh.indices.size() * 4 + mesh.positions.size() / 3 * 4);
+    v.push_back('C'); v.push_back('H'); v.push_back('K'); v.push_back('1');
+    v.push_back(MSG_MESH_DATA);
+    appendMeshEntry(v, mesh);
+    return v;
+}
+
+std::vector<uint8_t> buildMeshBatch(const MeshData* meshes, size_t count) {
+    std::vector<uint8_t> v;
+    v.push_back('C'); v.push_back('H'); v.push_back('K'); v.push_back('1');
+    v.push_back(MSG_MESH_BATCH);
+    putU16(v, static_cast<uint16_t>(count));
+    for (size_t i = 0; i < count; ++i)
+        appendMeshEntry(v, meshes[i]);
     return v;
 }
 

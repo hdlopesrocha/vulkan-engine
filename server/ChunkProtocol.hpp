@@ -8,6 +8,8 @@
 // Client -> Server (gunzipped):
 //   byte[0] = 0x01  REQUEST_ALL  (no further payload)
 //   byte[0] = 0x02  REQUEST_MESH (bytes[1..8] = u64 chunk id, LE)
+//   byte[0] = 0x03  REQUEST_ALL_MESHES (no further payload: stream one
+//                           MESH_DATA per live chunk, skipping empties)
 //
 // Server -> Client (gunzipped):
 //   bytes[0..3] = 'C','H','K','1'  magic
@@ -37,6 +39,15 @@
 //                           origin + ladder depth) exactly and name layers.
 //                           Receivers that predate the extension stop after
 //                           the fixed entries and ignore the tail.
+//     0x16 MESH_BATCH      : u16 count, then count x MeshData entries.
+//                           Each entry is encoded exactly like the 0x14
+//                           payload (u64 id, u32 version, u8 layer, pad[3],
+//                           u32 vertCount, u32 idxCount, verts, idx, brush
+//                           array). Pushed unsolicited: once per snapshot
+//                           after the CHUNK_BATCH frames, and after every
+//                           live upsert flush for the upserted ids. Empty
+//                           meshes are omitted; receivers treat a missing id
+//                           as "no geometry". Old receivers ignore the type.
 //
 // Chunk ids are OPAQUE server-assigned monotonic numbers (1, 2, 3, ...).
 // They are never node pointers and never reused while the mapping lives:
@@ -66,6 +77,7 @@ namespace chunkproto {
 
 constexpr uint8_t MSG_REQUEST_ALL   = 0x01;
 constexpr uint8_t MSG_REQUEST_MESH  = 0x02;
+constexpr uint8_t MSG_REQUEST_ALL_MESHES = 0x03;
 
 constexpr uint8_t MSG_SNAPSHOT_START = 0x10;
 constexpr uint8_t MSG_CHUNK_BATCH    = 0x11;
@@ -73,6 +85,7 @@ constexpr uint8_t MSG_DELETE_BATCH   = 0x12;
 constexpr uint8_t MSG_SNAPSHOT_END   = 0x13;
 constexpr uint8_t MSG_MESH_DATA      = 0x14;
 constexpr uint8_t MSG_SCENE_META     = 0x15;
+constexpr uint8_t MSG_MESH_BATCH     = 0x16;
 
 constexpr uint8_t LAYER_OPAQUE      = 0;
 constexpr uint8_t LAYER_TRANSPARENT = 1;
@@ -109,6 +122,7 @@ inline std::vector<uint8_t> gzipDecompress(const std::vector<uint8_t>& in) {
 // ---- message builders (raw, UNCOMPRESSED; caller gzips before WS send) ----
 std::vector<uint8_t> buildRequestAll();
 std::vector<uint8_t> buildRequestMesh(uint64_t chunkId);
+std::vector<uint8_t> buildRequestAllMeshes();
 std::vector<uint8_t> buildSnapshotStart(uint32_t total);
 std::vector<uint8_t> buildSnapshotEnd();
 std::vector<uint8_t> buildChunkBatch(const ChunkRecord* recs, size_t count);
@@ -140,6 +154,10 @@ struct MeshData {
     std::vector<int32_t> brush;     // vertCount entries (may be empty)
 };
 std::vector<uint8_t> buildMeshData(const MeshData& mesh);
+// One MESH_BATCH frame: count entries back-to-back (same per-entry layout
+// as buildMeshData's payload). Callers chunk large sets into several frames
+// to keep individual WS frames small.
+std::vector<uint8_t> buildMeshBatch(const MeshData* meshes, size_t count);
 
 // ---- record codec ----
 void encodeRecord(const ChunkRecord& r, uint8_t* out76);
