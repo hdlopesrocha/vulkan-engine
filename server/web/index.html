@@ -55,6 +55,7 @@
     <span class="pill">{{ culled }} culled</span>
     <button @click="requestAll">Request all</button>
     <button class="ghost" @click="clearAll">Clear</button>
+    <button class="ghost" @click="resetCamera" title="Restore the default start view">Reset camera</button>
     <label class="chk" v-for="l in layerList" :key="'v' + l"><input type="checkbox" v-model="layerVisibility[l]"> {{ layerName(l) }}</label>
     <label class="chk"><input type="checkbox" v-model="showWireframe"> wireframe</label>
     <label class="chk" title="Show only chunks at this LoD rung in the 3D view (0 = unset)">chunkLoD <input type="range" min="0" max="10" step="1" v-model.number="lodFilter" style="width:90px"> {{ lodFilter }} ({{ rungCount }})</label>
@@ -73,7 +74,7 @@
       <div class="help">
         <b>Camera (matches Vulkan):</b> W/S forward/back · A/D left/right · Q/E down/up ·
         H/F yaw−/+ · G/T pitch−/+ · R/Y roll−/+ · drag = yaw/pitch · click box = select + wireframe
-        (frustum-culled boxes, depth-tested wireframe)
+        (frustum-culled boxes, depth-tested wireframe · camera auto-saves, Reset camera restores start view)
       </div>
     </div>
     <aside>
@@ -321,8 +322,41 @@ createApp({
     // has no per-vertex data, then the chunk record's brush is used).
     let meshId = null, meshVersion = -1, meshPos = null, meshIdx = null, meshBrush = null;
 
-    // camera mirrors Vulkan: pos(-512,2048,0), yaw -90 (math/Camera + MyApp setup)
-    const cam = { pos: [-512, 2048, 0], quat: eulerToQuat(-90, 0, 0), timer: 0, keys: new Set() };
+    // camera mirrors Vulkan: pos(-512,2048,0), yaw -90 (math/Camera + MyApp setup).
+    // Pose + speed persist in localStorage across reloads (validated on load).
+    const CAM_STORE_KEY = 'chunkViewer.camera.v1';
+    const CAM_DEFAULT = { pos: [-512, 2048, 0], yaw: -90, speed: 512 };
+    const cam = { pos: [...CAM_DEFAULT.pos], quat: eulerToQuat(CAM_DEFAULT.yaw, 0, 0), timer: 0, keys: new Set() };
+    const NAV_KEYS = ['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE','KeyH','KeyF','KeyG','KeyT','KeyR','KeyY'];
+    let camDirty = false, lastCamSave = 0;
+    function saveCamera() {
+      try {
+        localStorage.setItem(CAM_STORE_KEY, JSON.stringify({ pos: cam.pos, quat: cam.quat, speed: camSpeed.value }));
+      } catch (e) {}
+      camDirty = false;
+      lastCamSave = performance.now();
+    }
+    function loadCamera() {
+      let s = null;
+      try { s = localStorage.getItem(CAM_STORE_KEY); } catch (e) { return; }
+      if (!s) return;
+      try {
+        const o = JSON.parse(s);
+        const ok3 = a => Array.isArray(a) && a.length === 3 && a.every(Number.isFinite);
+        const ok4 = a => Array.isArray(a) && a.length === 4 && a.every(Number.isFinite);
+        if (ok3(o.pos)) cam.pos = [...o.pos];
+        if (ok4(o.quat)) cam.quat = qnorm([...o.quat]);
+        if (Number.isFinite(o.speed)) camSpeed.value = Math.min(2048, Math.max(16, o.speed));
+      } catch (e) {}
+    }
+    function resetCamera() {
+      cam.pos = [...CAM_DEFAULT.pos];
+      cam.quat = eulerToQuat(CAM_DEFAULT.yaw, 0, 0);
+      cam.timer = 0;
+      camSpeed.value = CAM_DEFAULT.speed;
+      saveCamera();
+    }
+    loadCamera();
 
     const selected = computed(() => selectedId.value ? (chunks.value.get(selectedId.value) || null) : null);
     function layerName(l) { return l === 0 ? 'opaque' : l === 1 ? 'transparent' : 'layer ' + l; }
@@ -526,7 +560,8 @@ createApp({
       lineMin: 0, lineMax: 0, lineSum: 0 };
     window.__wire = () => ({ ...dbg, meshId, meshStatus: meshStatus.value,
       selectedId: selectedId.value, showWireframe: showWireframe.value,
-      chunks: chunks.value.size, lodFilter: lodFilter.value, rungCount: rungCount.value });
+      chunks: chunks.value.size, lodFilter: lodFilter.value, rungCount: rungCount.value,
+      cam: { pos: [...cam.pos], quat: [...cam.quat] }, camSpeed: camSpeed.value });
     let gl = null, prog = null, posBuf = null, colBuf = null, uVP = null;
     let meshTriBuf = null, meshLineBuf = null, meshLineColBuf = null;
     let vertCount = 0, meshTriCount = 0, meshLineCount = 0;
@@ -686,6 +721,7 @@ createApp({
       if (k.has('KeyT')) pitch(ang);
       if (k.has('KeyR')) roll(-ang);
       if (k.has('KeyY')) roll(ang);
+      if (NAV_KEYS.some(kk => k.has(kk))) camDirty = true;
     }
     function frame(dt) {
       updateCamera(dt);
@@ -806,6 +842,7 @@ createApp({
         cam.keys.add(e.code);
       });
       window.addEventListener('keyup', (e) => cam.keys.delete(e.code));
+      window.addEventListener('blur', () => cam.keys.clear()); // never stick keys when focus is lost
       const cv = document.getElementById('gl');
       let down = null, moved = 0;
       cv.addEventListener('mousedown', (e) => { down = [e.clientX, e.clientY]; moved = 0; });
@@ -816,6 +853,7 @@ createApp({
         const s = 0.15;
         cam.quat = qnorm(qmul(angleAxis([0,1,0], -dx*s*Math.PI/180), cam.quat));
         cam.quat = qnorm(qmul(angleAxis(camRight(), -dy*s*Math.PI/180), cam.quat));
+        if (dx || dy) camDirty = true;
       });
       window.addEventListener('mouseup', (e) => {
         if (!down) return;
@@ -834,18 +872,20 @@ createApp({
         last = now;
         frame(dt);
         frames++;
+        if (camDirty && now - lastCamSave > 1000) saveCamera();
         if (now - t0 > 500) { fps.value = frames * 1000 / (now - t0); frames = 0; t0 = now; }
         requestAnimationFrame(loop);
       }
       requestAnimationFrame(loop);
       window.addEventListener('resize', () => { builtKey = ''; });
+      window.addEventListener('pagehide', () => saveCamera());
     });
 
     return { chunks, connected, selected, selectedId, query, sortKey, layerVisibility,
       layerList, layerCounts, layerName, layerTag, lodFilter, rungCount,
       showWireframe, camSpeed, fps, culled, lastMsg, meshStatus, brushSwatch, wsTarget, wsError,
       filtered,
-      requestAll, clearAll, select, sortBy, reconnect, shortId, fmtF, fmt3, spaceName };
+      requestAll, clearAll, select, sortBy, reconnect, resetCamera, shortId, fmtF, fmt3, spaceName };
   }
 }).mount('#app');
 </script>
