@@ -173,8 +173,10 @@ void main() {
     // (degenerate triangle either way). No-op when impostors are off
     // (impostorDistance == 0).
     //
-    // This is the impostor hand-off point: billboards own [0,
-    // impostorDistance) and impostors own [impostorDistance, ...) (see
+    // Canonical removed-dither note (perf report 26 L15; the copies that
+    // were in VegetationRenderer.frag and VegetationRendererImpostor.vert
+    // now point here). This is the impostor hand-off point: billboards own
+    // [0, impostorDistance) and impostors own [impostorDistance, ...) (see
     // impostors.vert's matching < impostorDistance cull). It is a DIRECT
     // per-instance swap - no dithered cross-fade. The previous 0.50x-1.15x
     // complementary dither dissolved the billboards into sparse dots that

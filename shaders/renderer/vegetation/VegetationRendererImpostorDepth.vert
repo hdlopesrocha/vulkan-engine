@@ -36,6 +36,7 @@ layout(push_constant) uniform PushConstants {
 
 #include "../../includes/noise/Perlin2D.glsl"
 #include "../../includes/vegetation/VegetationCommon.glsl"
+#include "../../includes/vegetation/ImpostorViews.glsl"
 
 void main() {
     // Sentinel: instance was skipped by generator (empty biome or steep slope).
@@ -77,32 +78,12 @@ void main() {
 
     outInstanceOffset = worldPos;
 
-    const float goldenAngle = 3.14159265358979323846 * (3.0 - 2.2360679774997896);
-    const int NUM_VIEWS = 20;
-
+    // Best-view select (perf report 26 H4): shared helper, bit-identical
+    // layer to the inline 20-iteration loop it replaces (see
+    // VegetationRendererImpostor.vert note on why no cross-vertex broadcast).
     vec3 toCamera = normalize(ubo.viewPosition - worldPos);
 
-    float instTheta = rotFrac * 6.28318530718;
-    float cI = cos(instTheta);
-    float sI = sin(instTheta);
-    vec3 toCamera_canonical = vec3(
-         cI * toCamera.x + sI * toCamera.z,
-        toCamera.y,
-        -sI * toCamera.x + cI * toCamera.z
-    );
-
-    int bestIdx = 0;
-    float bestDot = -2.0;
-    for (int i = 0; i < NUM_VIEWS; i++) {
-        float y = 1.0 - (float(i) + 0.5) / float(NUM_VIEWS) * 2.0;
-        float r = sqrt(max(0.0, 1.0 - y * y));
-        float theta = goldenAngle * float(i);
-        vec3 d = vec3(cos(theta) * r, y, sin(theta) * r);
-        float dt = dot(toCamera_canonical, d);
-        if (dt > bestDot) { bestDot = dt; bestIdx = i; }
-    }
-
-    int layerIdx = clamp(billboardIdx, 0, 2) * NUM_VIEWS + bestIdx;
+    int layerIdx = impostorBestLayerIndex(toCamera, rotFrac, billboardIdx);
 
     float hs = inBakedHeight;
 
