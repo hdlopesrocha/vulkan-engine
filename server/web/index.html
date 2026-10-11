@@ -56,9 +56,7 @@
     <button @click="requestAll">Request all</button>
     <button class="ghost" @click="clearAll">Clear</button>
     <button class="ghost" @click="resetCamera" title="Restore the default start view">Reset camera</button>
-    <label class="chk" v-for="l in layerList" :key="'v' + l"><input type="checkbox" v-model="layerVisibility[l]"> {{ layerName(l) }}</label>
     <label class="chk"><input type="checkbox" v-model="showWireframe"> wireframe</label>
-    <label class="chk" title="Show only chunks at this LoD rung in the 3D view (0 = unset)">chunkLoD <input type="range" min="0" max="10" step="1" v-model.number="lodFilter" style="width:90px"> {{ lodFilter }} ({{ rungCount }})</label>
     <label class="chk">speed <input type="range" min="16" max="2048" v-model.number="camSpeed" style="width:90px"> {{ camSpeed }}</label>
   </header>
   <div v-if="!connected" class="connwarn">
@@ -78,6 +76,14 @@
       </div>
     </div>
     <aside>
+      <div class="sec">
+        <h2>Filters (list + 3D view)</h2>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:12px">
+          <label class="chk" v-for="l in layerList" :key="'v' + l"><input type="checkbox" v-model="layerVisibility[l]"> {{ layerName(l) }}</label>
+          <label class="chk" title="Show only chunks at this LoD rung (0 = unset)">chunkLoD <input type="range" min="0" max="10" step="1" v-model.number="lodFilter" style="width:90px"> {{ lodFilter }} ({{ rungCount }})</label>
+        </div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:4px">The search box below filters the list and the rendered chunks.</div>
+      </div>
       <div class="sec">
         <h2>Selected chunk (click a box)</h2>
         <div v-if="!selected" style="font-size:12px;color:#9ca3af">none — click a box or a row below</div>
@@ -99,7 +105,7 @@
       </div>
       <div class="sec list" style="flex:1">
         <h2>All chunks ({{ filtered.length }} shown of {{ chunks.size }})</h2>
-        <input type="search" v-model="query" placeholder="filter: id, layer, level, brush…">
+        <input type="search" v-model="query" placeholder="filter chunks: list + 3D view…">
         <div class="rows">
           <table>
             <thead><tr>
@@ -376,13 +382,19 @@ createApp({
       const vis = layerVisibility.value;
       let arr = [...chunks.value.values()];
       arr = arr.filter(c => vis[c.layer] !== false);
-      if (q) arr = arr.filter(c => c.id.toLowerCase().includes(q) || String(c.level) === q ||
-        String(c.layer) === q || String(c.brushIndex) === q ||
-        (q === 'opaque' && c.layer === 0) || (q === 'transparent' && c.layer === 1));
+      if (q) arr = arr.filter(c => matchesSearch(c, q));
       const k = sortKey.value;
       arr.sort((a, b) => (a[k] < b[k] ? -1 : a[k] > b[k] ? 1 : 0));
       return arr;
     });
+    // Shared list/render matcher: the search box filters the table AND the
+    // rendered chunks (boxes, picking, wireframe) alike.
+    function matchesSearch(c, q) {
+      if (!q) return true;
+      return c.id.toLowerCase().includes(q) || String(c.level) === q ||
+        String(c.layer) === q || String(c.brushIndex) === q ||
+        (q === 'opaque' && c.layer === 0) || (q === 'transparent' && c.layer === 1);
+    }
 
     function shortId(id) { return id.length > 10 ? '…' + id.slice(-8) : id; }
     function fmtF(x) { return (typeof x === 'number' && isFinite(x)) ? x.toFixed(1) : String(x); }
@@ -561,6 +573,7 @@ createApp({
     window.__wire = () => ({ ...dbg, meshId, meshStatus: meshStatus.value,
       selectedId: selectedId.value, showWireframe: showWireframe.value,
       chunks: chunks.value.size, lodFilter: lodFilter.value, rungCount: rungCount.value,
+      query: query.value,
       cam: { pos: [...cam.pos], quat: [...cam.quat] }, camSpeed: camSpeed.value });
     let gl = null, prog = null, posBuf = null, colBuf = null, uVP = null;
     let meshTriBuf = null, meshLineBuf = null, meshLineColBuf = null;
@@ -608,9 +621,11 @@ createApp({
       if (!gl) return 0;
       const pos = [], col = [];
       let culled = 0;
+      const q = query.value.trim().toLowerCase();
       for (const c of chunks.value.values()) {
         if (layerVisibility.value[c.layer] === false) continue;
         if (c.chunkLod !== lodFilter.value) continue; // LoD rung isolation
+        if (!matchesSearch(c, q)) continue; // search filters rendered chunks
         const mn = [c.minX, c.minY, c.minZ], mx = [c.minX + c.size, c.minY + c.size, c.minZ + c.size];
         if (planes && !aabbVisible(planes, mn, mx)) { culled++; continue; }
         const sel = selectedId.value === c.id;
@@ -738,7 +753,7 @@ createApp({
       // Box buffers depend on data + filters + frustum, so the rebuild key
       // includes a quantized camera pose (rebuilt while moving, cached idle).
       const visKey = layerList.value.map(l => layerVisibility.value[l] ? 1 : 0).join(',');
-      const key = [chunksVersion, visKey, lodFilter.value, selectedId.value, aspect,
+      const key = [chunksVersion, visKey, lodFilter.value, query.value, selectedId.value, aspect,
         cam.pos.map(x => x.toFixed(1)).join(','), cam.quat.map(x => x.toFixed(4)).join(',')].join('|');
       if (key !== builtKey) {
         culled.value = rebuildBuffers(planes);
@@ -753,12 +768,14 @@ createApp({
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       gl.uniformMatrix4fv(uVP, false, vp);
       // Selected-mesh visibility shares the chunk-box frustum test (plus the
-      // LoD rung gate, so a wireframe never floats over a hidden box).
+      // LoD rung gate and the search filter, so a wireframe never floats
+      // over a hidden box).
       let meshVisible = showWireframe.value && meshTriCount > 0 && meshId != null;
       if (meshVisible) {
         const c = chunks.value.get(meshId);
         if (!c) meshVisible = false;
         else if (c.chunkLod !== lodFilter.value) meshVisible = false;
+        else if (!matchesSearch(c, query.value.trim().toLowerCase())) meshVisible = false;
         else if (!aabbVisible(planes, [c.minX, c.minY, c.minZ],
                               [c.minX + c.size, c.minY + c.size, c.minZ + c.size])) meshVisible = false;
       }
@@ -808,9 +825,11 @@ createApp({
       const p0 = unproj(nx, ny, -1), p1 = unproj(nx, ny, 1);
       const dir = V3.norm(V3.sub(p1, p0));
       let best = null, bestT = 1e30;
+      const pq = query.value.trim().toLowerCase();
       for (const c of chunks.value.values()) {
         if (layerVisibility.value[c.layer] === false) continue;
         if (c.chunkLod !== lodFilter.value) continue; // hidden rung: not pickable
+        if (!matchesSearch(c, pq)) continue; // search-hidden: not pickable
         const mn = [c.minX, c.minY, c.minZ], mx = [c.minX + c.size, c.minY + c.size, c.minZ + c.size];
         let t0 = 0, t1 = 1e30, ok = true;
         for (let i = 0; i < 3; i++) {
