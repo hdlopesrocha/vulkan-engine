@@ -339,9 +339,36 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     if (!app) return;
     auto device = app->getDevice();
 
+    // M9-(2) (report 26): async consolidation. The copy + bake below runs in
+    // a graphics-queue single-time submit (same queue, same barriers, same
+    // regions as before) WITHOUT the old host fence wait: runSingleTimeCommands
+    // blocked the calling cull worker inside prepareCull, stalling tlCull for
+    // every consumer. Callers already skip the cull while dirty, so in-flight
+    // frames reuse the previous slot exactly like the old fence-pending path;
+    // the completion callback publishes the fresh prefix. Chunk bytes converge
+    // to the identical concatenation (same order, same regions); only the
+    // frame the fresh data becomes drawable shifts during streaming.
+    // Host-side fan-in (no new device timeline: the merged cull dispatch that
+    // would wait on it lives in IndirectRenderer, out of scope): never submit
+    // while a producer fence is still pending. isFencePending() only compares
+    // handles under the submission mutex and never dereferences, so a
+    // destroyed (implies signaled) or recycled handle resolves in the safe
+    // direction. Same-graphics-queue FIFO keeps today's cross-submit ordering
+    // (shadow reads, streaming copies) bit-for-bit: only host blocking is gone.
+    std::lock_guard<std::mutex> lk(consolidationMutex);
     // ── Phase 1: Check if previous consolidation is still pending ──
     //    The deferred callback clears consolidationPending when the fence signals.
     if (consolidationPending) {
+        if (consolidationFence != VK_NULL_HANDLE && app->isFencePending(consolidationFence)) {
+            vegConsolidationDirty = true;
+            return;
+        }
+        consolidationPending = false;
+    }
+    if (streamingUploadFence != VK_NULL_HANDLE && app->isFencePending(streamingUploadFence)) {
+        // Streaming copies (same graphics queue, submitted earlier on the main
+        // thread) are not device-complete yet: defer a frame rather than
+        // concatenating staged bytes whose publish callback has not run.
         vegConsolidationDirty = true;
         return;
     }
@@ -396,7 +423,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
 
     // Copy per-chunk instance data into the concatenated buffer (GPU→GPU)
     if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+        VkFence consolFence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
             // WRITE-AFTER-READ/WRITE guard: the concatenated instance buffer is
             // read as vertex attributes by the previous frame's vegetation
             // draws, and its per-chunk sources were written by earlier transfer
@@ -468,10 +495,30 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
                 vkCmdPipelineBarrier2(cmd, &bakeOutDep);
             }
         });
+        // Publish asynchronously: dirty stays set (callers keep skipping the
+        // cull) until the fence callback below runs. Per-chunk sources are
+        // safe to reference: every destroy path funnels through
+        // deferDestroyUntilFence(VK_NULL_HANDLE) (drain after ALL pending
+        // submits, which include this one), so no source buffer can die
+        // mid-copy; the concatenated/bake targets are preallocated for the
+        // app lifetime. Draws gate on the dirty flag via the cull, so the
+        // fresh prefix is unreadable before the callback clears it.
+        consolidationFence = consolFence;
+        consolidationPending = true;
+        const uint64_t submitVersion = chunkBufferVersion.load(std::memory_order_acquire);
+        app->deferDestroyUntilFence(consolFence, [this, submitVersion]() {
+            std::lock_guard<std::mutex> clk(consolidationMutex);
+            consolidationPending = false;
+            consolidationFence = VK_NULL_HANDLE;
+            // Clear dirty only if no chunk mutation arrived after the submit
+            // snapshot; otherwise the fresh change re-consolidates next frame
+            // instead of being silently dropped by a lost update.
+            if (chunkBufferVersion.load(std::memory_order_acquire) == submitVersion) {
+                vegConsolidationDirty = false;
+                vegChunkInfoDirty = true;
+            }
+        });
     }
-
-    vegConsolidationDirty = false;
-    vegChunkInfoDirty = true;
 }
 
 void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj) {
@@ -669,6 +716,14 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
     if (cascadeIndex >= 3) return;
     if (!app || vegetationShadowPipeline == VK_NULL_HANDLE) return;
     if (chunkBuffers.empty()) return;
+    // H7 (report 26): provably-empty gate before any bind or upload. With a
+    // dirty consolidation or zero consolidated chunks both streams below
+    // issue zero indirect draws today (each draw is guarded on
+    // !vegConsolidationDirty && vegNumChunks > 0), so returning before the
+    // pipeline/push-constant/descriptor binds and the wind UBO touch changes
+    // no pixel. Per-cascade GPU counts stay unread (no stall); the CPU-known
+    // empty states are the only ones elided.
+    if (vegConsolidationDirty || vegNumChunks == 0) return;
     if (!ensureVegDescriptorSet(app)) return;
     if (shadowDescriptorSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
 
@@ -888,9 +943,14 @@ void VegetationRenderer::init(VulkanApp* app) {
         bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         bindings[0].descriptorCount = 1;
         bindings[0].stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        // L14 (report 26): plain layout, no UPDATE_AFTER_BIND. This set is
+        // written exactly once at init (below) and never updated — the UBO
+        // contents stream via memcpy to persistently-mapped memory, which
+        // needs no descriptor update. Only the billboard texture set keeps
+        // UPDATE_AFTER_BIND (event-driven in-place refresh while pending).
         windParamsDescSetLayout = descAlloc.createLayout(
             bindings, 1,
-            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            0,
             nullptr,
             "VegetationRenderer: windParamsDescSetLayout");
     }
@@ -1193,6 +1253,8 @@ void VegetationRenderer::clearAllInstances() {
     }
     vegConsolidationDirty = true;
     vegNumChunks = 0;
+    // M9-(1): the chunk set moved — read barriers re-record next call.
+    if (!ids.empty()) noteChunkBuffersChanged();
 }
 
 size_t VegetationRenderer::getInstanceTotal() const {
@@ -1201,6 +1263,40 @@ size_t VegetationRenderer::getInstanceTotal() const {
         total += kv.second;
     }
     return total;
+}
+
+bool VegetationRenderer::hasDrawContent() const {
+    // H7 (report 26): see the header contract. Every conjunct is required
+    // for any indirect draw to exist today (issue*Draws no-op without the
+    // merged cull outputs or with zero chunks; a non-empty streaming backlog
+    // or a pending consolidation means the drawable set is still in flight).
+    // pendingChunkCount() is mutex-guarded and exact; the rest are the same
+    // plain-member reads the draw paths already perform on this thread.
+    if (chunkBuffers.empty() || vegNumChunks == 0) return false;
+    if (pendingChunkCount() != 0) return false;
+    if (vegConsolidationDirty) return false;
+    return true;
+}
+
+bool VegetationRenderer::beginInstancePass(bool hasContent) {
+    // H7 (report 26): worker-side transition + warmup arbiter, mirroring the
+    // report-25 M11 SDF elision. Steady-empty frames past warmup return false
+    // (caller skips the render-pass instances, keeping layouts stable and the
+    // submit for downstream timeline waits). Every content transition runs
+    // the full path. State is atomic for overlapping pool workers; the only
+    // race outcome is a missed skip, never a missed draw — a skip
+    // additionally requires hasContent == false evaluated by the caller.
+    const uint32_t prev = vegInstancePrev.load(std::memory_order_acquire);
+    const bool transition = (prev == 2) || ((prev != 0) != hasContent);
+    const uint32_t warm = vegInstanceWarmup.load(std::memory_order_acquire);
+    const bool skip = !hasContent && !transition && warm >= 3;
+    if (!skip) {
+        if (warm < 3) vegInstanceWarmup.fetch_add(1, std::memory_order_acq_rel);
+        vegInstancePrev.store(hasContent ? 1u : 0u, std::memory_order_release);
+        return true;
+    }
+    vegInstancePrev.store(0u, std::memory_order_release);
+    return false;
 }
 
 // Pool utilization telemetry (perf report 22 C1): chunk/instance counts vs
@@ -1219,11 +1315,29 @@ void VegetationRenderer::logUtilization() const {
 void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
     if (commandBuffer == VK_NULL_HANDLE) return;
 
-    // Reuse frame-thread scratch vector (clear + reserve) to avoid one heap
-    // allocation per call; called twice per frame from the main thread.
-    readBarrierScratch.clear();
-    readBarrierScratch.reserve(chunkBuffers.size() * 2);
-    std::vector<VkBufferMemoryBarrier2>& readBarriers = readBarrierScratch;
+    // M9-(1) (report 26): record once per chunk-set version, not once per
+    // frame. A barrier makes PRIOR writes visible to LATER reads; with no
+    // intervening write the steady-state re-record is redundant (sync
+    // validation agrees: read-after-read with no write needs no barrier, so
+    // eliding it is validation-clean). Every chunkBuffers mutation bumps
+    // chunkBufferVersion, so equality proves no publish/destroy/clear happened
+    // since the last record. Store-after-record closes the race: a mutation
+    // racing the record bumps the version after our load, forcing a re-record
+    // next call — a barrier is never missed, at most duplicated (harmless and
+    // idempotent). Callers (shadow + vegetation workers) may record
+    // concurrently on change-frames; duplicates are safe.
+    const uint64_t version = chunkBufferVersion.load(std::memory_order_acquire);
+    if (version == readBarrierRecordedVersion.load(std::memory_order_relaxed))
+        return;
+
+    // Frame-thread scratch used to be a shared member also touched from the
+    // shadow worker — a thread-local keeps concurrent change-frame records
+    // from racing on the vector. Same barrier contents as before.
+    thread_local std::vector<VkBufferMemoryBarrier2> scratch;
+    // Reuse capacity across calls to avoid one heap allocation per record.
+    scratch.clear();
+    scratch.reserve(chunkBuffers.size() * 2);
+    std::vector<VkBufferMemoryBarrier2>& readBarriers = scratch;
     for (const auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
         if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
@@ -1245,13 +1359,17 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
         instanceBarrier.size = VK_WHOLE_SIZE;
         readBarriers.push_back(instanceBarrier);
     }
-    if (readBarriers.empty()) return;
+    if (readBarriers.empty()) {
+        readBarrierRecordedVersion.store(version, std::memory_order_release);
+        return;
+    }
 
     VkDependencyInfo depInfo{};
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     depInfo.bufferMemoryBarrierCount = static_cast<uint32_t>(readBarriers.size());
     depInfo.pBufferMemoryBarriers = readBarriers.data();
     vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+    readBarrierRecordedVersion.store(version, std::memory_order_release);
 }
 
 
@@ -1311,10 +1429,15 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             bindings[3].descriptorCount = 1;
             bindings[3].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
         }
+        // L14 (report 26): plain layout + pool, no UPDATE_AFTER_BIND. This set
+        // is written once here (after waitForFrameFences, so nothing is
+        // pending) and never updated afterwards — sampled views/buffers are
+        // immutable for the set lifetime. Same for the depth-variant pair
+        // below. Only the billboard texture set keeps UPDATE_AFTER_BIND.
         DescriptorAllocator descAlloc{device, app};
         impostorDescSetLayout = descAlloc.createLayout(
             bindings, numBindings,
-            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            0,
             nullptr,
             "VegetationRenderer: impostorDescSetLayout");
 
@@ -1325,7 +1448,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
                 poolSz.emplace_back(VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1u});
             impostorDescPool = descAlloc.createPool(
                 poolSz.data(), static_cast<uint32_t>(poolSz.size()), 1,
-                VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+                0,
                 "VegetationRenderer: impostorDescPool");
         }
 
@@ -1362,7 +1485,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         DescriptorAllocator depthDescAlloc{device, app};
         impostorDepthDescSetLayout = depthDescAlloc.createLayout(
             depthBindings, 2,
-            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            0,
             nullptr,
             "VegetationRenderer: impostorDepthDescSetLayout");
 
@@ -1372,7 +1495,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         };
         impostorDepthDescPool = depthDescAlloc.createPool(
             depthPoolSizes, 2, 1,
-            VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+            0,
             "VegetationRenderer: impostorDepthDescPool");
 
         impostorDepthDescSet = depthDescAlloc.allocateSet(impostorDepthDescPool, impostorDepthDescSetLayout);
@@ -1599,6 +1722,36 @@ void VegetationRenderer::updateWindFieldUBO() {
 void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
     if (!windParamsMapped) return;
 
+    // M9-(3) (report 26): exact input-snapshot fast path. The 80 B payload
+    // below is a pure function of (camera, windSettings, densitySettings,
+    // impostorDistance): when every field compares equal to the last call,
+    // the rebuild + memcmp + memcpy would all be provable no-ops, so return
+    // before the rebuild (the old write-on-change memcmp already collapsed
+    // the 4--5 per-frame memcpys to one; this removes the redundant rebuilds
+    // too). Any differing field falls through to the existing path, so the
+    // shared-buffer bytes are bit-identical to before. Field-wise == only —
+    // never memcmp over the settings structs (bool padding) — erring toward
+    // a rebuild on NaN, never toward a missed upload.
+    {
+        const WindSettings& sw = windSettings;
+        const DistanceDensitySettings& sd = distanceDensitySettings;
+        const WindSettings& pw = windParamsSnapWind;
+        const DistanceDensitySettings& pd = windParamsSnapDensity;
+        if (windParamsSnapValid && cameraPos == windParamsSnapCam &&
+            impostorDistance == windParamsSnapImpostor &&
+            sw.enabled == pw.enabled && sw.direction == pw.direction &&
+            sw.strength == pw.strength && sw.baseFrequency == pw.baseFrequency &&
+            sw.speed == pw.speed && sw.gustFrequency == pw.gustFrequency &&
+            sw.gustStrength == pw.gustStrength && sw.skewAmount == pw.skewAmount &&
+            sw.trunkStiffness == pw.trunkStiffness && sw.noiseScale == pw.noiseScale &&
+            sw.verticalFlutter == pw.verticalFlutter && sw.turbulence == pw.turbulence &&
+            sd.enabled == pd.enabled && sd.fullDensityDistance == pd.fullDensityDistance &&
+            sd.minDensityDistance == pd.minDensityDistance &&
+            sd.minDensityFactor == pd.minDensityFactor) {
+            return;
+        }
+    }
+
     WindParamsUBO params{};
 
     glm::vec2 windDir = windSettings.direction;
@@ -1642,11 +1795,28 @@ void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
     // cascade draws all provide the same camera/wind state, so 4--5 mapped
     // memcpys collapse to one. Bitwise comparison is exact here: the struct
     // is a plain aggregate with no implicit padding (static_asserted).
-    if (windParamsCacheValid && std::memcmp(&windParamsCache, &params, sizeof(params)) == 0)
+    if (windParamsCacheValid && std::memcmp(&windParamsCache, &params, sizeof(params)) == 0) {
+        // Same no-op outcome as the fast path (payload would be re-derived
+        // identically next call): refresh the input snapshot so the next
+        // same-input call skips the rebuild entirely.
+        windParamsSnapCam = cameraPos;
+        windParamsSnapWind = windSettings;
+        windParamsSnapDensity = distanceDensitySettings;
+        windParamsSnapImpostor = impostorDistance;
+        windParamsSnapValid = true;
         return;
+    }
     std::memcpy(windParamsMapped, &params, sizeof(params));
     windParamsCache = params;
     windParamsCacheValid = true;
+    // Snapshot the attempted inputs (not just the uploaded payload): identical
+    // inputs rebuild to identical bytes, so the next same-input call takes the
+    // fast path above with provably no output change.
+    windParamsSnapCam = cameraPos;
+    windParamsSnapWind = windSettings;
+    windParamsSnapDensity = distanceDensitySettings;
+    windParamsSnapImpostor = impostorDistance;
+    windParamsSnapValid = true;
 }
 
 uint32_t VegetationRenderer::vegFrame() const {
@@ -1707,6 +1877,10 @@ void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffe
     if (!ensureVegDescriptorSet(app)) return;
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
     if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
+    // H7 (report 26): issueVegetationDraws no-ops without the merged cull
+    // outputs (null solidIR) or with zero consolidated chunks, so skip the
+    // wind UBO touch, binds and draw. Zero draws either way: pixel-identical.
+    if (!solidIR || vegNumChunks == 0) return;
     updateWindParamsUBO(cameraPos);
     WindPushConstants pc = buildWindPushConstants();
     VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
@@ -1733,6 +1907,11 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
     if (!ensureVegDescriptorSet(app)) return;
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
     if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
+    // H7 (report 26): both streams below no-op without the merged cull
+    // outputs (null solidIR) or with zero consolidated chunks, so skip the
+    // wind UBO touch, binds and draws. Per-stream flags still gate the
+    // billboard vs impostor binds exactly as before. Zero draws either way.
+    if (!solidIR || vegNumChunks == 0) return;
     updateWindParamsUBO(cameraPos);
     WindPushConstants pc = buildWindPushConstants();
     VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
@@ -1856,6 +2035,21 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
     VulkanApp* app = appPtr;
     const uint32_t billboardCnt = (billboardCount > 0) ? billboardCount : 1u;
 
+    // M12-(1) (report 26): batch build list. Per-chunk payloads are stashed
+    // here so a single staging buffer can be sized once from the batch total
+    // below (one acquire, one packed memcpy chain) instead of one acquire +
+    // memcpy per chunk. Device bytes, AABBs, anchors and publish order are
+    // unchanged; only host-side acquire traffic is gone.
+    struct BuiltChunk {
+        std::vector<float> bytes; // 8 floats per instance, same layout as before
+        NodeID chunkId;
+        uint32_t instanceCount;
+        glm::vec3 aabbMin, aabbMax, center;
+        std::vector<sdf_gpu::GrassAnchor> grassAnchors;
+    };
+    std::vector<BuiltChunk> built;
+    built.reserve(maxChunks);
+
     for (uint32_t n = 0; n < maxChunks; ++n) {
         PendingChunk pc;
         {
@@ -1975,51 +2169,105 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
             continue;
         }
 
-        const VkDeviceSize bufSize = validData.size() * sizeof(float);
+        // Stash this chunk's bytes for the single-staging flush below (takes
+        // the scratch storage; the scratch is re-established next iteration
+        // by clear() + reserve(), and the `validData` reference keeps
+        // aliasing the scratch object, not its storage).
+        BuiltChunk bc;
+        bc.bytes.swap(instanceGenScratch);
+        bc.chunkId = pc.chunkId;
+        bc.instanceCount = validCount;
+        bc.aabbMin = aabbMin;
+        bc.aabbMax = aabbMax;
+        bc.center = pc.chunkCenter;
+        bc.grassAnchors = std::move(grassAnchors);
+        built.push_back(std::move(bc));
+    }
 
-        // Staging buffer from the persistent pool (perf report 22 M10): no
-        // VMA allocation in steady-state streaming. Returned to the pool when
-        // this batch's copy fence signals (see the deferred callback below).
+    // Flush: pack the whole batch into ONE staging buffer sized once from the
+    // batch total, then copy each chunk at its packed offset in a single async
+    // submission. The deferred callback publishes chunks when the GPU is done.
+    if (!built.empty()) {
+        VkDeviceSize batchTotal = 0;
+        for (const auto& bc : built)
+            batchTotal += VkDeviceSize(bc.bytes.size() * sizeof(float));
+
+        // Single staging acquire from the persistent pool (perf report 22
+        // M10): no VMA allocation in steady-state streaming. Returned to the
+        // pool once when this batch's copy fence signals (see the deferred
+        // callback below).
         size_t stagingIndex = 0;
-        Buffer stagingInst = acquireStagingBuffer(app, bufSize, stagingIndex);
-        void* mapped = nullptr;
-        mapped = stagingInst.map(0);
-        std::memcpy(mapped, validData.data(), size_t(bufSize));
-        stagingInst.unmap(); // VMA persistent mapping
+        Buffer batchStaging = acquireStagingBuffer(app, batchTotal, stagingIndex);
+        {
+            void* mapped = batchStaging.map(0);
+            VkDeviceSize stagingOff = 0;
+            for (auto& bc : built) {
+                const VkDeviceSize chunkBytes = VkDeviceSize(bc.bytes.size() * sizeof(float));
+                std::memcpy(static_cast<char*>(mapped) + stagingOff,
+                            bc.bytes.data(), size_t(chunkBytes));
+                stagingOff += chunkBytes;
+            }
+            batchStaging.unmap(); // VMA persistent mapping
+        }
 
-        // Device-local instance buffer: GPU reads via vertex input.
+        // Device-local instance buffers: one per chunk with byte-identical
+        // contents to the old per-chunk path (same sizes, same batch order).
         // On RADV iGPUs, vertex reads go through TCP (Texture Cache/Pipe),
         // and host-visible pages lack TCP-read permission → GPUVM fault.
         // zeroInit=false: fully overwritten by the staging copy before use.
-        Buffer instBuf = app->createBuffer(bufSize,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
+        {
+            VkDeviceSize stagingOff = 0;
+            for (auto& bc : built) {
+                const VkDeviceSize bufSize = VkDeviceSize(bc.bytes.size() * sizeof(float));
+                Buffer instBuf = app->createBuffer(bufSize,
+                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
+                PendingBatchCopy e;
+                e.instBuf = instBuf;
+                e.bufSize = bufSize;
+                e.stagingOffset = stagingOff;
+                e.chunkId = bc.chunkId;
+                e.instanceCount = bc.instanceCount;
+                e.aabbMin = bc.aabbMin;
+                e.aabbMax = bc.aabbMax;
+                e.center = bc.center;
+                e.grassAnchors = std::move(bc.grassAnchors);
+                pendingBatch.push_back(std::move(e));
+                stagingOff += bufSize;
+            }
+        }
 
-        pendingBatch.push_back({ stagingInst, instBuf,
-                                 bufSize, stagingIndex, pc.chunkId, validCount,
-                                 aabbMin, aabbMax, pc.chunkCenter, std::move(grassAnchors) });
-    }
-
-    // Flush all batched copies in a single async submission.
-    // The deferred callback publishes chunks when the GPU is done.
-    if (!pendingBatch.empty()) {
         std::vector<PendingBatchCopy> batch = std::move(pendingBatch);
-        VkFence fence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
-            for (auto& c : batch) {
+        // Minimal copy plan for the async record (plain handles + offsets by
+        // value: sources and targets outlive the submit via the fence
+        // callback below, which also owns the staging lifetime through the
+        // pool entry).
+        struct StagedCopy { VkBuffer src, dst; VkDeviceSize srcOffset, size; };
+        std::vector<StagedCopy> copies;
+        copies.reserve(batch.size());
+        for (auto& c : batch)
+            copies.push_back({ batchStaging.buffer, c.instBuf.buffer, c.stagingOffset, c.bufSize });
+        VkFence fence = app->runSingleTimeCommandsAsync([copies](VkCommandBuffer cmd) {
+            for (const auto& c : copies) {
                 VkBufferCopy cr{};
-                cr.size = c.bufSize;
-                vkCmdCopyBuffer(cmd, c.stagingInst.buffer, c.instBuf.buffer, 1, &cr);
+                cr.srcOffset = c.srcOffset;
+                cr.dstOffset = 0;
+                cr.size = c.size;
+                vkCmdCopyBuffer(cmd, c.src, c.dst, 1, &cr);
             }
         });
-        app->deferDestroyUntilFence(fence, [this, app,
+        // M9-(2): latest streaming fence, so consolidateChunks can defer until
+        // these copies are device-complete (polled via isFencePending, never
+        // dereferenced).
+        streamingUploadFence = fence;
+        app->deferDestroyUntilFence(fence, [this, app, stagingIndex,
                                              batch = std::move(batch)]() mutable {
+            // Single pool release for the batch-sized staging buffer (perf
+            // report 22 M10): the copy fence has signaled, so the buffer is
+            // idle and safe to hand to a later batch.
+            if (stagingIndex < stagingPool.size())
+                stagingPool[stagingIndex].inUse = false;
             for (auto& c : batch) {
-                // Return the staging buffer to the pool instead of destroying
-                // it (perf report 22 M10): the copy fence has signaled, so the
-                // buffer is idle and safe to hand to a later batch.
-                if (c.stagingPoolIndex < stagingPool.size())
-                    stagingPool[c.stagingPoolIndex].inUse = false;
-
                 destroyInstanceBuffer(c.chunkId, app);
 
                 InstanceBuffer ibuf;
@@ -2042,6 +2290,8 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 }
                 vegConsolidationDirty = true;
             }
+            // M9-(1): the chunk set moved — read barriers re-record next call.
+            noteChunkBuffersChanged();
         });
     }
 }
@@ -2085,6 +2335,8 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
     it->second.memory = VK_NULL_HANDLE;
     chunkBuffers.erase(it);
     chunkInstanceCounts.erase(chunkId);
+    // M9-(1): the chunk set moved — read barriers re-record next call.
+    noteChunkBuffersChanged();
 
     if (!app) return;
 

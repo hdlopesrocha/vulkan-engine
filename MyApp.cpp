@@ -2259,7 +2259,29 @@ public:
         // composite waits on it).
         {
             const glm::vec3 vegCamPos = camera.getPosition();
-            asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, grassImpostorsEnabled, vegCamPos, v]() {
+            // H7 (report 26): main-thread veg-pass skip decision, mirroring
+            // the report-25 M11 SDF elision. vegWantDraw exactly matches the
+            // worker's (drawBillboards || drawImpostors): grassImpostorsEnabled
+            // already folds in impostorDistance > 0, and the worker below uses
+            // the captured vegImpostorDist snapshot instead of re-reading
+            // settings (same capture pattern as the other flags), so the skip
+            // condition and the worker's empty branch coincide provably. The
+            // submit is RETAINED on skipped frames (near-empty CB): the water
+            // pass waits tlVeg@v explicitly, so dropping the signal would hang
+            // it — full submit elision needs the water block's wait list,
+            // owned by another worker. Skipped frames record no transitions,
+            // no begins and no draws; layouts stay SHADER_READ_ONLY (as the
+            // warmup frames left them) and the targets keep their cleared
+            // bytes, which is exactly what the full clear-only path produces.
+            const bool vegWantDraw = vegetationEnabled || grassImpostorsEnabled;
+            const float vegImpostorDist = settings.impostorDistance;
+            static bool vegPrevWantDraw = true; // first frame runs full (establishes layouts)
+            static uint32_t vegWarmupRuns = 0;
+            const bool vegTransition = (vegWantDraw != vegPrevWantDraw);
+            vegPrevWantDraw = vegWantDraw;
+            const bool vegSkipRender = !vegWantDraw && !vegTransition && vegWarmupRuns >= 3;
+            if (!vegSkipRender && vegWarmupRuns < 3) ++vegWarmupRuns;
+            asyncVegFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, vegetationEnabled, grassImpostorsEnabled, vegCamPos, vegImpostorDist, vegSkipRender, v]() {
                 MyApp* app = this;
                 VkCommandBuffer vegCmd = app->beginAsyncTask("vegetation");
                 if (vegCmd == VK_NULL_HANDLE) return;
@@ -2277,6 +2299,28 @@ public:
                 // cull timeline directly (same frame value).
                 app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg,
                     {settings.enableShadows ? tlShadow : tlCull}, true, {}, {v}, v, {}, true);
+                    return;
+                }
+                // H7: steady-empty fast path (None mode past warmup, or the
+                // content gate below). Records nothing but still submits with
+                // the same waits/signal, so tlVeg@v keeps the water pass +
+                // composite DAG intact. Layouts stay SHADER_READ_ONLY and the
+                // targets keep the cleared bytes the warmup frames left —
+                // identical to the full clear-only path (zero draws either
+                // way). Full submit elision (no tlVeg signal) is dropped: it
+                // would require substituting the water block's explicit tlVeg
+                // wait, which lives outside this block.
+                const bool vegHasContent =
+                    sceneRenderer->vegetationRenderer->hasDrawContent();
+                const bool vegRecordInstances =
+                    sceneRenderer->vegetationRenderer->beginInstancePass(vegHasContent);
+                if (vegSkipRender || !vegRecordInstances) {
+                    if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE) {
+                        vkCmdWriteTimestamp(vegCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 12);
+                        vkCmdWriteTimestamp(vegCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 13);
+                    }
+                    app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg,
+                        {settings.enableShadows ? tlShadow : tlCull}, true, {}, {v}, v, {}, true);
                     return;
                 }
                 // Render area must match the vegetation offscreen targets' backing size
@@ -2316,7 +2360,7 @@ public:
                 // skips those clumps); in Vegetation mode the billboards own
                 // [0, impostorDistance) and the impostors take over beyond.
                 const bool drawBillboards = vegetationEnabled;
-                const bool drawImpostors = settings.impostorDistance > 0.0f &&
+                const bool drawImpostors = vegImpostorDist > 0.0f &&
                                            (vegetationEnabled || grassImpostorsEnabled);
                 if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                     vkCmdWriteTimestamp(vegCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 12);

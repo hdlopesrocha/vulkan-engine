@@ -17,6 +17,8 @@
 #include <deque>
 #include <unordered_map>
 #include <array>
+#include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <glm/glm.hpp>
 #include <glm/gtc/round.hpp>
@@ -118,6 +120,22 @@ public:
     void drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos,
                    bool drawBillboards = true, bool drawImpostors = true);
     void recordReadBarriers(VkCommandBuffer& commandBuffer);
+    // H7 (report 26): provably-empty gate for the veg block + draw entry
+    // points. True only when draws could exist today (non-empty chunk map AND
+    // a consolidated chunk count AND no streaming backlog AND no pending
+    // consolidation). False ⟹ drawDepth/drawColor currently issue zero
+    // indirect draws, so skipping the render-pass instances is pixel-identical.
+    // Reads plain renderer members also read by the existing draw paths (same
+    // cross-thread class); pendingChunkCount() is mutex-guarded and exact.
+    bool hasDrawContent() const;
+    // H7 (report 26): worker-side instance-pass arbiter with transition +
+    // warmup guards (mirrors the report-25 M11 SDF elision). Returns false
+    // only for steady-empty frames (no content, no transition, past warmup);
+    // every content transition runs the full path. Thread-safe for
+    // overlapping pool workers; worst case is a missed skip, never a missed
+    // draw: a skip additionally requires hasContent == false on entry.
+    bool beginInstancePass(bool hasContent);
+    bool isConsolidationDirty() const { return vegConsolidationDirty; }
 
     // ── Own offscreen framebuffer (decoupled from the solid pass) ──
     // Vegetation is rendered to its own color+depth images so it can be drawn on a
@@ -349,6 +367,18 @@ private:
     // thread, so the cache needs no extra synchronization.
     WindParamsUBO         windParamsCache{};
     bool                  windParamsCacheValid = false;
+    // M9-(3) (report 26): exact input snapshot for the updateWindParamsUBO
+    // fast path (see .cpp). The payload is a pure function of (camera,
+    // windSettings, densitySettings, impostorDistance); when every field
+    // compares equal to the last call, the rebuild + memcmp + memcpy would
+    // all be no-ops, so the call returns early. Field-wise == is used, never
+    // memcmp (the settings structs carry bool padding); it errs toward an
+    // extra rebuild on NaN, never toward a missed upload.
+    glm::vec3             windParamsSnapCam{0.0f};
+    WindSettings          windParamsSnapWind{};
+    DistanceDensitySettings windParamsSnapDensity{};
+    float                 windParamsSnapImpostor = 0.0f;
+    bool                  windParamsSnapValid = false;
     TrackedHandle<VkDescriptorSetLayout> windParamsDescSetLayout;
     TrackedHandle<VkDescriptorSet> windParamsDescSet;
     void*                 windParamsMapped       = nullptr;
@@ -453,20 +483,49 @@ private:
     // counter for the shadow cascade path (which keeps its own dispatch).
     uint32_t vegFrame() const;
 
-    // Per-frame scratch for read-barrier recording (recordReadBarriers). Runs
-    // on the main frame thread only (SceneRenderer::shadowPass / preRenderPass)
-    // — plain members are safe; clear() + reserve() reuse capacity across frames.
-    std::vector<VkBufferMemoryBarrier2> readBarrierScratch;
+    // Per-frame scratch for read-barrier recording (recordReadBarriers). Might
+    // be called from the shadow worker (ShadowRenderer) and the vegetation
+    // worker (MyApp veg block), so the scratch lives in a thread-local inside
+    // the function and the version gate below is atomic (see .cpp).
+    // M9-(1) (report 26): chunk-set version. Bumped (noteChunkBuffersChanged)
+    // after every chunkBuffers mutation (publish, destroy, clear); the barrier
+    // batch is re-recorded only when the version moved since the last record,
+    // not once per frame. Store-after-record guarantees no missed barrier.
+    std::atomic<uint64_t> chunkBufferVersion{0};
+    std::atomic<uint64_t> readBarrierRecordedVersion{UINT64_MAX};
+    void noteChunkBuffersChanged() { chunkBufferVersion.fetch_add(1, std::memory_order_release); }
 
-    // Pipelined consolidation: deferred callback handles fence lifecycle
+    // Pipelined consolidation: deferred callback handles fence lifecycle.
+    // (TrackedHandle is a non-owning wrapper: assigning the manager-owned
+    // fence handle here never double-frees; the handle is only ever passed
+    // to isFencePending(), never dereferenced.)
     TrackedHandle<VkFence> consolidationFence;
     bool consolidationPending = false;
+    // M9-(2) (report 26): latest streaming-upload fence from
+    // processPendingChunks (main thread). Polled with the thread-safe
+    // isFencePending() (handle compare only, never dereferenced), so a
+    // destroyed/recycled handle resolves in the safe direction. All streaming
+    // submits go to the same graphics queue in order, so the latest fence
+    // covers every earlier one.
+    VkFence streamingUploadFence = VK_NULL_HANDLE;
+    // M9-(2) (report 26): serializes concurrent consolidateChunks calls from
+    // the cull worker (prepareCull) and the shadow path
+    // (prepareCullCascades). Short critical section only.
+    std::mutex consolidationMutex;
+    // H7 (report 26): worker-side instance-pass elision state for
+    // beginInstancePass (2 = uninitialized: first frame always runs full so
+    // target layouts + clears are established before any skip).
+    std::atomic<uint32_t> vegInstancePrev{2};
+    std::atomic<uint32_t> vegInstanceWarmup{0};
 
-    // Batched async chunk upload: one fence, deferred publish
+    // Batched async chunk upload: one fence, deferred publish.
+    // M12-(1) (report 26): the batch shares ONE staging buffer sized once
+    // from the batch total (see processPendingChunks); each entry carries its
+    // source offset into it. Same device bytes as the old per-chunk acquires.
     struct PendingBatchCopy {
-        Buffer stagingInst, instBuf;
+        Buffer instBuf;
         VkDeviceSize bufSize;
-        size_t stagingPoolIndex; // slot `stagingInst` came from (release on fence)
+        VkDeviceSize stagingOffset; // src offset into the batch staging buffer
         NodeID chunkId;
         uint32_t instanceCount;
         glm::vec3 aabbMin, aabbMax, center;
