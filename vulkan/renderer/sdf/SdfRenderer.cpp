@@ -2861,12 +2861,17 @@ void SdfRenderer::drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
         grassCount = grassContainerCount_;
         if (grassCount == 0) return;
         // M10 (report 27): cascade-invariant PC fields are built once per
-        // frame; each cascade fills only lightViewProj (+time) under the
-        // same per-cascade lock (kept for the slice). Values are identical:
+        // frame; each cascade fills only lightViewProj under the same
+        // per-cascade lock (kept for the slice). Values are identical:
         // params_/config_ only change between frames in steady state, and
         // the caller passes the same frame time to every cascade.
+        // M6 (report 28): params.x (time) is folded into the cache too, so
+        // per-cascade pushes repeat only the varying lightViewProj. Exact
+        // only while the caller passes the identical frame sdfTime to every
+        // cascade (debug-checked at the fill below); lightViewProj stays out
+        // of the cache (one matrix per cascade).
         if (shadowBaseFrame_ != currentFrameIndex_) {
-            shadowBasePC_.params = glm::vec4(0.0f, params_.maxSteps, params_.epsilon, params_.safety);
+            shadowBasePC_.params = glm::vec4(time, params_.maxSteps, params_.epsilon, params_.safety);
             // march.z = shadow LOD camera scale: the grass shadow march evaluates
             // the reduced blade set (config_.grass.shadowLodScale) instead of the
             // full clump, per the shadow LOD policy; >= 80 (SdfGrass.glsl
@@ -2882,7 +2887,20 @@ void SdfRenderer::drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
         }
         pc = shadowBasePC_;
         pc.lightViewProj = lightViewProj;
-        pc.params.x = time;
+#ifndef NDEBUG
+        // M6 (perf report 28): identity check on the folded time — the cache
+        // fill above is exact only while every cascade of the frame carries
+        // the same sdfTime. A mismatch keeps the first cascade's time (and
+        // reports); release builds skip the check (same pushed bytes either
+        // way while the caller holds the identity).
+        if (pc.params.x != time) {
+            fprintf(stderr, "[SdfRenderer] M6: shadow time changed mid-frame "
+                "(cached %.6f vs cascade %u %.6f); keeping the cached value.\n",
+                static_cast<double>(pc.params.x), cascadeIndex, static_cast<double>(time));
+        }
+#else
+        (void)time;
+#endif
         // H8: outer cascades march impostors, not blades (coarse outer
         // cascades cannot resolve blade detail; report-22 C2 precedent). A
         // shadowLodScale at/above impostorFull already means impostor-only
