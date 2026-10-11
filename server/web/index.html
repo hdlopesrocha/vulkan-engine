@@ -429,6 +429,7 @@ createApp({
         if (!m) { lastMsg.value = 'mesh: short frame ignored'; return; }
         if (m.id !== selectedId.value) return; // stale reply for an old selection
         meshId = m.id; meshVersion = m.version; meshPos = m.pos; meshIdx = m.idx;
+        meshBrush = (m.brush && m.brush.length === m.pos.length / 3) ? m.brush : null;
         meshBufVersion++;
         const nTris = m.idx.length / 3;
         meshStatus.value = nTris > 0
@@ -592,7 +593,16 @@ createApp({
       meshTriCount = 0; meshLineCount = 0;
       if (!gl || !meshPos || !meshIdx || meshIdx.length === 0) return;
       const nVerts = meshPos.length / 3;
-      const tp = [], lp = [];
+      // Per-vertex brush ids (null when the sender has none); each line
+      // endpoint is colored by its OWN brush, mirroring the Vulkan debug
+      // view's per-corner palette blend. Falls back to the chunk brush.
+      const chunk = meshId != null ? chunks.value.get(meshId) : null;
+      const chunkBrush = chunk ? chunk.brushIndex : 0;
+      const chunkLayer = chunk ? chunk.layer : 0;
+      const vb = (meshBrush && meshBrush.length === nVerts)
+        ? (i => meshBrush[i])
+        : (() => chunkBrush);
+      const tp = [], lp = [], lb = [];
       for (let t = 0; t + 2 < meshIdx.length; t += 3) {
         const a = meshIdx[t], b = meshIdx[t + 1], d = meshIdx[t + 2];
         if (a >= nVerts || b >= nVerts || d >= nVerts) continue;
@@ -606,6 +616,7 @@ createApp({
                 meshPos[pd], meshPos[pd + 1], meshPos[pd + 2],
                 meshPos[pd], meshPos[pd + 1], meshPos[pd + 2],
                 meshPos[pa], meshPos[pa + 1], meshPos[pa + 2]);
+        lb.push(vb(a), vb(b), vb(b), vb(d), vb(d), vb(a));
       }
       if (tp.length === 0) return;
       const aPos = gl.getAttribLocation(prog, 'aPos');
@@ -623,13 +634,16 @@ createApp({
         lsum += v;
       }
       dbg.lineMin = lmin; dbg.lineMax = lmax; dbg.lineSum = lsum;
-      // Wireframe color = the chunk's debug brush color (same rule as the
-      // Vulkan DEBUG_MODE_MATERIAL_INDEX views).
-      const chunk = meshId != null ? chunks.value.get(meshId) : null;
-      const cc = chunk ? brushColor(chunk.brushIndex, chunk.layer) : [1.0, 1.0, 1.0];
-      dbg.wireColor = cc;
       const lc = new Float32Array((lp.length / 3) * 3);
-      for (let i = 0; i < lc.length; i += 3) { lc[i] = cc[0]; lc[i + 1] = cc[1]; lc[i + 2] = cc[2]; }
+      const brushSet = new Set();
+      for (let i = 0, v = 0; i < lc.length; i += 3, v++) {
+        const cc = brushColor(lb[v], chunkLayer);
+        brushSet.add(lb[v]);
+        lc[i] = cc[0]; lc[i + 1] = cc[1]; lc[i + 2] = cc[2];
+      }
+      dbg.wireBrushes = [...brushSet].sort((x, y) => x - y);
+      dbg.wireLayer = chunkLayer;
+      dbg.wireColor = lb.length ? brushColor(lb[0], chunkLayer) : [1.0, 1.0, 1.0];
       bindArr(meshLineColBuf, lc, aCol, 3);
       meshLineCount = lp.length / 3;
     }
