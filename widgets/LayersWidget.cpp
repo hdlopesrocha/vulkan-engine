@@ -3,8 +3,12 @@
 #include <imgui.h>
 #include "components/ImGuiHelpers.hpp"
 
-LayersWidget::LayersWidget(Scene* scene, SceneRenderer* renderer, std::function<void()> onLayersChanged)
-    : Widget("Layers", u8"\uf0c9"), scene_(scene), renderer_(renderer), onLayersChanged_(std::move(onLayersChanged)) {}
+LayersWidget::LayersWidget(Scene* scene, SceneRenderer* renderer,
+                         std::function<void()> onLayersChanged,
+                         std::function<void(Layer)> onLayerRepopulate)
+    : Widget("Layers", u8"\uf0c9"), scene_(scene), renderer_(renderer),
+      onLayersChanged_(std::move(onLayersChanged)),
+      onLayerRepopulate_(std::move(onLayerRepopulate)) {}
 
 void LayersWidget::render() {
     if (!scene_) return;
@@ -35,11 +39,15 @@ void LayersWidget::render() {
 
         bool enabled = scene_->layerEnabled(layer);
         if (ImGui::Checkbox("##en", &enabled)) {
-            if (!enabled && renderer_) renderer_->removeAllLayerMeshes(layer);
-            scene_->setLayerEnabled(layer, enabled);
             if (!enabled) {
-                // Hiding is immediate (slots freed); re-enabling needs a
-                // Generate Map / reload to repopulate (documented below).
+                // Hiding is immediate (slots freed).
+                if (renderer_) renderer_->removeAllLayerMeshes(layer);
+                scene_->setLayerEnabled(layer, enabled);
+            } else {
+                scene_->setLayerEnabled(layer, enabled);
+                // Re-queue the layer's chunks so it renders again without a
+                // manual Generate Map.
+                if (onLayerRepopulate_) onLayerRepopulate_(layer);
             }
         }
         ImGui::NextColumn();
@@ -56,9 +64,10 @@ void LayersWidget::render() {
         if (ImGui::Combo("##renderer", &cur, kRendererNames, 2)) {
             const auto next = (cur == 1) ? LayerRendererType::Water : LayerRendererType::Solid;
             // Free the layer's slots from the OLD pool before remapping so
-            // nothing renders twice; repopulation needs Generate Map.
+            // nothing renders twice, then re-queue into the new pool.
             if (renderer_) renderer_->removeAllLayerMeshes(layer);
             scene_->setLayerRenderer(layer, next);
+            if (onLayerRepopulate_) onLayerRepopulate_(layer);
         }
         ImGui::NextColumn();
 
@@ -71,9 +80,9 @@ void LayersWidget::render() {
     ImGui::Separator();
 
     ImGui::TextWrapped(
-        "Renderer switches and re-enabling a layer need File > Generate Map (or reload) "
-        "to repopulate GPU meshes. Removing drops the LAST layer only, keeping "
-        "earlier indices stable.");
+        "Disabling a layer frees its GPU meshes immediately; re-enabling or "
+        "switching renderers repopulates it automatically (progressively). "
+        "Removing drops the LAST layer only, keeping earlier indices stable.");
     ImGui::Spacing();
 
     if (!allowStructureEdit_) {

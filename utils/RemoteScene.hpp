@@ -76,6 +76,7 @@ public:
     void loadScene(SceneLoaderCallback& callback,
                    std::vector<Octree::OctreeNodeDataHandler> updateHandlers,
                    std::vector<Octree::OctreeNodeDataHandler> deleteHandlers) override;
+    void reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) override;
     void requestModel3D(Layer layer, OctreeNodeData& data,
                         const GeometryLodCallback& callback,
                         ThreadPool* poolOverride = nullptr) override;

@@ -840,7 +840,8 @@ public:
 
         // Dynamic scene layers + per-layer renderer selection.
         layersWidget = std::make_shared<LayersWidget>(&world->activeScene(), sceneRenderer,
-            [this]() { syncLayers(); });
+            [this]() { syncLayers(); },
+            [this](Layer layer) { repopulateLayer(layer); });
         widgetManager.addWidget(layersWidget);
 
         // Create per-frame timestamp query pools for GPU profiling
@@ -948,6 +949,11 @@ public:
     // Sync after LayersWidget add/remove: ensure handlers + clear GPU for
     // removed layers. Called from update() (poll) and explicitly by the widget.
     void syncLayers();
+    // Re-queue one layer's chunks for tessellation (used after re-enable or
+    // renderer switch). Re-emits the layer into its collector and dispatches
+    // it on a worker thread; GPU upload follows progressively on the main
+    // thread. Safe to call from the UI thread.
+    void repopulateLayer(Layer layer);
 
     // Start the background tessellation thread for the current scene. Every
     // layer dispatches on its own thread so all layers tessellate truly in
@@ -4237,8 +4243,7 @@ void MyApp::dispatchLayerEvents(Layer layer) {
     }
     if (!collector) return;
     // Disabled layers drop queued events (no tessellation while hidden).
-    // Re-enabling needs Generate Map / reload to repopulate (documented in
-    // the LayersWidget).
+    // repopulateLayer() re-queues on re-enable.
     if (world && !world->activeScene().layerEnabled(layer)) {
         collector->clear();
         return;
@@ -4319,6 +4324,31 @@ void MyApp::syncLayers() {
     if (brush3dWidget) brush3dWidget->setScene(active);
     if (octreeExplorerWidget) octreeExplorerWidget->setScene(active);
     ensureLayerHandlers();
+}
+
+void MyApp::repopulateLayer(Layer layer) {
+    if (!world || !sceneRenderer) return;
+    ensureLayerHandlers();
+    Scene& scene = world->activeScene();
+    if (!scene.validLayer(layer) || !scene.layerEnabled(layer)) return;
+    // The GPU slots were freed; the octree still holds the data but the
+    // tessellation dedup cache considers it up-to-date, so invalidate first
+    // (otherwise the re-emit below is skipped as a no-op).
+    scene.invalidateTessellationCache(layer);
+    Octree::OctreeNodeDataHandler updateHandler;
+    {
+        std::lock_guard<std::mutex> lock(layersSyncMutex_);
+        if (layer < 0 || static_cast<size_t>(layer) >= collectors.size() || !collectors[static_cast<size_t>(layer)])
+            return;
+        updateHandler = collectors[static_cast<size_t>(layer)]->updateHandler;
+    }
+    scene.reemitLayer(layer, updateHandler);
+    // Dispatch on a worker thread (same pattern as startTessellationThreads):
+    // the collector replay enqueues tessellation onto the layer's gen pool
+    // and returns quickly; the main thread uploads results progressively.
+    // Detached: dispatchLayerEvents only holds shared_ptr copies, so a
+    // concurrent add/remove cannot free anything under it.
+    std::thread([this, layer]() { dispatchLayerEvents(layer); }).detach();
 }
 
 void MyApp::generateMap() {

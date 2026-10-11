@@ -534,3 +534,33 @@ void LocalScene::load(const std::string& filePath, std::vector<Octree::OctreeNod
             notifyChunkNodes(tree->root, *tree, 0, *tree->allocator, updateHandlers[i], deleteHandlers[i]);
     }
 }
+
+void LocalScene::reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) {
+    if (!updateHandler) return;
+    // Hold the octree alive for the whole walk so a concurrent removeLayer
+    // cannot free it mid-traversal; take the tree's shared lock so a
+    // concurrent brush apply (unique lock) cannot mutate nodes under us.
+    std::shared_ptr<Octree> tree;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return;
+        tree = layers_[static_cast<size_t>(layer)].octree;
+    }
+    if (!tree || !tree->root || !tree->allocator) return;
+    Octree::OctreeNodeDataHandler noop;
+    {
+        std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
+        notifyChunkNodes(tree->root, *tree, 0, *tree->allocator, updateHandler, noop);
+    }
+}
+
+void LocalScene::invalidateTessellationCache(Layer layer) {
+    (void)layer;
+    // requestModel3D skips nodes whose version matches this cache. After the
+    // GPU slots for a layer are freed (disable / renderer switch), a re-emit
+    // must re-tessellate even though octree versions are unchanged. The map
+    // is keyed by node address only, so clear it wholesale; the next dispatch
+    // of the re-enabled layer rebuilds exactly its own entries.
+    std::lock_guard<std::mutex> lock(emittedMutex_);
+    emittedVersion_.clear();
+}

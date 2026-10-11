@@ -57,6 +57,8 @@ public:
     int maxChunkLod(Layer layer, float minSize) const override;
     glm::vec3 lodRootMin(Layer layer) const override;
     void loadScene(SceneLoaderCallback& callback, std::vector<Octree::OctreeNodeDataHandler> updateHandlers, std::vector<Octree::OctreeNodeDataHandler> deleteHandlers) override;
+    void reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) override;
+    void invalidateTessellationCache(Layer layer) override;
     void save(const std::string& filePath, const Settings* settings = nullptr);
     void load(const std::string& filePath, Settings* settings = nullptr);
     void load(const std::string& filePath, std::vector<Octree::OctreeNodeDataHandler> updateHandlers, std::vector<Octree::OctreeNodeDataHandler> deleteHandlers, Settings* settings = nullptr);

@@ -80,6 +80,14 @@ public:
     }
 
     virtual void loadScene(SceneLoaderCallback& callback, std::vector<Octree::OctreeNodeDataHandler> updateHandlers, std::vector<Octree::OctreeNodeDataHandler> deleteHandlers) = 0;
+    // Re-emit every chunk of one layer into updateHandler (used to repopulate
+    // GPU meshes after a layer is re-enabled or its renderer is switched).
+    // Only the update side is needed: the GPU slots were freed, so every
+    // live chunk must be re-queued for tessellation.
+    virtual void reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) = 0;
+    // Drop tessellation dedup state so a re-emitted layer actually
+    // re-tessellates instead of being skipped as up-to-date. Default no-op.
+    virtual void invalidateTessellationCache(Layer layer) { (void)layer; }
     virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride = nullptr) = 0;
     // Collect SDF debug cubes the same way requestModel3D collects meshes: the
     // walk emits one callback per node that carries a drawable SDF face, with the

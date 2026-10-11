@@ -613,6 +613,26 @@ void RemoteScene::scheduleRetry(Layer layer, uint64_t serverId) {
     if (have && handler) handler(nd);
 }
 
+void RemoteScene::reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) {
+    if (!updateHandler || layer < 0) return;
+    // Snapshot the layer's live stubs under lock, then invoke the handler
+    // without holding stubsMutex_ (collector lambdas only touch their own
+    // map; stub addresses are stable until disconnect). The mesh cache is
+    // version-keyed, so re-emitted chunks re-resolve from cache without
+    // re-fetching from the server.
+    std::vector<OctreeNodeData> pending;
+    {
+        std::lock_guard<std::mutex> lock(stubsMutex_);
+        pending.reserve(byServer_.size());
+        for (const auto& kv : byServer_) {
+            const Stub* stub = kv.second.get();
+            if (!stub || !stub->alive || stub->layer != static_cast<uint8_t>(layer)) continue;
+            pending.emplace_back(stub->level, const_cast<OctreeNode*>(&stub->node), stub->cube, nullptr);
+        }
+    }
+    for (const auto& nd : pending) updateHandler(nd);
+}
+
 // ---------------------------------------------------------------- Scene
 
 Geometry RemoteScene::buildGeometry(const chunkproto::MeshData& mesh, int brushIndex) {
