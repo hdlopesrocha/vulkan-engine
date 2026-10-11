@@ -128,13 +128,30 @@ public:
     // Reads plain renderer members also read by the existing draw paths (same
     // cross-thread class); pendingChunkCount() is mutex-guarded and exact.
     bool hasDrawContent() const;
-    // H7 (report 26): worker-side instance-pass arbiter with transition +
-    // warmup guards (mirrors the report-25 M11 SDF elision). Returns false
-    // only for steady-empty frames (no content, no transition, past warmup);
-    // every content transition runs the full path. Thread-safe for
-    // overlapping pool workers; worst case is a missed skip, never a missed
-    // draw: a skip additionally requires hasContent == false on entry.
-    bool beginInstancePass(bool hasContent);
+    // H7 (report 26, unified by M12 in report 27): veg-pass skip arbiter
+    // with transition + warmup guards (mirrors the report-25 M11 SDF
+    // elision). Returns false only for steady-empty frames (no work, no
+    // transition, past warmup); every input transition runs the full path.
+    // Thread-safe for overlapping callers; worst case is a missed skip,
+    // never a missed draw: a skip requires both inputs steady AND no work.
+    //
+    // M12 (perf report 27): UNIFIED veg-pass arbiter. The old main-thread
+    // duplicate (MyApp statics vegPrevWantDraw/vegWarmupRuns over the
+    // settings-level vegWantDraw formula) is removed; the single decision
+    // lives here over both inputs: wantDraw (settings: billboards and/or
+    // impostors enabled) and hasContent (hasDrawContent()). The transition
+    // memory tracks EACH input separately (packed bits in vegInstancePrev),
+    // so a simultaneous opposite toggle still forces a full frame — a skip
+    // additionally requires both inputs steady. Skip implies no draws by
+    // construction: !wantDraw forces both draw flags false (clear-only at
+    // most), and !hasContent means the draw streams no-op. The main thread
+    // evaluates this BEFORE enqueueing either the veg or the water task, so
+    // H7 can elide the veg submit and reroute water's wait on skip frames.
+    // Steady-state skip outcomes are identical to the old OR of the two
+    // arbiters; transition/warmup frames always run full (safe direction).
+    // The assert inside verifies the never-miss-a-draw invariant.
+    static constexpr uint32_t kVegSkipWarmupFrames = 3;
+    bool beginVegPass(bool wantDraw, bool hasContent);
     bool isConsolidationDirty() const { return vegConsolidationDirty; }
 
     // ── Own offscreen framebuffer (decoupled from the solid pass) ──
@@ -194,7 +211,13 @@ public:
                          VkImageView normalArray60,
                          VkSampler sampler,
                          VkImageView depthArray60 = VK_NULL_HANDLE,
-                         VkBuffer   captureInvVPBuf = VK_NULL_HANDLE);
+                         VkBuffer   captureInvVPBuf = VK_NULL_HANDLE,
+                         // M11 (perf report 27): capture fence for the async
+                         // path (captureAsync/captureAllAsync contract: wait
+                         // it before first sampling). VK_NULL_HANDLE on the
+                         // sync path (captureAll/capture fence-waits
+                         // internally before publish).
+                         VkFence    captureFence = VK_NULL_HANDLE);
 
     // Distance beyond which vegetation instances are replaced by impostor quads.
     // Set to 0 (default) to disable impostor rendering entirely.
@@ -513,8 +536,12 @@ private:
     // (prepareCullCascades). Short critical section only.
     std::mutex consolidationMutex;
     // H7 (report 26): worker-side instance-pass elision state for
-    // beginInstancePass (2 = uninitialized: first frame always runs full so
-    // target layouts + clears are established before any skip).
+    // beginVegPass (M12, report 27: single unified arbiter — the MyApp
+    // duplicate is removed). vegInstancePrev packs the previous inputs:
+    // 2 = uninitialized (first frame always runs full so target layouts +
+    // clears are established before any skip), otherwise bit 0 = prev
+    // wantDraw, bit 1 = prev hasContent. A change in EITHER bit is a
+    // transition and forces a full frame.
     std::atomic<uint32_t> vegInstancePrev{2};
     std::atomic<uint32_t> vegInstanceWarmup{0};
 

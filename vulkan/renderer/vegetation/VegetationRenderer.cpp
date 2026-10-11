@@ -1049,16 +1049,20 @@ void VegetationRenderer::init(VulkanApp* app) {
     attribDescs[6] = { ATTR_VEG_NORMAL, 1, VK_FORMAT_R32G32B32_SFLOAT, sizeof(glm::vec4) };
 
     // ── Shading pass pipeline (TRIANGLE_LIST, no geometry shader) ──
-    // Blending is standard alpha (SRC_ALPHA, ONE_MINUS_SRC_ALPHA): overlapping
-    // surfaces saturate toward the leaf color instead of adding without
-    // bound (premultiplied ONE would stack all six crossed planes into a
-    // clipped white mass). The composite un-premultiplies by veg alpha, so
-    // grass (alpha 1) renders bit-identical to opaque.
+    // H4 (perf report 27): blending DISABLED. Every fragment path in
+    // VegetationRenderer.frag ends with outColor.a = 1.0 (including the
+    // debug early-out), and the impostor twin does the same, so
+    // SRC_ALPHA/ONE_MINUS_SRC_ALPHA computed src*1 + dst*0 = src: the blend
+    // unit was an identity function over the whole vegetation target. With
+    // blendEnable = false the pipeline returns exactly src per pixel. Depth
+    // compare (LESS_OR_EQUAL, no depth write) and the H6 discard order are
+    // untouched. (The impostor color pipeline needs no change: blendEnable
+    // already defaults to false and its config never enables it.)
     GraphicsPipelineConfig vegCfg{};
     vegCfg.cullMode = VK_CULL_MODE_NONE;
     vegCfg.depthWriteEnable = false;
     vegCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    vegCfg.blendEnable = true;
+    vegCfg.blendEnable = false;
     vegCfg.blendSrcColorFactor = VK_BLEND_FACTOR_SRC_ALPHA;
     vegCfg.blendDstColorFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     vegCfg.blendSrcAlphaFactor = VK_BLEND_FACTOR_ONE;
@@ -1278,24 +1282,32 @@ bool VegetationRenderer::hasDrawContent() const {
     return true;
 }
 
-bool VegetationRenderer::beginInstancePass(bool hasContent) {
-    // H7 (report 26): worker-side transition + warmup arbiter, mirroring the
-    // report-25 M11 SDF elision. Steady-empty frames past warmup return false
-    // (caller skips the render-pass instances, keeping layouts stable and the
-    // submit for downstream timeline waits). Every content transition runs
-    // the full path. State is atomic for overlapping pool workers; the only
-    // race outcome is a missed skip, never a missed draw — a skip
-    // additionally requires hasContent == false evaluated by the caller.
+bool VegetationRenderer::beginVegPass(bool wantDraw, bool hasContent) {
+    // M12 (perf report 27): single unified veg-pass arbiter (see the header
+    // contract). Steady-empty frames past warmup return false (caller skips
+    // the veg task entirely — no CB, no submit, no tlVeg signal — and water
+    // waits tlCull instead, H7). Every input transition runs the full path.
+    // State is atomic for overlapping callers; the only race outcome is a
+    // missed skip, never a missed draw: a skip requires both inputs steady
+    // AND no work, and the assert below verifies worklessness on the skip
+    // path (!wantDraw forces both draw flags false; !hasContent means the
+    // draw streams no-op).
     const uint32_t prev = vegInstancePrev.load(std::memory_order_acquire);
-    const bool transition = (prev == 2) || ((prev != 0) != hasContent);
+    const bool transition = (prev == 2) ||
+        ((prev & 1u) != (wantDraw ? 1u : 0u)) ||
+        ((prev & 2u) != (hasContent ? 2u : 0u));
+    const bool hasWork = wantDraw && hasContent;
     const uint32_t warm = vegInstanceWarmup.load(std::memory_order_acquire);
-    const bool skip = !hasContent && !transition && warm >= 3;
+    const bool skip = !hasWork && !transition && warm >= kVegSkipWarmupFrames;
+    // Never-miss-a-draw invariant: a skip is only possible with no work.
+    assert(!skip || !hasWork);
+    const uint32_t nextPrev = (wantDraw ? 1u : 0u) | (hasContent ? 2u : 0u);
     if (!skip) {
-        if (warm < 3) vegInstanceWarmup.fetch_add(1, std::memory_order_acq_rel);
-        vegInstancePrev.store(hasContent ? 1u : 0u, std::memory_order_release);
+        if (warm < kVegSkipWarmupFrames) vegInstanceWarmup.fetch_add(1, std::memory_order_acq_rel);
+        vegInstancePrev.store(nextPrev, std::memory_order_release);
         return true;
     }
-    vegInstancePrev.store(0u, std::memory_order_release);
+    vegInstancePrev.store(nextPrev, std::memory_order_release);
     return false;
 }
 
@@ -1378,15 +1390,23 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
                                           VkImageView normalArray60,
                                           VkSampler sampler,
                                           VkImageView depthArray60,
-                                          VkBuffer captureInvVPBuf) {
+                                          VkBuffer captureInvVPBuf,
+                                          VkFence captureFence) {
     if (!app || albedoArray60 == VK_NULL_HANDLE || normalArray60 == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-    // Wait for all in-flight graphics work to complete before recreating descriptor sets.
-    // This prevents handle-reuse collisions between pending command buffers and
-    // freshly-allocated descriptor set handles. Only waits on per-frame fences
-    // rather than draining the entire device.
-    app->waitForFrameFences();
-
+    // M11 (perf report 27): no waitForFrameFences on the sync path. The
+    // synchronous capture (ImpostorService::rewire after captureAll) already
+    // fence-waits internally before publish, which covers the capture data
+    // this wiring samples. The old full frame-fence wait stalled an unrelated
+    // pipeline for nothing: the previous descriptor sets/pools/layouts below
+    // are orphaned (TrackedHandle null-assignment never frees — the central
+    // manager owns teardown), never freed or reused, so no pending command
+    // buffer can collide with the freshly allocated handles; descriptor
+    // contents written below are identical either way. Async callers pass the
+    // capture fence, which is awaited here before first sampling (capture
+    // async contract: frame fences do NOT cover it).
     VkDevice device = app->getDevice();
+    if (captureFence != VK_NULL_HANDLE)
+        VulkanApp::waitFence(device, captureFence);
 
     // Destroy any previous impostor resources (handles are tracked in the central manager).
     impostorPipeline            = VK_NULL_HANDLE;
@@ -1430,10 +1450,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             bindings[3].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
         }
         // L14 (report 26): plain layout + pool, no UPDATE_AFTER_BIND. This set
-        // is written once here (after waitForFrameFences, so nothing is
-        // pending) and never updated afterwards — sampled views/buffers are
-        // immutable for the set lifetime. Same for the depth-variant pair
-        // below. Only the billboard texture set keeps UPDATE_AFTER_BIND.
+        // is written once here and never updated afterwards — sampled
+        // views/buffers are immutable for the set lifetime (M11, report 27:
+        // the old sets are orphaned, never freed, so pending work keeps
+        // valid handles). Same for the depth-variant pair below. Only the
+        // billboard texture set keeps UPDATE_AFTER_BIND.
         DescriptorAllocator descAlloc{device, app};
         impostorDescSetLayout = descAlloc.createLayout(
             bindings, numBindings,
