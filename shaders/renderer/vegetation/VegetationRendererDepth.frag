@@ -33,8 +33,19 @@ layout(push_constant) uniform PushConstants {
 void main() {
     vec3 coord = vec3(inTexCoord.xy, inTexCoord.z);
 
-    float opacity     = texture(opacityArray, coord).r;
-    vec3  leafNormEnc = texture(normalArray,  coord).rgb;
+    // Cheap-first discard (perf report 26 H6): the single opacity tap is a
+    // sufficient cutout test (opacityWeight < 0.3 implies weight < 0.3, since
+    // normalWeight is in [0,1]), so the exact discard set is unchanged while
+    // discarded pixels skip both normal fetches. textureGrad with
+    // pre-discard gradients keeps the survivors' LOD bit-identical (the LOD5
+    // tap was already explicit).
+    float opacity       = texture(opacityArray, coord).r;
+    float opacityWeight = smoothstep(0.35, 0.65, opacity);
+    if (opacityWeight < 0.3) discard;
+
+    vec2 lodGradX = dFdx(coord.xy);
+    vec2 lodGradY = dFdy(coord.xy);
+    vec3  leafNormEnc = textureGrad(normalArray, coord, lodGradX, lodGradY).rgb;
     vec3  bgNormEnc   = textureLod(normalArray, coord, 5.0).rgb;
 
     vec3 leafNorm = normalize(leafNormEnc * 2.0 - 1.0);
@@ -43,7 +54,6 @@ void main() {
     float leafNConf = clamp(leafNorm.z, 0.0, 1.0);
     float bgNConf   = clamp(bgNorm.z,   0.0, 1.0);
 
-    float opacityWeight = smoothstep(0.35, 0.65, opacity);
     float normalWeight  = mix(bgNConf, leafNConf, opacityWeight);
     float weight        = opacityWeight * normalWeight;
 

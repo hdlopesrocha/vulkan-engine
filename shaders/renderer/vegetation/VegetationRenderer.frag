@@ -56,10 +56,25 @@ void main() {
     bool shadowPass = windEnabled < 0.0;
     fragPosWorld = inWorldPos; // must be set before any ShadowCalculation call
 
-    // Per-pixel leaf samples.
-    vec4  leafAlbedo  = texture(albedoArray,  coord);
-    float opacity     = texture(opacityArray, coord).r;
-    vec3  leafNormEnc = texture(normalArray,  coord).rgb;
+    // Cheap-first discard (perf report 26 H6): the single opacity tap drives
+    // the sufficient cutout test — opacityWeight < 0.3 implies weight < 0.3
+    // (normalWeight mixes two [0,1] confidences), so discarded pixels pay one
+    // fetch instead of three and survivors compute the same values as the
+    // old fetch-everything-first order. The albedo/normal fetches below run
+    // only for survivors via textureGrad with pre-discard gradients: the
+    // gradients are captured in uniform control flow, so LOD selection is
+    // exactly what the old implicit fetches computed (post-discard implicit
+    // derivatives would be undefined on partially-discarded quads).
+    float opacity       = texture(opacityArray, coord).r;
+    float opacityWeight = smoothstep(0.35, 0.65, opacity);
+    if (opacityWeight < 0.3) discard;
+
+    vec2 lodGradX = dFdx(coord.xy);
+    vec2 lodGradY = dFdy(coord.xy);
+
+    // Per-pixel leaf samples (survivors only; bit-identical values).
+    vec4  leafAlbedo  = textureGrad(albedoArray, coord, lodGradX, lodGradY);
+    vec3  leafNormEnc = textureGrad(normalArray,  coord, lodGradX, lodGradY).rgb;
 
     // Decode tangent-space normal from [0,1] to [-1,1].
     vec3 leafNorm = normalize(leafNormEnc * 2.0 - 1.0);
@@ -67,27 +82,9 @@ void main() {
     // Normal confidence: Z in tangent space — 1 = facing viewer, 0 = grazing.
     float leafNConf = clamp(leafNorm.z, 0.0, 1.0);
 
-    // Leaf-only weight component.
-    float opacityWeight = smoothstep(0.35, 0.65, opacity);
-
-    // Early-out for sparse texels (perf report 22 H6): with opacityWeight
-    // below 0.3 the final weight is < 0.3 * normalWeight <= 0.3 independently
-    // of the background (normalWeight is a mix of two [0,1] confidences), so
-    // deferring the background fetches below is exactly equivalent to the
-    // later `weight < 0.3` test. Saves both background fetches on the
-    // majority of foliage pixels (grass silhouettes). The < 0.3 test after
-    // the fetches remains the backstop for opacityWeight >= 0.3 pixels that
-    // the background demotes (bit-identical output either way).
-    if (opacityWeight < 0.3) discard;
-
-    // Impostor hand-off: DIRECT, no dithered fade. The vertex shader culls
-    // this instance at impostorDistance (see VegetationRenderer.vert) and the
-    // impostor vertex shader starts at the same distance, so the billboard
-    // and impostor swap per instance exactly at the threshold. The old
-    // 0.50x-1.15x complementary dither dissolved the grass into sparse dots
-    // before the impostors read as vegetation - at the half-res Minimal
-    // vegetation target each 4x4 Bayer block spans 8x8 screen pixels, so the
-    // "transition" looked like a bare ring with no grass at all.
+    // Impostor hand-off is DIRECT (no dithered fade): the per-instance swap
+    // at impostorDistance is documented once in VegetationRenderer.vert
+    // (canonical removed-dither note, perf report 26 L15).
 
     // Background: nearest-leaf-filled by CPU compositor; high-mip gives spatial blend.
     const float kAvgMip = 5.0;
