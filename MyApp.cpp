@@ -288,6 +288,9 @@ public:
     uint32_t skyRenderRuns = 0;          // frames actually rendered so far
     float skySig[42] = {};               // last rendered input signature (sky + clouds + quantized time)
     bool skySigValid = false;            // skySig holds a rendered frame's values
+    // Guards skySig/skySigValid/skyRenderRuns: the render task commits them
+    // from a worker thread after its command buffer begins (see below).
+    std::mutex skySigMutex;
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<SkyWidget> skyWidget;
     std::shared_ptr<class CloudWidget> cloudWidget;
@@ -1880,23 +1883,44 @@ public:
                 clouds.silverLining, clouds.ambientBoost, clouds.sunForwardG,
                 static_cast<float>(clouds.raymarchSteps), static_cast<float>(clouds.lightSteps)
             };
-            bool skySigChanged = !skySigValid;
-            for (int i = 0; i < 42; ++i) {
-                if (skySigNow[i] != skySig[i]) { skySigChanged = true; break; }
+            bool skySigChanged = false;
+            uint32_t skyRuns = 0;
+            {
+                // Written by the sky worker on successful begin (below).
+                std::lock_guard<std::mutex> lock(skySigMutex);
+                skySigChanged = !skySigValid;
+                if (!skySigChanged) {
+                    for (int i = 0; i < 42; ++i) {
+                        if (skySigNow[i] != skySig[i]) { skySigChanged = true; break; }
+                    }
+                }
+                skyRuns = skyRenderRuns;
             }
             // Clouds force a re-render every frame (see comment above):
             // continuous time + camera-anchored origin. Cloudless skies keep
             // the H8 cache (signature check only).
             const bool skyNeedsRender = !this->sceneRenderer->skyRenderer
-                || skyRenderRuns < SKY_CACHE_WARMUP || skySigChanged || cloudsActive;
+                || skyRuns < SKY_CACHE_WARMUP || skySigChanged || cloudsActive;
             if (skyNeedsRender) {
-                for (int i = 0; i < 42; ++i) skySig[i] = skySigNow[i];
-                skySigValid = true;
-                ++skyRenderRuns;
-                asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, v]() {
+                // NOTE: the signature commits only inside the task, after
+                // beginAsyncTask succeeds. Committing it here would mark a
+                // skipped/failed task as rendered, freezing a stale image
+                // (e.g. a cloudy equirect persisting in water reflections
+                // after disabling clouds) until the next parameter change.
+                // A failed begin leaves the signature invalid, so the next
+                // frame retries instead of caching stale contents.
+                std::array<float, 42> sigCopy{};
+                for (int i = 0; i < 42; ++i) sigCopy[i] = skySigNow[i];
+                asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, v, sigCopy]() {
                     MyApp* app = this;
                     VkCommandBuffer skyCmd = app->beginAsyncTask("sky");
                     if (skyCmd == VK_NULL_HANDLE) return;
+                    {
+                        std::lock_guard<std::mutex> lock(skySigMutex);
+                        for (int i = 0; i < 42; ++i) skySig[i] = sigCopy[i];
+                        skySigValid = true;
+                        ++skyRenderRuns;
+                    }
                     CommandBufferState taskState;
                     this->sceneRenderer->setCmdState(&taskState);
                     if (this->sceneRenderer->skyRenderer)
@@ -3532,8 +3556,11 @@ public:
         // H8: the sky offscreen targets were recreated with undefined contents
         // (and possibly new handles); force re-rendering until the cache is
         // repopulated. A few warmup frames cover all in-flight consumers.
-        skyRenderRuns = 0;
-        skySigValid = false;
+        {
+            std::lock_guard<std::mutex> lock(skySigMutex);
+            skyRenderRuns = 0;
+            skySigValid = false;
+        }
     }
 
     void preImGuiShutdown() override {
