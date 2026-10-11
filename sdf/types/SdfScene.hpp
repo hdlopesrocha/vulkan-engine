@@ -109,6 +109,12 @@ public:
     static SdfScene createGrassFromAnchors(const std::vector<GrassAnchor>& anchors,
                                            const GrassShape& shape);
 
+    // H6 (perf report 27): builds the three per-type grass materials from a
+    // shape (single source for createGrassFromAnchors and the renderer's
+    // material-only tint/roughness patch, so the patch writes byte-identical
+    // entries to a full rebuild). `out` must hold 3 SdfMaterials.
+    static void makeGrassMaterials(const GrassShape& shape, SdfMaterial* out);
+
     // Orientation for Y-up SDF instances (flames grow along local +Y):
     // shortest-arc rotation taking +Y to the surface normal `n`, expressed
     // as XYZ euler radians in the R = Rx * Ry * Rz convention used by

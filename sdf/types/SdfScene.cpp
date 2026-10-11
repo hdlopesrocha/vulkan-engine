@@ -499,6 +499,41 @@ void addFlameDefinitionAndMaterial(SdfScene& scene,
 }
 } // namespace
 
+// H6 (perf report 27): single source for the three per-type grass materials.
+// createGrassFromAnchors and the renderer's material-only tint/roughness patch
+// both go through here, so the patch writes byte-identical entries to a full
+// rebuild. Verbatim move of the material block (same expressions, same order).
+void SdfScene::makeGrassMaterials(const GrassShape& shape, SdfMaterial* out) {
+    const glm::vec3 kTypeColor[3] = {
+        glm::vec3(0.22f, 0.38f, 0.16f), // foliage
+        glm::vec3(0.30f, 0.52f, 0.20f), // grass
+        glm::vec3(0.46f, 0.55f, 0.24f), // wild
+    };
+    for (int t = 0; t < 3; ++t) {
+        SdfMaterial m;
+        m.mode = SdfMaterialType::Surface;
+        m.baseColor = glm::vec4(glm::clamp(kTypeColor[t] * shape.tint, glm::vec3(0.0f),
+                                           glm::vec3(4.0f)), 1.0f);
+        m.roughness = std::clamp(shape.roughness, 0.02f, 1.0f);
+        m.metallic = 0.0f;
+        m.opacity = 1.0f;
+        m.emission = glm::vec3(0.0f);
+        m.emissionIntensity = 0.0f;
+        // Opaque blades: zero volumetric density/temperature so even an
+        // interior march sample can never add gray volume (the solid hit
+        // path is the only shading, like rocks).
+        m.density = 0.0f;
+        m.absorption = 0.5f;
+        m.scattering = 0.5f;
+        m.tempScale = 0.0f;
+        m.noiseScale = 1.0f;
+        m.turbulence = 0.0f;
+        m.riseSpeed = 0.0f;
+        m.textureLayer = -1.0f; // flat blade color (no texture-array path)
+        out[t] = m;
+    }
+}
+
 SdfScene SdfScene::createFireFromAnchors(const std::vector<FlameAnchor>& anchors,
                                           const FlameShape& shape) {
     SdfScene scene;
@@ -637,11 +672,6 @@ SdfScene SdfScene::createGrassFromAnchors(const std::vector<GrassAnchor>& anchor
     constexpr float kTypeHeightMul[kTypeCount] = {1.10f, 1.00f, 0.80f};
     constexpr float kTypeWidthMul[kTypeCount]  = {1.30f, 1.00f, 0.85f};
     constexpr float kTypeCurveMul[kTypeCount]  = {0.70f, 1.00f, 1.25f};
-    const glm::vec3 kTypeColor[kTypeCount] = {
-        glm::vec3(0.22f, 0.38f, 0.16f), // foliage
-        glm::vec3(0.30f, 0.52f, 0.20f), // grass
-        glm::vec3(0.46f, 0.55f, 0.24f), // wild
-    };
 
     const float baseRadius = std::max(shape.clumpRadius, 1e-3f);
     const float baseHeight = std::max(shape.bladeHeight, 1e-3f);
@@ -652,6 +682,10 @@ SdfScene SdfScene::createGrassFromAnchors(const std::vector<GrassAnchor>& anchor
     const float windGain   = std::max(shape.windGain, 0.0f);
     const float tipWidth   = std::clamp(shape.tipWidth, 0.05f, 1.0f);
 
+    // H6 (report 27): materials via the shared helper (byte-identical to the
+    // inline block it replaces; the material-only patch reuses it).
+    SdfMaterial typeMats[kTypeCount];
+    makeGrassMaterials(shape, typeMats);
     for (int t = 0; t < kTypeCount; ++t) {
         SdfDefinition d;
         d.prim = SdfPrimitiveType::Grass;
@@ -665,27 +699,7 @@ SdfScene SdfScene::createGrassFromAnchors(const std::vector<GrassAnchor>& anchor
         d.smoothK = 0.5f;
         scene.addDefinition(d);
 
-        SdfMaterial m;
-        m.mode = SdfMaterialType::Surface;
-        m.baseColor = glm::vec4(glm::clamp(kTypeColor[t] * shape.tint, glm::vec3(0.0f),
-                                           glm::vec3(4.0f)), 1.0f);
-        m.roughness = std::clamp(shape.roughness, 0.02f, 1.0f);
-        m.metallic = 0.0f;
-        m.opacity = 1.0f;
-        m.emission = glm::vec3(0.0f);
-        m.emissionIntensity = 0.0f;
-        // Opaque blades: zero volumetric density/temperature so even an
-        // interior march sample can never add gray volume (the solid hit
-        // path is the only shading, like rocks).
-        m.density = 0.0f;
-        m.absorption = 0.5f;
-        m.scattering = 0.5f;
-        m.tempScale = 0.0f;
-        m.noiseScale = 1.0f;
-        m.turbulence = 0.0f;
-        m.riseSpeed = 0.0f;
-        m.textureLayer = -1.0f; // flat blade color (no texture-array path)
-        scene.addMaterial(m);
+        scene.addMaterial(typeMats[t]);
     }
 
     if (anchors.empty()) return scene; // defs+mats, no containers -> renders nothing

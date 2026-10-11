@@ -1477,10 +1477,87 @@ void SdfRenderer::markGrassDirty() {
     grassDirty_ = true;
 }
 
+// H6 (perf report 27): pack the live grass config into a build shape (shared
+// by the full rebuild and the material-only patch, so both derive materials
+// from identical inputs).
+sdf_gpu::GrassShape SdfRenderer::grassShapeLocked() const {
+    sdf_gpu::GrassShape shape;
+    shape.clumpRadius = config_.grass.clumpRadius;
+    shape.bladeHeight = config_.grass.bladeHeight;
+    shape.bladeWidth = config_.grass.bladeWidth;
+    shape.bladeCount = config_.grass.bladeCount;
+    shape.curvature = config_.grass.curvature;
+    shape.maxLean = config_.grass.maxLean;
+    shape.windGain = config_.grass.windGain;
+    shape.tipWidth = config_.grass.tipWidth;
+    shape.regionSize = config_.grass.regionSize;
+    shape.cellSize = config_.grass.cellSize;
+    shape.roughness = config_.grass.roughness;
+    shape.tint = config_.grass.tint;
+    return shape;
+}
+
+// H6 (perf report 27): FNV-1a over the structural grass config (everything
+// feeding definitions/containers/grids: NOT tint/roughness, NOT the streamed
+// shadow/impostor fields, NOT the ingest-only maxPerChunk whose changes take
+// the ingest path). Same-process compare only.
+uint64_t SdfRenderer::grassStructuralHashLocked() const {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](const void* data, size_t bytes) {
+        const auto* b = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < bytes; ++i) {
+            h ^= static_cast<uint64_t>(b[i]);
+            h *= 1099511628211ull;
+        }
+    };
+    auto mixField = [&](const auto& field) { mix(&field, sizeof(field)); };
+    mixField(config_.grass.enabled);
+    mixField(config_.grass.maxAnchors);
+    mixField(config_.grass.regionSize);
+    mixField(config_.grass.cellSize);
+    mixField(config_.grass.clumpRadius);
+    mixField(config_.grass.bladeHeight);
+    mixField(config_.grass.bladeWidth);
+    mixField(config_.grass.bladeCount);
+    mixField(config_.grass.curvature);
+    mixField(config_.grass.maxLean);
+    mixField(config_.grass.windGain);
+    mixField(config_.grass.tipWidth);
+    return h;
+}
+
 bool SdfRenderer::rebuildGrassIfDirty() {
     std::lock_guard<std::mutex> lock(sceneMutex);
+    // H6 (perf report 27): material-only tint/roughness path. The structural
+    // hash must still match the last full rebuild (a structural change that
+    // missed its flag escalates instead of silently taking the cheap path),
+    // and the merged material layout must be exactly lava+rocks+grass(3)+
+    // smoke; any mismatch falls through to the full rebuild below.
+    // Byte-identical gate: the patch reuses SdfScene::makeGrassMaterials, so
+    // the 3 entries equal a full rebuild's bytes while instances/containers/
+    // grids are untouched (no re-merge, no rebuild).
+    if (!grassDirty_ && grassMaterialDirty_) {
+        const size_t lavaMats = lavaScene_.materials().size();
+        const size_t rockMats = rocksScene_.materials().size();
+        const size_t smokeMats = smokeScene_.materials().size();
+        if (grassStructuralHashLocked() == grassStructuralHash_ &&
+            grassScene_.materials().size() == 3 &&
+            pendingScene_.materials().size() == lavaMats + rockMats + 3 + smokeMats) {
+            SdfMaterial mats[3];
+            sdf_gpu::SdfScene::makeGrassMaterials(grassShapeLocked(), mats);
+            for (int t = 0; t < 3; ++t) {
+                grassScene_.materials()[static_cast<size_t>(t)] = mats[t];
+                pendingScene_.materials()[lavaMats + rockMats + static_cast<size_t>(t)] = mats[t];
+            }
+            grassMaterialDirty_ = false;
+            grassMatDirtySlots_.fill(true);
+            return true;
+        }
+        grassDirty_ = true; // escalate: structural drift or unexpected layout
+    }
     if (!grassDirty_) return false;
     grassDirty_ = false;
+    grassMaterialDirty_ = false; // full rebuild covers materials too
 
     // Flatten the retained per-chunk anchors (the scene rebuild shares the
     // same coalesced path as lava/rocks: at most one flatten per frame).
@@ -1496,21 +1573,9 @@ bool SdfRenderer::rebuildGrassIfDirty() {
     }
 
     grassScene_ = [&] {
-        sdf_gpu::GrassShape shape;
-        shape.clumpRadius = config_.grass.clumpRadius;
-        shape.bladeHeight = config_.grass.bladeHeight;
-        shape.bladeWidth = config_.grass.bladeWidth;
-        shape.bladeCount = config_.grass.bladeCount;
-        shape.curvature = config_.grass.curvature;
-        shape.maxLean = config_.grass.maxLean;
-        shape.windGain = config_.grass.windGain;
-        shape.tipWidth = config_.grass.tipWidth;
-        shape.regionSize = config_.grass.regionSize;
-        shape.cellSize = config_.grass.cellSize;
-        shape.roughness = config_.grass.roughness;
-        shape.tint = config_.grass.tint;
-        return sdf_gpu::SdfScene::createGrassFromAnchors(all, shape);
+        return sdf_gpu::SdfScene::createGrassFromAnchors(all, grassShapeLocked());
     }();
+    grassStructuralHash_ = grassStructuralHashLocked();
     refreshMergedLocked();
     stats_.grassAnchors = static_cast<uint32_t>(all.size());
     stats_.grassChunks = static_cast<uint32_t>(grassByChunk_.size());
@@ -1611,7 +1676,7 @@ void SdfRenderer::setGrassRoughness(float r) {
     const float v = std::clamp(r, 0.02f, 1.0f);
     if (v == config_.grass.roughness) return;
     config_.grass.roughness = v;
-    grassDirty_ = true;
+    grassMaterialDirty_ = true; // H6 (report 27): material-only, no re-merge
 }
 
 void SdfRenderer::setGrassTint(const glm::vec3& rgb) {
@@ -1619,7 +1684,7 @@ void SdfRenderer::setGrassTint(const glm::vec3& rgb) {
     const glm::vec3 v = glm::clamp(rgb, glm::vec3(0.0f), glm::vec3(4.0f));
     if (v == config_.grass.tint) return;
     config_.grass.tint = v;
-    grassDirty_ = true;
+    grassMaterialDirty_ = true; // H6 (report 27): material-only, no re-merge
 }
 
 void SdfRenderer::setGrassShadowLodScale(float s) {
@@ -2287,6 +2352,28 @@ void SdfRenderer::flushSlotUploads(uint32_t slot) {
         };
         copiesPendingSlots_[slot] = true;
         sceneDirtySlots_[slot] = false;
+        grassMatDirtySlots_[slot] = false; // full upload already carries patched materials
+    } else if (grassMatDirtySlots_[slot]) {
+        // H6 (report 27): material-only upload — the material vector range
+        // alone (staging twin + staged byte counts). recordSlotCopies skips
+        // zero-count vectors, so only the material twin is copied; the
+        // rebuild is skipped by construction (rebuildGrassIfDirty patched in
+        // place instead).
+        ensureSlotCapacity(slot); // no-op: counts are unchanged on this path
+        if (!pendingScene_.materials().empty() && f.material.mappedData != nullptr) {
+            std::memcpy(f.material.mappedData, pendingScene_.materials().data(),
+                        pendingScene_.materials().size() * sizeof(SdfMaterial));
+        }
+        stagedBytes_[slot] = {
+            static_cast<VkDeviceSize>(0),
+            static_cast<VkDeviceSize>(0),
+            static_cast<VkDeviceSize>(pendingScene_.materials().size() * sizeof(SdfMaterial)),
+            static_cast<VkDeviceSize>(0),
+            static_cast<VkDeviceSize>(0),
+            static_cast<VkDeviceSize>(0),
+        };
+        copiesPendingSlots_[slot] = true;
+        grassMatDirtySlots_[slot] = false;
     }
     if (paramsDirtySlots_[slot]) {
         if (f.params.mappedData != nullptr)
@@ -2427,6 +2514,10 @@ void SdfRenderer::recordHostToShaderBarrier(VkCommandBuffer cmd, uint32_t slot) 
     if (sceneFresh) {
         for (int i = 0; i < 6; ++i) {
             if (gpuBufs[i] == VK_NULL_HANDLE) continue;
+            // H6 (report 27): only vectors copied this frame need the
+            // TRANSFER -> shader barrier (material-only uploads copy one
+            // twin); full uploads stage all six, so they are unaffected.
+            if (stagedBytes_[slot][i] == 0) continue;
             barriers[n].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
             barriers[n].srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
             barriers[n].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;

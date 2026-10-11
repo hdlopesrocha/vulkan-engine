@@ -199,6 +199,11 @@ public:
     bool rebuildGrassIfDirty();
     // Force a grass-scene rebuild from the retained anchors.
     void markGrassDirty();
+    // H6 (perf report 27): pack config_.grass into a GrassShape / hash the
+    // structural subset (everything feeding definitions/containers/grids, NOT
+    // tint/roughness). Callers hold sceneMutex.
+    sdf_gpu::GrassShape grassShapeLocked() const;
+    uint64_t grassStructuralHashLocked() const;
     // Placement/collector controls.
     void setGrassEnabled(bool on);
     void setGrassMaxPerChunk(int n);
@@ -547,6 +552,17 @@ private:
     bool lavaDirty_ = false;    // anchors changed -> rebuild staged
     bool rocksDirty_ = false;   // anchors/shape changed -> rebuild staged
     bool grassDirty_ = false;   // vegetation clumps/shape changed -> rebuild staged
+    // H6 (perf report 27): material-only grass tint/roughness path. Set by
+    // the tint/roughness setters instead of grassDirty_; consumed by
+    // rebuildGrassIfDirty, which patches the 3 grass materials in place
+    // (grassScene_ + merged range) and stages a material-range-only upload,
+    // skipping the re-merge/rebuild. grassStructuralHash_ guards the cheap
+    // path: a structural change that missed its flag escalates to a full
+    // rebuild instead of silently taking it. Per-slot flags mirror
+    // sceneDirtySlots_ (triple-buffered slots).
+    bool grassMaterialDirty_ = false;
+    uint64_t grassStructuralHash_ = 0;
+    std::array<bool, SDF_FRAMES> grassMatDirtySlots_ = {false, false, false};
 
     // Smoke bomb state (second generic consumer). Scene topology is static
     // (1 def/mat/container/instance); all behavior below streams through
